@@ -1,0 +1,29 @@
+change_in_place: true
+excludes:
+  - \.gitignore
+  - .*lock
+  - \.git/.*
+  - \.licensure\.yml
+  - README.*
+  - LICENSE.*
+  - .*\.(md|rst|txt)
+  - Cargo.toml
+  - .*\.yaml
+  - .*\.wav
+  - .*\.mid
+licenses:
+  - files: any
+    ident: GPL-3.0
+    authors:
+      - name: Michael Wilson
+        email: mike@mdwn.dev
+    auto_template: true
+
+comments:
+  - columns: 80
+    extensions:
+      - rs
+    commenter:
+      type: line
+      comment_char: "//"
+      trailing_lines: 0

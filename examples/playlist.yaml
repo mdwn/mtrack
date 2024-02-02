@@ -1,0 +1,10 @@
+# This is a simple file that contains, in order, the names of all songs
+# that mtrack should play. The names of the songs are defined in the
+# song repository, which can be found in mtrack.yaml.
+songs:
+- Sound check
+- A really cool song
+- Another cool song
+- The slow one
+- A really fast one
+- Outro tape

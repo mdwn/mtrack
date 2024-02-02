@@ -1,0 +1,64 @@
+# This audio device will be matched as best as possible against the devices on your system.
+# Run `mtrack devices` to see a list of the devices that mtrack recognizes.
+audio_device: UltraLite-mk5
+
+# This MIDI device will be matched as best as possible against the devices on your system.
+# Run `mtrack midi-devices` to see a list of the devices that mtrack recognizes.
+midi_device: UltraLite-mk5
+
+# The directory where all of your songs are located, frequently referred to as the song repository.
+# If the path is not absolute, it will be relative to the location of this file.
+songs: songs
+
+# The controller definition. As of now, the valid kinds of controllers are:
+# - keyboard
+# - midi
+# Keyboard is largely for testing and MIDI is intended for actual live usage.
+controller:
+  kind: midi
+
+  # When mtrack recognizes this MIDI event, it will play the current song if no other song is
+  # currently playing.
+  play:
+    type: control_change
+    channel: 16
+    controller: 100
+    value: 0
+
+  # When mtrack recognizes this MIDI event, it will navigate to the previous song in the playlist
+  # if no other song is currently playing.
+  prev:
+    type: control_change
+    channel: 16
+    controller: 100
+    value: 1
+
+  # When mtrack recognizes this MIDI event, it will navigate to the next song in the playlist
+  # if no other song is currently playing.
+  next:
+    type: control_change
+    channel: 16
+    controller: 100
+    value: 2
+
+  # When mtrack recognizes this MIDI event, it will stop the currently playing song.
+  stop:
+    type: control_change
+    channel: 16
+    controller: 100
+    value: 3
+
+  # When mtrack recognizes this MIDI event, it will switch to the playlist of all known songs in
+  # your song repository.
+  all_songs:
+    type: control_change
+    channel: 16
+    controller: 100
+    value: 4
+
+  # When mtrack recognizes this MIDI event, it will switch to the defined playlist.
+  playlist:
+    type: control_change
+    channel: 16
+    controller: 100
+    value: 5

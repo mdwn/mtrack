@@ -1,0 +1,56 @@
+name: mtrack
+on: [push, pull_request]
+
+jobs:
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Update apt
+      run: sudo apt update
+    - name: Install alsa
+      run: sudo apt-get install -y libasound2-dev
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy
+    - uses: Swatinem/rust-cache@v2
+    - name: Run clippy
+      run: cargo clippy --all --all-features
+
+  rustfmt-check:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Update apt
+      run: sudo apt update
+    - name: Install alsa
+      run: sudo apt-get install -y libasound2-dev
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        components: rustfmt
+    - uses: Swatinem/rust-cache@v2
+    - name: Run rustfmt
+      run: cargo fmt --all -- --check
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Update apt
+      run: sudo apt update
+    - name: Install alsa
+      run: sudo apt-get install -y libasound2-dev
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: Swatinem/rust-cache@v2
+    - name: Test mtrack
+      run: cargo test --all --verbose
+
+  licensure:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+    - name: Install licensure
+      run: cargo install licensure
+    - name: Check for licenses
+      run: licensure --check -p

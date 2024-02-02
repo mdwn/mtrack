@@ -1,0 +1,19 @@
+name: The slow one
+
+midi_event:
+  type: program_change
+  channel: 16
+  program: 1
+
+tracks:
+- name: click
+  file: click.wav
+  channel: 7
+- name: backing-track-l
+  file: backing-track.wav
+  file_channel: 1
+  channel: 9
+- name: backing-track-r
+  file: backing-track.wav
+  file_channel: 2
+  channel: 10
