@@ -31,7 +31,6 @@ midly = "0.5.3"
 nodi = { version = "1.0.0", features = ["hybrid-sleep", "midir"] }
 regex = "1.10.3"
 ringbuf = "0.3.3"
-ringbuffer = "0.15.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.9"
 shh = "1.0.1"
