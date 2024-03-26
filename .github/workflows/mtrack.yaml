@@ -1,7 +1,14 @@
 name: mtrack
-on: [push, pull_request]
+on:
+  push:
+    branches:
+    - main
+  pull_request:
+    branches:
+    - main
 
 jobs:
+  # Clippy effectively lints the code.
   clippy:
     runs-on: ubuntu-latest
     steps:
@@ -17,6 +24,7 @@ jobs:
     - name: Run clippy
       run: cargo clippy --all --all-features
 
+  # Make sure the code is properly formatted.
   rustfmt-check:
     runs-on: ubuntu-latest
     steps:
@@ -32,6 +40,7 @@ jobs:
     - name: Run rustfmt
       run: cargo fmt --all -- --check
 
+  # Make sure the tests pass.
   test:
     runs-on: ubuntu-latest
     steps:
@@ -45,6 +54,7 @@ jobs:
     - name: Test mtrack
       run: cargo test --all --verbose
 
+  # Make sure all code has an appropriate license header.
   licensure:
     runs-on: ubuntu-latest
     steps:
