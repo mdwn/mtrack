@@ -2,7 +2,8 @@
 name = "mtrack"
 description = "A multitrack audio and MIDI player for live performances."
 license = "GPL-3.0"
-version = "0.1.0"
+version = "0.1.1"
+authors = ["Michael Wilson <mike@mdwn.dev>"]
 edition = "2021"
 repository = "https://github.com/mdwn/mtrack"
 readme = "README.md"
