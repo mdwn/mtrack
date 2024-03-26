@@ -37,6 +37,20 @@ player.
 
 The events listed above can be triggered using MIDI messages.
 
+## Installation
+
+`mtrack` can be installed through cargo:
+
+```
+$ cargo install mtrack
+```
+
+If you want to use `mtrack` on startup, I recommend copying it to `/usr/local/bin`:
+
+```
+$ sudo cp ~/.cargo/bin/mtrack /usr/local/bin/mtrack
+```
+
 ## Figuring out what devices are supported
 
 You can figure out what audio devices `mtrack` recognizes by running `mtrack devices`:
@@ -261,7 +275,8 @@ To have `mtrack` start when the system starts, you can run:
 $ sudo mtrack systemd > /etc/systemd/system/mtrack.service
 ```
 
-This expects you to define your player configuration and playlist in `/etc/default/mtrack`. The file
+Note that the service expects that `mtrack` is available at the location `/usr/local/bin/mtrack`. It also
+expects you to define your player configuration and playlist in `/etc/default/mtrack`. This file
 should contain two variables: `MTRACK_CONFIG` and `PLAYLIST`:
 
 ```
