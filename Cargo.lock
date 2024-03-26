@@ -618,7 +618,6 @@ dependencies = [
  "nodi",
  "regex",
  "ringbuf",
- "ringbuffer",
  "serde",
  "serde_yaml",
  "shh",
@@ -958,12 +957,6 @@ checksum = "79abed428d1fd2a128201cec72c5f6938e2da607c6f3745f769fabea399d950a"
 dependencies = [
  "crossbeam-utils",
 ]
-
-[[package]]
-name = "ringbuffer"
-version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3df6368f71f205ff9c33c076d170dd56ebf68e8161c733c0caa07a7a5509ed53"
 
 [[package]]
 name = "rustc-demangle"
