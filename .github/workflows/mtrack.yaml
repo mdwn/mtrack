@@ -50,10 +50,10 @@ jobs:
     - name: Install alsa
       run: sudo apt-get install -y libasound2-dev
     - uses: dtolnay/rust-toolchain@stable
-    - run: cargo install cargo-tarpaulin
     - uses: Swatinem/rust-cache@v2
+    - run: cargo install cargo-tarpaulin
     - name: Test mtrack
-      run: cargo tarpaulin --verbose --all-features --workspace --timeout 120 --out xml
+      run: cargo tarpaulin --all-features --timeout 120 --out xml
     - name: Upload coverage reports to Codecov
       uses: codecov/codecov-action@v4.0.1
       with:
@@ -66,6 +66,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - uses: dtolnay/rust-toolchain@stable
+    - uses: Swatinem/rust-cache@v2
     - name: Install licensure
       run: cargo install licensure
     - name: Check for licenses
