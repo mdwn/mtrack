@@ -8,8 +8,32 @@ on:
     - main
 
 jobs:
+  # Build the code and verify that Cargo.lock is up to date.
+  build:
+    name: Build mtrack
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Update apt
+      run: sudo apt update
+    - name: Install alsa
+      run: sudo apt-get install -y libasound2-dev
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: Swatinem/rust-cache@v2
+    - name: Build mtrack
+      run: cargo build
+    - name: Check of Cargo.lock is up to date
+      run: |
+        if git diff --exit-code Cargo.lock; then
+          echo "Cargo.lock is up to date."
+        else
+          echo "Cargo.lock needs to be updated."
+          exit 1
+        fi
+
   # Clippy effectively lints the code.
   clippy:
+    name: Lint mtrack
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -26,6 +50,7 @@ jobs:
 
   # Make sure the code is properly formatted.
   rustfmt-check:
+    name: Run rustfmt
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -42,6 +67,7 @@ jobs:
 
   # Make sure the tests pass.
   test:
+    name: Run tests
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -62,6 +88,7 @@ jobs:
 
   # Make sure all code has an appropriate license header.
   licensure:
+    name: Ensure license headers
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -71,3 +98,19 @@ jobs:
       run: cargo install licensure
     - name: Check for licenses
       run: licensure --check -p
+
+  # Verify changelog is in keep-a-changelog format.
+  verify-changelog:
+    name: Verify changelog format
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      # We'll run the extract release notes action and drop the results on the floor.
+      # If extract-release-notes can successfully extract release notes, we'll
+      # consider this success for now.
+      - name: Extract release notes
+        id: extract-release-notes
+        uses: ffurrer2/extract-release-notes@v2
+      - name: Current release notes
+        run: echo '${{ steps.extract-release-notes.outputs.release_notes }}'
