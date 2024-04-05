@@ -352,9 +352,7 @@ where
             join_handle: Some(join_handle),
         };
 
-        if !source.wait_for_buffer_or_stop() {
-            return Err("Song has stopped while waiting for buffer to initially fill".into());
-        }
+        source.wait_for_buffer_or_stop();
 
         Ok(source)
     }
@@ -388,15 +386,15 @@ where
                     thread::sleep(Duration::from_millis(200))
                 }
 
-                // If finished gets set, we'll return immediately.
-                if finished.load(Ordering::Relaxed) {
-                    return;
-                }
-
                 // Load the entire buffer until it's full.
                 let num_frames_to_take = prod.free_len() / num_channels;
-                let mut all_files_finished = true;
                 for i in 0..num_frames_to_take {
+                    // If finished gets set, we'll return immediately.
+                    if finished.load(Ordering::Relaxed) {
+                        return;
+                    }
+
+                    let mut all_files_finished = true;
                     let current_frame = i % num_frames;
                     for j in 0..num_sources {
                         let file_channel_to_output_channels = file_mappings[j];
@@ -430,14 +428,17 @@ where
 
                     // Push the entirety of the frame to the buffer if we've read all the frames in this
                     // batch or if we're at the end of the loop.
-                    if i == num_frames_to_take - 1 || current_frame == num_frames - 1 {
+                    if i == num_frames_to_take - 1
+                        || current_frame == num_frames - 1
+                        || all_files_finished
+                    {
                         let _ = prod.push_slice(&frames[0..current_frame * num_channels]);
                     }
-                }
 
-                if all_files_finished {
-                    finished.store(true, Ordering::Relaxed);
-                    return;
+                    if all_files_finished {
+                        finished.store(true, Ordering::Relaxed);
+                        return;
+                    }
                 }
             }
         })
@@ -468,10 +469,8 @@ where
     type Item = S;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.wait_for_buffer_or_stop() {
-            return self.cons.pop();
-        }
-        None
+        self.wait_for_buffer_or_stop();
+        self.cons.pop()
     }
 }
 
@@ -550,9 +549,13 @@ impl Songs {
 
 #[cfg(test)]
 mod test {
-    use std::path::PathBuf;
+    use std::{error::Error, fs::File, path::PathBuf};
+
+    use hound::{SampleFormat, WavSpec, WavWriter};
 
     use crate::config;
+
+    use super::{Sample, SongSource};
 
     #[test]
     fn read_files() {
@@ -587,5 +590,101 @@ mod test {
         assert_eq!(44100, song.sample_rate);
         assert!(song.midi_event.is_none());
         assert!(song.midi_file.is_some());
+    }
+
+    #[test]
+    fn song_source_frame_read() -> Result<(), Box<dyn Error>> {
+        let mut source = test_source()?;
+
+        // First frame should have first samples, second frame second, and so on.
+        let frame = get_frame(4, &mut source)?.expect("Expected a frame");
+        assert_eq!(vec![1_i32, 0_i32, 2_i32, 0_i32], frame);
+
+        let frame = get_frame(4, &mut source)?.expect("Expected a frame");
+        assert_eq!(vec![2_i32, 0_i32, 3_i32, 0_i32], frame);
+
+        let frame = get_frame(4, &mut source)?.expect("Expected a frame");
+        assert_eq!(vec![3_i32, 0_i32, 4_i32, 0_i32], frame);
+
+        // Track 2 has ended, we expect zeroes here.
+        let frame = get_frame(4, &mut source)?.expect("Expected a frame");
+        assert_eq!(vec![4_i32, 0_i32, 0_i32, 0_i32], frame);
+
+        let frame = get_frame(4, &mut source)?.expect("Expected a frame");
+        assert_eq!(vec![5_i32, 0_i32, 0_i32, 0_i32], frame);
+
+        // All tracks have ended, we expect None.
+        let frame = get_frame(4, &mut source)?;
+        assert!(frame.is_none());
+
+        Ok(())
+    }
+
+    fn test_source() -> Result<SongSource<i32>, Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?.into_path();
+        let tempwav1_path = tempdir.join("tempwav1.wav");
+        let tempwav2_path = tempdir.join("tempwav2.wav");
+
+        write_wav(
+            tempwav1_path.clone(),
+            vec![1_i32, 2_i32, 3_i32, 4_i32, 5_i32],
+        )?;
+        write_wav(tempwav2_path.clone(), vec![2_i32, 3_i32, 4_i32])?;
+
+        let track1 = super::Track::new("test 1".into(), tempwav1_path, Some(1), 1)?;
+        let track2 = super::Track::new("test 2".into(), tempwav2_path, Some(1), 3)?;
+
+        let song = super::Song::new("song name".into(), None, None, vec![track1, track2])?;
+        song.source(4)
+    }
+
+    fn write_wav<S: Sample>(path: PathBuf, samples: Vec<S>) -> Result<(), Box<dyn Error>> {
+        let tempwav = File::create(path)?;
+        let sample_format = if S::FORMAT.is_int() || S::FORMAT.is_uint() {
+            SampleFormat::Int
+        } else if S::FORMAT.is_float() {
+            SampleFormat::Float
+        } else {
+            return Err("Unsupported sample format".into());
+        };
+
+        let mut writer = WavWriter::new(
+            tempwav,
+            WavSpec {
+                channels: 1,
+                sample_rate: 44100,
+                bits_per_sample: 32,
+                sample_format: sample_format,
+            },
+        )?;
+
+        // Write a simple set of samples to the wav file.
+        for sample in samples {
+            writer.write_sample(sample)?;
+        }
+
+        Ok(())
+    }
+
+    fn get_frame<S: Sample>(
+        frame_size: u16,
+        source: &mut SongSource<S>,
+    ) -> Result<Option<Vec<S>>, Box<dyn Error>> {
+        let mut frame = Vec::new();
+
+        for i in 0..frame_size {
+            match source.next() {
+                Some(sample) => frame.push(sample),
+                None => {
+                    if i == 0 {
+                        return Ok(None);
+                    } else {
+                        return Err("Stopped mid frame".into());
+                    }
+                }
+            };
+        }
+
+        Ok(Some(frame))
     }
 }
