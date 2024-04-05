@@ -227,3 +227,160 @@ fn parse_u14(raw: u16) -> Result<u14, Box<dyn Error>> {
         None => Err(format!("error parsing u14 value: {} is invalid", raw).into()),
     }
 }
+
+#[cfg(test)]
+mod test {
+    use std::error::Error;
+
+    use midly::{
+        live::LiveEvent,
+        num::{u14, u4, u7},
+    };
+
+    use crate::config::midi::ToMidiEvent;
+
+    #[test]
+    fn note_off() -> Result<(), Box<dyn Error>> {
+        assert_yaml_matches_midi(
+            r#"
+            type: note_off
+            channel: 7
+            key: 5
+            velocity: 28
+        "#
+            .into(),
+            LiveEvent::Midi {
+                channel: u4::from(6),
+                message: midly::MidiMessage::NoteOff {
+                    key: u7::from(5),
+                    vel: u7::from(28),
+                },
+            },
+        )
+    }
+
+    #[test]
+    fn note_on() -> Result<(), Box<dyn Error>> {
+        assert_yaml_matches_midi(
+            r#"
+            type: note_on
+            channel: 7
+            key: 5
+            velocity: 28
+        "#
+            .into(),
+            LiveEvent::Midi {
+                channel: u4::from(6),
+                message: midly::MidiMessage::NoteOn {
+                    key: u7::from(5),
+                    vel: u7::from(28),
+                },
+            },
+        )
+    }
+
+    #[test]
+    fn aftertouch() -> Result<(), Box<dyn Error>> {
+        assert_yaml_matches_midi(
+            r#"
+            type: aftertouch
+            channel: 7
+            key: 5
+            velocity: 28
+        "#
+            .into(),
+            LiveEvent::Midi {
+                channel: u4::from(6),
+                message: midly::MidiMessage::Aftertouch {
+                    key: u7::from(5),
+                    vel: u7::from(28),
+                },
+            },
+        )
+    }
+
+    #[test]
+    fn control_change() -> Result<(), Box<dyn Error>> {
+        assert_yaml_matches_midi(
+            r#"
+            type: control_change
+            channel: 7
+            controller: 5
+            value: 28
+        "#
+            .into(),
+            LiveEvent::Midi {
+                channel: u4::from(6),
+                message: midly::MidiMessage::Controller {
+                    controller: u7::from(5),
+                    value: u7::from(28),
+                },
+            },
+        )
+    }
+
+    #[test]
+    fn program_change() -> Result<(), Box<dyn Error>> {
+        assert_yaml_matches_midi(
+            r#"
+            type: program_change
+            channel: 7
+            program: 5
+        "#
+            .into(),
+            LiveEvent::Midi {
+                channel: u4::from(6),
+                message: midly::MidiMessage::ProgramChange {
+                    program: u7::from(5),
+                },
+            },
+        )
+    }
+
+    #[test]
+    fn channel_aftertouch() -> Result<(), Box<dyn Error>> {
+        assert_yaml_matches_midi(
+            r#"
+            type: channel_aftertouch
+            channel: 7
+            velocity: 5
+        "#
+            .into(),
+            LiveEvent::Midi {
+                channel: u4::from(6),
+                message: midly::MidiMessage::ChannelAftertouch { vel: u7::from(5) },
+            },
+        )
+    }
+
+    #[test]
+    fn pitch_bend() -> Result<(), Box<dyn Error>> {
+        assert_yaml_matches_midi(
+            r#"
+            type: pitch_bend
+            channel: 7
+            bend: 200
+        "#
+            .into(),
+            LiveEvent::Midi {
+                channel: u4::from(6),
+                message: midly::MidiMessage::PitchBend {
+                    bend: midly::PitchBend(u14::from(200)),
+                },
+            },
+        )
+    }
+
+    fn assert_yaml_matches_midi(
+        yaml: String,
+        expected_event: midly::live::LiveEvent,
+    ) -> Result<(), Box<dyn Error>> {
+        let event = serde_yaml::from_str::<super::Event>(&yaml)?.to_midi_event()?;
+
+        if expected_event == event {
+            Ok(())
+        } else {
+            Err("expected event did not match".into())
+        }
+    }
+}
