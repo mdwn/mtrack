@@ -132,7 +132,7 @@ mod test {
 
     use tokio::{sync::mpsc::Sender, task::JoinHandle};
 
-    use crate::{audio, config, player::Player, playlist::Playlist, test::test::eventually};
+    use crate::{audio, config, player::Player, playlist::Playlist, test::eventually};
 
     use super::{Driver, Event};
 

@@ -370,7 +370,7 @@ impl Player {
 mod test {
     use std::{error::Error, path::PathBuf, sync::Arc};
 
-    use crate::{audio, config, midi, playlist::Playlist, test::test::eventually};
+    use crate::{audio, config, midi, playlist::Playlist, test::eventually};
 
     use super::Player;
 
