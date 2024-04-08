@@ -134,7 +134,7 @@ mod test {
 
     use crate::{
         audio, config, controller::Controller, midi, player::Player, playlist::Playlist,
-        test::test::eventually,
+        test::eventually,
     };
 
     #[tokio::test(flavor = "multi_thread")]

@@ -16,7 +16,10 @@ use std::{
     any::type_name,
     error::Error,
     fmt,
-    sync::{mpsc::channel, Arc},
+    sync::{
+        mpsc::{channel, Sender},
+        Arc,
+    },
 };
 
 use cpal::traits::{DeviceTrait, StreamTrait};
@@ -36,7 +39,7 @@ pub struct Device {
     pub long_name: String,
     /// IDs that will match this device.
     matches: Vec<String>,
-    /// The underlying rodio::Device that will be doing our low level operations.
+    /// The underlying cpal::Device that will be doing our low level operations.
     device: cpal::Device,
     /// The ID of the host that this device belongs to.
     host_id: cpal::HostId,
@@ -55,7 +58,7 @@ impl fmt::Display for Device {
 }
 
 impl Device {
-    /// Lists rodio devices and produces the Device trait.
+    /// Lists cpal devices and produces the Device trait.
     pub fn list() -> Result<Vec<Box<dyn super::Device>>, Box<dyn Error>> {
         Ok(Device::list_cpal_devices()?
             .into_iter()
@@ -147,16 +150,37 @@ impl Device {
             )
             .into());
         }
-        let mut source = song.source::<S>(self.max_channels)?;
+        let source = song.source::<S>(self.max_channels)?;
 
         let (tx, rx) = channel();
 
-        let err_fn = |err: cpal::StreamError| {
-            error!(err = err.to_string(), "Error during stream.");
-        };
+        let mut output_callback = Device::output_callback(source, tx, cancel_handle);
+        let output_stream = self.device.build_output_stream(
+            &cpal::StreamConfig {
+                channels: self.max_channels,
+                sample_rate: cpal::SampleRate(song.sample_rate),
+                buffer_size: cpal::BufferSize::Default,
+            },
+            move |data, _| output_callback(data),
+            |err: cpal::StreamError| {
+                error!(err = err.to_string(), "Error during stream.");
+            },
+            None,
+        )?;
+        output_stream.play()?;
 
-        let output_data_fn = move |data: &mut [S], _: &cpal::OutputCallbackInfo| {
-            // The data length and data position keep track of where we are in the output buffer.
+        // Wait for the read finish.
+        rx.recv()?;
+
+        Ok(())
+    }
+
+    fn output_callback<S: songs::Sample>(
+        mut source: songs::SongSource<S>,
+        tx: Sender<()>,
+        cancel_handle: CancelHandle,
+    ) -> impl FnMut(&mut [S]) {
+        move |data: &mut [S]| {
             let data_len = data.len();
             let mut data_pos = 0;
 
@@ -187,23 +211,55 @@ impl Device {
                     return;
                 }
             }
-        };
+        }
+    }
+}
 
-        let output_stream = self.device.build_output_stream(
-            &cpal::StreamConfig {
-                channels: self.max_channels,
-                sample_rate: cpal::SampleRate(song.sample_rate),
-                buffer_size: cpal::BufferSize::Default,
-            },
-            output_data_fn,
-            err_fn,
-            None,
-        )?;
-        output_stream.play()?;
+#[cfg(test)]
+mod test {
+    use std::{error::Error, sync::mpsc::channel};
 
-        // Wait for the read finish.
-        rx.recv()?;
+    use crate::{
+        playsync::CancelHandle,
+        songs::{Song, Track},
+        test::write_wav,
+    };
 
+    #[test]
+    fn output_callback() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?.into_path();
+        let tempwav1_path = tempdir.join("tempwav1.wav");
+        let tempwav2_path = tempdir.join("tempwav2.wav");
+
+        write_wav(tempwav1_path.clone(), vec![1_i32, 2_i32, 3_i32])?;
+        write_wav(tempwav2_path.clone(), vec![2_i32, 3_i32])?;
+
+        let track1 = Track::new("test 1".into(), tempwav1_path, Some(1), 1)?;
+        let track2 = Track::new("test 2".into(), tempwav2_path, Some(1), 3)?;
+
+        let song = Song::new("song name".into(), None, None, vec![track1, track2])?;
+        let source = song.source::<i32>(4)?;
+        let (tx, rx) = channel();
+        let cancel_handle = CancelHandle::new();
+        let mut callback = super::Device::output_callback(source, tx, cancel_handle.clone());
+
+        let mut data = [0_i32; 2];
+
+        callback(&mut data);
+        assert_eq!([1_i32, 0_i32], data);
+        callback(&mut data);
+        assert_eq!([2_i32, 0_i32], data);
+        callback(&mut data);
+        assert_eq!([2_i32, 0_i32], data);
+        callback(&mut data);
+        assert_eq!([3_i32, 0_i32], data);
+        callback(&mut data);
+        assert_eq!([3_i32, 0_i32], data);
+        callback(&mut data);
+        assert_eq!([0_i32, 0_i32], data);
+        callback(&mut data);
+
+        rx.recv().expect("Expected receive once callback is done.");
         Ok(())
     }
 }

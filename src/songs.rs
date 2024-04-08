@@ -549,11 +549,9 @@ impl Songs {
 
 #[cfg(test)]
 mod test {
-    use std::{error::Error, fs::File, path::PathBuf};
+    use std::{error::Error, path::PathBuf};
 
-    use hound::{SampleFormat, WavSpec, WavWriter};
-
-    use crate::config;
+    use crate::{config, test::write_wav};
 
     use super::{Sample, SongSource};
 
@@ -636,34 +634,6 @@ mod test {
 
         let song = super::Song::new("song name".into(), None, None, vec![track1, track2])?;
         song.source(4)
-    }
-
-    fn write_wav<S: Sample>(path: PathBuf, samples: Vec<S>) -> Result<(), Box<dyn Error>> {
-        let tempwav = File::create(path)?;
-        let sample_format = if S::FORMAT.is_int() || S::FORMAT.is_uint() {
-            SampleFormat::Int
-        } else if S::FORMAT.is_float() {
-            SampleFormat::Float
-        } else {
-            return Err("Unsupported sample format".into());
-        };
-
-        let mut writer = WavWriter::new(
-            tempwav,
-            WavSpec {
-                channels: 1,
-                sample_rate: 44100,
-                bits_per_sample: 32,
-                sample_format: sample_format,
-            },
-        )?;
-
-        // Write a simple set of samples to the wav file.
-        for sample in samples {
-            writer.write_sample(sample)?;
-        }
-
-        Ok(())
     }
 
     fn get_frame<S: Sample>(
