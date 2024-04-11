@@ -175,6 +175,24 @@ impl Device {
         Ok(())
     }
 
+    // If the playback should stop, this sends on the provided Sender and returns true. This will
+    // only return true and send if we're on a frame boundary.
+    fn signal_stop<S: songs::Sample>(
+        source: &songs::SongSource<S>,
+        tx: &Sender<()>,
+        cancel_handle: &CancelHandle,
+    ) -> bool {
+        // Stop only when we hit a frame boundary. This will prevent weird noises
+        // when stopping a song.
+        if cancel_handle.is_cancelled() && source.get_frame_position() == 0 {
+            tx.send(()).expect("error sending message");
+            true
+        } else {
+            false
+        }
+    }
+
+    // Creates a callback function that fills the output device buffer.
     fn output_callback<S: songs::Sample>(
         mut source: songs::SongSource<S>,
         tx: Sender<()>,
@@ -185,16 +203,14 @@ impl Device {
             let mut data_pos = 0;
 
             loop {
-                // The playback has been cancelled, so cease playback.
-                if cancel_handle.is_cancelled() {
-                    tx.send(()).expect("error sending message");
-                    return;
-                }
-
                 // Copy the data from the song reader buffer to the output buffer
                 // sample by sample until we hit either the end of the output buffer or the
                 // reader buffer.
                 for data in data.iter_mut().take(data_len).skip(data_pos) {
+                    if Device::signal_stop(&source, &tx, &cancel_handle) {
+                        return;
+                    }
+
                     match source.next() {
                         Some(sample) => {
                             *data = sample;
@@ -205,6 +221,11 @@ impl Device {
                             return;
                         }
                     }
+                }
+
+                // We'll also check if things are stopped here to prevent an extra iteration.
+                if Device::signal_stop(&source, &tx, &cancel_handle) {
+                    return;
                 }
 
                 if data_pos == data_len {
@@ -258,6 +279,69 @@ mod test {
         callback(&mut data);
         assert_eq!([0_i32, 0_i32], data);
         callback(&mut data);
+
+        rx.recv().expect("Expected receive once callback is done.");
+        Ok(())
+    }
+
+    #[test]
+    fn stop_callback_immediately() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?.into_path();
+        let tempwav1_path = tempdir.join("tempwav1.wav");
+        let tempwav2_path = tempdir.join("tempwav2.wav");
+
+        write_wav(tempwav1_path.clone(), vec![1_i32, 2_i32, 3_i32])?;
+        write_wav(tempwav2_path.clone(), vec![2_i32, 3_i32])?;
+
+        let track1 = Track::new("test 1".into(), tempwav1_path, Some(1), 1)?;
+        let track2 = Track::new("test 2".into(), tempwav2_path, Some(1), 3)?;
+
+        let song = Song::new("song name".into(), None, None, vec![track1, track2])?;
+        let source = song.source::<i32>(4)?;
+        let (tx, rx) = channel();
+        let cancel_handle = CancelHandle::new();
+        let mut callback = super::Device::output_callback(source, tx, cancel_handle.clone());
+
+        let mut data = [0_i32; 2];
+
+        // This should immediately stop since we're on a frame boundary.
+        cancel_handle.cancel();
+
+        callback(&mut data);
+        assert_eq!([0_i32, 0_i32], data);
+
+        rx.recv().expect("Expected receive once callback is done.");
+
+        Ok(())
+    }
+
+    #[test]
+    fn stop_callback_on_frame_boundary() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?.into_path();
+        let tempwav1_path = tempdir.join("tempwav1.wav");
+        let tempwav2_path = tempdir.join("tempwav2.wav");
+
+        write_wav(tempwav1_path.clone(), vec![1_i32, 2_i32, 3_i32])?;
+        write_wav(tempwav2_path.clone(), vec![2_i32, 3_i32])?;
+
+        let track1 = Track::new("test 1".into(), tempwav1_path, Some(1), 1)?;
+        let track2 = Track::new("test 2".into(), tempwav2_path, Some(1), 3)?;
+
+        let song = Song::new("song name".into(), None, None, vec![track1, track2])?;
+        let source = song.source::<i32>(4)?;
+        let (tx, rx) = channel();
+        let cancel_handle = CancelHandle::new();
+        let mut callback = super::Device::output_callback(source, tx, cancel_handle.clone());
+
+        let mut data = [0_i32; 2];
+
+        callback(&mut data);
+        assert_eq!([1_i32, 0_i32], data);
+
+        // This should allow one more get, then it should stop once we hit the frame boundary.
+        cancel_handle.cancel();
+        callback(&mut data);
+        assert_eq!([2_i32, 0_i32], data);
 
         rx.recv().expect("Expected receive once callback is done.");
         Ok(())

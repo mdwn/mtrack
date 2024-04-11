@@ -16,7 +16,7 @@ use std::error::Error;
 use std::fs::{self, File};
 use std::io::BufReader;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -284,6 +284,8 @@ where
     finished: Arc<AtomicBool>,
     cons: HeapConsumer<S>,
     join_handle: Option<JoinHandle<()>>,
+    channels: u16,
+    frame_pos: Arc<AtomicU16>,
 }
 
 /// The decoder and the file channel mapping.
@@ -350,6 +352,8 @@ where
             finished,
             cons,
             join_handle: Some(join_handle),
+            channels,
+            frame_pos: Arc::new(AtomicU16::new(0)),
         };
 
         source.wait_for_buffer_or_stop();
@@ -460,6 +464,11 @@ where
 
         true
     }
+
+    /// Gets the current frame position in the song source.
+    pub fn get_frame_position(&self) -> u16 {
+        self.frame_pos.load(Ordering::Relaxed)
+    }
 }
 
 impl<S> Iterator for SongSource<S>
@@ -470,7 +479,17 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         self.wait_for_buffer_or_stop();
-        self.cons.pop()
+        let sample = self.cons.pop();
+
+        if sample.is_some() {
+            self.frame_pos
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |val| {
+                    Some((val + 1) % self.channels)
+                })
+                .expect("Got none from frame position update function");
+        }
+
+        sample
     }
 }
 
