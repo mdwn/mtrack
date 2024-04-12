@@ -46,8 +46,10 @@ impl fmt::Display for Device {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{} (Channels={}) ({:?})",
-            self.name, self.max_channels, self.host_id
+            "{} (Channels={}) ({})",
+            self.name,
+            self.max_channels,
+            self.host_id.name()
         )
     }
 }
@@ -66,11 +68,15 @@ impl Device {
 
     /// Lists cpal devices.
     fn list_cpal_devices() -> Result<Vec<Device>, Box<dyn Error>> {
+        // Suppress noisy output here.
+        let _shh_stdout = shh::stdout()?;
+        let _shh_stderr = shh::stderr()?;
+
         let mut devices: Vec<Device> = Vec::new();
         for host_id in cpal::available_hosts() {
-            println!("Querying {}", host_id.name());
-            let host = cpal::host_from_id(host_id)?;
-            for device in host.devices()? {
+            let host_devices = cpal::host_from_id(host_id)?.devices()?;
+
+            for device in host_devices {
                 let mut max_channels = 0;
                 for output_config in device.supported_output_configs()? {
                     if max_channels < output_config.channels() {
@@ -93,7 +99,7 @@ impl Device {
         Ok(devices)
     }
 
-    /// Gets the given rodio device.
+    /// Gets the given cpal device.
     pub fn get(name: &String) -> Result<Device, Box<dyn Error>> {
         match Device::list_cpal_devices()?
             .into_iter()
