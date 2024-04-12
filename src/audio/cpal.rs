@@ -11,7 +11,6 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-use super::alsa;
 use std::{
     any::type_name,
     error::Error,
@@ -22,7 +21,7 @@ use std::{
     },
 };
 
-use cpal::traits::{DeviceTrait, StreamTrait};
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use tracing::{error, info, span, Level};
 
 use crate::{
@@ -30,21 +29,17 @@ use crate::{
     songs::{self, Song},
 };
 
-/// A small wrapper around a rodio::Device. Used for storing some extra
+/// A small wrapper around a cpal::Device. Used for storing some extra
 /// data that makes multitrack playing more convenient.
 pub struct Device {
     /// The name of the device.
-    pub name: String,
-    /// The long name of the device. May be empty.
-    pub long_name: String,
-    /// IDs that will match this device.
-    matches: Vec<String>,
-    /// The underlying cpal::Device that will be doing our low level operations.
-    device: cpal::Device,
-    /// The ID of the host that this device belongs to.
-    host_id: cpal::HostId,
-    /// The maximum number of channels this device can play back through.
+    name: String,
+    /// The maximum number of channels the device supports.
     max_channels: u16,
+    /// The host ID of the device.
+    host_id: cpal::HostId,
+    /// The underlying cpal device.
+    device: cpal::Device,
 }
 
 impl fmt::Display for Device {
@@ -73,18 +68,23 @@ impl Device {
     fn list_cpal_devices() -> Result<Vec<Device>, Box<dyn Error>> {
         let mut devices: Vec<Device> = Vec::new();
         for host_id in cpal::available_hosts() {
-            match host_id {
-                cpal::HostId::Alsa => {
-                    for device in alsa::list_devices()? {
-                        devices.push(Device {
-                            name: device.name,
-                            long_name: device.long_name,
-                            matches: device.matches,
-                            device: device.device,
-                            host_id: cpal::HostId::Alsa,
-                            max_channels: u16::try_from(device.channels)?,
-                        });
+            println!("Querying {}", host_id.name());
+            let host = cpal::host_from_id(host_id)?;
+            for device in host.devices()? {
+                let mut max_channels = 0;
+                for output_config in device.supported_output_configs()? {
+                    if max_channels < output_config.channels() {
+                        max_channels = output_config.channels();
                     }
+                }
+
+                if max_channels > 0 {
+                    devices.push(Device {
+                        name: device.name()?,
+                        max_channels,
+                        host_id,
+                        device,
+                    })
                 }
             }
         }
@@ -95,12 +95,10 @@ impl Device {
 
     /// Gets the given rodio device.
     pub fn get(name: &String) -> Result<Device, Box<dyn Error>> {
-        match Device::list_cpal_devices()?.into_iter().find(|device| {
-            device
-                .matches
-                .iter()
-                .any(|device_name| *device_name == *name)
-        }) {
+        match Device::list_cpal_devices()?
+            .into_iter()
+            .find(|device| device.name == *name)
+        {
             Some(device) => Ok(device),
             None => Err(format!("no device found with name {}", name).into()),
         }
@@ -150,14 +148,14 @@ impl Device {
             )
             .into());
         }
-        let source = song.source::<S>(self.max_channels)?;
+        let source = song.source::<S>()?;
 
         let (tx, rx) = channel();
 
         let mut output_callback = Device::output_callback(source, tx, cancel_handle);
         let output_stream = self.device.build_output_stream(
             &cpal::StreamConfig {
-                channels: self.max_channels,
+                channels: song.num_channels,
                 sample_rate: cpal::SampleRate(song.sample_rate),
                 buffer_size: cpal::BufferSize::Default,
             },
@@ -256,10 +254,10 @@ mod test {
         write_wav(tempwav2_path.clone(), vec![2_i32, 3_i32])?;
 
         let track1 = Track::new("test 1".into(), tempwav1_path, Some(1), 1)?;
-        let track2 = Track::new("test 2".into(), tempwav2_path, Some(1), 3)?;
+        let track2 = Track::new("test 2".into(), tempwav2_path, Some(1), 4)?;
 
         let song = Song::new("song name".into(), None, None, vec![track1, track2])?;
-        let source = song.source::<i32>(4)?;
+        let source = song.source::<i32>()?;
         let (tx, rx) = channel();
         let cancel_handle = CancelHandle::new();
         let mut callback = super::Device::output_callback(source, tx, cancel_handle.clone());
@@ -269,11 +267,11 @@ mod test {
         callback(&mut data);
         assert_eq!([1_i32, 0_i32], data);
         callback(&mut data);
-        assert_eq!([2_i32, 0_i32], data);
+        assert_eq!([0_i32, 2_i32], data);
         callback(&mut data);
         assert_eq!([2_i32, 0_i32], data);
         callback(&mut data);
-        assert_eq!([3_i32, 0_i32], data);
+        assert_eq!([0_i32, 3_i32], data);
         callback(&mut data);
         assert_eq!([3_i32, 0_i32], data);
         callback(&mut data);
@@ -294,10 +292,10 @@ mod test {
         write_wav(tempwav2_path.clone(), vec![2_i32, 3_i32])?;
 
         let track1 = Track::new("test 1".into(), tempwav1_path, Some(1), 1)?;
-        let track2 = Track::new("test 2".into(), tempwav2_path, Some(1), 3)?;
+        let track2 = Track::new("test 2".into(), tempwav2_path, Some(1), 4)?;
 
         let song = Song::new("song name".into(), None, None, vec![track1, track2])?;
-        let source = song.source::<i32>(4)?;
+        let source = song.source::<i32>()?;
         let (tx, rx) = channel();
         let cancel_handle = CancelHandle::new();
         let mut callback = super::Device::output_callback(source, tx, cancel_handle.clone());
@@ -325,10 +323,10 @@ mod test {
         write_wav(tempwav2_path.clone(), vec![2_i32, 3_i32])?;
 
         let track1 = Track::new("test 1".into(), tempwav1_path, Some(1), 1)?;
-        let track2 = Track::new("test 2".into(), tempwav2_path, Some(1), 3)?;
+        let track2 = Track::new("test 2".into(), tempwav2_path, Some(1), 4)?;
 
         let song = Song::new("song name".into(), None, None, vec![track1, track2])?;
-        let source = song.source::<i32>(4)?;
+        let source = song.source::<i32>()?;
         let (tx, rx) = channel();
         let cancel_handle = CancelHandle::new();
         let mut callback = super::Device::output_callback(source, tx, cancel_handle.clone());
@@ -341,7 +339,7 @@ mod test {
         // This should allow one more get, then it should stop once we hit the frame boundary.
         cancel_handle.cancel();
         callback(&mut data);
-        assert_eq!([2_i32, 0_i32], data);
+        assert_eq!([0_i32, 2_i32], data);
 
         rx.recv().expect("Expected receive once callback is done.");
         Ok(())

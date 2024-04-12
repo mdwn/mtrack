@@ -16,7 +16,6 @@ use std::{error::Error, fmt, sync::Arc};
 use crate::playsync::CancelHandle;
 use crate::songs::Song;
 
-mod alsa;
 mod cpal;
 mod mock;
 
