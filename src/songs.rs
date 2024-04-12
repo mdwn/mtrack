@@ -56,7 +56,9 @@ pub struct Song {
 
 /// A simple sample for songs. Boils down to i32 or f32, which we can be reasonably assured that
 /// hound is able to read.
-pub trait Sample: cpal::SizedSample + hound::Sample + Default + Send + Sync + 'static {
+pub trait Sample:
+    cpal::SizedSample + hound::Sample + Default + Send + Sync + std::ops::AddAssign + 'static
+{
     /// Scales the sample given the bits per sample. i8, i16, i24 are all read using i32, but
     /// will be significantly reduced volume. By scaling it, the samples won't be anywhere
     /// near as quiet and volume should be decently normalized.
@@ -413,7 +415,7 @@ where
                                     file_channel_to_output_channels.get(&file_channel)
                                 {
                                     for target in targets {
-                                        frames[*target + current_frame * num_channels] =
+                                        frames[*target + current_frame * num_channels] +=
                                             match sample {
                                                 Ok(sample) => sample.scale(bits_per_sample),
                                                 Err(ref e) => {
@@ -437,6 +439,11 @@ where
                         || all_files_finished
                     {
                         let _ = prod.push_slice(&frames[0..current_frame * num_channels]);
+
+                        // Reset the frames to default.
+                        for sample in 0..current_frame * num_channels {
+                            frames[sample] = S::default();
+                        }
                     }
 
                     if all_files_finished {
@@ -620,13 +627,15 @@ mod test {
         let frame = get_frame(4, &mut source)?.expect("Expected a frame");
         assert_eq!(vec![2_i32, 0_i32, 0_i32, 3_i32], frame);
 
+        // Track 3 is added to track 2 samples.
         let frame = get_frame(4, &mut source)?.expect("Expected a frame");
-        assert_eq!(vec![3_i32, 0_i32, 0_i32, 4_i32], frame);
+        assert_eq!(vec![3_i32, 0_i32, 0_i32, 5_i32], frame);
 
-        // Track 2 has ended, we expect zeroes here.
+        // Track 2 has ended, but track 3 isn't done yet.
         let frame = get_frame(4, &mut source)?.expect("Expected a frame");
-        assert_eq!(vec![4_i32, 0_i32, 0_i32, 0_i32], frame);
+        assert_eq!(vec![4_i32, 0_i32, 0_i32, 2_i32], frame);
 
+        // Track 3 has ended.
         let frame = get_frame(4, &mut source)?.expect("Expected a frame");
         assert_eq!(vec![5_i32, 0_i32, 0_i32, 0_i32], frame);
 
@@ -641,17 +650,20 @@ mod test {
         let tempdir = tempfile::tempdir()?.into_path();
         let tempwav1_path = tempdir.join("tempwav1.wav");
         let tempwav2_path = tempdir.join("tempwav2.wav");
+        let tempwav3_path = tempdir.join("tempwav3.wav");
 
         write_wav(
             tempwav1_path.clone(),
             vec![1_i32, 2_i32, 3_i32, 4_i32, 5_i32],
         )?;
         write_wav(tempwav2_path.clone(), vec![2_i32, 3_i32, 4_i32])?;
+        write_wav(tempwav3_path.clone(), vec![0_i32, 0_i32, 1_i32, 2_i32])?;
 
         let track1 = super::Track::new("test 1".into(), tempwav1_path, Some(1), 1)?;
         let track2 = super::Track::new("test 2".into(), tempwav2_path, Some(1), 4)?;
+        let track3 = super::Track::new("test 3".into(), tempwav3_path, Some(1), 4)?;
 
-        let song = super::Song::new("song name".into(), None, None, vec![track1, track2])?;
+        let song = super::Song::new("song name".into(), None, None, vec![track1, track2, track3])?;
         song.source()
     }
 
