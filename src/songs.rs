@@ -171,11 +171,11 @@ impl Song {
     }
 
     /// Returns a rodio source for the song.
-    pub fn source<S>(&self, channels: u16) -> Result<SongSource<S>, Box<dyn Error>>
+    pub fn source<S>(&self) -> Result<SongSource<S>, Box<dyn Error>>
     where
         S: Sample,
     {
-        SongSource::<S>::new(channels, self)
+        SongSource::<S>::new(self.num_channels, self)
     }
 
     /// Returns a MIDI sheet for the song.
@@ -615,13 +615,13 @@ mod test {
 
         // First frame should have first samples, second frame second, and so on.
         let frame = get_frame(4, &mut source)?.expect("Expected a frame");
-        assert_eq!(vec![1_i32, 0_i32, 2_i32, 0_i32], frame);
+        assert_eq!(vec![1_i32, 0_i32, 0_i32, 2_i32], frame);
 
         let frame = get_frame(4, &mut source)?.expect("Expected a frame");
-        assert_eq!(vec![2_i32, 0_i32, 3_i32, 0_i32], frame);
+        assert_eq!(vec![2_i32, 0_i32, 0_i32, 3_i32], frame);
 
         let frame = get_frame(4, &mut source)?.expect("Expected a frame");
-        assert_eq!(vec![3_i32, 0_i32, 4_i32, 0_i32], frame);
+        assert_eq!(vec![3_i32, 0_i32, 0_i32, 4_i32], frame);
 
         // Track 2 has ended, we expect zeroes here.
         let frame = get_frame(4, &mut source)?.expect("Expected a frame");
@@ -649,10 +649,10 @@ mod test {
         write_wav(tempwav2_path.clone(), vec![2_i32, 3_i32, 4_i32])?;
 
         let track1 = super::Track::new("test 1".into(), tempwav1_path, Some(1), 1)?;
-        let track2 = super::Track::new("test 2".into(), tempwav2_path, Some(1), 3)?;
+        let track2 = super::Track::new("test 2".into(), tempwav2_path, Some(1), 4)?;
 
         let song = super::Song::new("song name".into(), None, None, vec![track1, track2])?;
-        song.source(4)
+        song.source()
     }
 
     fn get_frame<S: Sample>(
