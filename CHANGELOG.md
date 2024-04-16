@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - Player level channel mapping, merging of channels.
+
+Channel mappings have been removed from individual song files and will now be
+maintained as part of the player configuration.
+
+Channels can now be merged. That is, tracks can target the same output channel.
+
 ## [0.1.1] - Minor dependency update.
 
 Removal of unneeded ringbuffer dependency.
