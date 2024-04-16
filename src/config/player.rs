@@ -23,7 +23,8 @@ pub(super) struct Player {
     pub controller: Controller,
     /// The audio device to use.
     pub audio_device: String,
-    pub mappings: TrackMappings,
+    /// The track mappings for the player.
+    pub track_mappings: TrackMappings,
     /// The MIDI device to use.
     pub midi_device: Option<String>,
     /// The path to the song definitions.
