@@ -13,6 +13,7 @@
 //
 use std::{
     any::type_name,
+    collections::HashMap,
     error::Error,
     fmt,
     sync::{
@@ -118,10 +119,15 @@ impl super::Device for Device {
     }
 
     /// Play the given song through the audio device.
-    fn play(&self, song: Arc<Song>, cancel_handle: CancelHandle) -> Result<(), Box<dyn Error>> {
+    fn play(
+        &self,
+        song: Arc<Song>,
+        mappings: &HashMap<String, u16>,
+        cancel_handle: CancelHandle,
+    ) -> Result<(), Box<dyn Error>> {
         match song.sample_format {
-            hound::SampleFormat::Int => self.play_format::<i32>(song, cancel_handle),
-            hound::SampleFormat::Float => self.play_format::<f32>(song, cancel_handle),
+            hound::SampleFormat::Int => self.play_format::<i32>(song, mappings, cancel_handle),
+            hound::SampleFormat::Float => self.play_format::<f32>(song, mappings, cancel_handle),
         }
     }
 }
@@ -131,6 +137,7 @@ impl Device {
     fn play_format<S>(
         &self,
         song: Arc<Song>,
+        mappings: &HashMap<String, u16>,
         cancel_handle: CancelHandle,
     ) -> Result<(), Box<dyn Error>>
     where
@@ -154,14 +161,20 @@ impl Device {
             )
             .into());
         }
-        let source = song.source::<S>()?;
+        let source = song.source::<S>(mappings)?;
+
+        let num_channels = *mappings
+            .iter()
+            .map(|entry| entry.1)
+            .max()
+            .ok_or("no max channel found")?;
 
         let (tx, rx) = channel();
 
         let mut output_callback = Device::output_callback(source, tx, cancel_handle);
         let output_stream = self.device.build_output_stream(
             &cpal::StreamConfig {
-                channels: song.num_channels,
+                channels: num_channels,
                 sample_rate: cpal::SampleRate(song.sample_rate),
                 buffer_size: cpal::BufferSize::Default,
             },
@@ -242,7 +255,7 @@ impl Device {
 
 #[cfg(test)]
 mod test {
-    use std::{error::Error, sync::mpsc::channel};
+    use std::{collections::HashMap, error::Error, sync::mpsc::channel};
 
     use crate::{
         playsync::CancelHandle,
@@ -259,11 +272,15 @@ mod test {
         write_wav(tempwav1_path.clone(), vec![1_i32, 2_i32, 3_i32])?;
         write_wav(tempwav2_path.clone(), vec![2_i32, 3_i32])?;
 
-        let track1 = Track::new("test 1".into(), tempwav1_path, Some(1), 1)?;
-        let track2 = Track::new("test 2".into(), tempwav2_path, Some(1), 4)?;
+        let track1 = Track::new("test 1".into(), tempwav1_path, Some(1))?;
+        let track2 = Track::new("test 2".into(), tempwav2_path, Some(1))?;
 
         let song = Song::new("song name".into(), None, None, vec![track1, track2])?;
-        let source = song.source::<i32>()?;
+        let mut mappings: HashMap<String, u16> = HashMap::new();
+        mappings.insert("test 1".into(), 1);
+        mappings.insert("test 2".into(), 4);
+
+        let source = song.source::<i32>(&mappings)?;
         let (tx, rx) = channel();
         let cancel_handle = CancelHandle::new();
         let mut callback = super::Device::output_callback(source, tx, cancel_handle.clone());
@@ -297,11 +314,15 @@ mod test {
         write_wav(tempwav1_path.clone(), vec![1_i32, 2_i32, 3_i32])?;
         write_wav(tempwav2_path.clone(), vec![2_i32, 3_i32])?;
 
-        let track1 = Track::new("test 1".into(), tempwav1_path, Some(1), 1)?;
-        let track2 = Track::new("test 2".into(), tempwav2_path, Some(1), 4)?;
+        let track1 = Track::new("test 1".into(), tempwav1_path, Some(1))?;
+        let track2 = Track::new("test 2".into(), tempwav2_path, Some(1))?;
 
         let song = Song::new("song name".into(), None, None, vec![track1, track2])?;
-        let source = song.source::<i32>()?;
+        let mut mappings: HashMap<String, u16> = HashMap::new();
+        mappings.insert("test 1".into(), 1);
+        mappings.insert("test 2".into(), 4);
+
+        let source = song.source::<i32>(&mappings)?;
         let (tx, rx) = channel();
         let cancel_handle = CancelHandle::new();
         let mut callback = super::Device::output_callback(source, tx, cancel_handle.clone());
@@ -328,11 +349,15 @@ mod test {
         write_wav(tempwav1_path.clone(), vec![1_i32, 2_i32, 3_i32])?;
         write_wav(tempwav2_path.clone(), vec![2_i32, 3_i32])?;
 
-        let track1 = Track::new("test 1".into(), tempwav1_path, Some(1), 1)?;
-        let track2 = Track::new("test 2".into(), tempwav2_path, Some(1), 4)?;
+        let track1 = Track::new("test 1".into(), tempwav1_path, Some(1))?;
+        let track2 = Track::new("test 2".into(), tempwav2_path, Some(1))?;
 
         let song = Song::new("song name".into(), None, None, vec![track1, track2])?;
-        let source = song.source::<i32>()?;
+        let mut mappings: HashMap<String, u16> = HashMap::new();
+        mappings.insert("test 1".into(), 1);
+        mappings.insert("test 2".into(), 4);
+
+        let source = song.source::<i32>(&mappings)?;
         let (tx, rx) = channel();
         let cancel_handle = CancelHandle::new();
         let mut callback = super::Device::output_callback(source, tx, cancel_handle.clone());

@@ -12,6 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 use std::{
+    collections::HashMap,
     error::Error,
     fmt,
     sync::{
@@ -54,7 +55,12 @@ impl super::Device for Device {
     }
 
     /// A mock device that will sleep for the length of the song duration.
-    fn play(&self, song: Arc<Song>, cancel_handle: CancelHandle) -> Result<(), Box<dyn Error>> {
+    fn play(
+        &self,
+        song: Arc<Song>,
+        _: &HashMap<String, u16>,
+        cancel_handle: CancelHandle,
+    ) -> Result<(), Box<dyn Error>> {
         let span = span!(Level::INFO, "play song (mock)");
         let _enter = span.enter();
 

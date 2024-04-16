@@ -124,6 +124,7 @@ impl Controller {
 #[cfg(test)]
 mod test {
     use std::{
+        collections::HashMap,
         error::Error,
         io,
         path::PathBuf,
@@ -220,6 +221,7 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_controller() -> Result<(), Box<dyn Error>> {
         let driver = Arc::new(TestDriver::new(TestEvent::Unset));
+        let mappings: HashMap<String, u16> = HashMap::new();
         let device = Arc::new(audio::test::Device::get("mock-device"));
         let songs = config::get_all_songs(&PathBuf::from("assets/songs"))?;
         let playlist =
@@ -227,6 +229,7 @@ mod test {
         let all_songs_playlist = Playlist::from_songs(songs.clone())?;
         let player = Player::new(
             device.clone(),
+            mappings,
             None,
             playlist.clone(),
             all_songs_playlist.clone(),

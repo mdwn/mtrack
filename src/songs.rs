@@ -51,7 +51,7 @@ pub struct Song {
     /// The total duration of the song.
     pub duration: Duration,
     /// The individual audio tracks.
-    tracks: Vec<Track>,
+    pub tracks: Vec<Track>,
 }
 
 /// A simple sample for songs. Boils down to i32 or f32, which we can be reasonably assured that
@@ -103,17 +103,13 @@ impl Song {
         };
 
         // Calculate the number of channels and sample rate by reading the wav headers of each file.
-        let mut num_channels = 0;
+        let num_channels = u16::try_from(tracks.len())?;
         let mut sample_rate = 0;
         let mut max_duration = Duration::ZERO;
 
         let mut sample_format: Option<SampleFormat> = None;
         let mut bits_per_sample: Option<u16> = None;
         for track in tracks.iter() {
-            // Keep track of the maximum output channel in the tracks, as it dictates how many tracks we need
-            // to play this song.
-            num_channels = cmp::max(num_channels, track.channel);
-
             // Set the sample rate and formatif it's not already set.
             if sample_rate == 0 {
                 sample_rate = track.sample_rate;
@@ -173,11 +169,14 @@ impl Song {
     }
 
     /// Returns a rodio source for the song.
-    pub fn source<S>(&self) -> Result<SongSource<S>, Box<dyn Error>>
+    pub fn source<S>(
+        &self,
+        track_mappings: &HashMap<String, u16>,
+    ) -> Result<SongSource<S>, Box<dyn Error>>
     where
         S: Sample,
     {
-        SongSource::<S>::new(self.num_channels, self)
+        SongSource::<S>::new(self, track_mappings)
     }
 
     /// Returns a MIDI sheet for the song.
@@ -226,7 +225,7 @@ impl fmt::Display for Song {
 #[derive(Clone)]
 pub struct Track {
     /// The name of the audio track.
-    name: String,
+    pub name: String,
     /// The file that contains the contents of this audio track.
     file: PathBuf,
     /// The channel to use in the file for this audio track.
@@ -237,8 +236,6 @@ pub struct Track {
     sample_format: SampleFormat,
     /// The bits per sample.
     bits_per_sample: u16,
-    /// The output channel for this file.
-    channel: u16,
     /// The duration of the track.
     duration: Duration,
 }
@@ -248,7 +245,6 @@ impl Track {
         name: String,
         track_file: PathBuf,
         file_channel: Option<u16>,
-        channel: u16,
     ) -> Result<Track, Box<dyn Error>> {
         let reader = WavReader::open(track_file.clone())?;
         let spec = reader.spec();
@@ -272,7 +268,6 @@ impl Track {
             sample_rate,
             sample_format: spec.sample_format,
             bits_per_sample,
-            channel,
             duration,
         })
     }
@@ -301,7 +296,10 @@ impl<S> SongSource<S>
 where
     S: Sample,
 {
-    fn new(channels: u16, song: &Song) -> Result<SongSource<S>, Box<dyn Error>> {
+    fn new(
+        song: &Song,
+        track_mapping: &HashMap<String, u16>,
+    ) -> Result<SongSource<S>, Box<dyn Error>> {
         let mut files_to_tracks = HashMap::<PathBuf, Vec<&Track>>::new();
 
         song.tracks.iter().for_each(|track| {
@@ -313,7 +311,15 @@ where
             files_to_tracks.get_mut(file_path).unwrap().push(track);
         });
 
-        let buf = HeapRb::new(usize::from(channels) * usize::try_from(song.sample_rate)? * 10);
+        let num_channels = *track_mapping
+            .iter()
+            .map(|entry| entry.1)
+            .max()
+            .ok_or("no max channel found")?;
+
+        // Get a 30 second buffer here. Raspberry Pis have multiple gigs of memory and 30 seconds at 44.1Khz for 22 channels
+        // is less than 30 MB. At 192KHz, it's ~188 MB. These seem reasonable to me.
+        let buf = HeapRb::new(usize::from(num_channels) * usize::try_from(song.sample_rate)? * 30);
         let (prod, cons) = buf.split();
         let mut decoders_and_mappings = Vec::<DecoderAndMapping>::new();
 
@@ -325,11 +331,13 @@ where
             let mut file_channel_to_output_channels: HashMap<u16, Vec<usize>> = HashMap::new();
             tracks.into_iter().for_each(|track| {
                 let file_channel = track.file_channel - 1;
-                let output_channel = track.channel - 1;
-                file_channel_to_output_channels
-                    .entry(file_channel)
-                    .or_default()
-                    .push(output_channel.into());
+                if let Some(channel_mapping) = track_mapping.get(&track.name.to_string()) {
+                    let output_channel = channel_mapping - 1;
+                    file_channel_to_output_channels
+                        .entry(file_channel)
+                        .or_default()
+                        .push(output_channel.into());
+                }
             });
 
             decoders_and_mappings.push(DecoderAndMapping {
@@ -342,7 +350,7 @@ where
         let finished = Arc::new(AtomicBool::new(false));
         let join_handle = {
             SongSource::reader_thread(
-                usize::from(channels),
+                usize::from(num_channels),
                 song.bits_per_sample,
                 decoders_and_mappings,
                 prod,
@@ -354,7 +362,7 @@ where
             finished,
             cons,
             join_handle: Some(join_handle),
-            channels,
+            channels: num_channels,
             frame_pos: Arc::new(AtomicU16::new(0)),
         };
 
@@ -441,9 +449,10 @@ where
                         let _ = prod.push_slice(&frames[0..current_frame * num_channels]);
 
                         // Reset the frames to default.
-                        for sample in 0..current_frame * num_channels {
-                            frames[sample] = S::default();
-                        }
+                        frames
+                            .iter_mut()
+                            .take(current_frame * num_channels)
+                            .for_each(|sample| *sample = S::default());
                     }
 
                     if all_files_finished {
@@ -575,7 +584,7 @@ impl Songs {
 
 #[cfg(test)]
 mod test {
-    use std::{error::Error, path::PathBuf};
+    use std::{collections::HashMap, error::Error, path::PathBuf};
 
     use crate::{config, test::write_wav};
 
@@ -659,12 +668,17 @@ mod test {
         write_wav(tempwav2_path.clone(), vec![2_i32, 3_i32, 4_i32])?;
         write_wav(tempwav3_path.clone(), vec![0_i32, 0_i32, 1_i32, 2_i32])?;
 
-        let track1 = super::Track::new("test 1".into(), tempwav1_path, Some(1), 1)?;
-        let track2 = super::Track::new("test 2".into(), tempwav2_path, Some(1), 4)?;
-        let track3 = super::Track::new("test 3".into(), tempwav3_path, Some(1), 4)?;
+        let track1 = super::Track::new("test 1".into(), tempwav1_path, Some(1))?;
+        let track2 = super::Track::new("test 2".into(), tempwav2_path, Some(1))?;
+        let track3 = super::Track::new("test 3".into(), tempwav3_path, Some(1))?;
 
         let song = super::Song::new("song name".into(), None, None, vec![track1, track2, track3])?;
-        song.source()
+        let mut mapping: HashMap<String, u16> = HashMap::new();
+        mapping.insert("test 1".into(), 1);
+        mapping.insert("test 2".into(), 4);
+        mapping.insert("test 3".into(), 4);
+
+        song.source(&mapping)
     }
 
     fn get_frame<S: Sample>(

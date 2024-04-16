@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 // Copyright (C) 2024 Michael Wilson <mike@mdwn.dev>
 //
 // This program is free software: you can redistribute it and/or modify it under
@@ -25,7 +26,12 @@ pub trait Device: fmt::Display + std::marker::Send + std::marker::Sync {
     fn name(&self) -> String;
 
     /// Plays the given song through the audio interface.
-    fn play(&self, song: Arc<Song>, cancel_handle: CancelHandle) -> Result<(), Box<dyn Error>>;
+    fn play(
+        &self,
+        song: Arc<Song>,
+        mappings: &HashMap<String, u16>,
+        cancel_handle: CancelHandle,
+    ) -> Result<(), Box<dyn Error>>;
 }
 
 /// Lists devices known to cpal.

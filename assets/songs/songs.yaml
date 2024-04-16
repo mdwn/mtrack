@@ -3,7 +3,6 @@ midi_file: ../song.mid
 tracks:
 - name: track 1
   file: ../1Channel22.05k.wav
-  channel: 1
 ---
 name: Song 2
 midi_event:
@@ -13,7 +12,6 @@ midi_event:
 tracks:
 - name: track 1
   file: ../1Channel44.1k.wav
-  channel: 1
 ---
 name: Song 3
 midi_file: ../song.mid
@@ -21,11 +19,9 @@ tracks:
 - name: track 1
   file: ../2Channel44.1k.wav
   file_channel: 1
-  channel: 1
 - name: track 2
   file: ../2Channel44.1k.wav
   file_channel: 2
-  channel: 2
 ---
 name: Song 4
 midi_file: ../song.mid
@@ -33,31 +29,27 @@ tracks:
 - name: track 1
   file: ../8Channel44.1k.wav
   file_channel: 1
-  channel: 1
 - name: track 2
   file: ../8Channel44.1k.wav
   file_channel: 2
-  channel: 2
 - name: track 3
   file: ../8Channel44.1k.wav
   file_channel: 3
-  channel: 3
 - name: track 4
   file: ../8Channel44.1k.wav
   file_channel: 4
-  channel: 4
+- name: track 5
+  file: ../8Channel44.1k.wav
+  file_channel: 5
 - name: track 6
   file: ../8Channel44.1k.wav
   file_channel: 6
-  channel: 6
 - name: track 7
   file: ../8Channel44.1k.wav
   file_channel: 7
-  channel: 7
 - name: track 8
   file: ../8Channel44.1k.wav
   file_channel: 8
-  channel: 8
 ---
 name: Song 5
 midi_event:
@@ -69,14 +61,12 @@ tracks:
 - name: track 1
   file: ../20-sec-long.wav
   file_channel: 1
-  channel: 1
 ---
 name: Song 6
 midi_file: ../song.mid
 tracks:
 - name: track 1
   file: ../1Channel22.05k.wav
-  channel: 1
 ---
 name: Song 7
 midi_file: ../song.mid
@@ -84,25 +74,21 @@ tracks:
 - name: track 1
   file: ../20-sec-long.wav
   file_channel: 1
-  channel: 1
 ---
 name: Song 8
 midi_file: ../song.mid
 tracks:
 - name: track 1
   file: ../1Channel22.05k.wav
-  channel: 1
 ---
 name: Song 9
 midi_file: ../song.mid
 tracks:
 - name: track 1
   file: ../1Channel22.05k.wav
-  channel: 1
 ---
 name: Song 10
 midi_file: ../song.mid
 tracks:
 - name: track 1
   file: ../1Channel22.05k.wav
-  channel: 1
