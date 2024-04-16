@@ -96,7 +96,7 @@ pub fn init_player_and_controller(
     let playlist = parse_playlist(&PathBuf::from(playlist_path), Arc::clone(&songs))?;
     let player = crate::player::Player::new(
         device,
-        player_config.mappings.track_mappings,
+        player_config.track_mappings.track_mappings,
         midi_device.clone(),
         playlist,
         crate::playlist::Playlist::from_songs(songs)?,
