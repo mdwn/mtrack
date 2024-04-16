@@ -11,28 +11,14 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-use std::{error::Error, path::Path};
+use std::collections::HashMap;
 
 use serde::Deserialize;
 
-/// A YAML representation of a track.
+/// The mappings of tracks to output channels.
 #[derive(Deserialize)]
-pub(super) struct Track {
-    /// The name of the track.
-    name: String,
-    /// The file associated with the track.
-    file: String,
-    /// The file channel of the track to use.
-    file_channel: Option<u16>,
-}
-
-impl Track {
-    /// Converts this track configuration into a Track object.
-    pub(super) fn to_track(&self, song_path: &Path) -> Result<crate::songs::Track, Box<dyn Error>> {
-        crate::songs::Track::new(
-            self.name.clone(),
-            Path::join(song_path, self.file.clone()),
-            self.file_channel,
-        )
-    }
+pub(super) struct TrackMappings {
+    // The individual track mappings.
+    #[serde(flatten)]
+    pub track_mappings: HashMap<String, u16>,
 }

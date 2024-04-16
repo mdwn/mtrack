@@ -14,6 +14,7 @@
 use serde::Deserialize;
 
 use super::controller::Controller;
+use super::trackmappings::TrackMappings;
 
 /// The configuration for the multitrack player.
 #[derive(Deserialize)]
@@ -22,6 +23,7 @@ pub(super) struct Player {
     pub controller: Controller,
     /// The audio device to use.
     pub audio_device: String,
+    pub mappings: TrackMappings,
     /// The MIDI device to use.
     pub midi_device: Option<String>,
     /// The path to the song definitions.

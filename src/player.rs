@@ -12,6 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 use std::{
+    collections::HashMap,
     error::Error,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -37,6 +38,8 @@ struct PlayHandles {
 pub struct Player {
     /// The device to play audio through.
     device: Arc<dyn audio::Device>,
+    /// Mappings of tracks to output channels.
+    mappings: Arc<HashMap<String, u16>>,
     /// The MIDI device to play MIDI back through.
     midi_device: Option<Arc<dyn midi::Device>>,
     /// The playlist to use.
@@ -58,12 +61,14 @@ impl Player {
     /// Creates a new player.
     pub fn new(
         device: Arc<dyn audio::Device>,
+        mappings: HashMap<String, u16>,
         midi_device: Option<Arc<dyn midi::Device>>,
         playlist: Arc<Playlist>,
         all_songs_playlist: Arc<Playlist>,
     ) -> Player {
         let player = Player {
             device,
+            mappings: Arc::new(mappings),
             midi_device,
             playlist,
             all_songs: all_songs_playlist,
@@ -103,8 +108,9 @@ impl Player {
             let device = self.device.clone();
             let midi_device = self.midi_device.clone();
             let cancel_handle = cancel_handle.clone();
+            let mappings = self.mappings.clone();
             tokio::task::spawn_blocking(move || {
-                Player::play_files(device, midi_device, song, cancel_handle, play_tx);
+                Player::play_files(device, mappings, midi_device, song, cancel_handle, play_tx);
             })
         };
         *join = Some(PlayHandles {
@@ -148,6 +154,7 @@ impl Player {
 
     fn play_files(
         device: Arc<dyn audio::Device>,
+        mappings: Arc<HashMap<String, u16>>,
         midi_device: Option<Arc<dyn midi::Device>>,
         song: Arc<Song>,
         cancel_handle: CancelHandle,
@@ -170,7 +177,7 @@ impl Player {
                 let song_name = song.name.to_string();
 
                 barrier.wait();
-                if let Err(e) = device.play(song, cancel_handle) {
+                if let Err(e) = device.play(song, &mappings, cancel_handle) {
                     error!(
                         err = e.as_ref(),
                         song = song_name,
@@ -368,7 +375,7 @@ impl Player {
 
 #[cfg(test)]
 mod test {
-    use std::{error::Error, path::PathBuf, sync::Arc};
+    use std::{collections::HashMap, error::Error, path::PathBuf, sync::Arc};
 
     use crate::{audio, config, midi, playlist::Playlist, test::eventually};
 
@@ -377,6 +384,7 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_player() -> Result<(), Box<dyn Error>> {
         let device = Arc::new(audio::test::Device::get("mock-device"));
+        let mappings: HashMap<String, u16> = HashMap::new();
         let midi_device = Arc::new(midi::test::Device::get("mock-midi-device"));
         let songs = config::get_all_songs(&PathBuf::from("assets/songs"))?;
         let playlist =
@@ -384,6 +392,7 @@ mod test {
         let all_songs_playlist = Playlist::from_songs(songs.clone())?;
         let mut player = Player::new(
             device.clone(),
+            mappings,
             Some(midi_device.clone()),
             playlist.clone(),
             all_songs_playlist.clone(),

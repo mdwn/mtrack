@@ -122,28 +122,23 @@ tracks:
 # we want directly.
 - name: click
   file: click.wav # File paths are relative to the song.yaml file.
-  channel: 7
 # Similarly, our cue only has one channel.
 - name: cue
   file: /mnt/song-storage/cue.wav # Or file paths can be absolute.
-  channel: 8
 # Our backing track file has two channels, so we have to specify `file_channel` to let
 # mtrack know which channel from the file to use.
 - name: backing-track-l
   file: Backing Tracks.wav
   file_channel: 1
-  channel: 9
 # We can re-use our backing track file and specify the other channel if we'd like to do
 # stereo.
 - name: backing-track-r
   file: Backing Tracks.wav
   file_channel: 2
-  channel: 10
 # Our keys file has two channels, but we're only interested in one.
 - name: keys
   file: Keys.wav
   file_channel: 1
-  channel: 11
 ---
 # We can define multiple songs in one file.
 name: The Song Name (alternate version)
@@ -169,7 +164,7 @@ Songs (count: 23):
 You can play individual songs by using `mtrack play`:
 
 ```
-$ mtrack play -m my-midi-device my-audio-device /mnt/song-storage "My cool song"
+$ mtrack play -m my-midi-device my-audio-device click=1,cue=2 /mnt/song-storage "My cool song"
 2024-03-22T21:24:25.588828Z  INFO emit (midir): mtrack::midi::midir: Emitting event. device="my-midi-device:my-midi-device MIDI 1 28:0" event="Midi { channel: u4(15), message: ProgramChange { program: u7(3) } }"
 2024-03-22T21:24:25.589420Z  INFO player: mtrack::player: Waiting for song to finish. song="My cool song"
 2024-03-22T21:24:25.589992Z  INFO play song (rodio): mtrack::audio::rodio: Playing song. device="my-audio-device" song="My cool song" duration="4:14"
@@ -265,6 +260,14 @@ controller:
     channel: 16
     controller: 100
     value: 5
+
+# Mappings of track names to output channels.
+track_mappings:
+  click: 1
+  cue: 2
+  backing-track-l: 3
+  backing-track-r: 4
+  keys: 5
 ```
 
 You can start `mtrack` as a process with `mtrack start /path/to/player.yaml /path/to/playlist.yaml`.

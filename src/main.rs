@@ -25,6 +25,7 @@ mod test;
 use clap::{Parser, Subcommand};
 use config::init_player_and_controller;
 use player::Player;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -75,6 +76,9 @@ enum Commands {
     Play {
         /// The device name to play through.
         device_name: String,
+        /// The channel to device mappings. Should be in the form <TRACKNAME>=<CHANNEL>,...
+        /// For example, click=1,cue=2,backing-l=3.
+        mappings: String,
         /// The MIDI device name to play through.
         #[arg[short, long]]
         midi_device_name: Option<String>,
@@ -116,9 +120,24 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 return Ok(());
             }
 
+            let mut all_tracks: HashSet<String> = HashSet::new();
             println!("Songs (count: {}):", songs.len());
             for song in songs.sorted_list() {
+                // Record all of the tracks found in the song repository.
+                for track in song.tracks.iter() {
+                    all_tracks.insert(track.name.to_string());
+                }
+
                 println!("- {}", song);
+            }
+
+            // Sort the tracks so that the output is consistent.
+            let mut tracks: Vec<String> = all_tracks.into_iter().collect();
+            tracks.sort();
+
+            println!("\nTracks (count: {}):", tracks.len());
+            for track in tracks.iter() {
+                println!("- {}", track)
             }
         }
         Commands::Devices {} => {
@@ -149,10 +168,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
         Commands::Play {
             device_name,
+            mappings,
             midi_device_name,
             repository_path,
             song_name,
         } => {
+            let mut converted_mappings: HashMap<String, u16> = HashMap::new();
+            for mapping in mappings.split(',') {
+                let track_and_channel: Vec<&str> = mapping.split('=').collect();
+                if track_and_channel.len() != 2 {
+                    return Err("malformed track to channel mapping".into());
+                };
+                let track = track_and_channel[0];
+                let channel = track_and_channel[1].parse::<u16>()?;
+                converted_mappings.insert(track.into(), channel);
+            }
+
             let device = audio::get_device(&device_name)?;
             let midi_device = match midi_device_name {
                 Some(midi_device_name) => Some(midi::get_device(&midi_device_name)?),
@@ -160,7 +191,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
             };
             let songs = config::get_all_songs(&PathBuf::from(&repository_path))?;
             let playlist = Arc::new(Playlist::new(vec![song_name], Arc::clone(&songs))?);
-            let player = Player::new(device, midi_device, playlist, Playlist::from_songs(songs)?);
+            let player = Player::new(
+                device,
+                converted_mappings,
+                midi_device,
+                playlist,
+                Playlist::from_songs(songs)?,
+            );
 
             player.play().await?;
             while !player.wait_for_current_song().await? {
