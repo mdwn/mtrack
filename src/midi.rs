@@ -17,6 +17,7 @@ use std::{
     sync::{Arc, Barrier},
 };
 
+use midly::live::LiveEvent;
 use tokio::sync::mpsc::Sender;
 
 use crate::{playsync::CancelHandle, songs::Song};
@@ -41,7 +42,7 @@ pub trait Device: fmt::Display + std::marker::Send + std::marker::Sync {
     ) -> Result<(), Box<dyn Error>>;
 
     /// Emits an event.
-    fn emit(&self, song: Arc<Song>) -> Result<(), Box<dyn Error>>;
+    fn emit(&self, midi_event: Option<LiveEvent<'static>>) -> Result<(), Box<dyn Error>>;
 }
 
 /// Lists devices known to midir.

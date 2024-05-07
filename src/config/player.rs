@@ -14,6 +14,7 @@
 use serde::Deserialize;
 
 use super::controller::Controller;
+use super::midi;
 use super::trackmappings::TrackMappings;
 
 /// The configuration for the multitrack player.
@@ -27,6 +28,19 @@ pub(super) struct Player {
     pub track_mappings: TrackMappings,
     /// The MIDI device to use.
     pub midi_device: Option<String>,
+    /// Events to emit to report status out via MIDI.
+    pub status_events: Option<StatusEvents>,
     /// The path to the song definitions.
     pub songs: String,
+}
+
+/// The configuration for emitting status events.
+#[derive(Deserialize)]
+pub(super) struct StatusEvents {
+    /// The events to emit to clear the status.
+    pub off_events: Vec<midi::Event>,
+    /// The events to emit to indicate that the player is idling and waiting for input.
+    pub idling_events: Vec<midi::Event>,
+    /// The events to emit to indicate that the player is currently playing.
+    pub playing_events: Vec<midi::Event>,
 }

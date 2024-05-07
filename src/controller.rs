@@ -233,6 +233,7 @@ mod test {
             None,
             playlist.clone(),
             all_songs_playlist.clone(),
+            None,
         );
         let mut controller = super::Controller::new(player, driver.clone())?;
 

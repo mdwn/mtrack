@@ -316,8 +316,7 @@ where
 
         let num_channels = *track_mapping
             .iter()
-            .map(|entry| entry.1)
-            .flatten()
+            .flat_map(|entry| entry.1)
             .max()
             .ok_or("no max channel found")?;
 
@@ -336,7 +335,7 @@ where
             tracks.into_iter().for_each(|track| {
                 let file_channel = track.file_channel - 1;
                 if let Some(channel_mappings) = track_mapping.get(&track.name.to_string()) {
-                    channel_mappings.into_iter().for_each(|channel_mapping| {
+                    channel_mappings.iter().for_each(|channel_mapping| {
                         let output_channel = channel_mapping - 1;
                         file_channel_to_output_channels
                             .entry(file_channel)

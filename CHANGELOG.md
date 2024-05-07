@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 (Breaking Change) Track mappings now support mapping to multiple channels.
 
+Status reporting is now configurable.
+
 ## [0.1.3] - MIDI tuning, accuracy.
 
 MIDI playback is now more accurate and has been tuned to be more in time with audio

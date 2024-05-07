@@ -181,11 +181,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 };
                 let track = track_and_channel[0];
                 let channel = track_and_channel[1].parse::<u16>()?;
-                if !converted_mappings.contains_key(track.into()) {
+                if !converted_mappings.contains_key(track) {
                     converted_mappings.insert(track.into(), vec![]);
                 }
                 converted_mappings
-                    .get_mut(track.into())
+                    .get_mut(track)
                     .expect("expected mapping")
                     .push(channel);
             }
@@ -203,6 +203,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 midi_device,
                 playlist,
                 Playlist::from_songs(songs)?,
+                None,
             );
 
             player.play().await?;

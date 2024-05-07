@@ -17,11 +17,14 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use midly::live::LiveEvent;
 use serde::Deserialize;
 use tracing::error;
 
 use crate::audio;
+use crate::player::StatusEvents;
 
+use self::midi::ToMidiEvent;
 use self::player::Player;
 use self::playlist::Playlist;
 
@@ -94,12 +97,34 @@ pub fn init_player_and_controller(
         .map_or(Ok(None), |result| result.map(Some))?;
     let songs = get_all_songs(&PathBuf::from(player_config.songs))?;
     let playlist = parse_playlist(&PathBuf::from(playlist_path), Arc::clone(&songs))?;
+    let status_events = match player_config.status_events {
+        Some(status_events) => Some(StatusEvents::new(
+            status_events
+                .off_events
+                .iter()
+                .map(|event| event.to_midi_event())
+                .collect::<Result<Vec<LiveEvent<'static>>, Box<dyn Error>>>()?,
+            status_events
+                .idling_events
+                .iter()
+                .map(|event| event.to_midi_event())
+                .collect::<Result<Vec<LiveEvent<'static>>, Box<dyn Error>>>()?,
+            status_events
+                .playing_events
+                .iter()
+                .map(|event| event.to_midi_event())
+                .collect::<Result<Vec<LiveEvent<'static>>, Box<dyn Error>>>()?,
+        )),
+        None => None,
+    };
+
     let player = crate::player::Player::new(
         device,
         player_config.track_mappings.track_mappings,
         midi_device.clone(),
         playlist,
         crate::playlist::Playlist::from_songs(songs)?,
+        status_events,
     );
     let controller = crate::controller::Controller::new(
         player,
