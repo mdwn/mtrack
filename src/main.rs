@@ -197,6 +197,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 midi_device,
                 playlist,
                 Playlist::from_songs(songs)?,
+                None,
             );
 
             player.play().await?;

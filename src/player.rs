@@ -19,8 +19,10 @@ use std::{
         Arc, Barrier,
     },
     thread,
+    time::Duration,
 };
 
+use midly::live::LiveEvent;
 use tokio::{
     sync::{oneshot, Mutex},
     task::JoinHandle,
@@ -65,6 +67,7 @@ impl Player {
         midi_device: Option<Arc<dyn midi::Device>>,
         playlist: Arc<Playlist>,
         all_songs_playlist: Arc<Playlist>,
+        status_events: Option<StatusEvents>,
     ) -> Player {
         let player = Player {
             device,
@@ -78,10 +81,60 @@ impl Player {
             span: span!(Level::INFO, "player"),
         };
 
+        if player.midi_device.is_none() {
+            return player;
+        }
+
         // Emit the event for the first track if needed.
         Player::emit_midi_event(player.midi_device.clone(), player.get_playlist().current());
 
+        if let Some(status_events) = status_events {
+            let midi_device = player
+                .midi_device
+                .clone()
+                .expect("MIDI device must be present");
+            let join = player.join.clone();
+            tokio::spawn(Player::report_status(midi_device, join, status_events));
+        }
+
         player
+    }
+
+    /// Reports status as MIDI events.
+    async fn report_status(
+        midi_device: Arc<dyn midi::Device>,
+        join: Arc<Mutex<Option<PlayHandles>>>,
+        status_events: StatusEvents,
+    ) {
+        let midi_device = midi_device.clone();
+        let join = join.clone();
+
+        // This thread will run until the process is terminated.
+        let _join_handle = tokio::spawn(async move {
+            loop {
+                {
+                    let join = join.lock().await;
+
+                    let emit_result = if join.is_none() {
+                        midi_device.emit(Some(status_events.idling_event))
+                    } else {
+                        midi_device.emit(Some(status_events.playing_event))
+                    };
+
+                    if let Err(err) = emit_result {
+                        error!(err = err.as_ref(), "error emitting status event")
+                    }
+                }
+
+                tokio::time::sleep(Duration::from_secs(1)).await;
+
+                if let Err(err) = midi_device.emit(Some(status_events.off_event)) {
+                    error!(err = err.as_ref(), "error emitting off status event")
+                }
+
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        });
     }
 
     /// Plays the song at the current position. Returns true if the song was submitted successfully.
@@ -364,9 +417,34 @@ impl Player {
     /// Emits a MIDI event for the given song if possible.
     fn emit_midi_event(midi_device: Option<Arc<dyn midi::Device>>, song: Arc<Song>) {
         if let Some(midi_device) = midi_device.clone() {
-            if let Err(e) = midi_device.emit(song.clone()) {
+            if let Err(e) = midi_device.emit(song.midi_event) {
                 error!("Error emitting MIDI event: {:?}", e);
             }
+        }
+    }
+}
+
+/// Describes how to report status via MIDI.
+pub struct StatusEvents {
+    /// The event to emit to clear the status.
+    off_event: LiveEvent<'static>,
+    /// The event to emit to indicate that the player is idling and waiting for input.
+    idling_event: LiveEvent<'static>,
+    /// The event to emit to indicate that the player is currently playing.
+    playing_event: LiveEvent<'static>,
+}
+
+impl StatusEvents {
+    /// Creates a new status events configuration.
+    pub fn new(
+        off_event: LiveEvent<'static>,
+        idling_event: LiveEvent<'static>,
+        playing_event: LiveEvent<'static>,
+    ) -> StatusEvents {
+        StatusEvents {
+            off_event,
+            idling_event,
+            playing_event,
         }
     }
 }
@@ -394,6 +472,7 @@ mod test {
             Some(midi_device.clone()),
             playlist.clone(),
             all_songs_playlist.clone(),
+            None,
         );
 
         // Direct the player.

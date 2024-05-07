@@ -152,11 +152,11 @@ impl super::Device for Device {
         Ok(())
     }
 
-    fn emit(&self, song: Arc<Song>) -> Result<(), Box<dyn Error>> {
+    fn emit(&self, midi_event: Option<LiveEvent<'static>>) -> Result<(), Box<dyn Error>> {
         let span = span!(Level::INFO, "emit (midir)");
         let _enter = span.enter();
 
-        let event = match song.midi_event {
+        let event = match midi_event {
             Some(midi_event) => midi_event,
             // If there's no event, return early.
             None => return Ok(()),
@@ -165,10 +165,7 @@ impl super::Device for Device {
         let output_port = match &self.output_port {
             Some(output_port) => output_port,
             None => {
-                warn!(
-                    song = song.name,
-                    "No MIDI output device configured, cannot emit event."
-                );
+                warn!("No MIDI output device configured, cannot emit event.");
                 return Ok(());
             }
         };
