@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 // Copyright (C) 2024 Michael Wilson <mike@mdwn.dev>
 //
 // This program is free software: you can redistribute it and/or modify it under
@@ -16,6 +15,8 @@ use std::{error::Error, fmt, sync::Arc};
 
 use crate::playsync::CancelHandle;
 use crate::songs::Song;
+use std::collections::HashMap;
+use std::sync::Barrier;
 
 mod cpal;
 mod mock;
@@ -31,6 +32,7 @@ pub trait Device: fmt::Display + std::marker::Send + std::marker::Sync {
         song: Arc<Song>,
         mappings: &HashMap<String, u16>,
         cancel_handle: CancelHandle,
+        play_barrier: Arc<Barrier>,
     ) -> Result<(), Box<dyn Error>>;
 }
 

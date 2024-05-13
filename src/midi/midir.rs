@@ -15,13 +15,15 @@ use std::{
     collections::HashMap,
     error::Error,
     fmt, mem,
-    sync::{Arc, Mutex},
+    ops::Add,
+    sync::{Arc, Barrier, Mutex},
     thread,
+    time::{self, Instant},
 };
 
 use midir::{MidiInput, MidiInputConnection, MidiInputPort, MidiOutput, MidiOutputPort};
 use midly::live::LiveEvent;
-use nodi::{Connection, Player};
+use nodi::{Connection, Player, Timer};
 use tokio::sync::mpsc::Sender;
 use tracing::{error, info, span, warn, Level};
 
@@ -90,7 +92,12 @@ impl super::Device for Device {
     }
 
     /// Plays the given song through the MIDI interface.
-    fn play(&self, song: Arc<Song>, cancel_handle: CancelHandle) -> Result<(), Box<dyn Error>> {
+    fn play(
+        &self,
+        song: Arc<Song>,
+        cancel_handle: CancelHandle,
+        play_barrier: Arc<Barrier>,
+    ) -> Result<(), Box<dyn Error>> {
         let span = span!(Level::INFO, "play song (midir)");
         let _enter = span.enter();
 
@@ -127,9 +134,10 @@ impl super::Device for Device {
                 connection: midir_connection,
                 cancel_handle: cancel_handle.clone(),
             };
-            let mut player = Player::new(midi_sheet.ticker, connection);
+            let mut player = Player::new(AccurateTimer::new(midi_sheet.ticker), connection);
 
             thread::spawn(move || {
+                play_barrier.wait();
                 player.play(&midi_sheet.sheet);
                 cancel_handle.expire();
             })
@@ -282,6 +290,46 @@ pub fn get(name: &String) -> Result<Device, Box<dyn Error>> {
 
     // We've verified that there's only one element in the vector, so this should be safe.
     Ok(matches.swap_remove(0))
+}
+
+/// AccurateTimer is a timer for the nodi player that allows a more accurate clock. It uses the last
+/// known instant to properly calculate the next intended sleep duration.
+struct AccurateTimer<T: Timer> {
+    timer: T,
+    last_instant: Option<Instant>,
+}
+
+impl<T: Timer> AccurateTimer<T> {
+    fn new(timer: T) -> AccurateTimer<T> {
+        AccurateTimer {
+            timer,
+            last_instant: None,
+        }
+    }
+}
+
+impl<T: Timer> Timer for AccurateTimer<T> {
+    fn sleep_duration(&mut self, n_ticks: u32) -> std::time::Duration {
+        let mut duration = self.timer.sleep_duration(n_ticks);
+
+        // Modify the sleep duration if the last duration is populated, as we
+        // know about when the next tick should be.
+        match self.last_instant {
+            Some(last_instant) => {
+                self.last_instant = Some(last_instant.add(duration));
+                duration = duration
+                    .checked_sub(Instant::now().duration_since(last_instant))
+                    .expect("duration should not be less during subtraction")
+            }
+            None => self.last_instant = Some(time::Instant::now()),
+        };
+
+        duration
+    }
+
+    fn change_tempo(&mut self, tempo: u32) {
+        self.timer.change_tempo(tempo);
+    }
 }
 
 /// CancelConnection is a nodi connection that can be cancelled.

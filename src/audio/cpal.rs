@@ -18,7 +18,7 @@ use std::{
     fmt,
     sync::{
         mpsc::{channel, Sender},
-        Arc,
+        Arc, Barrier,
     },
 };
 
@@ -124,10 +124,15 @@ impl super::Device for Device {
         song: Arc<Song>,
         mappings: &HashMap<String, u16>,
         cancel_handle: CancelHandle,
+        play_barrier: Arc<Barrier>,
     ) -> Result<(), Box<dyn Error>> {
         match song.sample_format {
-            hound::SampleFormat::Int => self.play_format::<i32>(song, mappings, cancel_handle),
-            hound::SampleFormat::Float => self.play_format::<f32>(song, mappings, cancel_handle),
+            hound::SampleFormat::Int => {
+                self.play_format::<i32>(song, mappings, cancel_handle, play_barrier)
+            }
+            hound::SampleFormat::Float => {
+                self.play_format::<f32>(song, mappings, cancel_handle, play_barrier)
+            }
         }
     }
 }
@@ -139,6 +144,7 @@ impl Device {
         song: Arc<Song>,
         mappings: &HashMap<String, u16>,
         cancel_handle: CancelHandle,
+        play_barrier: Arc<Barrier>,
     ) -> Result<(), Box<dyn Error>>
     where
         S: songs::Sample,
@@ -172,6 +178,7 @@ impl Device {
         let (tx, rx) = channel();
 
         let mut output_callback = Device::output_callback(source, tx, cancel_handle);
+        play_barrier.wait();
         let output_stream = self.device.build_output_stream(
             &cpal::StreamConfig {
                 channels: num_channels,

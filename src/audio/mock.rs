@@ -17,7 +17,7 @@ use std::{
     fmt,
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc, Arc,
+        mpsc, Arc, Barrier,
     },
     thread,
 };
@@ -60,6 +60,7 @@ impl super::Device for Device {
         song: Arc<Song>,
         _: &HashMap<String, u16>,
         cancel_handle: CancelHandle,
+        play_barrier: Arc<Barrier>,
     ) -> Result<(), Box<dyn Error>> {
         let span = span!(Level::INFO, "play song (mock)");
         let _enter = span.enter();
@@ -78,6 +79,8 @@ impl super::Device for Device {
             let cancel_handle = cancel_handle.clone();
             // Wait until the song is cancelled or until the song is done.
             thread::spawn(move || {
+                play_barrier.wait();
+
                 // Wait for a signal or until we hit cancellation.
                 let _ = sleep_rx.recv_timeout(song.duration);
 
