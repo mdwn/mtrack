@@ -176,8 +176,7 @@ impl Player {
             thread::spawn(move || {
                 let song_name = song.name.to_string();
 
-                barrier.wait();
-                if let Err(e) = device.play(song, &mappings, cancel_handle) {
+                if let Err(e) = device.play(song, &mappings, cancel_handle, barrier) {
                     error!(
                         err = e.as_ref(),
                         song = song_name,
@@ -196,8 +195,7 @@ impl Player {
             let midi_join_handle = thread::spawn(move || {
                 let song_name = song.name.to_string();
 
-                barrier.wait();
-                if let Err(e) = midi_device.play(song, cancel_handle) {
+                if let Err(e) = midi_device.play(song, cancel_handle, barrier) {
                     error!(
                         err = e.as_ref(),
                         song = song_name,

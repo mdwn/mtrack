@@ -11,7 +11,11 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-use std::{error::Error, fmt, sync::Arc};
+use std::{
+    error::Error,
+    fmt,
+    sync::{Arc, Barrier},
+};
 
 use tokio::sync::mpsc::Sender;
 
@@ -32,7 +36,12 @@ pub trait Device: fmt::Display + std::marker::Send + std::marker::Sync {
     fn stop_watch_events(&self);
 
     /// Plays the given song through the MIDI interface.
-    fn play(&self, song: Arc<Song>, cancel_handle: CancelHandle) -> Result<(), Box<dyn Error>>;
+    fn play(
+        &self,
+        song: Arc<Song>,
+        cancel_handle: CancelHandle,
+        play_barrier: Arc<Barrier>,
+    ) -> Result<(), Box<dyn Error>>;
 
     /// Emits an event.
     fn emit(&self, song: Arc<Song>) -> Result<(), Box<dyn Error>>;
