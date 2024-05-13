@@ -317,9 +317,11 @@ impl<T: Timer> Timer for AccurateTimer<T> {
         match self.last_instant {
             Some(last_instant) => {
                 self.last_instant = Some(last_instant.add(duration));
+
+                // Subtract the duration unless it would be an overflow. If so, use the original duration.
                 duration = duration
                     .checked_sub(Instant::now().duration_since(last_instant))
-                    .expect("duration should not be less during subtraction")
+                    .unwrap_or(duration);
             }
             None => self.last_instant = Some(time::Instant::now()),
         };
