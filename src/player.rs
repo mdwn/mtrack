@@ -150,7 +150,7 @@ impl Player {
                     }
                 }
 
-                tokio::time::sleep(Duration::from_secs(250)).await;
+                tokio::time::sleep(Duration::from_millis(250)).await;
             }
         });
     }
