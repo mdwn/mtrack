@@ -115,10 +115,18 @@ impl Player {
                 {
                     let join = join.lock().await;
 
-                    let emit_result = if join.is_none() {
-                        midi_device.emit(Some(status_events.idling_event))
+                    let emit_result: Result<(), Box<dyn Error>> = if join.is_none() {
+                        status_events
+                            .idling_events
+                            .iter()
+                            .map(|event| midi_device.emit(Some(*event)))
+                            .collect()
                     } else {
-                        midi_device.emit(Some(status_events.playing_event))
+                        status_events
+                            .playing_events
+                            .iter()
+                            .map(|event| midi_device.emit(Some(*event)))
+                            .collect()
                     };
 
                     if let Err(err) = emit_result {
@@ -128,11 +136,19 @@ impl Player {
 
                 tokio::time::sleep(Duration::from_secs(1)).await;
 
-                if let Err(err) = midi_device.emit(Some(status_events.off_event)) {
-                    error!(err = err.as_ref(), "error emitting off status event")
+                {
+                    let status_event_emit_result: Result<(), Box<dyn Error>> = status_events
+                        .off_events
+                        .iter()
+                        .map(|event| midi_device.emit(Some(*event)))
+                        .collect();
+
+                    if let Err(err) = status_event_emit_result {
+                        error!(err = err.as_ref(), "error emitting off status event");
+                    }
                 }
 
-                tokio::time::sleep(Duration::from_millis(250)).await;
+                tokio::time::sleep(Duration::from_secs(250)).await;
             }
         });
     }
@@ -426,25 +442,25 @@ impl Player {
 
 /// Describes how to report status via MIDI.
 pub struct StatusEvents {
-    /// The event to emit to clear the status.
-    off_event: LiveEvent<'static>,
-    /// The event to emit to indicate that the player is idling and waiting for input.
-    idling_event: LiveEvent<'static>,
-    /// The event to emit to indicate that the player is currently playing.
-    playing_event: LiveEvent<'static>,
+    /// The events to emit to clear the status.
+    off_events: Vec<LiveEvent<'static>>,
+    /// The events to emit to indicate that the player is idling and waiting for input.
+    idling_events: Vec<LiveEvent<'static>>,
+    /// The events to emit to indicate that the player is currently playing.
+    playing_events: Vec<LiveEvent<'static>>,
 }
 
 impl StatusEvents {
     /// Creates a new status events configuration.
     pub fn new(
-        off_event: LiveEvent<'static>,
-        idling_event: LiveEvent<'static>,
-        playing_event: LiveEvent<'static>,
+        off_events: Vec<LiveEvent<'static>>,
+        idling_events: Vec<LiveEvent<'static>>,
+        playing_events: Vec<LiveEvent<'static>>,
     ) -> StatusEvents {
         StatusEvents {
-            off_event,
-            idling_event,
-            playing_event,
+            off_events,
+            idling_events,
+            playing_events,
         }
     }
 }

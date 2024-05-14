@@ -37,10 +37,10 @@ pub(super) struct Player {
 /// The configuration for emitting status events.
 #[derive(Deserialize)]
 pub(super) struct StatusEvents {
-    /// The event to emit to clear the status.
-    pub off_event: midi::Event,
-    /// The event to emit to indicate that the player is idling and waiting for input.
-    pub idling_event: midi::Event,
-    /// The event to emit to indicate that the player is currently playing.
-    pub playing_event: midi::Event,
+    /// The events to emit to clear the status.
+    pub off_events: Vec<midi::Event>,
+    /// The events to emit to indicate that the player is idling and waiting for input.
+    pub idling_events: Vec<midi::Event>,
+    /// The events to emit to indicate that the player is currently playing.
+    pub playing_events: Vec<midi::Event>,
 }

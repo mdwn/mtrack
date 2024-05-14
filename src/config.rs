@@ -17,6 +17,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use midly::live::LiveEvent;
 use serde::Deserialize;
 use tracing::error;
 
@@ -98,9 +99,21 @@ pub fn init_player_and_controller(
     let playlist = parse_playlist(&PathBuf::from(playlist_path), Arc::clone(&songs))?;
     let status_events = match player_config.status_events {
         Some(status_events) => Some(StatusEvents::new(
-            status_events.off_event.to_midi_event()?,
-            status_events.idling_event.to_midi_event()?,
-            status_events.playing_event.to_midi_event()?,
+            status_events
+                .off_events
+                .iter()
+                .map(|event| event.to_midi_event())
+                .collect::<Result<Vec<LiveEvent<'static>>, Box<dyn Error>>>()?,
+            status_events
+                .idling_events
+                .iter()
+                .map(|event| event.to_midi_event())
+                .collect::<Result<Vec<LiveEvent<'static>>, Box<dyn Error>>>()?,
+            status_events
+                .playing_events
+                .iter()
+                .map(|event| event.to_midi_event())
+                .collect::<Result<Vec<LiveEvent<'static>>, Box<dyn Error>>>()?,
         )),
         None => None,
     };
