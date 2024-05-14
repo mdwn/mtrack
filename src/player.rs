@@ -229,17 +229,18 @@ impl Player {
         let _enter = self.span.enter();
 
         let mut join = self.join.lock().await;
-        if join.is_none() {
-            return Ok(false);
-        }
-        info!(
-            song = self.get_playlist().current().name,
-            "Waiting for song to finish.",
-        );
-
-        // Wait for the mutex to become available and immediately drop it.
-        (&mut join.as_mut().unwrap().join).await?;
-        Ok(true)
+        Ok(match join.as_mut() {
+            Some(join) => {
+                info!(
+                    song = self.get_playlist().current().name,
+                    "Waiting for song to finish.",
+                );
+                // Wait for the mutex to become available and immediately drop it.
+                (&mut join.join).await?;
+                true
+            }
+            None => false,
+        })
     }
 
     /// Next goes to the next entry in the playlist.
@@ -276,10 +277,13 @@ impl Player {
     pub async fn stop(&mut self) -> Result<(), Box<dyn Error>> {
         let mut join = self.join.lock().await;
 
-        if join.is_none() {
-            info!("Player is not active, nothing to stop.");
-            return Ok(());
-        }
+        let join = match join.as_mut() {
+            Some(join) => join,
+            None => {
+                info!("Player is not active, nothing to stop.");
+                return Ok(());
+            }
+        };
 
         if self
             .stop_run
@@ -296,7 +300,6 @@ impl Player {
         );
 
         // Cancel the playback.
-        let join = join.as_mut().unwrap();
         join.cancel.cancel();
         Ok(())
     }

@@ -46,21 +46,24 @@ impl super::Device for Device {
         let span = span!(Level::INFO, "wait for event (midir)");
         let _enter = span.enter();
 
-        let mut event_connection = self.event_connection.lock().expect("Unable to get lock");
+        let mut event_connection = self.event_connection.lock().expect("unable to get lock");
         if event_connection.is_some() {
             return Err("Already watching events.".into());
         }
 
         info!("Watching MIDI events.");
 
-        if self.input_port.is_none() {
-            warn!("No MIDI output device configured, cannot listen for events.");
-            return Ok(());
-        }
+        let input_port = match self.input_port.as_ref() {
+            Some(input_port) => input_port,
+            None => {
+                warn!("No MIDI output device configured, cannot listen for events.");
+                return Ok(());
+            }
+        };
 
         let input = MidiInput::new("mtrack player input")?;
         *event_connection = Some(input.connect(
-            self.input_port.as_ref().unwrap(),
+            input_port,
             "mtrack input watcher",
             move |_, raw_event, _| {
                 if let Ok(event) = LiveEvent::parse(raw_event) {
@@ -85,7 +88,7 @@ impl super::Device for Device {
         let event_connection = self
             .event_connection
             .lock()
-            .expect("Error getting mutex.")
+            .expect("error getting mutex")
             .take();
 
         mem::drop(event_connection);
@@ -101,20 +104,24 @@ impl super::Device for Device {
         let span = span!(Level::INFO, "play song (midir)");
         let _enter = span.enter();
 
-        if self.output_port.is_none() {
-            warn!(
-                song = song.name,
-                "No MIDI output device configured, cannot play song."
-            );
-            return Ok(());
-        }
+        let output_port = match self.output_port.as_ref() {
+            Some(output_port) => output_port,
+            None => {
+                warn!(
+                    song = song.name,
+                    "No MIDI output device configured, cannot play song."
+                );
+                return Ok(());
+            }
+        };
 
-        let maybe_sheet = song.midi_sheet()?;
-        if maybe_sheet.is_none() {
-            info!(song = song.name, "Song has no MIDI sheet.");
-            return Ok(());
-        }
-        let midi_sheet = maybe_sheet.unwrap();
+        let midi_sheet = match song.midi_sheet()? {
+            Some(midi_sheet) => midi_sheet,
+            None => {
+                info!(song = song.name, "Song has no MIDI sheet.");
+                return Ok(());
+            }
+        };
         let output = MidiOutput::new("mtrack player output")?;
 
         info!(
@@ -128,8 +135,7 @@ impl super::Device for Device {
             let cancel_handle = cancel_handle.clone();
 
             // Wrap the midir connection in a cancel connection so that we can stop playback.
-            let midir_connection =
-                output.connect(self.output_port.as_ref().unwrap(), "mtrack player")?;
+            let midir_connection = output.connect(output_port, "mtrack player")?;
             let connection = CancelConnection {
                 connection: midir_connection,
                 cancel_handle: cancel_handle.clone(),
@@ -243,18 +249,21 @@ fn list_midir_devices() -> Result<Vec<Device>, Box<dyn Error>> {
 
     for port in output_ports {
         let name = output.port_name(&port)?;
-        if !devices.contains_key(&name) {
-            devices.insert(
-                name.clone(),
-                Device {
-                    name: name.clone(),
-                    input_port: None,
-                    output_port: Some(port),
-                    event_connection: Box::new(Mutex::new(None)),
-                },
-            );
-        } else {
-            devices.get_mut(&name).unwrap().output_port = Some(port);
+        match devices.get_mut(&name) {
+            Some(device) => {
+                device.output_port = Some(port);
+            }
+            None => {
+                devices.insert(
+                    name.clone(),
+                    Device {
+                        name: name.clone(),
+                        input_port: None,
+                        output_port: Some(port),
+                        event_connection: Box::new(Mutex::new(None)),
+                    },
+                );
+            }
         }
     }
 
@@ -319,9 +328,10 @@ impl<T: Timer> Timer for AccurateTimer<T> {
                 self.last_instant = Some(last_instant.add(duration));
 
                 // Subtract the duration unless it would be an overflow. If so, use the original duration.
-                duration = duration
-                    .checked_sub(Instant::now().duration_since(last_instant))
-                    .unwrap_or(duration);
+                duration = match duration.checked_sub(Instant::now().duration_since(last_instant)) {
+                    Some(duration) => duration,
+                    None => duration,
+                };
             }
             None => self.last_instant = Some(time::Instant::now()),
         };

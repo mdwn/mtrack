@@ -53,7 +53,7 @@ impl Device {
     /// Sends the mock event through to the sender.
     pub fn mock_event(&self, event: &Vec<u8>) {
         {
-            let mut mutex_event = self.event.lock().expect("Unable to get event lock.");
+            let mut mutex_event = self.event.lock().expect("unable to get event lock");
             *mutex_event = event.to_vec();
         }
         // Wait until the thread goes to receive the event.
@@ -68,7 +68,7 @@ impl Device {
         let emit_called = self
             .emit_called
             .lock()
-            .expect("Unable to get emit called lock.");
+            .expect("unable to get emit called lock");
         match emit_called.as_ref() {
             Some(event) => Some(event.to_vec()),
             None => None,
@@ -81,7 +81,7 @@ impl Device {
         let mut emit_called = self
             .emit_called
             .lock()
-            .expect("Unable to get emit called lock.");
+            .expect("unable to get emit called lock");
         *emit_called = None;
     }
 }
@@ -94,7 +94,7 @@ impl super::Device for Device {
 
     /// Watches MIDI input for events and sends them to the given sender.
     fn watch_events(&self, sender: Sender<Vec<u8>>) -> Result<(), Box<dyn Error>> {
-        let mut event_thread = self.event_thread.lock().expect("Unable to get lock");
+        let mut event_thread = self.event_thread.lock().expect("unable to get lock");
         if event_thread.is_some() {
             return Err("Already watching events.".into());
         }
@@ -109,10 +109,10 @@ impl super::Device for Device {
                 if closed.load(Ordering::Relaxed) {
                     return;
                 }
-                let event = event.lock().expect("Unable to get event lock.");
+                let event = event.lock().expect("unable to get event lock");
                 sender
                     .blocking_send(event.to_vec())
-                    .expect("Error sending event.");
+                    .expect("error sending event");
             }
             barrier.wait();
         }));
@@ -174,7 +174,7 @@ impl super::Device for Device {
             let mut emit_called = self
                 .emit_called
                 .lock()
-                .expect("Unable to get emit called lock.");
+                .expect("unable to get emit called lock");
 
             let mut buf: Vec<u8> = Vec::with_capacity(8);
             midi_event.write(&mut buf)?;

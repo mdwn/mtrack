@@ -209,7 +209,9 @@ impl Device {
         // Stop only when we hit a frame boundary. This will prevent weird noises
         // when stopping a song.
         if cancel_handle.is_cancelled() && source.get_frame_position() == 0 {
-            tx.send(()).expect("error sending message");
+            if tx.send(()).is_err() {
+                error!("Error sending message")
+            }
             true
         } else {
             false
@@ -241,7 +243,9 @@ impl Device {
                             data_pos += 1;
                         }
                         None => {
-                            tx.send(()).expect("error sending message");
+                            if tx.send(()).is_err() {
+                                error!("Error sending message")
+                            }
                             return;
                         }
                     }

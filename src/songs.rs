@@ -308,7 +308,10 @@ where
                 files_to_tracks.insert(file_path.clone(), Vec::new());
             }
 
-            files_to_tracks.get_mut(file_path).unwrap().push(track);
+            files_to_tracks
+                .get_mut(file_path)
+                .expect("unable to get tracks")
+                .push(track);
         });
 
         let num_channels = *track_mapping
@@ -502,7 +505,7 @@ where
                 .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |val| {
                     Some((val + 1) % self.channels)
                 })
-                .expect("Got none from frame position update function");
+                .expect("got none from frame position update function");
         }
 
         sample
