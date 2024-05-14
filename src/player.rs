@@ -106,6 +106,8 @@ impl Player {
         join: Arc<Mutex<Option<PlayHandles>>>,
         status_events: StatusEvents,
     ) {
+        info!("Reporting status");
+
         let midi_device = midi_device.clone();
         let join = join.clone();
 
