@@ -39,7 +39,7 @@ pub struct Song {
     /// The MIDI event to play when the song is selected in a playlist.
     pub midi_event: Option<LiveEvent<'static>>,
     /// The MIDI file to play along with the audio tracks.
-    midi_file: Option<PathBuf>,
+    pub midi_file: Option<PathBuf>,
     /// The number of channels required to play this song.
     pub num_channels: u16,
     /// The sample rate of this song.
