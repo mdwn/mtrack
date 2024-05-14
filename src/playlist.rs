@@ -34,8 +34,10 @@ impl fmt::Display for Playlist {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "Playlist ({} songs):", self.songs.len())?;
         for song_name in self.songs.iter() {
-            let song: Arc<Song> = self.registry.get(song_name).unwrap();
-            writeln!(f, "  - {} (Channels: {})", song.name, song.num_channels)?;
+            match self.registry.get(song_name) {
+                Ok(song) => writeln!(f, "  - {} (Channels: {})", song.name, song.num_channels)?,
+                Err(_) => writeln!(f, "  - {} (unable to find song)", song_name)?,
+            };
         }
 
         Ok(())
@@ -45,8 +47,7 @@ impl fmt::Display for Playlist {
 impl Playlist {
     /// Creates a new playlist.
     pub fn new(song_names: Vec<String>, registry: Arc<Songs>) -> Result<Playlist, Box<dyn Error>> {
-        // Verify that each song in the playlist exists in the registry. This will allow us
-        // to unwrap subsequent song gets later without worrying about panicking.
+        // Verify that each song in the playlist exists in the registry.
         for song_name in song_names.iter() {
             registry.get(song_name)?;
         }
@@ -79,12 +80,15 @@ impl Playlist {
     pub fn next(&self) -> Arc<Song> {
         let _enter = self.span.enter();
 
-        let mut position = self.position.write().unwrap();
+        let mut position = self.position.write().expect("unable to get lock");
         if *position < self.songs.len() - 1 {
             *position += 1;
         }
 
-        let current = &self.registry.get(&self.songs[*position]).unwrap();
+        let current = &self
+            .registry
+            .get(&self.songs[*position])
+            .expect("unable to get song from the registry");
 
         info!(
             position = *position,
@@ -116,8 +120,13 @@ impl Playlist {
 
     /// Return the song at the current position of the playlist.
     pub fn current(&self) -> Arc<Song> {
-        let position = self.position.read().unwrap();
-        Arc::clone(&self.registry.get(&self.songs[*position]).unwrap())
+        let position = self.position.read().expect("unable to get lock");
+        Arc::clone(
+            &self
+                .registry
+                .get(&self.songs[*position])
+                .expect("unable to find song in the registry"),
+        )
     }
 }
 

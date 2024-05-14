@@ -168,7 +168,7 @@ mod test {
         /// Signals the next event to the monitor thread.
         fn next_event(&self, event: TestEvent) {
             {
-                let mut current_event = self.current_event.lock().unwrap();
+                let mut current_event = self.current_event.lock().expect("failed to get lock");
                 *current_event = event;
             }
             // Wait until the thread goes to receive the event.
@@ -187,7 +187,7 @@ mod test {
                     loop {
                         // Wait for next event to set the current event.
                         barrier.wait();
-                        let current_event = current_event.lock().unwrap();
+                        let current_event = current_event.lock().expect("failed to get lock");
                         // Let next event know that we got the event.
                         barrier.wait();
                         match *current_event {
