@@ -162,10 +162,15 @@ impl Player {
     ) {
         let song = song.clone();
         let cancel_handle = cancel_handle.clone();
-        let barrier = Arc::new(match midi_device {
-            Some(_) => Barrier::new(2),
-            None => Barrier::new(1),
-        });
+
+        // Set up the play barrier, which will synchronize the two calls to play.
+        let barrier = Arc::new(Barrier::new(
+            if midi_device.is_some() && song.midi_file.is_some() {
+                2
+            } else {
+                1
+            },
+        ));
 
         let audio_join_handle = {
             let device = device.clone();
