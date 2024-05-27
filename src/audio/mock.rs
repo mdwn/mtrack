@@ -49,11 +49,6 @@ impl Device {
 }
 
 impl super::Device for Device {
-    /// Returns the name of the device.
-    fn name(&self) -> String {
-        self.name.clone()
-    }
-
     /// A mock device that will sleep for the length of the song duration.
     fn play(
         &self,

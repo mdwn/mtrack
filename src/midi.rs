@@ -26,9 +26,6 @@ mod mock;
 
 /// A MIDI device that can play MIDI files and listen for inputs.
 pub trait Device: fmt::Display + std::marker::Send + std::marker::Sync {
-    /// Returns the name of the device.
-    fn name(&self) -> String;
-
     /// Watches MIDI input for events and sends them to the given sender.
     fn watch_events(&self, sender: Sender<Vec<u8>>) -> Result<(), Box<dyn Error>>;
 

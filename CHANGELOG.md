@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3] - MIDI tuning, accuracy.
+
+MIDI playback is now more accurate and has been tuned to be more in time with audio
+playback.
+
 ## [0.1.2] - Player level channel mapping, merging of channels.
 
 Channel mappings have been removed from individual song files and will now be
