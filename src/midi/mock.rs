@@ -87,11 +87,6 @@ impl Device {
 }
 
 impl super::Device for Device {
-    /// Returns the name of the device.
-    fn name(&self) -> String {
-        self.name.clone()
-    }
-
     /// Watches MIDI input for events and sends them to the given sender.
     fn watch_events(&self, sender: Sender<Vec<u8>>) -> Result<(), Box<dyn Error>> {
         let mut event_thread = self.event_thread.lock().expect("unable to get lock");

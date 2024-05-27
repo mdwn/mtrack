@@ -113,11 +113,6 @@ impl Device {
 }
 
 impl super::Device for Device {
-    /// Returns the name of the device.
-    fn name(&self) -> String {
-        self.name.clone()
-    }
-
     /// Play the given song through the audio device.
     fn play(
         &self,

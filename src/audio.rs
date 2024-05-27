@@ -23,9 +23,6 @@ mod mock;
 
 /// An audio device that can play songs back.
 pub trait Device: fmt::Display + std::marker::Send + std::marker::Sync {
-    /// Returns the name of the device.
-    fn name(&self) -> String;
-
     /// Plays the given song through the audio interface.
     fn play(
         &self,

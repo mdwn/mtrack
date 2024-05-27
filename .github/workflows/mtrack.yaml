@@ -95,7 +95,7 @@ jobs:
     - uses: dtolnay/rust-toolchain@stable
     - uses: Swatinem/rust-cache@v2
     - name: Install licensure
-      run: cargo install licensure
+      run: cargo install licensure@0.3.2
     - name: Check for licenses
       run: licensure --check -p
 

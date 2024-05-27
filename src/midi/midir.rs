@@ -37,11 +37,6 @@ pub struct Device {
 }
 
 impl super::Device for Device {
-    /// Returns the name of the device.
-    fn name(&self) -> String {
-        self.name.clone()
-    }
-
     fn watch_events(&self, sender: Sender<Vec<u8>>) -> Result<(), Box<dyn Error>> {
         let span = span!(Level::INFO, "wait for event (midir)");
         let _enter = span.enter();
