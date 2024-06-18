@@ -221,7 +221,7 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_controller() -> Result<(), Box<dyn Error>> {
         let driver = Arc::new(TestDriver::new(TestEvent::Unset));
-        let mappings: HashMap<String, u16> = HashMap::new();
+        let mappings: HashMap<String, Vec<u16>> = HashMap::new();
         let device = Arc::new(audio::test::Device::get("mock-device"));
         let songs = config::get_all_songs(&PathBuf::from("assets/songs"))?;
         let playlist =

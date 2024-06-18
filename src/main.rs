@@ -173,7 +173,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             repository_path,
             song_name,
         } => {
-            let mut converted_mappings: HashMap<String, u16> = HashMap::new();
+            let mut converted_mappings: HashMap<String, Vec<u16>> = HashMap::new();
             for mapping in mappings.split(',') {
                 let track_and_channel: Vec<&str> = mapping.split('=').collect();
                 if track_and_channel.len() != 2 {
@@ -181,7 +181,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 };
                 let track = track_and_channel[0];
                 let channel = track_and_channel[1].parse::<u16>()?;
-                converted_mappings.insert(track.into(), channel);
+                if !converted_mappings.contains_key(track.into()) {
+                    converted_mappings.insert(track.into(), vec![]);
+                }
+                converted_mappings
+                    .get_mut(track.into())
+                    .expect("expected mapping")
+                    .push(channel);
             }
 
             let device = audio::get_device(&device_name)?;

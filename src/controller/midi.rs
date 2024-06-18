@@ -208,7 +208,7 @@ mod test {
         playlist_event.write(&mut playlist_buf)?;
 
         let device = Arc::new(audio::test::Device::get("mock-device"));
-        let mappings: HashMap<String, u16> = HashMap::new();
+        let mappings: HashMap<String, Vec<u16>> = HashMap::new();
         let songs = config::get_all_songs(&PathBuf::from("assets/songs"))?;
         let playlist =
             config::parse_playlist(&PathBuf::from("assets/playlist.yaml"), songs.clone())?;
