@@ -39,7 +39,7 @@ pub struct Player {
     /// The device to play audio through.
     device: Arc<dyn audio::Device>,
     /// Mappings of tracks to output channels.
-    mappings: Arc<HashMap<String, u16>>,
+    mappings: Arc<HashMap<String, Vec<u16>>>,
     /// The MIDI device to play MIDI back through.
     midi_device: Option<Arc<dyn midi::Device>>,
     /// The playlist to use.
@@ -61,7 +61,7 @@ impl Player {
     /// Creates a new player.
     pub fn new(
         device: Arc<dyn audio::Device>,
-        mappings: HashMap<String, u16>,
+        mappings: HashMap<String, Vec<u16>>,
         midi_device: Option<Arc<dyn midi::Device>>,
         playlist: Arc<Playlist>,
         all_songs_playlist: Arc<Playlist>,
@@ -154,7 +154,7 @@ impl Player {
 
     fn play_files(
         device: Arc<dyn audio::Device>,
-        mappings: Arc<HashMap<String, u16>>,
+        mappings: Arc<HashMap<String, Vec<u16>>>,
         midi_device: Option<Arc<dyn midi::Device>>,
         song: Arc<Song>,
         cancel_handle: CancelHandle,
@@ -390,7 +390,7 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_player() -> Result<(), Box<dyn Error>> {
         let device = Arc::new(audio::test::Device::get("mock-device"));
-        let mappings: HashMap<String, u16> = HashMap::new();
+        let mappings: HashMap<String, Vec<u16>> = HashMap::new();
         let midi_device = Arc::new(midi::test::Device::get("mock-midi-device"));
         let songs = config::get_all_songs(&PathBuf::from("assets/songs"))?;
         let playlist =

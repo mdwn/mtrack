@@ -53,7 +53,7 @@ impl super::Device for Device {
     fn play(
         &self,
         song: Arc<Song>,
-        _: &HashMap<String, u16>,
+        _: &HashMap<String, Vec<u16>>,
         cancel_handle: CancelHandle,
         play_barrier: Arc<Barrier>,
     ) -> Result<(), Box<dyn Error>> {

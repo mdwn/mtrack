@@ -117,7 +117,7 @@ impl super::Device for Device {
     fn play(
         &self,
         song: Arc<Song>,
-        mappings: &HashMap<String, u16>,
+        mappings: &HashMap<String, Vec<u16>>,
         cancel_handle: CancelHandle,
         play_barrier: Arc<Barrier>,
     ) -> Result<(), Box<dyn Error>> {
@@ -137,7 +137,7 @@ impl Device {
     fn play_format<S>(
         &self,
         song: Arc<Song>,
-        mappings: &HashMap<String, u16>,
+        mappings: &HashMap<String, Vec<u16>>,
         cancel_handle: CancelHandle,
         play_barrier: Arc<Barrier>,
     ) -> Result<(), Box<dyn Error>>
@@ -167,6 +167,7 @@ impl Device {
         let num_channels = *mappings
             .iter()
             .map(|entry| entry.1)
+            .flatten()
             .max()
             .ok_or("no max channel found")?;
 
@@ -282,9 +283,9 @@ mod test {
         let track2 = Track::new("test 2".into(), tempwav2_path, Some(1))?;
 
         let song = Song::new("song name".into(), None, None, vec![track1, track2])?;
-        let mut mappings: HashMap<String, u16> = HashMap::new();
-        mappings.insert("test 1".into(), 1);
-        mappings.insert("test 2".into(), 4);
+        let mut mappings: HashMap<String, Vec<u16>> = HashMap::new();
+        mappings.insert("test 1".into(), vec![1]);
+        mappings.insert("test 2".into(), vec![4]);
 
         let source = song.source::<i32>(&mappings)?;
         let (tx, rx) = channel();
@@ -324,9 +325,9 @@ mod test {
         let track2 = Track::new("test 2".into(), tempwav2_path, Some(1))?;
 
         let song = Song::new("song name".into(), None, None, vec![track1, track2])?;
-        let mut mappings: HashMap<String, u16> = HashMap::new();
-        mappings.insert("test 1".into(), 1);
-        mappings.insert("test 2".into(), 4);
+        let mut mappings: HashMap<String, Vec<u16>> = HashMap::new();
+        mappings.insert("test 1".into(), vec![1]);
+        mappings.insert("test 2".into(), vec![4]);
 
         let source = song.source::<i32>(&mappings)?;
         let (tx, rx) = channel();
@@ -359,9 +360,9 @@ mod test {
         let track2 = Track::new("test 2".into(), tempwav2_path, Some(1))?;
 
         let song = Song::new("song name".into(), None, None, vec![track1, track2])?;
-        let mut mappings: HashMap<String, u16> = HashMap::new();
-        mappings.insert("test 1".into(), 1);
-        mappings.insert("test 2".into(), 4);
+        let mut mappings: HashMap<String, Vec<u16>> = HashMap::new();
+        mappings.insert("test 1".into(), vec![1]);
+        mappings.insert("test 2".into(), vec![4]);
 
         let source = song.source::<i32>(&mappings)?;
         let (tx, rx) = channel();

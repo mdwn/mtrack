@@ -171,7 +171,7 @@ impl Song {
     /// Returns a rodio source for the song.
     pub fn source<S>(
         &self,
-        track_mappings: &HashMap<String, u16>,
+        track_mappings: &HashMap<String, Vec<u16>>,
     ) -> Result<SongSource<S>, Box<dyn Error>>
     where
         S: Sample,
@@ -298,7 +298,7 @@ where
 {
     fn new(
         song: &Song,
-        track_mapping: &HashMap<String, u16>,
+        track_mapping: &HashMap<String, Vec<u16>>,
     ) -> Result<SongSource<S>, Box<dyn Error>> {
         let mut files_to_tracks = HashMap::<PathBuf, Vec<&Track>>::new();
 
@@ -317,6 +317,7 @@ where
         let num_channels = *track_mapping
             .iter()
             .map(|entry| entry.1)
+            .flatten()
             .max()
             .ok_or("no max channel found")?;
 
@@ -334,12 +335,14 @@ where
             let mut file_channel_to_output_channels: HashMap<u16, Vec<usize>> = HashMap::new();
             tracks.into_iter().for_each(|track| {
                 let file_channel = track.file_channel - 1;
-                if let Some(channel_mapping) = track_mapping.get(&track.name.to_string()) {
-                    let output_channel = channel_mapping - 1;
-                    file_channel_to_output_channels
-                        .entry(file_channel)
-                        .or_default()
-                        .push(output_channel.into());
+                if let Some(channel_mappings) = track_mapping.get(&track.name.to_string()) {
+                    channel_mappings.into_iter().for_each(|channel_mapping| {
+                        let output_channel = channel_mapping - 1;
+                        file_channel_to_output_channels
+                            .entry(file_channel)
+                            .or_default()
+                            .push(output_channel.into());
+                    })
                 }
             });
 
@@ -676,10 +679,10 @@ mod test {
         let track3 = super::Track::new("test 3".into(), tempwav3_path, Some(1))?;
 
         let song = super::Song::new("song name".into(), None, None, vec![track1, track2, track3])?;
-        let mut mapping: HashMap<String, u16> = HashMap::new();
-        mapping.insert("test 1".into(), 1);
-        mapping.insert("test 2".into(), 4);
-        mapping.insert("test 3".into(), 4);
+        let mut mapping: HashMap<String, Vec<u16>> = HashMap::new();
+        mapping.insert("test 1".into(), vec![1]);
+        mapping.insert("test 2".into(), vec![4]);
+        mapping.insert("test 3".into(), vec![4]);
 
         song.source(&mapping)
     }

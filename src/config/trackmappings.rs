@@ -20,5 +20,5 @@ use serde::Deserialize;
 pub(super) struct TrackMappings {
     // The individual track mappings.
     #[serde(flatten)]
-    pub track_mappings: HashMap<String, u16>,
+    pub track_mappings: HashMap<String, Vec<u16>>,
 }
