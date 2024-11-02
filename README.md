@@ -362,9 +362,9 @@ strike me.
 
 ## Known limitations
 
-I have only tested this against a MOTU UltraLite-mk5.
-
-The MIDI output is not well tested, so I don't know how good it lines up with the audio playback.
+This has been tested with:
+- MOTU UltraLite-mk5
+- Behringer X32 (through X-Live card)
 
 This is my first Rust project, so this is likely cringey, horrible non-idiomatic Rust. Feel free to
 submit PRs to make this better.
