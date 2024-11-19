@@ -363,8 +363,17 @@ strike me.
 ## Known limitations
 
 This has been tested with:
-- MOTU UltraLite-mk5
+
+### Audio cards
+- MOTU UltraLite-mk5 
 - Behringer X32 (through X-Live card)
+- Behringer Wing Rack
+
+### MIDI
+- MOTU UltraLite-mk5
+- Roland UM-ONE
+
+### General disclaimer
 
 This is my first Rust project, so this is likely cringey, horrible non-idiomatic Rust. Feel free to
 submit PRs to make this better.
