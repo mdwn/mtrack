@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4] - Track mapping update, status reporting, stopping fix.
+
 (Breaking Change) Track mappings now support mapping to multiple channels.
 
 Status reporting is now configurable.
