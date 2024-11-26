@@ -36,6 +36,11 @@ pub struct Device {
     event_connection: Box<Mutex<Option<MidiInputConnection<()>>>>,
 }
 
+/// This is the maximum amount of ticks that the MIDI player can sleep for
+/// before checking whether a thread is cancelled. Lowering this may result
+/// in more frequent CPU spinning.
+const MAX_TICK_SIZE_FOR_SLEEP: usize = 200;
+
 impl super::Device for Device {
     fn watch_events(&self, sender: Sender<Vec<u8>>) -> Result<(), Box<dyn Error>> {
         let span = span!(Level::INFO, "wait for event (midir)");
@@ -135,7 +140,10 @@ impl super::Device for Device {
                 connection: midir_connection,
                 cancel_handle: cancel_handle.clone(),
             };
-            let mut player = Player::new(AccurateTimer::new(midi_sheet.ticker), connection);
+            let mut player = Player::new(
+                AccurateTimer::new(midi_sheet.ticker, cancel_handle.clone()),
+                connection,
+            );
 
             thread::spawn(move || {
                 play_barrier.wait();
@@ -146,9 +154,15 @@ impl super::Device for Device {
 
         cancel_handle.wait();
 
+        if cancel_handle.is_cancelled() {
+            info!("MIDI playback has been cancelled.");
+        }
+
         if join_handle.join().is_err() {
             return Err("Error while joining thread!".into());
         }
+
+        info!("MIDI playback stopped.");
 
         Ok(())
     }
@@ -298,13 +312,15 @@ pub fn get(name: &String) -> Result<Device, Box<dyn Error>> {
 struct AccurateTimer<T: Timer> {
     timer: T,
     last_instant: Option<Instant>,
+    cancel_handle: CancelHandle,
 }
 
 impl<T: Timer> AccurateTimer<T> {
-    fn new(timer: T) -> AccurateTimer<T> {
+    fn new(timer: T, cancel_handle: CancelHandle) -> AccurateTimer<T> {
         AccurateTimer {
             timer,
             last_instant: None,
+            cancel_handle,
         }
     }
 }
@@ -333,6 +349,17 @@ impl<T: Timer> Timer for AccurateTimer<T> {
 
     fn change_tempo(&mut self, tempo: u32) {
         self.timer.change_tempo(tempo);
+    }
+
+    fn sleep(&mut self, n_ticks: u32) {
+        for tick_slice in (0..n_ticks).step_by(MAX_TICK_SIZE_FOR_SLEEP) {
+            self.timer.sleep(tick_slice);
+
+            // Make sure we react to cancellation.
+            if self.cancel_handle.is_cancelled() {
+                return;
+            }
+        }
     }
 }
 
