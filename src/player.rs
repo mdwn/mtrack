@@ -120,11 +120,13 @@ impl Player {
                     let emit_result: Result<(), Box<dyn Error>> = if join.is_none() {
                         status_events
                             .idling_events
-                            .iter().try_for_each(|event| midi_device.emit(Some(*event)))
+                            .iter()
+                            .try_for_each(|event| midi_device.emit(Some(*event)))
                     } else {
                         status_events
                             .playing_events
-                            .iter().try_for_each(|event| midi_device.emit(Some(*event)))
+                            .iter()
+                            .try_for_each(|event| midi_device.emit(Some(*event)))
                     };
 
                     if let Err(err) = emit_result {
@@ -137,7 +139,8 @@ impl Player {
                 {
                     let status_event_emit_result: Result<(), Box<dyn Error>> = status_events
                         .off_events
-                        .iter().try_for_each(|event| midi_device.emit(Some(*event)));
+                        .iter()
+                        .try_for_each(|event| midi_device.emit(Some(*event)));
 
                     if let Err(err) = status_event_emit_result {
                         error!(err = err.as_ref(), "error emitting off status event");
