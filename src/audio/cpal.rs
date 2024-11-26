@@ -166,8 +166,7 @@ impl Device {
 
         let num_channels = *mappings
             .iter()
-            .map(|entry| entry.1)
-            .flatten()
+            .flat_map(|entry| entry.1)
             .max()
             .ok_or("no max channel found")?;
 

@@ -21,6 +21,7 @@ use std::{
     thread,
 };
 
+use midly::live::LiveEvent;
 use tokio::{sync::mpsc::Sender, task::JoinHandle};
 use tracing::{info, span, Level};
 
@@ -164,8 +165,8 @@ impl super::Device for Device {
     }
 
     /// Emits an event.
-    fn emit(&self, song: Arc<Song>) -> Result<(), Box<dyn Error>> {
-        if let Some(midi_event) = song.midi_event {
+    fn emit(&self, midi_event: Option<LiveEvent<'static>>) -> Result<(), Box<dyn Error>> {
+        if let Some(midi_event) = midi_event {
             let mut emit_called = self
                 .emit_called
                 .lock()

@@ -208,6 +208,37 @@ midi_device: UltraLite-mk5
 # If the path is not absolute, it will be relative to the location of this file.
 songs: /mnt/song-storage
 
+# Status events are emitted to the controller while mtrack is running. This is largely done
+# in order to confirm that mtrack is connected to the controller and operating properly.
+# The statuses are emitted periodically in the following timeline:
+# - Off (1 second)
+# - On (250 milliseconds, either idling or playing)
+# - Off (1 second)
+# - On (250 milliseconds, either idling or playing)
+# - ...
+status_events:
+  # Off events are emitted, in order, when trying to return the status indicator to "normal."
+  # If your MIDI controller has LEDs, for example, this would be to turn the LED off.
+  off_events:
+  - type: control_change
+    channel: 16
+    controller: 3
+    value: 2
+  # Idling events are emitted, in order, when trying to indicate that the player is connected,
+  # but not currently doing anything.
+  idling_events:
+  - type: control_change
+    channel: 16
+    controller: 2
+    value: 2
+  # Playing events are emitted, in order, when trying to indicate that the player is connected,
+  # and actively playing.
+  playing_events:
+  - type: control_change
+    channel: 16
+    controller: 2
+    value: 2
+
 # The controller definition. As of now, the valid kinds of controllers are:
 # - keyboard
 # - midi

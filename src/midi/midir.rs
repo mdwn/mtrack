@@ -25,7 +25,7 @@ use midir::{MidiInput, MidiInputConnection, MidiInputPort, MidiOutput, MidiOutpu
 use midly::live::LiveEvent;
 use nodi::{Connection, Player, Timer};
 use tokio::sync::mpsc::Sender;
-use tracing::{error, info, span, warn, Level};
+use tracing::{debug, error, info, span, warn, Level};
 
 use crate::{playsync::CancelHandle, songs::Song};
 
@@ -62,7 +62,7 @@ impl super::Device for Device {
             "mtrack input watcher",
             move |_, raw_event, _| {
                 if let Ok(event) = LiveEvent::parse(raw_event) {
-                    info!(event = format!("{:?}", event), "Received MIDI event.");
+                    debug!(event = format!("{:?}", event), "Received MIDI event.");
                 }
                 if let Err(e) = sender.blocking_send(Vec::from(raw_event)) {
                     error!(
@@ -153,11 +153,11 @@ impl super::Device for Device {
         Ok(())
     }
 
-    fn emit(&self, song: Arc<Song>) -> Result<(), Box<dyn Error>> {
+    fn emit(&self, midi_event: Option<LiveEvent<'static>>) -> Result<(), Box<dyn Error>> {
         let span = span!(Level::INFO, "emit (midir)");
         let _enter = span.enter();
 
-        let event = match song.midi_event {
+        let event = match midi_event {
             Some(midi_event) => midi_event,
             // If there's no event, return early.
             None => return Ok(()),
@@ -166,17 +166,14 @@ impl super::Device for Device {
         let output_port = match &self.output_port {
             Some(output_port) => output_port,
             None => {
-                warn!(
-                    song = song.name,
-                    "No MIDI output device configured, cannot emit event."
-                );
+                warn!("No MIDI output device configured, cannot emit event.");
                 return Ok(());
             }
         };
 
         let output = MidiOutput::new("mtrack emit output")?;
 
-        info!(
+        debug!(
             device = self.name,
             event = format!("{:?}", event),
             "Emitting event."
