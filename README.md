@@ -294,11 +294,17 @@ controller:
 
 # Mappings of track names to output channels.
 track_mappings:
-  click: 1
-  cue: 2
-  backing-track-l: 3
-  backing-track-r: 4
-  keys: 5
+  click:
+  - 1
+  cue:
+  - 2
+  backing-track-l:
+  - 3
+  backing-track-r:
+  - 4
+  keys:
+  - 5
+  - 6
 ```
 
 You can start `mtrack` as a process with `mtrack start /path/to/player.yaml /path/to/playlist.yaml`.
