@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Status reporting is now configurable.
 
+Address stopping not working for songs with sparse MIDI files.
+
 ## [0.1.3] - MIDI tuning, accuracy.
 
 MIDI playback is now more accurate and has been tuned to be more in time with audio
