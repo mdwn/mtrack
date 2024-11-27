@@ -40,6 +40,8 @@ pub struct Song {
     pub midi_event: Option<LiveEvent<'static>>,
     /// The MIDI file to play along with the audio tracks.
     pub midi_file: Option<PathBuf>,
+    /// The MIDI file to interpret as DMX along with the audio tracks.
+    pub dmx_file: Option<PathBuf>,
     /// The number of channels required to play this song.
     pub num_channels: u16,
     /// The sample rate of this song.
@@ -77,30 +79,37 @@ impl Sample for f32 {
     }
 }
 
+/// Parses a MIDI file if it's present, otherwise returns an error.
+fn parse_midi_file(midi_file: Option<PathBuf>) -> Result<Option<PathBuf>, Box<dyn Error>> {
+    // Get the MIDI file if it's present.
+    Ok(match midi_file {
+        Some(parsed_midi_file_path) => {
+            let midi_file = parsed_midi_file_path;
+            if !midi_file.is_file() {
+                return Err(format!(
+                    "midi file {} does not exist or is not a file",
+                    midi_file.to_string_lossy(),
+                )
+                .into());
+            }
+            Some(midi_file)
+        }
+        None => None,
+    })
+}
+
 impl Song {
     // Create a new song.
     pub fn new(
         name: String,
         midi_event: Option<LiveEvent<'static>>,
         midi_file: Option<PathBuf>,
+        dmx_file: Option<PathBuf>,
         tracks: Vec<Track>,
     ) -> Result<Song, Box<dyn Error>> {
-        // If there's a MIDI event present, let's make a LiveEvent out of it.
-        // Get the MIDI file if it's present.
-        let midi_file = match midi_file {
-            Some(parsed_midi_file_path) => {
-                let midi_file = parsed_midi_file_path;
-                if !midi_file.is_file() {
-                    return Err(format!(
-                        "midi file {} does not exist or is not a file",
-                        midi_file.to_string_lossy(),
-                    )
-                    .into());
-                }
-                Some(midi_file)
-            }
-            None => None,
-        };
+        // Get the MIDI/DMX file if it's present.
+        let midi_file = parse_midi_file(midi_file)?;
+        let dmx_file = parse_midi_file(dmx_file)?;
 
         // Calculate the number of channels and sample rate by reading the wav headers of each file.
         let num_channels = u16::try_from(tracks.len())?;
@@ -153,6 +162,7 @@ impl Song {
             name,
             midi_event,
             midi_file,
+            dmx_file,
             num_channels,
             sample_rate,
             sample_format: sample_format.expect("sample format not found"),
@@ -181,7 +191,17 @@ impl Song {
 
     /// Returns a MIDI sheet for the song.
     pub fn midi_sheet(&self) -> Result<Option<MidiSheet>, Box<dyn Error>> {
-        match &self.midi_file {
+        Self::parse_midi(&self.midi_file)
+    }
+
+    /// Returns a DMX MIDI sheet for the song.
+    pub fn dmx_midi_sheet(&self) -> Result<Option<MidiSheet>, Box<dyn Error>> {
+        Self::parse_midi(&self.dmx_file)
+    }
+
+    /// Returns a MIDI sheet for the given file.
+    fn parse_midi(midi_file: &Option<PathBuf>) -> Result<Option<MidiSheet>, Box<dyn Error>> {
+        match midi_file {
             Some(midi_file) => {
                 let buf: Vec<u8> = fs::read(midi_file)?;
                 let smf = Smf::parse(&buf)?;
@@ -677,7 +697,13 @@ mod test {
         let track2 = super::Track::new("test 2".into(), tempwav2_path, Some(1))?;
         let track3 = super::Track::new("test 3".into(), tempwav3_path, Some(1))?;
 
-        let song = super::Song::new("song name".into(), None, None, vec![track1, track2, track3])?;
+        let song = super::Song::new(
+            "song name".into(),
+            None,
+            None,
+            None,
+            vec![track1, track2, track3],
+        )?;
         let mut mapping: HashMap<String, Vec<u16>> = HashMap::new();
         mapping.insert("test 1".into(), vec![1]);
         mapping.insert("test 2".into(), vec![4]);

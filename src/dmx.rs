@@ -17,49 +17,22 @@ use std::{
     sync::{Arc, Barrier},
 };
 
-use midly::live::LiveEvent;
-use tokio::sync::mpsc::Sender;
-
 use crate::{playsync::CancelHandle, songs::Song};
 
-pub(crate) mod midir;
-mod mock;
+mod dmxengine;
 
-/// A MIDI device that can play MIDI files and listen for inputs.
+/// A DMX device that can play MIDI files as DMX.
 pub trait Device: fmt::Display + std::marker::Send + std::marker::Sync {
-    /// Watches MIDI input for events and sends them to the given sender.
-    fn watch_events(&self, sender: Sender<Vec<u8>>) -> Result<(), Box<dyn Error>>;
-
-    /// Stops watching events.
-    fn stop_watch_events(&self);
-
-    /// Plays the given song through the MIDI interface.
+    /// Plays the given file through the DMX interface interface.
     fn play(
         &self,
         song: Arc<Song>,
         cancel_handle: CancelHandle,
         play_barrier: Arc<Barrier>,
     ) -> Result<(), Box<dyn Error>>;
-
-    /// Emits an event.
-    fn emit(&self, midi_event: Option<LiveEvent<'static>>) -> Result<(), Box<dyn Error>>;
-}
-
-/// Lists devices known to midir.
-pub fn list_devices() -> Result<Vec<Box<dyn Device>>, Box<dyn Error>> {
-    midir::list()
 }
 
 /// Gets a device with the given name.
-pub fn get_device(name: &String) -> Result<Arc<dyn Device>, Box<dyn Error>> {
-    if name.starts_with("mock") {
-        return Ok(Arc::new(mock::Device::get(name)));
-    };
-
-    Ok(Arc::new(midir::get(name)?))
-}
-
-#[cfg(test)]
-pub mod test {
-    pub use super::mock::Device;
+pub fn get_device() -> Arc<dyn Device> {
+    Arc::new(dmxengine::get())
 }

@@ -35,6 +35,8 @@ pub(super) struct Song {
     midi_event: Option<midi::Event>,
     /// The associated MIDI file to play.
     midi_file: Option<String>,
+    /// The associated MIDI file to interpret as DMX to play.
+    dmx_file: Option<String>,
     /// The associated tracks to play.
     tracks: Vec<track::Track>,
 }
@@ -58,6 +60,9 @@ impl Song {
             self.midi_file
                 .as_ref()
                 .map(|midi_file| song_path.join(PathBuf::from(midi_file))),
+            self.dmx_file
+                .as_ref()
+                .map(|dmx_file| song_path.join(PathBuf::from(dmx_file))),
             self.tracks
                 .iter()
                 .map(|track| track.to_track(&song_path))
