@@ -29,7 +29,7 @@ use tokio::{
 };
 use tracing::{error, info, span, Level, Span};
 
-use crate::{audio, midi, playlist::Playlist, playsync::CancelHandle, songs::Song};
+use crate::{audio, dmx, midi, playlist::Playlist, playsync::CancelHandle, songs::Song};
 
 struct PlayHandles {
     join: JoinHandle<()>,
@@ -44,6 +44,8 @@ pub struct Player {
     mappings: Arc<HashMap<String, Vec<u16>>>,
     /// The MIDI device to play MIDI back through.
     midi_device: Option<Arc<dyn midi::Device>>,
+    /// The DMX device to use.
+    dmx_device: Arc<dyn dmx::Device>,
     /// The playlist to use.
     playlist: Arc<Playlist>,
     /// The all songs playlist.
@@ -65,6 +67,7 @@ impl Player {
         device: Arc<dyn audio::Device>,
         mappings: HashMap<String, Vec<u16>>,
         midi_device: Option<Arc<dyn midi::Device>>,
+        dmx_device: Arc<dyn dmx::Device>,
         playlist: Arc<Playlist>,
         all_songs_playlist: Arc<Playlist>,
         status_events: Option<StatusEvents>,
@@ -73,6 +76,7 @@ impl Player {
             device,
             mappings: Arc::new(mappings),
             midi_device,
+            dmx_device,
             playlist,
             all_songs: all_songs_playlist,
             use_all_songs: AtomicBool::new(false),
@@ -175,10 +179,19 @@ impl Player {
             let song = song.clone();
             let device = self.device.clone();
             let midi_device = self.midi_device.clone();
+            let dmx_device = self.dmx_device.clone();
             let cancel_handle = cancel_handle.clone();
             let mappings = self.mappings.clone();
             tokio::task::spawn_blocking(move || {
-                Player::play_files(device, mappings, midi_device, song, cancel_handle, play_tx);
+                Player::play_files(
+                    device,
+                    mappings,
+                    midi_device,
+                    dmx_device,
+                    song,
+                    cancel_handle,
+                    play_tx,
+                );
             })
         };
         *join = Some(PlayHandles {
@@ -224,6 +237,7 @@ impl Player {
         device: Arc<dyn audio::Device>,
         mappings: Arc<HashMap<String, Vec<u16>>>,
         midi_device: Option<Arc<dyn midi::Device>>,
+        dmx_device: Arc<dyn dmx::Device>,
         song: Arc<Song>,
         cancel_handle: CancelHandle,
         play_tx: oneshot::Sender<()>,
@@ -231,14 +245,17 @@ impl Player {
         let song = song.clone();
         let cancel_handle = cancel_handle.clone();
 
-        // Set up the play barrier, which will synchronize the two calls to play.
-        let barrier = Arc::new(Barrier::new(
-            if midi_device.is_some() && song.midi_file.is_some() {
-                2
-            } else {
-                1
-            },
-        ));
+        // Set up the play barrier, which will synchronize the three calls to play.
+        let barrier = Arc::new(Barrier::new({
+            let mut num_barriers = 1;
+            if song.midi_file.is_some() && midi_device.is_some() {
+                num_barriers += 1;
+            }
+            if song.dmx_file.is_some() {
+                num_barriers += 1;
+            }
+            num_barriers
+        }));
 
         let audio_join_handle = {
             let device = device.clone();
@@ -259,13 +276,36 @@ impl Player {
             })
         };
 
-        if let Some(midi_device) = midi_device {
+        let dmx_join_handle = if song.dmx_file.is_some() {
+            Some({
+                let dmx_device = dmx_device.clone();
+                let song = song.clone();
+                let barrier = barrier.clone();
+                let cancel_handle = cancel_handle.clone();
+
+                thread::spawn(move || {
+                    let song_name = song.name.to_string();
+
+                    if let Err(e) = dmx_device.play(song, cancel_handle, barrier) {
+                        error!(
+                            err = e.as_ref(),
+                            song = song_name,
+                            "Error while playing DMX"
+                        );
+                    }
+                })
+            })
+        } else {
+            None
+        };
+
+        let midi_join_handle = if let Some(midi_device) = midi_device {
             let midi_device = midi_device.clone();
             let song = song.clone();
             let barrier = barrier.clone();
             let cancel_handle = cancel_handle.clone();
 
-            let midi_join_handle = thread::spawn(move || {
+            Some(thread::spawn(move || {
                 let song_name = song.name.to_string();
 
                 if let Err(e) = midi_device.play(song, cancel_handle, barrier) {
@@ -275,15 +315,25 @@ impl Player {
                         "Error while playing song"
                     );
                 }
-            });
-
-            if let Err(e) = midi_join_handle.join() {
-                error!("Error waiting for MIDI to stop playing: {:?}", e)
-            }
-        }
+            }))
+        } else {
+            None
+        };
 
         if let Err(e) = audio_join_handle.join() {
             error!("Error waiting for audio to stop playing: {:?}", e)
+        }
+
+        if let Some(dmx_join_handle) = dmx_join_handle {
+            if let Err(e) = dmx_join_handle.join() {
+                error!("Error waiting for DMX to stop playing: {:?}", e)
+            }
+        }
+
+        if let Some(midi_join_handle) = midi_join_handle {
+            if let Err(e) = midi_join_handle.join() {
+                error!("Error waiting for MIDI to stop playing: {:?}", e)
+            }
         }
 
         if play_tx.send(()).is_err() {
@@ -476,7 +526,7 @@ impl StatusEvents {
 mod test {
     use std::{collections::HashMap, error::Error, path::PathBuf, sync::Arc};
 
-    use crate::{audio, config, midi, playlist::Playlist, test::eventually};
+    use crate::{audio, config, dmx, midi, playlist::Playlist, test::eventually};
 
     use super::Player;
 
@@ -485,6 +535,7 @@ mod test {
         let device = Arc::new(audio::test::Device::get("mock-device"));
         let mappings: HashMap<String, Vec<u16>> = HashMap::new();
         let midi_device = Arc::new(midi::test::Device::get("mock-midi-device"));
+        let dmx_device = dmx::get_device();
         let songs = config::get_all_songs(&PathBuf::from("assets/songs"))?;
         let playlist =
             config::parse_playlist(&PathBuf::from("assets/playlist.yaml"), songs.clone())?;
@@ -493,6 +544,7 @@ mod test {
             device.clone(),
             mappings,
             Some(midi_device.clone()),
+            dmx_device,
             playlist.clone(),
             all_songs_playlist.clone(),
             None,

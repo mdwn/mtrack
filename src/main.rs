@@ -14,6 +14,7 @@
 mod audio;
 mod config;
 mod controller;
+mod dmx;
 mod midi;
 mod player;
 mod playlist;
@@ -195,12 +196,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 Some(midi_device_name) => Some(midi::get_device(&midi_device_name)?),
                 None => None,
             };
+            let dmx_device = dmx::get_device();
             let songs = config::get_all_songs(&PathBuf::from(&repository_path))?;
             let playlist = Arc::new(Playlist::new(vec![song_name], Arc::clone(&songs))?);
             let player = Player::new(
                 device,
                 converted_mappings,
                 midi_device,
+                dmx_device,
                 playlist,
                 Playlist::from_songs(songs)?,
                 None,

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Initial DMX engine implemented. This is not quite ready for prime time.
+
+Fixed the MIDI cancelable clock. Not sure what I was thinking when I implemented that.
+
 ## [0.1.4] - Track mapping update, status reporting, stopping fix.
 
 (Breaking Change) Track mappings now support mapping to multiple channels.

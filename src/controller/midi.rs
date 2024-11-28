@@ -133,7 +133,7 @@ mod test {
     use std::{collections::HashMap, error::Error, path::PathBuf, sync::Arc};
 
     use crate::{
-        audio, config, controller::Controller, midi, player::Player, playlist::Playlist,
+        audio, config, controller::Controller, dmx, midi, player::Player, playlist::Playlist,
         test::eventually,
     };
 
@@ -224,6 +224,7 @@ mod test {
             device.clone(),
             mappings,
             None,
+            dmx::get_device(),
             playlist.clone(),
             all_songs_playlist.clone(),
             None,

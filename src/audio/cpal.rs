@@ -281,7 +281,7 @@ mod test {
         let track1 = Track::new("test 1".into(), tempwav1_path, Some(1))?;
         let track2 = Track::new("test 2".into(), tempwav2_path, Some(1))?;
 
-        let song = Song::new("song name".into(), None, None, vec![track1, track2])?;
+        let song = Song::new("song name".into(), None, None, None, vec![track1, track2])?;
         let mut mappings: HashMap<String, Vec<u16>> = HashMap::new();
         mappings.insert("test 1".into(), vec![1]);
         mappings.insert("test 2".into(), vec![4]);
@@ -323,7 +323,7 @@ mod test {
         let track1 = Track::new("test 1".into(), tempwav1_path, Some(1))?;
         let track2 = Track::new("test 2".into(), tempwav2_path, Some(1))?;
 
-        let song = Song::new("song name".into(), None, None, vec![track1, track2])?;
+        let song = Song::new("song name".into(), None, None, None, vec![track1, track2])?;
         let mut mappings: HashMap<String, Vec<u16>> = HashMap::new();
         mappings.insert("test 1".into(), vec![1]);
         mappings.insert("test 2".into(), vec![4]);
@@ -358,7 +358,7 @@ mod test {
         let track1 = Track::new("test 1".into(), tempwav1_path, Some(1))?;
         let track2 = Track::new("test 2".into(), tempwav2_path, Some(1))?;
 
-        let song = Song::new("song name".into(), None, None, vec![track1, track2])?;
+        let song = Song::new("song name".into(), None, None, None, vec![track1, track2])?;
         let mut mappings: HashMap<String, Vec<u16>> = HashMap::new();
         mappings.insert("test 1".into(), vec![1]);
         mappings.insert("test 2".into(), vec![4]);

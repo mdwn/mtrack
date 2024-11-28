@@ -133,7 +133,7 @@ mod test {
 
     use tokio::{sync::mpsc::Sender, task::JoinHandle};
 
-    use crate::{audio, config, player::Player, playlist::Playlist, test::eventually};
+    use crate::{audio, config, dmx, player::Player, playlist::Playlist, test::eventually};
 
     use super::{Driver, Event};
 
@@ -231,6 +231,7 @@ mod test {
             device.clone(),
             mappings,
             None,
+            dmx::get_device(),
             playlist.clone(),
             all_songs_playlist.clone(),
             None,

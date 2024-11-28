@@ -85,6 +85,7 @@ mod test {
     #[test]
     fn test_cancel_handle_cancelled() {
         let cancel_handle = CancelHandle::new();
+        assert_eq!(false, cancel_handle.is_cancelled());
 
         let join = {
             let cancel_handle = cancel_handle.clone();
@@ -99,6 +100,7 @@ mod test {
     #[test]
     fn test_cancel_handle_expired() {
         let cancel_handle = CancelHandle::new();
+        assert_eq!(false, cancel_handle.is_cancelled());
 
         let join = {
             let cancel_handle = cancel_handle.clone();

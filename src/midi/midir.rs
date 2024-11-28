@@ -12,6 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 use std::{
+    cmp::min,
     collections::HashMap,
     error::Error,
     fmt, mem,
@@ -39,7 +40,7 @@ pub struct Device {
 /// This is the maximum amount of ticks that the MIDI player can sleep for
 /// before checking whether a thread is cancelled. Lowering this may result
 /// in more frequent CPU spinning.
-const MAX_TICK_SIZE_FOR_SLEEP: usize = 200;
+const MAX_TICK_SIZE_FOR_SLEEP: u32 = 200;
 
 impl super::Device for Device {
     fn watch_events(&self, sender: Sender<Vec<u8>>) -> Result<(), Box<dyn Error>> {
@@ -309,14 +310,14 @@ pub fn get(name: &String) -> Result<Device, Box<dyn Error>> {
 
 /// AccurateTimer is a timer for the nodi player that allows a more accurate clock. It uses the last
 /// known instant to properly calculate the next intended sleep duration.
-struct AccurateTimer<T: Timer> {
+pub(crate) struct AccurateTimer<T: Timer> {
     timer: T,
     last_instant: Option<Instant>,
     cancel_handle: CancelHandle,
 }
 
 impl<T: Timer> AccurateTimer<T> {
-    fn new(timer: T, cancel_handle: CancelHandle) -> AccurateTimer<T> {
+    pub fn new(timer: T, cancel_handle: CancelHandle) -> AccurateTimer<T> {
         AccurateTimer {
             timer,
             last_instant: None,
@@ -352,8 +353,15 @@ impl<T: Timer> Timer for AccurateTimer<T> {
     }
 
     fn sleep(&mut self, n_ticks: u32) {
-        for tick_slice in (0..n_ticks).step_by(MAX_TICK_SIZE_FOR_SLEEP) {
-            self.timer.sleep(tick_slice);
+        // Sleep in chunks of MAX_TICK_SIZE_FOR_SLEEP or less.
+        let mut remaining_ticks = n_ticks;
+        loop {
+            let num_ticks = min(remaining_ticks, MAX_TICK_SIZE_FOR_SLEEP);
+            self.timer.sleep(num_ticks);
+            if remaining_ticks == num_ticks {
+                return;
+            }
+            remaining_ticks -= MAX_TICK_SIZE_FOR_SLEEP;
 
             // Make sure we react to cancellation.
             if self.cancel_handle.is_cancelled() {

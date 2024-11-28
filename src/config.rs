@@ -21,8 +21,8 @@ use midly::live::LiveEvent;
 use serde::Deserialize;
 use tracing::error;
 
-use crate::audio;
 use crate::player::StatusEvents;
+use crate::{audio, dmx};
 
 use self::midi::ToMidiEvent;
 use self::player::Player;
@@ -95,6 +95,7 @@ pub fn init_player_and_controller(
         .midi_device
         .map(|midi_device| crate::midi::get_device(&midi_device))
         .map_or(Ok(None), |result| result.map(Some))?;
+    let dmx_device = dmx::get_device();
     let songs = get_all_songs(&PathBuf::from(player_config.songs))?;
     let playlist = parse_playlist(&PathBuf::from(playlist_path), Arc::clone(&songs))?;
     let status_events = match player_config.status_events {
@@ -122,6 +123,7 @@ pub fn init_player_and_controller(
         device,
         player_config.track_mappings.track_mappings,
         midi_device.clone(),
+        dmx_device,
         playlist,
         crate::playlist::Playlist::from_songs(songs)?,
         status_events,
