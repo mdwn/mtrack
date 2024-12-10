@@ -23,6 +23,7 @@ exclude = [
 [dependencies]
 clap = { version = "4.5.0", features = ["derive"] }
 cpal = "0.15.2"
+dmx = "0.2.1"
 hound = "3.5.1"
 lazy_static = "1.4.0"
 libc = "0.2.153"
@@ -35,6 +36,7 @@ rust_dmx = "0.5.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.9"
 shh = "1.0.1"
+spin_sleep = "1.2.1"
 termion = "3.0.0"
 tokio = { version = "1.36.0", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
 tracing = "0.1.40"

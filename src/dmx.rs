@@ -14,12 +14,16 @@
 use std::{
     error::Error,
     fmt,
-    sync::{Arc, Barrier},
+    sync::{Arc, Barrier, Mutex},
 };
+
+use engine::Engine;
 
 use crate::{playsync::CancelHandle, songs::Song};
 
-mod dmxengine;
+mod device;
+pub mod engine;
+mod universe;
 
 /// A DMX device that can play MIDI files as DMX.
 pub trait Device: fmt::Display + std::marker::Send + std::marker::Sync {
@@ -33,6 +37,6 @@ pub trait Device: fmt::Display + std::marker::Send + std::marker::Sync {
 }
 
 /// Gets a device with the given name.
-pub fn get_device() -> Arc<dyn Device> {
-    Arc::new(dmxengine::get())
+pub fn get_device(dmx_engine: Arc<Mutex<Engine>>) -> Arc<dyn Device> {
+    Arc::new(device::get(dmx_engine))
 }

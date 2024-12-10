@@ -25,7 +25,11 @@ use tracing::{error, info, span, Level};
 
 use crate::{playsync::CancelHandle, songs::Song};
 
-pub struct Device {}
+use super::engine::Engine;
+
+pub struct Device {
+    dmx_engine: Arc<Mutex<Engine>>,
+}
 
 impl super::Device for Device {
     /// Plays the given song through the DMX interface.
@@ -52,14 +56,14 @@ impl super::Device for Device {
             "Playing song DMX."
         );
 
+        let dmx_engine = self.dmx_engine.clone();
         let join_handle = {
             let cancel_handle = cancel_handle.clone();
 
             thread::spawn(move || {
-                let universe = Arc::new(Mutex::new(vec![0; 512]));
                 let connection = DMXConnection {
                     cancel_handle: cancel_handle.clone(),
-                    universe: universe.clone(),
+                    dmx_engine: dmx_engine.clone(),
                 };
                 let mut player = Player::new(
                     crate::midi::midir::AccurateTimer::new(
@@ -105,13 +109,8 @@ impl super::Device for Device {
                             }
                             let start_time = std::time::SystemTime::now();
                             {
-                                let universe = {
-                                    universe
-                                        .lock()
-                                        .expect("unable to get universe lock")
-                                        .clone()
-                                };
-                                let _ = dmx_port.write(&universe);
+                                let universe = dmx_engine.lock().expect("Unable to get DMX engine lock.");
+                                let _ = dmx_port.write(&universe.get_universe(0));
                             }
 
                             // Sleep for 23 milliseconds if possible. This is roughly a little greater than 44 Hz, which is
@@ -161,15 +160,17 @@ impl fmt::Display for Device {
 }
 
 /// Gets the given DMX device.
-pub fn get() -> Device {
-    Device {}
+pub fn get(dmx_engine: Arc<Mutex<Engine>>) -> Device {
+    Device {
+        dmx_engine,
+    }
 }
 
 /// DMXConnection is a nodi connection that can be cancelled and will poutput to a
 /// DMX interface.
 struct DMXConnection {
     cancel_handle: CancelHandle,
-    universe: Arc<Mutex<Vec<u8>>>,
+    dmx_engine: Arc<Mutex<Engine>>,
 }
 
 impl Connection for DMXConnection {
@@ -178,28 +179,8 @@ impl Connection for DMXConnection {
             return false;
         };
 
-        match event.message {
-            midly::MidiMessage::NoteOn { key, vel } => {
-                self.update_universe(key.as_int(), vel.as_int() * 2);
-            }
-            midly::MidiMessage::NoteOff { key, vel } => {
-                self.update_universe(key.as_int(), vel.as_int() * 2);
-            }
-            _ => {
-                info!(
-                    midi_event = format!("{:?}", event.message),
-                    "Unrecognized MIDI event"
-                );
-            }
-        }
+        self.dmx_engine.lock().expect("Unable to get DMX Engine lock").handle_midi_event(event.message);
 
         true
-    }
-}
-
-impl DMXConnection {
-    fn update_universe(&mut self, channel: u8, value: u8) {
-        let mut universe = self.universe.lock().expect("unable to get mutex");
-        universe[usize::from(channel)] = value
     }
 }
