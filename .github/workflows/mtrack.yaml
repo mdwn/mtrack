@@ -17,7 +17,7 @@ jobs:
     - name: Update apt
       run: sudo apt update
     - name: Install dependencies
-      run: sudo apt-get install -y libasound2-dev libudev-dev
+      run: sudo apt-get install -y libasound2-dev libudev-dev protobuf-compiler
     - uses: dtolnay/rust-toolchain@stable
     - uses: Swatinem/rust-cache@v2
     - name: Build mtrack
@@ -40,7 +40,7 @@ jobs:
     - name: Update apt
       run: sudo apt update
     - name: Install dependencies
-      run: sudo apt-get install -y libasound2-dev libudev-dev
+      run: sudo apt-get install -y libasound2-dev libudev-dev protobuf-compiler
     - uses: dtolnay/rust-toolchain@stable
       with:
         components: clippy
@@ -57,7 +57,7 @@ jobs:
     - name: Update apt
       run: sudo apt update
     - name: Install dependencies
-      run: sudo apt-get install -y libasound2-dev libudev-dev
+      run: sudo apt-get install -y libasound2-dev libudev-dev protobuf-compiler
     - uses: dtolnay/rust-toolchain@stable
       with:
         components: rustfmt
@@ -74,7 +74,7 @@ jobs:
     - name: Update apt
       run: sudo apt update
     - name: Install dependencies
-      run: sudo apt-get install -y libasound2-dev libudev-dev
+      run: sudo apt-get install -y libasound2-dev libudev-dev protobuf-compiler
     - uses: dtolnay/rust-toolchain@stable
     - uses: Swatinem/rust-cache@v2
     - run: cargo install cargo-tarpaulin

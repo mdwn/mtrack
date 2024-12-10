@@ -116,8 +116,8 @@ impl super::Device for Device {
             }
         };
 
-        let midi_sheet = match song.midi_sheet()? {
-            Some(midi_sheet) => midi_sheet,
+        let midi_sheet = match song.midi_sheet() {
+            Some(midi_sheet) => midi_sheet?,
             None => {
                 info!(song = song.name, "Song has no MIDI sheet.");
                 return Ok(());

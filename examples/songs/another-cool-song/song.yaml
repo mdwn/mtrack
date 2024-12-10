@@ -7,6 +7,12 @@ midi_event:
 
 midi_file: song.mid
 
+light_shows:
+- universe_name: light-show
+  dmx_file: song.mid
+  midi_channels:
+  - 15
+
 tracks:
 - name: click
   file: click.wav

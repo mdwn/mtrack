@@ -25,6 +25,7 @@ mod test;
 
 use clap::{Parser, Subcommand};
 use config::init_player_and_controller;
+use dmx::universe::UniverseConfig;
 use player::Player;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
@@ -87,6 +88,13 @@ enum Commands {
         repository_path: String,
         /// The name of the song to play.
         song_name: String,
+        /// The DMX dimming speed modifier.
+        #[arg[short = 's', long]]
+        dmx_dimming_speed_modifier: Option<f64>,
+        /// The DMX universe configuration. Should be in the form: universe=<OLA-UNIVERSE>,name=<NAME>;...
+        /// For example, universe=1,name=light-show;universe=2,name=another-light-show
+        #[arg[short, long]]
+        dmx_universe_config: Option<String>,
     },
     /// Playlist will verify a playlist.
     Playlist {
@@ -171,6 +179,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             device_name,
             mappings,
             midi_device_name,
+            dmx_dimming_speed_modifier,
+            dmx_universe_config,
             repository_path,
             song_name,
         } => {
@@ -196,14 +206,69 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 Some(midi_device_name) => Some(midi::get_device(&midi_device_name)?),
                 None => None,
             };
-            let dmx_device = dmx::get_device();
+            let dmx_engine = match dmx_universe_config {
+                Some(dmx_universe_config) => {
+                    let mut universe_configs: Vec<UniverseConfig> = Vec::new();
+                    for universe_config in dmx_universe_config.split(';') {
+                        let config_fields: Vec<&str> = universe_config.split(',').collect();
+
+                        let mut universe: Option<u16> = None;
+                        let mut name: Option<String> = None;
+                        for config in config_fields.into_iter() {
+                            let config_parts: Vec<&str> = config.split('=').collect();
+
+                            if config_parts.len() != 2 {
+                                return Err(format!(
+                                    "malformed DMX configuration '{}'",
+                                    universe_config
+                                )
+                                .into());
+                            }
+
+                            // Parse the DMX configuration.
+                            match config_parts[0] {
+                                "universe" => {
+                                    let universe_num: u16 = config_parts[1].parse()?;
+                                    universe = Some(universe_num);
+                                }
+                                "name" => name = Some(config_parts[1].into()),
+                                _ => {} // Do nothing
+                            }
+                        }
+
+                        if universe.is_some() && name.is_some() {
+                            universe_configs.push(UniverseConfig {
+                                universe: universe.unwrap(),
+                                name: name.unwrap(),
+                            })
+                        } else {
+                            return Err(format!(
+                                "Missing device specified for config {}",
+                                universe_config
+                            )
+                            .into());
+                        }
+                    }
+
+                    if universe_configs.is_empty() {
+                        None
+                    } else {
+                        Some(dmx::create_engine(
+                            dmx_dimming_speed_modifier
+                                .unwrap_or(crate::config::DEFAULT_DMX_DIMMING_SPEED_MODIFIER),
+                            universe_configs,
+                        ))
+                    }
+                }
+                None => None,
+            };
             let songs = config::get_all_songs(&PathBuf::from(&repository_path))?;
             let playlist = Arc::new(Playlist::new(vec![song_name], Arc::clone(&songs))?);
             let player = Player::new(
                 device,
                 converted_mappings,
                 midi_device,
-                dmx_device,
+                dmx_engine,
                 playlist,
                 Playlist::from_songs(songs)?,
                 None,

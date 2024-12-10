@@ -10,6 +10,22 @@ midi_device: UltraLite-mk5
 # If the path is not absolute, it will be relative to the location of this file.
 songs: songs
 
+# The DMX configuration for mtrack. This maps OLA universes to light show names defined within
+# song files.
+dmx:
+  # The DMX engine in mtrack has a dimming engine that can be issued using MIDI program change (PC) commands.
+  # This modifier is multiplied by the value of the PC command to give a dimming duration, e.g.
+  # PC1 * 1.0 dim speed modifier = 1.0 second dim time
+  # PC1 * 0.25 dim speed modifier = 0.25 second dim time
+  # PC5 * 0.25 dim speed modifier = 1.25 second dim time
+  dim_speed_modifier: 0.25
+
+  # Universes here map OLA universe numbers into light show names.
+  universes:
+  # Any songs with a light show with a universe_name "light-show" will be played on OLA universe 1.
+  - universe: 1
+    name: light-show
+
 # The controller definition. As of now, the valid kinds of controllers are:
 # - keyboard
 # - midi
