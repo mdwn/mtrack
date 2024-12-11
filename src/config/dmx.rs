@@ -18,12 +18,12 @@ use crate::dmx::universe::UniverseConfig;
 
 /// A YAML representation of the DMX configuration.
 #[derive(Deserialize)]
-pub(super) struct DMX {
+pub(super) struct Dmx {
     /// The configuration of devices to universes.
     universes: Vec<Universe>,
 }
 
-impl DMX {
+impl Dmx {
     /// Converts the configuration into universe configs.
     pub(super) fn to_configs(&self) -> Vec<UniverseConfig> {
         self.universes

@@ -22,6 +22,8 @@ use std::time::Instant;
 use std::{sync::RwLock, time::Duration};
 use tracing::{error, info};
 
+use crate::playsync::CancelHandle;
+
 /// A DMX universe is 512 channels.
 const UNIVERSE_SIZE: usize = 512;
 
@@ -50,21 +52,22 @@ pub(crate) struct Universe {
     max_channels: Arc<AtomicU16>,
     /// The configuration for this universe.
     config: UniverseConfig,
+    // The cancel handle for the thread attached to this universe.
+    cancel_handle: CancelHandle,
 }
 
 impl Universe {
     /// Creates a new universe.
-    pub fn new(config: UniverseConfig) -> Universe {
-        let universe = Universe {
+    pub fn new(config: UniverseConfig, cancel_handle: CancelHandle) -> Universe {
+        Universe {
             rates: Arc::new(RwLock::new(vec![0.0; UNIVERSE_SIZE])),
             current: Arc::new(RwLock::new(vec![0.0; UNIVERSE_SIZE])),
             target: Arc::new(RwLock::new(vec![0.0; UNIVERSE_SIZE])),
             global_dim_rate: RwLock::new(1.0),
             max_channels: Arc::new(AtomicU16::new(0)),
             config,
-        };
-
-        universe
+            cancel_handle,
+        }
     }
 
     /// Updates the dim speed.
@@ -101,7 +104,7 @@ impl Universe {
         let _ =
             self.max_channels
                 .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current_channel| {
-                    if u16::from(channel) >= current_channel {
+                    if channel >= current_channel {
                         return Some(channel + 1);
                     }
                     None
@@ -109,13 +112,14 @@ impl Universe {
     }
 
     /// Starts a thread that writes the universe data to the transmitter.
-    fn start_thread(&self) -> JoinHandle<()> {
+    pub fn start_thread(&self) -> JoinHandle<()> {
         let rates = self.rates.clone();
         let current = self.current.clone();
         let target = self.target.clone();
         let device = self.config.device.clone();
-        let ftdi = self.config.ftdi.clone();
+        let ftdi = self.config.ftdi;
         let max_channels = self.max_channels.clone();
+        let cancel_handle = self.cancel_handle.clone();
 
         thread::spawn(move || {
             let mut dmx_transmitter: Box<dyn DmxTransmitter> = if ftdi {
@@ -130,6 +134,9 @@ impl Universe {
             let mut last_time = Instant::now();
             let tick_duration = Duration::from_secs(1).div_f64(TARGET_HZ);
             loop {
+                if cancel_handle.is_cancelled() {
+                    return;
+                }
                 let current_snapshot = Universe::approach_target(
                     rates.clone(),
                     current.clone(),
@@ -233,15 +240,21 @@ impl DmxTransmitter for FTDIDMXTransmitter {
 mod test {
     use std::{sync::atomic::Ordering, time::Duration};
 
-    use crate::dmx::universe::{UniverseConfig, TARGET_HZ};
+    use crate::{
+        dmx::universe::{UniverseConfig, TARGET_HZ},
+        playsync::CancelHandle,
+    };
 
     use super::Universe;
 
     fn new_universe() -> Universe {
-        Universe::new(UniverseConfig {
-            device: "mock".into(),
-            ftdi: false,
-        })
+        Universe::new(
+            UniverseConfig {
+                device: "mock".into(),
+                ftdi: false,
+            },
+            CancelHandle::new(),
+        )
     }
 
     #[test]

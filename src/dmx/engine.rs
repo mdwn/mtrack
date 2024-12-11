@@ -15,35 +15,42 @@
 use std::{
     error::Error,
     sync::{atomic::AtomicBool, Arc, Barrier, RwLock},
-    thread,
+    thread::{self, JoinHandle},
     time::Duration,
 };
 
 use midly::num::u7;
 use nodi::{Connection, Player};
-use tracing::{debug, info, span, Level};
+use tracing::{debug, error, info, span, Level};
 
 use crate::{playsync::CancelHandle, songs::Song};
 
 use super::{universe::UniverseConfig, Universe};
 
-/// We only support 1 universe for now.
-const SUPPORTED_UNIVERSES: u8 = 1;
-
 /// The DMX engine. This is meant to control the current state of the
 /// universe(s) that should be sent to our DMX interface(s).
 pub struct Engine {
     universes: Vec<RwLock<Universe>>,
+    cancel_handle: CancelHandle,
+    join_handles: Vec<JoinHandle<()>>,
 }
 
 impl Engine {
     /// Creates a new DMX Engine.
     pub fn new(configs: Vec<UniverseConfig>) -> Engine {
+        let cancel_handle = CancelHandle::new();
+        let universes: Vec<Universe> = configs
+            .into_iter()
+            .map(|config| Universe::new(config, cancel_handle.clone()))
+            .collect();
+        let join_handles: Vec<JoinHandle<()>> = universes
+            .iter()
+            .map(|universe| universe.start_thread())
+            .collect();
         Engine {
-            universes: configs
-                .into_iter()
-                .map(|config| RwLock::new(Universe::new(config)))
-                .collect(),
+            universes: universes.into_iter().map(RwLock::new).collect(),
+            cancel_handle,
+            join_handles,
         }
     }
 
@@ -156,6 +163,18 @@ impl Engine {
             .write()
             .expect("Unable to get write lock for universe")
             .update_channel_data(channel, value);
+    }
+}
+
+impl Drop for Engine {
+    fn drop(&mut self) {
+        self.cancel_handle.cancel();
+
+        self.join_handles.drain(..).for_each(|join_handle| {
+            if join_handle.join().is_err() {
+                error!("Error joining handle")
+            }
+        });
     }
 }
 

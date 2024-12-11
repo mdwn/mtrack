@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use midly::live::LiveEvent;
 use serde::Deserialize;
@@ -96,9 +96,9 @@ pub fn init_player_and_controller(
         .midi_device
         .map(|midi_device| crate::midi::get_device(&midi_device))
         .map_or(Ok(None), |result| result.map(Some))?;
-    let dmx_engine = player_config.dmx.map_or(None, |dmx_config| {
-        Some(crate::dmx::create_engine(dmx_config.to_configs()))
-    });
+    let dmx_engine = player_config
+        .dmx
+        .map(|dmx_config| crate::dmx::create_engine(dmx_config.to_configs()));
     let songs = get_all_songs(&PathBuf::from(player_config.songs))?;
     let playlist = parse_playlist(&PathBuf::from(playlist_path), Arc::clone(&songs))?;
     let status_events = match player_config.status_events {

@@ -14,7 +14,7 @@
 use serde::Deserialize;
 
 use super::controller::Controller;
-use super::dmx::DMX;
+use super::dmx::Dmx;
 use super::midi;
 use super::trackmappings::TrackMappings;
 
@@ -30,7 +30,7 @@ pub(super) struct Player {
     /// The MIDI device to use.
     pub midi_device: Option<String>,
     /// The DMX configuration.
-    pub dmx: Option<DMX>,
+    pub dmx: Option<Dmx>,
     /// Events to emit to report status out via MIDI.
     pub status_events: Option<StatusEvents>,
     /// The path to the song definitions.

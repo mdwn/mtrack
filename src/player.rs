@@ -276,8 +276,7 @@ impl Player {
             })
         };
 
-        let dmx_join_handle = if let Some(dmx_engine) = dmx_engine {
-            Some({
+        let dmx_join_handle = dmx_engine.map(|dmx_engine| {
                 let dmx_engine = dmx_engine.clone();
                 let song = song.clone();
                 let barrier = barrier.clone();
@@ -296,10 +295,7 @@ impl Player {
                         );
                     }
                 })
-            })
-        } else {
-            None
-        };
+            });
 
         let midi_join_handle = if let Some(midi_device) = midi_device {
             let midi_device = midi_device.clone();

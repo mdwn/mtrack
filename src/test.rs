@@ -67,7 +67,7 @@ pub fn write_wav<S: Sample>(path: PathBuf, samples: Vec<S>) -> Result<(), Box<dy
             channels: 1,
             sample_rate: 44100,
             bits_per_sample: 32,
-            sample_format: sample_format,
+            sample_format,
         },
     )?;
 

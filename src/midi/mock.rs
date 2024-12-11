@@ -70,10 +70,7 @@ impl Device {
             .emit_called
             .lock()
             .expect("unable to get emit called lock");
-        match emit_called.as_ref() {
-            Some(event) => Some(event.to_vec()),
-            None => None,
-        }
+        emit_called.as_ref().map(|event| event.to_vec())
     }
 
     #[cfg(test)]
