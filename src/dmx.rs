@@ -11,32 +11,15 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-use std::{
-    error::Error,
-    fmt,
-    sync::{Arc, Barrier, Mutex},
-};
+use std::sync::{Arc, RwLock};
 
 use engine::Engine;
+use universe::{Universe, UniverseConfig};
 
-use crate::{playsync::CancelHandle, songs::Song};
-
-mod device;
 pub mod engine;
-mod universe;
-
-/// A DMX device that can play MIDI files as DMX.
-pub trait Device: fmt::Display + std::marker::Send + std::marker::Sync {
-    /// Plays the given file through the DMX interface interface.
-    fn play(
-        &self,
-        song: Arc<Song>,
-        cancel_handle: CancelHandle,
-        play_barrier: Arc<Barrier>,
-    ) -> Result<(), Box<dyn Error>>;
-}
+pub mod universe;
 
 /// Gets a device with the given name.
-pub fn get_device(dmx_engine: Arc<Mutex<Engine>>) -> Arc<dyn Device> {
-    Arc::new(device::get(dmx_engine))
+pub fn create_engine(universe_configs: Vec<UniverseConfig>) -> Arc<RwLock<Engine>> {
+    Arc::new(RwLock::new(Engine::new(universe_configs)))
 }

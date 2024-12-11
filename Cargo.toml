@@ -24,6 +24,7 @@ exclude = [
 clap = { version = "4.5.0", features = ["derive"] }
 cpal = "0.15.2"
 dmx = "0.2.1"
+dmx-serial = "0.4.0"
 hound = "3.5.1"
 lazy_static = "1.4.0"
 libc = "0.2.153"

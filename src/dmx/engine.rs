@@ -12,10 +12,20 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-use std::sync::{RwLock};
+use std::{
+    error::Error,
+    sync::{atomic::AtomicBool, Arc, Barrier, RwLock},
+    thread,
+    time::Duration,
+};
 
 use midly::num::u7;
-use tracing::info;
+use nodi::{Connection, Player};
+use tracing::{debug, info, span, Level};
+
+use crate::{playsync::CancelHandle, songs::Song};
+
+use super::{universe::UniverseConfig, Universe};
 
 /// We only support 1 universe for now.
 const SUPPORTED_UNIVERSES: u8 = 1;
@@ -23,17 +33,83 @@ const SUPPORTED_UNIVERSES: u8 = 1;
 /// The DMX engine. This is meant to control the current state of the
 /// universe(s) that should be sent to our DMX interface(s).
 pub struct Engine {
-    universes: Vec<RwLock<Vec<u8>>>,
-    max_channels_seen: Vec<u16>,
+    universes: Vec<RwLock<Universe>>,
 }
 
 impl Engine {
     /// Creates a new DMX Engine.
-    pub fn new() -> Engine {
-        Engine{
-            universes: (0..SUPPORTED_UNIVERSES).map(|_| {RwLock::new(vec![0; UNIVERSE_SIZE])}).collect(),
-            max_channels_seen: vec![0; UNIVERSE_SIZE],
+    pub fn new(configs: Vec<UniverseConfig>) -> Engine {
+        Engine {
+            universes: configs
+                .into_iter()
+                .map(|config| RwLock::new(Universe::new(config)))
+                .collect(),
         }
+    }
+
+    /// Plays the given song through the DMX interface.
+    pub fn play(
+        dmx_engine: Arc<RwLock<Engine>>,
+        song: Arc<Song>,
+        cancel_handle: CancelHandle,
+        play_barrier: Arc<Barrier>,
+    ) -> Result<(), Box<dyn Error>> {
+        let span = span!(Level::INFO, "play song (dmx)");
+        let _enter = span.enter();
+
+        let dmx_midi_sheet = match song.dmx_midi_sheet()? {
+            Some(dmx_midi_sheet) => dmx_midi_sheet,
+            None => {
+                info!(song = song.name, "Song has no DMX MIDI sheet.");
+                return Ok(());
+            }
+        };
+
+        info!(
+            song = song.name,
+            duration = song.duration_string(),
+            "Playing song DMX."
+        );
+
+        let join_handle = {
+            let cancel_handle = cancel_handle.clone();
+            let dmx_engine = dmx_engine.clone();
+
+            thread::spawn(move || {
+                let connection = DMXConnection {
+                    cancel_handle: cancel_handle.clone(),
+                    dmx_engine,
+                };
+                let mut player = Player::new(
+                    crate::midi::midir::AccurateTimer::new(
+                        dmx_midi_sheet.ticker,
+                        cancel_handle.clone(),
+                    ),
+                    connection,
+                );
+
+                let play_finished = Arc::new(AtomicBool::new(false));
+
+                play_barrier.wait();
+                player.play(&dmx_midi_sheet.sheet);
+                cancel_handle.expire();
+                play_finished.store(true, std::sync::atomic::Ordering::Relaxed);
+            })
+        };
+
+        cancel_handle.wait();
+
+        if cancel_handle.is_cancelled() {
+            info!("DMX playback has been cancelled.");
+        }
+
+        if join_handle.join().is_err() {
+            return Err("Error while joining thread!".into());
+        }
+
+        info!("DMX playback stopped.");
+
+        Ok(())
     }
 
     /// Handles an incoming MIDI event.
@@ -45,8 +121,11 @@ impl Engine {
             midly::MidiMessage::NoteOff { key, vel } => {
                 self.handle_key_velocity(0, key, vel);
             }
+            midly::MidiMessage::ProgramChange { program } => {
+                self.update_dimming(0, Duration::from_secs(program.as_int().into()));
+            }
             _ => {
-                info!(
+                debug!(
                     midi_event = format!("{:?}", midi_message),
                     "Unrecognized MIDI event"
                 );
@@ -54,16 +133,50 @@ impl Engine {
         }
     }
 
-    /// Gets the given universe.
-    pub fn get_universe(&self, universe_number: usize) -> Vec<u8> {
-        self.universes
-        .get(universe_number).expect(format!("Universe {} not expected", universe_number).as_str())
-        .read().expect(format!("Unable to get lock for universe {}", universe_number).as_str()).clone()
-    }
-
     /// Handles MIDI events that use a key and velocity.
     fn handle_key_velocity(&mut self, universe_number: usize, key: u7, velocity: u7) {
-        return self.update_universe(universe_number, key.as_int(), velocity.as_int()*2)
+        self.update_universe(universe_number, key.as_int().into(), velocity.as_int() * 2)
     }
 
+    // Updates the current dimming speed.
+    fn update_dimming(&mut self, universe_number: usize, dimming_duration: Duration) {
+        info!(
+            dimming = dimming_duration.as_secs_f64(),
+            "Dimming speed updated"
+        );
+        self.universes[universe_number]
+            .write()
+            .expect("Unable to get write lock for universe")
+            .update_dim_speed(dimming_duration);
+    }
+
+    /// Updates the given universe.
+    fn update_universe(&mut self, universe_number: usize, channel: u16, value: u8) {
+        self.universes[universe_number]
+            .write()
+            .expect("Unable to get write lock for universe")
+            .update_channel_data(channel, value);
+    }
+}
+
+/// DMXConnection is a nodi connection that can be cancelled and will poutput to a
+/// DMX interface.
+struct DMXConnection {
+    cancel_handle: CancelHandle,
+    dmx_engine: Arc<RwLock<Engine>>,
+}
+
+impl Connection for DMXConnection {
+    fn play(&mut self, event: nodi::MidiEvent) -> bool {
+        if self.cancel_handle.is_cancelled() {
+            return false;
+        };
+
+        self.dmx_engine
+            .write()
+            .expect("Unable to get DMX engine lock.")
+            .handle_midi_event(event.message);
+
+        true
+    }
 }
