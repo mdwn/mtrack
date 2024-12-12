@@ -35,10 +35,25 @@ pub(super) struct Song {
     midi_event: Option<midi::Event>,
     /// The associated MIDI file to play.
     midi_file: Option<String>,
-    /// The associated MIDI file to interpret as DMX to play.
-    dmx_file: Option<String>,
+    /// The light show configurations.
+    light_shows: Option<Vec<LightShow>>,
     /// The associated tracks to play.
     tracks: Vec<track::Track>,
+}
+
+// A YAML representation of light shows.
+#[derive(Deserialize)]
+pub(super) struct LightShow {
+    /// The name of the universe. Will be matched against the universes configured in the DMX engine
+    /// to determine where (if anywhere) this light show should be sent.
+    universe_name: String,
+
+    /// The associated MIDI file to interpret as DMX to play.
+    dmx_file: String,
+
+    /// The MIDI channels from this MIDI file to use as lighting data. If empty,
+    /// all channels will be used.
+    midi_channels: Option<Vec<u8>>,
 }
 
 impl Song {
@@ -60,9 +75,18 @@ impl Song {
             self.midi_file
                 .as_ref()
                 .map(|midi_file| song_path.join(PathBuf::from(midi_file))),
-            self.dmx_file
+            self.light_shows
                 .as_ref()
-                .map(|dmx_file| song_path.join(PathBuf::from(dmx_file))),
+                .map_or_else(Vec::new, |light_shows| {
+                    light_shows
+                        .iter()
+                        .map(|light_show| crate::songs::LightShow {
+                            universe_name: light_show.universe_name.clone(),
+                            dmx_file: song_path.join(PathBuf::from(light_show.dmx_file.clone())),
+                            midi_channels: light_show.midi_channels.clone().unwrap_or_default(),
+                        })
+                        .collect()
+                }),
             self.tracks
                 .iter()
                 .map(|track| track.to_track(&song_path))

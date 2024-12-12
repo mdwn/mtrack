@@ -29,12 +29,13 @@ libc = "0.2.153"
 midir = "0.9.1"
 midly = "0.5.3"
 nodi = { version = "1.0.0", features = ["hybrid-sleep", "midir"] }
+ola = "0.1.0"
 regex = "1.10.3"
 ringbuf = "0.3.3"
-rust_dmx = "0.5.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.9"
 shh = "1.0.1"
+spin_sleep = "1.2.1"
 termion = "3.0.0"
 tokio = { version = "1.36.0", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
 tracing = "0.1.40"

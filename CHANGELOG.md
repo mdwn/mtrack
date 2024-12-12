@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+DMX engine using OLA has been added. Contains a built in dimming engine.
+
 ## [0.1.5] - Initial DMX engine, fixed MIDI clock timing.
 
 Initial DMX engine implemented. This is not quite ready for prime time.

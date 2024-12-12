@@ -40,8 +40,8 @@ pub struct Song {
     pub midi_event: Option<LiveEvent<'static>>,
     /// The MIDI file to play along with the audio tracks.
     pub midi_file: Option<PathBuf>,
-    /// The MIDI file to interpret as DMX along with the audio tracks.
-    pub dmx_file: Option<PathBuf>,
+    /// The light show configurations
+    pub light_shows: Vec<LightShow>,
     /// The number of channels required to play this song.
     pub num_channels: u16,
     /// The sample rate of this song.
@@ -54,6 +54,20 @@ pub struct Song {
     pub duration: Duration,
     /// The individual audio tracks.
     pub tracks: Vec<Track>,
+}
+
+/// A light show for the song.
+pub struct LightShow {
+    /// The name of the universe. Will be matched against the universes configured in the DMX engine
+    /// to determine where (if anywhere) this light show should be sent.
+    pub universe_name: String,
+
+    /// The associated MIDI file to interpret as DMX to play.
+    pub dmx_file: PathBuf,
+
+    /// The MIDI channels from this MIDI file to use as lighting data. If none are supplied, all channels
+    /// will be used.
+    pub midi_channels: Vec<u8>,
 }
 
 /// A simple sample for songs. Boils down to i32 or f32, which we can be reasonably assured that
@@ -79,37 +93,31 @@ impl Sample for f32 {
     }
 }
 
-/// Parses a MIDI file if it's present, otherwise returns an error.
-fn parse_midi_file(midi_file: Option<PathBuf>) -> Result<Option<PathBuf>, Box<dyn Error>> {
-    // Get the MIDI file if it's present.
-    Ok(match midi_file {
-        Some(parsed_midi_file_path) => {
-            let midi_file = parsed_midi_file_path;
-            if !midi_file.is_file() {
-                return Err(format!(
-                    "midi file {} does not exist or is not a file",
-                    midi_file.to_string_lossy(),
-                )
-                .into());
-            }
-            Some(midi_file)
-        }
-        None => None,
-    })
-}
-
 impl Song {
     // Create a new song.
     pub fn new(
         name: String,
         midi_event: Option<LiveEvent<'static>>,
         midi_file: Option<PathBuf>,
-        dmx_file: Option<PathBuf>,
+        light_shows: Vec<LightShow>,
         tracks: Vec<Track>,
     ) -> Result<Song, Box<dyn Error>> {
-        // Get the MIDI/DMX file if it's present.
-        let midi_file = parse_midi_file(midi_file)?;
-        let dmx_file = parse_midi_file(dmx_file)?;
+        // Make sure the MIDI/DMX files are parseable.
+        if let Some(midi_file) = &midi_file {
+            if !midi_file.exists() {
+                return Err("MIDI file does not exist".into());
+            }
+        }
+
+        for light_show in light_shows.iter() {
+            if !light_show.dmx_file.exists() {
+                return Err(format!(
+                    "MIDI file for light show {} does not exist",
+                    light_show.universe_name
+                )
+                .into());
+            }
+        }
 
         // Calculate the number of channels and sample rate by reading the wav headers of each file.
         let num_channels = u16::try_from(tracks.len())?;
@@ -162,7 +170,7 @@ impl Song {
             name,
             midi_event,
             midi_file,
-            dmx_file,
+            light_shows,
             num_channels,
             sample_rate,
             sample_format: sample_format.expect("sample format not found"),
@@ -190,35 +198,25 @@ impl Song {
     }
 
     /// Returns a MIDI sheet for the song.
-    pub fn midi_sheet(&self) -> Result<Option<MidiSheet>, Box<dyn Error>> {
-        Self::parse_midi(&self.midi_file)
+    pub fn midi_sheet(&self) -> Option<Result<MidiSheet, Box<dyn Error>>> {
+        self.midi_file.as_ref().map(parse_midi)
     }
+}
 
-    /// Returns a DMX MIDI sheet for the song.
-    pub fn dmx_midi_sheet(&self) -> Result<Option<MidiSheet>, Box<dyn Error>> {
-        Self::parse_midi(&self.dmx_file)
-    }
+/// Returns a MIDI sheet for the given file.
+fn parse_midi(midi_file: &PathBuf) -> Result<MidiSheet, Box<dyn Error>> {
+    let buf: Vec<u8> = fs::read(midi_file)?;
+    let smf = Smf::parse(&buf)?;
+    let ticker = Ticker::try_from(smf.header.timing)?;
 
-    /// Returns a MIDI sheet for the given file.
-    fn parse_midi(midi_file: &Option<PathBuf>) -> Result<Option<MidiSheet>, Box<dyn Error>> {
-        match midi_file {
-            Some(midi_file) => {
-                let buf: Vec<u8> = fs::read(midi_file)?;
-                let smf = Smf::parse(&buf)?;
-                let ticker = Ticker::try_from(smf.header.timing)?;
-
-                let midi_sheet = MidiSheet {
-                    ticker,
-                    sheet: match smf.header.format {
-                        Format::SingleTrack | Format::Sequential => Sheet::sequential(&smf.tracks),
-                        Format::Parallel => Sheet::parallel(&smf.tracks),
-                    },
-                };
-                Ok(Some(midi_sheet))
-            }
-            None => Ok(None),
-        }
-    }
+    let midi_sheet = MidiSheet {
+        ticker,
+        sheet: match smf.header.format {
+            Format::SingleTrack | Format::Sequential => Sheet::sequential(&smf.tracks),
+            Format::Parallel => Sheet::parallel(&smf.tracks),
+        },
+    };
+    Ok(midi_sheet)
 }
 
 impl fmt::Display for Song {
@@ -238,6 +236,13 @@ impl fmt::Display for Song {
                 .collect::<Vec<String>>()
                 .join(", "),
         )
+    }
+}
+
+impl LightShow {
+    /// Returns a MIDI sheet for the DMX file.
+    pub fn dmx_midi_sheet(&self) -> Result<MidiSheet, Box<dyn Error>> {
+        parse_midi(&self.dmx_file)
     }
 }
 
@@ -701,7 +706,7 @@ mod test {
             "song name".into(),
             None,
             None,
-            None,
+            Vec::new(),
             vec![track1, track2, track3],
         )?;
         let mut mapping: HashMap<String, Vec<u16>> = HashMap::new();

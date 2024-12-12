@@ -93,6 +93,7 @@ A song comprises of:
 
 - One or more audio files.
 - An optional MIDI file.
+- One or more light shows (MIDI files interpreted as DMX).
 - A song definition.
 
 The audio files must all be the same bitrate. They do not need to be the same length. mtrack player will
@@ -112,6 +113,21 @@ midi_event:
   type: program_change
   channel: 16
   program: 3
+
+# Light shows are MIDI files that are interpreted as DMX and sent to
+# OLA (Open Lighting Architecture).
+light_shows:
+# The universe name is used by the player to determine which OLA universe
+# to send the DMX information to.
+- universe_name: light-show
+  dmx_file: DMX Light Show.mid
+  # You can instruct the DMX engine to only recognize specific MIDI channels as
+  # having lighting data. If this is not supplied, all MIDI channels will be used
+  # as lighting data.
+  midi_channels:
+  - 15
+- universe_name: a-second-light-show
+  dmx_file: DMX Light Show 2.mid
 
 # An optional MIDI file to play along with the audio.
 midi_file: Song Automation.mid
@@ -164,10 +180,11 @@ Songs (count: 23):
 You can play individual songs by using `mtrack play`:
 
 ```
-$ mtrack play -m my-midi-device my-audio-device click=1,cue=2 /mnt/song-storage "My cool song"
+$ mtrack play -m my-midi-device -s 0.25 -d universe=1,name=light-show my-audio-device click=1,cue=2 /mnt/song-storage "My cool song"
 2024-03-22T21:24:25.588828Z  INFO emit (midir): mtrack::midi::midir: Emitting event. device="my-midi-device:my-midi-device MIDI 1 28:0" event="Midi { channel: u4(15), message: ProgramChange { program: u7(3) } }"
 2024-03-22T21:24:25.589420Z  INFO player: mtrack::player: Waiting for song to finish. song="My cool song"
 2024-03-22T21:24:25.589992Z  INFO play song (rodio): mtrack::audio::rodio: Playing song. device="my-audio-device" song="My cool song" duration="4:14"
+2024-03-22T21:24:25.591112Z  INFO play song (dmx): mtrack::dmx::engine: Playing song DMX. song="My cool song" duration="4:14"
 2024-03-22T21:24:25.676452Z  INFO play song (midir): mtrack::midi::midir: Playing song MIDI. device="my-midi-device:my-midi-device MIDI 1 28:0" song="My cool song" duration="4:14"
 ```
 
@@ -207,6 +224,22 @@ midi_device: UltraLite-mk5
 # The directory where all of your songs are located, frequently referred to as the song repository.
 # If the path is not absolute, it will be relative to the location of this file.
 songs: /mnt/song-storage
+
+# The DMX configuration for mtrack. This maps OLA universes to light show names defined within
+# song files.
+dmx:
+  # The DMX engine in mtrack has a dimming engine that can be issued using MIDI program change (PC) commands.
+  # This modifier is multiplied by the value of the PC command to give a dimming duration, e.g.
+  # PC1 * 1.0 dim speed modifier = 1.0 second dim time
+  # PC1 * 0.25 dim speed modifier = 0.25 second dim time
+  # PC5 * 0.25 dim speed modifier = 1.25 second dim time
+  dim_speed_modifier: 0.25
+
+  # Universes here map OLA universe numbers into light show names.
+  universes:
+  # Any songs with a light show with a universe_name "light-show" will be played on OLA universe 1.
+  - universe: 1
+    name: light-show
 
 # Status events are emitted to the controller while mtrack is running. This is largely done
 # in order to confirm that mtrack is connected to the controller and operating properly.
@@ -396,6 +429,81 @@ midi_event:
 There are more that can be implemented, but these are just the ones that came to me at the moment.
 If you'd like to add any particular ones, please file an issue. Otherwise I'll add them in as they
 strike me.
+
+## Light shows
+
+Light shows and DMX playback are now supported through the use of the [Open Lighting Architecture](https://www.openlighting.org/).
+Before delving too far into this, let's define some basic DMX information.
+
+### Basic DMX information
+
+DMX is a standard that allows for the controlling of stage devices, primarily lights. Each of these devices will react to data being
+fed into one or more DMX channels. Each DMX channel can be set from `0` to `255`. For example, a multicolor stage light might have 3
+DMX channels: 1 for red, 1 for green, 1 for blue. In order to set the color of the light, you would have to supply these channels with
+data representing the color that you want. DMX data is arranged into universes, where 1 universe consists of 512 channels of DMX data.
+
+### Configuring mtrack for DMX playback
+
+In order to use light shows, you'll need to set up OLA on your playback device and map your DMX devices into DMX universes. I recommend
+following [this tutorial](https://www.openlighting.org/ola/getting-started/). mtrack assumes that OLA is running on the same device.
+
+mtrack can be configured to stream DMX data to OLA universes. This can be done through the mtrack configuration file when using `mtrack start`
+or through the command line when using `mtrack play` using the `--dmx-dimming-speed-modifier` argument and the `dmx-universe-config` arguments.
+The `dmx-universe-config` argument format is:
+
+```
+universe=1,name=light-show;universe=2,name=another-light-show
+```
+
+Light shows can be defined in `Song` files and consist of an array of "universe names" and MIDI files. These universe names correlate to the
+names used in the mtrack configuration. For instance, a song with a light show with a universe name of `light-show` will play on the mtrack
+universe with the equivalent name.
+
+Additionally, songs can be defined to only recognize specific MIDI channels from the given MIDI file as lighting data. For instance, if you
+have a single MIDI file that contains all of your automation, you can restrict light shows to only recognize events from channel 15.
+
+Examples for these configuration options are in the song definition example and mtrack player examples above.
+
+### MIDI format
+
+The MIDI engine was heavily inspired by the [DecaBox MIDI to DMX converter](https://response-box.com/gear/product/decabox-protocol-converter-basic-firmware/), with the MIDI to DMX conversion mechanism being described
+[here](http://67.205.146.177/books/decabox-midi-to-dmx-converter).
+
+Note here that MIDI is an older protocol and doesn't have the same resolution that DMX does. As a result, we have
+to do some munging here in order to make this work. Some other notes:
+
+- `u7` is an unsigned 7 bit integer, which ranges from 0-127.
+- mtrack only supports 127 DMX channels per universe at present.
+
+MIDI data is converted into DMX data as follows:
+
+| MIDI Event | Outputs | Description |
+|------------|---------|-------------|
+| key on/off | key (`u7`), velocity(`u7`) | The value of _key_ is interpreted as the DMX channel, and _velocity_ is doubled and assigned to the channel |
+| program change | program (`u7`) | The dimming speed. 0 means instantaneous, any other number is multiplied by the dimming speed modifier and used as a duration. |
+| continuous controller | controller (`u7`), value (`u7`) | Similar to key on/off, the value of the _controller_ is interpreted as the DMX channel, and _value_ is doubled and assigned to the channel. Ignores dimming. |
+
+The general idea here is to create a MIDI file that generally describes the way you want your lights to display. Much like regular MIDI
+automation, you can program some pretty dynamic lights this way.
+
+### Dimming engine
+
+The dimming engine built into mtrack is controlled by program change (PC) commands. The value of the PC command will be multiplied by
+the dimming speed modifier and will produce a duration. Subsequent key on/off commands will gradually progress to their new value
+over this duration. For example, a dimming speed modifier of `0.25` and a PC command with a `1` will produce a dimming duration of `0.25`.
+New key on/off events will take `0.25` seconds to reach the new value. PC0 will ensure color changes are instantaneous.
+
+Dimming of channels is independent of one another. Imagine a lifecycle that looks like this, assuming a dimming speed modifier of 1:
+
+```
+PC5 --> key_on(0, 127) --> PC10 --> key_on(1, 127)
+```
+
+A PC command instructs the dimmer to dim over 5 seconds. The first `key_on` event will gradually progress channel from 0 to 127 over 5 seconds.
+After this, another PC command instructs the dimmer to dim over 10 seconds. The second `key_on` event will gradually progress channel 1 from 0
+to 127 over 10 seconds. This will not affect channel 0, which will still only take 5 seconds.
+
+Continuous controller (CC) messages will ignore dimming.
 
 ## Known limitations
 

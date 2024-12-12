@@ -16,7 +16,7 @@ use std::{
     error::Error,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Barrier,
+        Arc, Barrier, RwLock,
     },
     thread,
     time::Duration,
@@ -44,8 +44,8 @@ pub struct Player {
     mappings: Arc<HashMap<String, Vec<u16>>>,
     /// The MIDI device to play MIDI back through.
     midi_device: Option<Arc<dyn midi::Device>>,
-    /// The DMX device to use.
-    dmx_device: Arc<dyn dmx::Device>,
+    /// The DMX engine to use.
+    dmx_engine: Option<Arc<RwLock<dmx::engine::Engine>>>,
     /// The playlist to use.
     playlist: Arc<Playlist>,
     /// The all songs playlist.
@@ -67,7 +67,7 @@ impl Player {
         device: Arc<dyn audio::Device>,
         mappings: HashMap<String, Vec<u16>>,
         midi_device: Option<Arc<dyn midi::Device>>,
-        dmx_device: Arc<dyn dmx::Device>,
+        dmx_engine: Option<Arc<RwLock<dmx::engine::Engine>>>,
         playlist: Arc<Playlist>,
         all_songs_playlist: Arc<Playlist>,
         status_events: Option<StatusEvents>,
@@ -76,7 +76,7 @@ impl Player {
             device,
             mappings: Arc::new(mappings),
             midi_device,
-            dmx_device,
+            dmx_engine,
             playlist,
             all_songs: all_songs_playlist,
             use_all_songs: AtomicBool::new(false),
@@ -179,7 +179,7 @@ impl Player {
             let song = song.clone();
             let device = self.device.clone();
             let midi_device = self.midi_device.clone();
-            let dmx_device = self.dmx_device.clone();
+            let dmx_engine = self.dmx_engine.clone();
             let cancel_handle = cancel_handle.clone();
             let mappings = self.mappings.clone();
             tokio::task::spawn_blocking(move || {
@@ -187,7 +187,7 @@ impl Player {
                     device,
                     mappings,
                     midi_device,
-                    dmx_device,
+                    dmx_engine,
                     song,
                     cancel_handle,
                     play_tx,
@@ -237,7 +237,7 @@ impl Player {
         device: Arc<dyn audio::Device>,
         mappings: Arc<HashMap<String, Vec<u16>>>,
         midi_device: Option<Arc<dyn midi::Device>>,
-        dmx_device: Arc<dyn dmx::Device>,
+        dmx_engine: Option<Arc<RwLock<dmx::engine::Engine>>>,
         song: Arc<Song>,
         cancel_handle: CancelHandle,
         play_tx: oneshot::Sender<()>,
@@ -251,8 +251,8 @@ impl Player {
             if song.midi_file.is_some() && midi_device.is_some() {
                 num_barriers += 1;
             }
-            if song.dmx_file.is_some() {
-                num_barriers += 1;
+            if !song.light_shows.is_empty() && dmx_engine.is_some() {
+                num_barriers += song.light_shows.len();
             }
             num_barriers
         }));
@@ -276,28 +276,25 @@ impl Player {
             })
         };
 
-        let dmx_join_handle = if song.dmx_file.is_some() {
-            Some({
-                let dmx_device = dmx_device.clone();
-                let song = song.clone();
-                let barrier = barrier.clone();
-                let cancel_handle = cancel_handle.clone();
+        let dmx_join_handle = dmx_engine.map(|dmx_engine| {
+            let dmx_engine = dmx_engine.clone();
+            let song = song.clone();
+            let barrier = barrier.clone();
+            let cancel_handle = cancel_handle.clone();
 
-                thread::spawn(move || {
-                    let song_name = song.name.to_string();
+            thread::spawn(move || {
+                let song_name = song.name.to_string();
 
-                    if let Err(e) = dmx_device.play(song, cancel_handle, barrier) {
-                        error!(
-                            err = e.as_ref(),
-                            song = song_name,
-                            "Error while playing DMX"
-                        );
-                    }
-                })
+                if let Err(e) = dmx::engine::Engine::play(dmx_engine, song, cancel_handle, barrier)
+                {
+                    error!(
+                        err = e.as_ref(),
+                        song = song_name,
+                        "Error while playing DMX"
+                    );
+                }
             })
-        } else {
-            None
-        };
+        });
 
         let midi_join_handle = if let Some(midi_device) = midi_device {
             let midi_device = midi_device.clone();
@@ -526,7 +523,7 @@ impl StatusEvents {
 mod test {
     use std::{collections::HashMap, error::Error, path::PathBuf, sync::Arc};
 
-    use crate::{audio, config, dmx, midi, playlist::Playlist, test::eventually};
+    use crate::{audio, config, midi, playlist::Playlist, test::eventually};
 
     use super::Player;
 
@@ -535,7 +532,7 @@ mod test {
         let device = Arc::new(audio::test::Device::get("mock-device"));
         let mappings: HashMap<String, Vec<u16>> = HashMap::new();
         let midi_device = Arc::new(midi::test::Device::get("mock-midi-device"));
-        let dmx_device = dmx::get_device();
+        let dmx_engine = None;
         let songs = config::get_all_songs(&PathBuf::from("assets/songs"))?;
         let playlist =
             config::parse_playlist(&PathBuf::from("assets/playlist.yaml"), songs.clone())?;
@@ -544,7 +541,7 @@ mod test {
             device.clone(),
             mappings,
             Some(midi_device.clone()),
-            dmx_device,
+            dmx_engine,
             playlist.clone(),
             all_songs_playlist.clone(),
             None,

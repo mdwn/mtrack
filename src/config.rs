@@ -21,20 +21,24 @@ use midly::live::LiveEvent;
 use serde::Deserialize;
 use tracing::error;
 
+use crate::audio;
 use crate::player::StatusEvents;
-use crate::{audio, dmx};
 
 use self::midi::ToMidiEvent;
 use self::player::Player;
 use self::playlist::Playlist;
 
 mod controller;
+mod dmx;
 mod midi;
 mod player;
 mod playlist;
 mod song;
 mod track;
 mod trackmappings;
+
+/// The default DMX dimming speed.
+pub const DEFAULT_DMX_DIMMING_SPEED_MODIFIER: f64 = 1.0;
 
 /// Parses songs from a YAML file.
 pub fn parse_songs(file: &PathBuf) -> Result<Vec<crate::songs::Song>, Box<dyn Error>> {
@@ -95,7 +99,14 @@ pub fn init_player_and_controller(
         .midi_device
         .map(|midi_device| crate::midi::get_device(&midi_device))
         .map_or(Ok(None), |result| result.map(Some))?;
-    let dmx_device = dmx::get_device();
+    let dmx_engine = player_config.dmx.map(|dmx_config| {
+        crate::dmx::create_engine(
+            dmx_config
+                .get_dimming_speed_modifier()
+                .unwrap_or(DEFAULT_DMX_DIMMING_SPEED_MODIFIER),
+            dmx_config.to_configs(),
+        )
+    });
     let songs = get_all_songs(&PathBuf::from(player_config.songs))?;
     let playlist = parse_playlist(&PathBuf::from(playlist_path), Arc::clone(&songs))?;
     let status_events = match player_config.status_events {
@@ -123,7 +134,7 @@ pub fn init_player_and_controller(
         device,
         player_config.track_mappings.track_mappings,
         midi_device.clone(),
-        dmx_device,
+        dmx_engine,
         playlist,
         crate::playlist::Playlist::from_songs(songs)?,
         status_events,
