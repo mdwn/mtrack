@@ -5,7 +5,10 @@ midi_event:
   channel: 16
   program: 2
 
-midi_file: song.mid
+midi_playback:
+  file: song.mid
+  exclude_midi_channels:
+  - 15
 
 light_shows:
 - universe_name: light-show

@@ -38,8 +38,8 @@ pub struct Song {
     pub name: String,
     /// The MIDI event to play when the song is selected in a playlist.
     pub midi_event: Option<LiveEvent<'static>>,
-    /// The MIDI file to play along with the audio tracks.
-    pub midi_file: Option<PathBuf>,
+    /// The MIDI playback configuration.
+    pub midi_playback: Option<MidiPlayback>,
     /// The light show configurations
     pub light_shows: Vec<LightShow>,
     /// The number of channels required to play this song.
@@ -54,6 +54,15 @@ pub struct Song {
     pub duration: Duration,
     /// The individual audio tracks.
     pub tracks: Vec<Track>,
+}
+
+/// Midi playback configuration for the song.
+pub struct MidiPlayback {
+    /// The path to the MIDI file.
+    pub file: PathBuf,
+
+    /// The MIDI channels to exclude from playback.
+    pub exclude_midi_channels: Vec<u8>,
 }
 
 /// A light show for the song.
@@ -98,13 +107,13 @@ impl Song {
     pub fn new(
         name: String,
         midi_event: Option<LiveEvent<'static>>,
-        midi_file: Option<PathBuf>,
+        midi_playback: Option<MidiPlayback>,
         light_shows: Vec<LightShow>,
         tracks: Vec<Track>,
     ) -> Result<Song, Box<dyn Error>> {
         // Make sure the MIDI/DMX files are parseable.
-        if let Some(midi_file) = &midi_file {
-            if !midi_file.exists() {
+        if let Some(midi_playback) = &midi_playback {
+            if !midi_playback.file.exists() {
                 return Err("MIDI file does not exist".into());
             }
         }
@@ -169,7 +178,7 @@ impl Song {
         Ok(Song {
             name,
             midi_event,
-            midi_file,
+            midi_playback,
             light_shows,
             num_channels,
             sample_rate,
@@ -199,7 +208,9 @@ impl Song {
 
     /// Returns a MIDI sheet for the song.
     pub fn midi_sheet(&self) -> Option<Result<MidiSheet, Box<dyn Error>>> {
-        self.midi_file.as_ref().map(parse_midi)
+        self.midi_playback
+            .as_ref()
+            .map(|midi_playback| parse_midi(&midi_playback.file))
     }
 }
 
@@ -229,7 +240,7 @@ impl fmt::Display for Song {
             self.num_channels,
             self.sample_rate,
             self.midi_event,
-            self.midi_file,
+            self.midi_playback.as_ref().map(|midi_playback|&midi_playback.file),
             self.tracks
                 .iter()
                 .map(|track| track.name.clone())
@@ -631,28 +642,28 @@ mod test {
         assert_eq!(1, song.num_channels);
         assert_eq!(22050, song.sample_rate);
         assert!(song.midi_event.is_none());
-        assert!(song.midi_file.is_some());
+        assert!(song.midi_playback.is_some());
 
         let song = &songs[1];
         assert_eq!("Song 2", song.name);
         assert_eq!(1, song.num_channels);
         assert_eq!(44100, song.sample_rate);
         assert!(song.midi_event.is_some());
-        assert!(song.midi_file.is_none());
+        assert!(song.midi_playback.is_none());
 
         let song = &songs[2];
         assert_eq!("Song 3", song.name);
         assert_eq!(2, song.num_channels);
         assert_eq!(44100, song.sample_rate);
         assert!(song.midi_event.is_none());
-        assert!(song.midi_file.is_some());
+        assert!(song.midi_playback.is_some());
 
         let song = &songs[3];
         assert_eq!("Song 4", song.name);
         assert_eq!(8, song.num_channels);
         assert_eq!(44100, song.sample_rate);
         assert!(song.midi_event.is_none());
-        assert!(song.midi_file.is_some());
+        assert!(song.midi_playback.is_some());
     }
 
     #[test]

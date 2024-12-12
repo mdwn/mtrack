@@ -248,7 +248,7 @@ impl Player {
         // Set up the play barrier, which will synchronize the three calls to play.
         let barrier = Arc::new(Barrier::new({
             let mut num_barriers = 1;
-            if song.midi_file.is_some() && midi_device.is_some() {
+            if song.midi_playback.is_some() && midi_device.is_some() {
                 num_barriers += 1;
             }
             if !song.light_shows.is_empty() && dmx_engine.is_some() {
