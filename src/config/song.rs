@@ -35,10 +35,23 @@ pub(super) struct Song {
     midi_event: Option<midi::Event>,
     /// The associated MIDI file to play.
     midi_file: Option<String>,
+    /// MIDI playback configuration. Will override the midi_file field.
+    midi_playback: Option<MidiPlayback>,
     /// The light show configurations.
     light_shows: Option<Vec<LightShow>>,
     /// The associated tracks to play.
     tracks: Vec<track::Track>,
+}
+
+// A YAML representation of MIDI files with channel exclusions.
+#[derive(Deserialize)]
+pub(super) struct MidiPlayback {
+    /// The MIDI file.
+    file: String,
+
+    /// The MIDI channels to exclude from this MIDI file. Useful if you want to exclude lighting
+    /// data from being played back with other MIDI automation.
+    exclude_midi_channels: Option<Vec<u8>>,
 }
 
 // A YAML representation of light shows.
@@ -66,15 +79,32 @@ impl Song {
         }
         .to_path_buf();
 
+        let midi_playback = if let Some(midi_playback) = &self.midi_playback {
+            Some(crate::songs::MidiPlayback {
+                file: song_path.join(PathBuf::from(midi_playback.file.clone())),
+                exclude_midi_channels: midi_playback
+                    .exclude_midi_channels
+                    .as_ref()
+                    .map_or_else(Vec::new, |channels| {
+                        channels.clone().iter().map(|val| val - 1).collect()
+                    }),
+            })
+        } else {
+            self.midi_file
+                .as_ref()
+                .map(|midi_file| crate::songs::MidiPlayback {
+                    file: song_path.join(PathBuf::from(midi_file)),
+                    exclude_midi_channels: Vec::new(),
+                })
+        };
+
         crate::songs::Song::new(
             self.name.clone(),
             self.midi_event
                 .as_ref()
                 .map(|event| event.to_midi_event())
                 .map_or(Ok(None), |result| result.map(Some))?,
-            self.midi_file
-                .as_ref()
-                .map(|midi_file| song_path.join(PathBuf::from(midi_file))),
+            midi_playback,
             self.light_shows
                 .as_ref()
                 .map_or_else(Vec::new, |light_shows| {
@@ -83,7 +113,13 @@ impl Song {
                         .map(|light_show| crate::songs::LightShow {
                             universe_name: light_show.universe_name.clone(),
                             dmx_file: song_path.join(PathBuf::from(light_show.dmx_file.clone())),
-                            midi_channels: light_show.midi_channels.clone().unwrap_or_default(),
+                            midi_channels: light_show
+                                .midi_channels
+                                .clone()
+                                .unwrap_or_default()
+                                .iter()
+                                .map(|val| val - 1)
+                                .collect(),
                         })
                         .collect()
                 }),

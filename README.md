@@ -129,8 +129,15 @@ light_shows:
 - universe_name: a-second-light-show
   dmx_file: DMX Light Show 2.mid
 
-# An optional MIDI file to play along with the audio.
-midi_file: Song Automation.mid
+# An optional MIDI playback configuration.
+midi_playback:
+  file: Song Automation.mid
+
+  # MIDI channels from the MIDI file to exclude. Useful if you want to do things like
+  # exclude lighting data from MIDI playback.
+  exclude_midi_channels:
+  - 15
+
 
 # The tracks associated with this song.
 tracks:

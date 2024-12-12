@@ -13,7 +13,7 @@
 //
 use std::{
     cmp::min,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     error::Error,
     fmt, mem,
     ops::Add,
@@ -125,6 +125,14 @@ impl super::Device for Device {
         };
         let output = MidiOutput::new("mtrack player output")?;
 
+        let exclude_midi_channels = HashSet::from_iter(
+            song.midi_playback
+                .as_ref()
+                .expect("Expected MIDI playback to be Some")
+                .exclude_midi_channels
+                .clone(),
+        );
+
         info!(
             device = self.name,
             song = song.name,
@@ -137,9 +145,10 @@ impl super::Device for Device {
 
             // Wrap the midir connection in a cancel connection so that we can stop playback.
             let midir_connection = output.connect(output_port, "mtrack player")?;
-            let connection = CancelConnection {
+            let connection = ExcludeConnection {
                 connection: midir_connection,
                 cancel_handle: cancel_handle.clone(),
+                exclude_midi_channels,
             };
             let mut player = Player::new(
                 AccurateTimer::new(midi_sheet.ticker, cancel_handle.clone()),
@@ -371,17 +380,25 @@ impl<T: Timer> Timer for AccurateTimer<T> {
     }
 }
 
-/// CancelConnection is a nodi connection that can be cancelled.
-struct CancelConnection<C: Connection> {
+/// ExcludeConnection is a nodi connection that can be cancelled and will exclude the given MIDI channels..
+struct ExcludeConnection<C: Connection> {
     connection: C,
     cancel_handle: CancelHandle,
+    exclude_midi_channels: HashSet<u8>,
 }
 
-impl<C: Connection> Connection for CancelConnection<C> {
+impl<C: Connection> Connection for ExcludeConnection<C> {
     fn play(&mut self, event: nodi::MidiEvent) -> bool {
         if self.cancel_handle.is_cancelled() {
             return false;
         };
-        self.connection.play(event)
+
+        if self.exclude_midi_channels.is_empty()
+            || !self.exclude_midi_channels.contains(&event.channel.as_int())
+        {
+            self.connection.play(event)
+        } else {
+            true
+        }
     }
 }
