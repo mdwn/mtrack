@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6] - DMX engine with dimming support, MIDI channel exclusions.
+
 DMX engine using OLA has been added. Contains a built in dimming engine.
 
 Added the ability to exclude MIDI channels from MIDI playback.
