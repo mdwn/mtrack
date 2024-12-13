@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+`mtrack -V` will report the correct mtrack version.
+
 ## [0.1.7] - Fix dependencies.
 
 Dependencies for mtrack have all been updated. This should hopefully resolve the issue
