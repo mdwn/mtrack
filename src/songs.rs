@@ -84,18 +84,27 @@ pub struct LightShow {
 pub trait Sample:
     cpal::SizedSample + hound::Sample + Default + Send + Sync + std::ops::AddAssign + 'static
 {
+    fn float_value(&self) -> f32;
+
     /// Scales the sample given the bits per sample. i8, i16, i24 are all read using i32, but
     /// will be significantly reduced volume. By scaling it, the samples won't be anywhere
     /// near as quiet and volume should be decently normalized.
     fn scale(&self, bits_per_sample: u16) -> Self;
 }
 impl Sample for i32 {
+    fn float_value(&self) -> f32 {
+        use cpal::Sample;
+        self.to_float_sample()
+    }
     fn scale(&self, bits_per_sample: u16) -> Self {
         // Do a left shift to increase the magnitude of the sample.
         (self << (32 - bits_per_sample)) as Self
     }
 }
 impl Sample for f32 {
+    fn float_value(&self) -> f32 {
+        *self
+    }
     fn scale(&self, _: u16) -> Self {
         // Only f32 is supported, so there's no need to scale this.
         *self

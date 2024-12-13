@@ -22,7 +22,7 @@ use std::{
     },
 };
 
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::{traits::{DeviceTrait, HostTrait, StreamTrait}, Sample};
 use tracing::{error, info, span, Level};
 
 use crate::{
@@ -155,7 +155,14 @@ impl Device {
             duration = song.duration_string(),
             "Playing song."
         );
-        if self.max_channels < song.num_channels {
+
+        let num_channels = *mappings
+            .iter()
+            .flat_map(|entry| entry.1)
+            .max()
+            .ok_or("no max channel found")?;
+
+        if self.max_channels < num_channels {
             return Err(format!(
                 "Song {} requires {} channels, audio device {} only has {}",
                 song.name, song.num_channels, self.name, self.max_channels
@@ -163,12 +170,6 @@ impl Device {
             .into());
         }
         let source = song.source::<S>(mappings)?;
-
-        let num_channels = *mappings
-            .iter()
-            .flat_map(|entry| entry.1)
-            .max()
-            .ok_or("no max channel found")?;
 
         let (tx, rx) = channel();
 
@@ -218,8 +219,8 @@ impl Device {
         mut source: songs::SongSource<S>,
         tx: Sender<()>,
         cancel_handle: CancelHandle,
-    ) -> impl FnMut(&mut [S]) {
-        move |data: &mut [S]| {
+    ) -> impl FnMut(&mut [f32]) {
+        move |data: &mut [f32]| {
             let data_len = data.len();
             let mut data_pos = 0;
 
@@ -234,7 +235,7 @@ impl Device {
 
                     match source.next() {
                         Some(sample) => {
-                            *data = sample;
+                            *data = sample.float_value();
                             data_pos += 1;
                         }
                         None => {
