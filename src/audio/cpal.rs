@@ -12,7 +12,6 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 use std::{
-    any::type_name,
     collections::HashMap,
     error::Error,
     fmt,
@@ -22,8 +21,12 @@ use std::{
     },
 };
 
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use tracing::{error, info, span, Level};
+use cpal::{
+    traits::{DeviceTrait, HostTrait, StreamTrait},
+    Stream,
+};
+use hound::SampleFormat;
+use tracing::{debug, error, info, span, Level};
 
 use crate::{
     playsync::CancelHandle,
@@ -41,6 +44,10 @@ pub struct Device {
     host_id: cpal::HostId,
     /// The underlying cpal device.
     device: cpal::Device,
+    /// Supports i32.
+    supports_i32: bool,
+    /// Supports f32.
+    supports_f32: bool,
 }
 
 impl fmt::Display for Device {
@@ -75,11 +82,42 @@ impl Device {
 
         let mut devices: Vec<Device> = Vec::new();
         for host_id in cpal::available_hosts() {
-            let host_devices = cpal::host_from_id(host_id)?.devices()?;
+            let host_devices = match cpal::host_from_id(host_id)?.devices() {
+                Ok(host_devices) => host_devices,
+                Err(e) => {
+                    error!(
+                        err = e.to_string(),
+                        host = host_id.name(),
+                        "Unable to list devices for host"
+                    );
+                    continue;
+                }
+            };
 
             for device in host_devices {
                 let mut max_channels = 0;
+
+                let output_configs = device.supported_output_configs();
+                if let Err(e) = output_configs {
+                    debug!(
+                        err = e.to_string(),
+                        host = host_id.name(),
+                        device = device.name().unwrap_or_default(),
+                        "Error getting output configs"
+                    );
+                    continue;
+                }
+
+                let mut supports_f32 = false;
+                let mut supports_i32 = false;
+
                 for output_config in device.supported_output_configs()? {
+                    if output_config.sample_format().is_float() {
+                        supports_f32 = true;
+                    }
+                    if output_config.sample_format().is_int() {
+                        supports_i32 = true;
+                    }
                     if max_channels < output_config.channels() {
                         max_channels = output_config.channels();
                     }
@@ -91,6 +129,8 @@ impl Device {
                         max_channels,
                         host_id,
                         device,
+                        supports_f32,
+                        supports_i32,
                     })
                 }
             }
@@ -121,48 +161,20 @@ impl super::Device for Device {
         cancel_handle: CancelHandle,
         play_barrier: Arc<Barrier>,
     ) -> Result<(), Box<dyn Error>> {
-        match song.sample_format {
-            hound::SampleFormat::Int => {
-                self.play_format::<i32>(song, mappings, cancel_handle, play_barrier)
-            }
-            hound::SampleFormat::Float => {
-                self.play_format::<f32>(song, mappings, cancel_handle, play_barrier)
-            }
-        }
-    }
-}
-
-impl Device {
-    /// Plays the given song using the specified format.
-    fn play_format<S>(
-        &self,
-        song: Arc<Song>,
-        mappings: &HashMap<String, Vec<u16>>,
-        cancel_handle: CancelHandle,
-        play_barrier: Arc<Barrier>,
-    ) -> Result<(), Box<dyn Error>>
-    where
-        S: songs::Sample,
-    {
         let span = span!(Level::INFO, "play song (cpal)");
         let _enter = span.enter();
-        let format_string = type_name::<S>();
 
         info!(
-            format = format_string,
+            format = if song.sample_format == SampleFormat::Float {
+                "float"
+            } else {
+                "int"
+            },
             device = self.name,
             song = song.name,
             duration = song.duration_string(),
             "Playing song."
         );
-        if self.max_channels < song.num_channels {
-            return Err(format!(
-                "Song {} requires {} channels, audio device {} only has {}",
-                song.name, song.num_channels, self.name, self.max_channels
-            )
-            .into());
-        }
-        let source = song.source::<S>(mappings)?;
 
         let num_channels = *mappings
             .iter()
@@ -170,22 +182,32 @@ impl Device {
             .max()
             .ok_or("no max channel found")?;
 
+        if self.max_channels < num_channels {
+            return Err(format!(
+                "{} channels requested for song {}, audio device {} only has {}",
+                num_channels, song.name, self.name, self.max_channels
+            )
+            .into());
+        }
+
         let (tx, rx) = channel();
 
-        let mut output_callback = Device::output_callback(source, tx, cancel_handle);
         play_barrier.wait();
-        let output_stream = self.device.build_output_stream(
-            &cpal::StreamConfig {
-                channels: num_channels,
-                sample_rate: cpal::SampleRate(song.sample_rate),
-                buffer_size: cpal::BufferSize::Default,
-            },
-            move |data, _| output_callback(data),
-            |err: cpal::StreamError| {
-                error!(err = err.to_string(), "Error during stream.");
-            },
-            None,
-        )?;
+        let output_stream = if self.supports_i32 && song.sample_format == hound::SampleFormat::Int {
+            debug!("Playing i32->i32");
+            self.build_stream::<i32, i32>(song, mappings, num_channels, tx, cancel_handle)?
+        } else if self.supports_f32 && song.sample_format == hound::SampleFormat::Float {
+            debug!("Playing f32->f32");
+            self.build_stream::<f32, f32>(song, mappings, num_channels, tx, cancel_handle)?
+        } else if self.supports_i32 && song.sample_format == hound::SampleFormat::Float {
+            debug!("Playing f32->i32");
+            self.build_stream::<f32, i32>(song, mappings, num_channels, tx, cancel_handle)?
+        } else if self.supports_f32 && song.sample_format == hound::SampleFormat::Int {
+            debug!("Playing i32->f32");
+            self.build_stream::<i32, f32>(song, mappings, num_channels, tx, cancel_handle)?
+        } else {
+            return Err("Device does not support correct sample format for song".into());
+        };
         output_stream.play()?;
 
         // Wait for the read finish.
@@ -193,7 +215,41 @@ impl Device {
 
         Ok(())
     }
+}
 
+impl Device {
+    /// Builds an output stream.
+    fn build_stream<S: songs::Sample, C: cpal::SizedSample + cpal::FromSample<S> + 'static>(
+        &self,
+        song: Arc<Song>,
+        mappings: &HashMap<String, Vec<u16>>,
+        num_channels: u16,
+        tx: Sender<()>,
+        cancel_handle: CancelHandle,
+    ) -> Result<Stream, Box<dyn Error>> {
+        let stream_config = cpal::StreamConfig {
+            channels: num_channels,
+            sample_rate: cpal::SampleRate(song.sample_rate),
+            buffer_size: cpal::BufferSize::Default,
+        };
+        let error_callback = |err: cpal::StreamError| {
+            error!(err = err.to_string(), "Error during stream.");
+        };
+
+        let source = song.source::<S>(mappings)?;
+        let mut output_callback = Device::output_callback::<S, C>(source, tx, cancel_handle);
+        let stream = self.device.build_output_stream(
+            &stream_config,
+            move |data, _| output_callback(data),
+            error_callback,
+            None,
+        );
+
+        match stream {
+            Ok(stream) => Ok(stream),
+            Err(e) => Err(e.to_string().into()),
+        }
+    }
     // If the playback should stop, this sends on the provided Sender and returns true. This will
     // only return true and send if we're on a frame boundary.
     fn signal_stop<S: songs::Sample>(
@@ -214,12 +270,12 @@ impl Device {
     }
 
     // Creates a callback function that fills the output device buffer.
-    fn output_callback<S: songs::Sample>(
+    fn output_callback<S: songs::Sample, F: cpal::Sample + cpal::FromSample<S>>(
         mut source: songs::SongSource<S>,
         tx: Sender<()>,
         cancel_handle: CancelHandle,
-    ) -> impl FnMut(&mut [S]) {
-        move |data: &mut [S]| {
+    ) -> impl FnMut(&mut [F]) {
+        move |data: &mut [F]| {
             let data_len = data.len();
             let mut data_pos = 0;
 
@@ -234,7 +290,7 @@ impl Device {
 
                     match source.next() {
                         Some(sample) => {
-                            *data = sample;
+                            *data = sample.to_sample::<F>();
                             data_pos += 1;
                         }
                         None => {
