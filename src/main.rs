@@ -23,7 +23,7 @@ mod songs;
 #[cfg(test)]
 mod test;
 
-use clap::{Parser, Subcommand};
+use clap::{crate_version, Parser, Subcommand};
 use config::init_player_and_controller;
 use dmx::universe::UniverseConfig;
 use player::Player;
@@ -55,7 +55,7 @@ Alias=mtrack.service
 #[derive(Parser)]
 #[clap(
     author = "Michael Wilson",
-    version = "0.1.0",
+    version = crate_version!(),
     about = "A multitrack player."
 )]
 struct Cli {
