@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8] - Better MacOS support.
+
+MacOS support is improved. It's not super thoroughly tested, but has been tested
+against several audio interfaces.
+
 `mtrack -V` will report the correct mtrack version.
 
 ## [0.1.7] - Fix dependencies.
