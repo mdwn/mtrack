@@ -23,6 +23,7 @@ use crate::player::Player;
 
 pub mod keyboard;
 pub mod midi;
+pub mod multi;
 
 /// Controller events that will trigger behavior in the player.
 #[derive(Debug, PartialEq)]

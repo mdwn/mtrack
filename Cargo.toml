@@ -23,6 +23,7 @@ exclude = [
 [dependencies]
 clap = { version = "4.5.23", features = ["cargo", "derive"] }
 cpal = "0.15.3"
+futures = "0.3.31"
 hound = "3.5.1"
 libc = "0.2.168"
 midir = "0.10.1"
