@@ -112,5 +112,3 @@ jobs:
       - name: Extract release notes
         id: extract-release-notes
         uses: ffurrer2/extract-release-notes@v2
-      - name: Current release notes
-        run: echo '${{ steps.extract-release-notes.outputs.release_notes }}'
