@@ -205,6 +205,7 @@ mod test {
         let mut all_songs_buf: Vec<u8> = Vec::with_capacity(8);
         let mut playlist_buf: Vec<u8> = Vec::with_capacity(8);
         let mut unrecognized_buf: Vec<u8> = Vec::with_capacity(8);
+        let invalid_buf: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7, 8];
 
         play_event.write(&mut play_buf)?;
         prev_event.write(&mut prev_buf)?;
@@ -241,6 +242,8 @@ mod test {
             || playlist.current().name == "Song 1",
             "Playlist never became Song 1",
         );
+        // This invalid event should have no impact.
+        midi_device.mock_event(&invalid_buf);
         midi_device.mock_event(&unrecognized_buf);
         midi_device.mock_event(&next_buf);
         println!("Playlist -> Song 3");

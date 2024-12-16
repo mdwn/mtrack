@@ -25,7 +25,7 @@ pub mod keyboard;
 pub mod midi;
 
 /// Controller events that will trigger behavior in the player.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum Event {
     /// Plays the track at the current position in the playlist.
     Play,
