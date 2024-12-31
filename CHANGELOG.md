@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.9] - Better cancellation.
+
 The expiration mechanism for cancellation had an unintended side effect
 of preventing cancellation if one component of the song completed ahead
 of time. In other words, if a MIDI file finished playing but there is
