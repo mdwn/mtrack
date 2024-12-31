@@ -11,14 +11,13 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc, Condvar, Mutex};
 
 /// Represents the current cancel state.
 #[derive(PartialEq)]
 enum CancelState {
     Untouched,
     Cancelled,
-    Expired,
 }
 
 /// A cancel handle is passed to the device during a play operation. It's the player's responsibility
@@ -45,25 +44,23 @@ impl CancelHandle {
         *self.cancelled.lock().expect("Error getting lock") == CancelState::Cancelled
     }
 
-    /// Waits for the cancel handle to expire or be cancelled.
-    pub fn wait(&self) {
+    /// Waits for the cancel handle to be cancelled or for finished to be set to true.
+    pub fn wait(&self, finished: Arc<AtomicBool>) {
         let _unused = self
             .condvar
             .wait_while(
                 self.cancelled.lock().expect("Error getting lock"),
-                |cancelled| *cancelled == CancelState::Untouched,
+                |cancelled| {
+                    *cancelled == CancelState::Untouched && !finished.load(Ordering::Relaxed)
+                },
             )
             .expect("Error getting lock");
     }
 
-    /// Expire the cancel handle. This will let all active cancel handle waits proceed without
-    /// setting the handle to cancelled.
-    pub fn expire(&self) {
-        let mut cancel_state = self.cancelled.lock().expect("Error getting lock");
-        if *cancel_state == CancelState::Untouched {
-            *cancel_state = CancelState::Expired;
-            self.condvar.notify_all();
-        }
+    /// Notifies the cancel handle to see if this the song has been cancelled or if the
+    /// particular element has finished.
+    pub fn notify(&self) {
+        self.condvar.notify_all();
     }
 
     /// Cancel the device process.
@@ -71,7 +68,7 @@ impl CancelHandle {
         let mut cancel_state = self.cancelled.lock().expect("Error getting lock");
         if *cancel_state == CancelState::Untouched {
             *cancel_state = CancelState::Cancelled;
-            self.condvar.notify_all();
+            self.notify();
         }
     }
 }
@@ -89,7 +86,7 @@ mod test {
 
         let join = {
             let cancel_handle = cancel_handle.clone();
-            thread::spawn(move || cancel_handle.wait())
+            thread::spawn(move || cancel_handle.wait(Arc::new(AtomicBool::new(false))))
         };
 
         cancel_handle.cancel();
@@ -98,16 +95,15 @@ mod test {
     }
 
     #[test]
-    fn test_cancel_handle_expired() {
+    fn test_cancel_handle_finished() {
         let cancel_handle = CancelHandle::new();
         assert!(!cancel_handle.is_cancelled());
 
         let join = {
             let cancel_handle = cancel_handle.clone();
-            thread::spawn(move || cancel_handle.wait())
+            thread::spawn(move || cancel_handle.wait(Arc::new(AtomicBool::new(true))))
         };
 
-        cancel_handle.expire();
         assert!(join.join().is_ok());
         assert!(!cancel_handle.is_cancelled());
     }

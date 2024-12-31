@@ -151,7 +151,6 @@ impl Engine {
 
                     play_barrier.wait();
                     player.play(&dmx_midi_sheet.sheet);
-                    cancel_handle.expire();
                     play_finished.store(true, std::sync::atomic::Ordering::Relaxed);
                 })
             })
@@ -172,8 +171,6 @@ impl Engine {
                     .join()
                     .expect("Empty barrier join handle should join immediately");
             });
-
-        cancel_handle.wait();
 
         if cancel_handle.is_cancelled() {
             info!("DMX playback has been cancelled.");
