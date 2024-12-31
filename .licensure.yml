@@ -17,7 +17,7 @@ licenses:
     authors:
       - name: Michael Wilson
         email: mike@mdwn.dev
-    auto_template: true
+    template: Copyright (C) [year] [name of author]
 
 comments:
   - columns: 80
