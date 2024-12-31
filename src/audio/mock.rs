@@ -70,8 +70,10 @@ impl super::Device for Device {
         let (sleep_tx, sleep_rx) = mpsc::channel::<()>();
 
         self.is_playing.store(true, Ordering::Relaxed);
+        let finished = Arc::new(AtomicBool::new(false));
         let join_handle = {
             let cancel_handle = cancel_handle.clone();
+            let finished = finished.clone();
             // Wait until the song is cancelled or until the song is done.
             thread::spawn(move || {
                 play_barrier.wait();
@@ -80,11 +82,12 @@ impl super::Device for Device {
                 let _ = sleep_rx.recv_timeout(song.duration);
 
                 // Expire at the end of playback.
-                cancel_handle.expire();
+                finished.store(true, Ordering::Relaxed);
+                cancel_handle.notify();
             })
         };
 
-        cancel_handle.wait();
+        cancel_handle.wait(finished);
         sleep_tx.send(())?;
         let join_result = join_handle.join();
 

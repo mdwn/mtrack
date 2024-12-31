@@ -17,7 +17,10 @@ use std::{
     error::Error,
     fmt, mem,
     ops::Add,
-    sync::{Arc, Barrier, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Barrier, Mutex,
+    },
     thread,
     time::{self, Instant},
 };
@@ -140,8 +143,10 @@ impl super::Device for Device {
             "Playing song MIDI."
         );
 
+        let finished = Arc::new(AtomicBool::new(false));
         let join_handle = {
             let cancel_handle = cancel_handle.clone();
+            let finished = finished.clone();
 
             // Wrap the midir connection in a cancel connection so that we can stop playback.
             let midir_connection = output.connect(output_port, "mtrack player")?;
@@ -158,11 +163,12 @@ impl super::Device for Device {
             thread::spawn(move || {
                 play_barrier.wait();
                 player.play(&midi_sheet.sheet);
-                cancel_handle.expire();
+                finished.store(true, Ordering::Relaxed);
+                cancel_handle.notify();
             })
         };
 
-        cancel_handle.wait();
+        cancel_handle.wait(finished);
 
         if cancel_handle.is_cancelled() {
             info!("MIDI playback has been cancelled.");

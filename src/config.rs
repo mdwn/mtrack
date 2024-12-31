@@ -141,11 +141,10 @@ pub fn init_player_and_controller(
         crate::playlist::Playlist::from_songs(songs)?,
         status_events,
     );
-    let controller = crate::controller::Controller::new(
+    crate::controller::Controller::new(
         player,
         player_config.controller.driver(midi_device.clone())?,
-    );
-    controller
+    )
 }
 
 fn get_songs_path(player_path: &PathBuf, songs: String) -> PathBuf {
