@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+The expiration mechanism for cancellation had an unintended side effect
+of preventing cancellation if one component of the song completed ahead
+of time. In other words, if a MIDI file finished playing but there is
+still audio to play, the song is no longer cancellable. Additionally, it
+would be possible, in some circumstances, for the completion of one
+aspect of a song to cancel others unexpectedly.
+
+The "expiration" concept was introduced to allow cancellation while
+still allowing a song to finish normally. This has been replaced with a
+simple concept of an atomic bool that indicates whether a song component
+(MIDI, DMX, or audio) has finished and, when used in combination with
+the new "notify" function, will allow a cancel\_handle.wait() call to
+return without an actual cancellation happening.
+
 ## [0.1.8] - Better MacOS support.
 
 MacOS support is improved. It's not super thoroughly tested, but has been tested
