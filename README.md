@@ -525,6 +525,12 @@ This has been tested with:
 - MOTU UltraLite-mk5
 - Roland UM-ONE
 
+### DMX
+
+DMX is expected to be well supported through OLA, but the devices that have been explicitly tested:
+
+- Entec DMX USB Pro
+
 ### General disclaimer
 
 This is my first Rust project, so this is likely cringey, horrible non-idiomatic Rust. Feel free to
