@@ -202,10 +202,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
 
             let device = audio::get_device(&device_name)?;
-            let midi_device = match midi_device_name {
-                Some(midi_device_name) => Some(midi::get_device(&midi_device_name)?),
-                None => None,
-            };
             let dmx_engine = match dmx_universe_config {
                 Some(dmx_universe_config) => {
                     let mut universe_configs: Vec<UniverseConfig> = Vec::new();
@@ -257,8 +253,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             dmx_dimming_speed_modifier
                                 .unwrap_or(crate::config::DEFAULT_DMX_DIMMING_SPEED_MODIFIER),
                             universe_configs,
+                            HashMap::new(),
                         ))
                     }
+                }
+                None => None,
+            };
+            let midi_device = match midi_device_name {
+                Some(midi_device_name) => {
+                    Some(midi::get_device(&midi_device_name, dmx_engine.clone())?)
                 }
                 None => None,
             };

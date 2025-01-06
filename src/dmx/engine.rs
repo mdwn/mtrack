@@ -20,7 +20,7 @@ use std::{
     time::Duration,
 };
 
-use midly::num::u7;
+use midly::num::{u4, u7};
 use nodi::{Connection, Player};
 use tracing::{debug, error, info, span, Level};
 
@@ -36,13 +36,41 @@ use super::{universe::UniverseConfig, Universe};
 pub struct Engine {
     dimming_speed_modifier: f64,
     universes: HashMap<String, RwLock<Universe>>,
+    midi_input_to_channels: HashMap<String, MidiInputToChannels>,
     cancel_handle: CancelHandle,
     join_handles: Vec<JoinHandle<()>>,
 }
 
+/// Maps MIDI input to target DMX channels.
+#[derive(Clone)]
+pub struct MidiInputToChannels {
+    // The channel to monitor.
+    channel: u4,
+
+    // The MIDI input key value or CC value.
+    source: u8,
+
+    // The DMX channels that should be signaled based on the incoming value.
+    target_dmx_channels: Vec<u8>,
+}
+
+impl MidiInputToChannels {
+    pub fn new(channel: u8, source: u8, target_dmx_channels: Vec<u8>) -> MidiInputToChannels {
+        MidiInputToChannels {
+            channel: u4::from_int_lossy(channel),
+            source,
+            target_dmx_channels,
+        }
+    }
+}
+
 impl Engine {
     /// Creates a new DMX Engine.
-    pub fn new(dimming_speed_modifier: f64, universe_configs: Vec<UniverseConfig>) -> Engine {
+    pub fn new(
+        dimming_speed_modifier: f64,
+        universe_configs: Vec<UniverseConfig>,
+        midi_input_to_channels: HashMap<String, MidiInputToChannels>,
+    ) -> Engine {
         let cancel_handle = CancelHandle::new();
         let universes: HashMap<String, Universe> = universe_configs
             .into_iter()
@@ -63,6 +91,7 @@ impl Engine {
                 .into_iter()
                 .map(|(name, universe)| (name, RwLock::new(universe)))
                 .collect(),
+            midi_input_to_channels,
             cancel_handle,
             join_handles,
         }
@@ -192,6 +221,70 @@ impl Engine {
         info!("DMX playback stopped.");
 
         Ok(())
+    }
+
+    /// Handles an active MIDI input. Intended for mapping live MIDI events into
+    /// DMX signals.
+    pub fn handle_midi_input(&mut self, channel: u4, midi_message: midly::MidiMessage) {
+        self.midi_input_to_channels.clone().into_iter().for_each(
+            |(universe_name, midi_input_to_channels)| {
+                if channel == midi_input_to_channels.channel {
+                    match midi_message {
+                        midly::MidiMessage::NoteOn { key, vel } => {
+                            if key == midi_input_to_channels.source {
+                                midi_input_to_channels.target_dmx_channels.iter().for_each(
+                                    |dmx_channel| {
+                                        self.handle_midi_event(
+                                            universe_name.clone(),
+                                            midly::MidiMessage::NoteOn {
+                                                key: u7::from(*dmx_channel),
+                                                vel,
+                                            },
+                                        )
+                                    },
+                                );
+                            }
+                        }
+                        midly::MidiMessage::NoteOff { key, vel } => {
+                            if key == midi_input_to_channels.source {
+                                midi_input_to_channels.target_dmx_channels.iter().for_each(
+                                    |dmx_channel| {
+                                        self.handle_midi_event(
+                                            universe_name.clone(),
+                                            midly::MidiMessage::NoteOff {
+                                                key: u7::from(*dmx_channel),
+                                                vel,
+                                            },
+                                        )
+                                    },
+                                );
+                            }
+                        }
+                        midly::MidiMessage::Controller { controller, value } => {
+                            if controller == midi_input_to_channels.source {
+                                midi_input_to_channels.target_dmx_channels.iter().for_each(
+                                    |dmx_channel| {
+                                        self.handle_midi_event(
+                                            universe_name.clone(),
+                                            midly::MidiMessage::Controller {
+                                                controller: u7::from(*dmx_channel),
+                                                value,
+                                            },
+                                        )
+                                    },
+                                );
+                            }
+                        }
+                        _ => {
+                            debug!(
+                                midi_event = format!("{:?}", midi_message),
+                                "Unrecognized MIDI event"
+                            );
+                        }
+                    }
+                }
+            },
+        );
     }
 
     /// Handles an incoming MIDI event.

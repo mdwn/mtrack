@@ -14,13 +14,13 @@
 use std::{
     error::Error,
     fmt,
-    sync::{Arc, Barrier},
+    sync::{Arc, Barrier, RwLock},
 };
 
 use midly::live::LiveEvent;
 use tokio::sync::mpsc::Sender;
 
-use crate::{playsync::CancelHandle, songs::Song};
+use crate::{dmx::engine::Engine, playsync::CancelHandle, songs::Song};
 
 pub(crate) mod midir;
 mod mock;
@@ -51,12 +51,15 @@ pub fn list_devices() -> Result<Vec<Box<dyn Device>>, Box<dyn Error>> {
 }
 
 /// Gets a device with the given name.
-pub fn get_device(name: &String) -> Result<Arc<dyn Device>, Box<dyn Error>> {
+pub fn get_device(
+    name: &String,
+    dmx_engine: Option<Arc<RwLock<Engine>>>,
+) -> Result<Arc<dyn Device>, Box<dyn Error>> {
     if name.starts_with("mock") {
         return Ok(Arc::new(mock::Device::get(name)));
     };
 
-    Ok(Arc::new(midir::get(name)?))
+    Ok(Arc::new(midir::get(name, dmx_engine)?))
 }
 
 #[cfg(test)]

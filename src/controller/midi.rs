@@ -41,6 +41,7 @@ pub struct Driver {
     /// The MIDI event to look for to switch back to the current playlist.
     playlist: LiveEvent<'static>,
 }
+
 impl Driver {
     pub fn new(
         device: Arc<dyn midi::Device>,

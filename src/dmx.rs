@@ -11,9 +11,12 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-use std::sync::{Arc, RwLock};
+use std::{
+    collections::HashMap,
+    sync::{Arc, RwLock},
+};
 
-use engine::Engine;
+use engine::{Engine, MidiInputToChannels};
 use universe::{Universe, UniverseConfig};
 
 pub mod engine;
@@ -23,9 +26,11 @@ pub mod universe;
 pub fn create_engine(
     dimming_speed_modifier: f64,
     universe_configs: Vec<UniverseConfig>,
+    midi_input_to_channels: HashMap<String, MidiInputToChannels>,
 ) -> Arc<RwLock<Engine>> {
     Arc::new(RwLock::new(Engine::new(
         dimming_speed_modifier,
         universe_configs,
+        midi_input_to_channels,
     )))
 }

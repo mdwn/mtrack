@@ -96,18 +96,19 @@ pub fn init_player_and_controller(
 ) -> Result<crate::controller::Controller, Box<dyn Error>> {
     let player_config: Player = serde_yaml::from_str(&fs::read_to_string(player_path)?)?;
     let device = audio::get_device(&player_config.audio_device)?;
-    let midi_device = player_config
-        .midi_device
-        .map(|midi_device| crate::midi::get_device(&midi_device))
-        .map_or(Ok(None), |result| result.map(Some))?;
     let dmx_engine = player_config.dmx.map(|dmx_config| {
         crate::dmx::create_engine(
             dmx_config
                 .get_dimming_speed_modifier()
                 .unwrap_or(DEFAULT_DMX_DIMMING_SPEED_MODIFIER),
             dmx_config.to_configs(),
+            dmx_config.to_midi_input_to_channels(),
         )
     });
+    let midi_device = player_config
+        .midi_device
+        .map(|midi_device| crate::midi::get_device(&midi_device, dmx_engine.clone()))
+        .map_or(Ok(None), |result| result.map(Some))?;
     let songs_path = get_songs_path(player_path, player_config.songs);
     let songs = get_all_songs(&songs_path)?;
     let playlist = parse_playlist(&PathBuf::from(playlist_path), Arc::clone(&songs))?;
@@ -136,7 +137,7 @@ pub fn init_player_and_controller(
         device,
         player_config.track_mappings.track_mappings,
         midi_device.clone(),
-        dmx_engine,
+        dmx_engine.clone(),
         playlist,
         crate::playlist::Playlist::from_songs(songs)?,
         status_events,

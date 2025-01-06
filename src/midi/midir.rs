@@ -19,7 +19,7 @@ use std::{
     ops::Add,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Barrier, Mutex,
+        Arc, Barrier, Mutex, RwLock,
     },
     thread,
     time::{self, Instant},
@@ -31,13 +31,14 @@ use nodi::{Connection, Player, Timer};
 use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, info, span, warn, Level};
 
-use crate::{playsync::CancelHandle, songs::Song};
+use crate::{dmx::engine::Engine, playsync::CancelHandle, songs::Song};
 
 pub struct Device {
     name: String,
     input_port: Option<MidiInputPort>,
     output_port: Option<MidiOutputPort>,
     event_connection: Box<Mutex<Option<MidiInputConnection<()>>>>,
+    dmx_engine: Option<Arc<RwLock<Engine>>>,
 }
 
 /// This is the maximum amount of ticks that the MIDI player can sleep for
@@ -66,12 +67,20 @@ impl super::Device for Device {
         };
 
         let input = MidiInput::new("mtrack player input")?;
+        let dmx_engine = self.dmx_engine.clone();
         *event_connection = Some(input.connect(
             input_port,
             "mtrack input watcher",
             move |_, raw_event, _| {
                 if let Ok(event) = LiveEvent::parse(raw_event) {
                     debug!(event = format!("{:?}", event), "Received MIDI event.");
+                    if let Some(dmx_engine) = dmx_engine.clone() {
+                        if let LiveEvent::Midi { channel, message } = event {
+                            let mut dmx_engine =
+                                dmx_engine.write().expect("Unable to get DMX engine lock");
+                            dmx_engine.handle_midi_input(channel, message);
+                        }
+                    }
                 }
                 if let Err(e) = sender.blocking_send(Vec::from(raw_event)) {
                     error!(
@@ -264,6 +273,7 @@ fn list_midir_devices() -> Result<Vec<Device>, Box<dyn Error>> {
                     input_port: Some(port),
                     output_port: None,
                     event_connection: Box::new(Mutex::new(None)),
+                    dmx_engine: None,
                 },
             );
         }
@@ -283,6 +293,7 @@ fn list_midir_devices() -> Result<Vec<Device>, Box<dyn Error>> {
                         input_port: None,
                         output_port: Some(port),
                         event_connection: Box::new(Mutex::new(None)),
+                        dmx_engine: None,
                     },
                 );
             }
@@ -298,7 +309,10 @@ fn list_midir_devices() -> Result<Vec<Device>, Box<dyn Error>> {
 }
 
 /// Gets the given midir device.
-pub fn get(name: &String) -> Result<Device, Box<dyn Error>> {
+pub fn get(
+    name: &String,
+    dmx_engine: Option<Arc<RwLock<Engine>>>,
+) -> Result<Device, Box<dyn Error>> {
     let mut matches = list_midir_devices()?
         .into_iter()
         .filter(|device| device.name.contains(name))
@@ -320,7 +334,11 @@ pub fn get(name: &String) -> Result<Device, Box<dyn Error>> {
     }
 
     // We've verified that there's only one element in the vector, so this should be safe.
-    Ok(matches.swap_remove(0))
+    Ok({
+        let mut device = matches.swap_remove(0);
+        device.dmx_engine = dmx_engine;
+        device
+    })
 }
 
 /// AccurateTimer is a timer for the nodi player that allows a more accurate clock. It uses the last
