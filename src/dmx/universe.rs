@@ -141,7 +141,7 @@ impl Universe {
                     max_channels.load(Ordering::Relaxed),
                     &mut buffer,
                 ) {
-                    if let Err(e) = client.send_dmx(1, &buffer) {
+                    if let Err(e) = client.send_dmx(u32::from(universe), &buffer) {
                         error!(
                             err = e.to_string(),
                             "Error sending DMX packet to universe {}", universe
