@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
 use std::{sync::RwLock, time::Duration};
-use tracing::error;
+use tracing::{error, warn};
 
 use crate::playsync::CancelHandle;
 
@@ -127,7 +127,25 @@ impl Universe {
         thread::spawn(move || {
             let mut last_time = Instant::now();
             let tick_duration = Duration::from_secs(1).div_f64(TARGET_HZ);
-            let mut client = ola::connect().unwrap();
+            let maybe_client;
+
+            // Repeatedly attempt to connect to OLA.
+            loop {
+                if let Ok(ola_client) = ola::connect() {
+                    maybe_client = Some(ola_client);
+                    break;
+                };
+
+                warn!("Error connecting to OLA, waiting 5 seconds and trying again.");
+                thread::sleep(Duration::from_secs(5));
+            }
+            let mut client = match maybe_client {
+                Some(client) => client,
+                None => {
+                    error!("Unable to connect to OLA.");
+                    return;
+                }
+            };
             let mut buffer = DmxBuffer::new();
 
             loop {

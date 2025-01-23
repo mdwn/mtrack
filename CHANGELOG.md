@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - Repeatedly attempt to connect to OLA on startup.
+
+Repeatedly attempt to connect to OLA, which should make connecting to DMX on startup
+more reliable.
+
 ## [0.2.0] - Fix hard coded DMX universe.
 
 The DMX universe was inadvertently hard coded to OLA universe 1. This
