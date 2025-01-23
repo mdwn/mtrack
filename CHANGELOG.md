@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - Fix hard coded DMX universe.
+
+The DMX universe was inadvertently hard coded to OLA universe 1. This
+has been corrected.
+
 ## [0.1.9] - Better cancellation.
 
 The expiration mechanism for cancellation had an unintended side effect
