@@ -23,6 +23,7 @@ exclude = [
 [dependencies]
 clap = { version = "4.5.23", features = ["cargo", "derive"] }
 cpal = "0.15.3"
+duration-string = "0.5.2"
 futures = "0.3.31"
 hound = "3.5.1"
 libc = "0.2.168"
@@ -30,7 +31,6 @@ midir = "0.10.1"
 midly = "0.5.3"
 nodi = { version = "1.0.1", features = ["hybrid-sleep", "midir"] }
 ola = "0.1.0"
-regex = "1.11.1"
 ringbuf = "0.3.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.9"

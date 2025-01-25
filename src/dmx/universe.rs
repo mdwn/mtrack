@@ -15,13 +15,16 @@
 use ola::DmxBuffer;
 use spin_sleep;
 use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
 use std::{sync::RwLock, time::Duration};
-use tracing::{error, warn};
+use tracing::error;
 
 use crate::playsync::CancelHandle;
+
+use super::engine::DmxMessage;
 
 /// A DMX universe is 512 channels.
 const UNIVERSE_SIZE: usize = 512;
@@ -51,13 +54,19 @@ pub(crate) struct Universe {
     max_channels: Arc<AtomicU16>,
     /// The configuration for this universe.
     config: UniverseConfig,
-    // The cancel handle for the thread attached to this universe.
+    /// The cancel handle for the thread attached to this universe.
     cancel_handle: CancelHandle,
+    /// Used to send data to the OLA client thread.
+    ola_sender: Sender<DmxMessage>,
 }
 
 impl Universe {
     /// Creates a new universe.
-    pub fn new(config: UniverseConfig, cancel_handle: CancelHandle) -> Universe {
+    pub(super) fn new(
+        config: UniverseConfig,
+        cancel_handle: CancelHandle,
+        ola_sender: Sender<DmxMessage>,
+    ) -> Universe {
         Universe {
             rates: Arc::new(RwLock::new(vec![0.0; UNIVERSE_SIZE])),
             current: Arc::new(RwLock::new(vec![0.0; UNIVERSE_SIZE])),
@@ -66,6 +75,7 @@ impl Universe {
             max_channels: Arc::new(AtomicU16::new(0)),
             config,
             cancel_handle,
+            ola_sender,
         }
     }
 
@@ -123,29 +133,12 @@ impl Universe {
         let max_channels = self.max_channels.clone();
         let cancel_handle = self.cancel_handle.clone();
         let universe = self.config.universe;
+        let ola_sender = self.ola_sender.clone();
 
         thread::spawn(move || {
             let mut last_time = Instant::now();
             let tick_duration = Duration::from_secs(1).div_f64(TARGET_HZ);
-            let maybe_client;
 
-            // Repeatedly attempt to connect to OLA.
-            loop {
-                if let Ok(ola_client) = ola::connect() {
-                    maybe_client = Some(ola_client);
-                    break;
-                };
-
-                warn!("Error connecting to OLA, waiting 5 seconds and trying again.");
-                thread::sleep(Duration::from_secs(5));
-            }
-            let mut client = match maybe_client {
-                Some(client) => client,
-                None => {
-                    error!("Unable to connect to OLA.");
-                    return;
-                }
-            };
             let mut buffer = DmxBuffer::new();
 
             loop {
@@ -159,7 +152,10 @@ impl Universe {
                     max_channels.load(Ordering::Relaxed),
                     &mut buffer,
                 ) {
-                    if let Err(e) = client.send_dmx(u32::from(universe), &buffer) {
+                    if let Err(e) = ola_sender.send(DmxMessage {
+                        universe: u32::from(universe),
+                        buffer: buffer.clone(),
+                    }) {
                         error!(
                             err = e.to_string(),
                             "Error sending DMX packet to universe {}", universe
@@ -214,7 +210,10 @@ impl Universe {
 
 #[cfg(test)]
 mod test {
-    use std::{sync::atomic::Ordering, time::Duration};
+    use std::{
+        sync::{atomic::Ordering, mpsc},
+        time::Duration,
+    };
 
     use ola::DmxBuffer;
 
@@ -226,12 +225,14 @@ mod test {
     use super::Universe;
 
     fn new_universe() -> Universe {
+        let (sender, _) = mpsc::channel();
         Universe::new(
             UniverseConfig {
                 universe: 1,
                 name: "universe".into(),
             },
             CancelHandle::new(),
+            sender,
         )
     }
 

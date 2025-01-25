@@ -11,7 +11,11 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-use std::sync::{Arc, RwLock};
+use std::{
+    error::Error,
+    sync::{Arc, RwLock},
+    time::Duration,
+};
 
 use engine::Engine;
 use universe::{Universe, UniverseConfig};
@@ -22,10 +26,12 @@ pub mod universe;
 /// Gets a device with the given name.
 pub fn create_engine(
     dimming_speed_modifier: f64,
+    playback_delay: Duration,
     universe_configs: Vec<UniverseConfig>,
-) -> Arc<RwLock<Engine>> {
-    Arc::new(RwLock::new(Engine::new(
+) -> Result<Arc<RwLock<Engine>>, Box<dyn Error>> {
+    Ok(Arc::new(RwLock::new(Engine::new(
         dimming_speed_modifier,
+        playback_delay,
         universe_configs,
-    )))
+    )?)))
 }
