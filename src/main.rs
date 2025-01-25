@@ -26,6 +26,7 @@ mod test;
 use clap::{crate_version, Parser, Subcommand};
 use config::init_player_and_controller;
 use dmx::universe::UniverseConfig;
+use duration_string::DurationString;
 use player::Player;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
@@ -91,6 +92,8 @@ enum Commands {
         /// The DMX dimming speed modifier.
         #[arg[short = 's', long]]
         dmx_dimming_speed_modifier: Option<f64>,
+        /// The DMX playback delay.
+        dmx_playback_delay: Option<String>,
         /// The DMX universe configuration. Should be in the form: universe=<OLA-UNIVERSE>,name=<NAME>;...
         /// For example, universe=1,name=light-show;universe=2,name=another-light-show
         #[arg[short, long]]
@@ -180,6 +183,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             mappings,
             midi_device_name,
             dmx_dimming_speed_modifier,
+            dmx_playback_delay,
             dmx_universe_config,
             repository_path,
             song_name,
@@ -253,11 +257,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     if universe_configs.is_empty() {
                         None
                     } else {
+                        let dmx_plaback_delay = dmx_playback_delay.map_or(
+                            Ok::<Duration, Box<dyn Error>>(
+                                crate::config::DEFAULT_DMX_PLAYBACK_DELAY,
+                            ),
+                            |duration| Ok(DurationString::from_string(duration)?.into()),
+                        )?;
                         Some(dmx::create_engine(
                             dmx_dimming_speed_modifier
                                 .unwrap_or(crate::config::DEFAULT_DMX_DIMMING_SPEED_MODIFIER),
+                            dmx_plaback_delay,
                             universe_configs,
-                        ))
+                        )?)
                     }
                 }
                 None => None,

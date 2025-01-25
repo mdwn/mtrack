@@ -12,6 +12,9 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+use std::time::Duration;
+
+use duration_string::DurationString;
 use serde::Deserialize;
 
 use crate::dmx::universe::UniverseConfig;
@@ -22,6 +25,9 @@ pub(super) struct Dmx {
     /// Controls the dim speed modifier. A modifier of 1.0 means a dim speed of 1 == 1.0 second.
     dim_speed_modifier: Option<f64>,
 
+    /// Controls how long to wait before playback of a DMX lighting file starts.
+    playback_delay: Option<String>,
+
     /// The configuration of devices to universes.
     universes: Vec<Universe>,
 }
@@ -30,6 +36,13 @@ impl Dmx {
     /// Gets the dimming speed modifier.
     pub(super) fn get_dimming_speed_modifier(&self) -> Option<f64> {
         self.dim_speed_modifier
+    }
+
+    /// Gets the playback delay.
+    pub(super) fn get_playback_delay(&self) -> Result<Option<Duration>, duration_string::Error> {
+        self.playback_delay.as_ref().map_or(Ok(None), |duration| {
+            Ok(Some(DurationString::from_string(duration.clone())?.into()))
+        })
     }
 
     /// Converts the configuration into universe configs.

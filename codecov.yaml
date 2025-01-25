@@ -1,0 +1,2 @@
+# Disable github checks, as they're pretty noisy.
+github_checks: false

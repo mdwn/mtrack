@@ -16,6 +16,7 @@ use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use midly::live::LiveEvent;
 use serde::Deserialize;
@@ -39,6 +40,7 @@ mod trackmappings;
 
 /// The default DMX dimming speed.
 pub const DEFAULT_DMX_DIMMING_SPEED_MODIFIER: f64 = 1.0;
+pub const DEFAULT_DMX_PLAYBACK_DELAY: Duration = Duration::ZERO;
 
 /// Parses songs from a YAML file.
 pub fn parse_songs(file: &PathBuf) -> Result<Vec<crate::songs::Song>, Box<dyn Error>> {
@@ -100,14 +102,20 @@ pub fn init_player_and_controller(
         .midi_device
         .map(|midi_device| crate::midi::get_device(&midi_device))
         .map_or(Ok(None), |result| result.map(Some))?;
-    let dmx_engine = player_config.dmx.map(|dmx_config| {
-        crate::dmx::create_engine(
-            dmx_config
-                .get_dimming_speed_modifier()
-                .unwrap_or(DEFAULT_DMX_DIMMING_SPEED_MODIFIER),
-            dmx_config.to_configs(),
-        )
-    });
+    let dmx_engine = player_config
+        .dmx
+        .map(|dmx_config| {
+            crate::dmx::create_engine(
+                dmx_config
+                    .get_dimming_speed_modifier()
+                    .unwrap_or(DEFAULT_DMX_DIMMING_SPEED_MODIFIER),
+                dmx_config
+                    .get_playback_delay()?
+                    .unwrap_or(DEFAULT_DMX_PLAYBACK_DELAY),
+                dmx_config.to_configs(),
+            )
+        })
+        .map_or(Ok(None), |result| result.map(Some))?;
     let songs_path = get_songs_path(player_path, player_config.songs);
     let songs = get_all_songs(&songs_path)?;
     let playlist = parse_playlist(&PathBuf::from(playlist_path), Arc::clone(&songs))?;

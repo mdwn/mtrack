@@ -15,13 +15,19 @@
 use std::{
     collections::{HashMap, HashSet},
     error::Error,
-    sync::{atomic::AtomicBool, Arc, Barrier, RwLock},
+    net::TcpStream,
+    sync::{
+        atomic::AtomicBool,
+        mpsc::{self, Receiver},
+        Arc, Barrier, RwLock,
+    },
     thread::{self, JoinHandle},
     time::Duration,
 };
 
 use midly::num::u7;
 use nodi::{Connection, Player};
+use ola::{DmxBuffer, StreamingClient};
 use tracing::{debug, error, info, span, Level};
 
 use crate::{
@@ -35,21 +41,55 @@ use super::{universe::UniverseConfig, Universe};
 /// universe(s) that should be sent to our DMX interface(s).
 pub struct Engine {
     dimming_speed_modifier: f64,
+    playback_delay: Duration,
     universes: HashMap<String, RwLock<Universe>>,
     cancel_handle: CancelHandle,
+    client_handle: Option<JoinHandle<()>>,
     join_handles: Vec<JoinHandle<()>>,
+}
+
+/// DmxMessage is a message that can be passed around between senders and receivers.
+pub(super) struct DmxMessage {
+    pub universe: u32,
+    pub buffer: DmxBuffer,
 }
 
 impl Engine {
     /// Creates a new DMX Engine.
-    pub fn new(dimming_speed_modifier: f64, universe_configs: Vec<UniverseConfig>) -> Engine {
+    pub fn new(
+        dimming_speed_modifier: f64,
+        playback_delay: Duration,
+        universe_configs: Vec<UniverseConfig>,
+    ) -> Result<Engine, Box<dyn Error>> {
+        let mut maybe_client = None;
+
+        // Attempt to connect to OLA 10 times.
+        for _ in 0..10 {
+            thread::sleep(Duration::from_secs(5));
+
+            if let Ok(ola_client) = ola::connect() {
+                maybe_client = Some(ola_client);
+                break;
+            };
+
+            debug!("Error connecting to OLA, waiting 5 seconds and trying again.");
+        }
+        let client = match maybe_client {
+            Some(client) => client,
+            None => return Err("unable to connect to OLA".into()),
+        };
+        let (sender, receiver) = mpsc::channel::<DmxMessage>();
+
+        let client_handle = thread::spawn(move || {
+            Self::ola_thread(client, receiver);
+        });
         let cancel_handle = CancelHandle::new();
         let universes: HashMap<String, Universe> = universe_configs
             .into_iter()
             .map(|config| {
                 (
                     config.name.clone(),
-                    Universe::new(config, cancel_handle.clone()),
+                    Universe::new(config, cancel_handle.clone(), sender.clone()),
                 )
             })
             .collect();
@@ -57,15 +97,17 @@ impl Engine {
             .values()
             .map(|universe| universe.start_thread())
             .collect();
-        Engine {
+        Ok(Engine {
             dimming_speed_modifier,
+            playback_delay,
             universes: universes
                 .into_iter()
                 .map(|(name, universe)| (name, RwLock::new(universe)))
                 .collect(),
             cancel_handle,
+            client_handle: Some(client_handle),
             join_handles,
-        }
+        })
     }
 
     /// Plays the given song through the DMX interface.
@@ -89,14 +131,15 @@ impl Engine {
             "Playing song DMX."
         );
 
-        let universe_names: HashSet<String> = {
-            dmx_engine
+        let (universe_names, playback_delay): (HashSet<String>, Duration) = {
+            let dmx_engine = dmx_engine
                 .read()
-                .expect("Unable to get DMX engine read lock")
-                .universes
-                .keys()
-                .cloned()
-                .collect()
+                .expect("Unable to get DMX engine read lock");
+
+            (
+                dmx_engine.universes.keys().cloned().collect(),
+                dmx_engine.playback_delay,
+            )
         };
 
         let mut dmx_midi_sheets: HashMap<String, (MidiSheet, Vec<u8>)> = HashMap::new();
@@ -150,6 +193,7 @@ impl Engine {
                     let play_finished = Arc::new(AtomicBool::new(false));
 
                     play_barrier.wait();
+                    thread::sleep(playback_delay);
                     player.play(&dmx_midi_sheet.sheet);
                     play_finished.store(true, std::sync::atomic::Ordering::Relaxed);
                 })
@@ -257,6 +301,20 @@ impl Engine {
             .expect("Unable to get write lock for universe")
             .update_channel_data(channel, value, dim);
     }
+
+    /// Sends messages to OLA.
+    fn ola_thread(mut client: StreamingClient<TcpStream>, receiver: Receiver<DmxMessage>) {
+        loop {
+            match receiver.recv() {
+                Ok(message) => {
+                    if let Err(err) = client.send_dmx(message.universe, &message.buffer) {
+                        error!("error sending DMX to OLA: {}", err.to_string())
+                    }
+                }
+                Err(err) => error!("error receiving DMX message: {}", err.to_string()),
+            }
+        }
+    }
 }
 
 impl Drop for Engine {
@@ -265,9 +323,18 @@ impl Drop for Engine {
 
         self.join_handles.drain(..).for_each(|join_handle| {
             if join_handle.join().is_err() {
-                error!("Error joining handle")
+                error!("Error joining handle");
             }
         });
+        if self
+            .client_handle
+            .take()
+            .expect("Expected client handle")
+            .join()
+            .is_err()
+        {
+            error!("Error joining handle");
+        }
     }
 }
 
