@@ -23,12 +23,12 @@ use serde::Deserialize;
 const DEFAULT_MIDI_PLAYBACK_DELAY: Duration = Duration::ZERO;
 
 /// A YAML representation of the MIDI configuration.
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub(crate) struct Midi {
     /// The MIDI device.
     device: String,
 
-    /// Controls how long to wait before playback of a DMX lighting file starts.
+    /// Controls how long to wait before playback of a MIDI file starts.
     playback_delay: Option<String>,
 }
 
@@ -62,7 +62,7 @@ pub(super) trait ToMidiEvent {
 }
 
 /// MIDI events that can be parsed from YAML.
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(super) enum Event {
     NoteOff(NoteOff),
@@ -89,7 +89,7 @@ impl ToMidiEvent for Event {
 }
 
 /// A NoteOff event.
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub(super) struct NoteOff {
     /// The channel the MIDI event belongs to.
     channel: u8,
@@ -112,7 +112,7 @@ impl ToMidiEvent for NoteOff {
 }
 
 /// A NoteOn event.
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub(super) struct NoteOn {
     /// The channel the MIDI event belongs to.
     channel: u8,
@@ -135,7 +135,7 @@ impl ToMidiEvent for NoteOn {
 }
 
 /// An Aftertouch event.
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub(super) struct Aftertouch {
     /// The channel the MIDI event belongs to.
     channel: u8,
@@ -158,7 +158,7 @@ impl ToMidiEvent for Aftertouch {
 }
 
 /// A ControlChange event.
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub(super) struct ControlChange {
     /// The channel the MIDI event belongs to.
     channel: u8,
@@ -181,7 +181,7 @@ impl ToMidiEvent for ControlChange {
 }
 
 /// A ProgramChange event.
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub(super) struct ProgramChange {
     /// The channel the MIDI event belongs to.
     channel: u8,
@@ -201,7 +201,7 @@ impl ToMidiEvent for ProgramChange {
 }
 
 /// A ChannelAftertouch event.
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub(super) struct ChannelAftertouch {
     /// The channel the MIDI event belongs to.
     channel: u8,
@@ -221,7 +221,7 @@ impl ToMidiEvent for ChannelAftertouch {
 }
 
 /// A PitchBend event.
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub(super) struct PitchBend {
     /// The channel the MIDI event belongs to.
     channel: u8,

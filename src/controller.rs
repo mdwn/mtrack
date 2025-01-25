@@ -19,11 +19,13 @@ use tokio::task::JoinError;
 use tokio::{sync::mpsc::Sender, task::JoinHandle};
 use tracing::{error, info, span, Level};
 
+use crate::config::controller;
 use crate::player::Player;
 
-pub mod keyboard;
-pub mod midi;
-pub mod multi;
+mod drivers;
+mod keyboard;
+mod midi;
+mod multi;
 
 /// Controller events that will trigger behavior in the player.
 #[derive(Debug, PartialEq)]
@@ -60,11 +62,21 @@ pub struct Controller {
 }
 
 impl Controller {
+    /// Creates a new controller with the given config.
+    pub fn new(
+        player: Player,
+        midi_device: Option<Arc<dyn crate::midi::Device>>,
+        config: controller::Controller,
+    ) -> Result<Controller, Box<dyn Error>> {
+        let driver = drivers::driver(config, midi_device)?;
+        Ok(Self::new_from_driver(player, driver))
+    }
+
     /// Creates a new controller with the given driver.
-    pub fn new(player: Player, driver: Arc<dyn Driver>) -> Result<Controller, Box<dyn Error>> {
-        Ok(Controller {
+    pub fn new_from_driver(player: Player, driver: Arc<dyn Driver>) -> Controller {
+        Controller {
             handle: tokio::spawn(async move { Controller::trigger_events(player, driver).await }),
-        })
+        }
     }
 
     /// Join will block until the controller finishes.
@@ -237,7 +249,7 @@ mod test {
             all_songs_playlist.clone(),
             None,
         );
-        let mut controller = super::Controller::new(player, driver.clone())?;
+        let mut controller = super::Controller::new_from_driver(player, driver.clone());
 
         println!("Playlist: {}", playlist);
         println!("AllSongs: {}", all_songs_playlist);

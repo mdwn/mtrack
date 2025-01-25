@@ -230,7 +230,7 @@ mod test {
             all_songs_playlist.clone(),
             None,
         );
-        let _controller = Controller::new(player, driver)?;
+        let _controller = Controller::new_from_driver(player, driver);
 
         println!("Playlist: {}", playlist);
         println!("AllSongs: {}", all_songs_playlist);

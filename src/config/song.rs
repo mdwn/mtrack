@@ -18,6 +18,8 @@ use std::{
 
 use serde::Deserialize;
 
+use crate::songs;
+
 use super::{
     midi::{self, ToMidiEvent},
     track,
@@ -125,7 +127,7 @@ impl Song {
                 }),
             self.tracks
                 .iter()
-                .map(|track| track.to_track(&song_path))
+                .map(|track| songs::Track::new(track.with_song_path(&song_path)))
                 .collect::<Result<Vec<crate::songs::Track>, _>>()?,
         )
     }

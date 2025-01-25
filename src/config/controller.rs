@@ -11,93 +11,28 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-use std::{collections::HashMap, error::Error, sync::Arc};
+use std::{collections::HashMap, error::Error};
 
+use midly::live::LiveEvent;
 use serde::Deserialize;
-use tracing::error;
-
-use crate::controller::Driver;
 
 use super::midi::{self, ToMidiEvent};
 
 /// Allows users to specify various controllers.
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 #[serde(tag = "kind", rename_all = "lowercase")]
-pub(super) enum Controller {
+pub(crate) enum Controller {
     Keyboard,
     Midi(MidiController),
     Multi(HashMap<String, Controller>),
 }
 
-fn driver_from_midi_config(
-    config: &MidiController,
-    midi_device: Option<Arc<dyn crate::midi::Device>>,
-) -> Result<crate::controller::midi::Driver, Box<dyn Error>> {
-    match midi_device {
-        Some(midi_device) => Ok(crate::controller::midi::Driver::new(
-            midi_device,
-            config.play.to_midi_event()?,
-            config.prev.to_midi_event()?,
-            config.next.to_midi_event()?,
-            config.stop.to_midi_event()?,
-            config.all_songs.to_midi_event()?,
-            config.playlist.to_midi_event()?,
-        )),
-        None => Err("No MIDI device found for MIDI controller.".into()),
-    }
-}
-
-impl Controller {
-    /// Creates a controller driver from the config.
-    pub(super) fn driver(
-        &self,
-        midi_device: Option<Arc<dyn crate::midi::Device>>,
-    ) -> Result<Arc<dyn Driver>, Box<dyn Error>> {
-        match self {
-            Controller::Midi(config) => match midi_device {
-                Some(midi_device) => match driver_from_midi_config(config, Some(midi_device)) {
-                    Ok(driver) => Ok(Arc::new(driver)),
-                    Err(error) => Err(error),
-                },
-                None => Err("No MIDI device found for MIDI controller.".into()),
-            },
-            Controller::Keyboard => Ok(Arc::new(crate::controller::keyboard::Driver::new())),
-            Controller::Multi(vec) => Ok(Arc::new(crate::controller::multi::Driver::new(
-                vec.iter()
-                    .filter_map(|d| match d {
-                        (_key, Controller::Keyboard) => {
-                            Some(crate::controller::multi::SubDriver::Keyboard(Arc::new(
-                                crate::controller::keyboard::Driver::new(),
-                            )))
-                        }
-
-                        (_key, Controller::Midi(midi_controller)) => {
-                            let midi_driver_result =
-                                driver_from_midi_config(midi_controller, midi_device.clone());
-                            match midi_driver_result {
-                                Ok(driver) => Some(crate::controller::multi::SubDriver::Midi(
-                                    Arc::new(driver),
-                                )),
-                                Err(_e) => None,
-                            }
-                        }
-
-                        (_key, Controller::Multi(_vec)) => {
-                            error!("Recursive multi controllers are not supported");
-                            None
-                        }
-                    })
-                    .collect::<Vec<_>>(),
-            ))),
-        }
-    }
-}
 #[derive(Deserialize)]
 pub(super) struct KeyboardController {}
 
 /// The configuration that maps MIDI events to controller messages.
-#[derive(Deserialize)]
-pub(super) struct MidiController {
+#[derive(Deserialize, Clone)]
+pub(crate) struct MidiController {
     /// The MIDI event to look for to play the current song in the playlist.
     play: midi::Event,
     /// The MIDI event to look for to move the playlist to the previous item.
@@ -110,4 +45,36 @@ pub(super) struct MidiController {
     all_songs: midi::Event,
     /// The MIDI event to look for to switch back to the current playlist.
     playlist: midi::Event,
+}
+
+impl MidiController {
+    /// Gets the play event.
+    pub(crate) fn play(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
+        self.play.to_midi_event()
+    }
+
+    /// Gets the prev event.
+    pub(crate) fn prev(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
+        self.prev.to_midi_event()
+    }
+
+    /// Gets the next event.
+    pub(crate) fn next(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
+        self.next.to_midi_event()
+    }
+
+    /// Gets the stop event.
+    pub(crate) fn stop(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
+        self.stop.to_midi_event()
+    }
+
+    /// Gets the all songs event.
+    pub(crate) fn all_songs(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
+        self.all_songs.to_midi_event()
+    }
+
+    /// Gets the playlist event.
+    pub(crate) fn playlist(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
+        self.playlist.to_midi_event()
+    }
 }

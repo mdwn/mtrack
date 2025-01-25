@@ -277,12 +277,12 @@ pub struct Track {
 }
 
 impl Track {
-    pub fn new(
-        name: String,
-        track_file: PathBuf,
-        file_channel: Option<u16>,
-    ) -> Result<Track, Box<dyn Error>> {
-        let reader = WavReader::open(track_file.clone())?;
+    pub fn new(config: crate::config::track::Track) -> Result<Track, Box<dyn Error>> {
+        let track_file = PathBuf::from(config.file());
+        let file_channel = config.file_channel();
+        let name = config.name();
+
+        let reader = WavReader::open(&track_file)?;
         let spec = reader.spec();
         let sample_rate = spec.sample_rate;
         let duration = Duration::from_secs(u64::from(reader.duration()) / u64::from(sample_rate));
@@ -709,9 +709,21 @@ mod test {
         write_wav(tempwav2_path.clone(), vec![2_i32, 3_i32, 4_i32])?;
         write_wav(tempwav3_path.clone(), vec![0_i32, 0_i32, 1_i32, 2_i32])?;
 
-        let track1 = super::Track::new("test 1".into(), tempwav1_path, Some(1))?;
-        let track2 = super::Track::new("test 2".into(), tempwav2_path, Some(1))?;
-        let track3 = super::Track::new("test 3".into(), tempwav3_path, Some(1))?;
+        let track1 = super::Track::new(config::track::Track::new(
+            "test 1".into(),
+            tempwav1_path.to_string_lossy().into(),
+            Some(1),
+        ))?;
+        let track2 = super::Track::new(config::track::Track::new(
+            "test 2".into(),
+            tempwav2_path.to_string_lossy().into(),
+            Some(1),
+        ))?;
+        let track3 = super::Track::new(config::track::Track::new(
+            "test 3".into(),
+            tempwav3_path.to_string_lossy().into(),
+            Some(1),
+        ))?;
 
         let song = super::Song::new(
             "song name".into(),

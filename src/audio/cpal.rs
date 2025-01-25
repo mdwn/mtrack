@@ -19,6 +19,7 @@ use std::{
         mpsc::{channel, Sender},
         Arc, Barrier,
     },
+    time::Duration,
 };
 
 use cpal::{
@@ -33,11 +34,15 @@ use crate::{
     songs::{self, Song},
 };
 
+use super::Audio;
+
 /// A small wrapper around a cpal::Device. Used for storing some extra
 /// data that makes multitrack playing more convenient.
 pub struct Device {
     /// The name of the device.
     name: String,
+    /// Controls how long to wait before playback of an audio file starts.
+    playback_delay: Duration,
     /// The maximum number of channels the device supports.
     max_channels: u16,
     /// The host ID of the device.
@@ -126,6 +131,7 @@ impl Device {
                 if max_channels > 0 {
                     devices.push(Device {
                         name: device.name()?,
+                        playback_delay: Duration::ZERO,
                         max_channels,
                         host_id,
                         device,
@@ -141,12 +147,16 @@ impl Device {
     }
 
     /// Gets the given cpal device.
-    pub fn get(name: &String) -> Result<Device, Box<dyn Error>> {
+    pub fn get(config: Audio) -> Result<Device, Box<dyn Error>> {
+        let name = config.device();
         match Device::list_cpal_devices()?
             .into_iter()
             .find(|device| device.name == *name)
         {
-            Some(device) => Ok(device),
+            Some(mut device) => {
+                device.playback_delay = config.playback_delay()?;
+                Ok(device)
+            }
             None => Err(format!("no device found with name {}", name).into()),
         }
     }
@@ -193,6 +203,7 @@ impl super::Device for Device {
         let (tx, rx) = channel();
 
         play_barrier.wait();
+        spin_sleep::sleep(self.playback_delay);
         let output_stream = if self.supports_i32 && song.sample_format == hound::SampleFormat::Int {
             debug!("Playing i32->i32");
             self.build_stream::<i32, i32>(song, mappings, num_channels, tx, cancel_handle)?
@@ -320,6 +331,7 @@ mod test {
     use std::{collections::HashMap, error::Error, sync::mpsc::channel};
 
     use crate::{
+        config,
         playsync::CancelHandle,
         songs::{Song, Track},
         test::write_wav,
@@ -334,8 +346,16 @@ mod test {
         write_wav(tempwav1_path.clone(), vec![1_i32, 2_i32, 3_i32])?;
         write_wav(tempwav2_path.clone(), vec![2_i32, 3_i32])?;
 
-        let track1 = Track::new("test 1".into(), tempwav1_path, Some(1))?;
-        let track2 = Track::new("test 2".into(), tempwav2_path, Some(1))?;
+        let track1 = Track::new(config::track::Track::new(
+            "test 1".into(),
+            tempwav1_path.to_string_lossy().into(),
+            Some(1),
+        ))?;
+        let track2 = Track::new(config::track::Track::new(
+            "test 2".into(),
+            tempwav2_path.to_string_lossy().into(),
+            Some(1),
+        ))?;
 
         let song = Song::new(
             "song name".into(),
@@ -382,8 +402,16 @@ mod test {
         write_wav(tempwav1_path.clone(), vec![1_i32, 2_i32, 3_i32])?;
         write_wav(tempwav2_path.clone(), vec![2_i32, 3_i32])?;
 
-        let track1 = Track::new("test 1".into(), tempwav1_path, Some(1))?;
-        let track2 = Track::new("test 2".into(), tempwav2_path, Some(1))?;
+        let track1 = Track::new(config::track::Track::new(
+            "test 1".into(),
+            tempwav1_path.to_string_lossy().into(),
+            Some(1),
+        ))?;
+        let track2 = Track::new(config::track::Track::new(
+            "test 2".into(),
+            tempwav2_path.to_string_lossy().into(),
+            Some(1),
+        ))?;
 
         let song = Song::new(
             "song name".into(),
@@ -423,8 +451,16 @@ mod test {
         write_wav(tempwav1_path.clone(), vec![1_i32, 2_i32, 3_i32])?;
         write_wav(tempwav2_path.clone(), vec![2_i32, 3_i32])?;
 
-        let track1 = Track::new("test 1".into(), tempwav1_path, Some(1))?;
-        let track2 = Track::new("test 2".into(), tempwav2_path, Some(1))?;
+        let track1 = Track::new(config::track::Track::new(
+            "test 1".into(),
+            tempwav1_path.to_string_lossy().into(),
+            Some(1),
+        ))?;
+        let track2 = Track::new(config::track::Track::new(
+            "test 2".into(),
+            tempwav2_path.to_string_lossy().into(),
+            Some(1),
+        ))?;
 
         let song = Song::new(
             "song name".into(),
