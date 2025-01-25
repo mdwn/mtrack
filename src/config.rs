@@ -16,8 +16,8 @@ use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
+use midi::Midi;
 use midly::live::LiveEvent;
 use serde::Deserialize;
 use tracing::{debug, error};
@@ -30,17 +30,13 @@ use self::player::Player;
 use self::playlist::Playlist;
 
 mod controller;
-mod dmx;
-mod midi;
+pub(crate) mod dmx;
+pub(crate) mod midi;
 mod player;
 mod playlist;
 mod song;
 mod track;
 mod trackmappings;
-
-/// The default DMX dimming speed.
-pub const DEFAULT_DMX_DIMMING_SPEED_MODIFIER: f64 = 1.0;
-pub const DEFAULT_DMX_PLAYBACK_DELAY: Duration = Duration::ZERO;
 
 /// Parses songs from a YAML file.
 pub fn parse_songs(file: &PathBuf) -> Result<Vec<crate::songs::Song>, Box<dyn Error>> {
@@ -98,23 +94,21 @@ pub fn init_player_and_controller(
 ) -> Result<crate::controller::Controller, Box<dyn Error>> {
     let player_config: Player = serde_yaml::from_str(&fs::read_to_string(player_path)?)?;
     let device = audio::get_device(&player_config.audio_device)?;
-    let midi_device = player_config
-        .midi_device
-        .map(|midi_device| crate::midi::get_device(&midi_device))
-        .map_or(Ok(None), |result| result.map(Some))?;
+    let mut midi_device = player_config.midi.map_or(
+        Ok::<Option<Arc<dyn crate::midi::Device>>, Box<dyn Error>>(None),
+        |midi| Ok(Some(crate::midi::get_device(midi)?)),
+    )?;
+    if let Some(midi_device_string) = player_config.midi_device {
+        if midi_device.is_none() {
+            midi_device = Some(crate::midi::get_device(Midi::new(
+                midi_device_string,
+                None,
+            ))?);
+        }
+    }
     let dmx_engine = player_config
         .dmx
-        .map(|dmx_config| {
-            crate::dmx::create_engine(
-                dmx_config
-                    .get_dimming_speed_modifier()
-                    .unwrap_or(DEFAULT_DMX_DIMMING_SPEED_MODIFIER),
-                dmx_config
-                    .get_playback_delay()?
-                    .unwrap_or(DEFAULT_DMX_PLAYBACK_DELAY),
-                dmx_config.to_configs(),
-            )
-        })
+        .map(crate::dmx::create_engine)
         .map_or(Ok(None), |result| result.map(Some))?;
     let songs_path = get_songs_path(player_path, player_config.songs);
     let songs = get_all_songs(&songs_path)?;

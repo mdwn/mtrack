@@ -22,7 +22,7 @@ use std::{
         Arc, Barrier, Mutex,
     },
     thread,
-    time::{self, Instant},
+    time::{self, Duration, Instant},
 };
 
 use midir::{MidiInput, MidiInputConnection, MidiInputPort, MidiOutput, MidiOutputPort};
@@ -31,10 +31,11 @@ use nodi::{Connection, Player, Timer};
 use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, info, span, warn, Level};
 
-use crate::{playsync::CancelHandle, songs::Song};
+use crate::{config::midi::Midi, playsync::CancelHandle, songs::Song};
 
 pub struct Device {
     name: String,
+    playback_delay: Duration,
     input_port: Option<MidiInputPort>,
     output_port: Option<MidiOutputPort>,
     event_connection: Box<Mutex<Option<MidiInputConnection<()>>>>,
@@ -144,6 +145,7 @@ impl super::Device for Device {
         );
 
         let finished = Arc::new(AtomicBool::new(false));
+        let playback_delay = self.playback_delay;
         let join_handle = {
             let cancel_handle = cancel_handle.clone();
             let finished = finished.clone();
@@ -162,6 +164,7 @@ impl super::Device for Device {
 
             thread::spawn(move || {
                 play_barrier.wait();
+                spin_sleep::sleep(playback_delay);
                 player.play(&midi_sheet.sheet);
                 finished.store(true, Ordering::Relaxed);
                 cancel_handle.notify();
@@ -261,6 +264,7 @@ fn list_midir_devices() -> Result<Vec<Device>, Box<dyn Error>> {
                 name.clone(),
                 Device {
                     name: name.clone(),
+                    playback_delay: Duration::ZERO,
                     input_port: Some(port),
                     output_port: None,
                     event_connection: Box::new(Mutex::new(None)),
@@ -280,6 +284,7 @@ fn list_midir_devices() -> Result<Vec<Device>, Box<dyn Error>> {
                     name.clone(),
                     Device {
                         name: name.clone(),
+                        playback_delay: Duration::ZERO,
                         input_port: None,
                         output_port: Some(port),
                         event_connection: Box::new(Mutex::new(None)),
@@ -298,10 +303,12 @@ fn list_midir_devices() -> Result<Vec<Device>, Box<dyn Error>> {
 }
 
 /// Gets the given midir device.
-pub fn get(name: &String) -> Result<Device, Box<dyn Error>> {
+pub fn get(config: &Midi) -> Result<Device, Box<dyn Error>> {
+    let playback_delay = config.playback_delay()?;
+    let name = config.device();
     let mut matches = list_midir_devices()?
         .into_iter()
-        .filter(|device| device.name.contains(name))
+        .filter(|device| device.name.contains(&name))
         .collect::<Vec<Device>>();
 
     if matches.is_empty() {
@@ -319,8 +326,11 @@ pub fn get(name: &String) -> Result<Device, Box<dyn Error>> {
         .into());
     }
 
+    let mut midi_device = matches.swap_remove(0);
+    midi_device.playback_delay = playback_delay;
+
     // We've verified that there's only one element in the vector, so this should be safe.
-    Ok(matches.swap_remove(0))
+    Ok(midi_device)
 }
 
 /// AccurateTimer is a timer for the nodi player that allows a more accurate clock. It uses the last
