@@ -22,7 +22,7 @@ pub const DEFAULT_DMX_DIMMING_SPEED_MODIFIER: f64 = 1.0;
 pub const DEFAULT_DMX_PLAYBACK_DELAY: Duration = Duration::ZERO;
 
 /// A YAML representation of the DMX configuration.
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub(crate) struct Dmx {
     /// Controls the dim speed modifier. A modifier of 1.0 means a dim speed of 1 == 1.0 second.
     dim_speed_modifier: Option<f64>,

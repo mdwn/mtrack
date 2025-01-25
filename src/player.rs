@@ -507,15 +507,16 @@ pub struct StatusEvents {
 impl StatusEvents {
     /// Creates a new status events configuration.
     pub fn new(
-        off_events: Vec<LiveEvent<'static>>,
-        idling_events: Vec<LiveEvent<'static>>,
-        playing_events: Vec<LiveEvent<'static>>,
-    ) -> StatusEvents {
-        StatusEvents {
-            off_events,
-            idling_events,
-            playing_events,
-        }
+        config: Option<crate::config::statusevents::StatusEvents>,
+    ) -> Result<Option<StatusEvents>, Box<dyn Error>> {
+        Ok(match config {
+            Some(config) => Some(StatusEvents {
+                off_events: config.off_events()?,
+                idling_events: config.idling_events()?,
+                playing_events: config.playing_events()?,
+            }),
+            None => None,
+        })
     }
 }
 

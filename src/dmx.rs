@@ -25,6 +25,10 @@ pub mod engine;
 pub mod universe;
 
 /// Gets a device with the given name.
-pub fn create_engine(config: Dmx) -> Result<Arc<RwLock<Engine>>, Box<dyn Error>> {
-    Ok(Arc::new(RwLock::new(Engine::new(config)?)))
+pub fn create_engine(config: Option<Dmx>) -> Result<Option<Arc<RwLock<Engine>>>, Box<dyn Error>> {
+    let config = match config {
+        Some(config) => config,
+        None => return Ok(None),
+    };
+    Ok(Some(Arc::new(RwLock::new(Engine::new(config)?))))
 }

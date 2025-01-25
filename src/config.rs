@@ -17,25 +17,23 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use midi::Midi;
-use midly::live::LiveEvent;
 use serde::Deserialize;
 use tracing::{debug, error};
 
-use crate::audio;
 use crate::player::StatusEvents;
 
-use self::midi::ToMidiEvent;
 use self::player::Player;
 use self::playlist::Playlist;
 
-mod controller;
+pub(crate) mod audio;
+pub(crate) mod controller;
 pub(crate) mod dmx;
 pub(crate) mod midi;
 mod player;
 mod playlist;
 mod song;
-mod track;
+pub(crate) mod statusevents;
+pub(crate) mod track;
 mod trackmappings;
 
 /// Parses songs from a YAML file.
@@ -93,60 +91,25 @@ pub fn init_player_and_controller(
     playlist_path: &PathBuf,
 ) -> Result<crate::controller::Controller, Box<dyn Error>> {
     let player_config: Player = serde_yaml::from_str(&fs::read_to_string(player_path)?)?;
-    let device = audio::get_device(&player_config.audio_device)?;
-    let mut midi_device = player_config.midi.map_or(
-        Ok::<Option<Arc<dyn crate::midi::Device>>, Box<dyn Error>>(None),
-        |midi| Ok(Some(crate::midi::get_device(midi)?)),
-    )?;
-    if let Some(midi_device_string) = player_config.midi_device {
-        if midi_device.is_none() {
-            midi_device = Some(crate::midi::get_device(Midi::new(
-                midi_device_string,
-                None,
-            ))?);
-        }
-    }
-    let dmx_engine = player_config
-        .dmx
-        .map(crate::dmx::create_engine)
-        .map_or(Ok(None), |result| result.map(Some))?;
-    let songs_path = get_songs_path(player_path, player_config.songs);
+    let controller_config = player_config.controller();
+    let device = crate::audio::get_device(player_config.audio())?;
+    let midi_device = crate::midi::get_device(player_config.midi())?;
+    let dmx_engine = crate::dmx::create_engine(player_config.dmx())?;
+    let songs_path = get_songs_path(player_path, player_config.songs());
     let songs = get_all_songs(&songs_path)?;
     let playlist = parse_playlist(&PathBuf::from(playlist_path), Arc::clone(&songs))?;
-    let status_events = match player_config.status_events {
-        Some(status_events) => Some(StatusEvents::new(
-            status_events
-                .off_events
-                .iter()
-                .map(|event| event.to_midi_event())
-                .collect::<Result<Vec<LiveEvent<'static>>, Box<dyn Error>>>()?,
-            status_events
-                .idling_events
-                .iter()
-                .map(|event| event.to_midi_event())
-                .collect::<Result<Vec<LiveEvent<'static>>, Box<dyn Error>>>()?,
-            status_events
-                .playing_events
-                .iter()
-                .map(|event| event.to_midi_event())
-                .collect::<Result<Vec<LiveEvent<'static>>, Box<dyn Error>>>()?,
-        )),
-        None => None,
-    };
+    let status_events = StatusEvents::new(player_config.status_events())?;
 
     let player = crate::player::Player::new(
         device,
-        player_config.track_mappings.track_mappings,
+        player_config.track_mappings(),
         midi_device.clone(),
         dmx_engine,
         playlist,
         crate::playlist::Playlist::from_songs(songs)?,
         status_events,
     );
-    crate::controller::Controller::new(
-        player,
-        player_config.controller.driver(midi_device.clone())?,
-    )
+    crate::controller::Controller::new(player, midi_device, controller_config)
 }
 
 fn get_songs_path(player_path: &PathBuf, songs: String) -> PathBuf {

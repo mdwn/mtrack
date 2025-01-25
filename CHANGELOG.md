@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Configurable playback delays have been added for audio, MIDI, and DMX playback.
+
+A fairly large refactor has been done to the config logic. The motivation is to
+keep (most) of the instantiation of the various pieces of business logic out of
+the config package while simultaneously trying to simplify the configuration of
+the player and its various components.
+
 ## [0.2.1] - Repeatedly attempt to connect to OLA on startup.
 
 Repeatedly attempt to connect to OLA, which should make connecting to DMX on startup

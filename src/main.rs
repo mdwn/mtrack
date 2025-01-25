@@ -24,6 +24,7 @@ mod songs;
 mod test;
 
 use clap::{crate_version, Parser, Subcommand};
+use config::audio::Audio;
 use config::dmx::{Dmx, Universe};
 use config::init_player_and_controller;
 use config::midi::Midi;
@@ -208,12 +209,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     .push(channel);
             }
 
-            let device = audio::get_device(&device_name)?;
+            let device = audio::get_device(Some(Audio::new(device_name, None)))?;
             let midi_device = match midi_device_name {
-                Some(midi_device_name) => Some(midi::get_device(Midi::new(
-                    midi_device_name,
-                    midi_playback_delay,
-                ))?),
+                Some(midi_device_name) => {
+                    midi::get_device(Some(Midi::new(midi_device_name, midi_playback_delay)))?
+                }
                 None => None,
             };
             let dmx_engine = match dmx_universe_config {
@@ -260,11 +260,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     if universe_configs.is_empty() {
                         None
                     } else {
-                        Some(dmx::create_engine(Dmx::new(
+                        dmx::create_engine(Some(Dmx::new(
                             dmx_dimming_speed_modifier,
                             dmx_playback_delay,
                             universe_configs,
-                        ))?)
+                        )))?
                     }
                 }
                 None => None,

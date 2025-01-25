@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 // Copyright (C) 2025 Michael Wilson <mike@mdwn.dev>
 //
 // This program is free software: you can redistribute it and/or modify it under
@@ -13,40 +15,81 @@
 //
 use serde::Deserialize;
 
+use super::audio::Audio;
 use super::controller::Controller;
 use super::dmx::Dmx;
-use super::midi;
 use super::midi::Midi;
+use super::statusevents::StatusEvents;
 use super::trackmappings::TrackMappings;
 
 /// The configuration for the multitrack player.
 #[derive(Deserialize)]
 pub(super) struct Player {
     /// The controller configuration.
-    pub controller: Controller,
+    controller: Controller,
     /// The audio device to use.
-    pub audio_device: String,
+    audio_device: Option<String>,
+    /// The audio configuration section.
+    audio: Option<Audio>,
     /// The track mappings for the player.
-    pub track_mappings: TrackMappings,
+    track_mappings: TrackMappings,
     /// The MIDI device to use. (deprecated)
-    pub midi_device: Option<String>,
+    midi_device: Option<String>,
     /// The MIDI configuration section.
-    pub midi: Option<Midi>,
+    midi: Option<Midi>,
     /// The DMX configuration.
-    pub dmx: Option<Dmx>,
+    dmx: Option<Dmx>,
     /// Events to emit to report status out via MIDI.
-    pub status_events: Option<StatusEvents>,
+    status_events: Option<StatusEvents>,
     /// The path to the song definitions.
-    pub songs: String,
+    songs: String,
 }
 
-/// The configuration for emitting status events.
-#[derive(Deserialize)]
-pub(super) struct StatusEvents {
-    /// The events to emit to clear the status.
-    pub off_events: Vec<midi::Event>,
-    /// The events to emit to indicate that the player is idling and waiting for input.
-    pub idling_events: Vec<midi::Event>,
-    /// The events to emit to indicate that the player is currently playing.
-    pub playing_events: Vec<midi::Event>,
+impl Player {
+    /// Gets the controller configuration.
+    pub(crate) fn controller(&self) -> Controller {
+        self.controller.clone()
+    }
+
+    /// Gets the audio configuration.
+    pub(crate) fn audio(&self) -> Option<Audio> {
+        if let Some(audio) = &self.audio {
+            return Some(audio.clone());
+        } else if let Some(audio_device) = &self.audio_device {
+            return Some(Audio::new(audio_device.clone(), None));
+        }
+
+        None
+    }
+
+    /// Gets the track mapping configuration.
+    pub(crate) fn track_mappings(&self) -> HashMap<String, Vec<u16>> {
+        self.track_mappings.track_mappings.clone()
+    }
+
+    /// Gets the MIDI configuration.
+    pub(crate) fn midi(&self) -> Option<Midi> {
+        if let Some(midi) = &self.midi {
+            return Some(midi.clone());
+        } else if let Some(midi_device) = &self.midi_device {
+            return Some(Midi::new(midi_device.clone(), None));
+        }
+
+        None
+    }
+
+    /// Gets the DMX configuration.
+    pub(crate) fn dmx(&self) -> Option<Dmx> {
+        self.dmx.clone()
+    }
+
+    /// Gets the status events configuration.
+    pub(crate) fn status_events(&self) -> Option<StatusEvents> {
+        self.status_events.clone()
+    }
+
+    /// Gets the path to the song definitions.
+    pub(crate) fn songs(&self) -> String {
+        self.songs.clone()
+    }
 }
