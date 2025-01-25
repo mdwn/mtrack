@@ -11,13 +11,49 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-use std::error::Error;
+use std::{error::Error, time::Duration};
 
+use duration_string::DurationString;
 use midly::{
     live::LiveEvent,
     num::{u14, u4, u7},
 };
 use serde::Deserialize;
+
+const DEFAULT_MIDI_PLAYBACK_DELAY: Duration = Duration::ZERO;
+
+/// A YAML representation of the MIDI configuration.
+#[derive(Deserialize)]
+pub(crate) struct Midi {
+    /// The MIDI device.
+    device: String,
+
+    /// Controls how long to wait before playback of a DMX lighting file starts.
+    playback_delay: Option<String>,
+}
+
+impl Midi {
+    /// New will create a new MIDI configuration.
+    pub fn new(device: String, playback_delay: Option<String>) -> Midi {
+        Midi {
+            device,
+            playback_delay,
+        }
+    }
+
+    /// Returns the device from the configuration.
+    pub fn device(&self) -> String {
+        self.device.clone()
+    }
+
+    /// Returns the playback delay from the configuration.
+    pub fn playback_delay(&self) -> Result<Duration, Box<dyn Error>> {
+        match &self.playback_delay {
+            Some(playback_delay) => Ok(DurationString::from_string(playback_delay.clone())?.into()),
+            None => Ok(DEFAULT_MIDI_PLAYBACK_DELAY),
+        }
+    }
+}
 
 /// Implementers must convert to a MIDI live event.
 pub(super) trait ToMidiEvent {

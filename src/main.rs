@@ -24,9 +24,9 @@ mod songs;
 mod test;
 
 use clap::{crate_version, Parser, Subcommand};
+use config::dmx::{Dmx, Universe};
 use config::init_player_and_controller;
-use dmx::universe::UniverseConfig;
-use duration_string::DurationString;
+use config::midi::Midi;
 use player::Player;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
@@ -85,6 +85,8 @@ enum Commands {
         /// The MIDI device name to play through.
         #[arg[short, long]]
         midi_device_name: Option<String>,
+        /// The MIDI playback delay.
+        midi_playback_delay: Option<String>,
         /// The path to the song repository.
         repository_path: String,
         /// The name of the song to play.
@@ -182,6 +184,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             device_name,
             mappings,
             midi_device_name,
+            midi_playback_delay,
             dmx_dimming_speed_modifier,
             dmx_playback_delay,
             dmx_universe_config,
@@ -207,12 +210,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
             let device = audio::get_device(&device_name)?;
             let midi_device = match midi_device_name {
-                Some(midi_device_name) => Some(midi::get_device(&midi_device_name)?),
+                Some(midi_device_name) => Some(midi::get_device(Midi::new(
+                    midi_device_name,
+                    midi_playback_delay,
+                ))?),
                 None => None,
             };
             let dmx_engine = match dmx_universe_config {
                 Some(dmx_universe_config) => {
-                    let mut universe_configs: Vec<UniverseConfig> = Vec::new();
+                    let mut universe_configs: Vec<Universe> = Vec::new();
                     for universe_config in dmx_universe_config.split(';') {
                         let config_fields: Vec<&str> = universe_config.split(',').collect();
 
@@ -241,10 +247,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         }
 
                         if universe.is_some() && name.is_some() {
-                            universe_configs.push(UniverseConfig {
-                                universe: universe.unwrap(),
-                                name: name.unwrap(),
-                            })
+                            universe_configs.push(Universe::new(universe.unwrap(), name.unwrap()));
                         } else {
                             return Err(format!(
                                 "Missing device specified for config {}",
@@ -257,18 +260,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     if universe_configs.is_empty() {
                         None
                     } else {
-                        let dmx_plaback_delay = dmx_playback_delay.map_or(
-                            Ok::<Duration, Box<dyn Error>>(
-                                crate::config::DEFAULT_DMX_PLAYBACK_DELAY,
-                            ),
-                            |duration| Ok(DurationString::from_string(duration)?.into()),
-                        )?;
-                        Some(dmx::create_engine(
-                            dmx_dimming_speed_modifier
-                                .unwrap_or(crate::config::DEFAULT_DMX_DIMMING_SPEED_MODIFIER),
-                            dmx_plaback_delay,
+                        Some(dmx::create_engine(Dmx::new(
+                            dmx_dimming_speed_modifier,
+                            dmx_playback_delay,
                             universe_configs,
-                        )?)
+                        ))?)
                     }
                 }
                 None => None,

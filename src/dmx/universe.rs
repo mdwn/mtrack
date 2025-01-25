@@ -22,6 +22,7 @@ use std::time::Instant;
 use std::{sync::RwLock, time::Duration};
 use tracing::error;
 
+use crate::config::dmx;
 use crate::playsync::CancelHandle;
 
 use super::engine::DmxMessage;
@@ -31,14 +32,6 @@ const UNIVERSE_SIZE: usize = 512;
 
 /// The target number of updates per second.
 const TARGET_HZ: f64 = 44.0;
-
-/// The configuration for a universe.
-pub(crate) struct UniverseConfig {
-    /// The OpenLighting universe.
-    pub universe: u16,
-    /// The name of this universe. Will be mapped to a universe by the player.
-    pub name: String,
-}
 
 /// A DMX universe.
 pub(crate) struct Universe {
@@ -53,7 +46,7 @@ pub(crate) struct Universe {
     /// Max channels
     max_channels: Arc<AtomicU16>,
     /// The configuration for this universe.
-    config: UniverseConfig,
+    config: dmx::Universe,
     /// The cancel handle for the thread attached to this universe.
     cancel_handle: CancelHandle,
     /// Used to send data to the OLA client thread.
@@ -63,7 +56,7 @@ pub(crate) struct Universe {
 impl Universe {
     /// Creates a new universe.
     pub(super) fn new(
-        config: UniverseConfig,
+        config: dmx::Universe,
         cancel_handle: CancelHandle,
         ola_sender: Sender<DmxMessage>,
     ) -> Universe {
@@ -132,7 +125,7 @@ impl Universe {
         let target = self.target.clone();
         let max_channels = self.max_channels.clone();
         let cancel_handle = self.cancel_handle.clone();
-        let universe = self.config.universe;
+        let universe = self.config.universe();
         let ola_sender = self.ola_sender.clone();
 
         thread::spawn(move || {
@@ -217,20 +210,14 @@ mod test {
 
     use ola::DmxBuffer;
 
-    use crate::{
-        dmx::universe::{UniverseConfig, TARGET_HZ},
-        playsync::CancelHandle,
-    };
+    use crate::{config::dmx, dmx::universe::TARGET_HZ, playsync::CancelHandle};
 
     use super::Universe;
 
     fn new_universe() -> Universe {
         let (sender, _) = mpsc::channel();
         Universe::new(
-            UniverseConfig {
-                universe: 1,
-                name: "universe".into(),
-            },
+            dmx::Universe::new(1, "universe".to_string()),
             CancelHandle::new(),
             sender,
         )

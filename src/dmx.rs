@@ -14,24 +14,17 @@
 use std::{
     error::Error,
     sync::{Arc, RwLock},
-    time::Duration,
 };
 
 use engine::Engine;
-use universe::{Universe, UniverseConfig};
+use universe::Universe;
+
+use crate::config::dmx::Dmx;
 
 pub mod engine;
 pub mod universe;
 
 /// Gets a device with the given name.
-pub fn create_engine(
-    dimming_speed_modifier: f64,
-    playback_delay: Duration,
-    universe_configs: Vec<UniverseConfig>,
-) -> Result<Arc<RwLock<Engine>>, Box<dyn Error>> {
-    Ok(Arc::new(RwLock::new(Engine::new(
-        dimming_speed_modifier,
-        playback_delay,
-        universe_configs,
-    )?)))
+pub fn create_engine(config: Dmx) -> Result<Arc<RwLock<Engine>>, Box<dyn Error>> {
+    Ok(Arc::new(RwLock::new(Engine::new(config)?)))
 }

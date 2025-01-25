@@ -17,11 +17,13 @@ use std::time::Duration;
 use duration_string::DurationString;
 use serde::Deserialize;
 
-use crate::dmx::universe::UniverseConfig;
+/// The default DMX dimming speed.
+pub const DEFAULT_DMX_DIMMING_SPEED_MODIFIER: f64 = 1.0;
+pub const DEFAULT_DMX_PLAYBACK_DELAY: Duration = Duration::ZERO;
 
 /// A YAML representation of the DMX configuration.
 #[derive(Deserialize)]
-pub(super) struct Dmx {
+pub(crate) struct Dmx {
     /// Controls the dim speed modifier. A modifier of 1.0 means a dim speed of 1 == 1.0 second.
     dim_speed_modifier: Option<f64>,
 
@@ -33,30 +35,42 @@ pub(super) struct Dmx {
 }
 
 impl Dmx {
+    /// Creates a new DMX configuration.
+    pub(crate) fn new(
+        dim_speed_modifier: Option<f64>,
+        playback_delay: Option<String>,
+        universes: Vec<Universe>,
+    ) -> Dmx {
+        Dmx {
+            dim_speed_modifier,
+            playback_delay,
+            universes,
+        }
+    }
     /// Gets the dimming speed modifier.
-    pub(super) fn get_dimming_speed_modifier(&self) -> Option<f64> {
+    pub(crate) fn dimming_speed_modifier(&self) -> f64 {
         self.dim_speed_modifier
+            .unwrap_or(DEFAULT_DMX_DIMMING_SPEED_MODIFIER)
     }
 
     /// Gets the playback delay.
-    pub(super) fn get_playback_delay(&self) -> Result<Option<Duration>, duration_string::Error> {
-        self.playback_delay.as_ref().map_or(Ok(None), |duration| {
-            Ok(Some(DurationString::from_string(duration.clone())?.into()))
-        })
+    pub(crate) fn playback_delay(&self) -> Result<Duration, duration_string::Error> {
+        self.playback_delay
+            .as_ref()
+            .map_or(Ok(DEFAULT_DMX_PLAYBACK_DELAY), |duration| {
+                Ok(DurationString::from_string(duration.clone())?.into())
+            })
     }
 
     /// Converts the configuration into universe configs.
-    pub(super) fn to_configs(&self) -> Vec<UniverseConfig> {
-        self.universes
-            .iter()
-            .map(|u| u.to_universe_config())
-            .collect()
+    pub(crate) fn universes(&self) -> Vec<Universe> {
+        self.universes.clone()
     }
 }
 
 /// A YAML representation of a DMX universe configuration.
-#[derive(Deserialize)]
-pub(super) struct Universe {
+#[derive(Deserialize, Clone)]
+pub(crate) struct Universe {
     /// The OpenLighting universe.
     universe: u16,
 
@@ -65,11 +79,18 @@ pub(super) struct Universe {
 }
 
 impl Universe {
-    /// Converts this universe configuration into a UniverseConfiguration object.
-    pub(super) fn to_universe_config(&self) -> UniverseConfig {
-        UniverseConfig {
-            universe: self.universe,
-            name: self.name.clone(),
-        }
+    /// Creates a new universe configuration.
+    pub(crate) fn new(universe: u16, name: String) -> Universe {
+        Universe { universe, name }
+    }
+
+    /// Gets the OpenLighting universe.
+    pub(crate) fn universe(&self) -> u16 {
+        self.universe
+    }
+
+    /// Gets the name of the universe.
+    pub(crate) fn name(&self) -> String {
+        self.name.clone()
     }
 }

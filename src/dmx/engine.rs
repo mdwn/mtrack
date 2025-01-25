@@ -31,11 +31,12 @@ use ola::{DmxBuffer, StreamingClient};
 use tracing::{debug, error, info, span, Level};
 
 use crate::{
+    config::dmx::Dmx,
     playsync::CancelHandle,
     songs::{MidiSheet, Song},
 };
 
-use super::{universe::UniverseConfig, Universe};
+use super::Universe;
 
 /// The DMX engine. This is meant to control the current state of the
 /// universe(s) that should be sent to our DMX interface(s).
@@ -56,11 +57,7 @@ pub(super) struct DmxMessage {
 
 impl Engine {
     /// Creates a new DMX Engine.
-    pub fn new(
-        dimming_speed_modifier: f64,
-        playback_delay: Duration,
-        universe_configs: Vec<UniverseConfig>,
-    ) -> Result<Engine, Box<dyn Error>> {
+    pub fn new(config: Dmx) -> Result<Engine, Box<dyn Error>> {
         let mut maybe_client = None;
 
         // Attempt to connect to OLA 10 times.
@@ -84,11 +81,12 @@ impl Engine {
             Self::ola_thread(client, receiver);
         });
         let cancel_handle = CancelHandle::new();
-        let universes: HashMap<String, Universe> = universe_configs
+        let universes: HashMap<String, Universe> = config
+            .universes()
             .into_iter()
             .map(|config| {
                 (
-                    config.name.clone(),
+                    config.name(),
                     Universe::new(config, cancel_handle.clone(), sender.clone()),
                 )
             })
@@ -98,8 +96,8 @@ impl Engine {
             .map(|universe| universe.start_thread())
             .collect();
         Ok(Engine {
-            dimming_speed_modifier,
-            playback_delay,
+            dimming_speed_modifier: config.dimming_speed_modifier(),
+            playback_delay: config.playback_delay()?,
             universes: universes
                 .into_iter()
                 .map(|(name, universe)| (name, RwLock::new(universe)))
@@ -193,7 +191,7 @@ impl Engine {
                     let play_finished = Arc::new(AtomicBool::new(false));
 
                     play_barrier.wait();
-                    thread::sleep(playback_delay);
+                    spin_sleep::sleep(playback_delay);
                     player.play(&dmx_midi_sheet.sheet);
                     play_finished.store(true, std::sync::atomic::Ordering::Relaxed);
                 })

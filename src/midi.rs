@@ -20,7 +20,7 @@ use std::{
 use midly::live::LiveEvent;
 use tokio::sync::mpsc::Sender;
 
-use crate::{playsync::CancelHandle, songs::Song};
+use crate::{config, playsync::CancelHandle, songs::Song};
 
 pub(crate) mod midir;
 mod mock;
@@ -51,12 +51,13 @@ pub fn list_devices() -> Result<Vec<Box<dyn Device>>, Box<dyn Error>> {
 }
 
 /// Gets a device with the given name.
-pub fn get_device(name: &String) -> Result<Arc<dyn Device>, Box<dyn Error>> {
-    if name.starts_with("mock") {
-        return Ok(Arc::new(mock::Device::get(name)));
+pub fn get_device(config: config::midi::Midi) -> Result<Arc<dyn Device>, Box<dyn Error>> {
+    let device = config.device();
+    if device.starts_with("mock") {
+        return Ok(Arc::new(mock::Device::get(device.as_str())));
     };
 
-    Ok(Arc::new(midir::get(name)?))
+    Ok(Arc::new(midir::get(&config)?))
 }
 
 #[cfg(test)]
