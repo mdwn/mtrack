@@ -27,6 +27,7 @@ use tracing::{info, span, Level};
 use crate::{playsync::CancelHandle, songs::Song};
 
 /// A mock device. Doesn't actually play anything.
+#[derive(Clone)]
 pub struct Device {
     name: String,
     is_playing: Arc<AtomicBool>,
@@ -98,6 +99,11 @@ impl super::Device for Device {
         }
 
         Ok(())
+    }
+
+    #[cfg(test)]
+    fn to_mock(&self) -> Result<Arc<Device>, Box<dyn Error>> {
+        Ok(Arc::new(self.clone()))
     }
 }
 

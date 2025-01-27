@@ -11,6 +11,7 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
+use midly::live::LiveEvent;
 use std::{
     collections::HashMap,
     error::Error,
@@ -21,15 +22,16 @@ use std::{
     thread,
     time::Duration,
 };
-
-use midly::live::LiveEvent;
 use tokio::{
     sync::{oneshot, Mutex},
     task::JoinHandle,
 };
 use tracing::{error, info, span, Level, Span};
 
-use crate::{audio, dmx, midi, playlist::Playlist, playsync::CancelHandle, songs::Song};
+use crate::songs::Songs;
+use crate::{
+    audio, config, dmx, midi, playlist, playlist::Playlist, playsync::CancelHandle, songs::Song,
+};
 
 struct PlayHandles {
     join: JoinHandle<()>,
@@ -64,21 +66,31 @@ pub struct Player {
 impl Player {
     /// Creates a new player.
     pub fn new(
-        device: Arc<dyn audio::Device>,
-        mappings: HashMap<String, Vec<u16>>,
-        midi_device: Option<Arc<dyn midi::Device>>,
-        dmx_engine: Option<Arc<RwLock<dmx::engine::Engine>>>,
+        songs: Arc<Songs>,
         playlist: Arc<Playlist>,
-        all_songs_playlist: Arc<Playlist>,
-        status_events: Option<StatusEvents>,
-    ) -> Player {
+        config: &config::Player,
+    ) -> Result<Player, Box<dyn Error>> {
+        let midi_device = midi::get_device(config.midi())?;
+        Self::new_with_midi_device(songs, playlist, midi_device, config)
+    }
+
+    pub fn new_with_midi_device(
+        songs: Arc<Songs>,
+        playlist: Arc<Playlist>,
+        midi_device: Option<Arc<dyn midi::Device>>,
+        config: &config::Player,
+    ) -> Result<Player, Box<dyn Error>> {
+        let device = audio::get_device(config.audio())?;
+        let dmx_engine = dmx::create_engine(config.dmx())?;
+        let status_events = StatusEvents::new(config.status_events())?;
+
         let player = Player {
             device,
-            mappings: Arc::new(mappings),
+            mappings: Arc::new(config.track_mappings().clone()),
             midi_device,
             dmx_engine,
             playlist,
-            all_songs: all_songs_playlist,
+            all_songs: playlist::from_songs(songs)?,
             use_all_songs: AtomicBool::new(false),
             join: Arc::new(Mutex::new(None)),
             stop_run: Arc::new(AtomicBool::new(false)),
@@ -86,7 +98,7 @@ impl Player {
         };
 
         if player.midi_device.is_none() {
-            return player;
+            return Ok(player);
         }
 
         // Emit the event for the first track if needed.
@@ -101,7 +113,18 @@ impl Player {
             tokio::spawn(Player::report_status(midi_device, join, status_events));
         }
 
-        player
+        Ok(player)
+    }
+
+    /// Gets the audio device currently in use by the player.
+    #[cfg(test)]
+    pub fn audio_device(&self) -> Arc<dyn audio::Device> {
+        self.device.clone()
+    }
+
+    /// Gets the MIDI device currently in use by the player.
+    pub fn midi_device(&self) -> Option<Arc<dyn midi::Device>> {
+        self.midi_device.clone()
     }
 
     /// Reports status as MIDI events.
@@ -464,6 +487,12 @@ impl Player {
         self.playlist.clone()
     }
 
+    /// Gets the all songs playlist used by the player.
+    #[cfg(test)]
+    pub fn get_all_songs_playlist(&self) -> Arc<Playlist> {
+        self.all_songs.clone()
+    }
+
     /// Goes to the previous song and emits the MIDI event associated if one exists.
     fn prev_and_emit(
         midi_device: Option<Arc<dyn midi::Device>>,
@@ -508,7 +537,7 @@ pub struct StatusEvents {
 impl StatusEvents {
     /// Creates a new status events configuration.
     pub fn new(
-        config: Option<crate::config::StatusEvents>,
+        config: Option<config::StatusEvents>,
     ) -> Result<Option<StatusEvents>, Box<dyn Error>> {
         Ok(match config {
             Some(config) => Some(StatusEvents {
@@ -525,29 +554,32 @@ impl StatusEvents {
 mod test {
     use std::{collections::HashMap, error::Error, path::PathBuf, sync::Arc};
 
-    use crate::{audio, config, midi, playlist::Playlist, test::eventually};
+    use crate::{config, midi, playlist::Playlist, songs, test::eventually};
 
     use super::Player;
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_player() -> Result<(), Box<dyn Error>> {
-        let device = Arc::new(audio::test::Device::get("mock-device"));
-        let mappings: HashMap<String, Vec<u16>> = HashMap::new();
+        let songs = songs::get_all_songs(&PathBuf::from("assets/songs"))?;
         let midi_device = Arc::new(midi::test::Device::get("mock-midi-device"));
-        let dmx_engine = None;
-        let songs = config::get_all_songs(&PathBuf::from("assets/songs"))?;
-        let playlist =
-            config::parse_playlist(&PathBuf::from("assets/playlist.yaml"), songs.clone())?;
-        let all_songs_playlist = Playlist::from_songs(songs.clone())?;
-        let mut player = Player::new(
-            device.clone(),
-            mappings,
+        let mut player = Player::new_with_midi_device(
+            songs.clone(),
+            Playlist::new(
+                &config::Playlist::deserialize(&PathBuf::from("assets/playlist.yaml"))?,
+                songs,
+            )?,
             Some(midi_device.clone()),
-            dmx_engine,
-            playlist.clone(),
-            all_songs_playlist.clone(),
-            None,
-        );
+            &config::Player::new(
+                config::Controller::Keyboard,
+                config::Audio::new("mock-device"),
+                Some(config::Midi::new("mock-midi-device", None)),
+                None,
+                HashMap::new(),
+                "assets/songs",
+            ),
+        )?;
+        let binding = player.audio_device();
+        let device = binding.to_mock()?;
 
         // Direct the player.
         println!("Playlist -> Song 1");

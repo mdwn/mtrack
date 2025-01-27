@@ -216,6 +216,11 @@ impl super::Device for Device {
 
         Ok(())
     }
+
+    #[cfg(test)]
+    fn to_mock(&self) -> Result<Arc<super::mock::Device>, Box<dyn Error>> {
+        Err("not a mock".into())
+    }
 }
 
 impl fmt::Display for Device {

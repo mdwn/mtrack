@@ -28,13 +28,14 @@ use tracing::{info, span, Level};
 use crate::{playsync::CancelHandle, songs::Song};
 
 /// A mock device. Doesn't actually play anything.
+#[derive(Clone)]
 pub struct Device {
     name: String,
     barrier: Arc<Barrier>,
     closed: Arc<AtomicBool>,
     event: Arc<Mutex<Vec<u8>>>,
-    emit_called: Mutex<Option<Vec<u8>>>,
-    event_thread: Box<Mutex<Option<JoinHandle<()>>>>,
+    emit_called: Arc<Mutex<Option<Vec<u8>>>>,
+    event_thread: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
 impl Device {
@@ -45,8 +46,8 @@ impl Device {
             closed: Arc::new(AtomicBool::new(false)),
             barrier: Arc::new(Barrier::new(2)),
             event: Arc::new(Mutex::new(Vec::new())),
-            emit_called: Mutex::new(None),
-            event_thread: Box::new(Mutex::new(None)),
+            emit_called: Arc::new(Mutex::new(None)),
+            event_thread: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -178,6 +179,11 @@ impl super::Device for Device {
         }
 
         Ok(())
+    }
+
+    #[cfg(test)]
+    fn to_mock(&self) -> Result<Arc<Device>, Box<dyn Error>> {
+        Ok(Arc::new(self.clone()))
     }
 }
 

@@ -1,5 +1,7 @@
 use std::collections::HashMap;
-
+use std::error::Error;
+use std::fs;
+use std::path::{Path, PathBuf};
 // Copyright (C) 2025 Michael Wilson <mike@mdwn.dev>
 //
 // This program is free software: you can redistribute it and/or modify it under
@@ -13,14 +15,14 @@ use std::collections::HashMap;
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-use serde::Deserialize;
-
 use super::audio::Audio;
 use super::controller::Controller;
 use super::dmx::Dmx;
 use super::midi::Midi;
 use super::statusevents::StatusEvents;
 use super::trackmappings::TrackMappings;
+use serde::Deserialize;
+use tracing::error;
 
 /// The configuration for the multitrack player.
 #[derive(Deserialize)]
@@ -46,6 +48,32 @@ pub struct Player {
 }
 
 impl Player {
+    pub fn new(
+        controller: Controller,
+        audio: Audio,
+        midi: Option<Midi>,
+        dmx: Option<Dmx>,
+        track_mappings: HashMap<String, Vec<u16>>,
+        songs: &str,
+    ) -> Player {
+        Player {
+            controller,
+            audio_device: None,
+            audio: Some(audio),
+            track_mappings: TrackMappings { track_mappings },
+            midi_device: None,
+            midi,
+            dmx,
+            status_events: None,
+            songs: songs.to_string(),
+        }
+    }
+
+    /// Deserializes a file from the path into a player configuration struct.
+    pub fn deserialize(path: &PathBuf) -> Result<Player, Box<dyn Error>> {
+        Ok(serde_yaml::from_str(&fs::read_to_string(path)?)?)
+    }
+
     /// Gets the controller configuration.
     pub fn controller(&self) -> &Controller {
         &self.controller
@@ -56,7 +84,7 @@ impl Player {
         if let Some(audio) = &self.audio {
             return Some(audio.clone());
         } else if let Some(audio_device) = &self.audio_device {
-            return Some(Audio::new(audio_device.clone(), None));
+            return Some(Audio::new(audio_device));
         }
 
         None
@@ -89,7 +117,18 @@ impl Player {
     }
 
     /// Gets the path to the song definitions.
-    pub fn songs(&self) -> &str {
-        &self.songs
+    pub fn songs(&self, player_path: &Path) -> PathBuf {
+        let songs_path_config = PathBuf::from(&self.songs);
+        if songs_path_config.is_absolute() {
+            return songs_path_config;
+        }
+        let player_path_directory = match player_path.parent() {
+            Some(path) => path,
+            None => {
+                error!("Could not find parent of player path {player_path:?}");
+                return songs_path_config;
+            }
+        };
+        player_path_directory.join(&self.songs)
     }
 }

@@ -28,7 +28,7 @@ use midly::{Format, Smf};
 use nodi::timers::Ticker;
 use nodi::Sheet;
 use ringbuf::{HeapConsumer, HeapProducer, HeapRb};
-use tracing::error;
+use tracing::{debug, error};
 
 use crate::config;
 
@@ -58,89 +58,6 @@ pub struct Song {
     tracks: Vec<Track>,
 }
 
-/// Midi playback configuration for the song.
-#[derive(Clone)]
-pub struct MidiPlayback {
-    /// The path to the MIDI file.
-    file: PathBuf,
-
-    /// The MIDI channels to exclude from playback.
-    exclude_midi_channels: Vec<u8>,
-}
-
-impl MidiPlayback {
-    /// Creates a new MIDI playback object.
-    pub fn new(
-        start_path: &Path,
-        config: config::MidiPlayback,
-    ) -> Result<MidiPlayback, Box<dyn Error>> {
-        let file = start_path.join(config.file());
-
-        if !file.exists() {
-            return Err(format!("file {} does not exist", file.display()).into());
-        }
-        Ok(MidiPlayback {
-            file,
-            exclude_midi_channels: config.exclude_midi_channels(),
-        })
-    }
-
-    /// Returns a MIDI sheet for the song.
-    pub fn midi_sheet(&self) -> Result<MidiSheet, Box<dyn Error>> {
-        parse_midi(&self.file)
-    }
-
-    /// Gets the MIDI channels to exclude.
-    pub fn exclude_midi_channels(&self) -> Vec<u8> {
-        self.exclude_midi_channels.clone()
-    }
-}
-
-/// A light show for the song.
-#[derive(Clone)]
-pub struct LightShow {
-    /// The name of the universe. Will be matched against the universes configured in the DMX engine
-    /// to determine where (if anywhere) this light show should be sent.
-    universe_name: String,
-
-    /// The associated MIDI file to interpret as DMX to play.
-    dmx_file: PathBuf,
-
-    /// The MIDI channels from this MIDI file to use as lighting data. If none are supplied, all channels
-    /// will be used.
-    midi_channels: Vec<u8>,
-}
-
-impl LightShow {
-    pub fn new(start_path: &Path, config: &config::LightShow) -> Result<LightShow, Box<dyn Error>> {
-        let dmx_file = start_path.join(config.dmx_file());
-
-        if !dmx_file.exists() {
-            return Err(format!("file {} does not exist", dmx_file.display()).into());
-        }
-        Ok(LightShow {
-            universe_name: config.universe_name(),
-            dmx_file,
-            midi_channels: config.midi_channels(),
-        })
-    }
-
-    /// Gets the universe name associated with the DMX playback.
-    pub fn universe_name(&self) -> String {
-        self.universe_name.clone()
-    }
-
-    /// Returns a MIDI sheet for the DMX file.
-    pub fn dmx_midi_sheet(&self) -> Result<MidiSheet, Box<dyn Error>> {
-        parse_midi(&self.dmx_file)
-    }
-
-    /// Gets the MIDI channels to include.
-    pub fn midi_channels(&self) -> Vec<u8> {
-        self.midi_channels.clone()
-    }
-}
-
 /// A simple sample for songs. Boils down to i32 or f32, which we can be reasonably assured that
 /// hound is able to read.
 pub trait Sample:
@@ -166,7 +83,7 @@ impl Sample for f32 {
 
 impl Song {
     // Create a new song.
-    pub fn new(start_path: &Path, config: config::Song) -> Result<Song, Box<dyn Error>> {
+    pub fn new(start_path: &Path, config: &config::Song) -> Result<Song, Box<dyn Error>> {
         let midi_playback = match config.midi_playback() {
             Some(midi_playback) => Some(MidiPlayback::new(start_path, midi_playback)?),
             None => None,
@@ -245,6 +162,17 @@ impl Song {
         })
     }
 
+    /// Creates multiple new songs from a given set of configs.
+    pub fn new_multiple(
+        start_path: &Path,
+        songs: &[config::Song],
+    ) -> Result<Vec<Song>, Box<dyn Error>> {
+        songs
+            .iter()
+            .map(|config| Self::new(start_path, config))
+            .collect::<Result<Vec<Song>, Box<dyn Error>>>()
+    }
+
     /// Gets the name of the song.
     pub fn name(&self) -> &str {
         &self.name
@@ -308,22 +236,6 @@ impl Song {
     }
 }
 
-/// Returns a MIDI sheet for the given file.
-fn parse_midi(midi_file: &PathBuf) -> Result<MidiSheet, Box<dyn Error>> {
-    let buf: Vec<u8> = fs::read(midi_file)?;
-    let smf = Smf::parse(&buf)?;
-    let ticker = Ticker::try_from(smf.header.timing)?;
-
-    let midi_sheet = MidiSheet {
-        ticker,
-        sheet: match smf.header.format {
-            Format::SingleTrack | Format::Sequential => Sheet::sequential(&smf.tracks),
-            Format::Parallel => Sheet::parallel(&smf.tracks),
-        },
-    };
-    Ok(midi_sheet)
-}
-
 impl fmt::Display for Song {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -341,6 +253,105 @@ impl fmt::Display for Song {
                 .collect::<Vec<String>>()
                 .join(", "),
         )
+    }
+}
+
+/// Midi playback configuration for the song.
+#[derive(Clone)]
+pub struct MidiPlayback {
+    /// The path to the MIDI file.
+    file: PathBuf,
+
+    /// The MIDI channels to exclude from playback.
+    exclude_midi_channels: Vec<u8>,
+}
+
+impl MidiPlayback {
+    /// Creates a new MIDI playback object.
+    pub fn new(
+        start_path: &Path,
+        config: config::MidiPlayback,
+    ) -> Result<MidiPlayback, Box<dyn Error>> {
+        let file = start_path.join(config.file());
+
+        if !file.exists() {
+            return Err(format!("file {} does not exist", file.display()).into());
+        }
+        Ok(MidiPlayback {
+            file,
+            exclude_midi_channels: config.exclude_midi_channels(),
+        })
+    }
+
+    /// Returns a MIDI sheet for the song.
+    pub fn midi_sheet(&self) -> Result<MidiSheet, Box<dyn Error>> {
+        parse_midi(&self.file)
+    }
+
+    /// Gets the MIDI channels to exclude.
+    pub fn exclude_midi_channels(&self) -> Vec<u8> {
+        self.exclude_midi_channels.clone()
+    }
+}
+
+/// Returns a MIDI sheet for the given file.
+fn parse_midi(midi_file: &PathBuf) -> Result<MidiSheet, Box<dyn Error>> {
+    let buf: Vec<u8> = fs::read(midi_file)?;
+    let smf = Smf::parse(&buf)?;
+    let ticker = Ticker::try_from(smf.header.timing)?;
+
+    let midi_sheet = MidiSheet {
+        ticker,
+        sheet: match smf.header.format {
+            Format::SingleTrack | Format::Sequential => Sheet::sequential(&smf.tracks),
+            Format::Parallel => Sheet::parallel(&smf.tracks),
+        },
+    };
+    Ok(midi_sheet)
+}
+
+/// A light show for the song.
+#[derive(Clone)]
+pub struct LightShow {
+    /// The name of the universe. Will be matched against the universes configured in the DMX engine
+    /// to determine where (if anywhere) this light show should be sent.
+    universe_name: String,
+
+    /// The associated MIDI file to interpret as DMX to play.
+    dmx_file: PathBuf,
+
+    /// The MIDI channels from this MIDI file to use as lighting data. If none are supplied, all channels
+    /// will be used.
+    midi_channels: Vec<u8>,
+}
+
+impl LightShow {
+    pub fn new(start_path: &Path, config: &config::LightShow) -> Result<LightShow, Box<dyn Error>> {
+        let dmx_file = start_path.join(config.dmx_file());
+
+        if !dmx_file.exists() {
+            return Err(format!("file {} does not exist", dmx_file.display()).into());
+        }
+        Ok(LightShow {
+            universe_name: config.universe_name(),
+            dmx_file,
+            midi_channels: config.midi_channels(),
+        })
+    }
+
+    /// Gets the universe name associated with the DMX playback.
+    pub fn universe_name(&self) -> String {
+        self.universe_name.clone()
+    }
+
+    /// Returns a MIDI sheet for the DMX file.
+    pub fn dmx_midi_sheet(&self) -> Result<MidiSheet, Box<dyn Error>> {
+        parse_midi(&self.dmx_file)
+    }
+
+    /// Gets the MIDI channels to include.
+    pub fn midi_channels(&self) -> Vec<u8> {
+        self.midi_channels.clone()
     }
 }
 
@@ -716,18 +727,60 @@ impl Songs {
     }
 }
 
+/// Recurse into the given path and return all valid songs found.
+pub fn get_all_songs(path: &PathBuf) -> Result<Arc<Songs>, Box<dyn Error>> {
+    debug!("Getting songs for directory {path:?}");
+    let mut songs: HashMap<String, Arc<Song>> = HashMap::new();
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.is_dir() {
+            get_all_songs(&path)?.list().iter().for_each(|song| {
+                songs.insert(song.name().to_string(), song.clone());
+            });
+        }
+
+        let extension = path.extension();
+        if extension.is_some_and(|ext| ext == "yaml" || ext == "yml") {
+            match config::Song::parse_multiple(&path) {
+                Ok(parsed) => {
+                    match path.parent() {
+                        Some(parent) => Song::new_multiple(&parent.canonicalize()?, &parsed)?,
+                        None => return Err("unable to get parent for path".into()),
+                    }
+                    .into_iter()
+                    .for_each(|song| {
+                        songs.insert(song.name().to_string(), Arc::new(song));
+                    });
+                }
+                Err(e) => error!(err = e.as_ref(), "Error while parsing files"),
+            }
+        }
+    }
+
+    Ok(Arc::new(Songs::new(songs)))
+}
+
 #[cfg(test)]
 mod test {
     use std::{collections::HashMap, error::Error, path::PathBuf};
 
-    use crate::{config, test::write_wav};
+    use crate::{config, songs::Song, test::write_wav};
 
     use super::{Sample, SongSource};
 
     #[test]
-    fn read_files() {
-        let songs = config::parse_songs(&PathBuf::from("assets/songs/songs.yaml"))
-            .expect("Unable to parse songs.");
+    fn read_files() -> Result<(), Box<dyn Error>> {
+        let songs_path = &PathBuf::from("assets/songs/songs.yaml");
+        let songs = Song::new_multiple(
+            songs_path
+                .parent()
+                .expect("parent should exist")
+                .canonicalize()?
+                .as_path(),
+            config::Song::parse_multiple(songs_path)?.as_slice(),
+        )?;
 
         // Check that the first few songs were parsed correctly.
         let song = &songs[0];
@@ -757,6 +810,8 @@ mod test {
         assert_eq!(44100, song.sample_rate);
         assert!(song.midi_event.is_none());
         assert!(song.midi_playback.is_some());
+
+        Ok(())
     }
 
     #[test]
@@ -808,7 +863,7 @@ mod test {
 
         let song = super::Song::new(
             &tempdir,
-            config::Song::new("song name", vec![track1, track2, track3]),
+            &config::Song::new("song name", vec![track1, track2, track3]),
         )?;
         let mut mapping: HashMap<String, Vec<u16>> = HashMap::new();
         mapping.insert("test 1".into(), vec![1]);

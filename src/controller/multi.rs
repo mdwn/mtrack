@@ -16,10 +16,11 @@ use std::{io, sync::Arc};
 use tokio::{sync::mpsc::Sender, task::JoinHandle};
 
 use super::Event;
+use crate::controller;
 
 pub enum SubDriver {
-    Keyboard(Arc<crate::controller::keyboard::Driver>),
-    Midi(Arc<crate::controller::midi::Driver>),
+    Keyboard(Arc<controller::keyboard::Driver>),
+    Midi(Arc<controller::midi::Driver>),
 }
 
 /// A controller that controls a player using multiple other drivers.
@@ -60,11 +61,11 @@ mod test {
     use std::{collections::HashMap, error::Error, path::PathBuf, sync::Arc};
 
     use crate::{
-        audio, config,
-        controller::{multi::SubDriver, Controller},
-        midi,
+        config,
+        controller::{self, multi::SubDriver, Controller},
         player::Player,
         playlist::Playlist,
+        songs,
         test::eventually,
     };
 
@@ -75,7 +76,6 @@ mod test {
             // ... add configuration
             .finish();
         let _default_guard = tracing::subscriber::set_default(subscriber);
-        let midi_device = Arc::new(midi::test::Device::get("mock-midi-device"));
         let play_event = midly::live::LiveEvent::Midi {
             channel: 16.into(),
             message: midly::MidiMessage::NoteOn {
@@ -118,17 +118,6 @@ mod test {
                 vel: 127.into(),
             },
         };
-        let driver = Arc::new(super::Driver::new(vec![SubDriver::Midi(Arc::new(
-            crate::controller::midi::Driver::new(
-                midi_device.clone(),
-                play_event,
-                prev_event,
-                next_event,
-                stop_event,
-                all_songs_event,
-                playlist_event,
-            ),
-        ))]));
 
         let mut play_buf: Vec<u8> = Vec::with_capacity(8);
         let mut prev_buf: Vec<u8> = Vec::with_capacity(8);
@@ -144,21 +133,41 @@ mod test {
         all_songs_event.write(&mut all_songs_buf)?;
         playlist_event.write(&mut playlist_buf)?;
 
-        let device = Arc::new(audio::test::Device::get("mock-device"));
-        let mappings: HashMap<String, Vec<u16>> = HashMap::new();
-        let songs = config::get_all_songs(&PathBuf::from("assets/songs"))?;
-        let playlist =
-            config::parse_playlist(&PathBuf::from("assets/playlist.yaml"), songs.clone())?;
-        let all_songs_playlist = Playlist::from_songs(songs.clone())?;
+        let songs = songs::get_all_songs(&PathBuf::from("assets/songs"))?;
         let player = Player::new(
-            device.clone(),
-            mappings,
-            Some(midi_device.clone()),
-            None,
-            playlist.clone(),
-            all_songs_playlist.clone(),
-            None,
-        );
+            songs.clone(),
+            Playlist::new(
+                &config::Playlist::deserialize(&PathBuf::from("assets/playlist.yaml"))?,
+                songs,
+            )?,
+            &config::Player::new(
+                config::Controller::Keyboard,
+                config::Audio::new("mock-device"),
+                Some(config::Midi::new("mock-midi-device", None)),
+                None,
+                HashMap::new(),
+                "assets/songs",
+            ),
+        )?;
+        let playlist = player.get_playlist();
+        let all_songs_playlist = player.get_all_songs_playlist();
+        let binding = player.audio_device();
+        let device = binding.to_mock()?;
+        let binding = player.midi_device().expect("MIDI device not found");
+        let midi_device = binding.to_mock()?;
+
+        let driver = Arc::new(super::Driver::new(vec![SubDriver::Midi(Arc::new(
+            controller::midi::Driver::new(
+                midi_device.clone(),
+                play_event,
+                prev_event,
+                next_event,
+                stop_event,
+                all_songs_event,
+                playlist_event,
+            ),
+        ))]));
+
         let _controller = Controller::new_from_driver(player, driver);
 
         println!("Playlist: {}", playlist);

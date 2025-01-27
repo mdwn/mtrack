@@ -30,10 +30,10 @@ pub struct Audio {
 
 impl Audio {
     /// New will create a new Audio configuration.
-    pub fn new(device: String, playback_delay: Option<String>) -> Audio {
+    pub fn new(device: &str) -> Audio {
         Audio {
-            device,
-            playback_delay,
+            device: device.to_string(),
+            playback_delay: None,
         }
     }
 
