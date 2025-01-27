@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fs::{self, File};
 use std::io::BufReader;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -30,53 +30,115 @@ use nodi::Sheet;
 use ringbuf::{HeapConsumer, HeapProducer, HeapRb};
 use tracing::error;
 
+use crate::config;
+
 /// A song with associated tracks for multitrack playback. Can contain:
 /// - An optional MIDI event, which will be played when the song is selected in a playlist.
 /// - An optional MIDI file, which will be played along with the audio tracks.
 pub struct Song {
     /// The name of the song.
-    pub name: String,
+    name: String,
     /// The MIDI event to play when the song is selected in a playlist.
-    pub midi_event: Option<LiveEvent<'static>>,
+    midi_event: Option<LiveEvent<'static>>,
     /// The MIDI playback configuration.
-    pub midi_playback: Option<MidiPlayback>,
+    midi_playback: Option<MidiPlayback>,
     /// The light show configurations
-    pub light_shows: Vec<LightShow>,
+    light_shows: Vec<LightShow>,
     /// The number of channels required to play this song.
-    pub num_channels: u16,
+    num_channels: u16,
     /// The sample rate of this song.
-    pub sample_rate: u32,
+    sample_rate: u32,
     /// The sample format.
-    pub sample_format: hound::SampleFormat,
+    sample_format: hound::SampleFormat,
     /// The bits per sample.
-    pub bits_per_sample: u16,
+    bits_per_sample: u16,
     /// The total duration of the song.
-    pub duration: Duration,
+    duration: Duration,
     /// The individual audio tracks.
-    pub tracks: Vec<Track>,
+    tracks: Vec<Track>,
 }
 
 /// Midi playback configuration for the song.
+#[derive(Clone)]
 pub struct MidiPlayback {
     /// The path to the MIDI file.
-    pub file: PathBuf,
+    file: PathBuf,
 
     /// The MIDI channels to exclude from playback.
-    pub exclude_midi_channels: Vec<u8>,
+    exclude_midi_channels: Vec<u8>,
+}
+
+impl MidiPlayback {
+    /// Creates a new MIDI playback object.
+    pub fn new(
+        start_path: &Path,
+        config: config::MidiPlayback,
+    ) -> Result<MidiPlayback, Box<dyn Error>> {
+        let file = start_path.join(config.file());
+
+        if !file.exists() {
+            return Err(format!("file {} does not exist", file.display()).into());
+        }
+        Ok(MidiPlayback {
+            file,
+            exclude_midi_channels: config.exclude_midi_channels(),
+        })
+    }
+
+    /// Returns a MIDI sheet for the song.
+    pub fn midi_sheet(&self) -> Result<MidiSheet, Box<dyn Error>> {
+        parse_midi(&self.file)
+    }
+
+    /// Gets the MIDI channels to exclude.
+    pub fn exclude_midi_channels(&self) -> Vec<u8> {
+        self.exclude_midi_channels.clone()
+    }
 }
 
 /// A light show for the song.
+#[derive(Clone)]
 pub struct LightShow {
     /// The name of the universe. Will be matched against the universes configured in the DMX engine
     /// to determine where (if anywhere) this light show should be sent.
-    pub universe_name: String,
+    universe_name: String,
 
     /// The associated MIDI file to interpret as DMX to play.
-    pub dmx_file: PathBuf,
+    dmx_file: PathBuf,
 
     /// The MIDI channels from this MIDI file to use as lighting data. If none are supplied, all channels
     /// will be used.
-    pub midi_channels: Vec<u8>,
+    midi_channels: Vec<u8>,
+}
+
+impl LightShow {
+    pub fn new(start_path: &Path, config: &config::LightShow) -> Result<LightShow, Box<dyn Error>> {
+        let dmx_file = start_path.join(config.dmx_file());
+
+        if !dmx_file.exists() {
+            return Err(format!("file {} does not exist", dmx_file.display()).into());
+        }
+        Ok(LightShow {
+            universe_name: config.universe_name(),
+            dmx_file,
+            midi_channels: config.midi_channels(),
+        })
+    }
+
+    /// Gets the universe name associated with the DMX playback.
+    pub fn universe_name(&self) -> String {
+        self.universe_name.clone()
+    }
+
+    /// Returns a MIDI sheet for the DMX file.
+    pub fn dmx_midi_sheet(&self) -> Result<MidiSheet, Box<dyn Error>> {
+        parse_midi(&self.dmx_file)
+    }
+
+    /// Gets the MIDI channels to include.
+    pub fn midi_channels(&self) -> Vec<u8> {
+        self.midi_channels.clone()
+    }
 }
 
 /// A simple sample for songs. Boils down to i32 or f32, which we can be reasonably assured that
@@ -104,31 +166,25 @@ impl Sample for f32 {
 
 impl Song {
     // Create a new song.
-    pub fn new(
-        name: String,
-        midi_event: Option<LiveEvent<'static>>,
-        midi_playback: Option<MidiPlayback>,
-        light_shows: Vec<LightShow>,
-        tracks: Vec<Track>,
-    ) -> Result<Song, Box<dyn Error>> {
-        // Make sure the MIDI/DMX files are parseable.
-        if let Some(midi_playback) = &midi_playback {
-            if !midi_playback.file.exists() {
-                return Err("MIDI file does not exist".into());
-            }
-        }
-
-        for light_show in light_shows.iter() {
-            if !light_show.dmx_file.exists() {
-                return Err(format!(
-                    "MIDI file for light show {} does not exist",
-                    light_show.universe_name
-                )
-                .into());
-            }
-        }
+    pub fn new(start_path: &Path, config: config::Song) -> Result<Song, Box<dyn Error>> {
+        let midi_playback = match config.midi_playback() {
+            Some(midi_playback) => Some(MidiPlayback::new(start_path, midi_playback)?),
+            None => None,
+        };
+        let light_shows = match config.light_shows() {
+            Some(light_shows) => light_shows
+                .iter()
+                .map(|light_show| LightShow::new(start_path, light_show))
+                .collect::<Result<Vec<LightShow>, Box<dyn Error>>>()?,
+            None => Vec::default(),
+        };
 
         // Calculate the number of channels and sample rate by reading the wav headers of each file.
+        let tracks = config
+            .tracks()
+            .iter()
+            .map(|track| Track::new(start_path, track))
+            .collect::<Result<Vec<Track>, Box<dyn Error>>>()?;
         let num_channels = u16::try_from(tracks.len())?;
         let mut sample_rate = 0;
         let mut max_duration = Duration::ZERO;
@@ -176,8 +232,8 @@ impl Song {
         }
 
         Ok(Song {
-            name,
-            midi_event,
+            name: config.name().to_string(),
+            midi_event: config.midi_event()?,
             midi_playback,
             light_shows,
             num_channels,
@@ -187,6 +243,51 @@ impl Song {
             duration: max_duration,
             tracks,
         })
+    }
+
+    /// Gets the name of the song.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Gets the MIDI event.
+    pub fn midi_event(&self) -> Option<LiveEvent<'static>> {
+        self.midi_event
+    }
+
+    /// Gets the sample rate of the song.
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    /// Gets the sample format.
+    pub fn sample_format(&self) -> SampleFormat {
+        self.sample_format
+    }
+
+    /// Gets the duration of the song.
+    pub fn duration(&self) -> Duration {
+        self.duration
+    }
+
+    /// Gets the number of channels.
+    pub fn num_channels(&self) -> u16 {
+        self.num_channels
+    }
+
+    /// Gets the MIDI playback info.
+    pub fn midi_playback(&self) -> Option<MidiPlayback> {
+        self.midi_playback.clone()
+    }
+
+    /// Gets the song light shows.
+    pub fn light_shows(&self) -> Vec<LightShow> {
+        self.light_shows.clone()
+    }
+
+    /// Gets the song tracks.
+    pub fn tracks(&self) -> Vec<Track> {
+        self.tracks.clone()
     }
 
     /// Returns the duration string in minutes and seconds.
@@ -204,13 +305,6 @@ impl Song {
         S: Sample,
     {
         SongSource::<S>::new(self, track_mappings)
-    }
-
-    /// Returns a MIDI sheet for the song.
-    pub fn midi_sheet(&self) -> Option<Result<MidiSheet, Box<dyn Error>>> {
-        self.midi_playback
-            .as_ref()
-            .map(|midi_playback| parse_midi(&midi_playback.file))
     }
 }
 
@@ -250,18 +344,11 @@ impl fmt::Display for Song {
     }
 }
 
-impl LightShow {
-    /// Returns a MIDI sheet for the DMX file.
-    pub fn dmx_midi_sheet(&self) -> Result<MidiSheet, Box<dyn Error>> {
-        parse_midi(&self.dmx_file)
-    }
-}
-
 /// Track is an individual audio track to play.
 #[derive(Clone)]
 pub struct Track {
     /// The name of the audio track.
-    pub name: String,
+    name: String,
     /// The file that contains the contents of this audio track.
     file: PathBuf,
     /// The channel to use in the file for this audio track.
@@ -277,8 +364,9 @@ pub struct Track {
 }
 
 impl Track {
-    pub fn new(config: crate::config::track::Track) -> Result<Track, Box<dyn Error>> {
-        let track_file = PathBuf::from(config.file());
+    /// Creates a new track.
+    pub fn new(start_path: &Path, config: &config::Track) -> Result<Track, Box<dyn Error>> {
+        let track_file = start_path.join(config.file());
         let file_channel = config.file_channel();
         let name = config.name();
 
@@ -298,7 +386,7 @@ impl Track {
         let file_channel = file_channel.unwrap_or(1);
 
         Ok(Track {
-            name,
+            name: name.to_string(),
             file: track_file.clone(),
             file_channel,
             sample_rate,
@@ -306,6 +394,11 @@ impl Track {
             bits_per_sample,
             duration,
         })
+    }
+
+    /// Gets the track name.
+    pub fn name(&self) -> &str {
+        &self.name
     }
 }
 
@@ -698,39 +791,24 @@ mod test {
 
     fn test_source() -> Result<SongSource<i32>, Box<dyn Error>> {
         let tempdir = tempfile::tempdir()?.into_path();
-        let tempwav1_path = tempdir.join("tempwav1.wav");
-        let tempwav2_path = tempdir.join("tempwav2.wav");
-        let tempwav3_path = tempdir.join("tempwav3.wav");
+        let tempwav1 = "tempwav1.wav";
+        let tempwav2 = "tempwav2.wav";
+        let tempwav3 = "tempwav3.wav";
 
         write_wav(
-            tempwav1_path.clone(),
+            tempdir.join(tempwav1),
             vec![1_i32, 2_i32, 3_i32, 4_i32, 5_i32],
         )?;
-        write_wav(tempwav2_path.clone(), vec![2_i32, 3_i32, 4_i32])?;
-        write_wav(tempwav3_path.clone(), vec![0_i32, 0_i32, 1_i32, 2_i32])?;
+        write_wav(tempdir.join(tempwav2), vec![2_i32, 3_i32, 4_i32])?;
+        write_wav(tempdir.join(tempwav3), vec![0_i32, 0_i32, 1_i32, 2_i32])?;
 
-        let track1 = super::Track::new(config::track::Track::new(
-            "test 1".into(),
-            tempwav1_path.to_string_lossy().into(),
-            Some(1),
-        ))?;
-        let track2 = super::Track::new(config::track::Track::new(
-            "test 2".into(),
-            tempwav2_path.to_string_lossy().into(),
-            Some(1),
-        ))?;
-        let track3 = super::Track::new(config::track::Track::new(
-            "test 3".into(),
-            tempwav3_path.to_string_lossy().into(),
-            Some(1),
-        ))?;
+        let track1 = config::Track::new("test 1".into(), tempwav1, Some(1));
+        let track2 = config::Track::new("test 2".into(), tempwav2, Some(1));
+        let track3 = config::Track::new("test 3".into(), tempwav3, Some(1));
 
         let song = super::Song::new(
-            "song name".into(),
-            None,
-            None,
-            Vec::new(),
-            vec![track1, track2, track3],
+            &tempdir,
+            config::Song::new("song name", vec![track1, track2, track3]),
         )?;
         let mut mapping: HashMap<String, Vec<u16>> = HashMap::new();
         mapping.insert("test 1".into(), vec![1]);

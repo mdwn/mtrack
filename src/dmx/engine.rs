@@ -31,7 +31,7 @@ use ola::{DmxBuffer, StreamingClient};
 use tracing::{debug, error, info, span, Level};
 
 use crate::{
-    config::dmx::Dmx,
+    config,
     playsync::CancelHandle,
     songs::{MidiSheet, Song},
 };
@@ -57,7 +57,7 @@ pub(super) struct DmxMessage {
 
 impl Engine {
     /// Creates a new DMX Engine.
-    pub fn new(config: Dmx) -> Result<Engine, Box<dyn Error>> {
+    pub fn new(config: &config::Dmx) -> Result<Engine, Box<dyn Error>> {
         let mut maybe_client = None;
 
         // Attempt to connect to OLA 10 times.
@@ -86,7 +86,7 @@ impl Engine {
             .into_iter()
             .map(|config| {
                 (
-                    config.name(),
+                    config.name().to_string(),
                     Universe::new(config, cancel_handle.clone(), sender.clone()),
                 )
             })
@@ -119,12 +119,13 @@ impl Engine {
         let _enter = span.enter();
 
         // No light shows in this song, so return early.
-        if song.light_shows.is_empty() {
+        let light_shows = song.light_shows();
+        if light_shows.is_empty() {
             return Ok(());
         }
 
         info!(
-            song = song.name,
+            song = song.name(),
             duration = song.duration_string(),
             "Playing song DMX."
         );
@@ -142,24 +143,22 @@ impl Engine {
 
         let mut dmx_midi_sheets: HashMap<String, (MidiSheet, Vec<u8>)> = HashMap::new();
         let mut empty_barrier_counter = 0;
-        for light_show in song.light_shows.iter() {
-            if !universe_names.contains(&light_show.universe_name) {
+        for light_show in song.light_shows().iter() {
+            let universe_name = light_show.universe_name();
+            if !universe_names.contains(&universe_name) {
                 // Keep track of the number of threads that should just wait on the play barrier.
                 empty_barrier_counter += 1;
                 continue;
             }
 
             dmx_midi_sheets.insert(
-                light_show.universe_name.clone(),
-                (
-                    light_show.dmx_midi_sheet()?,
-                    light_show.midi_channels.clone(),
-                ),
+                universe_name.clone(),
+                (light_show.dmx_midi_sheet()?, light_show.midi_channels()),
             );
         }
 
         if dmx_midi_sheets.is_empty() {
-            info!(song = song.name, "Song has no matching light shows.");
+            info!(song = song.name(), "Song has no matching light shows.");
             return Ok(());
         }
 

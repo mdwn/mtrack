@@ -13,7 +13,7 @@
 //
 use std::{error::Error, fmt, sync::Arc};
 
-use crate::config::audio::Audio;
+use crate::config;
 use crate::playsync::CancelHandle;
 use crate::songs::Song;
 use std::collections::HashMap;
@@ -40,7 +40,7 @@ pub fn list_devices() -> Result<Vec<Box<dyn Device>>, Box<dyn Error>> {
 }
 
 /// Gets a device with the given name.
-pub fn get_device(config: Option<Audio>) -> Result<Arc<dyn Device>, Box<dyn Error>> {
+pub fn get_device(config: Option<config::Audio>) -> Result<Arc<dyn Device>, Box<dyn Error>> {
     let config = match config {
         Some(config) => config,
         None => return Err("there must be an audio device specified".into()),
@@ -48,7 +48,7 @@ pub fn get_device(config: Option<Audio>) -> Result<Arc<dyn Device>, Box<dyn Erro
 
     let device = config.device();
     if device.starts_with("mock") {
-        return Ok(Arc::new(mock::Device::get(device.as_str())));
+        return Ok(Arc::new(mock::Device::get(device)));
     };
 
     Ok(Arc::new(cpal::Device::get(config)?))

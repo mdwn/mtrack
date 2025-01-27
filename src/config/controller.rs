@@ -21,18 +21,18 @@ use super::midi::{self, ToMidiEvent};
 /// Allows users to specify various controllers.
 #[derive(Deserialize, Clone)]
 #[serde(tag = "kind", rename_all = "lowercase")]
-pub(crate) enum Controller {
+pub enum Controller {
     Keyboard,
     Midi(MidiController),
     Multi(HashMap<String, Controller>),
 }
 
 #[derive(Deserialize)]
-pub(super) struct KeyboardController {}
+pub struct KeyboardController {}
 
 /// The configuration that maps MIDI events to controller messages.
 #[derive(Deserialize, Clone)]
-pub(crate) struct MidiController {
+pub struct MidiController {
     /// The MIDI event to look for to play the current song in the playlist.
     play: midi::Event,
     /// The MIDI event to look for to move the playlist to the previous item.
@@ -49,32 +49,32 @@ pub(crate) struct MidiController {
 
 impl MidiController {
     /// Gets the play event.
-    pub(crate) fn play(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
+    pub fn play(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
         self.play.to_midi_event()
     }
 
     /// Gets the prev event.
-    pub(crate) fn prev(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
+    pub fn prev(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
         self.prev.to_midi_event()
     }
 
     /// Gets the next event.
-    pub(crate) fn next(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
+    pub fn next(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
         self.next.to_midi_event()
     }
 
     /// Gets the stop event.
-    pub(crate) fn stop(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
+    pub fn stop(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
         self.stop.to_midi_event()
     }
 
     /// Gets the all songs event.
-    pub(crate) fn all_songs(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
+    pub fn all_songs(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
         self.all_songs.to_midi_event()
     }
 
     /// Gets the playlist event.
-    pub(crate) fn playlist(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
+    pub fn playlist(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
         self.playlist.to_midi_event()
     }
 }

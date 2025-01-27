@@ -239,7 +239,7 @@ mod test {
         // unrecognized events in between to make sure that they're ignored.
         println!("Playlist -> Song 1");
         eventually(
-            || playlist.current().name == "Song 1",
+            || playlist.current().name() == "Song 1",
             "Playlist never became Song 1",
         );
         // This invalid event should have no impact.
@@ -248,70 +248,70 @@ mod test {
         midi_device.mock_event(&next_buf);
         println!("Playlist -> Song 3");
         eventually(
-            || playlist.current().name == "Song 3",
+            || playlist.current().name() == "Song 3",
             "Playlist never became Song 3",
         );
         midi_device.mock_event(&unrecognized_buf);
         midi_device.mock_event(&next_buf);
         println!("Playlist -> Song 5");
         eventually(
-            || playlist.current().name == "Song 5",
+            || playlist.current().name() == "Song 5",
             "Playlist never became Song 5",
         );
         midi_device.mock_event(&unrecognized_buf);
         midi_device.mock_event(&next_buf);
         println!("Playlist -> Song 7");
         eventually(
-            || playlist.current().name == "Song 7",
+            || playlist.current().name() == "Song 7",
             "Playlist never became Song 7",
         );
         midi_device.mock_event(&unrecognized_buf);
         midi_device.mock_event(&prev_buf);
         println!("Playlist -> Song 5");
         eventually(
-            || playlist.current().name == "Song 5",
+            || playlist.current().name() == "Song 5",
             "Playlist never became Song 5",
         );
         println!("Switch to AllSongs");
         midi_device.mock_event(&unrecognized_buf);
         midi_device.mock_event(&all_songs_buf);
         eventually(
-            || all_songs_playlist.current().name == "Song 1",
+            || all_songs_playlist.current().name() == "Song 1",
             "All Songs Playlist never became Song 1",
         );
         println!("AllSongs -> Song 10");
         midi_device.mock_event(&unrecognized_buf);
         midi_device.mock_event(&next_buf);
         eventually(
-            || all_songs_playlist.current().name == "Song 10",
+            || all_songs_playlist.current().name() == "Song 10",
             "All Songs Playlist never became Song 10",
         );
         println!("AllSongs -> Song 2");
         midi_device.mock_event(&unrecognized_buf);
         midi_device.mock_event(&next_buf);
         eventually(
-            || all_songs_playlist.current().name == "Song 2",
+            || all_songs_playlist.current().name() == "Song 2",
             "All Songs Playlist never became Song 2",
         );
         println!("AllSongs -> Song 10");
         midi_device.mock_event(&unrecognized_buf);
         midi_device.mock_event(&prev_buf);
         eventually(
-            || all_songs_playlist.current().name == "Song 10",
+            || all_songs_playlist.current().name() == "Song 10",
             "All Songs Playlist never became Song 10",
         );
         println!("Switch to Playlist");
         midi_device.mock_event(&unrecognized_buf);
         midi_device.mock_event(&playlist_buf);
         eventually(
-            || playlist.current().name == "Song 5",
+            || playlist.current().name() == "Song 5",
             "Playlist never became Song 5",
         );
         println!("Playlist -> Song 7");
         midi_device.mock_event(&unrecognized_buf);
         midi_device.mock_event(&next_buf);
         eventually(
-            || playlist.current().name == "Song 7",
+            || playlist.current().name() == "Song 7",
             "Playlist never became Song 7",
         );
         midi_device.mock_event(&unrecognized_buf);

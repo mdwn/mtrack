@@ -165,7 +165,7 @@ impl Player {
         let playlist = self.get_playlist().clone();
         if join.is_some() {
             info!(
-                current_song = playlist.current().name,
+                current_song = playlist.current().name(),
                 "Player is already playing a song."
             );
             return Ok(());
@@ -220,7 +220,7 @@ impl Player {
             }
 
             info!(
-                song = song.name,
+                song = song.name(),
                 cancelled = cancelled,
                 "Song finished playing."
             );
@@ -248,11 +248,11 @@ impl Player {
         // Set up the play barrier, which will synchronize the three calls to play.
         let barrier = Arc::new(Barrier::new({
             let mut num_barriers = 1;
-            if song.midi_playback.is_some() && midi_device.is_some() {
+            if song.midi_playback().is_some() && midi_device.is_some() {
                 num_barriers += 1;
             }
-            if !song.light_shows.is_empty() && dmx_engine.is_some() {
-                num_barriers += song.light_shows.len();
+            if !song.light_shows().is_empty() && dmx_engine.is_some() {
+                num_barriers += song.light_shows().len();
             }
             num_barriers
         }));
@@ -264,7 +264,7 @@ impl Player {
             let cancel_handle = cancel_handle.clone();
 
             thread::spawn(move || {
-                let song_name = song.name.to_string();
+                let song_name = song.name().to_string();
 
                 if let Err(e) = device.play(song, &mappings, cancel_handle, barrier) {
                     error!(
@@ -283,7 +283,7 @@ impl Player {
             let cancel_handle = cancel_handle.clone();
 
             thread::spawn(move || {
-                let song_name = song.name.to_string();
+                let song_name = song.name().to_string();
 
                 if let Err(e) = dmx::engine::Engine::play(dmx_engine, song, cancel_handle, barrier)
                 {
@@ -303,7 +303,7 @@ impl Player {
             let cancel_handle = cancel_handle.clone();
 
             Some(thread::spawn(move || {
-                let song_name = song.name.to_string();
+                let song_name = song.name().to_string();
 
                 if let Err(e) = midi_device.play(song, cancel_handle, barrier) {
                     error!(
@@ -347,7 +347,7 @@ impl Player {
         Ok(match join.as_mut() {
             Some(join) => {
                 info!(
-                    song = self.get_playlist().current().name,
+                    song = self.get_playlist().current().name(),
                     "Waiting for song to finish.",
                 );
                 // Wait for the mutex to become available and immediately drop it.
@@ -365,7 +365,7 @@ impl Player {
         if join.is_some() {
             let current = playlist.current();
             info!(
-                current_song = current.name,
+                current_song = current.name(),
                 "Can't go to next, player is active."
             );
             return Ok(current);
@@ -380,7 +380,7 @@ impl Player {
         if join.is_some() {
             let current = playlist.current();
             info!(
-                current_song = current.name,
+                current_song = current.name(),
                 "Can't go to previous, player is active."
             );
             return Ok(current);
@@ -410,7 +410,7 @@ impl Player {
         }
 
         info!(
-            song = self.get_playlist().current().name,
+            song = self.get_playlist().current().name(),
             "Stopping playback."
         );
 
@@ -425,7 +425,7 @@ impl Player {
         let join = self.join.lock().await;
         if join.is_some() {
             info!(
-                current_song = self.get_playlist().current().name,
+                current_song = self.get_playlist().current().name(),
                 "Can't switch to all songs, player is active."
             );
             return Ok(());
@@ -443,7 +443,7 @@ impl Player {
         let join = self.join.lock().await;
         if join.is_some() {
             info!(
-                current_song = self.get_playlist().current().name,
+                current_song = self.get_playlist().current().name(),
                 "Can't switch to playlist, player is active."
             );
             return Ok(());
@@ -487,7 +487,8 @@ impl Player {
     /// Emits a MIDI event for the given song if possible.
     fn emit_midi_event(midi_device: Option<Arc<dyn midi::Device>>, song: Arc<Song>) {
         if let Some(midi_device) = midi_device.clone() {
-            if let Err(e) = midi_device.emit(song.midi_event) {
+            let midi_event = song.midi_event();
+            if let Err(e) = midi_device.emit(midi_event) {
                 error!("Error emitting MIDI event: {:?}", e);
             }
         }
@@ -507,7 +508,7 @@ pub struct StatusEvents {
 impl StatusEvents {
     /// Creates a new status events configuration.
     pub fn new(
-        config: Option<crate::config::statusevents::StatusEvents>,
+        config: Option<crate::config::StatusEvents>,
     ) -> Result<Option<StatusEvents>, Box<dyn Error>> {
         Ok(match config {
             Some(config) => Some(StatusEvents {
@@ -550,30 +551,30 @@ mod test {
 
         // Direct the player.
         println!("Playlist -> Song 1");
-        assert_eq!(player.get_playlist().current().name, "Song 1");
+        assert_eq!(player.get_playlist().current().name(), "Song 1");
 
         player.next().await?;
         println!("Playlist -> Song 3");
-        assert_eq!(player.get_playlist().current().name, "Song 3");
+        assert_eq!(player.get_playlist().current().name(), "Song 3");
 
         player.prev().await?;
         println!("Playlist -> Song 1");
-        assert_eq!(player.get_playlist().current().name, "Song 1");
+        assert_eq!(player.get_playlist().current().name(), "Song 1");
 
         println!("Switch to AllSongs");
         player.switch_to_all_songs().await?;
-        assert_eq!(player.get_playlist().current().name, "Song 1");
+        assert_eq!(player.get_playlist().current().name(), "Song 1");
 
         player.next().await?;
         println!("AllSongs -> Song 10");
-        assert_eq!(player.get_playlist().current().name, "Song 10");
+        assert_eq!(player.get_playlist().current().name(), "Song 10");
 
         // No emitted events yet
         assert!(midi_device.get_emitted_event().is_none());
 
         player.next().await?;
         println!("AllSongs -> Song 2");
-        assert_eq!(player.get_playlist().current().name, "Song 2");
+        assert_eq!(player.get_playlist().current().name(), "Song 2");
 
         let expected_event = midly::live::LiveEvent::Midi {
             channel: 15.into(),
@@ -589,26 +590,26 @@ mod test {
 
         player.next().await?;
         println!("AllSongs -> Song 3");
-        assert_eq!(player.get_playlist().current().name, "Song 3");
+        assert_eq!(player.get_playlist().current().name(), "Song 3");
 
         assert!(midi_device.get_emitted_event().is_none());
 
         player.switch_to_playlist().await?;
         println!("Switch to Playlist");
-        assert_eq!(player.get_playlist().current().name, "Song 1");
+        assert_eq!(player.get_playlist().current().name(), "Song 1");
 
         player.next().await?;
         println!("Playlist -> Song 3");
-        assert_eq!(player.get_playlist().current().name, "Song 3");
+        assert_eq!(player.get_playlist().current().name(), "Song 3");
 
         player.play().await?;
 
         // Playlist should have moved to next song.
         eventually(
-            || player.get_playlist().current().name == "Song 5",
+            || player.get_playlist().current().name() == "Song 5",
             format!(
                 "Song never moved to next, on song {}",
-                player.get_playlist().current().name
+                player.get_playlist().current().name()
             )
             .as_str(),
         );
@@ -635,7 +636,7 @@ mod test {
         eventually(|| !device.is_playing(), "Song never stopped playing");
 
         // Player should not have moved to the next song.
-        assert_eq!(player.get_playlist().current().name, "Song 5");
+        assert_eq!(player.get_playlist().current().name(), "Song 5");
 
         assert!(midi_device.get_emitted_event().is_none());
 

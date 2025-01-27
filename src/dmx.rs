@@ -19,13 +19,15 @@ use std::{
 use engine::Engine;
 use universe::Universe;
 
-use crate::config::dmx::Dmx;
+use crate::config;
 
 pub mod engine;
 pub mod universe;
 
 /// Gets a device with the given name.
-pub fn create_engine(config: Option<Dmx>) -> Result<Option<Arc<RwLock<Engine>>>, Box<dyn Error>> {
+pub fn create_engine(
+    config: Option<&config::Dmx>,
+) -> Result<Option<Arc<RwLock<Engine>>>, Box<dyn Error>> {
     let config = match config {
         Some(config) => config,
         None => return Ok(None),

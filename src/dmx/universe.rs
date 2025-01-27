@@ -22,7 +22,7 @@ use std::time::Instant;
 use std::{sync::RwLock, time::Duration};
 use tracing::error;
 
-use crate::config::dmx;
+use crate::config;
 use crate::playsync::CancelHandle;
 
 use super::engine::DmxMessage;
@@ -46,7 +46,7 @@ pub(crate) struct Universe {
     /// Max channels
     max_channels: Arc<AtomicU16>,
     /// The configuration for this universe.
-    config: dmx::Universe,
+    config: config::Universe,
     /// The cancel handle for the thread attached to this universe.
     cancel_handle: CancelHandle,
     /// Used to send data to the OLA client thread.
@@ -56,7 +56,7 @@ pub(crate) struct Universe {
 impl Universe {
     /// Creates a new universe.
     pub(super) fn new(
-        config: dmx::Universe,
+        config: config::Universe,
         cancel_handle: CancelHandle,
         ola_sender: Sender<DmxMessage>,
     ) -> Universe {
@@ -210,14 +210,14 @@ mod test {
 
     use ola::DmxBuffer;
 
-    use crate::{config::dmx, dmx::universe::TARGET_HZ, playsync::CancelHandle};
+    use crate::{config, dmx::universe::TARGET_HZ, playsync::CancelHandle};
 
     use super::Universe;
 
     fn new_universe() -> Universe {
         let (sender, _) = mpsc::channel();
         Universe::new(
-            dmx::Universe::new(1, "universe".to_string()),
+            config::Universe::new(1, "universe".to_string()),
             CancelHandle::new(),
             sender,
         )
@@ -289,48 +289,39 @@ mod test {
 
         // There are TARGET_HZ updates per second.
         for _ in 0..(TARGET_HZ as usize) {
-            assert_eq!(
-                Universe::approach_target(
-                    universe.rates.clone(),
-                    universe.current.clone(),
-                    universe.target.clone(),
-                    universe.max_channels.load(Ordering::Relaxed),
-                    &mut buffer,
-                ),
-                true
-            )
+            assert!(Universe::approach_target(
+                universe.rates.clone(),
+                universe.current.clone(),
+                universe.target.clone(),
+                universe.max_channels.load(Ordering::Relaxed),
+                &mut buffer,
+            ))
         }
 
         // After one second, we should be halfway there.
         assert_eq!([0u8, 25u8, 50u8, 75u8, 100u8], buffer.as_slice()[0..5]);
 
         for _ in 0..(TARGET_HZ as usize) {
-            assert_eq!(
-                Universe::approach_target(
-                    universe.rates.clone(),
-                    universe.current.clone(),
-                    universe.target.clone(),
-                    universe.max_channels.load(Ordering::Relaxed),
-                    &mut buffer,
-                ),
-                true
-            )
+            assert!(Universe::approach_target(
+                universe.rates.clone(),
+                universe.current.clone(),
+                universe.target.clone(),
+                universe.max_channels.load(Ordering::Relaxed),
+                &mut buffer,
+            ))
         }
 
         // After two seconds, we should be all the way there.
         assert_eq!([0u8, 50u8, 100u8, 150u8, 200u8], buffer.as_slice()[0..5]);
 
         for _ in 0..(TARGET_HZ as usize) {
-            assert_eq!(
-                Universe::approach_target(
-                    universe.rates.clone(),
-                    universe.current.clone(),
-                    universe.target.clone(),
-                    universe.max_channels.load(Ordering::Relaxed),
-                    &mut buffer,
-                ),
-                false
-            )
+            assert!(!Universe::approach_target(
+                universe.rates.clone(),
+                universe.current.clone(),
+                universe.target.clone(),
+                universe.max_channels.load(Ordering::Relaxed),
+                &mut buffer,
+            ))
         }
 
         // After another second, nothing should have changed.
@@ -364,32 +355,26 @@ mod test {
 
         // There are TARGET_HZ updates per second.
         for _ in 0..(TARGET_HZ as usize) {
-            assert_eq!(
-                Universe::approach_target(
-                    universe.rates.clone(),
-                    universe.current.clone(),
-                    universe.target.clone(),
-                    universe.max_channels.load(Ordering::Relaxed),
-                    &mut buffer,
-                ),
-                true
-            )
+            assert!(Universe::approach_target(
+                universe.rates.clone(),
+                universe.current.clone(),
+                universe.target.clone(),
+                universe.max_channels.load(Ordering::Relaxed),
+                &mut buffer,
+            ))
         }
 
         // After one second (+ 1 tick), channel 0 should be done and channel 2 should be halfway there.
         assert_eq!([100u8, 50u8], buffer.as_slice()[0..2]);
 
         for _ in 0..(TARGET_HZ as usize) {
-            assert_eq!(
-                Universe::approach_target(
-                    universe.rates.clone(),
-                    universe.current.clone(),
-                    universe.target.clone(),
-                    universe.max_channels.load(Ordering::Relaxed),
-                    &mut buffer,
-                ),
-                true
-            )
+            assert!(Universe::approach_target(
+                universe.rates.clone(),
+                universe.current.clone(),
+                universe.target.clone(),
+                universe.max_channels.load(Ordering::Relaxed),
+                &mut buffer,
+            ))
         }
 
         // After two seconds (+ 1 tick), we should be all the way there.
@@ -408,16 +393,13 @@ mod test {
 
         // There are TARGET_HZ updates per second.
         for _ in 0..((TARGET_HZ / 2.0) as usize) {
-            assert_eq!(
-                Universe::approach_target(
-                    universe.rates.clone(),
-                    universe.current.clone(),
-                    universe.target.clone(),
-                    universe.max_channels.load(Ordering::Relaxed),
-                    &mut buffer,
-                ),
-                true
-            )
+            assert!(Universe::approach_target(
+                universe.rates.clone(),
+                universe.current.clone(),
+                universe.target.clone(),
+                universe.max_channels.load(Ordering::Relaxed),
+                &mut buffer,
+            ))
         }
 
         // After half of a second, we should be halfway there.
@@ -428,32 +410,26 @@ mod test {
         universe.update_channel_data(0, 100, true);
 
         for _ in 0..(TARGET_HZ as usize) {
-            assert_eq!(
-                Universe::approach_target(
-                    universe.rates.clone(),
-                    universe.current.clone(),
-                    universe.target.clone(),
-                    universe.max_channels.load(Ordering::Relaxed),
-                    &mut buffer,
-                ),
-                true
-            )
+            assert!(Universe::approach_target(
+                universe.rates.clone(),
+                universe.current.clone(),
+                universe.target.clone(),
+                universe.max_channels.load(Ordering::Relaxed),
+                &mut buffer,
+            ))
         }
 
         // After 1.5 seconds, we should be halfway with the new dimming speed.
         assert_eq!([75u8], buffer.as_slice()[0..1]);
 
         for _ in 0..(TARGET_HZ as usize) {
-            assert_eq!(
-                Universe::approach_target(
-                    universe.rates.clone(),
-                    universe.current.clone(),
-                    universe.target.clone(),
-                    universe.max_channels.load(Ordering::Relaxed),
-                    &mut buffer,
-                ),
-                true
-            )
+            assert!(Universe::approach_target(
+                universe.rates.clone(),
+                universe.current.clone(),
+                universe.target.clone(),
+                universe.max_channels.load(Ordering::Relaxed),
+                &mut buffer,
+            ))
         }
 
         // After 2.5 seconds, we should be all the way there.

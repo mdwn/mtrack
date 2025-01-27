@@ -24,7 +24,7 @@ const DEFAULT_MIDI_PLAYBACK_DELAY: Duration = Duration::ZERO;
 
 /// A YAML representation of the MIDI configuration.
 #[derive(Deserialize, Clone)]
-pub(crate) struct Midi {
+pub struct Midi {
     /// The MIDI device.
     device: String,
 
@@ -34,16 +34,16 @@ pub(crate) struct Midi {
 
 impl Midi {
     /// New will create a new MIDI configuration.
-    pub fn new(device: String, playback_delay: Option<String>) -> Midi {
+    pub fn new(device: &str, playback_delay: Option<String>) -> Midi {
         Midi {
-            device,
+            device: device.to_string(),
             playback_delay,
         }
     }
 
     /// Returns the device from the configuration.
-    pub fn device(&self) -> String {
-        self.device.clone()
+    pub fn device(&self) -> &str {
+        &self.device
     }
 
     /// Returns the playback delay from the configuration.

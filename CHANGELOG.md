@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Configurable playback delays have been added for audio, MIDI, and DMX playback.
 
+DMX will now only use one OLA client instead of one per universe.
+
 A fairly large refactor has been done to the config logic. The motivation is to
 keep (most) of the instantiation of the various pieces of business logic out of
 the config package while simultaneously trying to simplify the configuration of

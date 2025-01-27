@@ -30,11 +30,10 @@ use hound::SampleFormat;
 use tracing::{debug, error, info, span, Level};
 
 use crate::{
+    config,
     playsync::CancelHandle,
     songs::{self, Song},
 };
-
-use super::Audio;
 
 /// A small wrapper around a cpal::Device. Used for storing some extra
 /// data that makes multitrack playing more convenient.
@@ -147,7 +146,7 @@ impl Device {
     }
 
     /// Gets the given cpal device.
-    pub fn get(config: Audio) -> Result<Device, Box<dyn Error>> {
+    pub fn get(config: config::Audio) -> Result<Device, Box<dyn Error>> {
         let name = config.device();
         match Device::list_cpal_devices()?
             .into_iter()
@@ -175,13 +174,13 @@ impl super::Device for Device {
         let _enter = span.enter();
 
         info!(
-            format = if song.sample_format == SampleFormat::Float {
+            format = if song.sample_format() == SampleFormat::Float {
                 "float"
             } else {
                 "int"
             },
             device = self.name,
-            song = song.name,
+            song = song.name(),
             duration = song.duration_string(),
             "Playing song."
         );
@@ -195,7 +194,10 @@ impl super::Device for Device {
         if self.max_channels < num_channels {
             return Err(format!(
                 "{} channels requested for song {}, audio device {} only has {}",
-                num_channels, song.name, self.name, self.max_channels
+                num_channels,
+                song.name(),
+                self.name,
+                self.max_channels
             )
             .into());
         }
@@ -204,16 +206,17 @@ impl super::Device for Device {
 
         play_barrier.wait();
         spin_sleep::sleep(self.playback_delay);
-        let output_stream = if self.supports_i32 && song.sample_format == hound::SampleFormat::Int {
+        let output_stream = if self.supports_i32 && song.sample_format() == hound::SampleFormat::Int
+        {
             debug!("Playing i32->i32");
             self.build_stream::<i32, i32>(song, mappings, num_channels, tx, cancel_handle)?
-        } else if self.supports_f32 && song.sample_format == hound::SampleFormat::Float {
+        } else if self.supports_f32 && song.sample_format() == hound::SampleFormat::Float {
             debug!("Playing f32->f32");
             self.build_stream::<f32, f32>(song, mappings, num_channels, tx, cancel_handle)?
-        } else if self.supports_i32 && song.sample_format == hound::SampleFormat::Float {
+        } else if self.supports_i32 && song.sample_format() == hound::SampleFormat::Float {
             debug!("Playing f32->i32");
             self.build_stream::<f32, i32>(song, mappings, num_channels, tx, cancel_handle)?
-        } else if self.supports_f32 && song.sample_format == hound::SampleFormat::Int {
+        } else if self.supports_f32 && song.sample_format() == hound::SampleFormat::Int {
             debug!("Playing i32->f32");
             self.build_stream::<i32, f32>(song, mappings, num_channels, tx, cancel_handle)?
         } else {
@@ -240,7 +243,7 @@ impl Device {
     ) -> Result<Stream, Box<dyn Error>> {
         let stream_config = cpal::StreamConfig {
             channels: num_channels,
-            sample_rate: cpal::SampleRate(song.sample_rate),
+            sample_rate: cpal::SampleRate(song.sample_rate()),
             buffer_size: cpal::BufferSize::Default,
         };
         let error_callback = |err: cpal::StreamError| {
@@ -330,39 +333,23 @@ impl Device {
 mod test {
     use std::{collections::HashMap, error::Error, sync::mpsc::channel};
 
-    use crate::{
-        config,
-        playsync::CancelHandle,
-        songs::{Song, Track},
-        test::write_wav,
-    };
+    use crate::{config, playsync::CancelHandle, songs::Song, test::write_wav};
 
     #[test]
     fn output_callback() -> Result<(), Box<dyn Error>> {
         let tempdir = tempfile::tempdir()?.into_path();
-        let tempwav1_path = tempdir.join("tempwav1.wav");
-        let tempwav2_path = tempdir.join("tempwav2.wav");
+        let tempwav1 = "tempwav1.wav";
+        let tempwav2 = "tempwav2.wav";
 
-        write_wav(tempwav1_path.clone(), vec![1_i32, 2_i32, 3_i32])?;
-        write_wav(tempwav2_path.clone(), vec![2_i32, 3_i32])?;
+        write_wav(tempdir.join(tempwav1), vec![1_i32, 2_i32, 3_i32])?;
+        write_wav(tempdir.join(tempwav2), vec![2_i32, 3_i32])?;
 
-        let track1 = Track::new(config::track::Track::new(
-            "test 1".into(),
-            tempwav1_path.to_string_lossy().into(),
-            Some(1),
-        ))?;
-        let track2 = Track::new(config::track::Track::new(
-            "test 2".into(),
-            tempwav2_path.to_string_lossy().into(),
-            Some(1),
-        ))?;
+        let track1 = config::Track::new("test 1".into(), tempwav1, Some(1));
+        let track2 = config::Track::new("test 2".into(), tempwav2, Some(1));
 
         let song = Song::new(
-            "song name".into(),
-            None,
-            None,
-            Vec::new(),
-            vec![track1, track2],
+            &tempdir,
+            config::Song::new("song name", vec![track1, track2]),
         )?;
         let mut mappings: HashMap<String, Vec<u16>> = HashMap::new();
         mappings.insert("test 1".into(), vec![1]);
@@ -396,29 +383,18 @@ mod test {
     #[test]
     fn stop_callback_immediately() -> Result<(), Box<dyn Error>> {
         let tempdir = tempfile::tempdir()?.into_path();
-        let tempwav1_path = tempdir.join("tempwav1.wav");
-        let tempwav2_path = tempdir.join("tempwav2.wav");
+        let tempwav1 = "tempwav1.wav";
+        let tempwav2 = "tempwav2.wav";
 
-        write_wav(tempwav1_path.clone(), vec![1_i32, 2_i32, 3_i32])?;
-        write_wav(tempwav2_path.clone(), vec![2_i32, 3_i32])?;
+        write_wav(tempdir.join(tempwav1), vec![1_i32, 2_i32, 3_i32])?;
+        write_wav(tempdir.join(tempwav2), vec![2_i32, 3_i32])?;
 
-        let track1 = Track::new(config::track::Track::new(
-            "test 1".into(),
-            tempwav1_path.to_string_lossy().into(),
-            Some(1),
-        ))?;
-        let track2 = Track::new(config::track::Track::new(
-            "test 2".into(),
-            tempwav2_path.to_string_lossy().into(),
-            Some(1),
-        ))?;
+        let track1 = config::Track::new("test 1".into(), tempwav1, Some(1));
+        let track2 = config::Track::new("test 2".into(), tempwav2, Some(1));
 
         let song = Song::new(
-            "song name".into(),
-            None,
-            None,
-            Vec::new(),
-            vec![track1, track2],
+            &tempdir,
+            config::Song::new("song name", vec![track1, track2]),
         )?;
         let mut mappings: HashMap<String, Vec<u16>> = HashMap::new();
         mappings.insert("test 1".into(), vec![1]);
@@ -445,29 +421,18 @@ mod test {
     #[test]
     fn stop_callback_on_frame_boundary() -> Result<(), Box<dyn Error>> {
         let tempdir = tempfile::tempdir()?.into_path();
-        let tempwav1_path = tempdir.join("tempwav1.wav");
-        let tempwav2_path = tempdir.join("tempwav2.wav");
+        let tempwav1 = "tempwav1.wav";
+        let tempwav2 = "tempwav2.wav";
 
-        write_wav(tempwav1_path.clone(), vec![1_i32, 2_i32, 3_i32])?;
-        write_wav(tempwav2_path.clone(), vec![2_i32, 3_i32])?;
+        write_wav(tempdir.join(tempwav1), vec![1_i32, 2_i32, 3_i32])?;
+        write_wav(tempdir.join(tempwav2), vec![2_i32, 3_i32])?;
 
-        let track1 = Track::new(config::track::Track::new(
-            "test 1".into(),
-            tempwav1_path.to_string_lossy().into(),
-            Some(1),
-        ))?;
-        let track2 = Track::new(config::track::Track::new(
-            "test 2".into(),
-            tempwav2_path.to_string_lossy().into(),
-            Some(1),
-        ))?;
+        let track1 = config::Track::new("test 1".into(), tempwav1, Some(1));
+        let track2 = config::Track::new("test 2".into(), tempwav2, Some(1));
 
         let song = Song::new(
-            "song name".into(),
-            None,
-            None,
-            Vec::new(),
-            vec![track1, track2],
+            &tempdir,
+            config::Song::new("song name", vec![track1, track2]),
         )?;
         let mut mappings: HashMap<String, Vec<u16>> = HashMap::new();
         mappings.insert("test 1".into(), vec![1]);

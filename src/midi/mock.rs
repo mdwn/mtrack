@@ -52,7 +52,7 @@ impl Device {
 
     #[cfg(test)]
     /// Sends the mock event through to the sender.
-    pub fn mock_event(&self, event: &Vec<u8>) {
+    pub fn mock_event(&self, event: &[u8]) {
         {
             let mut mutex_event = self.event.lock().expect("unable to get event lock");
             *mutex_event = event.to_vec();
@@ -132,7 +132,7 @@ impl super::Device for Device {
 
         info!(
             device = self.name,
-            song = song.name,
+            song = song.name(),
             duration = song.duration_string(),
             "Playing song."
         );
@@ -147,7 +147,7 @@ impl super::Device for Device {
             thread::spawn(move || {
                 play_barrier.wait();
                 // Wait for a signal or until we hit cancellation.
-                let _ = sleep_rx.recv_timeout(song.duration);
+                let _ = sleep_rx.recv_timeout(song.duration());
 
                 // Expire at the end of playback.
                 finished.store(true, Ordering::Relaxed);
