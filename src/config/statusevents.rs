@@ -22,7 +22,7 @@ use super::midi;
 
 /// The configuration for emitting status events.
 #[derive(Deserialize, Clone)]
-pub(crate) struct StatusEvents {
+pub struct StatusEvents {
     /// The events to emit to clear the status.
     off_events: Vec<midi::Event>,
     /// The events to emit to indicate that the player is idling and waiting for input.
@@ -33,7 +33,7 @@ pub(crate) struct StatusEvents {
 
 impl StatusEvents {
     /// Gets the off events.
-    pub(crate) fn off_events(&self) -> Result<Vec<LiveEvent<'static>>, Box<dyn Error>> {
+    pub fn off_events(&self) -> Result<Vec<LiveEvent<'static>>, Box<dyn Error>> {
         self.off_events
             .iter()
             .map(|event| event.to_midi_event())
@@ -41,7 +41,7 @@ impl StatusEvents {
     }
 
     /// Gets the idling events.
-    pub(crate) fn idling_events(&self) -> Result<Vec<LiveEvent<'static>>, Box<dyn Error>> {
+    pub fn idling_events(&self) -> Result<Vec<LiveEvent<'static>>, Box<dyn Error>> {
         self.idling_events
             .iter()
             .map(|event| event.to_midi_event())
@@ -49,7 +49,7 @@ impl StatusEvents {
     }
 
     /// Gets the playing events.
-    pub(crate) fn playing_events(&self) -> Result<Vec<LiveEvent<'static>>, Box<dyn Error>> {
+    pub fn playing_events(&self) -> Result<Vec<LiveEvent<'static>>, Box<dyn Error>> {
         self.playing_events
             .iter()
             .map(|event| event.to_midi_event())

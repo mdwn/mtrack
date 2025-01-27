@@ -24,10 +24,6 @@ mod songs;
 mod test;
 
 use clap::{crate_version, Parser, Subcommand};
-use config::audio::Audio;
-use config::dmx::{Dmx, Universe};
-use config::init_player_and_controller;
-use config::midi::Midi;
 use player::Player;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
@@ -139,8 +135,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             println!("Songs (count: {}):", songs.len());
             for song in songs.sorted_list() {
                 // Record all of the tracks found in the song repository.
-                for track in song.tracks.iter() {
-                    all_tracks.insert(track.name.to_string());
+                for track in song.tracks().iter() {
+                    all_tracks.insert(track.name().to_string());
                 }
 
                 println!("- {}", song);
@@ -209,16 +205,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     .push(channel);
             }
 
-            let device = audio::get_device(Some(Audio::new(device_name, None)))?;
+            let device = audio::get_device(Some(config::Audio::new(device_name, None)))?;
             let midi_device = match midi_device_name {
-                Some(midi_device_name) => {
-                    midi::get_device(Some(Midi::new(midi_device_name, midi_playback_delay)))?
-                }
+                Some(midi_device_name) => midi::get_device(Some(config::Midi::new(
+                    midi_device_name.as_str(),
+                    midi_playback_delay,
+                )))?,
                 None => None,
             };
             let dmx_engine = match dmx_universe_config {
                 Some(dmx_universe_config) => {
-                    let mut universe_configs: Vec<Universe> = Vec::new();
+                    let mut universe_configs: Vec<config::Universe> = Vec::new();
                     for universe_config in dmx_universe_config.split(';') {
                         let config_fields: Vec<&str> = universe_config.split(',').collect();
 
@@ -247,7 +244,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         }
 
                         if universe.is_some() && name.is_some() {
-                            universe_configs.push(Universe::new(universe.unwrap(), name.unwrap()));
+                            universe_configs
+                                .push(config::Universe::new(universe.unwrap(), name.unwrap()));
                         } else {
                             return Err(format!(
                                 "Missing device specified for config {}",
@@ -260,7 +258,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     if universe_configs.is_empty() {
                         None
                     } else {
-                        dmx::create_engine(Some(Dmx::new(
+                        dmx::create_engine(Some(&config::Dmx::new(
                             dmx_dimming_speed_modifier,
                             dmx_playback_delay,
                             universe_configs,
@@ -299,9 +297,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
             player_path,
             playlist_path,
         } => {
-            init_player_and_controller(&PathBuf::from(player_path), &PathBuf::from(playlist_path))?
-                .join()
-                .await?;
+            config::init_player_and_controller(
+                &PathBuf::from(player_path),
+                &PathBuf::from(playlist_path),
+            )?
+            .join()
+            .await?;
         }
         Commands::Systemd {} => {
             println!("{}", SYSTEMD_SERVICE)

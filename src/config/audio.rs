@@ -20,7 +20,7 @@ const DEFAULT_AUDIO_PLAYBACK_DELAY: Duration = Duration::ZERO;
 
 /// A YAML representation of the audio configuration.
 #[derive(Deserialize, Clone)]
-pub(crate) struct Audio {
+pub struct Audio {
     /// The audio device.
     device: String,
 
@@ -38,8 +38,8 @@ impl Audio {
     }
 
     /// Returns the device from the configuration.
-    pub fn device(&self) -> String {
-        self.device.clone()
+    pub fn device(&self) -> &str {
+        &self.device
     }
 
     /// Returns the playback delay from the configuration.

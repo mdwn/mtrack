@@ -19,7 +19,7 @@ use tokio::task::JoinError;
 use tokio::{sync::mpsc::Sender, task::JoinHandle};
 use tracing::{error, info, span, Level};
 
-use crate::config::controller;
+use crate::config;
 use crate::player::Player;
 
 mod drivers;
@@ -66,7 +66,7 @@ impl Controller {
     pub fn new(
         player: Player,
         midi_device: Option<Arc<dyn crate::midi::Device>>,
-        config: controller::Controller,
+        config: config::Controller,
     ) -> Result<Controller, Box<dyn Error>> {
         let driver = drivers::driver(config, midi_device)?;
         Ok(Self::new_from_driver(player, driver))
@@ -93,7 +93,7 @@ impl Controller {
         let join_handle = driver.monitor_events(events_tx);
 
         info!(
-            first_song = player.get_playlist().current().name,
+            first_song = player.get_playlist().current().name(),
             "Controller started."
         );
 
@@ -204,7 +204,7 @@ mod test {
                         // Let next event know that we got the event.
                         barrier.wait();
                         match *current_event {
-                            TestEvent::Unset => assert!(false, "current event should not be unset"),
+                            TestEvent::Unset => unreachable!("current event should not be unset"),
                             TestEvent::Play => {
                                 assert!(events_tx.blocking_send(Event::Play).is_ok())
                             }
@@ -257,67 +257,67 @@ mod test {
         // Test the controller directing the player.
         println!("Playlist -> Song 1");
         eventually(
-            || playlist.current().name == "Song 1",
+            || playlist.current().name() == "Song 1",
             "Playlist never became Song 1",
         );
         driver.next_event(TestEvent::Next);
         println!("Playlist -> Song 3");
         eventually(
-            || playlist.current().name == "Song 3",
+            || playlist.current().name() == "Song 3",
             "Playlist never became Song 3",
         );
         driver.next_event(TestEvent::Next);
         println!("Playlist -> Song 5");
         eventually(
-            || playlist.current().name == "Song 5",
+            || playlist.current().name() == "Song 5",
             "Playlist never became Song 5",
         );
         driver.next_event(TestEvent::Next);
         println!("Playlist -> Song 7");
         eventually(
-            || playlist.current().name == "Song 7",
+            || playlist.current().name() == "Song 7",
             "Playlist never became Song 7",
         );
         driver.next_event(TestEvent::Prev);
         println!("Playlist -> Song 5");
         eventually(
-            || playlist.current().name == "Song 5",
+            || playlist.current().name() == "Song 5",
             "Playlist never became Song 5",
         );
         println!("Switch to AllSongs");
         driver.next_event(TestEvent::AllSongs);
         eventually(
-            || all_songs_playlist.current().name == "Song 1",
+            || all_songs_playlist.current().name() == "Song 1",
             "All Songs Playlist never became Song 1",
         );
         println!("AllSongs -> Song 10");
         driver.next_event(TestEvent::Next);
         eventually(
-            || all_songs_playlist.current().name == "Song 10",
+            || all_songs_playlist.current().name() == "Song 10",
             "All Songs Playlist never became Song 10",
         );
         println!("AllSongs -> Song 2");
         driver.next_event(TestEvent::Next);
         eventually(
-            || all_songs_playlist.current().name == "Song 2",
+            || all_songs_playlist.current().name() == "Song 2",
             "All Songs Playlist never became Song 2",
         );
         println!("AllSongs -> Song 10");
         driver.next_event(TestEvent::Prev);
         eventually(
-            || all_songs_playlist.current().name == "Song 10",
+            || all_songs_playlist.current().name() == "Song 10",
             "All Songs Playlist never became Song 10",
         );
         println!("Switch to Playlist");
         driver.next_event(TestEvent::Playlist);
         eventually(
-            || playlist.current().name == "Song 5",
+            || playlist.current().name() == "Song 5",
             "Playlist never became Song 5",
         );
         println!("Playlist -> Song 7");
         driver.next_event(TestEvent::Next);
         eventually(
-            || playlist.current().name == "Song 7",
+            || playlist.current().name() == "Song 7",
             "Playlist never became Song 7",
         );
         driver.next_event(TestEvent::Play);

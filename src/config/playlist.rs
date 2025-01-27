@@ -15,7 +15,13 @@ use serde::Deserialize;
 
 /// The configuration for a playlist.
 #[derive(Deserialize)]
-pub(super) struct Playlist {
+pub struct Playlist {
     /// The songs that belong to this playlist.
-    pub songs: Vec<String>,
+    songs: Vec<String>,
+}
+
+impl Playlist {
+    pub fn songs(&self) -> &Vec<String> {
+        &self.songs
+    }
 }

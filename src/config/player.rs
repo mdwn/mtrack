@@ -24,7 +24,7 @@ use super::trackmappings::TrackMappings;
 
 /// The configuration for the multitrack player.
 #[derive(Deserialize)]
-pub(super) struct Player {
+pub struct Player {
     /// The controller configuration.
     controller: Controller,
     /// The audio device to use.
@@ -47,12 +47,12 @@ pub(super) struct Player {
 
 impl Player {
     /// Gets the controller configuration.
-    pub(crate) fn controller(&self) -> Controller {
-        self.controller.clone()
+    pub fn controller(&self) -> &Controller {
+        &self.controller
     }
 
     /// Gets the audio configuration.
-    pub(crate) fn audio(&self) -> Option<Audio> {
+    pub fn audio(&self) -> Option<Audio> {
         if let Some(audio) = &self.audio {
             return Some(audio.clone());
         } else if let Some(audio_device) = &self.audio_device {
@@ -63,33 +63,33 @@ impl Player {
     }
 
     /// Gets the track mapping configuration.
-    pub(crate) fn track_mappings(&self) -> HashMap<String, Vec<u16>> {
-        self.track_mappings.track_mappings.clone()
+    pub fn track_mappings(&self) -> &HashMap<String, Vec<u16>> {
+        &self.track_mappings.track_mappings
     }
 
     /// Gets the MIDI configuration.
-    pub(crate) fn midi(&self) -> Option<Midi> {
+    pub fn midi(&self) -> Option<Midi> {
         if let Some(midi) = &self.midi {
             return Some(midi.clone());
         } else if let Some(midi_device) = &self.midi_device {
-            return Some(Midi::new(midi_device.clone(), None));
+            return Some(Midi::new(midi_device, None));
         }
 
         None
     }
 
     /// Gets the DMX configuration.
-    pub(crate) fn dmx(&self) -> Option<Dmx> {
-        self.dmx.clone()
+    pub fn dmx(&self) -> Option<&Dmx> {
+        self.dmx.as_ref()
     }
 
     /// Gets the status events configuration.
-    pub(crate) fn status_events(&self) -> Option<StatusEvents> {
+    pub fn status_events(&self) -> Option<StatusEvents> {
         self.status_events.clone()
     }
 
     /// Gets the path to the song definitions.
-    pub(crate) fn songs(&self) -> String {
-        self.songs.clone()
+    pub fn songs(&self) -> &str {
+        &self.songs
     }
 }

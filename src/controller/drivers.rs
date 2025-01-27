@@ -15,10 +15,12 @@ use std::{error::Error, sync::Arc};
 
 use tracing::error;
 
+use crate::config;
+
 use super::Driver;
 
 pub(super) fn driver_from_midi_config(
-    config: &crate::config::controller::MidiController,
+    config: &config::MidiController,
     midi_device: Option<Arc<dyn crate::midi::Device>>,
 ) -> Result<crate::controller::midi::Driver, Box<dyn Error>> {
     match midi_device {
@@ -37,31 +39,31 @@ pub(super) fn driver_from_midi_config(
 
 /// Creates a controller driver from the config.
 pub(super) fn driver(
-    config: crate::config::controller::Controller,
+    config: crate::config::Controller,
     midi_device: Option<Arc<dyn crate::midi::Device>>,
 ) -> Result<Arc<dyn Driver>, Box<dyn Error>> {
     match config {
-        crate::config::controller::Controller::Midi(config) => match midi_device {
+        crate::config::Controller::Midi(config) => match midi_device {
             Some(midi_device) => match driver_from_midi_config(&config, Some(midi_device)) {
                 Ok(driver) => Ok(Arc::new(driver)),
                 Err(error) => Err(error),
             },
             None => Err("No MIDI device found for MIDI controller.".into()),
         },
-        crate::config::controller::Controller::Keyboard => {
+        crate::config::Controller::Keyboard => {
             Ok(Arc::new(crate::controller::keyboard::Driver::new()))
         }
-        crate::config::controller::Controller::Multi(vec) => {
+        crate::config::Controller::Multi(vec) => {
             Ok(Arc::new(crate::controller::multi::Driver::new(
                 vec.iter()
                     .filter_map(|d| match d {
-                        (_key, crate::config::controller::Controller::Keyboard) => {
+                        (_key, crate::config::Controller::Keyboard) => {
                             Some(crate::controller::multi::SubDriver::Keyboard(Arc::new(
                                 crate::controller::keyboard::Driver::new(),
                             )))
                         }
 
-                        (_key, crate::config::controller::Controller::Midi(midi_controller)) => {
+                        (_key, crate::config::Controller::Midi(midi_controller)) => {
                             let midi_driver_result =
                                 driver_from_midi_config(midi_controller, midi_device.clone());
                             match midi_driver_result {
@@ -72,7 +74,7 @@ pub(super) fn driver(
                             }
                         }
 
-                        (_key, crate::config::controller::Controller::Multi(_vec)) => {
+                        (_key, crate::config::Controller::Multi(_vec)) => {
                             error!("Recursive multi controllers are not supported");
                             None
                         }

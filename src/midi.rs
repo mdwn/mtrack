@@ -51,9 +51,7 @@ pub fn list_devices() -> Result<Vec<Box<dyn Device>>, Box<dyn Error>> {
 }
 
 /// Gets a device with the given name.
-pub fn get_device(
-    config: Option<config::midi::Midi>,
-) -> Result<Option<Arc<dyn Device>>, Box<dyn Error>> {
+pub fn get_device(config: Option<config::Midi>) -> Result<Option<Arc<dyn Device>>, Box<dyn Error>> {
     let config = match config {
         Some(config) => config,
         None => return Ok(None),
@@ -61,7 +59,7 @@ pub fn get_device(
 
     let device = config.device();
     if device.starts_with("mock") {
-        return Ok(Some(Arc::new(mock::Device::get(device.as_str()))));
+        return Ok(Some(Arc::new(mock::Device::get(device))));
     };
 
     Ok(Some(Arc::new(midir::get(&config)?)))

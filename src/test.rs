@@ -26,6 +26,7 @@ use crate::songs::Sample;
 
 /// Wait for the given predicate to return true or fail.
 #[inline]
+#[cfg(test)]
 pub fn eventually<F>(predicate: F, error_msg: &str)
 where
     F: Fn() -> bool,
@@ -37,12 +38,12 @@ where
     loop {
         let elapsed = start.elapsed();
         if elapsed.is_err() {
-            assert!(false, "System time error");
+            panic!("System time error");
         }
         let elapsed = elapsed.unwrap();
 
         if elapsed > timeout {
-            assert!(false, "{}", error_msg);
+            panic!("{}", error_msg);
         }
         if predicate() {
             return;
@@ -51,6 +52,7 @@ where
     }
 }
 
+#[cfg(test)]
 pub fn write_wav<S: Sample>(path: PathBuf, samples: Vec<S>) -> Result<(), Box<dyn Error>> {
     let tempwav = File::create(path)?;
     let sample_format = if S::FORMAT.is_int() || S::FORMAT.is_uint() {

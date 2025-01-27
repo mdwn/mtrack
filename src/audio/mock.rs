@@ -62,7 +62,7 @@ impl super::Device for Device {
 
         info!(
             device = self.name,
-            song = song.name,
+            song = song.name(),
             duration = song.duration_string(),
             "Playing song."
         );
@@ -79,7 +79,7 @@ impl super::Device for Device {
                 play_barrier.wait();
 
                 // Wait for a signal or until we hit cancellation.
-                let _ = sleep_rx.recv_timeout(song.duration);
+                let _ = sleep_rx.recv_timeout(song.duration());
 
                 // Expire at the end of playback.
                 finished.store(true, Ordering::Relaxed);

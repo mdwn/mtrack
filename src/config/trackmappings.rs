@@ -17,7 +17,7 @@ use serde::Deserialize;
 
 /// The mappings of tracks to output channels.
 #[derive(Deserialize)]
-pub(super) struct TrackMappings {
+pub struct TrackMappings {
     // The individual track mappings.
     #[serde(flatten)]
     pub track_mappings: HashMap<String, Vec<u16>>,

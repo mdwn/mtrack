@@ -31,7 +31,7 @@ use nodi::{Connection, Player, Timer};
 use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, info, span, warn, Level};
 
-use crate::{config::midi::Midi, playsync::CancelHandle, songs::Song};
+use crate::{config, playsync::CancelHandle, songs::Song};
 
 pub struct Device {
     name: String,
@@ -113,33 +113,28 @@ impl super::Device for Device {
             Some(output_port) => output_port,
             None => {
                 warn!(
-                    song = song.name,
+                    song = song.name(),
                     "No MIDI output device configured, cannot play song."
                 );
                 return Ok(());
             }
         };
 
-        let midi_sheet = match song.midi_sheet() {
-            Some(midi_sheet) => midi_sheet?,
+        let midi_playback = match song.midi_playback() {
+            Some(midi_playback) => midi_playback,
             None => {
-                info!(song = song.name, "Song has no MIDI sheet.");
+                info!(song = song.name(), "Song has no MIDI sheet.");
                 return Ok(());
             }
         };
+        let midi_sheet = midi_playback.midi_sheet()?;
         let output = MidiOutput::new("mtrack player output")?;
 
-        let exclude_midi_channels = HashSet::from_iter(
-            song.midi_playback
-                .as_ref()
-                .expect("Expected MIDI playback to be Some")
-                .exclude_midi_channels
-                .clone(),
-        );
+        let exclude_midi_channels = HashSet::from_iter(midi_playback.exclude_midi_channels());
 
         info!(
             device = self.name,
-            song = song.name,
+            song = song.name(),
             duration = song.duration_string(),
             "Playing song MIDI."
         );
@@ -303,12 +298,12 @@ fn list_midir_devices() -> Result<Vec<Device>, Box<dyn Error>> {
 }
 
 /// Gets the given midir device.
-pub fn get(config: &Midi) -> Result<Device, Box<dyn Error>> {
+pub fn get(config: &config::Midi) -> Result<Device, Box<dyn Error>> {
     let playback_delay = config.playback_delay()?;
     let name = config.device();
     let mut matches = list_midir_devices()?
         .into_iter()
-        .filter(|device| device.name.contains(&name))
+        .filter(|device| device.name.contains(name))
         .collect::<Vec<Device>>();
 
     if matches.is_empty() {

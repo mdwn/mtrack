@@ -35,7 +35,7 @@ impl fmt::Display for Playlist {
         writeln!(f, "Playlist ({} songs):", self.songs.len())?;
         for song_name in self.songs.iter() {
             match self.registry.get(song_name) {
-                Ok(song) => writeln!(f, "  - {} (Channels: {})", song.name, song.num_channels)?,
+                Ok(song) => writeln!(f, "  - {} (Channels: {})", song.name(), song.num_channels())?,
                 Err(_) => writeln!(f, "  - {} (unable to find song)", song_name)?,
             };
         }
@@ -70,7 +70,7 @@ impl Playlist {
             songs
                 .sorted_list()
                 .into_iter()
-                .map(|song| song.name.clone()),
+                .map(|song| song.name().to_string()),
         );
         Ok(Arc::new(Playlist::new(sorted, songs)?))
     }
@@ -92,7 +92,7 @@ impl Playlist {
 
         info!(
             position = *position,
-            song = current.name,
+            song = current.name(),
             "Moving to next playlist position."
         );
 
@@ -111,7 +111,7 @@ impl Playlist {
 
         info!(
             position = *position,
-            song = current.name,
+            song = current.name(),
             "Moving to next previous position."
         );
 
@@ -146,22 +146,22 @@ mod test {
                 .expect("Unable to create playlist");
 
         // Starts at the first element in the list.
-        assert_eq!("Song 1", playlist.current().name);
+        assert_eq!("Song 1", playlist.current().name());
 
         // Previous should just stay at the beginning of the list, since it's at the start.
         playlist.prev();
-        assert_eq!("Song 1", playlist.current().name);
+        assert_eq!("Song 1", playlist.current().name());
 
         // Next goes to the next entry.
         playlist.next();
-        assert_eq!("Song 2", playlist.current().name);
+        assert_eq!("Song 2", playlist.current().name());
 
         // Next should just stay at the end of the list, since it's at the end.
         playlist.next();
-        assert_eq!("Song 2", playlist.current().name);
+        assert_eq!("Song 2", playlist.current().name());
 
         // Prev goes to the previous entry.
         playlist.prev();
-        assert_eq!("Song 1", playlist.current().name);
+        assert_eq!("Song 1", playlist.current().name());
     }
 }
