@@ -1,0 +1,6 @@
+name: Song 7
+midi_file: ../song.mid
+tracks:
+- name: track 1
+  file: ../20-sec-long.wav
+  file_channel: 1

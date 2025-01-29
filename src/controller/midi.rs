@@ -130,7 +130,7 @@ impl Drop for Driver {
 
 #[cfg(test)]
 mod test {
-    use std::{collections::HashMap, error::Error, path::PathBuf, sync::Arc};
+    use std::{collections::HashMap, error::Error, path::Path, sync::Arc};
 
     use crate::{
         config, controller::Controller, player::Player, playlist::Playlist, songs, test::eventually,
@@ -203,11 +203,11 @@ mod test {
         playlist_event.write(&mut playlist_buf)?;
         unrecognized_event.write(&mut unrecognized_buf)?;
 
-        let songs = songs::get_all_songs(&PathBuf::from("assets/songs"))?;
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
         let player = Player::new(
             songs.clone(),
             Playlist::new(
-                &config::Playlist::deserialize(&PathBuf::from("assets/playlist.yaml"))?,
+                &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
                 songs,
             )?,
             &config::Player::new(
