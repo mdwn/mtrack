@@ -16,13 +16,12 @@ use std::{
     collections::{HashMap, HashSet},
     error::Error,
     fmt, mem,
-    ops::Add,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Barrier, Mutex,
     },
     thread,
-    time::{self, Duration, Instant},
+    time::Duration,
 };
 
 use midir::{MidiInput, MidiInputConnection, MidiInputPort, MidiOutput, MidiOutputPort};
@@ -153,7 +152,7 @@ impl super::Device for Device {
                 exclude_midi_channels,
             };
             let mut player = Player::new(
-                AccurateTimer::new(midi_sheet.ticker, cancel_handle.clone()),
+                CancelableTimer::new(midi_sheet.ticker, cancel_handle.clone()),
                 connection,
             );
 
@@ -333,44 +332,24 @@ pub fn get(config: &config::Midi) -> Result<Device, Box<dyn Error>> {
     Ok(midi_device)
 }
 
-/// AccurateTimer is a timer for the nodi player that allows a more accurate clock. It uses the last
-/// known instant to properly calculate the next intended sleep duration.
-pub(crate) struct AccurateTimer<T: Timer> {
+/// CancelableTimer is a timer for the nodi player that allows cancelation.
+pub(crate) struct CancelableTimer<T: Timer> {
     timer: T,
-    last_instant: Option<Instant>,
     cancel_handle: CancelHandle,
 }
 
-impl<T: Timer> AccurateTimer<T> {
-    pub fn new(timer: T, cancel_handle: CancelHandle) -> AccurateTimer<T> {
-        AccurateTimer {
+impl<T: Timer> CancelableTimer<T> {
+    pub fn new(timer: T, cancel_handle: CancelHandle) -> CancelableTimer<T> {
+        CancelableTimer {
             timer,
-            last_instant: None,
             cancel_handle,
         }
     }
 }
 
-impl<T: Timer> Timer for AccurateTimer<T> {
+impl<T: Timer> Timer for CancelableTimer<T> {
     fn sleep_duration(&mut self, n_ticks: u32) -> std::time::Duration {
-        let mut duration = self.timer.sleep_duration(n_ticks);
-
-        // Modify the sleep duration if the last duration is populated, as we
-        // know about when the next tick should be.
-        match self.last_instant {
-            Some(last_instant) => {
-                self.last_instant = Some(last_instant.add(duration));
-
-                // Subtract the duration unless it would be an overflow. If so, use the original duration.
-                duration = match duration.checked_sub(Instant::now().duration_since(last_instant)) {
-                    Some(duration) => duration,
-                    None => duration,
-                };
-            }
-            None => self.last_instant = Some(time::Instant::now()),
-        };
-
-        duration
+        self.timer.sleep_duration(n_ticks)
     }
 
     fn change_tempo(&mut self, tempo: u32) {

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - Configurable playback delays and refactoring.
+
 Configurable playback delays have been added for audio, MIDI, and DMX playback.
 
 DMX will now only use one OLA client instead of one per universe.
@@ -15,6 +17,10 @@ A fairly large refactor has been done to the config logic. The motivation is to
 keep (most) of the instantiation of the various pieces of business logic out of
 the config package while simultaneously trying to simplify the configuration of
 the player and its various components.
+
+Finally, the nodi dependency was updated. This is of interested as it has a corrected
+timer, so mtrack has been updated to use it. Initial testing seems to indicate
+that it works well.
 
 ## [0.2.1] - Repeatedly attempt to connect to OLA on startup.
 
