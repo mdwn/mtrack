@@ -220,13 +220,23 @@ To start mtrack as a standalone player that's controllable by MIDI, you'll need 
 player config file:
 
 ```yaml
-# This audio device will be matched as best as possible against the devices on your system.
-# Run `mtrack devices` to see a list of the devices that mtrack recognizes.
-audio_device: UltraLite-mk5
+# The audio configuration for mtrack.
+audio:
+  # This audio device will be matched as best as possible against the devices on your system.
+  # Run `mtrack devices` to see a list of the devices that mtrack recognizes.
+  audio_device: UltraLite-mk5
 
-# This MIDI device will be matched as best as possible against the devices on your system.
-# Run `mtrack midi-devices` to see a list of the devices that mtrack recognizes.
-midi_device: UltraLite-mk5
+  # (Optional) Once a song is started, mtrack will wait this amount before triggering the audio playback.
+  playback_delay: 500ms
+
+# The MIDI configuration for mtrack.
+midi:
+  # This MIDI device will be matched as best as possible against the devices on your system.
+  # Run `mtrack midi-devices` to see a list of the devices that mtrack recognizes.
+  midi_device: UltraLite-mk5
+
+  # (Optional) Once a song is started, mtrack will wait this amount before triggering the MIDI playback.
+  playback_delay: 500ms
 
 # The directory where all of your songs are located, frequently referred to as the song repository.
 # If the path is not absolute, it will be relative to the location of this file.
@@ -241,6 +251,9 @@ dmx:
   # PC1 * 0.25 dim speed modifier = 0.25 second dim time
   # PC5 * 0.25 dim speed modifier = 1.25 second dim time
   dim_speed_modifier: 0.25
+
+  # (Optional) Once a song is started, mtrack will wait this amount before triggering the DMX playback.
+  playback_delay: 500ms
 
   # Universes here map OLA universe numbers into light show names.
   universes:

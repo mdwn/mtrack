@@ -180,7 +180,7 @@ impl Engine {
                         dmx_engine,
                     };
                     let mut player = Player::new(
-                        midi::midir::AccurateTimer::new(
+                        midi::midir::CancelableTimer::new(
                             dmx_midi_sheet.ticker,
                             cancel_handle.clone(),
                         ),
