@@ -11,7 +11,7 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-use std::error::Error;
+use std::{error::Error, fs, path::PathBuf};
 
 use midly::live::LiveEvent;
 use serde::Deserialize;
@@ -50,6 +50,23 @@ impl Song {
             light_shows: None,
             tracks,
         }
+    }
+
+    /// Parses songs from a YAML file.
+    pub fn parse_multiple(file: &PathBuf) -> Result<Vec<Song>, Box<dyn Error>> {
+        let mut songs: Vec<Song> = Vec::new();
+
+        for document in serde_yaml::Deserializer::from_str(&fs::read_to_string(file)?) {
+            let song = match Self::deserialize(document) {
+                Ok(song) => song,
+                Err(e) => {
+                    return Err(format!("error parsing file {}: {}", file.display(), e).into())
+                }
+            };
+            songs.push(song);
+        }
+
+        Ok(songs)
     }
 
     /// Gets the name of the song.
@@ -109,7 +126,12 @@ impl MidiPlayback {
 
     /// Gets the MIDI channels to exclude.
     pub fn exclude_midi_channels(&self) -> Vec<u8> {
-        self.exclude_midi_channels.clone().unwrap_or_default()
+        self.exclude_midi_channels
+            .clone()
+            .unwrap_or_default()
+            .iter()
+            .map(|channel| channel - 1)
+            .collect()
     }
 }
 
@@ -141,6 +163,11 @@ impl LightShow {
 
     /// Gets the MIDI channels that should be associated with light show data.
     pub fn midi_channels(&self) -> Vec<u8> {
-        self.midi_channels.clone().unwrap_or_default()
+        self.midi_channels
+            .clone()
+            .unwrap_or_default()
+            .iter()
+            .map(|channel| channel - 1)
+            .collect()
     }
 }

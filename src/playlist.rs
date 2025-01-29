@@ -13,6 +13,7 @@
 //
 use tracing::{info, span, Level, Span};
 
+use crate::config;
 use crate::songs::{Song, Songs};
 use core::fmt;
 use std::error::Error;
@@ -46,33 +47,22 @@ impl fmt::Display for Playlist {
 
 impl Playlist {
     /// Creates a new playlist.
-    pub fn new(song_names: Vec<String>, registry: Arc<Songs>) -> Result<Playlist, Box<dyn Error>> {
+    pub fn new(
+        config: &config::Playlist,
+        registry: Arc<Songs>,
+    ) -> Result<Arc<Playlist>, Box<dyn Error>> {
         // Verify that each song in the playlist exists in the registry.
+        let song_names = config.songs();
         for song_name in song_names.iter() {
             registry.get(song_name)?;
         }
 
-        Ok(Playlist {
-            songs: song_names,
+        Ok(Arc::new(Playlist {
+            songs: song_names.clone(),
             position: Arc::new(RwLock::new(0)),
             registry: Arc::clone(&registry),
             span: span!(Level::INFO, "playlist"),
-        })
-    }
-
-    /// Creates an alphabetized playlist from all available songs.
-    pub fn from_songs(songs: Arc<Songs>) -> Result<Arc<Playlist>, Box<dyn Error>> {
-        // The easiest thing to do here is to gather the names of all of the songs and pass them
-        // to new. This is a little silly, since new is just going to double check that they
-        // all exist and then do an explicit mapping each time. However, the easiest way to
-        // make from_file work is to do it this way, so we'll just do this rigamarole for now.
-        let sorted = Vec::from_iter(
-            songs
-                .sorted_list()
-                .into_iter()
-                .map(|song| song.name().to_string()),
-        );
-        Ok(Arc::new(Playlist::new(sorted, songs)?))
+        }))
     }
 
     /// Move to the next element of the playlist. If we're at the end of the playlist, the position will not
@@ -130,20 +120,37 @@ impl Playlist {
     }
 }
 
+/// Creates an alphabetized playlist from all available songs.
+pub fn from_songs(songs: Arc<Songs>) -> Result<Arc<Playlist>, Box<dyn Error>> {
+    // The easiest thing to do here is to gather the names of all of the songs and pass them
+    // to new. This is a little silly, since new is just going to double check that they
+    // all exist and then do an explicit mapping each time. However, the easiest way to
+    // make from_file work is to do it this way, so we'll just do this rigamarole for now.
+    let sorted = Vec::from_iter(
+        songs
+            .sorted_list()
+            .into_iter()
+            .map(|song| song.name().to_string()),
+    );
+    Playlist::new(&config::Playlist::new(&sorted), songs)
+}
+
 #[cfg(test)]
 mod test {
     use std::path::PathBuf;
 
-    use crate::config;
+    use crate::{config, songs};
 
     #[test]
     fn test_playlist() {
-        let songs = config::get_all_songs(&PathBuf::from("assets/songs"))
+        let songs = songs::get_all_songs(&PathBuf::from("assets/songs"))
             .expect("Parse songs should have succeeded.");
 
-        let playlist =
-            super::Playlist::new(vec!["Song 1".to_string(), "Song 2".to_string()], songs)
-                .expect("Unable to create playlist");
+        let playlist = super::Playlist::new(
+            &config::Playlist::new(&["Song 1".to_string(), "Song 2".to_string()]),
+            songs,
+        )
+        .expect("Unable to create playlist");
 
         // Starts at the first element in the list.
         assert_eq!("Song 1", playlist.current().name());

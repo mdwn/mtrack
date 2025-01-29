@@ -31,7 +31,7 @@ use ola::{DmxBuffer, StreamingClient};
 use tracing::{debug, error, info, span, Level};
 
 use crate::{
-    config,
+    config, midi,
     playsync::CancelHandle,
     songs::{MidiSheet, Song},
 };
@@ -180,7 +180,7 @@ impl Engine {
                         dmx_engine,
                     };
                     let mut player = Player::new(
-                        crate::midi::midir::AccurateTimer::new(
+                        midi::midir::AccurateTimer::new(
                             dmx_midi_sheet.ticker,
                             cancel_handle.clone(),
                         ),

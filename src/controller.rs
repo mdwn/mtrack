@@ -63,12 +63,8 @@ pub struct Controller {
 
 impl Controller {
     /// Creates a new controller with the given config.
-    pub fn new(
-        player: Player,
-        midi_device: Option<Arc<dyn crate::midi::Device>>,
-        config: config::Controller,
-    ) -> Result<Controller, Box<dyn Error>> {
-        let driver = drivers::driver(config, midi_device)?;
+    pub fn new(player: Player, config: config::Controller) -> Result<Controller, Box<dyn Error>> {
+        let driver = drivers::driver(config, player.midi_device())?;
         Ok(Self::new_from_driver(player, driver))
     }
 
@@ -146,7 +142,7 @@ mod test {
 
     use tokio::{sync::mpsc::Sender, task::JoinHandle};
 
-    use crate::{audio, config, player::Player, playlist::Playlist, test::eventually};
+    use crate::{config, player::Player, playlist::Playlist, songs, test::eventually};
 
     use super::{Driver, Event};
 
@@ -233,22 +229,28 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_controller() -> Result<(), Box<dyn Error>> {
-        let driver = Arc::new(TestDriver::new(TestEvent::Unset));
-        let mappings: HashMap<String, Vec<u16>> = HashMap::new();
-        let device = Arc::new(audio::test::Device::get("mock-device"));
-        let songs = config::get_all_songs(&PathBuf::from("assets/songs"))?;
-        let playlist =
-            config::parse_playlist(&PathBuf::from("assets/playlist.yaml"), songs.clone())?;
-        let all_songs_playlist = Playlist::from_songs(songs.clone())?;
+        let songs = songs::get_all_songs(&PathBuf::from("assets/songs"))?;
         let player = Player::new(
-            device.clone(),
-            mappings,
-            None,
-            None,
-            playlist.clone(),
-            all_songs_playlist.clone(),
-            None,
-        );
+            songs.clone(),
+            Playlist::new(
+                &config::Playlist::deserialize(&PathBuf::from("assets/playlist.yaml"))?,
+                songs,
+            )?,
+            &config::Player::new(
+                config::Controller::Keyboard,
+                config::Audio::new("mock-device"),
+                None,
+                None,
+                HashMap::new(),
+                "assets/songs",
+            ),
+        )?;
+        let playlist = player.get_playlist();
+        let all_songs_playlist = player.get_all_songs_playlist();
+        let binding = player.audio_device();
+        let device = binding.to_mock()?;
+
+        let driver = Arc::new(TestDriver::new(TestEvent::Unset));
         let mut controller = super::Controller::new_from_driver(player, driver.clone());
 
         println!("Playlist: {}", playlist);

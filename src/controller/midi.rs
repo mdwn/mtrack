@@ -133,14 +133,12 @@ mod test {
     use std::{collections::HashMap, error::Error, path::PathBuf, sync::Arc};
 
     use crate::{
-        audio, config, controller::Controller, midi, player::Player, playlist::Playlist,
-        test::eventually,
+        config, controller::Controller, player::Player, playlist::Playlist, songs, test::eventually,
     };
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_midi_controller() -> Result<(), Box<dyn Error>> {
         // Set up all of the MIDI events and the MIDI controller driver.
-        let midi_device = Arc::new(midi::test::Device::get("mock-midi-device"));
         let play_event = midly::live::LiveEvent::Midi {
             channel: 16.into(),
             message: midly::MidiMessage::NoteOn {
@@ -183,16 +181,6 @@ mod test {
                 vel: 127.into(),
             },
         };
-        let driver = Arc::new(super::Driver::new(
-            midi_device.clone(),
-            play_event,
-            prev_event,
-            next_event,
-            stop_event,
-            all_songs_event,
-            playlist_event,
-        ));
-
         let unrecognized_event = midly::live::LiveEvent::Midi {
             channel: 15.into(),
             message: midly::MidiMessage::ProgramChange { program: 27.into() },
@@ -215,21 +203,39 @@ mod test {
         playlist_event.write(&mut playlist_buf)?;
         unrecognized_event.write(&mut unrecognized_buf)?;
 
-        let device = Arc::new(audio::test::Device::get("mock-device"));
-        let mappings: HashMap<String, Vec<u16>> = HashMap::new();
-        let songs = config::get_all_songs(&PathBuf::from("assets/songs"))?;
-        let playlist =
-            config::parse_playlist(&PathBuf::from("assets/playlist.yaml"), songs.clone())?;
-        let all_songs_playlist = Playlist::from_songs(songs.clone())?;
+        let songs = songs::get_all_songs(&PathBuf::from("assets/songs"))?;
         let player = Player::new(
-            device.clone(),
-            mappings,
-            None,
-            None,
-            playlist.clone(),
-            all_songs_playlist.clone(),
-            None,
-        );
+            songs.clone(),
+            Playlist::new(
+                &config::Playlist::deserialize(&PathBuf::from("assets/playlist.yaml"))?,
+                songs,
+            )?,
+            &config::Player::new(
+                config::Controller::Keyboard,
+                config::Audio::new("mock-device"),
+                Some(config::Midi::new("mock-midi-device", None)),
+                None,
+                HashMap::new(),
+                "assets/songs",
+            ),
+        )?;
+        let playlist = player.get_playlist();
+        let all_songs_playlist = player.get_all_songs_playlist();
+        let binding = player.audio_device();
+        let device = binding.to_mock()?;
+        let binding = player.midi_device().expect("MIDI device not found");
+        let midi_device = binding.to_mock()?;
+
+        let driver = Arc::new(super::Driver::new(
+            midi_device.clone(),
+            play_event,
+            prev_event,
+            next_event,
+            stop_event,
+            all_songs_event,
+            playlist_event,
+        ));
+
         let _controller = Controller::new_from_driver(player, driver);
 
         println!("Playlist: {}", playlist);

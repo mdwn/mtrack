@@ -23,16 +23,14 @@ mod songs;
 #[cfg(test)]
 mod test;
 
+use crate::playlist::Playlist;
 use clap::{crate_version, Parser, Subcommand};
 use player::Player;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::thread;
 use std::time::Duration;
-
-use crate::playlist::Playlist;
 
 const SYSTEMD_SERVICE: &str = r#"
 [Unit]
@@ -124,7 +122,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     match cli.command {
         Commands::Songs { path } => {
-            let songs = config::get_all_songs(&PathBuf::from(&path))?;
+            let songs = songs::get_all_songs(&PathBuf::from(&path))?;
 
             if songs.is_empty() {
                 println!("No songs found in {}.", path.as_str());
@@ -205,15 +203,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     .push(channel);
             }
 
-            let device = audio::get_device(Some(config::Audio::new(device_name, None)))?;
-            let midi_device = match midi_device_name {
-                Some(midi_device_name) => midi::get_device(Some(config::Midi::new(
-                    midi_device_name.as_str(),
-                    midi_playback_delay,
-                )))?,
-                None => None,
-            };
-            let dmx_engine = match dmx_universe_config {
+            let audio_config = config::Audio::new(device_name.as_str());
+            let midi_config = midi_device_name.map(|midi_device_name| {
+                config::Midi::new(midi_device_name.as_str(), midi_playback_delay)
+            });
+            let dmx_config = match dmx_universe_config {
                 Some(dmx_universe_config) => {
                     let mut universe_configs: Vec<config::Universe> = Vec::new();
                     for universe_config in dmx_universe_config.split(';') {
@@ -258,38 +252,46 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     if universe_configs.is_empty() {
                         None
                     } else {
-                        dmx::create_engine(Some(&config::Dmx::new(
+                        Some(config::Dmx::new(
                             dmx_dimming_speed_modifier,
                             dmx_playback_delay,
                             universe_configs,
-                        )))?
+                        ))
                     }
                 }
                 None => None,
             };
-            let songs = config::get_all_songs(&PathBuf::from(&repository_path))?;
-            let playlist = Arc::new(Playlist::new(vec![song_name], Arc::clone(&songs))?);
+
+            let songs = songs::get_all_songs(&PathBuf::from(&repository_path))?;
+            let playlist = Playlist::new(&config::Playlist::new(&[song_name]), Arc::clone(&songs))?;
+
             let player = Player::new(
-                device,
-                converted_mappings,
-                midi_device,
-                dmx_engine,
+                songs,
                 playlist,
-                Playlist::from_songs(songs)?,
-                None,
-            );
+                &config::Player::new(
+                    config::Controller::Keyboard {},
+                    audio_config,
+                    midi_config,
+                    dmx_config,
+                    converted_mappings,
+                    &repository_path,
+                ),
+            )?;
 
             player.play().await?;
             while !player.wait_for_current_song().await? {
-                thread::sleep(Duration::from_millis(10));
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
         }
         Commands::Playlist {
             repository_path,
             playlist_path,
         } => {
-            let songs = config::get_all_songs(&PathBuf::from(&repository_path))?;
-            let playlist = config::parse_playlist(&PathBuf::from(playlist_path), songs)?;
+            let songs = songs::get_all_songs(&PathBuf::from(&repository_path))?;
+            let playlist = Playlist::new(
+                &config::Playlist::deserialize(&PathBuf::from(playlist_path))?,
+                songs,
+            )?;
 
             println!("{}", playlist);
         }
@@ -297,12 +299,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
             player_path,
             playlist_path,
         } => {
-            config::init_player_and_controller(
-                &PathBuf::from(player_path),
-                &PathBuf::from(playlist_path),
-            )?
-            .join()
-            .await?;
+            let player_path = PathBuf::from(player_path);
+            let player_config = config::Player::deserialize(&player_path)?;
+            let songs = songs::get_all_songs(&player_config.songs(&player_path))?;
+            let playlist = Playlist::new(
+                &config::Playlist::deserialize(&PathBuf::from(playlist_path))?,
+                songs.clone(),
+            )?;
+
+            let player = player::Player::new(songs, playlist, &player_config)?;
+            crate::controller::Controller::new(player, player_config.controller().clone())?
+                .join()
+                .await?;
         }
         Commands::Systemd {} => {
             println!("{}", SYSTEMD_SERVICE)

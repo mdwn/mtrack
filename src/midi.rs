@@ -12,6 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 use std::{
+    any::Any,
     error::Error,
     fmt,
     sync::{Arc, Barrier},
@@ -26,7 +27,7 @@ pub(crate) mod midir;
 mod mock;
 
 /// A MIDI device that can play MIDI files and listen for inputs.
-pub trait Device: fmt::Display + std::marker::Send + std::marker::Sync {
+pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {
     /// Watches MIDI input for events and sends them to the given sender.
     fn watch_events(&self, sender: Sender<Vec<u8>>) -> Result<(), Box<dyn Error>>;
 
@@ -43,6 +44,9 @@ pub trait Device: fmt::Display + std::marker::Send + std::marker::Sync {
 
     /// Emits an event.
     fn emit(&self, midi_event: Option<LiveEvent<'static>>) -> Result<(), Box<dyn Error>>;
+
+    #[cfg(test)]
+    fn to_mock(&self) -> Result<Arc<mock::Device>, Box<dyn Error>>;
 }
 
 /// Lists devices known to midir.

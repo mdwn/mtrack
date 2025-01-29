@@ -229,6 +229,11 @@ impl super::Device for Device {
 
         Ok(())
     }
+
+    #[cfg(test)]
+    fn to_mock(&self) -> Result<Arc<super::mock::Device>, Box<dyn Error>> {
+        Err("not a mock".into())
+    }
 }
 
 impl Device {
@@ -349,7 +354,7 @@ mod test {
 
         let song = Song::new(
             &tempdir,
-            config::Song::new("song name", vec![track1, track2]),
+            &config::Song::new("song name", vec![track1, track2]),
         )?;
         let mut mappings: HashMap<String, Vec<u16>> = HashMap::new();
         mappings.insert("test 1".into(), vec![1]);
@@ -394,7 +399,7 @@ mod test {
 
         let song = Song::new(
             &tempdir,
-            config::Song::new("song name", vec![track1, track2]),
+            &config::Song::new("song name", vec![track1, track2]),
         )?;
         let mut mappings: HashMap<String, Vec<u16>> = HashMap::new();
         mappings.insert("test 1".into(), vec![1]);
@@ -432,7 +437,7 @@ mod test {
 
         let song = Song::new(
             &tempdir,
-            config::Song::new("song name", vec![track1, track2]),
+            &config::Song::new("song name", vec![track1, track2]),
         )?;
         let mut mappings: HashMap<String, Vec<u16>> = HashMap::new();
         mappings.insert("test 1".into(), vec![1]);

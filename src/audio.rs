@@ -1,3 +1,4 @@
+use std::any::Any;
 // Copyright (C) 2025 Michael Wilson <mike@mdwn.dev>
 //
 // This program is free software: you can redistribute it and/or modify it under
@@ -20,10 +21,10 @@ use std::collections::HashMap;
 use std::sync::Barrier;
 
 mod cpal;
-mod mock;
+pub mod mock;
 
 /// An audio device that can play songs back.
-pub trait Device: fmt::Display + std::marker::Send + std::marker::Sync {
+pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {
     /// Plays the given song through the audio interface.
     fn play(
         &self,
@@ -32,6 +33,9 @@ pub trait Device: fmt::Display + std::marker::Send + std::marker::Sync {
         cancel_handle: CancelHandle,
         play_barrier: Arc<Barrier>,
     ) -> Result<(), Box<dyn Error>>;
+
+    #[cfg(test)]
+    fn to_mock(&self) -> Result<Arc<mock::Device>, Box<dyn Error>>;
 }
 
 /// Lists devices known to cpal.
@@ -52,10 +56,4 @@ pub fn get_device(config: Option<config::Audio>) -> Result<Arc<dyn Device>, Box<
     };
 
     Ok(Arc::new(cpal::Device::get(config)?))
-}
-
-#[cfg(test)]
-pub mod test {
-    // Reexport the mock device direclty for testing.
-    pub use super::mock::Device;
 }
