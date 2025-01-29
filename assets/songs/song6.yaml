@@ -1,0 +1,5 @@
+name: Song 6
+midi_file: ../song.mid
+tracks:
+- name: track 1
+  file: ../1Channel22.05k.wav

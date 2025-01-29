@@ -136,7 +136,7 @@ mod test {
         collections::HashMap,
         error::Error,
         io,
-        path::PathBuf,
+        path::Path,
         sync::{Arc, Barrier, Mutex},
     };
 
@@ -229,11 +229,11 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_controller() -> Result<(), Box<dyn Error>> {
-        let songs = songs::get_all_songs(&PathBuf::from("assets/songs"))?;
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
         let player = Player::new(
             songs.clone(),
             Playlist::new(
-                &config::Playlist::deserialize(&PathBuf::from("assets/playlist.yaml"))?,
+                &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
                 songs,
             )?,
             &config::Player::new(

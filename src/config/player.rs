@@ -1,7 +1,3 @@
-use std::collections::HashMap;
-use std::error::Error;
-use std::fs;
-use std::path::{Path, PathBuf};
 // Copyright (C) 2025 Michael Wilson <mike@mdwn.dev>
 //
 // This program is free software: you can redistribute it and/or modify it under
@@ -21,7 +17,11 @@ use super::dmx::Dmx;
 use super::midi::Midi;
 use super::statusevents::StatusEvents;
 use super::trackmappings::TrackMappings;
+use config::{Config, File};
 use serde::Deserialize;
+use std::collections::HashMap;
+use std::error::Error;
+use std::path::{Path, PathBuf};
 use tracing::error;
 
 /// The configuration for the multitrack player.
@@ -70,8 +70,11 @@ impl Player {
     }
 
     /// Deserializes a file from the path into a player configuration struct.
-    pub fn deserialize(path: &PathBuf) -> Result<Player, Box<dyn Error>> {
-        Ok(serde_yaml::from_str(&fs::read_to_string(path)?)?)
+    pub fn deserialize(path: &Path) -> Result<Player, Box<dyn Error>> {
+        Ok(Config::builder()
+            .add_source(File::from(path))
+            .build()?
+            .try_deserialize::<Player>()?)
     }
 
     /// Gets the controller configuration.

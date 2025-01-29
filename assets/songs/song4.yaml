@@ -1,0 +1,27 @@
+name: Song 4
+midi_file: ../song.mid
+tracks:
+- name: track 1
+  file: ../8Channel44.1k.wav
+  file_channel: 1
+- name: track 2
+  file: ../8Channel44.1k.wav
+  file_channel: 2
+- name: track 3
+  file: ../8Channel44.1k.wav
+  file_channel: 3
+- name: track 4
+  file: ../8Channel44.1k.wav
+  file_channel: 4
+- name: track 5
+  file: ../8Channel44.1k.wav
+  file_channel: 5
+- name: track 6
+  file: ../8Channel44.1k.wav
+  file_channel: 6
+- name: track 7
+  file: ../8Channel44.1k.wav
+  file_channel: 7
+- name: track 8
+  file: ../8Channel44.1k.wav
+  file_channel: 8

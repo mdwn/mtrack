@@ -28,7 +28,7 @@ use clap::{crate_version, Parser, Subcommand};
 use player::Player;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -122,7 +122,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     match cli.command {
         Commands::Songs { path } => {
-            let songs = songs::get_all_songs(&PathBuf::from(&path))?;
+            let songs = songs::get_all_songs(Path::new(&path))?;
 
             if songs.is_empty() {
                 println!("No songs found in {}.", path.as_str());
@@ -262,7 +262,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 None => None,
             };
 
-            let songs = songs::get_all_songs(&PathBuf::from(&repository_path))?;
+            let songs = songs::get_all_songs(Path::new(&repository_path))?;
             let playlist = Playlist::new(&config::Playlist::new(&[song_name]), Arc::clone(&songs))?;
 
             let player = Player::new(
@@ -287,9 +287,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
             repository_path,
             playlist_path,
         } => {
-            let songs = songs::get_all_songs(&PathBuf::from(&repository_path))?;
+            let songs = songs::get_all_songs(Path::new(&repository_path))?;
             let playlist = Playlist::new(
-                &config::Playlist::deserialize(&PathBuf::from(playlist_path))?,
+                &config::Playlist::deserialize(Path::new(&playlist_path))?,
                 songs,
             )?;
 
@@ -299,11 +299,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
             player_path,
             playlist_path,
         } => {
-            let player_path = PathBuf::from(player_path);
-            let player_config = config::Player::deserialize(&player_path)?;
-            let songs = songs::get_all_songs(&player_config.songs(&player_path))?;
+            let player_path = &Path::new(&player_path);
+            let player_config = config::Player::deserialize(player_path)?;
+            let songs = songs::get_all_songs(&player_config.songs(player_path))?;
             let playlist = Playlist::new(
-                &config::Playlist::deserialize(&PathBuf::from(playlist_path))?,
+                &config::Playlist::deserialize(Path::new(&playlist_path))?,
                 songs.clone(),
             )?;
 

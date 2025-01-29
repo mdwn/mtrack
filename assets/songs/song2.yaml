@@ -1,0 +1,8 @@
+name: Song 2
+midi_event:
+  type: program_change
+  channel: 16
+  program: 0
+tracks:
+- name: track 1
+  file: ../1Channel44.1k.wav

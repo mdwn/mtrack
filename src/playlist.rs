@@ -137,13 +137,13 @@ pub fn from_songs(songs: Arc<Songs>) -> Result<Arc<Playlist>, Box<dyn Error>> {
 
 #[cfg(test)]
 mod test {
-    use std::path::PathBuf;
+    use std::path::Path;
 
     use crate::{config, songs};
 
     #[test]
     fn test_playlist() {
-        let songs = songs::get_all_songs(&PathBuf::from("assets/songs"))
+        let songs = songs::get_all_songs(Path::new("assets/songs"))
             .expect("Parse songs should have succeeded.");
 
         let playlist = super::Playlist::new(

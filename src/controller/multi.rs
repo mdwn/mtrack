@@ -58,7 +58,7 @@ impl super::Driver for Driver {
 
 #[cfg(test)]
 mod test {
-    use std::{collections::HashMap, error::Error, path::PathBuf, sync::Arc};
+    use std::{collections::HashMap, error::Error, path::Path, sync::Arc};
 
     use crate::{
         config,
@@ -133,11 +133,11 @@ mod test {
         all_songs_event.write(&mut all_songs_buf)?;
         playlist_event.write(&mut playlist_buf)?;
 
-        let songs = songs::get_all_songs(&PathBuf::from("assets/songs"))?;
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
         let player = Player::new(
             songs.clone(),
             Playlist::new(
-                &config::Playlist::deserialize(&PathBuf::from("assets/playlist.yaml"))?,
+                &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
                 songs,
             )?,
             &config::Player::new(

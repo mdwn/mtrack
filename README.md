@@ -79,13 +79,19 @@ Devices:
 The name prior to the first colon is the identifier for use by `mtrack`. When referring to the second
 MIDI device, you would use the string `UltraLite-mk5`.
 
+## File formats
+
+`mtrack` now uses [config-rs](https://github.com/rust-cli/config-rs) for configuration parsing, which
+means we should support any of the configuration file formats that it supports. Testing for anything
+other than YAML is limited at the moment.
+
 ## Structure of an mtrack repository and supporting files
 
 ### Song repository
 
 The song repository is a location on disk that houses both your backing tracks, MIDI files, and song
 definitions. The song repository does not have to be in any particular layout, as `mtrack` will attempt
-to parse any/all `yaml` files it finds to look for song definitions.
+to parse any/all config files supported by `config-rs` it finds to look for song definitions.
 
 ### Songs
 
@@ -99,7 +105,7 @@ A song comprises of:
 The audio files must all be the same bitrate. They do not need to be the same length. mtrack player will
 play until the last audio (or MIDI) file is complete.
 
-A song is defined in a `yaml` file:
+A song is defined in any of the formats supported by `config-rs`.
 
 ```yaml
 # The name of the song. This name is primarily used when constructing
@@ -144,7 +150,7 @@ tracks:
 # The click track only has one channel, so we can just indicate which output channel
 # we want directly.
 - name: click
-  file: click.wav # File paths are relative to the song.yaml file.
+  file: click.wav # File paths are relative to the song config file.
 # Similarly, our cue only has one channel.
 - name: cue
   file: /mnt/song-storage/cue.wav # Or file paths can be absolute.
@@ -162,10 +168,6 @@ tracks:
 - name: keys
   file: Keys.wav
   file_channel: 1
----
-# We can define multiple songs in one file.
-name: The Song Name (alternate version)
-...
 ```
 
 We can test our song repository with the `mtrack songs` command:
@@ -197,12 +199,12 @@ $ mtrack play -m my-midi-device -s 0.25 -d universe=1,name=light-show my-audio-d
 
 ### Playlists
 
-The playlist definition is a pretty simple `yaml` file:
+The playlist definition is a pretty simple config file:
 
 ```yaml
 # This is a simple file that contains, in order, the names of all songs
 # that mtrack should play. The names of the songs are defined in the
-# song repository, which can be found in mtrack.yaml.
+# song repository, which can be found in the mtrack config file.
 songs:
 - Sound check
 - A really cool song

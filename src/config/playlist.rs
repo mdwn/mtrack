@@ -1,5 +1,3 @@
-use std::{error::Error, fs, path::PathBuf};
-
 // Copyright (C) 2025 Michael Wilson <mike@mdwn.dev>
 //
 // This program is free software: you can redistribute it and/or modify it under
@@ -13,6 +11,9 @@ use std::{error::Error, fs, path::PathBuf};
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
+use std::{error::Error, path::Path};
+
+use config::{Config, File};
 use serde::Deserialize;
 
 /// The configuration for a playlist.
@@ -31,8 +32,11 @@ impl Playlist {
     }
 
     /// Parse a playlist from a YAML file.
-    pub fn deserialize(file: &PathBuf) -> Result<Playlist, Box<dyn Error>> {
-        Ok(serde_yaml::from_str(&fs::read_to_string(file)?)?)
+    pub fn deserialize(path: &Path) -> Result<Playlist, Box<dyn Error>> {
+        Ok(Config::builder()
+            .add_source(File::from(path))
+            .build()?
+            .try_deserialize::<Playlist>()?)
     }
 
     /// Get all songs in the playlist.

@@ -11,8 +11,9 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-use std::{error::Error, fs, path::PathBuf};
+use std::{error::Error, path::Path};
 
+use config::{Config, File};
 use midly::live::LiveEvent;
 use serde::Deserialize;
 
@@ -52,21 +53,12 @@ impl Song {
         }
     }
 
-    /// Parses songs from a YAML file.
-    pub fn parse_multiple(file: &PathBuf) -> Result<Vec<Song>, Box<dyn Error>> {
-        let mut songs: Vec<Song> = Vec::new();
-
-        for document in serde_yaml::Deserializer::from_str(&fs::read_to_string(file)?) {
-            let song = match Self::deserialize(document) {
-                Ok(song) => song,
-                Err(e) => {
-                    return Err(format!("error parsing file {}: {}", file.display(), e).into())
-                }
-            };
-            songs.push(song);
-        }
-
-        Ok(songs)
+    /// Deserializes a file from the path into a song configuration struct.
+    pub fn deserialize(path: &Path) -> Result<Song, Box<dyn Error>> {
+        Ok(Config::builder()
+            .add_source(File::from(path))
+            .build()?
+            .try_deserialize::<Song>()?)
     }
 
     /// Gets the name of the song.

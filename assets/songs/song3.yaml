@@ -1,0 +1,9 @@
+name: Song 3
+midi_file: ../song.mid
+tracks:
+- name: track 1
+  file: ../2Channel44.1k.wav
+  file_channel: 1
+- name: track 2
+  file: ../2Channel44.1k.wav
+  file_channel: 2

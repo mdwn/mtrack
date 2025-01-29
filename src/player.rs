@@ -552,7 +552,7 @@ impl StatusEvents {
 
 #[cfg(test)]
 mod test {
-    use std::{collections::HashMap, error::Error, path::PathBuf, sync::Arc};
+    use std::{collections::HashMap, error::Error, path::Path, sync::Arc};
 
     use crate::{config, midi, playlist::Playlist, songs, test::eventually};
 
@@ -560,12 +560,12 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_player() -> Result<(), Box<dyn Error>> {
-        let songs = songs::get_all_songs(&PathBuf::from("assets/songs"))?;
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
         let midi_device = Arc::new(midi::test::Device::get("mock-midi-device"));
         let mut player = Player::new_with_midi_device(
             songs.clone(),
             Playlist::new(
-                &config::Playlist::deserialize(&PathBuf::from("assets/playlist.yaml"))?,
+                &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
                 songs,
             )?,
             Some(midi_device.clone()),
