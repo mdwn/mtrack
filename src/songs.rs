@@ -31,6 +31,7 @@ use ringbuf::{HeapConsumer, HeapProducer, HeapRb};
 use tracing::{debug, error};
 
 use crate::config;
+use crate::proto::player;
 
 /// A song with associated tracks for multitrack playback. Can contain:
 /// - An optional MIDI event, which will be played when the song is selected in a playlist.
@@ -233,6 +234,13 @@ impl Song {
         S: Sample,
     {
         SongSource::<S>::new(self, track_mappings)
+    }
+
+    /// Returns a proto version of the song.
+    pub fn to_proto(&self) -> player::v1::Song {
+        player::v1::Song {
+            name: self.name.to_string(),
+        }
     }
 }
 

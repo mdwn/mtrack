@@ -36,6 +36,7 @@ comments:
   - columns: 80
     extensions:
       - rs
+      - proto
     commenter:
       type: line
       comment_char: "//"

@@ -19,6 +19,7 @@ mod midi;
 mod player;
 mod playlist;
 mod playsync;
+mod proto;
 mod songs;
 #[cfg(test)]
 mod test;
@@ -278,7 +279,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 ),
             )?;
 
-            player.play().await?;
+            player.play().await;
             while !player.wait_for_current_song().await? {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
