@@ -1,0 +1,120 @@
+// Copyright (C) 2025 Michael Wilson <mike@mdwn.dev>
+//
+// This program is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free Software
+// Foundation, version 3.
+//
+// This program is distributed in the hope that it will be useful, but WITHOUT
+// ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License along with
+// this program. If not, see <https://www.gnu.org/licenses/>.
+//
+syntax = "proto3";
+
+package player.v1;
+
+import "google/protobuf/duration.proto";
+
+// Song is a message that contains information about a song.
+message Song {
+    // Name is the name of the song.
+    string name = 1;
+    
+    // Duration is the length of the song.
+    google.protobuf.Duration duration = 2;
+
+    // Tracks are the tracks available for the song.
+    repeated string tracks = 3; 
+}
+
+// PlayRequest is the message for requesting the player to play the current song.
+message PlayRequest {}
+
+// PlayResponse is the response message after playing a song.
+message PlayResponse {
+    // Song is the song that is now playing.
+    Song song = 1;
+}
+
+// PreviousRequest is the message for requesting the player to move to the previous
+// song.
+message PreviousRequest {}
+
+// PreviousResponse is the response message after moving to the previous song.
+message PreviousResponse {
+    // Song is the song the playlist is now pointing at.
+    Song song = 1;
+}
+
+// NextRequest is the message for requesting the player to move to the next
+// song.
+message NextRequest {}
+
+// NextResponse is the response message after moving to the next song.
+message NextResponse {
+    // Song is the song the playlist is now pointing at.
+    Song song = 1;
+}
+
+// StopRequest is the message for requesting the player to stop the currently
+// playing song.
+message StopRequest {}
+
+// StopResponse is the response message after requesting the player to stop.
+message StopResponse {
+    // Song is the song that was stopped.
+    Song song = 1;
+}
+
+// SwitchToPlaylistRequest is the message for requesting the player to switch
+// to a different playlist.
+message SwitchToPlaylistRequest {
+    // PlaylistName is the name of the playlist to switch to.
+    string playlist_name = 1;
+}
+
+// SwitchToPlaylistResponse is the response message after requesting the player
+// to switch to a different playlist.
+message SwitchToPlaylistResponse {}
+
+// StatusRequest is the message for requesting a streaming status from the player.
+message StatusRequest {}
+
+// StatusResponse is the response message after requesting the status from the player.
+message StatusResponse {
+    // PlaylistName is the name of the current playlist.
+    string playlist_name = 1;
+
+    // CurrentSong is the current song that the current playlist is pointing to.
+    Song current_song = 2;
+
+    // Playing is true while a song is playing.
+    bool playing = 3;
+
+    // Elapsed is the amount of time that has elapsed while playing the song.
+    google.protobuf.Duration elapsed = 4;
+}
+
+// PlayerService is a service for controlling the mtrack player.
+service PlayerService {
+    // Play will play the current song in the playlist if no other songs
+    // are playing.
+    rpc Play(PlayRequest) returns (PlayResponse);
+
+    // Previous will move the playlist to the previous song.
+    rpc Previous(PreviousRequest) returns (PreviousResponse);
+
+    // Next will move the playlist to the next song.
+    rpc Next(NextRequest) returns (NextResponse);
+
+    // Stop will stop the currently playing song.
+    rpc Stop(StopRequest) returns (StopResponse);
+
+    // SwitchToPlaylist will switch the player to a different playlist.
+    rpc SwitchToPlaylist(SwitchToPlaylistRequest) returns (SwitchToPlaylistResponse);
+
+    // Status will return the current status of the player.
+    rpc Status(StatusRequest) returns (StatusResponse);
+}

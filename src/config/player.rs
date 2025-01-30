@@ -24,9 +24,13 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 use tracing::error;
 
+pub const DEFAULT_GRPC_PORT: i32 = 43234;
+
 /// The configuration for the multitrack player.
 #[derive(Deserialize)]
 pub struct Player {
+    /// The gRPC server configuration.
+    grpc: Option<Grpc>,
     /// The controller configuration.
     controller: Controller,
     /// The audio device to use.
@@ -57,6 +61,7 @@ impl Player {
         songs: &str,
     ) -> Player {
         Player {
+            grpc: None,
             controller,
             audio_device: None,
             audio: Some(audio),
@@ -75,6 +80,11 @@ impl Player {
             .add_source(File::from(path))
             .build()?
             .try_deserialize::<Player>()?)
+    }
+
+    /// Gets the gRPC configuration.
+    pub fn grpc(&self) -> Grpc {
+        self.grpc.clone().unwrap_or_default()
     }
 
     /// Gets the controller configuration.
@@ -133,5 +143,26 @@ impl Player {
             }
         };
         player_path_directory.join(&self.songs)
+    }
+}
+
+/// The configuration for the multitrack player gRPC server.
+#[derive(Clone, Default, Deserialize)]
+pub struct Grpc {
+    /// Whether the gRPC server is enabled. Defaults to true.
+    enabled: Option<bool>,
+    /// The port to listen on.
+    port: Option<i32>,
+}
+
+impl Grpc {
+    /// Gets whether the gRPC server should be enabled.
+    pub fn enabled(&self) -> bool {
+        self.enabled.unwrap_or(true)
+    }
+
+    /// Gets the port to listen on.
+    pub fn port(&self) -> i32 {
+        self.port.unwrap_or(DEFAULT_GRPC_PORT)
     }
 }

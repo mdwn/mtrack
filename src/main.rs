@@ -19,18 +19,25 @@ mod midi;
 mod player;
 mod playlist;
 mod playsync;
+mod proto;
 mod songs;
 #[cfg(test)]
-mod test;
+mod testutil;
 
 use crate::playlist::Playlist;
 use clap::{crate_version, Parser, Subcommand};
 use player::Player;
+use proto::player::v1::player_service_client::PlayerServiceClient;
+use proto::player::v1::{
+    NextRequest, PlayRequest, PreviousRequest, Song, StatusRequest, SwitchToPlaylistRequest,
+};
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
+use tonic::transport::Channel;
+use tonic::Request;
 
 const SYSTEMD_SERVICE: &str = r#"
 [Unit]
@@ -71,7 +78,7 @@ enum Commands {
     /// Lists the available MIDI input/output devices.
     MidiDevices {},
     /// Plays a song through the audio interface.
-    Play {
+    PlayDirect {
         /// The device name to play through.
         device_name: String,
         /// The channel to device mappings. Should be in the form <TRACKNAME>=<CHANNEL>,...
@@ -81,6 +88,7 @@ enum Commands {
         #[arg[short, long]]
         midi_device_name: Option<String>,
         /// The MIDI playback delay.
+        #[arg[long]]
         midi_playback_delay: Option<String>,
         /// The path to the song repository.
         repository_path: String,
@@ -90,6 +98,7 @@ enum Commands {
         #[arg[short = 's', long]]
         dmx_dimming_speed_modifier: Option<f64>,
         /// The DMX playback delay.
+        #[arg[long]]
         dmx_playback_delay: Option<String>,
         /// The DMX universe configuration. Should be in the form: universe=<OLA-UNIVERSE>,name=<NAME>;...
         /// For example, universe=1,name=light-show;universe=2,name=another-light-show
@@ -109,6 +118,38 @@ enum Commands {
         player_path: String,
         /// The path to the playlist.
         playlist_path: String,
+    },
+    /// Plays the current song in the playlist.
+    Play {
+        /// The host and port of the gRPC server.
+        #[arg[short, long]]
+        host_port: Option<String>,
+    },
+    /// Moves to the previous song in the playlist.
+    Previous {
+        /// The host and port of the gRPC server.
+        #[arg[short, long]]
+        host_port: Option<String>,
+    },
+    /// Moves to the next song in the playlist.
+    Next {
+        /// The host and port of the gRPC server.
+        #[arg[short, long]]
+        host_port: Option<String>,
+    },
+    /// Switches to the given playlist.
+    SwitchToPlaylist {
+        /// The host and port of the gRPC server.
+        #[arg[short, long]]
+        host_port: Option<String>,
+        /// The name of the playlist to switch to. Currently only supports "all_songs" and "playlist."
+        playlist_name: String,
+    },
+    /// Gets the current status of the player from the gRPC server.
+    Status {
+        /// The host and port of the gRPC server.
+        #[arg[short, long]]
+        host_port: Option<String>,
     },
     /// Prints a systemd service definition to stdout.
     Systemd {},
@@ -175,7 +216,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 println!("- {}", device);
             }
         }
-        Commands::Play {
+        Commands::PlayDirect {
             device_name,
             mappings,
             midi_device_name,
@@ -278,7 +319,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 ),
             )?;
 
-            player.play().await?;
+            player.play().await;
             while !player.wait_for_current_song().await? {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
@@ -312,10 +353,108 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .join()
                 .await?;
         }
+        Commands::Play { host_port } => {
+            let mut client = connect(host_port).await?;
+            let response = client.play(Request::new(PlayRequest {})).await?;
+            println!("Playing the song:");
+            print_song(response.into_inner().song)?;
+        }
+        Commands::Previous { host_port } => {
+            let mut client = connect(host_port).await?;
+            let response = client.previous(Request::new(PreviousRequest {})).await?;
+            println!("Moved to previous song:");
+            print_song(response.into_inner().song)?;
+        }
+        Commands::Next { host_port } => {
+            let mut client = connect(host_port).await?;
+            let response = client.next(Request::new(NextRequest {})).await?;
+            println!("Moved to next song:");
+            print_song(response.into_inner().song)?;
+        }
+        Commands::SwitchToPlaylist {
+            host_port,
+            playlist_name,
+        } => {
+            let mut client = connect(host_port).await?;
+            let _ = client
+                .switch_to_playlist(Request::new(SwitchToPlaylistRequest {
+                    playlist_name: playlist_name.clone(),
+                }))
+                .await?;
+            println!("Switched to playlist {}", playlist_name);
+        }
+        Commands::Status { host_port } => {
+            let mut client = connect(host_port).await?;
+            let response = client
+                .status(Request::new(StatusRequest {}))
+                .await?
+                .into_inner();
+            if let Some(song) = response.current_song {
+                println!("Current song: {}", song.name);
+                let song_duration = duration_minutes_seconds(Duration::try_from(
+                    song.duration.unwrap_or_default(),
+                )?);
+                let elapsed = duration_minutes_seconds(Duration::try_from(
+                    response.elapsed.unwrap_or_default(),
+                )?);
+                println!("Elapsed: {}/{}", elapsed, song_duration);
+            }
+            println!("Playing: {}", response.playing);
+            println!("Playlist name: {}", response.playlist_name)
+        }
         Commands::Systemd {} => {
             println!("{}", SYSTEMD_SERVICE)
         }
     }
 
     Ok(())
+}
+
+fn print_song(song: Option<Song>) -> Result<(), Box<dyn Error>> {
+    if let Some(song) = song {
+        println!("Name: {}", song.name);
+        println!(
+            "Duration: {}",
+            duration_minutes_seconds(Duration::try_from(song.duration.unwrap_or_default())?)
+        );
+        println!("Tracks:");
+        for track in song.tracks {
+            println!("  - {}", track);
+        }
+    }
+
+    Ok(())
+}
+
+fn duration_minutes_seconds(duration: Duration) -> String {
+    let minutes = duration.as_secs() / 60;
+    let secs = duration.as_secs() - minutes * 60;
+    format!("{}:{:02}", minutes, secs)
+}
+
+async fn connect(
+    host_port: Option<String>,
+) -> Result<PlayerServiceClient<Channel>, Box<dyn Error>> {
+    Ok(PlayerServiceClient::connect(
+        "http://".to_owned()
+            + &host_port.unwrap_or(format!("0.0.0.0:{}", config::DEFAULT_GRPC_PORT)),
+    )
+    .await?)
+}
+
+#[cfg(test)]
+mod test {
+    use std::time::Duration;
+
+    use crate::duration_minutes_seconds;
+
+    #[test]
+    fn test_duration_minutes_strings() {
+        assert_eq!("0:00", duration_minutes_seconds(Duration::new(0, 0)));
+        assert_eq!("0:05", duration_minutes_seconds(Duration::new(5, 0)));
+        assert_eq!("0:55", duration_minutes_seconds(Duration::new(55, 0)));
+        assert_eq!("1:00", duration_minutes_seconds(Duration::new(60, 0)));
+        assert_eq!("2:05", duration_minutes_seconds(Duration::new(125, 0)));
+        assert_eq!("60:06", duration_minutes_seconds(Duration::new(3606, 0)));
+    }
 }

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+A gRPC server has been added to mtrack along with several utility subcommands that allow
+for control of the player from the command line. This should be useful for creating
+external player clients.
+
+The keyboard controller has been fixed -- it wasn't trimming off the newlines at the end
+of keyboard input.
+
+(Breaking Change) The `play` subcommand has been renamed `play-direct` so that the `play`
+subcommand could be used to control the gRPC server.
+
 (Breaking Change) mtrack no longer supports multiple song definitions in one file. This
 is because mtrack has shed `serde_yaml`, which has been deprecated, and now uses `config-rs`
 to parse config files, and config-rs does not support YAML documents in one file.

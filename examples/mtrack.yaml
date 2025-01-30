@@ -1,8 +1,16 @@
+# The gRPC server configuration.
+grpc:
+  # Whether or not the gRPC server should be enabled. Defaults to true.
+  enabled: true
+
+  # The port the gRPC server should be hosted on. Defaults to 43234.
+  port: 43234
+
 # The audio configuration for mtrack.
 audio:
   # This audio device will be matched as best as possible against the devices on your system.
   # Run `mtrack devices` to see a list of the devices that mtrack recognizes.
-  audio_device: UltraLite-mk5
+  device: UltraLite-mk5
 
   # (Optional) Once a song is started, mtrack will wait this amount before triggering the audio playback.
   playback_delay: 500ms
@@ -11,7 +19,7 @@ audio:
 midi:
   # This MIDI device will be matched as best as possible against the devices on your system.
   # Run `mtrack midi-devices` to see a list of the devices that mtrack recognizes.
-  midi_device: UltraLite-mk5
+  device: UltraLite-mk5
 
   # (Optional) Once a song is started, mtrack will wait this amount before triggering the MIDI playback.
   playback_delay: 500ms
