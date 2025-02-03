@@ -32,6 +32,8 @@ use tracing::{debug, error};
 
 use crate::config;
 
+const AUDIO_EXTENSIONS: &[&str] = &["wav"];
+
 /// A song with associated tracks for multitrack playback. Can contain:
 /// - An optional MIDI event, which will be played when the song is selected in a playlist.
 /// - An optional MIDI file, which will be played along with the audio tracks.
@@ -160,17 +162,6 @@ impl Song {
             duration: max_duration,
             tracks,
         })
-    }
-
-    /// Creates multiple new songs from a given set of configs.
-    pub fn new_multiple(
-        start_path: &Path,
-        songs: &[config::Song],
-    ) -> Result<Vec<Song>, Box<dyn Error>> {
-        songs
-            .iter()
-            .map(|config| Self::new(start_path, config))
-            .collect::<Result<Vec<Song>, Box<dyn Error>>>()
     }
 
     /// Gets the name of the song.
@@ -728,7 +719,7 @@ impl Songs {
 }
 
 /// Recurse into the given path and return all valid songs found.
-pub fn get_all_songs(path: &PathBuf) -> Result<Arc<Songs>, Box<dyn Error>> {
+pub fn get_all_songs(path: &Path) -> Result<Arc<Songs>, Box<dyn Error>> {
     debug!("Getting songs for directory {path:?}");
     let mut songs: HashMap<String, Arc<Song>> = HashMap::new();
     for entry in fs::read_dir(path)? {
@@ -736,23 +727,26 @@ pub fn get_all_songs(path: &PathBuf) -> Result<Arc<Songs>, Box<dyn Error>> {
         let path = entry.path();
 
         if path.is_dir() {
-            get_all_songs(&path)?.list().iter().for_each(|song| {
-                songs.insert(song.name().to_string(), song.clone());
-            });
+            get_all_songs(path.as_path())?
+                .list()
+                .iter()
+                .for_each(|song| {
+                    songs.insert(song.name().to_string(), song.clone());
+                });
         }
 
         let extension = path.extension();
-        if extension.is_some_and(|ext| ext == "yaml" || ext == "yml") {
-            match config::Song::parse_multiple(&path) {
-                Ok(parsed) => {
-                    match path.parent() {
-                        Some(parent) => Song::new_multiple(&parent.canonicalize()?, &parsed)?,
+        if extension.is_some_and(|ext| {
+            ext.to_str()
+                .is_some_and(|ext| !AUDIO_EXTENSIONS.contains(&ext))
+        }) {
+            match config::Song::deserialize(path.as_path()) {
+                Ok(song) => {
+                    let song = match path.parent() {
+                        Some(parent) => Song::new(&parent.canonicalize()?, &song)?,
                         None => return Err("unable to get parent for path".into()),
-                    }
-                    .into_iter()
-                    .for_each(|song| {
-                        songs.insert(song.name().to_string(), Arc::new(song));
-                    });
+                    };
+                    songs.insert(song.name().to_string(), Arc::new(song));
                 }
                 Err(e) => error!(err = e.as_ref(), "Error while parsing files"),
             }
@@ -764,55 +758,11 @@ pub fn get_all_songs(path: &PathBuf) -> Result<Arc<Songs>, Box<dyn Error>> {
 
 #[cfg(test)]
 mod test {
-    use std::{collections::HashMap, error::Error, path::PathBuf};
+    use std::{collections::HashMap, error::Error};
 
-    use crate::{config, songs::Song, test::write_wav};
+    use crate::{config, test::write_wav};
 
     use super::{Sample, SongSource};
-
-    #[test]
-    fn read_files() -> Result<(), Box<dyn Error>> {
-        let songs_path = &PathBuf::from("assets/songs/songs.yaml");
-        let songs = Song::new_multiple(
-            songs_path
-                .parent()
-                .expect("parent should exist")
-                .canonicalize()?
-                .as_path(),
-            config::Song::parse_multiple(songs_path)?.as_slice(),
-        )?;
-
-        // Check that the first few songs were parsed correctly.
-        let song = &songs[0];
-        assert_eq!("Song 1", song.name);
-        assert_eq!(1, song.num_channels);
-        assert_eq!(22050, song.sample_rate);
-        assert!(song.midi_event.is_none());
-        assert!(song.midi_playback.is_some());
-
-        let song = &songs[1];
-        assert_eq!("Song 2", song.name);
-        assert_eq!(1, song.num_channels);
-        assert_eq!(44100, song.sample_rate);
-        assert!(song.midi_event.is_some());
-        assert!(song.midi_playback.is_none());
-
-        let song = &songs[2];
-        assert_eq!("Song 3", song.name);
-        assert_eq!(2, song.num_channels);
-        assert_eq!(44100, song.sample_rate);
-        assert!(song.midi_event.is_none());
-        assert!(song.midi_playback.is_some());
-
-        let song = &songs[3];
-        assert_eq!("Song 4", song.name);
-        assert_eq!(8, song.num_channels);
-        assert_eq!(44100, song.sample_rate);
-        assert!(song.midi_event.is_none());
-        assert!(song.midi_playback.is_some());
-
-        Ok(())
-    }
 
     #[test]
     fn song_source_frame_read() -> Result<(), Box<dyn Error>> {

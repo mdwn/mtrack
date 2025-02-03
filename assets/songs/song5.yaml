@@ -1,0 +1,10 @@
+name: Song 5
+midi_event:
+  type: program_change
+  channel: 16
+  program: 5
+midi_file: ../song.mid
+tracks:
+- name: track 1
+  file: ../20-sec-long.wav
+  file_channel: 1

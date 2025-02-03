@@ -268,6 +268,7 @@ fn parse_u14(raw: u16) -> Result<u14, Box<dyn Error>> {
 mod test {
     use std::error::Error;
 
+    use config::{Config, File, FileFormat};
     use midly::{
         live::LiveEvent,
         num::{u14, u4, u7},
@@ -411,7 +412,11 @@ mod test {
         yaml: String,
         expected_event: midly::live::LiveEvent,
     ) -> Result<(), Box<dyn Error>> {
-        let event = serde_yaml::from_str::<super::Event>(&yaml)?.to_midi_event()?;
+        let event = Config::builder()
+            .add_source(File::from_str(&yaml, FileFormat::Yaml))
+            .build()?
+            .try_deserialize::<super::Event>()?
+            .to_midi_event()?;
 
         if expected_event == event {
             Ok(())

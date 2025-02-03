@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+(Breaking Change) mtrack no longer supports multiple song definitions in one file. This
+is because mtrack has shed `serde_yaml`, which has been deprecated, and now uses `config-rs`
+to parse config files, and config-rs does not support YAML documents in one file.
+Other than lessening the maintenance burden, one advantage to doing this is that mtrack
+can now support multiple file types. As of the time of writing, this includes:
+
+- JSON
+- TOML
+- YAML
+- INI
+- RON
+- JSON5
+
+Note that I still personally test with YAML, so I haven't had an opportunity to exercise
+all of the different file types.
+
 ## [0.3.0] - Configurable playback delays and refactoring.
 
 Configurable playback delays have been added for audio, MIDI, and DMX playback.
