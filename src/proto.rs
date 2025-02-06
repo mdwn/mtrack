@@ -11,28 +11,9 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-mod audio;
-mod controller;
-mod dmx;
-mod midi;
-mod player;
-mod playlist;
-mod song;
-mod statusevents;
-mod track;
-mod trackmappings;
-
-pub use self::audio::Audio;
-pub use self::controller::Controller;
-pub use self::controller::MidiController;
-pub use self::dmx::Dmx;
-pub use self::dmx::Universe;
-pub use self::midi::Midi;
-pub use self::player::Player;
-pub use self::player::DEFAULT_GRPC_PORT;
-pub use self::playlist::Playlist;
-pub use self::song::LightShow;
-pub use self::song::MidiPlayback;
-pub use self::song::Song;
-pub use self::statusevents::StatusEvents;
-pub use self::track::Track;
+// Include the generated player code.
+pub mod player {
+    pub mod v1 {
+        include!(concat!(env!("OUT_DIR"), "/player.v1.rs"));
+    }
+}

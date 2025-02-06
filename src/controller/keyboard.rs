@@ -14,7 +14,7 @@
 use std::io;
 
 use tokio::{sync::mpsc::Sender, task::JoinHandle};
-use tracing::{info, span, Level};
+use tracing::{info, span, warn, Level};
 
 use super::Event;
 
@@ -51,14 +51,17 @@ impl Driver {
         let mut input: String = String::default();
         reader.read_line(&mut input)?;
 
-        match input.to_lowercase().as_str() {
+        match input.trim().to_lowercase().as_str() {
             PLAY => events_tx.blocking_send(Event::Play),
             PREV => events_tx.blocking_send(Event::Prev),
             NEXT => events_tx.blocking_send(Event::Next),
             STOP => events_tx.blocking_send(Event::Stop),
             ALL_SONGS => events_tx.blocking_send(Event::AllSongs),
             PLAYLIST => events_tx.blocking_send(Event::Playlist),
-            _ => Ok(()),
+            _ => {
+                warn!(input = input, "Unrecognized input");
+                Ok(())
+            }
         }
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
         Ok(())

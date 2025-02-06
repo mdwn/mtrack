@@ -66,7 +66,7 @@ mod test {
         player::Player,
         playlist::Playlist,
         songs,
-        test::eventually,
+        testutil::eventually,
     };
 
     #[tokio::test(flavor = "multi_thread")]

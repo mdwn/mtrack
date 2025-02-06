@@ -20,17 +20,31 @@ use std::{
         Arc, Barrier, RwLock,
     },
     thread,
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 use tokio::{
     sync::{oneshot, Mutex},
     task::JoinHandle,
 };
+use tonic::{transport::Server, Request, Response, Status};
 use tracing::{error, info, span, Level, Span};
 
-use crate::songs::Songs;
 use crate::{
-    audio, config, dmx, midi, playlist, playlist::Playlist, playsync::CancelHandle, songs::Song,
+    audio, config, dmx, midi,
+    playlist::{self, Playlist},
+    playsync::CancelHandle,
+    proto::player::v1::{
+        player_service_server::PlayerServiceServer, StatusRequest, StatusResponse,
+    },
+    songs::Song,
+};
+use crate::{
+    proto::player::v1::{
+        player_service_server::PlayerService, NextRequest, NextResponse, PlayRequest, PlayResponse,
+        PreviousRequest, PreviousResponse, StopRequest, StopResponse, SwitchToPlaylistRequest,
+        SwitchToPlaylistResponse,
+    },
+    songs::Songs,
 };
 
 struct PlayHandles {
@@ -39,6 +53,7 @@ struct PlayHandles {
 }
 
 /// Plays back individual wav files as multichannel audio for the configured audio interface.
+#[derive(Clone)]
 pub struct Player {
     /// The device to play audio through.
     device: Arc<dyn audio::Device>,
@@ -53,7 +68,9 @@ pub struct Player {
     /// The all songs playlist.
     all_songs: Arc<Playlist>,
     /// Switches between the playlist and the all songs playlist.
-    use_all_songs: AtomicBool,
+    use_all_songs: Arc<AtomicBool>,
+    /// The time that the last play action occurred.
+    play_start_time: Arc<Mutex<Option<SystemTime>>>,
     /// Keeps track of the player joins. There should only be one task on here at a time.
     join: Arc<Mutex<Option<PlayHandles>>>,
     /// After stop is set, this will be set to true. This will prevent stop from being run again until
@@ -84,6 +101,7 @@ impl Player {
         let dmx_engine = dmx::create_engine(config.dmx())?;
         let status_events = StatusEvents::new(config.status_events())?;
 
+        let span = span!(Level::INFO, "player");
         let player = Player {
             device,
             mappings: Arc::new(config.track_mappings().clone()),
@@ -91,26 +109,40 @@ impl Player {
             dmx_engine,
             playlist,
             all_songs: playlist::from_songs(songs)?,
-            use_all_songs: AtomicBool::new(false),
+            use_all_songs: Arc::new(AtomicBool::new(false)),
+            play_start_time: Arc::new(Mutex::new(None)),
             join: Arc::new(Mutex::new(None)),
             stop_run: Arc::new(AtomicBool::new(false)),
-            span: span!(Level::INFO, "player"),
+            span: span.clone(),
         };
+        let _enter = span.enter();
 
-        if player.midi_device.is_none() {
-            return Ok(player);
+        if player.midi_device.is_some() {
+            // Emit the event for the first track if needed.
+            Player::emit_midi_event(player.midi_device.clone(), player.get_playlist().current());
+
+            if let Some(status_events) = status_events {
+                let midi_device = player
+                    .midi_device
+                    .clone()
+                    .expect("MIDI device must be present");
+                let join = player.join.clone();
+                tokio::spawn(Player::report_status(midi_device, join, status_events));
+            }
         }
 
-        // Emit the event for the first track if needed.
-        Player::emit_midi_event(player.midi_device.clone(), player.get_playlist().current());
-
-        if let Some(status_events) = status_events {
-            let midi_device = player
-                .midi_device
-                .clone()
-                .expect("MIDI device must be present");
-            let join = player.join.clone();
-            tokio::spawn(Player::report_status(midi_device, join, status_events));
+        let grpc = config.grpc();
+        if grpc.enabled() {
+            let addr = format!("0.0.0.0:{}", grpc.port()).parse()?;
+            let player = player.clone();
+            tokio::spawn(
+                Server::builder()
+                    .add_service(PlayerServiceServer::new(player.clone()))
+                    .serve(addr),
+            );
+            info!("gRPC server started");
+        } else {
+            info!("gRPC disabled");
         }
 
         Ok(player)
@@ -180,21 +212,21 @@ impl Player {
     }
 
     /// Plays the song at the current position. Returns true if the song was submitted successfully.
-    pub async fn play(&self) -> Result<(), Box<dyn Error>> {
+    pub async fn play(&self) -> Option<Arc<Song>> {
         let _enter = self.span.enter();
 
         let mut join = self.join.lock().await;
 
         let playlist = self.get_playlist().clone();
+        let song = playlist.current();
         if join.is_some() {
             info!(
-                current_song = playlist.current().name(),
+                current_song = song.name(),
                 "Player is already playing a song."
             );
-            return Ok(());
+            return None;
         }
 
-        let song = playlist.current();
         let cancel_handle = CancelHandle::new();
         let (play_tx, play_rx) = oneshot::channel::<()>();
 
@@ -222,38 +254,45 @@ impl Player {
             cancel: cancel_handle,
         });
 
-        let join_mutex = self.join.clone();
-        let stop_run = self.stop_run.clone();
-        let song = song.clone();
-        let midi_device = self.midi_device.clone();
-        tokio::spawn(async move {
-            if let Err(e) = play_rx.await {
-                error!(err = e.to_string(), "Error receiving signal");
-                return;
-            }
-            let mut join = join_mutex.lock().await;
+        {
+            let mut play_start_time = self.play_start_time.lock().await;
+            *play_start_time = Some(SystemTime::now());
+        }
 
-            let mut cancelled = false;
-            // Only move to the next playlist entry if this wasn't cancelled.
-            if let Some(join) = join.as_ref() {
-                cancelled = join.cancel.is_cancelled();
-                if !cancelled {
-                    Player::next_and_emit(midi_device.clone(), playlist);
+        {
+            let join_mutex = self.join.clone();
+            let stop_run = self.stop_run.clone();
+            let song = song.clone();
+            let midi_device = self.midi_device.clone();
+            tokio::spawn(async move {
+                if let Err(e) = play_rx.await {
+                    error!(err = e.to_string(), "Error receiving signal");
+                    return;
                 }
-            }
+                let mut join = join_mutex.lock().await;
 
-            info!(
-                song = song.name(),
-                cancelled = cancelled,
-                "Song finished playing."
-            );
+                let mut cancelled = false;
+                // Only move to the next playlist entry if this wasn't cancelled.
+                if let Some(join) = join.as_ref() {
+                    cancelled = join.cancel.is_cancelled();
+                    if !cancelled {
+                        Player::next_and_emit(midi_device.clone(), playlist);
+                    }
+                }
 
-            // Remove the handles and reset stop run.
-            *join = None;
-            stop_run.store(false, Ordering::Relaxed);
-        });
+                info!(
+                    song = song.name(),
+                    cancelled = cancelled,
+                    "Song finished playing."
+                );
 
-        Ok(())
+                // Remove the handles and reset stop run.
+                *join = None;
+                stop_run.store(false, Ordering::Relaxed);
+            });
+        }
+
+        Some(song)
     }
 
     fn play_files(
@@ -382,7 +421,7 @@ impl Player {
     }
 
     /// Next goes to the next entry in the playlist.
-    pub async fn next(&self) -> Result<Arc<Song>, Box<dyn Error>> {
+    pub async fn next(&self) -> Arc<Song> {
         let join = self.join.lock().await;
         let playlist = self.get_playlist();
         if join.is_some() {
@@ -391,13 +430,13 @@ impl Player {
                 current_song = current.name(),
                 "Can't go to next, player is active."
             );
-            return Ok(current);
+            return current;
         }
-        Ok(Player::next_and_emit(self.midi_device.clone(), playlist))
+        Player::next_and_emit(self.midi_device.clone(), playlist)
     }
 
     /// Prev goes to the previous entry in the playlist.
-    pub async fn prev(&self) -> Result<Arc<Song>, Box<dyn Error>> {
+    pub async fn prev(&self) -> Arc<Song> {
         let join = self.join.lock().await;
         let playlist = self.get_playlist();
         if join.is_some() {
@@ -406,20 +445,20 @@ impl Player {
                 current_song = current.name(),
                 "Can't go to previous, player is active."
             );
-            return Ok(current);
+            return current;
         }
-        Ok(Player::prev_and_emit(self.midi_device.clone(), playlist))
+        Player::prev_and_emit(self.midi_device.clone(), playlist)
     }
 
     /// Stop will stop a song if a song is playing.
-    pub async fn stop(&mut self) -> Result<(), Box<dyn Error>> {
+    pub async fn stop(&self) -> Option<Arc<Song>> {
         let mut join = self.join.lock().await;
 
         let join = match join.as_mut() {
             Some(join) => join,
             None => {
                 info!("Player is not active, nothing to stop.");
-                return Ok(());
+                return None;
             }
         };
 
@@ -429,21 +468,19 @@ impl Player {
             .is_err()
         {
             info!("The previous stop is still processing.");
-            return Ok(());
+            return None;
         }
 
-        info!(
-            song = self.get_playlist().current().name(),
-            "Stopping playback."
-        );
+        let song = self.get_playlist().current();
+        info!(song = song.name(), "Stopping playback.");
 
         // Cancel the playback.
         join.cancel.cancel();
-        Ok(())
+        Some(song)
     }
 
     /// Switch to the all songs playlist.
-    pub async fn switch_to_all_songs(&self) -> Result<(), Box<dyn Error>> {
+    pub async fn switch_to_all_songs(&self) {
         println!("Switching to all songs");
         let join = self.join.lock().await;
         if join.is_some() {
@@ -451,17 +488,16 @@ impl Player {
                 current_song = self.get_playlist().current().name(),
                 "Can't switch to all songs, player is active."
             );
-            return Ok(());
+            return;
         }
 
         self.use_all_songs.store(true, Ordering::Relaxed);
         let song = self.get_playlist().current();
         Player::emit_midi_event(self.midi_device.clone(), song.clone());
-        Ok(())
     }
 
     /// Switch to the regular playlist.
-    pub async fn switch_to_playlist(&self) -> Result<(), Box<dyn Error>> {
+    pub async fn switch_to_playlist(&self) {
         println!("Switching to playlist");
         let join = self.join.lock().await;
         if join.is_some() {
@@ -469,13 +505,12 @@ impl Player {
                 current_song = self.get_playlist().current().name(),
                 "Can't switch to playlist, player is active."
             );
-            return Ok(());
+            return;
         }
 
         self.use_all_songs.store(false, Ordering::Relaxed);
         let song = self.get_playlist().current();
         Player::emit_midi_event(self.midi_device.clone(), song.clone());
-        Ok(())
     }
 
     /// Gets the current playlist used by the player.
@@ -550,11 +585,119 @@ impl StatusEvents {
     }
 }
 
+// Playlist name constants.
+const PLAYLIST_NAME: &str = "playlist";
+const ALL_SONGS_NAME: &str = "all_songs";
+
+#[tonic::async_trait]
+impl PlayerService for Player {
+    async fn play(&self, _: Request<PlayRequest>) -> Result<Response<PlayResponse>, Status> {
+        match Self::play(self).await {
+            Some(song) => Ok(Response::new(PlayResponse {
+                song: Some(song.to_proto()?),
+            })),
+            None => Err(Status::failed_precondition("song already playing")),
+        }
+    }
+
+    async fn previous(
+        &self,
+        _: Request<PreviousRequest>,
+    ) -> Result<Response<PreviousResponse>, Status> {
+        let current_song = self.playlist.current();
+        let previous_song = Self::prev(self).await;
+
+        if current_song.name() == previous_song.name() {
+            return Err(Status::failed_precondition(
+                "can't move to previous song while playing",
+            ));
+        }
+
+        Ok(Response::new(PreviousResponse {
+            song: Some(previous_song.to_proto()?),
+        }))
+    }
+
+    async fn next(&self, _: Request<NextRequest>) -> Result<Response<NextResponse>, Status> {
+        let current_song = self.playlist.current();
+        let next_song = Self::next(self).await;
+
+        if current_song.name() == next_song.name() {
+            return Err(Status::failed_precondition(
+                "can't move to next song while playing",
+            ));
+        }
+
+        Ok(Response::new(NextResponse {
+            song: Some(next_song.to_proto()?),
+        }))
+    }
+
+    async fn stop(&self, _: Request<StopRequest>) -> Result<Response<StopResponse>, Status> {
+        match Self::stop(self).await {
+            Some(song) => Ok(Response::new(StopResponse {
+                song: Some(song.to_proto()?),
+            })),
+            None => Err(Status::failed_precondition("song not playing")),
+        }
+    }
+
+    async fn switch_to_playlist(
+        &self,
+        request: Request<SwitchToPlaylistRequest>,
+    ) -> Result<Response<SwitchToPlaylistResponse>, Status> {
+        let playlist_name = request.into_inner().playlist_name;
+        if playlist_name == PLAYLIST_NAME {
+            self.switch_to_playlist().await;
+            return Ok(Response::new(SwitchToPlaylistResponse {}));
+        }
+        if playlist_name == ALL_SONGS_NAME {
+            self.switch_to_all_songs().await;
+            return Ok(Response::new(SwitchToPlaylistResponse {}));
+        }
+
+        Err(Status::unimplemented(format!(
+            "only {} and {} are supported for now",
+            ALL_SONGS_NAME, PLAYLIST_NAME
+        )))
+    }
+
+    async fn status(&self, _: Request<StatusRequest>) -> Result<Response<StatusResponse>, Status> {
+        let playlist = self.get_playlist();
+        let playlist_name = if Arc::ptr_eq(&playlist, &self.playlist) {
+            PLAYLIST_NAME
+        } else {
+            ALL_SONGS_NAME
+        };
+
+        let elapsed = {
+            let play_start_time = self.play_start_time.lock().await;
+            match *play_start_time {
+                Some(play_start_time) => match play_start_time.elapsed() {
+                    Ok(play_start_time) => match prost_types::Duration::try_from(play_start_time) {
+                        Ok(play_start_time) => Some(play_start_time),
+                        Err(e) => return Err(Status::from_error(Box::new(e))),
+                    },
+                    Err(e) => return Err(Status::from_error(Box::new(e))),
+                },
+                None => None,
+            }
+        };
+
+        Ok(Response::new(StatusResponse {
+            playlist_name: playlist_name.to_string(),
+            current_song: Some(playlist.current().to_proto()?),
+            playing: elapsed.is_some(),
+            elapsed,
+        }))
+    }
+}
+
 #[cfg(test)]
 mod test {
     use std::{collections::HashMap, error::Error, path::Path, sync::Arc};
 
-    use crate::{config, midi, playlist::Playlist, songs, test::eventually};
+    use crate::{config, midi, playlist::Playlist, songs, testutil::eventually};
 
     use super::Player;
 
@@ -562,7 +705,7 @@ mod test {
     async fn test_player() -> Result<(), Box<dyn Error>> {
         let songs = songs::get_all_songs(Path::new("assets/songs"))?;
         let midi_device = Arc::new(midi::test::Device::get("mock-midi-device"));
-        let mut player = Player::new_with_midi_device(
+        let player = Player::new_with_midi_device(
             songs.clone(),
             Playlist::new(
                 &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
@@ -585,26 +728,26 @@ mod test {
         println!("Playlist -> Song 1");
         assert_eq!(player.get_playlist().current().name(), "Song 1");
 
-        player.next().await?;
+        player.next().await;
         println!("Playlist -> Song 3");
         assert_eq!(player.get_playlist().current().name(), "Song 3");
 
-        player.prev().await?;
+        player.prev().await;
         println!("Playlist -> Song 1");
         assert_eq!(player.get_playlist().current().name(), "Song 1");
 
         println!("Switch to AllSongs");
-        player.switch_to_all_songs().await?;
+        player.switch_to_all_songs().await;
         assert_eq!(player.get_playlist().current().name(), "Song 1");
 
-        player.next().await?;
+        player.next().await;
         println!("AllSongs -> Song 10");
         assert_eq!(player.get_playlist().current().name(), "Song 10");
 
         // No emitted events yet
         assert!(midi_device.get_emitted_event().is_none());
 
-        player.next().await?;
+        player.next().await;
         println!("AllSongs -> Song 2");
         assert_eq!(player.get_playlist().current().name(), "Song 2");
 
@@ -620,21 +763,21 @@ mod test {
 
         midi_device.reset_emitted_event();
 
-        player.next().await?;
+        player.next().await;
         println!("AllSongs -> Song 3");
         assert_eq!(player.get_playlist().current().name(), "Song 3");
 
         assert!(midi_device.get_emitted_event().is_none());
 
-        player.switch_to_playlist().await?;
+        player.switch_to_playlist().await;
         println!("Switch to Playlist");
         assert_eq!(player.get_playlist().current().name(), "Song 1");
 
-        player.next().await?;
+        player.next().await;
         println!("Playlist -> Song 3");
         assert_eq!(player.get_playlist().current().name(), "Song 3");
 
-        player.play().await?;
+        player.play().await;
 
         // Playlist should have moved to next song.
         eventually(
@@ -660,11 +803,11 @@ mod test {
         midi_device.reset_emitted_event();
 
         // Play a song and cancel it.
-        player.play().await?;
+        player.play().await;
         println!("Play Song 5.");
         eventually(|| device.is_playing(), "Song never started playing");
 
-        player.stop().await?;
+        player.stop().await;
         eventually(|| !device.is_playing(), "Song never stopped playing");
 
         // Player should not have moved to the next song.

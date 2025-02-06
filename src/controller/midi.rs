@@ -133,7 +133,8 @@ mod test {
     use std::{collections::HashMap, error::Error, path::Path, sync::Arc};
 
     use crate::{
-        config, controller::Controller, player::Player, playlist::Playlist, songs, test::eventually,
+        config, controller::Controller, player::Player, playlist::Playlist, songs,
+        testutil::eventually,
     };
 
     #[tokio::test(flavor = "multi_thread")]

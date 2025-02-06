@@ -81,7 +81,7 @@ impl Controller {
     }
 
     /// Triggers player events by watching the driver and getting events from it.
-    async fn trigger_events(mut player: Player, driver: Arc<dyn Driver>) {
+    async fn trigger_events(player: Player, driver: Arc<dyn Driver>) {
         let span = span!(Level::INFO, "controller");
         let _enter = span.enter();
 
@@ -97,27 +97,25 @@ impl Controller {
             if let Some(event) = events_rx.recv().await {
                 info!(event = format!("{:?}", event), "Received event.");
 
-                if let Err(e) = match event {
-                    Event::Play => player.play().await,
+                match event {
+                    Event::Play => {
+                        player.play().await;
+                    }
                     Event::Prev => {
-                        if let Err(e) = player.prev().await {
-                            Err(e)
-                        } else {
-                            Ok(())
-                        }
+                        player.prev().await;
                     }
                     Event::Next => {
-                        if let Err(e) = player.next().await {
-                            Err(e)
-                        } else {
-                            Ok(())
-                        }
+                        player.next().await;
                     }
-                    Event::Stop => player.stop().await,
-                    Event::AllSongs => player.switch_to_all_songs().await,
-                    Event::Playlist => player.switch_to_playlist().await,
-                } {
-                    error!("Error talking to player: {}", e);
+                    Event::Stop => {
+                        player.stop().await;
+                    }
+                    Event::AllSongs => {
+                        player.switch_to_all_songs().await;
+                    }
+                    Event::Playlist => {
+                        player.switch_to_playlist().await;
+                    }
                 }
             } else {
                 info!("Controller closing.");
@@ -142,7 +140,7 @@ mod test {
 
     use tokio::{sync::mpsc::Sender, task::JoinHandle};
 
-    use crate::{config, player::Player, playlist::Playlist, songs, test::eventually};
+    use crate::{config, player::Player, playlist::Playlist, songs, testutil::eventually};
 
     use super::{Driver, Event};
 

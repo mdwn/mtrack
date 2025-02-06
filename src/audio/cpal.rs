@@ -338,7 +338,7 @@ impl Device {
 mod test {
     use std::{collections::HashMap, error::Error, sync::mpsc::channel};
 
-    use crate::{config, playsync::CancelHandle, songs::Song, test::write_wav};
+    use crate::{config, playsync::CancelHandle, songs::Song, testutil::write_wav};
 
     #[test]
     fn output_callback() -> Result<(), Box<dyn Error>> {

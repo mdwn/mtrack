@@ -186,10 +186,10 @@ Songs (count: 23):
   ...
 ```
 
-You can play individual songs by using `mtrack play`:
+You can play individual songs by using `mtrack play-direct`:
 
 ```
-$ mtrack play -m my-midi-device -s 0.25 -d universe=1,name=light-show my-audio-device click=1,cue=2 /mnt/song-storage "My cool song"
+$ mtrack play-direct -m my-midi-device -s 0.25 -d universe=1,name=light-show my-audio-device click=1,cue=2 /mnt/song-storage "My cool song"
 2024-03-22T21:24:25.588828Z  INFO emit (midir): mtrack::midi::midir: Emitting event. device="my-midi-device:my-midi-device MIDI 1 28:0" event="Midi { channel: u4(15), message: ProgramChange { program: u7(3) } }"
 2024-03-22T21:24:25.589420Z  INFO player: mtrack::player: Waiting for song to finish. song="My cool song"
 2024-03-22T21:24:25.589992Z  INFO play song (rodio): mtrack::audio::rodio: Playing song. device="my-audio-device" song="My cool song" duration="4:14"
@@ -222,11 +222,19 @@ To start mtrack as a standalone player that's controllable by MIDI, you'll need 
 player config file:
 
 ```yaml
+# The gRPC server configuration.
+grpc:
+  # Whether or not the gRPC server should be enabled. Defaults to true.
+  enabled: true
+
+  # The port the gRPC server should be hosted on. Defaults to 43234.
+  port: 43234
+
 # The audio configuration for mtrack.
 audio:
   # This audio device will be matched as best as possible against the devices on your system.
   # Run `mtrack devices` to see a list of the devices that mtrack recognizes.
-  audio_device: UltraLite-mk5
+  device: UltraLite-mk5
 
   # (Optional) Once a song is started, mtrack will wait this amount before triggering the audio playback.
   playback_delay: 500ms
@@ -235,7 +243,7 @@ audio:
 midi:
   # This MIDI device will be matched as best as possible against the devices on your system.
   # Run `mtrack midi-devices` to see a list of the devices that mtrack recognizes.
-  midi_device: UltraLite-mk5
+  device: UltraLite-mk5
 
   # (Optional) Once a song is started, mtrack will wait this amount before triggering the MIDI playback.
   playback_delay: 500ms
@@ -451,6 +459,31 @@ midi_event:
 There are more that can be implemented, but these are just the ones that came to me at the moment.
 If you'd like to add any particular ones, please file an issue. Otherwise I'll add them in as they
 strike me.
+
+## gRPC Control
+
+The player can now be controlled using gRPC calls. The definition for the service can be found
+[here](src/proto/player/v1/player.proto). By default, this runs on port 43234.
+
+The `mtrack` command itself supports several subcommands for gRPC interaction of the running
+player:
+
+```
+$ mtrack play
+$ mtrack previous
+$ mtrack next
+$ mtrack switch-to-playlist all_songs|playlist
+$ mtrack status
+```
+
+This will allow for multiple, arbitrary connections to the player, potentially from clients
+outside the device the player is running on. It should also be handy for "oh crap" moments at
+gigs when your MIDI controller isn't behaving well. While not ideal, you'll still at least
+be able to control the player.
+
+One note: there is no security on this at present. I don't advise running `mtrack` on a public
+network to begin with, but I would advise disabling the gRPC server if for some reason the
+network the player is running on is wide open.
 
 ## Light shows
 

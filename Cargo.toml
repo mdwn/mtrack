@@ -33,13 +33,20 @@ midir = "0.10.1"
 midly = "0.5.3"
 nodi = { version = "1.0.1", features = ["hybrid-sleep", "midir"] }
 ola = "0.1.0"
+prost = "0.13.4"
+prost-types = "0.13.4"
 ringbuf = "0.3.3"
 serde = { version = "1.0", features = ["derive"] }
 shh = "1.0.1"
 spin_sleep = "1.2.1"
 tokio = { version = "1.42.0", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
+tonic = "0.12.3"
 tracing = "0.1.41"
 tracing-subscriber = "0.3.19"
 
 [dev-dependencies]
 tempfile = "3.14.0"
+
+[build-dependencies]
+prost-build = "0.13.4"
+tonic-build = "0.12.3"

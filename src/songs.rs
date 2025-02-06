@@ -31,6 +31,7 @@ use ringbuf::{HeapConsumer, HeapProducer, HeapRb};
 use tracing::{debug, error};
 
 use crate::config;
+use crate::proto::player;
 
 const AUDIO_EXTENSIONS: &[&str] = &["wav"];
 
@@ -224,6 +225,24 @@ impl Song {
         S: Sample,
     {
         SongSource::<S>::new(self, track_mappings)
+    }
+
+    /// Returns a proto version of the song.
+    pub fn to_proto(&self) -> Result<player::v1::Song, std::io::Error> {
+        let duration = match prost_types::Duration::try_from(self.duration) {
+            Ok(duration) => duration,
+            Err(e) => {
+                return Err(std::io::Error::new::<String>(
+                    std::io::ErrorKind::Other,
+                    e.to_string(),
+                ))
+            }
+        };
+        Ok(player::v1::Song {
+            name: self.name.to_string(),
+            duration: Some(duration),
+            tracks: self.tracks.iter().map(|track| track.name.clone()).collect(),
+        })
     }
 }
 
@@ -760,7 +779,7 @@ pub fn get_all_songs(path: &Path) -> Result<Arc<Songs>, Box<dyn Error>> {
 mod test {
     use std::{collections::HashMap, error::Error};
 
-    use crate::{config, test::write_wav};
+    use crate::{config, testutil::write_wav};
 
     use super::{Sample, SongSource};
 
