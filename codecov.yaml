@@ -1,4 +1,7 @@
 # Disable github checks, as they're pretty noisy.
 comment: false
-github_checks:
-  annotations: false
+coverage:
+  status:
+    project: false
+    patch: false
+github_checks: false
