@@ -11,10 +11,14 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-use std::io::Result;
+use std::{env, error::Error, path::PathBuf};
 
-fn main() -> Result<()> {
+fn main() -> Result<(), Box<dyn Error>> {
+    let out_dir = PathBuf::from(env::var("OUT_DIR")?);
+
     prost_build::compile_protos(&["src/proto/player/v1/player.proto"], &["src/proto/"])?;
-    tonic_build::compile_protos("src/proto/player/v1/player.proto")?;
+    tonic_build::configure()
+        .file_descriptor_set_path(out_dir.join("player_descriptor.bin"))
+        .compile_protos(&["src/proto/player/v1/player.proto"], &["src/proto"])?;
     Ok(())
 }
