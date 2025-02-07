@@ -578,6 +578,7 @@ This has been tested with:
 DMX is expected to be well supported through OLA, but the devices that have been explicitly tested:
 
 - Entec DMX USB Pro
+- RatPac Satellite (Art-Net and sACN)
 
 ### General disclaimer
 
