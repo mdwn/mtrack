@@ -61,8 +61,11 @@ impl Engine {
         let mut maybe_client = None;
 
         // Attempt to connect to OLA 10 times.
-        for _ in 0..10 {
-            thread::sleep(Duration::from_secs(5));
+        for i in 0..10 {
+            // Don't sleep on the first iteration.
+            if i > 0 {
+                thread::sleep(Duration::from_secs(5));
+            }
 
             if let Ok(ola_client) = ola::connect() {
                 maybe_client = Some(ola_client);

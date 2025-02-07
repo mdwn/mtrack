@@ -98,11 +98,13 @@ impl Player {
         midi_device: Option<Arc<dyn midi::Device>>,
         config: &config::Player,
     ) -> Result<Player, Box<dyn Error>> {
+        let span = span!(Level::INFO, "player");
+        let _enter = span.enter();
+
         let device = audio::get_device(config.audio())?;
         let dmx_engine = dmx::create_engine(config.dmx())?;
         let status_events = StatusEvents::new(config.status_events())?;
 
-        let span = span!(Level::INFO, "player");
         let player = Player {
             device,
             mappings: Arc::new(config.track_mappings().clone()),
@@ -116,7 +118,6 @@ impl Player {
             stop_run: Arc::new(AtomicBool::new(false)),
             span: span.clone(),
         };
-        let _enter = span.enter();
 
         if player.midi_device.is_some() {
             // Emit the event for the first track if needed.
@@ -128,7 +129,12 @@ impl Player {
                     .clone()
                     .expect("MIDI device must be present");
                 let join = player.join.clone();
-                tokio::spawn(Player::report_status(midi_device, join, status_events));
+                tokio::spawn(Player::report_status(
+                    span.clone(),
+                    midi_device,
+                    join,
+                    status_events,
+                ));
             }
         }
 
@@ -166,10 +172,12 @@ impl Player {
 
     /// Reports status as MIDI events.
     async fn report_status(
+        span: Span,
         midi_device: Arc<dyn midi::Device>,
         join: Arc<Mutex<Option<PlayHandles>>>,
         status_events: StatusEvents,
     ) {
+        let _enter = span.enter();
         info!("Reporting status");
 
         let midi_device = midi_device.clone();
