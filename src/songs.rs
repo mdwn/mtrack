@@ -34,7 +34,7 @@ use tracing::{debug, error};
 use crate::config;
 use crate::proto::player;
 
-const AUDIO_EXTENSIONS: &[&str] = &["wav"];
+const AUDIO_EXTENSIONS: &[&str] = &["wav", "mid"];
 
 /// A song with associated tracks for multitrack playback. Can contain:
 /// - An optional MIDI event, which will be played when the song is selected in a playlist.
@@ -747,6 +747,11 @@ pub fn get_all_songs(path: &Path) -> Result<Arc<Songs>, Box<dyn Error>> {
         let path = entry.path();
 
         if path.is_dir() {
+            // Skip .git subdirectories.
+            if path.ends_with(".git") {
+                continue;
+            }
+
             get_all_songs(path.as_path())?
                 .list()
                 .iter()
@@ -760,15 +765,12 @@ pub fn get_all_songs(path: &Path) -> Result<Arc<Songs>, Box<dyn Error>> {
             ext.to_str()
                 .is_some_and(|ext| !AUDIO_EXTENSIONS.contains(&ext))
         }) {
-            match config::Song::deserialize(path.as_path()) {
-                Ok(song) => {
-                    let song = match path.parent() {
-                        Some(parent) => Song::new(&parent.canonicalize()?, &song)?,
-                        None => return Err("unable to get parent for path".into()),
-                    };
-                    songs.insert(song.name().to_string(), Arc::new(song));
-                }
-                Err(e) => error!(err = e.as_ref(), "Error while parsing files"),
+            if let Ok(song) = config::Song::deserialize(path.as_path()) {
+                let song = match path.parent() {
+                    Some(parent) => Song::new(&parent.canonicalize()?, &song)?,
+                    None => return Err("unable to get parent for path".into()),
+                };
+                songs.insert(song.name().to_string(), Arc::new(song));
             }
         }
     }
