@@ -35,6 +35,7 @@ use crate::{
     playsync::CancelHandle,
     proto::player::v1::{
         player_service_server::PlayerServiceServer, StatusRequest, StatusResponse,
+        FILE_DESCRIPTOR_SET,
     },
     songs::Song,
 };
@@ -135,8 +136,12 @@ impl Player {
         if grpc.enabled() {
             let addr = format!("0.0.0.0:{}", grpc.port()).parse()?;
             let player = player.clone();
+            let reflection_service = tonic_reflection::server::Builder::configure()
+                .register_encoded_file_descriptor_set(FILE_DESCRIPTOR_SET)
+                .build_v1()?;
             tokio::spawn(
                 Server::builder()
+                    .add_service(reflection_service)
                     .add_service(PlayerServiceServer::new(player.clone()))
                     .serve(addr),
             );

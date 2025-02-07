@@ -15,5 +15,8 @@
 pub mod player {
     pub mod v1 {
         include!(concat!(env!("OUT_DIR"), "/player.v1.rs"));
+
+        pub(crate) const FILE_DESCRIPTOR_SET: &[u8] =
+            tonic::include_file_descriptor_set!("player_descriptor");
     }
 }
