@@ -27,7 +27,8 @@ use midly::live::LiveEvent;
 use midly::{Format, Smf};
 use nodi::timers::Ticker;
 use nodi::Sheet;
-use ringbuf::{HeapConsumer, HeapProducer, HeapRb};
+use ringbuf::traits::{Consumer, Observer, Producer, Split};
+use ringbuf::{HeapCons, HeapProd, HeapRb};
 use tracing::{debug, error};
 
 use crate::config;
@@ -429,7 +430,7 @@ where
     S: Sample,
 {
     finished: Arc<AtomicBool>,
-    cons: HeapConsumer<S>,
+    cons: HeapCons<S>,
     join_handle: Option<JoinHandle<()>>,
     channels: u16,
     frame_pos: Arc<AtomicU16>,
@@ -530,12 +531,12 @@ where
         num_channels: usize,
         bits_per_sample: u16,
         mut decoder_and_mappings: Vec<DecoderAndMapping>,
-        mut prod: HeapProducer<S>,
+        mut prod: HeapProd<S>,
         finished: Arc<AtomicBool>,
     ) -> JoinHandle<()> {
         thread::spawn(move || {
             // The number of frames to read at a time from the source. We'll make it one quarter of the total capacity.
-            let num_frames = prod.capacity() / num_channels / 2;
+            let num_frames = Into::<usize>::into(prod.capacity()) / num_channels / 2;
             let num_sources = decoder_and_mappings.len();
             let mut sample_sources: Vec<WavSamples<'_, BufReader<File>, S>> =
                 Vec::with_capacity(num_sources);
@@ -551,12 +552,12 @@ where
 
             loop {
                 // Wait until the buffer is half empty before proceeding.
-                while prod.len() > prod.capacity() / 2 {
+                while prod.occupied_len() > Into::<usize>::into(prod.capacity()) / 2 {
                     thread::sleep(Duration::from_millis(200))
                 }
 
                 // Load the entire buffer until it's full.
-                let num_frames_to_take = prod.free_len() / num_channels;
+                let num_frames_to_take = prod.vacant_len() / num_channels;
                 for i in 0..num_frames_to_take {
                     // If finished gets set, we'll return immediately.
                     if finished.load(Ordering::Relaxed) {
@@ -650,7 +651,7 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         self.wait_for_buffer_or_stop();
-        let sample = self.cons.pop();
+        let sample = self.cons.try_pop();
 
         if sample.is_some() {
             self.frame_pos
