@@ -48,6 +48,24 @@ pub struct MidiController {
 }
 
 impl MidiController {
+    #[cfg(test)]
+    pub fn new(
+        play: midi::Event,
+        prev: midi::Event,
+        next: midi::Event,
+        stop: midi::Event,
+        all_songs: midi::Event,
+        playlist: midi::Event,
+    ) -> MidiController {
+        MidiController {
+            play,
+            prev,
+            next,
+            stop,
+            all_songs,
+            playlist,
+        }
+    }
     /// Gets the play event.
     pub fn play(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
         self.play.to_midi_event()

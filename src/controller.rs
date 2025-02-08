@@ -14,10 +14,7 @@
 use std::error::Error;
 use std::io;
 use std::sync::Arc;
-use tokio::sync::mpsc;
-use tokio::task::JoinError;
-use tokio::{sync::mpsc::Sender, task::JoinHandle};
-use tracing::{error, info, span, Level};
+use tokio::task::JoinHandle;
 
 use crate::config;
 use crate::player::Player;
@@ -25,124 +22,60 @@ use crate::player::Player;
 mod drivers;
 mod keyboard;
 mod midi;
-mod multi;
-
-/// Controller events that will trigger behavior in the player.
-#[derive(Debug, PartialEq)]
-pub enum Event {
-    /// Plays the track at the current position in the playlist.
-    Play,
-
-    /// Moves the current playlist position to the previous position.
-    /// If a song is currently playing, does nothing.
-    Prev,
-
-    /// Moves the current playlist position to the next position.
-    /// If a song is currently playing, does nothing.
-    Next,
-
-    /// Stops the currently playing song. If no song is playing, does nothing.
-    Stop,
-
-    /// Switches the playlist to the all songs playlist, which is an alphabetized
-    /// playlist consisting of all songs in the song registry.
-    AllSongs,
-
-    /// Switches the playlist to the configured playlist.
-    Playlist,
-}
 
 pub trait Driver: Send + Sync + 'static {
-    fn monitor_events(&self, events_tx: Sender<Event>) -> JoinHandle<Result<(), io::Error>>;
+    fn monitor_events(&self) -> JoinHandle<Result<(), io::Error>>;
 }
 
 /// Controls a playlist.
 pub struct Controller {
-    handle: JoinHandle<()>,
+    handles: Vec<JoinHandle<Result<(), io::Error>>>,
 }
 
 impl Controller {
     /// Creates a new controller with the given config.
-    pub fn new(player: Player, config: config::Controller) -> Result<Controller, Box<dyn Error>> {
-        let driver = drivers::driver(config, player.midi_device())?;
-        Ok(Self::new_from_driver(player, driver))
+    pub fn new(
+        config: Vec<config::Controller>,
+        player: Arc<Player>,
+    ) -> Result<Controller, Box<dyn Error>> {
+        let mut controller_drivers = Vec::new();
+        for config in config {
+            controller_drivers.push(drivers::driver(config, player.clone())?);
+        }
+        Ok(Self::new_from_drivers(controller_drivers))
     }
 
-    /// Creates a new controller with the given driver.
-    pub fn new_from_driver(player: Player, driver: Arc<dyn Driver>) -> Controller {
-        Controller {
-            handle: tokio::spawn(async move { Controller::trigger_events(player, driver).await }),
+    /// Creates a new controller from multiple drivers.
+    pub fn new_from_drivers(drivers: Vec<Arc<dyn Driver>>) -> Controller {
+        let mut handles = Vec::new();
+        for driver in drivers {
+            handles.push(driver.monitor_events());
         }
+        Controller { handles }
     }
 
     /// Join will block until the controller finishes.
-    pub async fn join(&mut self) -> Result<(), JoinError> {
-        (&mut self.handle).await
-    }
-
-    /// Triggers player events by watching the driver and getting events from it.
-    async fn trigger_events(player: Player, driver: Arc<dyn Driver>) {
-        let span = span!(Level::INFO, "controller");
-        let _enter = span.enter();
-
-        let (events_tx, mut events_rx) = mpsc::channel(1);
-        let join_handle = driver.monitor_events(events_tx);
-
-        info!(
-            first_song = player.get_playlist().current().name(),
-            "Controller started."
-        );
-
-        loop {
-            if let Some(event) = events_rx.recv().await {
-                info!(event = format!("{:?}", event), "Received event.");
-
-                match event {
-                    Event::Play => {
-                        player.play().await;
-                    }
-                    Event::Prev => {
-                        player.prev().await;
-                    }
-                    Event::Next => {
-                        player.next().await;
-                    }
-                    Event::Stop => {
-                        player.stop().await;
-                    }
-                    Event::AllSongs => {
-                        player.switch_to_all_songs().await;
-                    }
-                    Event::Playlist => {
-                        player.switch_to_playlist().await;
-                    }
-                }
-            } else {
-                info!("Controller closing.");
-                if let Err(e) = join_handle.await {
-                    error!("Error waiting for event monitor to stop: {}", e);
-                }
-                return;
-            }
+    pub async fn join(&mut self) -> Result<(), io::Error> {
+        for handle in &mut self.handles {
+            handle.await??;
         }
+
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod test {
-    use std::{
-        collections::HashMap,
-        error::Error,
-        io,
-        path::Path,
-        sync::{Arc, Barrier, Mutex},
-    };
+    use std::{collections::HashMap, error::Error, io, path::Path, sync::Arc};
 
-    use tokio::{sync::mpsc::Sender, task::JoinHandle};
+    use tokio::{
+        sync::{Barrier, Mutex},
+        task::JoinHandle,
+    };
 
     use crate::{config, player::Player, playlist::Playlist, songs, testutil::eventually};
 
-    use super::{Driver, Event};
+    use super::Driver;
 
     #[derive(Debug)]
     enum TestEvent {
@@ -157,70 +90,72 @@ mod test {
     }
 
     struct TestDriver {
+        player: Arc<Player>,
         current_event: Arc<Mutex<TestEvent>>,
         barrier: Arc<Barrier>,
     }
 
     impl TestDriver {
         /// Creates a new test driver which is explicitly controlled by the next_event function.
-        fn new(current_event: TestEvent) -> TestDriver {
+        fn new(player: Arc<Player>, current_event: TestEvent) -> TestDriver {
             let current_event = Arc::new(Mutex::new(current_event));
             let barrier = Arc::new(Barrier::new(2));
             TestDriver {
+                player,
                 current_event,
                 barrier,
             }
         }
 
         /// Signals the next event to the monitor thread.
-        fn next_event(&self, event: TestEvent) {
+        async fn next_event(&self, event: TestEvent) {
             {
-                let mut current_event = self.current_event.lock().expect("failed to get lock");
+                let mut current_event = self.current_event.lock().await;
                 *current_event = event;
             }
             // Wait until the thread goes to receive the event.
-            self.barrier.wait();
+            self.barrier.wait().await;
             // Wait until the thread has locked the mutex.
-            self.barrier.wait();
+            self.barrier.wait().await;
         }
     }
 
     impl Driver for TestDriver {
-        fn monitor_events(&self, events_tx: Sender<Event>) -> JoinHandle<Result<(), io::Error>> {
+        fn monitor_events(&self) -> JoinHandle<Result<(), io::Error>> {
             let barrier = self.barrier.clone();
             let current_event = self.current_event.clone();
-            let result: JoinHandle<Result<(), io::Error>> =
-                tokio::task::spawn_blocking(move || {
-                    loop {
-                        // Wait for next event to set the current event.
-                        barrier.wait();
-                        let current_event = current_event.lock().expect("failed to get lock");
-                        // Let next event know that we got the event.
-                        barrier.wait();
-                        match *current_event {
-                            TestEvent::Unset => unreachable!("current event should not be unset"),
-                            TestEvent::Play => {
-                                assert!(events_tx.blocking_send(Event::Play).is_ok())
-                            }
-                            TestEvent::Prev => {
-                                assert!(events_tx.blocking_send(Event::Prev).is_ok())
-                            }
-                            TestEvent::Next => {
-                                assert!(events_tx.blocking_send(Event::Next).is_ok())
-                            }
-                            TestEvent::Stop => {
-                                assert!(events_tx.blocking_send(Event::Stop).is_ok())
-                            }
-                            TestEvent::AllSongs => {
-                                assert!(events_tx.blocking_send(Event::AllSongs).is_ok())
-                            }
-                            TestEvent::Playlist => {
-                                assert!(events_tx.blocking_send(Event::Playlist).is_ok())
-                            }
-                            TestEvent::Close => return Ok(()),
+            let player = self.player.clone();
+            let result: JoinHandle<Result<(), io::Error>> = tokio::spawn(async move {
+                loop {
+                    // Wait for next event to set the current event.
+                    barrier.wait().await;
+                    let current_event = current_event.lock().await;
+                    // Let next event know that we got the event.
+                    barrier.wait().await;
+                    match *current_event {
+                        TestEvent::Unset => unreachable!("current event should not be unset"),
+                        TestEvent::Play => {
+                            player.play().await;
                         }
+                        TestEvent::Prev => {
+                            player.prev().await;
+                        }
+                        TestEvent::Next => {
+                            player.next().await;
+                        }
+                        TestEvent::Stop => {
+                            player.stop().await;
+                        }
+                        TestEvent::AllSongs => {
+                            player.switch_to_all_songs().await;
+                        }
+                        TestEvent::Playlist => {
+                            player.switch_to_playlist().await;
+                        }
+                        TestEvent::Close => return Ok(()),
                     }
-                });
+                }
+            });
             result
         }
     }
@@ -228,28 +163,28 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_controller() -> Result<(), Box<dyn Error>> {
         let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let player = Player::new(
+        let player = Arc::new(Player::new(
             songs.clone(),
             Playlist::new(
                 &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
                 songs,
             )?,
             &config::Player::new(
-                config::Controller::Keyboard,
+                vec![config::Controller::Keyboard],
                 config::Audio::new("mock-device"),
                 None,
                 None,
                 HashMap::new(),
                 "assets/songs",
             ),
-        )?;
+        )?);
         let playlist = player.get_playlist();
         let all_songs_playlist = player.get_all_songs_playlist();
         let binding = player.audio_device();
         let device = binding.to_mock()?;
 
-        let driver = Arc::new(TestDriver::new(TestEvent::Unset));
-        let mut controller = super::Controller::new_from_driver(player, driver.clone());
+        let driver = Arc::new(TestDriver::new(player, TestEvent::Unset));
+        let mut controller = super::Controller::new_from_drivers(vec![driver.clone()]);
 
         println!("Playlist: {}", playlist);
         println!("AllSongs: {}", all_songs_playlist);
@@ -260,73 +195,73 @@ mod test {
             || playlist.current().name() == "Song 1",
             "Playlist never became Song 1",
         );
-        driver.next_event(TestEvent::Next);
+        driver.next_event(TestEvent::Next).await;
         println!("Playlist -> Song 3");
         eventually(
             || playlist.current().name() == "Song 3",
             "Playlist never became Song 3",
         );
-        driver.next_event(TestEvent::Next);
+        driver.next_event(TestEvent::Next).await;
         println!("Playlist -> Song 5");
         eventually(
             || playlist.current().name() == "Song 5",
             "Playlist never became Song 5",
         );
-        driver.next_event(TestEvent::Next);
+        driver.next_event(TestEvent::Next).await;
         println!("Playlist -> Song 7");
         eventually(
             || playlist.current().name() == "Song 7",
             "Playlist never became Song 7",
         );
-        driver.next_event(TestEvent::Prev);
+        driver.next_event(TestEvent::Prev).await;
         println!("Playlist -> Song 5");
         eventually(
             || playlist.current().name() == "Song 5",
             "Playlist never became Song 5",
         );
         println!("Switch to AllSongs");
-        driver.next_event(TestEvent::AllSongs);
+        driver.next_event(TestEvent::AllSongs).await;
         eventually(
             || all_songs_playlist.current().name() == "Song 1",
             "All Songs Playlist never became Song 1",
         );
         println!("AllSongs -> Song 10");
-        driver.next_event(TestEvent::Next);
+        driver.next_event(TestEvent::Next).await;
         eventually(
             || all_songs_playlist.current().name() == "Song 10",
             "All Songs Playlist never became Song 10",
         );
         println!("AllSongs -> Song 2");
-        driver.next_event(TestEvent::Next);
+        driver.next_event(TestEvent::Next).await;
         eventually(
             || all_songs_playlist.current().name() == "Song 2",
             "All Songs Playlist never became Song 2",
         );
         println!("AllSongs -> Song 10");
-        driver.next_event(TestEvent::Prev);
+        driver.next_event(TestEvent::Prev).await;
         eventually(
             || all_songs_playlist.current().name() == "Song 10",
             "All Songs Playlist never became Song 10",
         );
         println!("Switch to Playlist");
-        driver.next_event(TestEvent::Playlist);
+        driver.next_event(TestEvent::Playlist).await;
         eventually(
             || playlist.current().name() == "Song 5",
             "Playlist never became Song 5",
         );
         println!("Playlist -> Song 7");
-        driver.next_event(TestEvent::Next);
+        driver.next_event(TestEvent::Next).await;
         eventually(
             || playlist.current().name() == "Song 7",
             "Playlist never became Song 7",
         );
-        driver.next_event(TestEvent::Play);
+        driver.next_event(TestEvent::Play).await;
         eventually(|| device.is_playing(), "Song never started playing");
-        driver.next_event(TestEvent::Stop);
+        driver.next_event(TestEvent::Stop).await;
         eventually(|| !device.is_playing(), "Song never stopped playing");
 
         println!("Close");
-        driver.next_event(TestEvent::Close);
+        driver.next_event(TestEvent::Close).await;
         assert!(
             controller.join().await.is_ok(),
             "Error waiting for controller",

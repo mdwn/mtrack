@@ -726,7 +726,7 @@ mod test {
             )?,
             Some(midi_device.clone()),
             &config::Player::new(
-                config::Controller::Keyboard,
+                vec![config::Controller::Keyboard],
                 config::Audio::new("mock-device"),
                 Some(config::Midi::new("mock-midi-device", None)),
                 None,

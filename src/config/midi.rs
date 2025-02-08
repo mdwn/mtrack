@@ -56,7 +56,7 @@ impl Midi {
 }
 
 /// Implementers must convert to a MIDI live event.
-pub(super) trait ToMidiEvent {
+pub trait ToMidiEvent {
     /// Converts the implementer to a MIDI live event.
     fn to_midi_event(&self) -> Result<LiveEvent<'static>, Box<dyn Error>>;
 }
@@ -64,7 +64,7 @@ pub(super) trait ToMidiEvent {
 /// MIDI events that can be parsed from YAML.
 #[derive(Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub(super) enum Event {
+pub enum Event {
     NoteOff(NoteOff),
     NoteOn(NoteOn),
     Aftertouch(Aftertouch),
@@ -72,6 +72,16 @@ pub(super) enum Event {
     ProgramChange(ProgramChange),
     ChannelAftertouch(ChannelAftertouch),
     PitchBend(PitchBend),
+}
+
+/// Creates a note on MIDI event.
+#[cfg(test)]
+pub fn note_on(channel: u8, key: u8, velocity: u8) -> Event {
+    Event::NoteOn(NoteOn {
+        channel,
+        key,
+        velocity,
+    })
 }
 
 impl ToMidiEvent for Event {
@@ -90,7 +100,7 @@ impl ToMidiEvent for Event {
 
 /// A NoteOff event.
 #[derive(Deserialize, Clone)]
-pub(super) struct NoteOff {
+pub struct NoteOff {
     /// The channel the MIDI event belongs to.
     channel: u8,
     /// The key for the note off event.
@@ -113,7 +123,7 @@ impl ToMidiEvent for NoteOff {
 
 /// A NoteOn event.
 #[derive(Deserialize, Clone)]
-pub(super) struct NoteOn {
+pub struct NoteOn {
     /// The channel the MIDI event belongs to.
     channel: u8,
     /// The key of the note on event.
@@ -136,7 +146,7 @@ impl ToMidiEvent for NoteOn {
 
 /// An Aftertouch event.
 #[derive(Deserialize, Clone)]
-pub(super) struct Aftertouch {
+pub struct Aftertouch {
     /// The channel the MIDI event belongs to.
     channel: u8,
     /// The key value of the aftertouch event.
@@ -159,7 +169,7 @@ impl ToMidiEvent for Aftertouch {
 
 /// A ControlChange event.
 #[derive(Deserialize, Clone)]
-pub(super) struct ControlChange {
+pub struct ControlChange {
     /// The channel the MIDI event belongs to.
     channel: u8,
     /// Controller is the controller for a control_change event.
@@ -182,7 +192,7 @@ impl ToMidiEvent for ControlChange {
 
 /// A ProgramChange event.
 #[derive(Deserialize, Clone)]
-pub(super) struct ProgramChange {
+pub struct ProgramChange {
     /// The channel the MIDI event belongs to.
     channel: u8,
     /// Program is the program value for program_change events.
@@ -202,7 +212,7 @@ impl ToMidiEvent for ProgramChange {
 
 /// A ChannelAftertouch event.
 #[derive(Deserialize, Clone)]
-pub(super) struct ChannelAftertouch {
+pub struct ChannelAftertouch {
     /// The channel the MIDI event belongs to.
     channel: u8,
     /// The velocity of the channel aftertouch event.
@@ -222,7 +232,7 @@ impl ToMidiEvent for ChannelAftertouch {
 
 /// A PitchBend event.
 #[derive(Deserialize, Clone)]
-pub(super) struct PitchBend {
+pub struct PitchBend {
     /// The channel the MIDI event belongs to.
     channel: u8,
     /// The pitchbend event.
