@@ -222,14 +222,6 @@ To start mtrack as a standalone player that's controllable by MIDI, you'll need 
 player config file:
 
 ```yaml
-# The gRPC server configuration.
-grpc:
-  # Whether or not the gRPC server should be enabled. Defaults to true.
-  enabled: true
-
-  # The port the gRPC server should be hosted on. Defaults to 43234.
-  port: 43234
-
 # The audio configuration for mtrack.
 audio:
   # This audio device will be matched as best as possible against the devices on your system.
@@ -302,12 +294,20 @@ status_events:
     controller: 2
     value: 2
 
-# The controller definition. As of now, the valid kinds of controllers are:
+# The controller definitions. As of now, the valid kinds of controllers are:
+# - grpc
 # - keyboard
 # - midi
-# Keyboard is largely for testing and MIDI is intended for actual live usage.
-controller:
-  kind: midi
+# Keyboard is largely for testing.
+controllers:
+# The gRPC server configuration.
+- kind: grpc
+
+  # The port the gRPC server should be hosted on. Defaults to 43234.
+  port: 43234
+
+# The MIDI controller configuration.
+- kind: midi
 
   # When mtrack recognizes this MIDI event, it will play the current song if no other song is
   # currently playing.

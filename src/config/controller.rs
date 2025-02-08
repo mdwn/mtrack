@@ -18,10 +18,13 @@ use serde::Deserialize;
 
 use super::midi::{self, ToMidiEvent};
 
+pub const DEFAULT_GRPC_PORT: i32 = 43234;
+
 /// Allows users to specify various controllers.
 #[derive(Deserialize, Clone)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Controller {
+    Grpc(GrpcController),
     Keyboard,
     Midi(MidiController),
     Multi(HashMap<String, Controller>),
@@ -94,5 +97,19 @@ impl MidiController {
     /// Gets the playlist event.
     pub fn playlist(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
         self.playlist.to_midi_event()
+    }
+}
+
+/// The configuration for the multitrack player gRPC server.
+#[derive(Clone, Default, Deserialize)]
+pub struct GrpcController {
+    /// The port to listen on.
+    port: Option<i32>,
+}
+
+impl GrpcController {
+    /// Gets the port to listen on.
+    pub fn port(&self) -> i32 {
+        self.port.unwrap_or(DEFAULT_GRPC_PORT)
     }
 }

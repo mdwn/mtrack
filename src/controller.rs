@@ -20,6 +20,7 @@ use crate::config;
 use crate::player::Player;
 
 mod drivers;
+mod grpc;
 mod keyboard;
 mod midi;
 
