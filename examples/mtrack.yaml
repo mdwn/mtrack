@@ -1,11 +1,3 @@
-# The gRPC server configuration.
-grpc:
-  # Whether or not the gRPC server should be enabled. Defaults to true.
-  enabled: true
-
-  # The port the gRPC server should be hosted on. Defaults to 43234.
-  port: 43234
-
 # The audio configuration for mtrack.
 audio:
   # This audio device will be matched as best as possible against the devices on your system.
@@ -47,64 +39,66 @@ dmx:
   - universe: 1
     name: light-show
 
-# The controller definition. As of now, the valid kinds of controllers are:
+# The controller definitions. As of now, the valid kinds of controllers are:
+# - grpc
 # - keyboard
-# - multi
 # - midi
-# Keyboard is largely for testing and MIDI is intended for actual live usage.
-# Multi allows using multiple different controllers at once. 
-controller:
-  kind: multi
-  keyboard_controller:
-    kind: keyboard
-  midi_controller:
-    kind: midi
+# Keyboard is largely for testing.
+controllers:
+# The gRPC server configuration.
+- kind: grpc
 
-    # When mtrack recognizes this MIDI event, it will play the current song if no other song is
-    # currently playing.
-    play:
-      type: control_change
-      channel: 16
-      controller: 100
-      value: 0
+  # The port the gRPC server should be hosted on. Defaults to 43234.
+  port: 43234
 
-    # When mtrack recognizes this MIDI event, it will navigate to the previous song in the playlist
-    # if no other song is currently playing.
-    prev:
-      type: control_change
-      channel: 16
-      controller: 100
-      value: 1
+# The MIDI controller configuration.
+- kind: midi
 
-    # When mtrack recognizes this MIDI event, it will navigate to the next song in the playlist
-    # if no other song is currently playing.
-    next:
-      type: control_change
-      channel: 16
-      controller: 100
-      value: 2
+  # When mtrack recognizes this MIDI event, it will play the current song if no other song is
+  # currently playing.
+  play:
+    type: control_change
+    channel: 16
+    controller: 100
+    value: 0
 
-    # When mtrack recognizes this MIDI event, it will stop the currently playing song.
-    stop:
-      type: control_change
-      channel: 16
-      controller: 100
-      value: 3
+  # When mtrack recognizes this MIDI event, it will navigate to the previous song in the playlist
+  # if no other song is currently playing.
+  prev:
+    type: control_change
+    channel: 16
+    controller: 100
+    value: 1
 
-    # When mtrack recognizes this MIDI event, it will switch to the playlist of all known songs in
-    # your song repository.
-    all_songs:
-      type: control_change
-      channel: 16
-      controller: 100
-      value: 4
+  # When mtrack recognizes this MIDI event, it will navigate to the next song in the playlist
+  # if no other song is currently playing.
+  next:
+    type: control_change
+    channel: 16
+    controller: 100
+    value: 2
 
-    # When mtrack recognizes this MIDI event, it will switch to the defined playlist.
-    playlist:
-      type: control_change
-      channel: 16
-      controller: 100
-      value: 5
+  # When mtrack recognizes this MIDI event, it will stop the currently playing song.
+  stop:
+    type: control_change
+    channel: 16
+    controller: 100
+    value: 3
+
+  # When mtrack recognizes this MIDI event, it will switch to the playlist of all known songs in
+  # your song repository.
+  all_songs:
+    type: control_change
+    channel: 16
+    controller: 100
+    value: 4
+
+  # When mtrack recognizes this MIDI event, it will switch to the defined playlist.
+  playlist:
+    type: control_change
+    channel: 16
+    controller: 100
+    value: 5
 
 # Mappings of track names to output channels.
 track_mappings:

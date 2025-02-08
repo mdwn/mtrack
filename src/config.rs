@@ -27,12 +27,13 @@ mod trackmappings;
 
 pub use self::audio::Audio;
 pub use self::controller::Controller;
+pub use self::controller::GrpcController;
 pub use self::controller::MidiController;
+pub use self::controller::DEFAULT_GRPC_PORT;
 pub use self::dmx::Dmx;
 pub use self::dmx::Universe;
 pub use self::midi::Midi;
 pub use self::player::Player;
-pub use self::player::DEFAULT_GRPC_PORT;
 pub use self::playlist::Playlist;
 pub use self::song::LightShow;
 pub use self::song::MidiPlayback;

@@ -23,6 +23,9 @@ pub(super) fn driver(
     player: Arc<Player>,
 ) -> Result<Arc<dyn Driver>, Box<dyn Error>> {
     match config {
+        config::Controller::Grpc(config) => {
+            Ok(Arc::new(controller::grpc::Driver::new(config, player)?))
+        }
         config::Controller::Midi(config) => {
             Ok(Arc::new(controller::midi::Driver::new(config, player)?))
         }
