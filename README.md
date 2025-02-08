@@ -306,6 +306,20 @@ controllers:
   # The port the gRPC server should be hosted on. Defaults to 43234.
   port: 43234
 
+# The OSC server configuration.
+- kind: osc
+
+  # The port the OSC server should be hosted on. Defaults to 43235.
+  port: 43235
+
+  # Maps player events to arbitrary OSC events.
+  play: /play
+  prev: /prev
+  next: /next
+  stop: /stop
+  all_songs: /all_songs
+  playlist: /playlist
+
 # The MIDI controller configuration.
 - kind: midi
 
@@ -472,6 +486,7 @@ player:
 $ mtrack play
 $ mtrack previous
 $ mtrack next
+$ mtrack stop
 $ mtrack switch-to-playlist all_songs|playlist
 $ mtrack status
 ```
@@ -484,6 +499,13 @@ be able to control the player.
 One note: there is no security on this at present. I don't advise running `mtrack` on a public
 network to begin with, but I would advise disabling the gRPC server if for some reason the
 network the player is running on is wide open.
+
+## OSC Control
+
+The player can also be controlled using arbitrary OSC commands. This is configurable in the OSC
+controller configuration section. This allows you to define OSC addresses that will map to
+player events (play, previous, next, stop, all_songs, playlist). Refer to the example
+configuration above.
 
 ## Light shows
 

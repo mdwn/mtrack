@@ -19,10 +19,10 @@ use tokio::task::JoinHandle;
 use crate::config;
 use crate::player::Player;
 
-mod drivers;
 mod grpc;
 mod keyboard;
 mod midi;
+mod osc;
 
 pub trait Driver: Send + Sync + 'static {
     fn monitor_events(&self) -> JoinHandle<Result<(), io::Error>>;
@@ -41,7 +41,15 @@ impl Controller {
     ) -> Result<Controller, Box<dyn Error>> {
         let mut controller_drivers = Vec::new();
         for config in config {
-            controller_drivers.push(drivers::driver(config, player.clone())?);
+            let player = player.clone();
+            let driver: Arc<dyn Driver> = match config {
+                config::Controller::Grpc(config) => grpc::Driver::new(config, player)?,
+                config::Controller::Keyboard => keyboard::Driver::new(player),
+                config::Controller::Osc(config) => osc::Driver::new(config, player)?,
+                config::Controller::Midi(config) => midi::Driver::new(config, player)?,
+                _ => return Err("unexpected controller type".into()),
+            };
+            controller_drivers.push(driver);
         }
         Ok(Self::new_from_drivers(controller_drivers))
     }
