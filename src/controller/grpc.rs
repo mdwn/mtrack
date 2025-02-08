@@ -15,7 +15,7 @@ use std::{error::Error, io, net::SocketAddr, sync::Arc};
 
 use tokio::task::JoinHandle;
 use tonic::{transport::Server, Request, Response, Status};
-use tracing::info;
+use tracing::{info, span, Level};
 
 use crate::{
     config,
@@ -32,7 +32,7 @@ use crate::{
 const PLAYLIST_NAME: &str = "playlist";
 const ALL_SONGS_NAME: &str = "all_songs";
 
-/// A controller that controls a player using MIDI.
+/// A controller that controls a player using gRPC.
 pub struct Driver {
     /// The player.
     player: Arc<Player>,
@@ -44,10 +44,10 @@ impl Driver {
     pub fn new(
         config: config::GrpcController,
         player: Arc<Player>,
-    ) -> Result<Driver, Box<dyn Error>> {
+    ) -> Result<Arc<Self>, Box<dyn Error>> {
         let addr: SocketAddr = format!("0.0.0.0:{}", config.port()).parse()?;
 
-        Ok(Driver { player, addr })
+        Ok(Arc::new(Driver { player, addr }))
     }
 }
 
@@ -57,6 +57,9 @@ impl super::Driver for Driver {
         let player = self.player.clone();
 
         tokio::spawn(async move {
+            let span = span!(Level::INFO, "gRPC Server");
+            let _enter = span.enter();
+
             let player = player.clone();
             let reflection_service = tonic_reflection::server::Builder::configure()
                 .register_encoded_file_descriptor_set(FILE_DESCRIPTOR_SET)

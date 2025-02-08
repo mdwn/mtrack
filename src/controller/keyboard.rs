@@ -31,8 +31,8 @@ pub struct Driver {
 }
 
 impl Driver {
-    pub fn new(player: Arc<Player>) -> Driver {
-        Driver { player }
+    pub fn new(player: Arc<Player>) -> Arc<Self> {
+        Arc::new(Driver { player })
     }
 
     fn monitor_io<R, W>(player: Arc<Player>, mut reader: R, mut writer: W) -> Result<(), io::Error>

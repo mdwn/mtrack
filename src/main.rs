@@ -29,7 +29,8 @@ use clap::{crate_version, Parser, Subcommand};
 use player::Player;
 use proto::player::v1::player_service_client::PlayerServiceClient;
 use proto::player::v1::{
-    NextRequest, PlayRequest, PreviousRequest, Song, StatusRequest, SwitchToPlaylistRequest,
+    NextRequest, PlayRequest, PreviousRequest, Song, StatusRequest, StopRequest,
+    SwitchToPlaylistRequest,
 };
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
@@ -133,6 +134,12 @@ enum Commands {
     },
     /// Moves to the next song in the playlist.
     Next {
+        /// The host and port of the gRPC server.
+        #[arg[short, long]]
+        host_port: Option<String>,
+    },
+    /// Stops the currently playing song.
+    Stop {
         /// The host and port of the gRPC server.
         #[arg[short, long]]
         host_port: Option<String>,
@@ -369,6 +376,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let mut client = connect(host_port).await?;
             let response = client.next(Request::new(NextRequest {})).await?;
             println!("Moved to next song:");
+            print_song(response.into_inner().song)?;
+        }
+        Commands::Stop { host_port } => {
+            let mut client = connect(host_port).await?;
+            let response = client.stop(Request::new(StopRequest {})).await?;
+            println!("The song was stopped:");
             print_song(response.into_inner().song)?;
         }
         Commands::SwitchToPlaylist {

@@ -19,6 +19,7 @@ use serde::Deserialize;
 use super::midi::{self, ToMidiEvent};
 
 pub const DEFAULT_GRPC_PORT: i32 = 43234;
+pub const DEFAULT_OSC_PORT: i32 = 43235;
 
 /// Allows users to specify various controllers.
 #[derive(Deserialize, Clone)]
@@ -28,6 +29,7 @@ pub enum Controller {
     Keyboard,
     Midi(MidiController),
     Multi(HashMap<String, Controller>),
+    Osc(OscController),
 }
 
 #[derive(Deserialize)]
@@ -111,5 +113,61 @@ impl GrpcController {
     /// Gets the port to listen on.
     pub fn port(&self) -> i32 {
         self.port.unwrap_or(DEFAULT_GRPC_PORT)
+    }
+}
+
+/// The configuration for the multitrack player OSC server.
+#[derive(Clone, Default, Deserialize)]
+pub struct OscController {
+    /// The port to listen on.
+    port: Option<i32>,
+    /// The OSC address to look for to play the current song in the playlist.
+    play: Option<String>,
+    /// The OSC address to look for to move the playlist to the previous item.
+    prev: Option<String>,
+    /// The OSC address to look for to move the playlist to the next item.
+    next: Option<String>,
+    /// The OSC address to look for to stop playback.
+    stop: Option<String>,
+    /// The OSC address to look for to switch from the current playlist to an all songs playlist.
+    all_songs: Option<String>,
+    /// The OSC address to look for to switch back to the current playlist.
+    playlist: Option<String>,
+}
+
+impl OscController {
+    /// Gets the port to listen on.
+    pub fn port(&self) -> i32 {
+        self.port.unwrap_or(DEFAULT_OSC_PORT)
+    }
+
+    /// Gets the play OSC address.
+    pub fn play(&self) -> Option<String> {
+        self.play.clone()
+    }
+
+    /// Gets the prev OSC address.
+    pub fn prev(&self) -> Option<String> {
+        self.prev.clone()
+    }
+
+    /// Gets the next OSC address.
+    pub fn next(&self) -> Option<String> {
+        self.next.clone()
+    }
+
+    /// Gets the stop OSC address.
+    pub fn stop(&self) -> Option<String> {
+        self.stop.clone()
+    }
+
+    /// Gets the all songs OSC address.
+    pub fn all_songs(&self) -> Option<String> {
+        self.all_songs.clone()
+    }
+
+    /// Gets the playlist OSC address.
+    pub fn playlist(&self) -> Option<String> {
+        self.playlist.clone()
     }
 }

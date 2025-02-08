@@ -1216,6 +1216,7 @@ dependencies = [
  "prost-build 0.13.4",
  "prost-types 0.13.4",
  "ringbuf",
+ "rosc",
  "serde",
  "shh",
  "spin_sleep",
@@ -1812,6 +1813,16 @@ dependencies = [
  "bitflags 2.8.0",
  "serde",
  "serde_derive",
+]
+
+[[package]]
+name = "rosc"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b2e63d9e6b0d090be1485cf159b1e04c3973d2d3e1614963544ea2ff47a4a981"
+dependencies = [
+ "byteorder",
+ "nom",
 ]
 
 [[package]]

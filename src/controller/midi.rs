@@ -42,9 +42,9 @@ impl Driver {
     pub fn new(
         config: config::MidiController,
         player: Arc<Player>,
-    ) -> Result<Driver, Box<dyn Error>> {
+    ) -> Result<Arc<Self>, Box<dyn Error>> {
         match player.midi_device() {
-            Some(midi_device) => Ok(Driver {
+            Some(midi_device) => Ok(Arc::new(Driver {
                 player,
                 midi_device,
                 play: config.play()?,
@@ -53,7 +53,7 @@ impl Driver {
                 stop: config.stop()?,
                 all_songs: config.all_songs()?,
                 playlist: config.playlist()?,
-            }),
+            })),
             None => Err("No MIDI device to use for MIDI configuration".into()),
         }
     }
@@ -192,7 +192,7 @@ mod test {
         let binding = player.midi_device().expect("MIDI device not found");
         let midi_device = binding.to_mock()?;
 
-        let driver = Arc::new(super::Driver::new(
+        let driver = super::Driver::new(
             MidiController::new(
                 play_event,
                 prev_event,
@@ -202,7 +202,7 @@ mod test {
                 playlist_event,
             ),
             player,
-        )?);
+        )?;
 
         let _controller = Controller::new_from_drivers(vec![driver]);
 
