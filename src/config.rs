@@ -14,6 +14,9 @@
 mod audio;
 mod controller;
 mod dmx;
+#[cfg(test)]
+pub mod midi;
+#[cfg(not(test))]
 mod midi;
 mod player;
 mod playlist;

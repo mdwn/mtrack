@@ -310,7 +310,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 songs,
                 playlist,
                 &config::Player::new(
-                    config::Controller::Keyboard {},
+                    vec![config::Controller::Keyboard {}],
                     audio_config,
                     midi_config,
                     dmx_config,
@@ -348,8 +348,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 songs.clone(),
             )?;
 
-            let player = player::Player::new(songs, playlist, &player_config)?;
-            crate::controller::Controller::new(player, player_config.controller().clone())?
+            let player = Arc::new(player::Player::new(songs, playlist, &player_config)?);
+            crate::controller::Controller::new(player_config.controllers(), player)?
                 .join()
                 .await?;
         }

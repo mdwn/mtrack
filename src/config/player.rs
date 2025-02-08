@@ -32,7 +32,9 @@ pub struct Player {
     /// The gRPC server configuration.
     grpc: Option<Grpc>,
     /// The controller configuration.
-    controller: Controller,
+    controller: Option<Controller>,
+    /// The controllers configuration.
+    controllers: Option<Vec<Controller>>,
     /// The audio device to use.
     audio_device: Option<String>,
     /// The audio configuration section.
@@ -53,7 +55,7 @@ pub struct Player {
 
 impl Player {
     pub fn new(
-        controller: Controller,
+        controllers: Vec<Controller>,
         audio: Audio,
         midi: Option<Midi>,
         dmx: Option<Dmx>,
@@ -62,7 +64,8 @@ impl Player {
     ) -> Player {
         Player {
             grpc: None,
-            controller,
+            controller: None,
+            controllers: Some(controllers),
             audio_device: None,
             audio: Some(audio),
             track_mappings: TrackMappings { track_mappings },
@@ -87,9 +90,22 @@ impl Player {
         self.grpc.clone().unwrap_or_default()
     }
 
-    /// Gets the controller configuration.
-    pub fn controller(&self) -> &Controller {
-        &self.controller
+    /// Gets the controllers configuration.
+    pub fn controllers(&self) -> Vec<Controller> {
+        if let Some(controllers) = &self.controllers {
+            return controllers.clone();
+        } else if let Some(controller) = &self.controller {
+            if let Controller::Multi(multi) = controller {
+                return multi
+                    .iter()
+                    .map(|(_, controller)| controller.clone())
+                    .collect();
+            }
+
+            return vec![controller.clone()];
+        }
+
+        vec![]
     }
 
     /// Gets the audio configuration.

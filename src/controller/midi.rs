@@ -11,23 +11,20 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-use std::{io, sync::Arc};
+use std::{error::Error, io, sync::Arc};
 
 use midly::live::LiveEvent;
-use tokio::{
-    sync::mpsc::{self, Sender},
-    task::JoinHandle,
-};
+use tokio::{sync::mpsc, task::JoinHandle};
 use tracing::{error, info, span, Level};
 
-use crate::midi;
-
-use super::Event;
+use crate::{config, midi::Device, player::Player};
 
 /// A controller that controls a player using MIDI.
 pub struct Driver {
-    /// The device that the driver will monitor.
-    device: Arc<dyn midi::Device>,
+    /// The player.
+    player: Arc<Player>,
+    /// The MIDI device.
+    midi_device: Arc<dyn Device>,
     /// The MIDI event to look for to play the current song in the playlist.
     play: LiveEvent<'static>,
     /// The MIDI event to look for to move the playlist to the previous item.
@@ -43,30 +40,30 @@ pub struct Driver {
 }
 impl Driver {
     pub fn new(
-        device: Arc<dyn midi::Device>,
-        play: LiveEvent<'static>,
-        prev: LiveEvent<'static>,
-        next: LiveEvent<'static>,
-        stop: LiveEvent<'static>,
-        all_songs: LiveEvent<'static>,
-        playlist: LiveEvent<'static>,
-    ) -> Driver {
-        Driver {
-            device,
-            play,
-            prev,
-            next,
-            stop,
-            all_songs,
-            playlist,
+        config: config::MidiController,
+        player: Arc<Player>,
+    ) -> Result<Driver, Box<dyn Error>> {
+        match player.midi_device() {
+            Some(midi_device) => Ok(Driver {
+                player,
+                midi_device,
+                play: config.play()?,
+                prev: config.prev()?,
+                next: config.next()?,
+                stop: config.stop()?,
+                all_songs: config.all_songs()?,
+                playlist: config.playlist()?,
+            }),
+            None => Err("No MIDI device to use for MIDI configuration".into()),
         }
     }
 }
 
 impl super::Driver for Driver {
-    fn monitor_events(&self, events_tx: Sender<Event>) -> JoinHandle<Result<(), io::Error>> {
+    fn monitor_events(&self) -> JoinHandle<Result<(), io::Error>> {
         let (midi_events_tx, mut midi_events_rx) = mpsc::channel::<Vec<u8>>(10);
-        let device = self.device.clone();
+        let player = self.player.clone();
+        let device = self.midi_device.clone();
         let play = self.play;
         let prev = self.prev;
         let next = self.next;
@@ -80,15 +77,22 @@ impl super::Driver for Driver {
 
             info!("MIDI driver started.");
 
-            device
+            if let Err(e) = device
                 .watch_events(midi_events_tx)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
+            {
+                error!(err = e.to_string(), "Error watching MIDI events");
+            }
+        });
 
+        let device = self.midi_device.clone();
+        tokio::spawn(async move {
             loop {
-                let raw_event = match midi_events_rx.blocking_recv() {
+                let raw_event = match midi_events_rx.recv().await {
                     Some(raw_event) => raw_event,
                     None => {
                         info!("MIDI watcher closed.");
+                        device.stop_watch_events();
                         return Ok(());
                     }
                 };
@@ -102,29 +106,20 @@ impl super::Driver for Driver {
                 };
 
                 if event == play {
-                    events_tx.blocking_send(Event::Play)
+                    player.play().await;
                 } else if event == prev {
-                    events_tx.blocking_send(Event::Prev)
+                    player.prev().await;
                 } else if event == next {
-                    events_tx.blocking_send(Event::Next)
+                    player.next().await;
                 } else if event == stop {
-                    events_tx.blocking_send(Event::Stop)
+                    player.stop().await;
                 } else if event == all_songs {
-                    events_tx.blocking_send(Event::AllSongs)
+                    player.switch_to_all_songs().await;
                 } else if event == playlist {
-                    events_tx.blocking_send(Event::Playlist)
-                } else {
-                    Ok(())
+                    player.switch_to_playlist().await;
                 }
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
             }
         })
-    }
-}
-
-impl Drop for Driver {
-    fn drop(&mut self) {
-        self.device.stop_watch_events();
     }
 }
 
@@ -133,55 +128,25 @@ mod test {
     use std::{collections::HashMap, error::Error, path::Path, sync::Arc};
 
     use crate::{
-        config, controller::Controller, player::Player, playlist::Playlist, songs,
+        config::{self, midi::ToMidiEvent, MidiController},
+        controller::Controller,
+        midi::Device,
+        player::Player,
+        playlist::Playlist,
+        songs,
         testutil::eventually,
     };
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_midi_controller() -> Result<(), Box<dyn Error>> {
         // Set up all of the MIDI events and the MIDI controller driver.
-        let play_event = midly::live::LiveEvent::Midi {
-            channel: 16.into(),
-            message: midly::MidiMessage::NoteOn {
-                key: 0.into(),
-                vel: 127.into(),
-            },
-        };
-        let prev_event = midly::live::LiveEvent::Midi {
-            channel: 16.into(),
-            message: midly::MidiMessage::NoteOn {
-                key: 1.into(),
-                vel: 127.into(),
-            },
-        };
-        let next_event = midly::live::LiveEvent::Midi {
-            channel: 16.into(),
-            message: midly::MidiMessage::NoteOn {
-                key: 2.into(),
-                vel: 127.into(),
-            },
-        };
-        let stop_event = midly::live::LiveEvent::Midi {
-            channel: 16.into(),
-            message: midly::MidiMessage::NoteOn {
-                key: 3.into(),
-                vel: 127.into(),
-            },
-        };
-        let all_songs_event = midly::live::LiveEvent::Midi {
-            channel: 16.into(),
-            message: midly::MidiMessage::NoteOn {
-                key: 4.into(),
-                vel: 127.into(),
-            },
-        };
-        let playlist_event = midly::live::LiveEvent::Midi {
-            channel: 16.into(),
-            message: midly::MidiMessage::NoteOn {
-                key: 5.into(),
-                vel: 127.into(),
-            },
-        };
+        let play_event = config::midi::note_on(16, 0, 127);
+        let prev_event = config::midi::note_on(16, 1, 127);
+        let next_event = config::midi::note_on(16, 2, 127);
+        let stop_event = config::midi::note_on(16, 3, 127);
+        let all_songs_event = config::midi::note_on(16, 4, 127);
+        let playlist_event = config::midi::note_on(16, 5, 127);
+
         let unrecognized_event = midly::live::LiveEvent::Midi {
             channel: 15.into(),
             message: midly::MidiMessage::ProgramChange { program: 27.into() },
@@ -196,30 +161,30 @@ mod test {
         let mut unrecognized_buf: Vec<u8> = Vec::with_capacity(8);
         let invalid_buf: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7, 8];
 
-        play_event.write(&mut play_buf)?;
-        prev_event.write(&mut prev_buf)?;
-        next_event.write(&mut next_buf)?;
-        stop_event.write(&mut stop_buf)?;
-        all_songs_event.write(&mut all_songs_buf)?;
-        playlist_event.write(&mut playlist_buf)?;
+        play_event.to_midi_event()?.write(&mut play_buf)?;
+        prev_event.to_midi_event()?.write(&mut prev_buf)?;
+        next_event.to_midi_event()?.write(&mut next_buf)?;
+        stop_event.to_midi_event()?.write(&mut stop_buf)?;
+        all_songs_event.to_midi_event()?.write(&mut all_songs_buf)?;
+        playlist_event.to_midi_event()?.write(&mut playlist_buf)?;
         unrecognized_event.write(&mut unrecognized_buf)?;
 
         let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let player = Player::new(
+        let player = Arc::new(Player::new(
             songs.clone(),
             Playlist::new(
                 &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
                 songs,
             )?,
             &config::Player::new(
-                config::Controller::Keyboard,
+                vec![config::Controller::Keyboard],
                 config::Audio::new("mock-device"),
                 Some(config::Midi::new("mock-midi-device", None)),
                 None,
                 HashMap::new(),
                 "assets/songs",
             ),
-        )?;
+        )?);
         let playlist = player.get_playlist();
         let all_songs_playlist = player.get_all_songs_playlist();
         let binding = player.audio_device();
@@ -228,16 +193,18 @@ mod test {
         let midi_device = binding.to_mock()?;
 
         let driver = Arc::new(super::Driver::new(
-            midi_device.clone(),
-            play_event,
-            prev_event,
-            next_event,
-            stop_event,
-            all_songs_event,
-            playlist_event,
-        ));
+            MidiController::new(
+                play_event,
+                prev_event,
+                next_event,
+                stop_event,
+                all_songs_event,
+                playlist_event,
+            ),
+            player,
+        )?);
 
-        let _controller = Controller::new_from_driver(player, driver);
+        let _controller = Controller::new_from_drivers(vec![driver]);
 
         println!("Playlist: {}", playlist);
         println!("AllSongs: {}", all_songs_playlist);
@@ -327,6 +294,8 @@ mod test {
         midi_device.mock_event(&unrecognized_buf);
         midi_device.mock_event(&stop_buf);
         eventually(|| !device.is_playing(), "Song never stopped playing");
+
+        midi_device.stop_watch_events();
 
         Ok(())
     }
