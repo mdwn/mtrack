@@ -199,6 +199,7 @@ impl Player {
         let _enter = self.span.enter();
 
         let mut join = self.join.lock().await;
+        let play_start_time = self.play_start_time.clone();
 
         let playlist = self.get_playlist().clone();
         let song = playlist.current();
@@ -238,7 +239,7 @@ impl Player {
         });
 
         {
-            let mut play_start_time = self.play_start_time.lock().await;
+            let mut play_start_time = play_start_time.lock().await;
             *play_start_time = Some(SystemTime::now());
         }
 
@@ -261,6 +262,12 @@ impl Player {
                     if !cancelled {
                         Player::next_and_emit(midi_device.clone(), playlist);
                     }
+                }
+
+                // Reset the play start time as well.
+                {
+                    let mut play_start_time = play_start_time.lock().await;
+                    *play_start_time = None;
                 }
 
                 info!(
@@ -510,10 +517,13 @@ impl Player {
         self.all_songs.clone()
     }
 
-    /// Gets the play start time.
-    pub async fn get_play_start_time(&self) -> Option<SystemTime> {
+    /// Gets the elapsed time from the play start time.
+    pub async fn elapsed(&self) -> Result<Option<Duration>, Box<dyn Error>> {
         let play_start_time = self.play_start_time.lock().await;
-        *play_start_time
+        Ok(match *play_start_time {
+            Some(play_start_time) => Some(play_start_time.elapsed()?),
+            None => None,
+        })
     }
 
     /// Goes to the previous song and emits the MIDI event associated if one exists.

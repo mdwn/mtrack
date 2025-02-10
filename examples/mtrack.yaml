@@ -57,13 +57,35 @@ controllers:
   # The port the OSC server should be hosted on. Defaults to 43235.
   port: 43235
 
-  # Maps player events to arbitrary OSC events.
-  play: /play
-  prev: /prev
-  next: /next
-  stop: /stop
-  all_songs: /all_songs
-  playlist: /playlist
+  # The addresses that player status should be broadcast to.
+  broadcast_addresses:
+  - 127.0.0.1:43236
+
+  # Maps player events to arbitrary OSC events. If not specified, these
+  # below are the defaults.
+  play: /mtrack/play
+  prev: /mtrack/prev
+  next: /mtrack/next
+  stop: /mtrack/stop
+  all_songs: /mtrack/all_songs
+  playlist: /mtrack/playlist
+
+  # The following events will be used by mtrack to report the current
+  # player status over OSC. If not specified, these below are the defaults.
+
+  # The current status of the player: whether it's stopped or playing, and the
+  # current elapsed time and the song duration.
+  status: /mtrack/status
+
+  # The playlist that is currently being played.
+  playlist_current: /mtrack/playlist/current
+
+  # The song that the playlist is currently pointing to.
+  playlist_current_song: /mtrack/playlist/current_song
+
+  # The duration of the time elapsed since a song was playing and the
+  # total duration of the song.
+  playlist_current_song_elapsed: /mtrack/playlist/current_song/elapsed
 
 # The MIDI controller configuration.
 - kind: midi

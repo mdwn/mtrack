@@ -168,16 +168,17 @@ impl PlayerService for PlayerServer {
         };
 
         let elapsed = {
-            let play_start_time = self.player.get_play_start_time().await;
-            match play_start_time {
-                Some(play_start_time) => match play_start_time.elapsed() {
-                    Ok(play_start_time) => match prost_types::Duration::try_from(play_start_time) {
+            let elapsed = self.player.elapsed().await;
+            match elapsed {
+                Ok(play_start_time) => match play_start_time {
+                    Some(play_start_time) => match prost_types::Duration::try_from(play_start_time)
+                    {
                         Ok(play_start_time) => Some(play_start_time),
                         Err(e) => return Err(Status::from_error(Box::new(e))),
                     },
-                    Err(e) => return Err(Status::from_error(Box::new(e))),
+                    None => None,
                 },
-                None => None,
+                Err(e) => return Err(Status::internal(e.to_string())),
             }
         };
 
@@ -187,5 +188,170 @@ impl PlayerService for PlayerServer {
             playing: elapsed.is_some(),
             elapsed,
         }))
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::{
+        collections::HashMap,
+        error::Error,
+        net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+        path::Path,
+        sync::Arc,
+        time::Duration,
+    };
+
+    use tokio::net::TcpListener;
+    use tonic::transport::Channel;
+
+    use crate::{
+        config,
+        controller::{
+            grpc::{Driver, ALL_SONGS_NAME, PLAYLIST_NAME},
+            Driver as _,
+        },
+        playlist::Playlist,
+        proto::player::v1::{
+            player_service_client::PlayerServiceClient, NextRequest, PlayRequest, PreviousRequest,
+            StatusRequest, StopRequest, SwitchToPlaylistRequest,
+        },
+        songs,
+        testutil::eventually,
+    };
+
+    use super::Player;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_grpc() -> Result<(), Box<dyn Error>> {
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
+        let player = Arc::new(Player::new_with_midi_device(
+            songs.clone(),
+            Playlist::new(
+                &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
+                songs,
+            )?,
+            None,
+            &config::Player::new(
+                vec![config::Controller::Keyboard],
+                config::Audio::new("mock-device"),
+                Some(config::Midi::new("mock-midi-device", None)),
+                None,
+                HashMap::new(),
+                "assets/songs",
+            ),
+        )?);
+        let binding = player.audio_device();
+        let device = binding.to_mock()?;
+
+        // Get a random port.
+        let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0));
+        let listener = TcpListener::bind(addr).await?;
+        let port = listener.local_addr()?.port();
+        drop(listener);
+
+        println!("Using port {} for testing.", port);
+
+        let driver = Driver::new(config::GrpcController::new(port), player.clone())?;
+        tokio::spawn(driver.monitor_events());
+        let mut client: Option<PlayerServiceClient<Channel>> = None;
+        for _ in 0..5 {
+            match PlayerServiceClient::connect(format!("http://127.0.0.1:{}", port)).await {
+                Ok(connected_client) => client = Some(connected_client),
+                Err(e) => {
+                    println!(
+                        "Sleeping for 50ms and trying to connect again. {}",
+                        e
+                    );
+                }
+            }
+
+            if client.is_some() {
+                break;
+            }
+
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        // Direct the player.
+        let mut client = client.expect("client was none");
+        println!("Playlist -> Song 1");
+        assert_eq!(player.get_playlist().current().name(), "Song 1");
+
+        let resp = client.next(NextRequest {}).await?;
+        println!("Playlist -> Song 3");
+        assert_eq!(player.get_playlist().current().name(), "Song 3");
+        assert_eq!(resp.into_inner().song.unwrap().name, "Song 3");
+
+        let resp = client.previous(PreviousRequest {}).await?;
+        println!("Playlist -> Song 1");
+        assert_eq!(player.get_playlist().current().name(), "Song 1");
+        assert_eq!(resp.into_inner().song.unwrap().name, "Song 1");
+
+        println!("Switch to AllSongs");
+        let _ = client
+            .switch_to_playlist(SwitchToPlaylistRequest {
+                playlist_name: ALL_SONGS_NAME.to_string(),
+            })
+            .await?;
+        assert_eq!(player.get_playlist().current().name(), "Song 1");
+
+        let resp = client.next(NextRequest {}).await?;
+        println!("AllSongs -> Song 10");
+        assert_eq!(player.get_playlist().current().name(), "Song 10");
+        assert_eq!(resp.into_inner().song.unwrap().name, "Song 10");
+
+        let resp = client.next(NextRequest {}).await?;
+        println!("AllSongs -> Song 2");
+        assert_eq!(player.get_playlist().current().name(), "Song 2");
+        assert_eq!(resp.into_inner().song.unwrap().name, "Song 2");
+
+        let resp = client.next(NextRequest {}).await?;
+        println!("AllSongs -> Song 3");
+        assert_eq!(player.get_playlist().current().name(), "Song 3");
+        assert_eq!(resp.into_inner().song.unwrap().name, "Song 3");
+
+        let _ = client
+            .switch_to_playlist(SwitchToPlaylistRequest {
+                playlist_name: PLAYLIST_NAME.to_string(),
+            })
+            .await?;
+        println!("Switch to Playlist");
+        assert_eq!(player.get_playlist().current().name(), "Song 1");
+
+        let resp = client.next(NextRequest {}).await?;
+        println!("Playlist -> Song 3");
+        assert_eq!(player.get_playlist().current().name(), "Song 3");
+        assert_eq!(resp.into_inner().song.unwrap().name, "Song 3");
+
+        let resp = client.play(PlayRequest {}).await?;
+        assert_eq!(resp.into_inner().song.unwrap().name, "Song 3");
+
+        // Playlist should have moved to next song.
+        eventually(
+            || player.get_playlist().current().name() == "Song 5",
+            format!(
+                "Song never moved to next, on song {}",
+                player.get_playlist().current().name()
+            )
+            .as_str(),
+        );
+        let resp = client.status(StatusRequest {}).await?;
+        assert_eq!(resp.into_inner().current_song.unwrap().name, "Song 5");
+
+        // Play a song and cancel it.
+        let resp = client.play(PlayRequest {}).await?;
+        println!("Play Song 5.");
+        eventually(|| device.is_playing(), "Song never started playing");
+        assert_eq!(resp.into_inner().song.unwrap().name, "Song 5");
+
+        let resp = client.stop(StopRequest {}).await?;
+        eventually(|| !device.is_playing(), "Song never stopped playing");
+        assert_eq!(resp.into_inner().song.unwrap().name, "Song 5");
+
+        // Player should not have moved to the next song.
+        assert_eq!(player.get_playlist().current().name(), "Song 5");
+
+        Ok(())
     }
 }

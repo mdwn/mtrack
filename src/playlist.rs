@@ -65,6 +65,11 @@ impl Playlist {
         }))
     }
 
+    /// Returns the list of songs in the playlist.
+    pub fn songs(&self) -> &Vec<String> {
+        &self.songs
+    }
+
     /// Move to the next element of the playlist. If we're at the end of the playlist, the position will not
     /// increment. The song at the current position will be returned.
     pub fn next(&self) -> Arc<Song> {
