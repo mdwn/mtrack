@@ -259,10 +259,7 @@ mod test {
             match PlayerServiceClient::connect(format!("http://127.0.0.1:{}", port)).await {
                 Ok(connected_client) => client = Some(connected_client),
                 Err(e) => {
-                    println!(
-                        "Sleeping for 50ms and trying to connect again. {}",
-                        e
-                    );
+                    println!("Sleeping for 50ms and trying to connect again. {}", e);
                 }
             }
 
