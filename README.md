@@ -317,7 +317,7 @@ controllers:
   - 127.0.0.1:43236
 
   # Maps player events to arbitrary OSC events. If not specified, these
-  # below are the defaults.
+  # below are the defaults. None of these events require any arguments.
   play: /mtrack/play
   prev: /mtrack/prev
   next: /mtrack/next
@@ -329,17 +329,19 @@ controllers:
   # player status over OSC. If not specified, these below are the defaults.
 
   # The current status of the player: whether it's stopped or playing, and the
-  # current elapsed time and the song duration.
+  # current elapsed time and the song duration. Contains a single string argument.
   status: /mtrack/status
 
-  # The playlist that is currently being played.
+  # The playlist that is currently being played. Contains a single string argument,
+  # though it will be fairly long depending on your playlist.
   playlist_current: /mtrack/playlist/current
 
-  # The song that the playlist is currently pointing to.
+  # The song that the playlist is currently pointing to. Contains a single string
+  # argument.
   playlist_current_song: /mtrack/playlist/current_song
 
   # The duration of the time elapsed since a song was playing and the
-  # total duration of the song.
+  # total duration of the song. Contains a single string argument.
   playlist_current_song_elapsed: /mtrack/playlist/current_song/elapsed
 
 
@@ -528,7 +530,12 @@ network the player is running on is wide open.
 The player can also be controlled using arbitrary OSC commands. This is configurable in the OSC
 controller configuration section. This allows you to define OSC addresses that will map to
 player events (play, previous, next, stop, all_songs, playlist). Refer to the example
-configuration above.
+configuration above for the exact name of these events.
+
+Additionally, information can be reported back to a fixed list of clients from the OSC server.
+This will allow OSC clients to display things like the current song the playlist is pointing to,
+whether or not the player is currently playing, how much time has elapsed, and the contents of
+the playlist. Again, refer to the example configuration above for the defaults for these events.
 
 ## Light shows
 

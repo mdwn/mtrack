@@ -13,7 +13,8 @@ external player clients.
 
 An OSC server has been added to mtrack. This will allow communication with mtrack over any
 OSC protocol (UDP only at the moment). This is handy for using clients like TouchOSC to
-control mtrack.
+control mtrack. This includes reporting, so that OSC clients can display information about
+currently playing songs, track durations, etc.
 
 The keyboard controller has been fixed -- it wasn't trimming off the newlines at the end
 of keyboard input.
