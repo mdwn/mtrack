@@ -97,3 +97,140 @@ impl super::Driver for Driver {
         })
     }
 }
+
+#[cfg(test)]
+mod test {
+    use std::{
+        collections::HashMap,
+        error::Error,
+        io::{BufReader, BufWriter},
+        path::Path,
+        sync::Arc,
+    };
+
+    use crate::{
+        config,
+        controller::keyboard::{Driver, ALL_SONGS, NEXT, PLAY, PLAYLIST, PREV, STOP},
+        playlist::Playlist,
+        songs,
+        testutil::eventually,
+    };
+
+    use super::Player;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_osc() -> Result<(), Box<dyn Error>> {
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
+        let player = Arc::new(Player::new_with_midi_device(
+            songs.clone(),
+            Playlist::new(
+                &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
+                songs,
+            )?,
+            None,
+            &config::Player::new(
+                vec![config::Controller::Keyboard],
+                config::Audio::new("mock-device"),
+                Some(config::Midi::new("mock-midi-device", None)),
+                None,
+                HashMap::new(),
+                "assets/songs",
+            ),
+        )?);
+        let binding = player.audio_device();
+        let device = binding.to_mock()?;
+
+        let key_event = |event: &str| {
+            Driver::monitor_io(
+                player.clone(),
+                BufReader::new(format!("{}\n", event).as_bytes()),
+                BufWriter::new(Vec::new()),
+            )
+        };
+
+        // Direct the player.
+        println!("Playlist -> Song 1");
+        assert_eq!(player.get_playlist().current().name(), "Song 1");
+
+        key_event(NEXT)?;
+        println!("Playlist -> Song 3");
+        eventually(
+            || player.get_playlist().current().name() == "Song 3",
+            "Event not processed",
+        );
+
+        key_event(PREV)?;
+        println!("Playlist -> Song 1");
+        eventually(
+            || player.get_playlist().current().name() == "Song 1",
+            "Event not processed",
+        );
+
+        println!("Switch to AllSongs");
+        key_event(ALL_SONGS)?;
+        eventually(
+            || player.get_playlist().current().name() == "Song 1",
+            "Event not processed",
+        );
+
+        key_event(NEXT)?;
+        println!("AllSongs -> Song 10");
+        eventually(
+            || player.get_playlist().current().name() == "Song 10",
+            "Event not processed",
+        );
+
+        key_event(NEXT)?;
+        println!("AllSongs -> Song 2");
+        eventually(
+            || player.get_playlist().current().name() == "Song 2",
+            "Event not processed",
+        );
+
+        key_event(NEXT)?;
+        println!("AllSongs -> Song 3");
+        eventually(
+            || player.get_playlist().current().name() == "Song 3",
+            "Event not processed",
+        );
+
+        key_event(PLAYLIST)?;
+        println!("Switch to Playlist");
+        eventually(
+            || player.get_playlist().current().name() == "Song 1",
+            "Event not processed",
+        );
+
+        key_event(NEXT)?;
+        println!("Playlist -> Song 3");
+        eventually(
+            || player.get_playlist().current().name() == "Song 3",
+            "Event not processed",
+        );
+
+        key_event(PLAY)?;
+
+        // Playlist should have moved to next song.
+        eventually(
+            || player.get_playlist().current().name() == "Song 5",
+            format!(
+                "Song never moved to next, on song {}",
+                player.get_playlist().current().name()
+            )
+            .as_str(),
+        );
+
+        // Play a song and cancel it.
+        key_event(PLAY)?;
+        println!("Play Song 5.");
+        eventually(|| device.is_playing(), "Song never started playing");
+
+        key_event(STOP)?;
+        eventually(|| !device.is_playing(), "Song never stopped playing");
+
+        // Player should not have moved to the next song.
+        assert_eq!(player.get_playlist().current().name(), "Song 5");
+
+        Ok(())
+    }
+}

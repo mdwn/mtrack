@@ -23,6 +23,7 @@ mod proto;
 mod songs;
 #[cfg(test)]
 mod testutil;
+mod util;
 
 use crate::playlist::Playlist;
 use clap::{crate_version, Parser, Subcommand};
@@ -404,10 +405,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .into_inner();
             if let Some(song) = response.current_song {
                 println!("Current song: {}", song.name);
-                let song_duration = duration_minutes_seconds(Duration::try_from(
+                let song_duration = util::duration_minutes_seconds(Duration::try_from(
                     song.duration.unwrap_or_default(),
                 )?);
-                let elapsed = duration_minutes_seconds(Duration::try_from(
+                let elapsed = util::duration_minutes_seconds(Duration::try_from(
                     response.elapsed.unwrap_or_default(),
                 )?);
                 println!("Elapsed: {}/{}", elapsed, song_duration);
@@ -428,7 +429,7 @@ fn print_song(song: Option<Song>) -> Result<(), Box<dyn Error>> {
         println!("Name: {}", song.name);
         println!(
             "Duration: {}",
-            duration_minutes_seconds(Duration::try_from(song.duration.unwrap_or_default())?)
+            util::duration_minutes_seconds(Duration::try_from(song.duration.unwrap_or_default())?)
         );
         println!("Tracks:");
         for track in song.tracks {
@@ -439,12 +440,6 @@ fn print_song(song: Option<Song>) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn duration_minutes_seconds(duration: Duration) -> String {
-    let minutes = duration.as_secs() / 60;
-    let secs = duration.as_secs() - minutes * 60;
-    format!("{}:{:02}", minutes, secs)
-}
-
 async fn connect(
     host_port: Option<String>,
 ) -> Result<PlayerServiceClient<Channel>, Box<dyn Error>> {
@@ -453,21 +448,4 @@ async fn connect(
             + &host_port.unwrap_or(format!("0.0.0.0:{}", config::DEFAULT_GRPC_PORT)),
     )
     .await?)
-}
-
-#[cfg(test)]
-mod test {
-    use std::time::Duration;
-
-    use crate::duration_minutes_seconds;
-
-    #[test]
-    fn test_duration_minutes_strings() {
-        assert_eq!("0:00", duration_minutes_seconds(Duration::new(0, 0)));
-        assert_eq!("0:05", duration_minutes_seconds(Duration::new(5, 0)));
-        assert_eq!("0:55", duration_minutes_seconds(Duration::new(55, 0)));
-        assert_eq!("1:00", duration_minutes_seconds(Duration::new(60, 0)));
-        assert_eq!("2:05", duration_minutes_seconds(Duration::new(125, 0)));
-        assert_eq!("60:06", duration_minutes_seconds(Duration::new(3606, 0)));
-    }
 }
