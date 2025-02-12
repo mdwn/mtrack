@@ -17,7 +17,7 @@ use std::{
     io,
     net::{AddrParseError, Ipv4Addr, SocketAddr, SocketAddrV4},
     sync::Arc,
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 use rosc::{
@@ -29,13 +29,11 @@ use tokio::{
     select,
     sync::mpsc::{self, Receiver, Sender},
     task::JoinHandle,
+    time,
 };
 use tracing::{error, info, span, Level};
 
 use crate::{config, player::Player, util};
-
-/// This is the all hosts multicast address.
-const BROADCAST_SLEEP_DURATION: Duration = Duration::from_millis(500);
 
 /// Player status strings.
 const STATUS_STOPPED: &str = "Stopped";
@@ -137,31 +135,43 @@ impl super::Driver for Driver {
                 let player = player.clone();
                 let tx_sender = tx_sender.clone();
                 let osc_events = osc_events.clone();
+                let (update_sender, mut update_receiver) = mpsc::channel::<()>(10);
+                player.subscribe(Arc::new(update_sender));
 
                 info!("Starting broadcast loop");
                 tokio::spawn(async move {
+                    let mut playing = false;
                     loop {
-                        if let Err(e) = Self::broadcast(&player, &osc_events, &tx_sender).await {
-                            error!(err = e, "Error broadcasting player status");
+                        match Self::broadcast(&player, &osc_events, &tx_sender).await {
+                            Ok(is_playing) => playing = is_playing,
+                            Err(e) => {
+                                error!(err = e, "Error broadcasting player status");
+                            }
                         }
-                        tokio::time::sleep(BROADCAST_SLEEP_DURATION).await;
+
+                        // If the player is playing, we'll update every second to update the
+                        // current song duration. We'll just do a simple second wait. I expect
+                        // there will be some drift, but I also don't think it will be that
+                        // important.
+                        if playing {
+                            select! {
+                                _ = update_receiver.recv() => {},
+                                _ = time::sleep(Duration::from_secs(1)) => {},
+                            }
+                        } else {
+                            update_receiver.recv().await;
+                        }
                     }
                 });
             }
 
             loop {
                 let packet = rx_receiver.recv().await;
-                let tx_sender = tx_sender.clone();
 
                 if let Some(packet) = packet {
-                    if Self::handle_packet(&player, &osc_events, &packet)
+                    Self::handle_packet(&player, &osc_events, &packet)
                         .await
                         .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?
-                    {
-                        if let Err(e) = Self::broadcast(&player, &osc_events, &tx_sender).await {
-                            error!(err = e, "Error broadcasting player status");
-                        };
-                    }
                 }
             }
         })
@@ -222,7 +232,7 @@ impl Driver {
         player: &Arc<Player>,
         osc_events: &Arc<OscEvents>,
         tx_sender: &Sender<OscPacket>,
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> Result<bool, Box<dyn Error>> {
         let playlist = player.get_playlist();
         let song = playlist.current();
         let song_name = song.name();
@@ -274,7 +284,7 @@ impl Driver {
             }))
             .await?;
 
-        Ok(())
+        Ok(elapsed.is_some())
     }
 
     /// Handles incoming OSC packets. Meant for responding to things like player
@@ -283,19 +293,17 @@ impl Driver {
         player: &Arc<Player>,
         osc_events: &Arc<OscEvents>,
         packet: &OscPacket,
-    ) -> Result<bool, Box<dyn Error>> {
+    ) -> Result<(), Box<dyn Error>> {
         match packet {
             OscPacket::Message(osc_message) => {
                 Box::pin(Self::handle_message(player, osc_events, osc_message)).await
             }
             OscPacket::Bundle(osc_bundle) => {
-                let mut recognized_event = false;
                 for packet in &osc_bundle.content {
-                    recognized_event = recognized_event
-                        || Box::pin(Self::handle_packet(player, osc_events, packet)).await?;
+                    Box::pin(Self::handle_packet(player, osc_events, packet)).await?;
                 }
 
-                Ok(recognized_event)
+                Ok(())
             }
         }
     }
@@ -305,30 +313,23 @@ impl Driver {
         player: &Arc<Player>,
         osc_events: &Arc<OscEvents>,
         msg: &OscMessage,
-    ) -> Result<bool, Box<dyn Error>> {
+    ) -> Result<(), Box<dyn Error>> {
         let address = OscAddress::new(msg.addr.clone())?;
-        let mut recognized_event = false;
         if osc_events.play.match_address(&address) {
             player.play().await;
-            recognized_event = true;
         } else if osc_events.prev.match_address(&address) {
             player.prev().await;
-            recognized_event = true;
         } else if osc_events.next.match_address(&address) {
             player.next().await;
-            recognized_event = true;
         } else if osc_events.stop.match_address(&address) {
             player.stop().await;
-            recognized_event = true;
         } else if osc_events.all_songs.match_address(&address) {
             player.switch_to_all_songs().await;
-            recognized_event = true;
         } else if osc_events.playlist.match_address(&address) {
             player.switch_to_playlist().await;
-            recognized_event = true;
         }
 
-        Ok(recognized_event)
+        Ok(())
     }
 }
 

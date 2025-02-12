@@ -23,10 +23,10 @@ use std::{
     time::{Duration, SystemTime},
 };
 use tokio::{
-    sync::{oneshot, Mutex},
+    sync::{mpsc::Sender, oneshot, Mutex},
     task::JoinHandle,
 };
-use tracing::{error, info, span, Level, Span};
+use tracing::{debug, error, info, span, Level, Span};
 
 use crate::songs::Songs;
 use crate::{
@@ -65,6 +65,9 @@ pub struct Player {
     /// After stop is set, this will be set to true. This will prevent stop from being run again until
     /// it is unset, which should be handled by a cleanup async process after playback finishes.
     stop_run: Arc<AtomicBool>,
+    /// Subscription to state changing events. This is not meant to send the data, but just to
+    /// let subscribers know that the player has changed.
+    subscriptions: Arc<RwLock<Vec<Arc<Sender<()>>>>>,
     /// The logging span.
     span: Span,
 }
@@ -104,6 +107,7 @@ impl Player {
             play_start_time: Arc::new(Mutex::new(None)),
             join: Arc::new(Mutex::new(None)),
             stop_run: Arc::new(AtomicBool::new(false)),
+            subscriptions: Arc::new(RwLock::new(Vec::new())),
             span: span.clone(),
         };
 
@@ -133,6 +137,15 @@ impl Player {
     #[cfg(test)]
     pub fn audio_device(&self) -> Arc<dyn audio::Device> {
         self.device.clone()
+    }
+
+    /// Requests that the player send an event to the given sender when
+    /// internal state changes.
+    pub fn subscribe(&self, sender: Arc<Sender<()>>) {
+        self.subscriptions
+            .write()
+            .expect("Unable to get lock")
+            .push(sender);
     }
 
     /// Gets the MIDI device currently in use by the player.
@@ -194,6 +207,21 @@ impl Player {
         });
     }
 
+    /// Notifies all subscribers that an event has changed.
+    async fn notify_subscribers(&self) {
+        let _enter = self.span.enter();
+        let subscriptions = self.subscriptions.clone();
+
+        for sender in subscriptions.read().expect("Unable to get lock").iter() {
+            let sender = sender.clone();
+            tokio::spawn(async move {
+                if let Err(e) = sender.send(()).await {
+                    debug!(err = e.to_string(), "Error notifying subscriber");
+                };
+            });
+        }
+    }
+
     /// Plays the song at the current position. Returns true if the song was submitted successfully.
     pub async fn play(&self) -> Option<Arc<Song>> {
         let _enter = self.span.enter();
@@ -243,17 +271,27 @@ impl Player {
             *play_start_time = Some(SystemTime::now());
         }
 
+        self.notify_subscribers().await;
+
         {
             let join_mutex = self.join.clone();
             let stop_run = self.stop_run.clone();
             let song = song.clone();
             let midi_device = self.midi_device.clone();
+            let player = self.clone();
+            let play_start_time = play_start_time.clone();
             tokio::spawn(async move {
                 if let Err(e) = play_rx.await {
                     error!(err = e.to_string(), "Error receiving signal");
                     return;
                 }
                 let mut join = join_mutex.lock().await;
+
+                // Reset the play start time as well.
+                {
+                    let mut play_start_time = play_start_time.lock().await;
+                    *play_start_time = None;
+                }
 
                 let mut cancelled = false;
                 // Only move to the next playlist entry if this wasn't cancelled.
@@ -262,12 +300,6 @@ impl Player {
                     if !cancelled {
                         Player::next_and_emit(midi_device.clone(), playlist);
                     }
-                }
-
-                // Reset the play start time as well.
-                {
-                    let mut play_start_time = play_start_time.lock().await;
-                    *play_start_time = None;
                 }
 
                 info!(
@@ -279,6 +311,12 @@ impl Player {
                 // Remove the handles and reset stop run.
                 *join = None;
                 stop_run.store(false, Ordering::Relaxed);
+
+                // Only notify subscribers if we're cancelled. Otherwise the next_and_emit
+                // above will handle the subscription bits.
+                if cancelled {
+                    player.notify_subscribers().await;
+                }
             });
         }
 
@@ -422,7 +460,9 @@ impl Player {
             );
             return current;
         }
-        Player::next_and_emit(self.midi_device.clone(), playlist)
+        let song = Player::next_and_emit(self.midi_device.clone(), playlist);
+        self.notify_subscribers().await;
+        song
     }
 
     /// Prev goes to the previous entry in the playlist.
@@ -437,7 +477,9 @@ impl Player {
             );
             return current;
         }
-        Player::prev_and_emit(self.midi_device.clone(), playlist)
+        let song = Player::prev_and_emit(self.midi_device.clone(), playlist);
+        self.notify_subscribers().await;
+        song
     }
 
     /// Stop will stop a song if a song is playing.
@@ -484,6 +526,7 @@ impl Player {
         self.use_all_songs.store(true, Ordering::Relaxed);
         let song = self.get_playlist().current();
         Player::emit_midi_event(self.midi_device.clone(), song.clone());
+        self.notify_subscribers().await;
     }
 
     /// Switch to the regular playlist.
@@ -501,6 +544,7 @@ impl Player {
         self.use_all_songs.store(false, Ordering::Relaxed);
         let song = self.get_playlist().current();
         Player::emit_midi_event(self.midi_device.clone(), song.clone());
+        self.notify_subscribers().await;
     }
 
     /// Gets the current playlist used by the player.
