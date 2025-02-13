@@ -12,6 +12,7 @@ excludes:
   - .*\.wav
   - .*\.mid
   - lcov.info
+  - .*\.tosc
 licenses:
   - files: any
     ident: GPL-3.0
