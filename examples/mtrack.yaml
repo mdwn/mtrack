@@ -43,6 +43,7 @@ dmx:
 # - grpc
 # - keyboard
 # - midi
+# - osc
 # Keyboard is largely for testing.
 controllers:
 # The gRPC server configuration.

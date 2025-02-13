@@ -298,6 +298,7 @@ status_events:
 # - grpc
 # - keyboard
 # - midi
+# - osc
 # Keyboard is largely for testing.
 controllers:
 # The gRPC server configuration.
@@ -536,6 +537,8 @@ Additionally, information can be reported back to a fixed list of clients from t
 This will allow OSC clients to display things like the current song the playlist is pointing to,
 whether or not the player is currently playing, how much time has elapsed, and the contents of
 the playlist. Again, refer to the example configuration above for the defaults for these events.
+
+An starting TouchOSC file has been supplied [here](touchosc/mtrack.tosc).
 
 ## Light shows
 
