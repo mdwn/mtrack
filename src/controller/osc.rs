@@ -122,6 +122,22 @@ impl super::Driver for Driver {
 
             info!("OSC driver started.");
             let socket = UdpSocket::bind(addr).await?;
+
+            // We're allowed to send broadcast messages.
+            socket.set_broadcast(true)?;
+            for broadcast_addr in broadcast_addresses.iter() {
+                let ip = broadcast_addr.ip();
+                if ip.is_multicast() {
+                    match ip {
+                        std::net::IpAddr::V4(ipv4_addr) => {
+                            socket.join_multicast_v4(ipv4_addr, Ipv4Addr::UNSPECIFIED)?
+                        }
+                        std::net::IpAddr::V6(ipv6_addr) => {
+                            socket.join_multicast_v6(&ipv6_addr, 0)?
+                        }
+                    }
+                }
+            }
             let (rx_sender, mut rx_receiver) = mpsc::channel::<OscPacket>(10);
             let (tx_sender, tx_receiver) = mpsc::channel::<OscPacket>(10);
 
