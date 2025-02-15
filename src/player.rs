@@ -471,7 +471,6 @@ impl Player {
 
     /// Switch to the all songs playlist.
     pub async fn switch_to_all_songs(&self) {
-        println!("Switching to all songs");
         let join = self.join.lock().await;
         if join.is_some() {
             info!(
@@ -488,7 +487,6 @@ impl Player {
 
     /// Switch to the regular playlist.
     pub async fn switch_to_playlist(&self) {
-        println!("Switching to playlist");
         let join = self.join.lock().await;
         if join.is_some() {
             info!(
