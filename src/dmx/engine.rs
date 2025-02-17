@@ -19,7 +19,7 @@ use std::{
     sync::{
         atomic::AtomicBool,
         mpsc::{self, Receiver},
-        Arc, Barrier, RwLock,
+        Arc, Barrier,
     },
     thread::{self, JoinHandle},
     time::Duration,
@@ -27,7 +27,7 @@ use std::{
 
 use midly::num::u7;
 use nodi::{Connection, Player};
-use ola::{DmxBuffer, StreamingClient};
+use ola::{client::StreamingClientConfig, DmxBuffer, StreamingClient};
 use tracing::{debug, error, info, span, Level};
 
 use crate::{
@@ -43,7 +43,7 @@ use super::Universe;
 pub struct Engine {
     dimming_speed_modifier: f64,
     playback_delay: Duration,
-    universes: HashMap<String, RwLock<Universe>>,
+    universes: HashMap<String, Universe>,
     cancel_handle: CancelHandle,
     client_handle: Option<JoinHandle<()>>,
     join_handles: Vec<JoinHandle<()>>,
@@ -59,6 +59,10 @@ impl Engine {
     /// Creates a new DMX Engine.
     pub fn new(config: &config::Dmx) -> Result<Engine, Box<dyn Error>> {
         let mut maybe_client = None;
+        let ola_client_config = StreamingClientConfig {
+            server_port: config.ola_port(),
+            ..Default::default()
+        };
 
         // Attempt to connect to OLA 10 times.
         for i in 0..10 {
@@ -67,7 +71,7 @@ impl Engine {
                 thread::sleep(Duration::from_secs(5));
             }
 
-            if let Ok(ola_client) = ola::connect() {
+            if let Ok(ola_client) = ola::connect_with_config(ola_client_config.clone()) {
                 maybe_client = Some(ola_client);
                 break;
             };
@@ -101,19 +105,21 @@ impl Engine {
         Ok(Engine {
             dimming_speed_modifier: config.dimming_speed_modifier(),
             playback_delay: config.playback_delay()?,
-            universes: universes
-                .into_iter()
-                .map(|(name, universe)| (name, RwLock::new(universe)))
-                .collect(),
+            universes: universes.into_iter().collect(),
             cancel_handle,
             client_handle: Some(client_handle),
             join_handles,
         })
     }
 
+    #[cfg(test)]
+    pub fn get_universe(&self, universe_name: &str) -> Option<&Universe> {
+        self.universes.get(universe_name)
+    }
+
     /// Plays the given song through the DMX interface.
     pub fn play(
-        dmx_engine: Arc<RwLock<Engine>>,
+        dmx_engine: Arc<Engine>,
         song: Arc<Song>,
         cancel_handle: CancelHandle,
         play_barrier: Arc<Barrier>,
@@ -133,16 +139,10 @@ impl Engine {
             "Playing song DMX."
         );
 
-        let (universe_names, playback_delay): (HashSet<String>, Duration) = {
-            let dmx_engine = dmx_engine
-                .read()
-                .expect("Unable to get DMX engine read lock");
-
-            (
-                dmx_engine.universes.keys().cloned().collect(),
-                dmx_engine.playback_delay,
-            )
-        };
+        let (universe_names, playback_delay): (HashSet<String>, Duration) = (
+            dmx_engine.universes.keys().cloned().collect(),
+            dmx_engine.playback_delay,
+        );
 
         let mut dmx_midi_sheets: HashMap<String, (MidiSheet, Vec<u8>)> = HashMap::new();
         let mut empty_barrier_counter = 0;
@@ -239,7 +239,7 @@ impl Engine {
     }
 
     /// Handles an incoming MIDI event.
-    pub fn handle_midi_event(&mut self, universe_name: String, midi_message: midly::MidiMessage) {
+    pub fn handle_midi_event(&self, universe_name: String, midi_message: midly::MidiMessage) {
         match midi_message {
             midly::MidiMessage::NoteOn { key, vel } => {
                 self.handle_key_velocity(universe_name, key, vel);
@@ -273,7 +273,7 @@ impl Engine {
     }
 
     /// Handles MIDI events that use a key and velocity.
-    fn handle_key_velocity(&mut self, universe_name: String, key: u7, velocity: u7) {
+    fn handle_key_velocity(&self, universe_name: String, key: u7, velocity: u7) {
         self.update_universe(
             universe_name,
             key.as_int().into(),
@@ -283,23 +283,21 @@ impl Engine {
     }
 
     // Updates the current dimming speed.
-    fn update_dimming(&mut self, universe_name: String, dimming_duration: Duration) {
+    fn update_dimming(&self, universe_name: String, dimming_duration: Duration) {
         debug!(
             dimming = dimming_duration.as_secs_f64(),
             "Dimming speed updated"
         );
-        self.universes[&universe_name]
-            .write()
-            .expect("Unable to get write lock for universe")
-            .update_dim_speed(dimming_duration);
+        if let Some(universe) = self.universes.get(&universe_name) {
+            universe.update_dim_speed(dimming_duration)
+        }
     }
 
     /// Updates the given universe.
-    fn update_universe(&mut self, universe_name: String, channel: u16, value: u8, dim: bool) {
-        self.universes[&universe_name]
-            .write()
-            .expect("Unable to get write lock for universe")
-            .update_channel_data(channel, value, dim);
+    fn update_universe(&self, universe_name: String, channel: u16, value: u8, dim: bool) {
+        if let Some(universe) = self.universes.get(&universe_name) {
+            universe.update_channel_data(channel, value, dim)
+        }
     }
 
     /// Sends messages to OLA.
@@ -311,7 +309,7 @@ impl Engine {
                         error!("error sending DMX to OLA: {}", err.to_string())
                     }
                 }
-                Err(err) => error!("error receiving DMX message: {}", err.to_string()),
+                Err(_) => return,
             }
         }
     }
@@ -326,6 +324,9 @@ impl Drop for Engine {
                 error!("Error joining handle");
             }
         });
+
+        self.universes.drain();
+
         if self
             .client_handle
             .take()
@@ -344,7 +345,7 @@ struct DMXConnection {
     cancel_handle: CancelHandle,
     universe_name: String,
     midi_channels: HashSet<u8>,
-    dmx_engine: Arc<RwLock<Engine>>,
+    dmx_engine: Arc<Engine>,
 }
 
 impl Connection for DMXConnection {
@@ -355,11 +356,133 @@ impl Connection for DMXConnection {
 
         if self.midi_channels.is_empty() || self.midi_channels.contains(&event.channel.as_int()) {
             self.dmx_engine
-                .write()
-                .expect("Unable to get DMX engine lock.")
                 .handle_midi_event(self.universe_name.clone(), event.message);
         }
 
         true
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::{
+        collections::HashSet,
+        error::Error,
+        net::{Ipv4Addr, SocketAddr, TcpListener},
+        sync::Arc,
+    };
+
+    use midly::num::u7;
+    use nodi::{Connection, MidiEvent};
+
+    use crate::playsync::CancelHandle;
+
+    use super::{config, DMXConnection, Engine};
+
+    fn create_engine() -> Result<(Arc<Engine>, CancelHandle), Box<dyn Error>> {
+        let listener = TcpListener::bind(SocketAddr::new(
+            std::net::IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            0,
+        ))?;
+        let engine = Engine::new(&config::Dmx::new(
+            None,
+            None,
+            Some(listener.local_addr()?.port()),
+            vec![config::Universe::new(5, "universe1".to_string())],
+        ))?;
+        let cancel_handle = engine.cancel_handle.clone();
+        Ok((Arc::new(engine), cancel_handle))
+    }
+
+    #[test]
+    fn test_connection_cancel() -> Result<(), Box<dyn Error>> {
+        let (engine, cancel_handle) = create_engine()?;
+
+        let mut connection = DMXConnection {
+            cancel_handle: cancel_handle.clone(),
+            universe_name: "universe1".to_string(),
+            midi_channels: HashSet::new(),
+            dmx_engine: engine.clone(),
+        };
+
+        // Verify the default dim speed value.
+        assert_eq!(
+            engine.get_universe("universe1").unwrap().get_dim_speed(),
+            1.0
+        );
+
+        // No cancellation.
+        assert!(connection.play(MidiEvent {
+            channel: 5.into(),
+            message: midly::MidiMessage::ProgramChange {
+                program: u7::new(1u8)
+            }
+        }));
+
+        // Verify that the universe got our command.
+        assert_eq!(
+            engine.get_universe("universe1").unwrap().get_dim_speed(),
+            44.0
+        );
+
+        cancel_handle.cancel();
+
+        // Cancellation.
+        assert!(!connection.play(MidiEvent {
+            channel: 5.into(),
+            message: midly::MidiMessage::NoteOn {
+                key: 0.into(),
+                vel: 0.into(),
+            },
+        }));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_connection_midi_inclusion() -> Result<(), Box<dyn Error>> {
+        let (engine, cancel_handle) = create_engine()?;
+
+        let mut midi_channels: HashSet<u8> = HashSet::new();
+        midi_channels.insert(5);
+        let mut connection = DMXConnection {
+            cancel_handle: cancel_handle.clone(),
+            universe_name: "universe1".to_string(),
+            midi_channels,
+            dmx_engine: engine.clone(),
+        };
+
+        assert_eq!(
+            engine.get_universe("universe1").unwrap().get_dim_speed(),
+            1.0
+        );
+
+        // Valid MIDI channel.
+        assert!(connection.play(MidiEvent {
+            channel: 5.into(),
+            message: midly::MidiMessage::ProgramChange {
+                program: u7::new(1u8)
+            }
+        }));
+
+        assert_eq!(
+            engine.get_universe("universe1").unwrap().get_dim_speed(),
+            44.0
+        );
+
+        // This will be excluded.
+        assert!(connection.play(MidiEvent {
+            channel: 6.into(),
+            message: midly::MidiMessage::ProgramChange {
+                program: u7::new(0u8)
+            }
+        }));
+
+        assert_eq!(
+            engine.get_universe("universe1").unwrap().get_dim_speed(),
+            44.0
+        );
+
+        Ok(())
     }
 }

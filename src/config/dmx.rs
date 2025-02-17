@@ -18,6 +18,7 @@ use duration_string::DurationString;
 use serde::Deserialize;
 
 /// The default DMX dimming speed.
+pub const DEFAULT_OLA_PORT: u16 = 9010;
 pub const DEFAULT_DMX_DIMMING_SPEED_MODIFIER: f64 = 1.0;
 pub const DEFAULT_DMX_PLAYBACK_DELAY: Duration = Duration::ZERO;
 
@@ -30,6 +31,9 @@ pub struct Dmx {
     /// Controls how long to wait before playback of a DMX lighting file starts.
     playback_delay: Option<String>,
 
+    /// The OLA port. Defaults to the default OLA port.
+    ola_port: Option<u16>,
+
     /// The configuration of devices to universes.
     universes: Vec<Universe>,
 }
@@ -39,11 +43,13 @@ impl Dmx {
     pub fn new(
         dim_speed_modifier: Option<f64>,
         playback_delay: Option<String>,
+        ola_port: Option<u16>,
         universes: Vec<Universe>,
     ) -> Dmx {
         Dmx {
             dim_speed_modifier,
             playback_delay,
+            ola_port,
             universes,
         }
     }
@@ -60,6 +66,11 @@ impl Dmx {
             .map_or(Ok(DEFAULT_DMX_PLAYBACK_DELAY), |duration| {
                 Ok(DurationString::from_string(duration.clone())?.into())
             })
+    }
+
+    /// Gets the OLA port to use.
+    pub fn ola_port(&self) -> u16 {
+        self.ola_port.unwrap_or(DEFAULT_OLA_PORT)
     }
 
     /// Converts the configuration into universe configs.

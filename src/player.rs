@@ -17,7 +17,7 @@ use std::{
     error::Error,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Barrier, RwLock,
+        Arc, Barrier,
     },
     thread,
     time::{Duration, SystemTime},
@@ -51,7 +51,7 @@ pub struct Player {
     /// The MIDI device to play MIDI back through.
     midi_device: Option<Arc<dyn midi::Device>>,
     /// The DMX engine to use.
-    dmx_engine: Option<Arc<RwLock<dmx::engine::Engine>>>,
+    dmx_engine: Option<Arc<dmx::engine::Engine>>,
     /// The playlist to use.
     playlist: Arc<Playlist>,
     /// The all songs playlist.
@@ -289,7 +289,7 @@ impl Player {
         device: Arc<dyn audio::Device>,
         mappings: Arc<HashMap<String, Vec<u16>>>,
         midi_device: Option<Arc<dyn midi::Device>>,
-        dmx_engine: Option<Arc<RwLock<dmx::engine::Engine>>>,
+        dmx_engine: Option<Arc<dmx::engine::Engine>>,
         song: Arc<Song>,
         cancel_handle: CancelHandle,
         play_tx: oneshot::Sender<()>,
