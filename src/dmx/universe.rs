@@ -72,8 +72,16 @@ impl Universe {
         }
     }
 
+    #[cfg(test)]
+    pub fn get_dim_speed(&self) -> f64 {
+        *self
+            .global_dim_rate
+            .read()
+            .expect("Unable to get global dim rate read lock")
+    }
+
     /// Updates the dim speed.
-    pub fn update_dim_speed(&mut self, dim_rate: Duration) {
+    pub fn update_dim_speed(&self, dim_rate: Duration) {
         let mut global_dim_rate = self
             .global_dim_rate
             .write()
@@ -86,7 +94,7 @@ impl Universe {
     }
 
     /// Updates the universe with the DMX channel/value.
-    pub fn update_channel_data(&mut self, channel: u16, value: u8, dim: bool) {
+    pub fn update_channel_data(&self, channel: u16, value: u8, dim: bool) {
         let channel_index = usize::from(channel);
         let value = f64::from(value);
         self.target
@@ -142,7 +150,7 @@ impl Universe {
                 if Universe::approach_target(&rates, &current, &target, &max_channels, &mut buffer)
                 {
                     if let Err(e) = ola_sender.send(DmxMessage {
-                        universe: universe,
+                        universe,
                         buffer: buffer.clone(),
                     }) {
                         error!(
@@ -231,7 +239,7 @@ mod test {
     #[test]
     fn test_thread() -> Result<(), Box<dyn Error>> {
         // We just want to make sure that the thread vaguely does what we think it should.
-        let (mut universe, receiver) = new_universe();
+        let (universe, receiver) = new_universe();
 
         let receiver_handle = thread::spawn(move || receiver.recv());
 
@@ -254,7 +262,7 @@ mod test {
 
     #[test]
     fn test_no_dimming() {
-        let (mut universe, _) = new_universe();
+        let (universe, _) = new_universe();
 
         universe.update_channel_data(0, 0, true);
         universe.update_channel_data(1, 50, true);
@@ -277,7 +285,7 @@ mod test {
 
     #[test]
     fn test_ignore_dimming() {
-        let (mut universe, _) = new_universe();
+        let (universe, _) = new_universe();
 
         // Dim over 2 seconds. This will be ignored.
         universe.update_dim_speed(Duration::from_secs(2));
@@ -303,7 +311,7 @@ mod test {
 
     #[test]
     fn test_dimming_over_two_seconds() {
-        let (mut universe, _) = new_universe();
+        let (universe, _) = new_universe();
 
         // Dim over 2 seconds.
         universe.update_dim_speed(Duration::from_secs(2));
@@ -359,7 +367,7 @@ mod test {
 
     #[test]
     fn test_separate_dimming() {
-        let (mut universe, _) = new_universe();
+        let (universe, _) = new_universe();
 
         // Dim over 1 second.
         universe.update_dim_speed(Duration::from_secs(1));
@@ -412,7 +420,7 @@ mod test {
 
     #[test]
     fn test_dimming_override() {
-        let (mut universe, _) = new_universe();
+        let (universe, _) = new_universe();
 
         // Dim over 1 second.
         universe.update_dim_speed(Duration::from_secs(1));

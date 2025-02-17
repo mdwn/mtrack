@@ -11,10 +11,7 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-use std::{
-    error::Error,
-    sync::{Arc, RwLock},
-};
+use std::{error::Error, sync::Arc};
 
 use engine::Engine;
 use universe::Universe;
@@ -25,12 +22,10 @@ pub mod engine;
 pub mod universe;
 
 /// Gets a device with the given name.
-pub fn create_engine(
-    config: Option<&config::Dmx>,
-) -> Result<Option<Arc<RwLock<Engine>>>, Box<dyn Error>> {
+pub fn create_engine(config: Option<&config::Dmx>) -> Result<Option<Arc<Engine>>, Box<dyn Error>> {
     let config = match config {
         Some(config) => config,
         None => return Ok(None),
     };
-    Ok(Some(Arc::new(RwLock::new(Engine::new(config)?))))
+    Ok(Some(Arc::new(Engine::new(config)?)))
 }

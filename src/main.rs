@@ -304,6 +304,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         Some(config::Dmx::new(
                             dmx_dimming_speed_modifier,
                             dmx_playback_delay,
+                            None,
                             universe_configs,
                         ))
                     }
