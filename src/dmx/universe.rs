@@ -125,7 +125,7 @@ impl Universe {
         let target = self.target.clone();
         let max_channels = self.max_channels.clone();
         let cancel_handle = self.cancel_handle.clone();
-        let universe = self.config.universe();
+        let universe = u32::from(self.config.universe());
         let ola_sender = self.ola_sender.clone();
 
         thread::spawn(move || {
@@ -138,15 +138,11 @@ impl Universe {
                 if cancel_handle.is_cancelled() {
                     return;
                 }
-                if Universe::approach_target(
-                    rates.clone(),
-                    current.clone(),
-                    target.clone(),
-                    max_channels.load(Ordering::Relaxed),
-                    &mut buffer,
-                ) {
+
+                if Universe::approach_target(&rates, &current, &target, &max_channels, &mut buffer)
+                {
                     if let Err(e) = ola_sender.send(DmxMessage {
-                        universe: u32::from(universe),
+                        universe: universe,
                         buffer: buffer.clone(),
                     }) {
                         error!(
@@ -165,10 +161,10 @@ impl Universe {
     /// Takes the given inputs and approaches the current expected DMX values.
     /// Returns true if anything changed.
     fn approach_target(
-        rates: Arc<RwLock<Vec<f64>>>,
-        current: Arc<RwLock<Vec<f64>>>,
-        target: Arc<RwLock<Vec<f64>>>,
-        max_channels: u16,
+        rates: &Arc<RwLock<Vec<f64>>>,
+        current: &Arc<RwLock<Vec<f64>>>,
+        target: &Arc<RwLock<Vec<f64>>>,
+        max_channels: &Arc<AtomicU16>,
         buffer: &mut DmxBuffer,
     ) -> bool {
         let mut current = current
@@ -182,7 +178,7 @@ impl Universe {
             .expect("Unable to get target universe information lock");
 
         let mut changed = false;
-        for i in 0..usize::from(max_channels) {
+        for i in 0..usize::from(max_channels.load(Ordering::Relaxed)) {
             // We want current == target, but due to floating points we'll test if they're close to each other.
             if (current[i] - target[i]).abs() > f64::EPSILON {
                 changed = true;
@@ -204,28 +200,61 @@ impl Universe {
 #[cfg(test)]
 mod test {
     use std::{
-        sync::{atomic::Ordering, mpsc},
+        error::Error,
+        sync::mpsc::{self, Receiver},
+        thread,
         time::Duration,
     };
 
     use ola::DmxBuffer;
 
-    use crate::{config, dmx::universe::TARGET_HZ, playsync::CancelHandle};
+    use crate::{
+        config,
+        dmx::{engine::DmxMessage, universe::TARGET_HZ},
+        playsync::CancelHandle,
+    };
 
     use super::Universe;
 
-    fn new_universe() -> Universe {
-        let (sender, _) = mpsc::channel();
-        Universe::new(
-            config::Universe::new(1, "universe".to_string()),
-            CancelHandle::new(),
-            sender,
+    fn new_universe() -> (Universe, Receiver<DmxMessage>) {
+        let (sender, receiver) = mpsc::channel();
+        (
+            Universe::new(
+                config::Universe::new(1, "universe".to_string()),
+                CancelHandle::new(),
+                sender,
+            ),
+            receiver,
         )
     }
 
     #[test]
+    fn test_thread() -> Result<(), Box<dyn Error>> {
+        // We just want to make sure that the thread vaguely does what we think it should.
+        let (mut universe, receiver) = new_universe();
+
+        let receiver_handle = thread::spawn(move || receiver.recv());
+
+        let handle = universe.start_thread();
+        universe.update_channel_data(1, 50, false);
+
+        let result = receiver_handle
+            .join()
+            .map_err(|_| "Error waiting for join".to_string())??;
+
+        assert_eq!([0u8, 50u8], result.buffer.as_slice()[0..2]);
+
+        universe.cancel_handle.cancel();
+        handle
+            .join()
+            .map_err(|_| "Error waiting for join".to_string())?;
+
+        Ok(())
+    }
+
+    #[test]
     fn test_no_dimming() {
-        let mut universe = new_universe();
+        let (mut universe, _) = new_universe();
 
         universe.update_channel_data(0, 0, true);
         universe.update_channel_data(1, 50, true);
@@ -236,10 +265,10 @@ mod test {
         let mut buffer = DmxBuffer::new();
 
         Universe::approach_target(
-            universe.rates.clone(),
-            universe.current.clone(),
-            universe.target.clone(),
-            universe.max_channels.load(Ordering::Relaxed),
+            &universe.rates,
+            &universe.current,
+            &universe.target,
+            &universe.max_channels,
             &mut buffer,
         );
 
@@ -248,7 +277,7 @@ mod test {
 
     #[test]
     fn test_ignore_dimming() {
-        let mut universe = new_universe();
+        let (mut universe, _) = new_universe();
 
         // Dim over 2 seconds. This will be ignored.
         universe.update_dim_speed(Duration::from_secs(2));
@@ -262,10 +291,10 @@ mod test {
         let mut buffer = DmxBuffer::new();
 
         Universe::approach_target(
-            universe.rates.clone(),
-            universe.current.clone(),
-            universe.target.clone(),
-            universe.max_channels.load(Ordering::Relaxed),
+            &universe.rates,
+            &universe.current,
+            &universe.target,
+            &universe.max_channels,
             &mut buffer,
         );
 
@@ -274,7 +303,7 @@ mod test {
 
     #[test]
     fn test_dimming_over_two_seconds() {
-        let mut universe = new_universe();
+        let (mut universe, _) = new_universe();
 
         // Dim over 2 seconds.
         universe.update_dim_speed(Duration::from_secs(2));
@@ -290,10 +319,10 @@ mod test {
         // There are TARGET_HZ updates per second.
         for _ in 0..(TARGET_HZ as usize) {
             assert!(Universe::approach_target(
-                universe.rates.clone(),
-                universe.current.clone(),
-                universe.target.clone(),
-                universe.max_channels.load(Ordering::Relaxed),
+                &universe.rates,
+                &universe.current,
+                &universe.target,
+                &universe.max_channels,
                 &mut buffer,
             ))
         }
@@ -303,10 +332,10 @@ mod test {
 
         for _ in 0..(TARGET_HZ as usize) {
             assert!(Universe::approach_target(
-                universe.rates.clone(),
-                universe.current.clone(),
-                universe.target.clone(),
-                universe.max_channels.load(Ordering::Relaxed),
+                &universe.rates,
+                &universe.current,
+                &universe.target,
+                &universe.max_channels,
                 &mut buffer,
             ))
         }
@@ -316,10 +345,10 @@ mod test {
 
         for _ in 0..(TARGET_HZ as usize) {
             assert!(!Universe::approach_target(
-                universe.rates.clone(),
-                universe.current.clone(),
-                universe.target.clone(),
-                universe.max_channels.load(Ordering::Relaxed),
+                &universe.rates,
+                &universe.current,
+                &universe.target,
+                &universe.max_channels,
                 &mut buffer,
             ))
         }
@@ -330,7 +359,7 @@ mod test {
 
     #[test]
     fn test_separate_dimming() {
-        let mut universe = new_universe();
+        let (mut universe, _) = new_universe();
 
         // Dim over 1 second.
         universe.update_dim_speed(Duration::from_secs(1));
@@ -340,10 +369,10 @@ mod test {
 
         // Progress one tick.
         let _ = Universe::approach_target(
-            universe.rates.clone(),
-            universe.current.clone(),
-            universe.target.clone(),
-            universe.max_channels.load(Ordering::Relaxed),
+            &universe.rates,
+            &universe.current,
+            &universe.target,
+            &universe.max_channels,
             &mut buffer,
         );
 
@@ -356,10 +385,10 @@ mod test {
         // There are TARGET_HZ updates per second.
         for _ in 0..(TARGET_HZ as usize) {
             assert!(Universe::approach_target(
-                universe.rates.clone(),
-                universe.current.clone(),
-                universe.target.clone(),
-                universe.max_channels.load(Ordering::Relaxed),
+                &universe.rates,
+                &universe.current,
+                &universe.target,
+                &universe.max_channels,
                 &mut buffer,
             ))
         }
@@ -369,10 +398,10 @@ mod test {
 
         for _ in 0..(TARGET_HZ as usize) {
             assert!(Universe::approach_target(
-                universe.rates.clone(),
-                universe.current.clone(),
-                universe.target.clone(),
-                universe.max_channels.load(Ordering::Relaxed),
+                &universe.rates,
+                &universe.current,
+                &universe.target,
+                &universe.max_channels,
                 &mut buffer,
             ))
         }
@@ -383,7 +412,7 @@ mod test {
 
     #[test]
     fn test_dimming_override() {
-        let mut universe = new_universe();
+        let (mut universe, _) = new_universe();
 
         // Dim over 1 second.
         universe.update_dim_speed(Duration::from_secs(1));
@@ -394,10 +423,10 @@ mod test {
         // There are TARGET_HZ updates per second.
         for _ in 0..((TARGET_HZ / 2.0) as usize) {
             assert!(Universe::approach_target(
-                universe.rates.clone(),
-                universe.current.clone(),
-                universe.target.clone(),
-                universe.max_channels.load(Ordering::Relaxed),
+                &universe.rates,
+                &universe.current,
+                &universe.target,
+                &universe.max_channels,
                 &mut buffer,
             ))
         }
@@ -411,10 +440,10 @@ mod test {
 
         for _ in 0..(TARGET_HZ as usize) {
             assert!(Universe::approach_target(
-                universe.rates.clone(),
-                universe.current.clone(),
-                universe.target.clone(),
-                universe.max_channels.load(Ordering::Relaxed),
+                &universe.rates,
+                &universe.current,
+                &universe.target,
+                &universe.max_channels,
                 &mut buffer,
             ))
         }
@@ -424,10 +453,10 @@ mod test {
 
         for _ in 0..(TARGET_HZ as usize) {
             assert!(Universe::approach_target(
-                universe.rates.clone(),
-                universe.current.clone(),
-                universe.target.clone(),
-                universe.max_channels.load(Ordering::Relaxed),
+                &universe.rates,
+                &universe.current,
+                &universe.target,
+                &universe.max_channels,
                 &mut buffer,
             ))
         }
