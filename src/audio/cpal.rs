@@ -150,7 +150,7 @@ impl Device {
         let name = config.device();
         match Device::list_cpal_devices()?
             .into_iter()
-            .find(|device| device.name == *name)
+            .find(|device| device.name.trim() == name)
         {
             Some(mut device) => {
                 device.playback_delay = config.playback_delay()?;
