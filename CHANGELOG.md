@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1]
+
+Fix: Audio interfaces with spaces at the end can now be selected.
+
+## [0.4.0] - Refactoring of config parsing, gRPC/OSC.
+
 A gRPC server has been added to mtrack along with several utility subcommands that allow
 for control of the player from the command line. This should be useful for creating
 external player clients.
