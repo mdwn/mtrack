@@ -15,6 +15,7 @@ use midly::live::LiveEvent;
 use std::{
     collections::HashMap,
     error::Error,
+    fmt::Display,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Barrier,
@@ -26,7 +27,7 @@ use tokio::{
     sync::{oneshot, Mutex},
     task::JoinHandle,
 };
-use tracing::{error, info, span, Level, Span};
+use tracing::{error, info, span, warn, Level, Span};
 
 use crate::songs::Songs;
 use crate::{
@@ -76,7 +77,9 @@ impl Player {
         playlist: Arc<Playlist>,
         config: &config::Player,
     ) -> Result<Player, Box<dyn Error>> {
-        let midi_device = midi::get_device(config.midi())?;
+        let midi_device = Self::wait_for_ok("midi device".to_string(), || {
+            midi::get_device(config.midi())
+        });
         Self::new_with_midi_device(songs, playlist, midi_device, config)
     }
 
@@ -89,9 +92,15 @@ impl Player {
         let span = span!(Level::INFO, "player");
         let _enter = span.enter();
 
-        let device = audio::get_device(config.audio())?;
-        let dmx_engine = dmx::create_engine(config.dmx())?;
-        let status_events = StatusEvents::new(config.status_events())?;
+        let device = Self::wait_for_ok("audio device".to_string(), || {
+            audio::get_device(config.audio())
+        });
+        let dmx_engine = Self::wait_for_ok("dmx engine".to_string(), || {
+            dmx::create_engine(config.dmx())
+        });
+        let status_events = Self::wait_for_ok("status events".to_string(), || {
+            StatusEvents::new(config.status_events())
+        });
 
         let player = Player {
             device,
@@ -127,6 +136,21 @@ impl Player {
         }
 
         Ok(player)
+    }
+
+    /// Wait for constructor function to return an Ok(result) variant
+    fn wait_for_ok<T, E: Display, F: Fn() -> Result<T, E>>(name: String, constructor: F) -> T {
+        loop {
+            match constructor() {
+                Ok(ok) => return ok,
+                Err(err) => {
+                    warn!("Could not get {name}! {err}");
+                    info!("Retrying after delay.");
+                    let delay_ms = 500;
+                    thread::sleep(Duration::from_millis(delay_ms));
+                }
+            }
+        }
     }
 
     /// Gets the audio device currently in use by the player.
