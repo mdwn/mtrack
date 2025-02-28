@@ -824,10 +824,13 @@ mod test {
 
         write_wav(
             tempdir.join(tempwav1),
-            vec![1_i32, 2_i32, 3_i32, 4_i32, 5_i32],
+            vec![vec![1_i32, 2_i32, 3_i32, 4_i32, 5_i32]],
         )?;
-        write_wav(tempdir.join(tempwav2), vec![2_i32, 3_i32, 4_i32])?;
-        write_wav(tempdir.join(tempwav3), vec![0_i32, 0_i32, 1_i32, 2_i32])?;
+        write_wav(tempdir.join(tempwav2), vec![vec![2_i32, 3_i32, 4_i32]])?;
+        write_wav(
+            tempdir.join(tempwav3),
+            vec![vec![0_i32, 0_i32, 1_i32, 2_i32]],
+        )?;
 
         let track1 = config::Track::new("test 1".into(), tempwav1, Some(1));
         let track2 = config::Track::new("test 2".into(), tempwav2, Some(1));

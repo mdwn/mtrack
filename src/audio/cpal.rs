@@ -346,15 +346,15 @@ mod test {
         let tempwav1 = "tempwav1.wav";
         let tempwav2 = "tempwav2.wav";
 
-        write_wav(tempdir.join(tempwav1), vec![1_i32, 2_i32, 3_i32])?;
-        write_wav(tempdir.join(tempwav2), vec![2_i32, 3_i32])?;
+        write_wav(tempdir.join(tempwav1), vec![vec![1_i32, 2_i32, 3_i32]])?;
+        write_wav(tempdir.join(tempwav2), vec![vec![2_i32, 3_i32]])?;
 
         let track1 = config::Track::new("test 1".into(), tempwav1, Some(1));
         let track2 = config::Track::new("test 2".into(), tempwav2, Some(1));
 
         let song = Song::new(
             &tempdir,
-            &config::Song::new("song name", vec![track1, track2]),
+            &config::Song::new("song name", None, None, None, None, vec![track1, track2]),
         )?;
         let mut mappings: HashMap<String, Vec<u16>> = HashMap::new();
         mappings.insert("test 1".into(), vec![1]);
@@ -391,15 +391,15 @@ mod test {
         let tempwav1 = "tempwav1.wav";
         let tempwav2 = "tempwav2.wav";
 
-        write_wav(tempdir.join(tempwav1), vec![1_i32, 2_i32, 3_i32])?;
-        write_wav(tempdir.join(tempwav2), vec![2_i32, 3_i32])?;
+        write_wav(tempdir.join(tempwav1), vec![vec![1_i32, 2_i32, 3_i32]])?;
+        write_wav(tempdir.join(tempwav2), vec![vec![2_i32, 3_i32]])?;
 
         let track1 = config::Track::new("test 1".into(), tempwav1, Some(1));
         let track2 = config::Track::new("test 2".into(), tempwav2, Some(1));
 
         let song = Song::new(
             &tempdir,
-            &config::Song::new("song name", vec![track1, track2]),
+            &config::Song::new("song name", None, None, None, None, vec![track1, track2]),
         )?;
         let mut mappings: HashMap<String, Vec<u16>> = HashMap::new();
         mappings.insert("test 1".into(), vec![1]);
@@ -429,15 +429,15 @@ mod test {
         let tempwav1 = "tempwav1.wav";
         let tempwav2 = "tempwav2.wav";
 
-        write_wav(tempdir.join(tempwav1), vec![1_i32, 2_i32, 3_i32])?;
-        write_wav(tempdir.join(tempwav2), vec![2_i32, 3_i32])?;
+        write_wav(tempdir.join(tempwav1), vec![vec![1_i32, 2_i32, 3_i32]])?;
+        write_wav(tempdir.join(tempwav2), vec![vec![2_i32, 3_i32]])?;
 
         let track1 = config::Track::new("test 1".into(), tempwav1, Some(1));
         let track2 = config::Track::new("test 2".into(), tempwav2, Some(1));
 
         let song = Song::new(
             &tempdir,
-            &config::Song::new("song name", vec![track1, track2]),
+            &config::Song::new("song name", None, None, None, None, vec![track1, track2]),
         )?;
         let mut mappings: HashMap<String, Vec<u16>> = HashMap::new();
         mappings.insert("test 1".into(), vec![1]);
