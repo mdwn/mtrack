@@ -11,10 +11,10 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// A YAML representation of a track.
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, Serialize)]
 pub struct Track {
     /// The name of the track.
     name: String,
@@ -26,7 +26,6 @@ pub struct Track {
 
 impl Track {
     /// Creates a new track config.
-    #[cfg(test)]
     pub fn new(name: String, file: &str, file_channel: Option<u16>) -> Track {
         Track {
             name,

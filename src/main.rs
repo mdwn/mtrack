@@ -40,6 +40,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tonic::transport::Channel;
 use tonic::Request;
+use tracing::info;
 
 const SYSTEMD_SERVICE: &str = r#"
 [Unit]
@@ -74,6 +75,9 @@ enum Commands {
     Songs {
         /// The path to the songs repository on disk.
         path: String,
+        /// Initialize song directories with YAML files containing default values.
+        #[arg(long)]
+        init: bool,
     },
     /// Lists the available audio output devices.
     Devices {},
@@ -170,7 +174,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Songs { path } => {
+        Commands::Songs { path, init } => {
+            if init {
+                info!("Initializing songs");
+                songs::initialize_songs(Path::new(&path))?;
+            } else {
+                info!("Not initializing songs");
+            }
+
             let songs = songs::get_all_songs(Path::new(&path))?;
 
             if songs.is_empty() {

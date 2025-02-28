@@ -22,6 +22,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 use std::{cmp, fmt, thread};
 
+use clap::builder::OsStr;
 use hound::{SampleFormat, WavReader, WavSamples};
 use midly::live::LiveEvent;
 use midly::{Format, Smf};
@@ -29,7 +30,7 @@ use nodi::timers::Ticker;
 use nodi::Sheet;
 use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
-use tracing::{debug, error};
+use tracing::{debug, error, info, warn};
 
 use crate::config;
 use crate::proto::player;
@@ -166,6 +167,66 @@ impl Song {
         })
     }
 
+    /// Create a song from a directory without a configuration file
+    fn initialize(song_directory: &PathBuf) -> Result<Self, Box<dyn Error>> {
+        let song_files = fs::read_dir(song_directory)?;
+        let mut song = Self::default();
+        song.name = song_directory
+            .file_name()
+            .unwrap_or(&OsStr::from("unreadable directory name"))
+            .to_string_lossy()
+            .to_string();
+        for song_file in song_files {
+            let entry = song_file?;
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                warn!("Song directory {song_directory:?} has a subdirectory called '{entry:?}'. It will be ignored for initialization.");
+                continue;
+            }
+            if !file_type.is_file() {
+                warn!("Song directory {song_directory:?} has an entry '{entry:?}' that is not a regular file. It will be ignored during initialization.");
+                continue;
+            }
+
+            let path = entry.path();
+            let stem = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                // .and_then(|stem| Some(stem.to_string()))
+                .unwrap_or("Unreadable file stem");
+            let extension = path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                // .and_then(|extension| Some(extension.to_string()))
+                .unwrap_or("Unreadable file extension");
+
+            match extension {
+                "mid" => {
+                    if stem.starts_with("dmx_") {
+                        song.light_shows.push(LightShow {
+                            universe_name: "default universe".to_string(),
+                            dmx_file: entry.path(),
+                            midi_channels: vec![],
+                        });
+                    } else {
+                        song.midi_playback = Some(MidiPlayback {
+                            file: entry.path(),
+                            exclude_midi_channels: vec![],
+                        })
+                    }
+                }
+                "wav" => {
+                    let mut tracks = Track::load_tracks(&path)?;
+                    song.tracks.append(&mut tracks);
+                }
+                unknown_extension => {
+                    info!("Unknown extension: {unknown_extension}. Ignoring file.");
+                }
+            }
+        }
+        Ok(song)
+    }
+
     /// Gets the name of the song.
     pub fn name(&self) -> &str {
         &self.name
@@ -264,6 +325,23 @@ impl fmt::Display for Song {
                 .collect::<Vec<String>>()
                 .join(", "),
         )
+    }
+}
+
+impl Default for Song {
+    fn default() -> Self {
+        Self {
+            name: Default::default(),
+            midi_event: Default::default(),
+            midi_playback: Default::default(),
+            light_shows: Default::default(),
+            num_channels: Default::default(),
+            sample_rate: Default::default(),
+            sample_format: SampleFormat::Int,
+            bits_per_sample: Default::default(),
+            duration: Default::default(),
+            tracks: Default::default(),
+        }
     }
 }
 
@@ -416,6 +494,75 @@ impl Track {
             bits_per_sample,
             duration,
         })
+    }
+
+    pub fn load_tracks(track_path: &PathBuf) -> Result<Vec<Track>, Box<dyn Error>> {
+        let file_name = track_path
+            .file_name()
+            .unwrap_or(&OsStr::from("unreadable file name"))
+            .to_string_lossy()
+            .to_string();
+        let suffix = ".wav".to_string();
+        assert!(
+            file_name.ends_with(&suffix),
+            "Expected file name to end in '.wav'"
+        );
+        let track_name = match file_name.rsplit_once(".") {
+            Some((prefix, _suffix)) => prefix.to_string(),
+            None => "default name".to_string(),
+        };
+
+        let reader = WavReader::open(&track_path)?;
+        let spec = reader.spec();
+        let sample_rate = spec.sample_rate;
+        let sample_format = spec.sample_format;
+        let duration = Duration::from_secs(u64::from(reader.duration()) / u64::from(sample_rate));
+        let bits_per_sample = spec.bits_per_sample;
+
+        let tracks = match spec.channels {
+            0 => vec![],
+            1 => vec![Track {
+                name: track_name,
+                file: track_path.to_path_buf(),
+                file_channel: 0,
+                sample_rate,
+                sample_format,
+                bits_per_sample,
+                duration,
+            }],
+            2 => vec![
+                Track {
+                    name: format!("{track_name}-l"),
+                    file: track_path.to_path_buf(),
+                    file_channel: 0,
+                    sample_rate,
+                    sample_format,
+                    bits_per_sample,
+                    duration,
+                },
+                Track {
+                    name: format!("{track_name}-r"),
+                    file: track_path.to_path_buf(),
+                    file_channel: 1,
+                    sample_rate,
+                    sample_format,
+                    bits_per_sample,
+                    duration,
+                },
+            ],
+            _ => (0..spec.channels)
+                .map(|channel| Track {
+                    name: format!("{track_name}-{channel}"),
+                    file: track_path.to_path_buf(),
+                    file_channel: channel,
+                    sample_rate,
+                    sample_format,
+                    bits_per_sample,
+                    duration,
+                })
+                .collect(),
+        };
+        Ok(tracks)
     }
 
     /// Gets the track name.
@@ -738,6 +885,69 @@ impl Songs {
     }
 }
 
+/// Create default song configurations in a repository of song directories
+pub fn initialize_songs(start_path: &Path) -> Result<usize, Box<dyn Error>> {
+    let song_directories = fs::read_dir(start_path)?;
+    let mut num_songs_found = 0;
+    for song_directory in song_directories {
+        let entry = song_directory?;
+        let file_type = entry.file_type()?;
+        if !file_type.is_dir() {
+            continue;
+        }
+        let song_config = match Song::initialize(&entry.path()) {
+            Ok(song) => {
+                num_songs_found += 1;
+                config::Song::new(
+                    song.name(),
+                    None,
+                    match &song.midi_playback {
+                        Some(midi_playback) => {
+                            Some(midi_playback.file.to_string_lossy().to_string())
+                        }
+                        None => None,
+                    },
+                    None,
+                    match &song.light_shows().len() {
+                        0 => None,
+                        _ => {
+                            let light_shows = song.light_shows();
+                            Some(
+                                light_shows
+                                    .iter()
+                                    .map(|light_show| {
+                                        config::LightShow::new(
+                                            light_show.universe_name(),
+                                            light_show.dmx_file.to_string_lossy().to_string(),
+                                            Some(light_show.midi_channels()),
+                                        )
+                                    })
+                                    .collect(),
+                            )
+                        }
+                    },
+                    song.tracks()
+                        .iter()
+                        .map(|track| {
+                            config::Track::new(
+                                track.name().to_string(),
+                                &track.file.to_string_lossy().to_string(),
+                                Some(track.file_channel),
+                            )
+                        })
+                        .collect(),
+                )
+            }
+            Err(error) => return Err(error),
+        };
+        if let Err(error) = song_config.save(entry.path().join("song.yaml").as_path()) {
+            return Err(error);
+        }
+    }
+    info!("Found {num_songs_found} songs");
+    Ok(num_songs_found)
+}
+
 /// Recurse into the given path and return all valid songs found.
 pub fn get_all_songs(path: &Path) -> Result<Arc<Songs>, Box<dyn Error>> {
     debug!("Getting songs for directory {path:?}");
@@ -780,11 +990,18 @@ pub fn get_all_songs(path: &Path) -> Result<Arc<Songs>, Box<dyn Error>> {
 
 #[cfg(test)]
 mod test {
-    use std::{collections::HashMap, error::Error};
+    use std::{
+        collections::HashMap,
+        error::Error,
+        fs, io,
+        path::{Path, PathBuf},
+    };
 
-    use crate::{config, testutil::write_wav};
+    use thiserror::Error;
 
-    use super::{Sample, SongSource};
+    use crate::{config, songs::initialize_songs, testutil::write_wav};
+
+    use super::{get_all_songs, Sample, SongSource};
 
     #[test]
     fn song_source_frame_read() -> Result<(), Box<dyn Error>> {
@@ -838,7 +1055,14 @@ mod test {
 
         let song = super::Song::new(
             &tempdir,
-            &config::Song::new("song name", vec![track1, track2, track3]),
+            &config::Song::new(
+                "song name",
+                None,
+                None,
+                None,
+                None,
+                vec![track1, track2, track3],
+            ),
         )?;
         let mut mapping: HashMap<String, Vec<u16>> = HashMap::new();
         mapping.insert("test 1".into(), vec![1]);
@@ -868,5 +1092,152 @@ mod test {
         }
 
         Ok(Some(frame))
+    }
+
+    fn count_songs(path: &Path) -> Result<usize, TestError> {
+        let songs = get_all_songs(path)?;
+        Ok(songs.len())
+    }
+
+    fn create_song_dir(path: &Path, song_name: &str) -> Result<PathBuf, Box<dyn Error>> {
+        let song_path = path.join(song_name);
+        if !fs::exists(&song_path)? {
+            fs::create_dir(&song_path)?;
+        }
+        Ok(song_path)
+    }
+
+    fn create_mono_song(path: &Path) -> Result<(), Box<dyn Error>> {
+        let song_path = create_song_dir(&path, "1 Song with mono track")?;
+
+        write_wav(
+            song_path.join("mono_track.wav"),
+            vec![vec![1_i32, 2_i32, 3_i32, 4_i32, 5_i32]],
+        )?;
+
+        Ok(())
+    }
+
+    fn create_stereo_song(path: &Path) -> Result<(), Box<dyn Error>> {
+        let song_path = create_song_dir(path, "2 Song with stereo track")?;
+
+        write_wav(
+            song_path.join("stereo_track.wav"),
+            vec![
+                vec![1_i32, 2_i32, 3_i32, 4_i32, 5_i32],
+                vec![5_i32, 4_i32, 3_i32, 2_i32, 1_i32],
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    fn create_mono_and_stereo_song(path: &Path) -> Result<(), Box<dyn Error>> {
+        let song_path = create_song_dir(path, "3 Song with mono and stereo tracks")?;
+
+        write_wav(
+            song_path.join("mono_track.wav"),
+            vec![vec![1_i32, 2_i32, 3_i32, 4_i32, 5_i32]],
+        )?;
+
+        write_wav(
+            song_path.join("stereo_track.wav"),
+            vec![
+                vec![1_i32, 2_i32, 3_i32, 4_i32, 5_i32],
+                vec![5_i32, 4_i32, 3_i32, 2_i32, 1_i32],
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    #[derive(Debug, Error)]
+    enum TestError {
+        #[error("Generic error! {0}")]
+        Generic(#[from] Box<dyn Error>),
+        #[error("I/O error! {0}")]
+        IoError(#[from] io::Error),
+        #[error("No song found")]
+        NoSongFound,
+    }
+
+    #[test]
+    fn test_init() -> Result<(), TestError> {
+        let temp_dir = tempfile::tempdir()?;
+        let temp_dir = temp_dir.path();
+        assert_eq!(
+            count_songs(temp_dir)?,
+            0,
+            "Expected no song in a newly created directory."
+        );
+
+        create_mono_song(temp_dir)?;
+        check_first_song(temp_dir)?;
+
+        create_stereo_song(temp_dir)?;
+        check_second_song(temp_dir)?;
+
+        create_mono_and_stereo_song(temp_dir)?;
+        check_third_song(temp_dir)?;
+
+        Ok(())
+    }
+
+    fn check_first_song(temp_dir: &Path) -> Result<(), TestError> {
+        assert_eq!(
+            count_songs(temp_dir)?,
+            0,
+            "Expected no song in a newly created directory with one wav file."
+        );
+        let num_songs = initialize_songs(temp_dir)?;
+        assert_eq!(num_songs, 1, "Expected to find one song configuration.");
+        let songs = get_all_songs(temp_dir)?;
+        let songs_list = songs.list();
+        assert_eq!(
+            songs_list.len(),
+            num_songs,
+            "Expected to find the number of songs to be equal to the number of configs created."
+        );
+        let first_song = songs_list.first().ok_or(TestError::NoSongFound)?;
+        assert_eq!(first_song.tracks().len(), 1, "Expected to find one track");
+        Ok(())
+    }
+
+    fn check_second_song(temp_dir: &Path) -> Result<(), TestError> {
+        let num_songs = initialize_songs(temp_dir)?;
+        assert_eq!(num_songs, 2, "Expected to find two song configurations.");
+        let songs = get_all_songs(temp_dir)?;
+        let songs_list = songs.sorted_list();
+        assert_eq!(
+            songs_list.len(),
+            num_songs,
+            "Expected to find the number of songs to be equal to the number of configs created."
+        );
+        let first_song = songs_list.first().ok_or(TestError::NoSongFound)?;
+        assert_eq!(first_song.tracks().len(), 1, "Expected to find one track");
+        let second_song = songs_list.iter().last().ok_or(TestError::NoSongFound)?;
+        assert_eq!(second_song.tracks().len(), 2, "Expected to find two tracks");
+        Ok(())
+    }
+
+    fn check_third_song(temp_dir: &Path) -> Result<(), TestError> {
+        let num_songs = initialize_songs(temp_dir)?;
+        assert_eq!(num_songs, 3, "Expected to find three song configurations.");
+        let songs = get_all_songs(temp_dir)?;
+        let songs_list = songs.sorted_list();
+        assert_eq!(
+            songs_list.len(),
+            num_songs,
+            "Expected to find the number of songs to be equal to the number of configs created."
+        );
+        let first_song = songs_list.first().ok_or(TestError::NoSongFound)?;
+        assert_eq!(first_song.tracks().len(), 1, "Expected to find one track");
+        let third_song = songs_list.iter().last().ok_or(TestError::NoSongFound)?;
+        assert_eq!(
+            third_song.tracks().len(),
+            3,
+            "Expected to find three tracks"
+        );
+        Ok(())
     }
 }
