@@ -22,7 +22,6 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 use std::{cmp, fmt, thread};
 
-use clap::builder::OsStr;
 use hound::{SampleFormat, WavReader, WavSamples};
 use midly::live::LiveEvent;
 use midly::{Format, Smf};
@@ -147,10 +146,10 @@ impl Song {
         }
 
         if sample_format.is_none() {
-            return Err("no sample format found".into());
+            warn!("no sample format found");
         }
         if bits_per_sample.is_none() {
-            return Err("no bits per sample found".into());
+            warn!("no bits per sample found");
         }
 
         Ok(Song {
@@ -160,8 +159,8 @@ impl Song {
             light_shows,
             num_channels,
             sample_rate,
-            sample_format: sample_format.expect("sample format not found"),
-            bits_per_sample: bits_per_sample.expect("bits per sample not found"),
+            sample_format: sample_format.unwrap_or(SampleFormat::Int),
+            bits_per_sample: bits_per_sample.unwrap_or(0),
             duration: max_duration,
             tracks,
         })
@@ -170,12 +169,15 @@ impl Song {
     /// Create a song from a directory without a configuration file
     fn initialize(song_directory: &PathBuf) -> Result<Self, Box<dyn Error>> {
         let song_files = fs::read_dir(song_directory)?;
-        let mut song = Self::default();
-        song.name = song_directory
+        let name = song_directory
             .file_name()
-            .unwrap_or(&OsStr::from("unreadable directory name"))
-            .to_string_lossy()
+            .and_then(|file_name| file_name.to_str())
+            .unwrap_or("unreadable directory name")
             .to_string();
+
+        let mut light_shows = vec![];
+        let mut midi_playback = None;
+        let mut tracks = vec![];
         for song_file in song_files {
             let entry = song_file?;
             let file_type = entry.file_type()?;
@@ -192,39 +194,83 @@ impl Song {
             let stem = path
                 .file_stem()
                 .and_then(|stem| stem.to_str())
-                // .and_then(|stem| Some(stem.to_string()))
                 .unwrap_or("Unreadable file stem");
             let extension = path
                 .extension()
                 .and_then(|extension| extension.to_str())
-                // .and_then(|extension| Some(extension.to_string()))
                 .unwrap_or("Unreadable file extension");
 
             match extension {
                 "mid" => {
                     if stem.starts_with("dmx_") {
-                        song.light_shows.push(LightShow {
+                        light_shows.push(LightShow {
                             universe_name: "default universe".to_string(),
-                            dmx_file: entry.path(),
+                            dmx_file: path,
                             midi_channels: vec![],
                         });
                     } else {
-                        song.midi_playback = Some(MidiPlayback {
-                            file: entry.path(),
+                        midi_playback = Some(MidiPlayback {
+                            file: path,
                             exclude_midi_channels: vec![],
                         })
                     }
                 }
                 "wav" => {
-                    let mut tracks = Track::load_tracks(&path)?;
-                    song.tracks.append(&mut tracks);
+                    let mut new_tracks = Track::load_tracks(&path)?;
+                    tracks.append(&mut new_tracks);
                 }
                 unknown_extension => {
                     info!("Unknown extension: {unknown_extension}. Ignoring file.");
                 }
             }
         }
+        let song = Self {
+            name,
+            midi_playback,
+            light_shows,
+            tracks,
+            ..Default::default()
+        };
         Ok(song)
+    }
+
+    pub fn get_config(&self) -> config::Song {
+        let name = self.name();
+        let midi_event = None;
+        let midi_file = self.midi_playback.as_ref().map(|midi_playback| {
+            midi_playback
+                .file
+                .file_name()
+                .and_then(|file_name| file_name.to_str())
+                .unwrap_or("unreadable file name")
+                .to_string()
+        });
+        let midi_playback = None;
+        let light_shows = match &self.light_shows().len() {
+            0 => None,
+            _ => {
+                let light_shows = self.light_shows();
+                Some(
+                    light_shows
+                        .iter()
+                        .map(|light_show| light_show.get_config())
+                        .collect(),
+                )
+            }
+        };
+        let tracks = self
+            .tracks()
+            .iter()
+            .map(|track| track.get_config())
+            .collect();
+        config::Song::new(
+            name,
+            midi_event,
+            midi_file,
+            midi_playback,
+            light_shows,
+            tracks,
+        )
     }
 
     /// Gets the name of the song.
@@ -442,6 +488,18 @@ impl LightShow {
     pub fn midi_channels(&self) -> Vec<u8> {
         self.midi_channels.clone()
     }
+
+    pub fn get_config(&self) -> config::LightShow {
+        config::LightShow::new(
+            self.universe_name(),
+            self.dmx_file
+                .file_name()
+                .and_then(|file_name| file_name.to_str())
+                .unwrap_or("unreadable file name")
+                .to_string(),
+            Some(self.midi_channels()),
+        )
+    }
 }
 
 /// Track is an individual audio track to play.
@@ -497,22 +555,18 @@ impl Track {
     }
 
     pub fn load_tracks(track_path: &PathBuf) -> Result<Vec<Track>, Box<dyn Error>> {
-        let file_name = track_path
-            .file_name()
-            .unwrap_or(&OsStr::from("unreadable file name"))
-            .to_string_lossy()
-            .to_string();
-        let suffix = ".wav".to_string();
-        assert!(
-            file_name.ends_with(&suffix),
-            "Expected file name to end in '.wav'"
-        );
-        let track_name = match file_name.rsplit_once(".") {
-            Some((prefix, _suffix)) => prefix.to_string(),
-            None => "default name".to_string(),
-        };
+        let stem = track_path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("Unreadable file stem");
+        let extension = track_path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or("Unreadable file extension");
 
-        let reader = WavReader::open(&track_path)?;
+        assert_eq!(extension, "wav", "Expected file name to end in '.wav'");
+        let track_name = stem.to_string();
+        let reader = WavReader::open(track_path)?;
         let spec = reader.spec();
         let sample_rate = spec.sample_rate;
         let sample_format = spec.sample_format;
@@ -524,7 +578,7 @@ impl Track {
             1 => vec![Track {
                 name: track_name,
                 file: track_path.to_path_buf(),
-                file_channel: 0,
+                file_channel: 1,
                 sample_rate,
                 sample_format,
                 bits_per_sample,
@@ -534,7 +588,7 @@ impl Track {
                 Track {
                     name: format!("{track_name}-l"),
                     file: track_path.to_path_buf(),
-                    file_channel: 0,
+                    file_channel: 1,
                     sample_rate,
                     sample_format,
                     bits_per_sample,
@@ -543,7 +597,7 @@ impl Track {
                 Track {
                     name: format!("{track_name}-r"),
                     file: track_path.to_path_buf(),
-                    file_channel: 1,
+                    file_channel: 2,
                     sample_rate,
                     sample_format,
                     bits_per_sample,
@@ -554,7 +608,7 @@ impl Track {
                 .map(|channel| Track {
                     name: format!("{track_name}-{channel}"),
                     file: track_path.to_path_buf(),
-                    file_channel: channel,
+                    file_channel: channel + 1,
                     sample_rate,
                     sample_format,
                     bits_per_sample,
@@ -568,6 +622,17 @@ impl Track {
     /// Gets the track name.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    pub fn get_config(&self) -> config::Track {
+        config::Track::new(
+            self.name().to_string(),
+            self.file
+                .file_name()
+                .and_then(|file_name| file_name.to_str())
+                .unwrap_or("unreadable file name"),
+            Some(self.file_channel),
+        )
     }
 }
 
@@ -898,51 +963,11 @@ pub fn initialize_songs(start_path: &Path) -> Result<usize, Box<dyn Error>> {
         let song_config = match Song::initialize(&entry.path()) {
             Ok(song) => {
                 num_songs_found += 1;
-                config::Song::new(
-                    song.name(),
-                    None,
-                    match &song.midi_playback {
-                        Some(midi_playback) => {
-                            Some(midi_playback.file.to_string_lossy().to_string())
-                        }
-                        None => None,
-                    },
-                    None,
-                    match &song.light_shows().len() {
-                        0 => None,
-                        _ => {
-                            let light_shows = song.light_shows();
-                            Some(
-                                light_shows
-                                    .iter()
-                                    .map(|light_show| {
-                                        config::LightShow::new(
-                                            light_show.universe_name(),
-                                            light_show.dmx_file.to_string_lossy().to_string(),
-                                            Some(light_show.midi_channels()),
-                                        )
-                                    })
-                                    .collect(),
-                            )
-                        }
-                    },
-                    song.tracks()
-                        .iter()
-                        .map(|track| {
-                            config::Track::new(
-                                track.name().to_string(),
-                                &track.file.to_string_lossy().to_string(),
-                                Some(track.file_channel),
-                            )
-                        })
-                        .collect(),
-                )
+                song.get_config()
             }
             Err(error) => return Err(error),
         };
-        if let Err(error) = song_config.save(entry.path().join("song.yaml").as_path()) {
-            return Err(error);
-        }
+        song_config.save(entry.path().join("song.yaml").as_path())?
     }
     info!("Found {num_songs_found} songs");
     Ok(num_songs_found)
@@ -1151,6 +1176,33 @@ mod test {
         Ok(())
     }
 
+    fn create_eight_channel_song(path: &Path) -> Result<(), Box<dyn Error>> {
+        let song_path = create_song_dir(path, "4 Song with eight tracks")?;
+
+        write_wav(
+            song_path.join("eight_channels_track.wav"),
+            vec![
+                vec![1_i32, 2_i32, 3_i32, 4_i32, 5_i32],
+                vec![2_i32, 4_i32, 3_i32, 2_i32, 1_i32],
+                vec![3_i32, 2_i32, 3_i32, 4_i32, 5_i32],
+                vec![4_i32, 4_i32, 3_i32, 2_i32, 1_i32],
+                vec![5_i32, 2_i32, 3_i32, 4_i32, 5_i32],
+                vec![6_i32, 4_i32, 3_i32, 2_i32, 1_i32],
+                vec![7_i32, 2_i32, 3_i32, 4_i32, 5_i32],
+                vec![8_i32, 4_i32, 3_i32, 2_i32, 1_i32],
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    fn create_midi_and_dmx_song(path: &Path) -> Result<(), Box<dyn Error>> {
+        let song_path = create_song_dir(path, "5 Song with MIDI and DMX")?;
+        fs::write(song_path.join("song.mid"), "")?;
+        fs::write(song_path.join("dmx_lightshow.mid"), "")?;
+        Ok(())
+    }
+
     #[derive(Debug, Error)]
     enum TestError {
         #[error("Generic error! {0}")]
@@ -1180,6 +1232,12 @@ mod test {
         create_mono_and_stereo_song(temp_dir)?;
         check_third_song(temp_dir)?;
 
+        create_eight_channel_song(temp_dir)?;
+        check_fourth_song(temp_dir)?;
+
+        create_midi_and_dmx_song(temp_dir)?;
+        check_fifth_song(temp_dir)?;
+
         Ok(())
     }
 
@@ -1199,7 +1257,20 @@ mod test {
             "Expected to find the number of songs to be equal to the number of configs created."
         );
         let first_song = songs_list.first().ok_or(TestError::NoSongFound)?;
-        assert_eq!(first_song.tracks().len(), 1, "Expected to find one track");
+        let tracks = first_song.tracks();
+        assert_eq!(tracks.len(), 1, "Expected to find one track");
+        assert_eq!(
+            first_song.name(),
+            "1 Song with mono track",
+            "Name is not correct"
+        );
+        assert_eq!(first_song.num_channels, 1, "Unexpected number of channels");
+        let track = tracks.first().unwrap();
+        assert_eq!(track.name, "mono_track", "Unexpected name");
+        assert!(
+            fs::exists(track.file.to_path_buf()).unwrap(),
+            "Track file not found"
+        );
         Ok(())
     }
 
@@ -1236,7 +1307,57 @@ mod test {
         assert_eq!(
             third_song.tracks().len(),
             3,
-            "Expected to find three tracks"
+            "Expected to find three tracks."
+        );
+        Ok(())
+    }
+
+    fn check_fourth_song(temp_dir: &Path) -> Result<(), TestError> {
+        let num_songs = initialize_songs(temp_dir)?;
+        assert_eq!(num_songs, 4, "Expected to find four song configurations.");
+        let songs = get_all_songs(temp_dir)?;
+        let songs_list = songs.sorted_list();
+        assert_eq!(
+            songs_list.len(),
+            num_songs,
+            "Expected to find the number of songs to be equal to the number of configs created."
+        );
+        let fourth_song = songs_list.iter().last().ok_or(TestError::NoSongFound)?;
+        assert_eq!(
+            fourth_song.tracks().len(),
+            8,
+            "Expected to find eight tracks."
+        );
+        assert_eq!(fourth_song.num_channels, 8, "Unexpected number of channels");
+        Ok(())
+    }
+
+    fn check_fifth_song(temp_dir: &Path) -> Result<(), TestError> {
+        let num_songs = initialize_songs(temp_dir)?;
+        assert_eq!(num_songs, 5, "Expected to find five song configurations.");
+        let songs = get_all_songs(temp_dir)?;
+        let songs_list = songs.sorted_list();
+        assert_eq!(
+            songs_list.len(),
+            num_songs,
+            "Expected to find the number of songs to be equal to the number of configs created."
+        );
+        let fifth_song = songs_list.iter().last().ok_or(TestError::NoSongFound)?;
+        assert_eq!(
+            fifth_song.tracks().len(),
+            0,
+            "Expected to find zero tracks."
+        );
+        assert_eq!(fifth_song.num_channels, 0, "Unexpected number of channels.");
+
+        assert!(
+            fifth_song.midi_playback().is_some(),
+            "Expected song to have MIDI playback."
+        );
+        assert_eq!(
+            fifth_song.light_shows().len(),
+            1,
+            "Expected song to have a light show."
         );
         Ok(())
     }
