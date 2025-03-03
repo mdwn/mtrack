@@ -11,11 +11,12 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-use std::{error::Error, path::Path};
+use std::{error::Error, io::Write, path::Path};
 
 use config::{Config, File};
 use midly::live::LiveEvent;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use tracing::info;
 
 use super::{
     midi::{self, ToMidiEvent},
@@ -23,7 +24,7 @@ use super::{
 };
 
 /// A YAML represetnation of a song.
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct Song {
     /// The name of the song.
     name: String,
@@ -41,14 +42,20 @@ pub struct Song {
 
 impl Song {
     /// Creates a new song configuration.
-    #[cfg(test)]
-    pub fn new(name: &str, tracks: Vec<Track>) -> Song {
+    pub fn new(
+        name: &str,
+        midi_event: Option<midi::Event>,
+        midi_file: Option<String>,
+        midi_playback: Option<MidiPlayback>,
+        light_shows: Option<Vec<LightShow>>,
+        tracks: Vec<Track>,
+    ) -> Song {
         Song {
             name: name.to_string(),
-            midi_event: None,
-            midi_file: None,
-            midi_playback: None,
-            light_shows: None,
+            midi_event,
+            midi_file,
+            midi_playback,
+            light_shows,
             tracks,
         }
     }
@@ -59,6 +66,22 @@ impl Song {
             .add_source(File::from(path))
             .build()?
             .try_deserialize::<Song>()?)
+    }
+
+    /// Serialize and save a song configuration struct to a file at given path.
+    pub fn save(&self, path: &Path) -> Result<(), Box<dyn Error>> {
+        let serialized = serde_yml::to_string(self)?;
+        info!(serialized);
+
+        let mut file = match std::fs::File::create(path) {
+            Ok(file) => file,
+            Err(err) => return Err(Box::new(err)),
+        };
+
+        match file.write_all(serialized.as_bytes()) {
+            Ok(_result) => Ok(()),
+            Err(err) => Err(Box::new(err)),
+        }
     }
 
     /// Gets the name of the song.
@@ -100,7 +123,7 @@ impl Song {
 }
 
 // A YAML representation of MIDI files with channel exclusions.
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, Serialize)]
 pub struct MidiPlayback {
     /// The MIDI file.
     file: String,
@@ -128,7 +151,7 @@ impl MidiPlayback {
 }
 
 // A YAML representation of light shows.
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, Serialize)]
 pub struct LightShow {
     /// The name of the universe. Will be matched against the universes configured in the DMX engine
     /// to determine where (if anywhere) this light show should be sent.
@@ -143,6 +166,15 @@ pub struct LightShow {
 }
 
 impl LightShow {
+    /// Constructor function
+    pub fn new(universe_name: String, dmx_file: String, midi_channels: Option<Vec<u8>>) -> Self {
+        Self {
+            universe_name,
+            dmx_file,
+            midi_channels,
+        }
+    }
+
     /// Gets the universe name for the light show.
     pub fn universe_name(&self) -> String {
         self.universe_name.clone()

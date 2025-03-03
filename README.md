@@ -197,6 +197,20 @@ $ mtrack play-direct -m my-midi-device -s 0.25 -d universe=1,name=light-show my-
 2024-03-22T21:24:25.676452Z  INFO play song (midir): mtrack::midi::midir: Playing song MIDI. device="my-midi-device:my-midi-device MIDI 1 28:0" song="My cool song" duration="4:14"
 ```
 
+#### Generating default song configurations
+
+Song configurations can be generated using the `songs` command as follows:
+
+
+```
+$ mtrack songs --init /mnt/song-storage
+```
+
+This will create a file called `song.yaml` in each subfolder of `/mnt/storage`. The name of the
+subfolder determines the song's name. WAV files are used as tracks. The track's name is
+determined using the file name and the number of channels within the file. MIDI files are used as
+MIDI playback, MIDI files that start with `dmx_` will be used as light shows. You can edit the generated files to refine the settings to your needs. 
+
 ### Playlists
 
 The playlist definition is a pretty simple config file:

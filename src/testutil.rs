@@ -53,7 +53,7 @@ where
 }
 
 #[cfg(test)]
-pub fn write_wav<S: Sample>(path: PathBuf, samples: Vec<S>) -> Result<(), Box<dyn Error>> {
+pub fn write_wav<S: Sample>(path: PathBuf, samples: Vec<Vec<S>>) -> Result<(), Box<dyn Error>> {
     let tempwav = File::create(path)?;
     let sample_format = if S::FORMAT.is_int() || S::FORMAT.is_uint() {
         SampleFormat::Int
@@ -63,10 +63,12 @@ pub fn write_wav<S: Sample>(path: PathBuf, samples: Vec<S>) -> Result<(), Box<dy
         return Err("Unsupported sample format".into());
     };
 
+    let num_channels = samples.len();
+    assert!(num_channels <= u16::MAX.into(), "Too many channels!");
     let mut writer = WavWriter::new(
         tempwav,
         WavSpec {
-            channels: 1,
+            channels: num_channels as u16,
             sample_rate: 44100,
             bits_per_sample: 32,
             sample_format,
@@ -74,8 +76,10 @@ pub fn write_wav<S: Sample>(path: PathBuf, samples: Vec<S>) -> Result<(), Box<dy
     )?;
 
     // Write a simple set of samples to the wav file.
-    for sample in samples {
-        writer.write_sample(sample)?;
+    for channel in 0..samples.len() {
+        for sample in &samples[channel] {
+            writer.write_sample(sample.to_owned())?;
+        }
     }
 
     Ok(())
