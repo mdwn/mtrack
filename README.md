@@ -641,6 +641,7 @@ This has been tested with:
 ### MIDI
 - MOTU UltraLite-mk5
 - Roland UM-ONE
+- CME U6MIDI Pro
 
 ### DMX
 
