@@ -77,18 +77,6 @@ impl Player {
         playlist: Arc<Playlist>,
         config: &config::Player,
     ) -> Result<Player, Box<dyn Error>> {
-        let midi_device = Self::wait_for_ok("midi device".to_string(), || {
-            midi::get_device(config.midi())
-        });
-        Self::new_with_midi_device(songs, playlist, midi_device, config)
-    }
-
-    pub fn new_with_midi_device(
-        songs: Arc<Songs>,
-        playlist: Arc<Playlist>,
-        midi_device: Option<Arc<dyn midi::Device>>,
-        config: &config::Player,
-    ) -> Result<Player, Box<dyn Error>> {
         let span = span!(Level::INFO, "player");
         let _enter = span.enter();
 
@@ -97,6 +85,9 @@ impl Player {
         });
         let dmx_engine = Self::wait_for_ok("dmx engine".to_string(), || {
             dmx::create_engine(config.dmx())
+        });
+        let midi_device = Self::wait_for_ok("midi device".to_string(), || {
+            midi::get_device(config.midi(), dmx_engine.clone())
         });
         let status_events = Self::wait_for_ok("status events".to_string(), || {
             StatusEvents::new(config.status_events())
@@ -607,23 +598,21 @@ impl StatusEvents {
 
 #[cfg(test)]
 mod test {
-    use std::{collections::HashMap, error::Error, path::Path, sync::Arc};
+    use std::{collections::HashMap, error::Error, path::Path};
 
-    use crate::{config, midi, playlist::Playlist, songs, testutil::eventually};
+    use crate::{config, playlist::Playlist, songs, testutil::eventually};
 
     use super::Player;
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_player() -> Result<(), Box<dyn Error>> {
         let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let midi_device = Arc::new(midi::test::Device::get("mock-midi-device"));
-        let player = Player::new_with_midi_device(
+        let player = Player::new(
             songs.clone(),
             Playlist::new(
                 &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
                 songs,
             )?,
-            Some(midi_device.clone()),
             &config::Player::new(
                 vec![config::Controller::Keyboard],
                 config::Audio::new("mock-device"),
@@ -635,6 +624,10 @@ mod test {
         )?;
         let binding = player.audio_device();
         let device = binding.to_mock()?;
+        let midi_device = player
+            .midi_device()
+            .expect("MIDI should be present")
+            .to_mock()?;
 
         // Direct the player.
         println!("Playlist -> Song 1");

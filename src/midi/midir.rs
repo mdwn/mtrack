@@ -30,7 +30,12 @@ use nodi::{Connection, Player, Timer};
 use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, info, span, warn, Level};
 
-use crate::{config, playsync::CancelHandle, songs::Song};
+use crate::{
+    config,
+    dmx::{self, engine::Engine},
+    playsync::CancelHandle,
+    songs::Song,
+};
 
 pub struct Device {
     name: String,
@@ -38,6 +43,8 @@ pub struct Device {
     input_port: Option<MidiInputPort>,
     output_port: Option<MidiOutputPort>,
     event_connection: Box<Mutex<Option<MidiInputConnection<()>>>>,
+    midi_to_dmx_mappings: HashMap<u8, String>,
+    dmx_engine: Option<Arc<dmx::engine::Engine>>,
 }
 
 /// This is the maximum amount of ticks that the MIDI player can sleep for
@@ -49,6 +56,8 @@ impl super::Device for Device {
     fn watch_events(&self, sender: Sender<Vec<u8>>) -> Result<(), Box<dyn Error>> {
         let span = span!(Level::INFO, "wait for event (midir)");
         let _enter = span.enter();
+        let dmx_engine = self.dmx_engine.clone();
+        let midi_to_dmx_mappings = self.midi_to_dmx_mappings.clone();
 
         let mut event_connection = self.event_connection.lock().expect("unable to get lock");
         if event_connection.is_some() {
@@ -72,6 +81,15 @@ impl super::Device for Device {
             move |_, raw_event, _| {
                 if let Ok(event) = LiveEvent::parse(raw_event) {
                     debug!(event = format!("{:?}", event), "Received MIDI event.");
+
+                    // Take the MIDI and pass through to the DMX engine if the DMX engine is present.
+                    if let LiveEvent::Midi { channel, message } = event {
+                        if let Some(universe) = midi_to_dmx_mappings.get(&channel.as_int()) {
+                            if let Some(dmx_engine) = &dmx_engine {
+                                dmx_engine.handle_midi_event(universe.into(), message);
+                            }
+                        }
+                    }
                 }
                 if let Err(e) = sender.blocking_send(Vec::from(raw_event)) {
                     error!(
@@ -267,6 +285,8 @@ fn list_midir_devices() -> Result<Vec<Device>, Box<dyn Error>> {
                     input_port: Some(port),
                     output_port: None,
                     event_connection: Box::new(Mutex::new(None)),
+                    midi_to_dmx_mappings: HashMap::new(),
+                    dmx_engine: None,
                 },
             );
         }
@@ -287,6 +307,8 @@ fn list_midir_devices() -> Result<Vec<Device>, Box<dyn Error>> {
                         input_port: None,
                         output_port: Some(port),
                         event_connection: Box::new(Mutex::new(None)),
+                        midi_to_dmx_mappings: HashMap::new(),
+                        dmx_engine: None,
                     },
                 );
             }
@@ -302,7 +324,10 @@ fn list_midir_devices() -> Result<Vec<Device>, Box<dyn Error>> {
 }
 
 /// Gets the given midir device.
-pub fn get(config: &config::Midi) -> Result<Device, Box<dyn Error>> {
+pub fn get(
+    config: &config::Midi,
+    dmx_engine: Option<Arc<Engine>>,
+) -> Result<Device, Box<dyn Error>> {
     let playback_delay = config.playback_delay()?;
     let name = config.device();
     let mut matches = list_midir_devices()?
@@ -325,8 +350,15 @@ pub fn get(config: &config::Midi) -> Result<Device, Box<dyn Error>> {
         .into());
     }
 
+    let mut midi_to_dmx_mapping = HashMap::new();
+    for midi_to_dmx in config.midi_to_dmx() {
+        midi_to_dmx_mapping.insert(midi_to_dmx.midi_channel(), midi_to_dmx.universe());
+    }
+
     let mut midi_device = matches.swap_remove(0);
     midi_device.playback_delay = playback_delay;
+    midi_device.midi_to_dmx_mappings = midi_to_dmx_mapping;
+    midi_device.dmx_engine = dmx_engine;
 
     // We've verified that there's only one element in the vector, so this should be safe.
     Ok(midi_device)
