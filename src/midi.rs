@@ -21,14 +21,15 @@ use std::{
 use midly::live::LiveEvent;
 use tokio::sync::mpsc::Sender;
 
-use crate::{config, playsync::CancelHandle, songs::Song};
+use crate::{config, dmx::engine::Engine, playsync::CancelHandle, songs::Song};
 
 pub(crate) mod midir;
 mod mock;
 
 /// A MIDI device that can play MIDI files and listen for inputs.
 pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {
-    /// Watches MIDI input for events and sends them to the given sender.
+    /// Watches MIDI input for events and sends them to the given sender. If a DMX engine
+    /// is loaded, the events may be passed through to the engine.
     fn watch_events(&self, sender: Sender<Vec<u8>>) -> Result<(), Box<dyn Error>>;
 
     /// Stops watching events.
@@ -55,7 +56,10 @@ pub fn list_devices() -> Result<Vec<Box<dyn Device>>, Box<dyn Error>> {
 }
 
 /// Gets a device with the given name.
-pub fn get_device(config: Option<config::Midi>) -> Result<Option<Arc<dyn Device>>, Box<dyn Error>> {
+pub fn get_device(
+    config: Option<config::Midi>,
+    dmx_engine: Option<Arc<Engine>>,
+) -> Result<Option<Arc<dyn Device>>, Box<dyn Error>> {
     let config = match config {
         Some(config) => config,
         None => return Ok(None),
@@ -66,10 +70,5 @@ pub fn get_device(config: Option<config::Midi>) -> Result<Option<Arc<dyn Device>
         return Ok(Some(Arc::new(mock::Device::get(device))));
     };
 
-    Ok(Some(Arc::new(midir::get(&config)?)))
-}
-
-#[cfg(test)]
-pub mod test {
-    pub use super::mock::Device;
+    Ok(Some(Arc::new(midir::get(&config, dmx_engine)?)))
 }

@@ -30,6 +30,9 @@ pub struct Midi {
 
     /// Controls how long to wait before playback of a MIDI file starts.
     playback_delay: Option<String>,
+
+    /// MIDI to DMX passthrough configurations.
+    midi_to_dmx: Option<Vec<MidiToDmx>>,
 }
 
 impl Midi {
@@ -38,6 +41,7 @@ impl Midi {
         Midi {
             device: device.to_string(),
             playback_delay,
+            midi_to_dmx: None,
         }
     }
 
@@ -52,6 +56,33 @@ impl Midi {
             Some(playback_delay) => Ok(DurationString::from_string(playback_delay.clone())?.into()),
             None => Ok(DEFAULT_MIDI_PLAYBACK_DELAY),
         }
+    }
+
+    /// Returns the MIDI to DMX configuration.
+    pub fn midi_to_dmx(&self) -> Vec<MidiToDmx> {
+        self.midi_to_dmx.clone().unwrap_or_default()
+    }
+}
+
+/// A YAML representation of the MIDI configuration.
+#[derive(Deserialize, Clone)]
+pub struct MidiToDmx {
+    /// The MIDI channel to pass through to DMX.
+    midi_channel: u8,
+
+    /// The DMX universe to target.
+    universe: String,
+}
+
+impl MidiToDmx {
+    /// The MIDI channel associated with this mapping.
+    pub fn midi_channel(&self) -> u8 {
+        self.midi_channel - 1
+    }
+
+    /// The DMX universe to map the MIDI channel to.
+    pub fn universe(&self) -> String {
+        self.universe.clone()
     }
 }
 

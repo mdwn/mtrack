@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Initialization of a songs directory is now easier, as mtrack can be given an `--init` flag
+when using the `songs` subcommand. This will establish a baseline YAML file in each song
+directory.
+
+Live MIDI can be routed to the DMX engine. This will allow live controlling of lights through
+mtrack.
+
 ## [0.4.1]
 
 Fix: Audio interfaces with spaces at the end can now be selected.

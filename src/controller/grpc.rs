@@ -225,13 +225,12 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_grpc() -> Result<(), Box<dyn Error>> {
         let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let player = Arc::new(Player::new_with_midi_device(
+        let player = Arc::new(Player::new(
             songs.clone(),
             Playlist::new(
                 &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
                 songs,
             )?,
-            None,
             &config::Player::new(
                 vec![config::Controller::Keyboard],
                 config::Audio::new("mock-device"),
