@@ -45,6 +45,8 @@ pub struct Player {
     dmx: Option<Dmx>,
     /// Events to emit to report status out via MIDI.
     status_events: Option<StatusEvents>,
+    /// The path to the playlist.
+    playlist: Option<String>,
     /// The path to the song definitions.
     songs: String,
 }
@@ -68,6 +70,7 @@ impl Player {
             midi,
             dmx,
             status_events: None,
+            playlist: None,
             songs: songs.to_string(),
         }
     }
@@ -133,6 +136,11 @@ impl Player {
     /// Gets the status events configuration.
     pub fn status_events(&self) -> Option<StatusEvents> {
         self.status_events.clone()
+    }
+
+    /// Gets the path to the playlist.
+    pub fn playlist(&self) -> Option<PathBuf> {
+        self.playlist.as_ref().map(PathBuf::from)
     }
 
     /// Gets the path to the song definitions.
