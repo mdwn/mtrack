@@ -34,8 +34,9 @@ use proto::player::v1::{
     SwitchToPlaylistRequest,
 };
 use std::collections::{HashMap, HashSet};
+use std::env;
 use std::error::Error;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tonic::transport::Channel;
@@ -50,7 +51,7 @@ Description=multitrack player
 Type=simple
 Restart=on-failure
 EnvironmentFile=-/etc/default/mtrack
-ExecStart=/usr/local/bin/mtrack start "$MTRACK_CONFIG" "$PLAYLIST"
+ExecStart={{ CURRENT_EXECUTABLE }} start "$MTRACK_CONFIG"
 ExecReload=/bin/kill -HUP $MAINPID
 
 [Install]
@@ -122,8 +123,8 @@ enum Commands {
     Start {
         /// The path to the player config.
         player_path: String,
-        /// The path to the playlist.
-        playlist_path: String,
+        /// The path to the playlist. Must be specified if the playlist is not specified in the player config.
+        playlist_path: Option<String>,
     },
     /// Plays the current song in the playlist.
     Play {
@@ -362,9 +363,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
         } => {
             let player_path = &Path::new(&player_path);
             let player_config = config::Player::deserialize(player_path)?;
+            let mut playlist_path = playlist_path.as_ref().map(PathBuf::from).or(player_config.playlist()).ok_or(
+                "Must supply the playlist from the command line or inside the mtrack configuration",
+            )?;
+            if !playlist_path.is_absolute() {
+                playlist_path = if let Some(parent) = player_path.parent() {
+                    parent.join(playlist_path)
+                } else {
+                    return Err("Unable to determining playlist path. Please specify the playlist path using an absolute path.")?;
+                };
+            };
             let songs = songs::get_all_songs(&player_config.songs(player_path))?;
             let playlist = Playlist::new(
-                &config::Playlist::deserialize(Path::new(&playlist_path))?,
+                &config::Playlist::deserialize(playlist_path.as_path())?,
                 songs.clone(),
             )?;
 
@@ -429,7 +440,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
             println!("Playlist name: {}", response.playlist_name)
         }
         Commands::Systemd {} => {
-            println!("{}", SYSTEMD_SERVICE)
+            let current_executable_path = env::current_exe()?;
+            println!(
+                "{}",
+                SYSTEMD_SERVICE.replace(
+                    "{{ CURRENT_EXECUTABLE }}",
+                    current_executable_path
+                        .to_str()
+                        .expect("unable to convert current executable path to string")
+                )
+            )
         }
     }
 

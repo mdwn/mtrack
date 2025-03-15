@@ -14,6 +14,9 @@ directory.
 Live MIDI can be routed to the DMX engine. This will allow live controlling of lights through
 mtrack.
 
+The playlist can now be specified through the mtrack configuration YAML rather than specified
+separately when using the start command.
+
 ## [0.4.1]
 
 Fix: Audio interfaces with spaces at the end can now be selected.

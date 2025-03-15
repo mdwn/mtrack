@@ -236,6 +236,13 @@ To start mtrack as a standalone player that's controllable by MIDI, you'll need 
 player config file:
 
 ```yaml
+# The directory where all of your songs are located, frequently referred to as the song repository.
+# If the path is not absolute, it will be relative to the location of this file.
+songs: /mnt/song-storage
+
+# The path to the playlist file.
+playlist: /mnt/playlist.yaml
+
 # The audio configuration for mtrack.
 audio:
   # This audio device will be matched as best as possible against the devices on your system.
@@ -261,10 +268,6 @@ midi:
   - midi_channel: 15
     # Route these events to the light-show universe.
     universe: light-show
-
-# The directory where all of your songs are located, frequently referred to as the song repository.
-# If the path is not absolute, it will be relative to the location of this file.
-songs: /mnt/song-storage
 
 # The DMX configuration for mtrack. This maps OLA universes to light show names defined within
 # song files.
@@ -432,7 +435,7 @@ track_mappings:
   - 6
 ```
 
-You can start `mtrack` as a process with `mtrack start /path/to/player.yaml /path/to/playlist.yaml`.
+You can start `mtrack` as a process with `mtrack start /path/to/player.yaml`.
 
 ### mtrack on startup
 
@@ -443,15 +446,12 @@ $ sudo mtrack systemd > /etc/systemd/system/mtrack.service
 ```
 
 Note that the service expects that `mtrack` is available at the location `/usr/local/bin/mtrack`. It also
-expects you to define your player configuration and playlist in `/etc/default/mtrack`. This file
-should contain two variables: `MTRACK_CONFIG` and `PLAYLIST`:
+expects you to define your player configuration in `/etc/default/mtrack`. This file
+should contain one variable: `MTRACK_CONFIG`:
 
 ```
 # The configuration for the mtrack player.
 MTRACK_CONFIG=/mnt/storage/mtrack.yaml
-
-# The playlist to use.
-PLAYLIST=/mnt/storage/playlist.yaml
 ```
 
 Once that's defined, you can start it with:
