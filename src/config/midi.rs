@@ -72,17 +72,25 @@ pub struct MidiToDmx {
 
     /// The DMX universe to target.
     universe: String,
+
+    /// Transformations to apply to the input to this mapping.
+    transformers: Option<Vec<MidiTransformer>>,
 }
 
 impl MidiToDmx {
     /// The MIDI channel associated with this mapping.
-    pub fn midi_channel(&self) -> u8 {
-        self.midi_channel - 1
+    pub fn midi_channel(&self) -> Result<u7, Box<dyn Error>> {
+        u7::try_from(self.midi_channel - 1).ok_or("error parsing MIDI channel".into())
     }
 
     /// The DMX universe to map the MIDI channel to.
     pub fn universe(&self) -> String {
         self.universe.clone()
+    }
+
+    /// The transformers to apply to the input MIDI.
+    pub fn transformers(&self) -> Vec<MidiTransformer> {
+        self.transformers.clone().unwrap_or_default()
     }
 }
 
@@ -90,6 +98,60 @@ impl MidiToDmx {
 pub trait ToMidiEvent {
     /// Converts the implementer to a MIDI live event.
     fn to_midi_event(&self) -> Result<LiveEvent<'static>, Box<dyn Error>>;
+}
+
+#[derive(Deserialize, Clone)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum MidiTransformer {
+    NoteMapper(NoteMapper),
+    ControlChangeMapper(ControlChangeMapper),
+}
+
+/// A YAML representation of the note mapper MIDI transformation.
+#[derive(Deserialize, Clone)]
+pub struct NoteMapper {
+    input_note: u8,
+    convert_to_notes: Vec<u8>,
+}
+
+impl NoteMapper {
+    /// Gets the input note.
+    pub fn input_note(&self) -> Result<u7, Box<dyn Error>> {
+        u7::try_from(self.input_note).ok_or("input note cannot be converted to a u7".into())
+    }
+
+    /// Gets the notes to convert the input to.
+    pub fn convert_to_notes(&self) -> Result<Vec<u7>, Box<dyn Error>> {
+        self.convert_to_notes
+            .iter()
+            .map(|note| u7::try_from(*note).ok_or("unable to convert note to u7".into()))
+            .collect()
+    }
+}
+
+/// A YAML representation of the control change mapper MIDI transformation.
+#[derive(Deserialize, Clone)]
+pub struct ControlChangeMapper {
+    input_controller: u8,
+    convert_to_controllers: Vec<u8>,
+}
+
+impl ControlChangeMapper {
+    /// Gets the input controller.
+    pub fn input_controller(&self) -> Result<u7, Box<dyn Error>> {
+        u7::try_from(self.input_controller)
+            .ok_or("input controller cannot be converted to a u7".into())
+    }
+
+    /// Gets the controllers to convert the input to.
+    pub fn convert_to_notes(&self) -> Result<Vec<u7>, Box<dyn Error>> {
+        self.convert_to_controllers
+            .iter()
+            .map(|controller| {
+                u7::try_from(*controller).ok_or("unable to convert controller to u7".into())
+            })
+            .collect()
+    }
 }
 
 /// MIDI events that can be parsed from YAML.

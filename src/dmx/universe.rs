@@ -192,6 +192,8 @@ impl Universe {
                 changed = true;
                 if rates[i] > 0.0 {
                     current[i] = (current[i] + rates[i]).min(target[i])
+                } else if rates[i] == 0.0 {
+                    current[i] = target[i]
                 } else {
                     current[i] = (current[i] + rates[i]).max(target[i])
                 }
@@ -307,6 +309,21 @@ mod test {
         );
 
         assert_eq!([0u8, 50u8, 100u8, 150u8, 200u8], buffer.as_slice()[0..5]);
+
+        // We found a bug with dimming back down, so let's test that here.
+        universe.update_channel_data(2, 50u8, false);
+        universe.update_channel_data(3, 200u8, false);
+        universe.update_channel_data(4, 0, false);
+
+        Universe::approach_target(
+            &universe.rates,
+            &universe.current,
+            &universe.target,
+            &universe.max_channels,
+            &mut buffer,
+        );
+
+        assert_eq!([0u8, 50u8, 50u8, 200u8, 0u8], buffer.as_slice()[0..5]);
     }
 
     #[test]

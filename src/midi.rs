@@ -25,6 +25,7 @@ use crate::{config, dmx::engine::Engine, playsync::CancelHandle, songs::Song};
 
 pub(crate) mod midir;
 mod mock;
+mod transform;
 
 /// A MIDI device that can play MIDI files and listen for inputs.
 pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {

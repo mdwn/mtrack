@@ -37,6 +37,8 @@ use crate::{
     songs::Song,
 };
 
+use super::transform::{ControlChangeMapper, MidiTransformer, NoteMapper};
+
 pub struct Device {
     name: String,
     playback_delay: Duration,
@@ -45,6 +47,7 @@ pub struct Device {
     event_connection: Box<Mutex<Option<MidiInputConnection<()>>>>,
     midi_to_dmx_mappings: HashMap<u8, String>,
     dmx_engine: Option<Arc<dmx::engine::Engine>>,
+    dmx_midi_transformers: HashMap<u8, Vec<MidiTransformer>>,
 }
 
 /// This is the maximum amount of ticks that the MIDI player can sleep for
@@ -58,6 +61,7 @@ impl super::Device for Device {
         let _enter = span.enter();
         let dmx_engine = self.dmx_engine.clone();
         let midi_to_dmx_mappings = self.midi_to_dmx_mappings.clone();
+        let dmx_midi_transformers = self.dmx_midi_transformers.clone();
 
         let mut event_connection = self.event_connection.lock().expect("unable to get lock");
         if event_connection.is_some() {
@@ -88,7 +92,30 @@ impl super::Device for Device {
                                     if let Some(universe) =
                                         midi_to_dmx_mappings.get(&channel.as_int())
                                     {
-                                        dmx_engine.handle_midi_event(universe.into(), message);
+                                        let mut transformed = false;
+
+                                        if let Some(transformers_for_channel) =
+                                            dmx_midi_transformers.get(&channel.as_int())
+                                        {
+                                            for transformer in transformers_for_channel {
+                                                if transformer.can_process(&message) {
+                                                    for transformed_message in
+                                                        transformer.transform(&message)
+                                                    {
+                                                        transformed = true;
+                                                        dmx_engine.handle_midi_event(
+                                                            universe.into(),
+                                                            transformed_message,
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // Only send the original note if
+                                        if !transformed {
+                                            dmx_engine.handle_midi_event(universe.into(), message);
+                                        }
                                     }
                                 }
                             }
@@ -310,6 +337,7 @@ fn list_midir_devices() -> Result<Vec<Device>, Box<dyn Error>> {
                     event_connection: Box::new(Mutex::new(None)),
                     midi_to_dmx_mappings: HashMap::new(),
                     dmx_engine: None,
+                    dmx_midi_transformers: HashMap::new(),
                 },
             );
         }
@@ -332,6 +360,7 @@ fn list_midir_devices() -> Result<Vec<Device>, Box<dyn Error>> {
                         event_connection: Box::new(Mutex::new(None)),
                         midi_to_dmx_mappings: HashMap::new(),
                         dmx_engine: None,
+                        dmx_midi_transformers: HashMap::new(),
                     },
                 );
             }
@@ -374,14 +403,51 @@ pub fn get(
     }
 
     let mut midi_to_dmx_mapping = HashMap::new();
+    let mut dmx_midi_transformers: HashMap<u8, Vec<MidiTransformer>> = HashMap::new();
     for midi_to_dmx in config.midi_to_dmx() {
-        midi_to_dmx_mapping.insert(midi_to_dmx.midi_channel(), midi_to_dmx.universe());
+        let midi_channel = midi_to_dmx.midi_channel()?.as_int();
+        midi_to_dmx_mapping.insert(midi_channel, midi_to_dmx.universe());
+
+        let mut transformers = Vec::new();
+        for transformer in midi_to_dmx.transformers() {
+            transformers.push(match transformer {
+                config::MidiTransformer::NoteMapper(note_mapper) => {
+                    info!(
+                        input_note = note_mapper.input_note()?.as_int(),
+                        "Configuring note mapper transformer"
+                    );
+                    MidiTransformer::NoteMapper(NoteMapper::new(
+                        note_mapper.input_note()?,
+                        note_mapper.convert_to_notes()?,
+                    ))
+                }
+                config::MidiTransformer::ControlChangeMapper(control_change_mapper) => {
+                    info!(
+                        input_controller = control_change_mapper.input_controller()?.as_int(),
+                        "Configuring control change mapper transformer"
+                    );
+                    MidiTransformer::ControlChangeMapper(ControlChangeMapper::new(
+                        control_change_mapper.input_controller()?,
+                        control_change_mapper.convert_to_notes()?,
+                    ))
+                }
+            })
+        }
+
+        if !dmx_midi_transformers.contains_key(&midi_channel) {
+            dmx_midi_transformers.insert(midi_channel, Vec::new());
+        }
+
+        dmx_midi_transformers
+            .get_mut(&midi_channel)
+            .map(|current_transformers| current_transformers.extend(transformers));
     }
 
     let mut midi_device = matches.swap_remove(0);
     midi_device.playback_delay = playback_delay;
     midi_device.midi_to_dmx_mappings = midi_to_dmx_mapping;
     midi_device.dmx_engine = dmx_engine;
+    midi_device.dmx_midi_transformers = dmx_midi_transformers;
 
     // We've verified that there's only one element in the vector, so this should be safe.
     Ok(midi_device)
