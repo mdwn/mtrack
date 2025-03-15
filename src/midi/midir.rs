@@ -18,7 +18,7 @@ use std::{
     fmt, mem,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Barrier, Mutex,
+        mpsc, Arc, Barrier, Mutex,
     },
     thread,
     time::Duration,
@@ -74,21 +74,44 @@ impl super::Device for Device {
             }
         };
 
+        // Spawn a thread to handle parsing and sending of MIDI events to the DMX engine if we're configured to do so.
+        let dmx_sender = dmx_engine.map(|dmx_engine| {
+            let (dmx_sender, dmx_receiver) = mpsc::channel::<Vec<u8>>();
+            thread::spawn(move || {
+                info!("Passing MIDI events to the DMX engine.");
+                loop {
+                    match dmx_receiver.recv() {
+                        Ok(event) => {
+                            if let Ok(event) = LiveEvent::parse(&event) {
+                                // Take the MIDI and pass through to the DMX engine if the DMX engine is present.
+                                if let LiveEvent::Midi { channel, message } = event {
+                                    if let Some(universe) =
+                                        midi_to_dmx_mappings.get(&channel.as_int())
+                                    {
+                                        dmx_engine.handle_midi_event(universe.into(), message);
+                                    }
+                                }
+                            }
+                        }
+                        Err(_) => return,
+                    }
+                }
+            });
+
+            dmx_sender
+        });
+
         let input = MidiInput::new("mtrack player input")?;
         *event_connection = Some(input.connect(
             input_port,
             "mtrack input watcher",
             move |_, raw_event, _| {
-                if let Ok(event) = LiveEvent::parse(raw_event) {
-                    debug!(event = format!("{:?}", event), "Received MIDI event.");
-
-                    // Take the MIDI and pass through to the DMX engine if the DMX engine is present.
-                    if let LiveEvent::Midi { channel, message } = event {
-                        if let Some(universe) = midi_to_dmx_mappings.get(&channel.as_int()) {
-                            if let Some(dmx_engine) = &dmx_engine {
-                                dmx_engine.handle_midi_event(universe.into(), message);
-                            }
-                        }
+                if let Some(dmx_sender) = &dmx_sender {
+                    if let Err(e) = dmx_sender.send(raw_event.into()) {
+                        error!(
+                            err = format!("{:?}", e),
+                            "Error sending MIDI event to DMX engine."
+                        );
                     }
                 }
                 if let Err(e) = sender.blocking_send(Vec::from(raw_event)) {
