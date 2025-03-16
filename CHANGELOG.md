@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0]
+
 Initialization of a songs directory is now easier, as mtrack can be given an `--init` flag
 when using the `songs` subcommand. This will establish a baseline YAML file in each song
 directory.
