@@ -34,6 +34,7 @@ pub use self::controller::DEFAULT_GRPC_PORT;
 pub use self::dmx::Dmx;
 pub use self::dmx::Universe;
 pub use self::midi::Midi;
+pub use self::midi::MidiTransformer;
 pub use self::player::Player;
 pub use self::playlist::Playlist;
 pub use self::song::LightShow;

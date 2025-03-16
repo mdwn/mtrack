@@ -269,6 +269,20 @@ midi:
     # Route these events to the light-show universe.
     universe: light-show
 
+    # Transform the MIDI events into multiple
+    transformers:
+    # Maps the input note into the given list of notes. The velocity will be copied to each
+    # new note.
+    - type: note_mapper
+      input_note: 0
+      convert_to_notes: [0, 1, 2, 4, 5, 6]
+
+    # Maps the input controller into the given list of controllers. The controller value will
+    # be mapped to each new controller.
+    - type: control_change_mapper
+      input_controller: 0
+      convert_to_controllers: [0, 1, 2, 4, 5, 6]
+
 # The DMX configuration for mtrack. This maps OLA universes to light show names defined within
 # song files.
 dmx:
@@ -595,6 +609,19 @@ Additionally, songs can be defined to only recognize specific MIDI channels from
 have a single MIDI file that contains all of your automation, you can restrict light shows to only recognize events from channel 15.
 
 Examples for these configuration options are in the song definition example and mtrack player examples above.
+
+#### Live MIDI to DMX mapping
+
+mtrack is also capable of mapping live MIDI events into the DMX engine. This allows for live control of lighting using a
+MIDI controller. Additionally, transformations can be applied to the incoming MIDI events that allow for singular MIDI messages
+to be transformed into multiple MIDI messages and then fed into the DMX engine, allowing for the control multiple lights. Right now,
+the transformers supported are:
+
+- Note Mapper: This maps one note on a MIDI Channel to multiple notes, all with the same velocity. Works for both note_on and note_off events.
+- Control Change Mapper: This maps one control change event on a MIDI Channel to multiple control change events, all with the same value.
+
+Right now collision behavior is undefined. The intention is to provide some sort of composable mechanism here, so it's very possible that
+this interface will change in the future.
 
 ### MIDI format
 

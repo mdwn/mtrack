@@ -17,6 +17,10 @@ mtrack.
 The playlist can now be specified through the mtrack configuration YAML rather than specified
 separately when using the start command.
 
+Simple MIDI to DMX transformations are now supported. This allows for a simple MIDI event to
+be expanded into multiple, which can then be fed into the DMX engine. This allows for things
+like simple MIDI controllers to control multiple lights.
+
 ## [0.4.1]
 
 Fix: Audio interfaces with spaces at the end can now be selected.
