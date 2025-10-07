@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Transcoding has been added to mtrack. This allows audio files and audio devices to have
+mismatched sample rates and formats, making it easier to deal with files from multiple
+sources. This also adds the ability to configure the target output format for an audio
+device.
+
 ## [0.5.0]
 
 Initialization of a songs directory is now easier, as mtrack can be given an `--init` flag

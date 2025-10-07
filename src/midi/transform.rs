@@ -58,11 +58,10 @@ impl NoteMapper {
 
 impl NoteMapper {
     fn can_process(&self, midi_message: &midly::MidiMessage) -> bool {
-        match midi_message {
-            midly::MidiMessage::NoteOn { key: _, vel: _ } => true,
-            midly::MidiMessage::NoteOff { key: _, vel: _ } => true,
-            _ => false,
-        }
+        matches!(
+            midi_message,
+            midly::MidiMessage::NoteOn { .. } | midly::MidiMessage::NoteOff { .. }
+        )
     }
 
     fn transform(&self, midi_message: &midly::MidiMessage) -> Vec<midly::MidiMessage> {
@@ -117,13 +116,7 @@ impl ControlChangeMapper {
 
 impl ControlChangeMapper {
     fn can_process(&self, midi_message: &midly::MidiMessage) -> bool {
-        match midi_message {
-            midly::MidiMessage::Controller {
-                controller: _,
-                value: _,
-            } => true,
-            _ => false,
-        }
+        matches!(midi_message, midly::MidiMessage::Controller { .. })
     }
 
     fn transform(&self, midi_message: &midly::MidiMessage) -> Vec<midly::MidiMessage> {

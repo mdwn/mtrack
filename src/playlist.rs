@@ -97,12 +97,18 @@ impl Playlist {
     /// Move to the previous element of the playlist. If we're at the beginning of the playlist, the position
     /// will not decrement. The song at the current position will be returned.
     pub fn prev(&self) -> Arc<Song> {
-        let mut position = self.position.write().unwrap();
+        let mut position = self
+            .position
+            .write()
+            .expect("unable to get write lock on position");
         if *position > 0 {
             *position -= 1;
         }
 
-        let current = &self.registry.get(&self.songs[*position]).unwrap();
+        let current = &self
+            .registry
+            .get(&self.songs[*position])
+            .expect("unable to find song in the registry");
 
         info!(
             position = *position,

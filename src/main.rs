@@ -298,9 +298,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             }
                         }
 
-                        if universe.is_some() && name.is_some() {
+                        if let (Some(universe_id), Some(universe_name)) = (universe, name) {
                             universe_configs
-                                .push(config::Universe::new(universe.unwrap(), name.unwrap()));
+                                .push(config::Universe::new(universe_id, universe_name));
                         } else {
                             return Err(format!(
                                 "Missing device specified for config {}",

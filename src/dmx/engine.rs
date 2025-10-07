@@ -113,7 +113,7 @@ impl Engine {
     }
 
     #[cfg(test)]
-    pub fn get_universe(&self, universe_name: &str) -> Option<&Universe> {
+    pub(crate) fn get_universe(&self, universe_name: &str) -> Option<&Universe> {
         self.universes.get(universe_name)
     }
 
