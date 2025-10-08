@@ -30,6 +30,7 @@ use hound::SampleFormat;
 use tracing::{debug, error, info, span, Level};
 
 use crate::{
+    audio::TargetFormat,
     config,
     playsync::CancelHandle,
     songs::{self, Song},
@@ -48,10 +49,8 @@ pub struct Device {
     host_id: cpal::HostId,
     /// The underlying cpal device.
     device: cpal::Device,
-    /// Supports i32.
-    supports_i32: bool,
-    /// Supports f32.
-    supports_f32: bool,
+    /// The target format for this device.
+    target_format: TargetFormat,
 }
 
 impl fmt::Display for Device {
@@ -112,30 +111,23 @@ impl Device {
                     continue;
                 }
 
-                let mut supports_f32 = false;
-                let mut supports_i32 = false;
-
                 for output_config in device.supported_output_configs()? {
-                    if output_config.sample_format().is_float() {
-                        supports_f32 = true;
-                    }
-                    if output_config.sample_format().is_int() {
-                        supports_i32 = true;
-                    }
                     if max_channels < output_config.channels() {
                         max_channels = output_config.channels();
                     }
                 }
 
                 if max_channels > 0 {
+                    // Create device with default format - will be overridden in get() method
+                    let default_format = TargetFormat::new(44100, SampleFormat::Int, 32)?;
+
                     devices.push(Device {
                         name: device.name()?,
                         playback_delay: Duration::ZERO,
                         max_channels,
                         host_id,
                         device,
-                        supports_f32,
-                        supports_i32,
+                        target_format: default_format,
                     })
                 }
             }
@@ -154,6 +146,12 @@ impl Device {
         {
             Some(mut device) => {
                 device.playback_delay = config.playback_delay()?;
+
+                device.target_format = TargetFormat::new(
+                    config.sample_rate(),
+                    config.sample_format()?,
+                    config.bits_per_sample(),
+                )?;
                 Ok(device)
             }
             None => Err(format!("no device found with name {}", name).into()),
@@ -206,21 +204,13 @@ impl super::Device for Device {
 
         play_barrier.wait();
         spin_sleep::sleep(self.playback_delay);
-        let output_stream = if self.supports_i32 && song.sample_format() == hound::SampleFormat::Int
-        {
-            debug!("Playing i32->i32");
-            self.build_stream::<i32, i32>(song, mappings, num_channels, tx, cancel_handle)?
-        } else if self.supports_f32 && song.sample_format() == hound::SampleFormat::Float {
-            debug!("Playing f32->f32");
+        // Use the device's target format - transcoder handles all conversion
+        let output_stream = if self.target_format.sample_format == SampleFormat::Float {
+            debug!("Playing with f32 target format");
             self.build_stream::<f32, f32>(song, mappings, num_channels, tx, cancel_handle)?
-        } else if self.supports_i32 && song.sample_format() == hound::SampleFormat::Float {
-            debug!("Playing f32->i32");
-            self.build_stream::<f32, i32>(song, mappings, num_channels, tx, cancel_handle)?
-        } else if self.supports_f32 && song.sample_format() == hound::SampleFormat::Int {
-            debug!("Playing i32->f32");
-            self.build_stream::<i32, f32>(song, mappings, num_channels, tx, cancel_handle)?
         } else {
-            return Err("Device does not support correct sample format for song".into());
+            debug!("Playing with i32 target format");
+            self.build_stream::<f32, i32>(song, mappings, num_channels, tx, cancel_handle)?
         };
         output_stream.play()?;
 
@@ -246,16 +236,20 @@ impl Device {
         tx: Sender<()>,
         cancel_handle: CancelHandle,
     ) -> Result<Stream, Box<dyn Error>> {
+        // Use the device's configured target format
+        let target_format = &self.target_format;
+
+        // Use the target format's sample rate for the CPAL device
         let stream_config = cpal::StreamConfig {
             channels: num_channels,
-            sample_rate: cpal::SampleRate(song.sample_rate()),
+            sample_rate: cpal::SampleRate(target_format.sample_rate),
             buffer_size: cpal::BufferSize::Default,
         };
         let error_callback = |err: cpal::StreamError| {
             error!(err = err.to_string(), "Error during stream.");
         };
 
-        let source = song.source::<S>(mappings)?;
+        let source = song.source::<S>(mappings, target_format.clone())?;
         let mut output_callback = Device::output_callback::<S, C>(source, tx, cancel_handle);
         let stream = self.device.build_output_stream(
             &stream_config,
@@ -338,7 +332,9 @@ impl Device {
 mod test {
     use std::{collections::HashMap, error::Error, sync::mpsc::channel};
 
-    use crate::{config, playsync::CancelHandle, songs::Song, testutil::write_wav};
+    use crate::{
+        audio::TargetFormat, config, playsync::CancelHandle, songs::Song, testutil::write_wav,
+    };
 
     #[test]
     fn output_callback() -> Result<(), Box<dyn Error>> {
@@ -346,8 +342,12 @@ mod test {
         let tempwav1 = "tempwav1.wav";
         let tempwav2 = "tempwav2.wav";
 
-        write_wav(tempdir.join(tempwav1), vec![vec![1_i32, 2_i32, 3_i32]])?;
-        write_wav(tempdir.join(tempwav2), vec![vec![2_i32, 3_i32]])?;
+        write_wav(
+            tempdir.join(tempwav1),
+            vec![vec![1_i32, 2_i32, 3_i32]],
+            44100,
+        )?;
+        write_wav(tempdir.join(tempwav2), vec![vec![2_i32, 3_i32]], 44100)?;
 
         let track1 = config::Track::new("test 1".into(), tempwav1, Some(1));
         let track2 = config::Track::new("test 2".into(), tempwav2, Some(1));
@@ -360,7 +360,7 @@ mod test {
         mappings.insert("test 1".into(), vec![1]);
         mappings.insert("test 2".into(), vec![4]);
 
-        let source = song.source::<i32>(&mappings)?;
+        let source = song.source::<i32>(&mappings, TargetFormat::default())?;
         let (tx, rx) = channel();
         let cancel_handle = CancelHandle::new();
         let mut callback = super::Device::output_callback(source, tx, cancel_handle.clone());
@@ -391,8 +391,12 @@ mod test {
         let tempwav1 = "tempwav1.wav";
         let tempwav2 = "tempwav2.wav";
 
-        write_wav(tempdir.join(tempwav1), vec![vec![1_i32, 2_i32, 3_i32]])?;
-        write_wav(tempdir.join(tempwav2), vec![vec![2_i32, 3_i32]])?;
+        write_wav(
+            tempdir.join(tempwav1),
+            vec![vec![1_i32, 2_i32, 3_i32]],
+            44100,
+        )?;
+        write_wav(tempdir.join(tempwav2), vec![vec![2_i32, 3_i32]], 44100)?;
 
         let track1 = config::Track::new("test 1".into(), tempwav1, Some(1));
         let track2 = config::Track::new("test 2".into(), tempwav2, Some(1));
@@ -405,7 +409,7 @@ mod test {
         mappings.insert("test 1".into(), vec![1]);
         mappings.insert("test 2".into(), vec![4]);
 
-        let source = song.source::<i32>(&mappings)?;
+        let source = song.source::<i32>(&mappings, TargetFormat::default())?;
         let (tx, rx) = channel();
         let cancel_handle = CancelHandle::new();
         let mut callback = super::Device::output_callback(source, tx, cancel_handle.clone());
@@ -429,8 +433,12 @@ mod test {
         let tempwav1 = "tempwav1.wav";
         let tempwav2 = "tempwav2.wav";
 
-        write_wav(tempdir.join(tempwav1), vec![vec![1_i32, 2_i32, 3_i32]])?;
-        write_wav(tempdir.join(tempwav2), vec![vec![2_i32, 3_i32]])?;
+        write_wav(
+            tempdir.join(tempwav1),
+            vec![vec![1_i32, 2_i32, 3_i32]],
+            44100,
+        )?;
+        write_wav(tempdir.join(tempwav2), vec![vec![2_i32, 3_i32]], 44100)?;
 
         let track1 = config::Track::new("test 1".into(), tempwav1, Some(1));
         let track2 = config::Track::new("test 2".into(), tempwav2, Some(1));
@@ -443,7 +451,7 @@ mod test {
         mappings.insert("test 1".into(), vec![1]);
         mappings.insert("test 2".into(), vec![4]);
 
-        let source = song.source::<i32>(&mappings)?;
+        let source = song.source::<i32>(&mappings, TargetFormat::default())?;
         let (tx, rx) = channel();
         let cancel_handle = CancelHandle::new();
         let mut callback = super::Device::output_callback(source, tx, cancel_handle.clone());

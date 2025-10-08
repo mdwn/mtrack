@@ -13,8 +13,7 @@
 //
 use std::collections::HashMap;
 use std::error::Error;
-use std::fs::{self, File};
-use std::io::BufReader;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::Arc;
@@ -22,7 +21,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 use std::{cmp, fmt, thread};
 
-use hound::{SampleFormat, WavReader, WavSamples};
+use hound::{SampleFormat, WavReader};
 use midly::live::LiveEvent;
 use midly::{Format, Smf};
 use nodi::timers::Ticker;
@@ -31,6 +30,10 @@ use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 use tracing::{debug, error, info, warn};
 
+use crate::audio::{
+    sample_source::{AudioTranscoder, SampleSource, WavSampleSource},
+    TargetFormat,
+};
 use crate::config;
 use crate::proto::player;
 
@@ -54,8 +57,6 @@ pub struct Song {
     sample_rate: u32,
     /// The sample format.
     sample_format: hound::SampleFormat,
-    /// The bits per sample.
-    bits_per_sample: u16,
     /// The total duration of the song.
     duration: Duration,
     /// The individual audio tracks.
@@ -67,21 +68,17 @@ pub struct Song {
 pub trait Sample:
     cpal::SizedSample + hound::Sample + Default + Send + Sync + std::ops::AddAssign + 'static
 {
-    /// Scales the sample given the bits per sample. i8, i16, i24 are all read using i32, but
-    /// will be significantly reduced volume. By scaling it, the samples won't be anywhere
-    /// near as quiet and volume should be decently normalized.
-    fn scale(&self, bits_per_sample: u16) -> Self;
+    /// Converts from f32 to this sample type
+    fn from_f32(value: f32) -> Self;
 }
 impl Sample for i32 {
-    fn scale(&self, bits_per_sample: u16) -> Self {
-        // Do a left shift to increase the magnitude of the sample.
-        (self << (32 - bits_per_sample)) as Self
+    fn from_f32(value: f32) -> Self {
+        (value * 2147483647.0) as i32
     }
 }
 impl Sample for f32 {
-    fn scale(&self, _: u16) -> Self {
-        // Only f32 is supported, so there's no need to scale this.
-        *self
+    fn from_f32(value: f32) -> Self {
+        value
     }
 }
 
@@ -111,45 +108,27 @@ impl Song {
         let mut max_duration = Duration::ZERO;
 
         let mut sample_format: Option<SampleFormat> = None;
-        let mut bits_per_sample: Option<u16> = None;
         for track in tracks.iter() {
             // Set the sample rate and formatif it's not already set.
             if sample_rate == 0 {
                 sample_rate = track.sample_rate;
             } else if sample_rate != track.sample_rate {
-                // All songs need to have the same sample rate.
-                return Err(format!(
-                    "mismatching sample rates in WAV file: {}, {}",
-                    sample_rate, track.sample_rate,
-                )
-                .into());
+                // AudioTranscoder handles different sample rates
             }
             max_duration = cmp::max(track.duration, max_duration);
 
             match sample_format {
                 Some(sample_format) => {
                     if sample_format != track.sample_format {
-                        return Err("all tracks must have the same sample format".into());
+                        // AudioTranscoder handles different sample formats
                     }
                 }
                 None => sample_format = Some(track.sample_format),
-            }
-
-            match bits_per_sample {
-                Some(bits_per_sample) => {
-                    if bits_per_sample != track.bits_per_sample {
-                        return Err("all tracks must have the same bits per sample".into());
-                    }
-                }
-                None => bits_per_sample = Some(track.bits_per_sample),
             }
         }
 
         if sample_format.is_none() {
             warn!("no sample format found");
-        }
-        if bits_per_sample.is_none() {
-            warn!("no bits per sample found");
         }
 
         Ok(Song {
@@ -160,7 +139,6 @@ impl Song {
             num_channels,
             sample_rate,
             sample_format: sample_format.unwrap_or(SampleFormat::Int),
-            bits_per_sample: bits_per_sample.unwrap_or(0),
             duration: max_duration,
             tracks,
         })
@@ -283,11 +261,6 @@ impl Song {
         self.midi_event
     }
 
-    /// Gets the sample rate of the song.
-    pub fn sample_rate(&self) -> u32 {
-        self.sample_rate
-    }
-
     /// Gets the sample format.
     pub fn sample_format(&self) -> SampleFormat {
         self.sample_format
@@ -328,11 +301,12 @@ impl Song {
     pub fn source<S>(
         &self,
         track_mappings: &HashMap<String, Vec<u16>>,
+        target_format: TargetFormat,
     ) -> Result<SongSource<S>, Box<dyn Error>>
     where
         S: Sample,
     {
-        SongSource::<S>::new(self, track_mappings)
+        SongSource::<S>::new(self, track_mappings, target_format)
     }
 
     /// Returns a proto version of the song.
@@ -384,7 +358,6 @@ impl Default for Song {
             num_channels: Default::default(),
             sample_rate: Default::default(),
             sample_format: SampleFormat::Int,
-            bits_per_sample: Default::default(),
             duration: Default::default(),
             tracks: Default::default(),
         }
@@ -515,8 +488,6 @@ pub struct Track {
     sample_rate: u32,
     /// The sample format of the track.
     sample_format: SampleFormat,
-    /// The bits per sample.
-    bits_per_sample: u16,
     /// The duration of the track.
     duration: Duration,
 }
@@ -532,8 +503,6 @@ impl Track {
         let spec = reader.spec();
         let sample_rate = spec.sample_rate;
         let duration = Duration::from_secs(u64::from(reader.duration()) / u64::from(sample_rate));
-        let bits_per_sample = spec.bits_per_sample;
-
         if spec.channels > 1 && file_channel.is_none() {
             return Err(format!(
                 "track {} has more than one channel but file_channel is not specified",
@@ -549,7 +518,6 @@ impl Track {
             file_channel,
             sample_rate,
             sample_format: spec.sample_format,
-            bits_per_sample,
             duration,
         })
     }
@@ -571,8 +539,6 @@ impl Track {
         let sample_rate = spec.sample_rate;
         let sample_format = spec.sample_format;
         let duration = Duration::from_secs(u64::from(reader.duration()) / u64::from(sample_rate));
-        let bits_per_sample = spec.bits_per_sample;
-
         let tracks = match spec.channels {
             0 => vec![],
             1 => vec![Track {
@@ -581,7 +547,6 @@ impl Track {
                 file_channel: 1,
                 sample_rate,
                 sample_format,
-                bits_per_sample,
                 duration,
             }],
             2 => vec![
@@ -591,7 +556,6 @@ impl Track {
                     file_channel: 1,
                     sample_rate,
                     sample_format,
-                    bits_per_sample,
                     duration,
                 },
                 Track {
@@ -600,7 +564,6 @@ impl Track {
                     file_channel: 2,
                     sample_rate,
                     sample_format,
-                    bits_per_sample,
                     duration,
                 },
             ],
@@ -611,7 +574,6 @@ impl Track {
                     file_channel: channel + 1,
                     sample_rate,
                     sample_format,
-                    bits_per_sample,
                     duration,
                 })
                 .collect(),
@@ -648,9 +610,9 @@ where
     frame_pos: Arc<AtomicU16>,
 }
 
-/// The decoder and the file channel mapping.
-struct DecoderAndMapping {
-    decoder: WavReader<BufReader<File>>,
+/// The sample source and the file channel mapping.
+struct SampleSourceAndMapping {
+    sample_source: WavSampleSource,
     file_channel_to_output_channels: HashMap<u16, Vec<usize>>,
     num_channels: u16,
 }
@@ -662,6 +624,7 @@ where
     fn new(
         song: &Song,
         track_mapping: &HashMap<String, Vec<u16>>,
+        target_format: TargetFormat,
     ) -> Result<SongSource<S>, Box<dyn Error>> {
         let mut files_to_tracks = HashMap::<PathBuf, Vec<&Track>>::new();
 
@@ -687,12 +650,22 @@ where
         // is less than 30 MB. At 192KHz, it's ~188 MB. These seem reasonable to me.
         let buf = HeapRb::new(usize::from(num_channels) * usize::try_from(song.sample_rate)? * 30);
         let (prod, cons) = buf.split();
-        let mut decoders_and_mappings = Vec::<DecoderAndMapping>::new();
+        let mut sample_sources_and_mappings = Vec::<SampleSourceAndMapping>::new();
 
         for (file_path, tracks) in files_to_tracks {
-            // Open the various files for reading.
-            let decoder = WavReader::open(file_path)?;
-            let num_channels = decoder.spec().channels;
+            // Get the WAV file spec to determine the actual source format
+            let file = std::fs::File::open(&file_path)?;
+            let wav_reader = hound::WavReader::new(file)?;
+            let spec = wav_reader.spec();
+            let wav_channels = spec.channels;
+
+            // Create source format from the actual WAV file spec
+            let source_format =
+                TargetFormat::new(spec.sample_rate, spec.sample_format, spec.bits_per_sample)?;
+
+            let converter = AudioTranscoder::new(&source_format, &target_format, wav_channels)?;
+            let sample_source =
+                WavSampleSource::from_file(file_path, target_format.clone(), converter)?;
 
             let mut file_channel_to_output_channels: HashMap<u16, Vec<usize>> = HashMap::new();
             tracks.into_iter().for_each(|track| {
@@ -708,10 +681,10 @@ where
                 }
             });
 
-            decoders_and_mappings.push(DecoderAndMapping {
-                decoder,
+            sample_sources_and_mappings.push(SampleSourceAndMapping {
+                sample_source,
                 file_channel_to_output_channels,
-                num_channels,
+                num_channels: wav_channels,
             })
         }
 
@@ -719,8 +692,7 @@ where
         let join_handle = {
             SongSource::reader_thread(
                 usize::from(num_channels),
-                song.bits_per_sample,
-                decoders_and_mappings,
+                sample_sources_and_mappings,
                 prod,
                 finished.clone(),
             )
@@ -741,25 +713,25 @@ where
 
     fn reader_thread(
         num_channels: usize,
-        bits_per_sample: u16,
-        mut decoder_and_mappings: Vec<DecoderAndMapping>,
+        mut sample_sources_and_mappings: Vec<SampleSourceAndMapping>,
         mut prod: HeapProd<S>,
         finished: Arc<AtomicBool>,
     ) -> JoinHandle<()> {
         thread::spawn(move || {
             // The number of frames to read at a time from the source. We'll make it one quarter of the total capacity.
             let num_frames = Into::<usize>::into(prod.capacity()) / num_channels / 2;
-            let num_sources = decoder_and_mappings.len();
-            let mut sample_sources: Vec<WavSamples<'_, BufReader<File>, S>> =
-                Vec::with_capacity(num_sources);
+            let num_sources = sample_sources_and_mappings.len();
             let mut channels: Vec<u16> = Vec::with_capacity(num_sources);
-            let mut file_mappings: Vec<&HashMap<u16, Vec<usize>>> = Vec::with_capacity(num_sources);
+            let mut file_mappings: Vec<HashMap<u16, Vec<usize>>> = Vec::with_capacity(num_sources);
             let mut frames = vec![S::default(); num_channels * num_frames];
 
-            for decoder_and_mappings in decoder_and_mappings.iter_mut() {
-                sample_sources.push(decoder_and_mappings.decoder.samples());
-                channels.push(decoder_and_mappings.num_channels);
-                file_mappings.push(&decoder_and_mappings.file_channel_to_output_channels);
+            for sample_source_and_mapping in sample_sources_and_mappings.iter() {
+                channels.push(sample_source_and_mapping.num_channels);
+                file_mappings.push(
+                    sample_source_and_mapping
+                        .file_channel_to_output_channels
+                        .clone(),
+                );
             }
 
             loop {
@@ -778,31 +750,37 @@ where
 
                     let mut all_files_finished = true;
                     let current_frame = i % num_frames;
-                    for j in 0..num_sources {
-                        let file_channel_to_output_channels = file_mappings[j];
-                        let samples = &mut sample_sources[j];
 
-                        // Populate the current frame.
+                    // Read one sample from each source for this frame
+                    for j in 0..num_sources {
+                        let file_channel_to_output_channels = &file_mappings[j];
+                        let sample_source = &mut sample_sources_and_mappings[j].sample_source;
+
+                        // Read one sample from each channel of this source
                         for file_channel in 0..channels[j] {
-                            let result = samples.next();
-                            if let Some(sample) = result {
-                                all_files_finished = false;
-                                if let Some(targets) =
-                                    file_channel_to_output_channels.get(&file_channel)
-                                {
-                                    for target in targets {
-                                        frames[*target + current_frame * num_channels] +=
-                                            match sample {
-                                                Ok(sample) => sample.scale(bits_per_sample),
-                                                Err(ref e) => {
-                                                    error!(
-                                                        err = e.to_string(),
-                                                        "Error reading sample"
-                                                    );
-                                                    S::default()
-                                                }
-                                            };
+                            let result = sample_source.next_sample();
+                            match result {
+                                Ok(Some(sample)) => {
+                                    all_files_finished = false;
+                                    if let Some(targets) =
+                                        file_channel_to_output_channels.get(&file_channel)
+                                    {
+                                        for target in targets {
+                                            // Convert f32 sample to the target sample type
+                                            let converted_sample = S::from_f32(sample);
+                                            frames[*target + current_frame * num_channels] +=
+                                                converted_sample;
+                                        }
                                     }
+                                }
+                                Ok(None) => {
+                                    // Sample source is finished
+                                }
+                                Err(e) => {
+                                    error!(
+                                        err = e.to_string(),
+                                        "Error reading sample from SampleSource"
+                                    );
                                 }
                             }
                         }
@@ -1024,7 +1002,7 @@ mod test {
 
     use thiserror::Error;
 
-    use crate::{config, songs::initialize_songs, testutil::write_wav};
+    use crate::{audio::TargetFormat, config, songs::initialize_songs, testutil::write_wav};
 
     use super::{get_all_songs, Sample, SongSource};
 
@@ -1067,11 +1045,17 @@ mod test {
         write_wav(
             tempdir.join(tempwav1),
             vec![vec![1_i32, 2_i32, 3_i32, 4_i32, 5_i32]],
+            44100,
         )?;
-        write_wav(tempdir.join(tempwav2), vec![vec![2_i32, 3_i32, 4_i32]])?;
+        write_wav(
+            tempdir.join(tempwav2),
+            vec![vec![2_i32, 3_i32, 4_i32]],
+            44100,
+        )?;
         write_wav(
             tempdir.join(tempwav3),
             vec![vec![0_i32, 0_i32, 1_i32, 2_i32]],
+            44100,
         )?;
 
         let track1 = config::Track::new("test 1".into(), tempwav1, Some(1));
@@ -1094,7 +1078,7 @@ mod test {
         mapping.insert("test 2".into(), vec![4]);
         mapping.insert("test 3".into(), vec![4]);
 
-        song.source(&mapping)
+        song.source(&mapping, TargetFormat::default())
     }
 
     fn get_frame<S: Sample>(
@@ -1138,6 +1122,7 @@ mod test {
         write_wav(
             song_path.join("mono_track.wav"),
             vec![vec![1_i32, 2_i32, 3_i32, 4_i32, 5_i32]],
+            44100,
         )?;
 
         Ok(())
@@ -1152,6 +1137,7 @@ mod test {
                 vec![1_i32, 2_i32, 3_i32, 4_i32, 5_i32],
                 vec![5_i32, 4_i32, 3_i32, 2_i32, 1_i32],
             ],
+            44100,
         )?;
 
         Ok(())
@@ -1163,6 +1149,7 @@ mod test {
         write_wav(
             song_path.join("mono_track.wav"),
             vec![vec![1_i32, 2_i32, 3_i32, 4_i32, 5_i32]],
+            44100,
         )?;
 
         write_wav(
@@ -1171,6 +1158,7 @@ mod test {
                 vec![1_i32, 2_i32, 3_i32, 4_i32, 5_i32],
                 vec![5_i32, 4_i32, 3_i32, 2_i32, 1_i32],
             ],
+            44100,
         )?;
 
         Ok(())
@@ -1191,6 +1179,7 @@ mod test {
                 vec![7_i32, 2_i32, 3_i32, 4_i32, 5_i32],
                 vec![8_i32, 4_i32, 3_i32, 2_i32, 1_i32],
             ],
+            44100,
         )?;
 
         Ok(())
@@ -1359,6 +1348,212 @@ mod test {
             1,
             "Expected song to have a light show."
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_write_wav_formats() -> Result<(), Box<dyn Error>> {
+        use crate::testutil::write_wav;
+
+        let tempdir = tempfile::tempdir()?.into_path();
+
+        let i32_samples: Vec<i32> = vec![1, 2, 3, 4, 5];
+        let i32_path = tempdir.join("test_i32.wav");
+        write_wav(i32_path.clone(), vec![i32_samples], 44100)?;
+
+        let f32_samples: Vec<f32> = vec![0.1, 0.2, 0.3, 0.4, 0.5];
+        let f32_path = tempdir.join("test_f32.wav");
+        write_wav(f32_path.clone(), vec![f32_samples], 44100)?;
+
+        println!("Both formats work!");
+        Ok(())
+    }
+
+    #[test]
+    fn test_song_source_multiformat_integration() -> Result<(), Box<dyn Error>> {
+        use crate::testutil::write_wav;
+        use std::collections::HashMap;
+
+        // Create a temporary directory for test files
+        let tempdir = tempfile::tempdir()?.into_path();
+
+        // Test parameters
+        let duration_seconds = 0.5; // All sources will be 0.5 seconds
+        let target_sample_rate = 48000;
+        let target_format =
+            TargetFormat::new(target_sample_rate, hound::SampleFormat::Float, 32).unwrap();
+
+        // Create multiple input sources with different formats and sample rates
+        let test_sources = vec![
+            // Source 1: 44.1kHz, 32-bit int, mono
+            {
+                let sample_rate = 44100;
+                let sample_count = (sample_rate as f32 * duration_seconds) as usize;
+                let samples: Vec<i32> = (0..sample_count)
+                    .map(|i| {
+                        ((i as f32 * 440.0 * 2.0 * std::f32::consts::PI / sample_rate as f32).sin()
+                            * (1 << 23) as f32) as i32
+                    })
+                    .collect();
+                let wav_path = tempdir.join("source_44k_32bit_mono.wav");
+                write_wav(wav_path.clone(), vec![samples], sample_rate)?;
+                ("source_44k_32bit_mono.wav", 1, wav_path)
+            },
+            // Source 2: 48kHz, 32-bit int, stereo
+            {
+                let sample_rate = 48000;
+                let sample_count = (sample_rate as f32 * duration_seconds) as usize;
+                let left_samples: Vec<i32> = (0..sample_count)
+                    .map(|i| {
+                        ((i as f32 * 880.0 * 2.0 * std::f32::consts::PI / sample_rate as f32).sin()
+                            * (1 << 23) as f32) as i32
+                    })
+                    .collect();
+                let right_samples: Vec<i32> = (0..sample_count)
+                    .map(|i| {
+                        ((i as f32 * 1320.0 * 2.0 * std::f32::consts::PI / sample_rate as f32)
+                            .sin()
+                            * (1 << 23) as f32) as i32
+                    })
+                    .collect();
+                let wav_path = tempdir.join("source_48k_32bit_int_stereo.wav");
+                write_wav(
+                    wav_path.clone(),
+                    vec![left_samples, right_samples],
+                    sample_rate,
+                )?;
+                ("source_48k_32bit_int_stereo.wav", 2, wav_path)
+            },
+            // Source 3: 96kHz, 32-bit int, mono
+            {
+                let sample_rate = 96000;
+                let sample_count = (sample_rate as f32 * duration_seconds) as usize;
+                let samples: Vec<i32> = (0..sample_count)
+                    .map(|i| {
+                        ((i as f32 * 220.0 * 2.0 * std::f32::consts::PI / sample_rate as f32).sin()
+                            * (1 << 23) as f32) as i32
+                    })
+                    .collect();
+                let wav_path = tempdir.join("source_96k_32bit_mono.wav");
+                write_wav(wav_path.clone(), vec![samples], sample_rate)?;
+                ("source_96k_32bit_mono.wav", 1, wav_path)
+            },
+            // Source 4: 22.05kHz, 32-bit int, mono
+            {
+                let sample_rate = 22050;
+                let sample_count = (sample_rate as f32 * duration_seconds) as usize;
+                let samples: Vec<i32> = (0..sample_count)
+                    .map(|i| {
+                        ((i as f32 * 660.0 * 2.0 * std::f32::consts::PI / sample_rate as f32).sin()
+                            * (1 << 23) as f32) as i32
+                    })
+                    .collect();
+                let wav_path = tempdir.join("source_22k_32bit_int_mono.wav");
+                write_wav(wav_path.clone(), vec![samples], sample_rate)?;
+                ("source_22k_32bit_int_mono.wav", 1, wav_path)
+            },
+        ];
+
+        // Create tracks for each source
+        let tracks: Vec<config::Track> = test_sources
+            .iter()
+            .enumerate()
+            .map(|(i, (filename, channels, _))| {
+                config::Track::new(format!("track_{}", i + 1), filename, Some(*channels))
+            })
+            .collect();
+
+        // Create the song
+        let song = super::Song::new(
+            &tempdir,
+            &config::Song::new("multiformat_test_song", None, None, None, None, tracks),
+        )?;
+
+        // Create channel mapping (each track to a different output channel)
+        let mut channel_mapping: HashMap<String, Vec<u16>> = HashMap::new();
+        for (i, _) in test_sources.iter().enumerate() {
+            channel_mapping.insert(format!("track_{}", i + 1), vec![(i + 1) as u16]);
+        }
+
+        // Create the song source
+        let mut song_source: SongSource<f32> = song.source(&channel_mapping, target_format)?;
+
+        // Collect all samples from the song source
+        let mut all_samples = Vec::new();
+
+        while let Some(sample) = song_source.next() {
+            all_samples.push(sample);
+        }
+
+        // Calculate expected duration and sample count
+        // For a multitrack song source, the duration should be the longest track
+        // Each track is 0.5 seconds, so the total should be 0.5 seconds at 48kHz
+        let expected_duration_samples = (target_sample_rate as f32 * duration_seconds) as usize;
+
+        // The song source should output samples for the duration of the longest track
+        // Since all tracks are 0.5 seconds, the output should be 0.5 seconds worth of samples
+        // But we need to account for the fact that the song source interleaves multiple channels
+        let num_tracks = test_sources.len();
+        let expected_total_samples = expected_duration_samples * num_tracks;
+
+        // Verify the output - we expect samples for the duration of the longest track
+        // multiplied by the number of tracks (since they're interleaved)
+        // Allow for streaming variations (1% tolerance)
+        let tolerance = (expected_total_samples as f32 * 0.01) as usize;
+        assert!(
+            (all_samples.len() as i32 - expected_total_samples as i32).abs() <= tolerance as i32,
+            "Output sample count mismatch: got {}, expected {} (duration: {}s, tracks: {}, tolerance: {})",
+            all_samples.len(),
+            expected_total_samples,
+            duration_seconds,
+            num_tracks,
+            tolerance
+        );
+
+        // Verify duration is correct (within 1% tolerance)
+        // The duration should be calculated as total_samples / (sample_rate * num_channels)
+        // because the samples are interleaved across multiple channels
+        let actual_duration =
+            all_samples.len() as f32 / (target_sample_rate as f32 * num_tracks as f32);
+        let expected_duration = duration_seconds;
+        let duration_ratio = actual_duration / expected_duration;
+
+        assert!(
+            duration_ratio > 0.99 && duration_ratio < 1.01,
+            "Duration mismatch: got {:.3}s, expected {:.3}s (ratio: {:.4})",
+            actual_duration,
+            expected_duration,
+            duration_ratio
+        );
+
+        // Verify that we have samples from all channels
+        let num_channels = test_sources.len();
+        let samples_per_channel = all_samples.len() / num_channels;
+
+        assert!(
+            samples_per_channel > 0,
+            "No samples per channel: {} samples / {} channels",
+            all_samples.len(),
+            num_channels
+        );
+
+        // Verify that the samples are not all zeros (basic quality check)
+        let non_zero_samples = all_samples.iter().filter(|&&s| s != 0.0).count();
+        let non_zero_ratio = non_zero_samples as f32 / all_samples.len() as f32;
+
+        assert!(
+            non_zero_ratio > 0.1, // At least 10% non-zero samples
+            "Too many zero samples: {:.1}% non-zero (expected > 10%)",
+            non_zero_ratio * 100.0
+        );
+
+        println!(
+            "Integration test passed: {} samples, {:.3}s duration, {:.1}% non-zero samples",
+            all_samples.len(),
+            actual_duration,
+            non_zero_ratio * 100.0
+        );
+
         Ok(())
     }
 }

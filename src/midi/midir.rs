@@ -86,36 +86,35 @@ impl super::Device for Device {
                 loop {
                     match dmx_receiver.recv() {
                         Ok(event) => {
-                            if let Ok(event) = LiveEvent::parse(&event) {
+                            if let Ok(LiveEvent::Midi { channel, message }) =
+                                LiveEvent::parse(&event)
+                            {
                                 // Take the MIDI and pass through to the DMX engine if the DMX engine is present.
-                                if let LiveEvent::Midi { channel, message } = event {
-                                    if let Some(universe) =
-                                        midi_to_dmx_mappings.get(&channel.as_int())
-                                    {
-                                        let mut transformed = false;
+                                if let Some(universe) = midi_to_dmx_mappings.get(&channel.as_int())
+                                {
+                                    let mut transformed = false;
 
-                                        if let Some(transformers_for_channel) =
-                                            dmx_midi_transformers.get(&channel.as_int())
-                                        {
-                                            for transformer in transformers_for_channel {
-                                                if transformer.can_process(&message) {
-                                                    for transformed_message in
-                                                        transformer.transform(&message)
-                                                    {
-                                                        transformed = true;
-                                                        dmx_engine.handle_midi_event(
-                                                            universe.into(),
-                                                            transformed_message,
-                                                        );
-                                                    }
+                                    if let Some(transformers_for_channel) =
+                                        dmx_midi_transformers.get(&channel.as_int())
+                                    {
+                                        for transformer in transformers_for_channel {
+                                            if transformer.can_process(&message) {
+                                                for transformed_message in
+                                                    transformer.transform(&message)
+                                                {
+                                                    transformed = true;
+                                                    dmx_engine.handle_midi_event(
+                                                        universe.into(),
+                                                        transformed_message,
+                                                    );
                                                 }
                                             }
                                         }
+                                    }
 
-                                        // Only send the original note if
-                                        if !transformed {
-                                            dmx_engine.handle_midi_event(universe.into(), message);
-                                        }
+                                    // Only send the original note if
+                                    if !transformed {
+                                        dmx_engine.handle_midi_event(universe.into(), message);
                                     }
                                 }
                             }
@@ -434,13 +433,11 @@ pub fn get(
             })
         }
 
-        if !dmx_midi_transformers.contains_key(&midi_channel) {
-            dmx_midi_transformers.insert(midi_channel, Vec::new());
-        }
+        dmx_midi_transformers.entry(midi_channel).or_default();
 
-        dmx_midi_transformers
-            .get_mut(&midi_channel)
-            .map(|current_transformers| current_transformers.extend(transformers));
+        if let Some(current_transformers) = dmx_midi_transformers.get_mut(&midi_channel) {
+            current_transformers.extend(transformers);
+        }
     }
 
     let mut midi_device = matches.swap_remove(0);

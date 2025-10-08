@@ -38,7 +38,15 @@ impl CancelHandle {
             condvar: Arc::new(Condvar::new()),
         }
     }
+}
 
+impl Default for CancelHandle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CancelHandle {
     /// Returns true if the device process has been cancelled.
     pub fn is_cancelled(&self) -> bool {
         *self.cancelled.lock().expect("Error getting lock") == CancelState::Cancelled

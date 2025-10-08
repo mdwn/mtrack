@@ -112,3 +112,34 @@ jobs:
       - name: Extract release notes
         id: extract-release-notes
         uses: ffurrer2/extract-release-notes@v2
+
+  benchmarks:
+    name: Run benchmarks
+    permissions:
+      pull-requests: write
+      checks: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Update apt
+        run: sudo apt update
+      - name: Install dependencies
+        run: sudo apt-get install -y libasound2-dev libudev-dev protobuf-compiler
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: bencherdev/bencher@main
+      - uses: Swatinem/rust-cache@v2
+      - name: Track base branch benchmarks with Bencher
+        run: |
+          bencher run \
+          --project mtrack \
+          --token '${{ secrets.BENCHER_API_TOKEN }}' \
+          --branch main \
+          --testbed ubuntu-latest \
+          --threshold-measure latency \
+          --threshold-test t_test \
+          --threshold-max-sample-size 64 \
+          --threshold-upper-boundary 0.99 \
+          --thresholds-reset \
+          --err \
+          --adapter rust_criterion \
+          --github-actions '${{ secrets.GITHUB_TOKEN }}' -- cargo bench

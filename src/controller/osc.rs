@@ -360,7 +360,7 @@ mod test {
         controller::osc::{Driver, STATUS_PLAYING, STATUS_STOPPED},
         playlist::Playlist,
         songs,
-        testutil::eventually,
+        testutil::{eventually, eventually_async},
     };
 
     use super::Player;
@@ -468,6 +468,13 @@ mod test {
 
         osc_packet(stop.clone()).await?;
         eventually(|| !device.is_playing(), "Song never stopped playing");
+
+        // Wait for player's internal state to update as well
+        eventually_async(
+            || async { player.elapsed().await.map(|e| e.is_none()).unwrap_or(false) },
+            "Player state never updated to stopped",
+        )
+        .await;
 
         // Player should not have moved to the next song.
         assert_eq!(player.get_playlist().current().name(), "Song 5");
