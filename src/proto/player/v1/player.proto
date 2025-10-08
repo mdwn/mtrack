@@ -26,7 +26,10 @@ message Song {
     google.protobuf.Duration duration = 2;
 
     // Tracks are the tracks available for the song.
-    repeated string tracks = 3; 
+    repeated string tracks = 3;
+
+    // IsTranscoded indicates if the song requires transcoding for playback.
+    bool is_transcoded = 4;
 }
 
 // PlayRequest is the message for requesting the player to play the current song.

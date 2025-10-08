@@ -30,7 +30,6 @@ use crate::songs::Sample;
 /// Audio test utilities for generating test signals and validating results
 #[cfg(test)]
 pub mod audio_test_utils {
-    use super::*;
     use std::f32::consts::PI;
 
     /// Generate a multi-frequency signal (sum of sine waves)
@@ -88,60 +87,6 @@ pub mod audio_test_utils {
         }
 
         10.0 * (signal_power / noise_power).log10()
-    }
-
-    /// Validate that sample count is within expected tolerance
-    pub fn validate_sample_count(
-        actual: usize,
-        expected: usize,
-        tolerance: usize,
-        test_name: &str,
-    ) {
-        let difference = (actual as i32 - expected as i32).abs() as usize;
-        assert!(
-            difference <= tolerance,
-            "{}: got {} samples, expected {} (difference: {})",
-            test_name,
-            actual,
-            expected,
-            difference
-        );
-    }
-
-    /// Create a simple test WAV file with sequential samples
-    pub fn create_test_wav_file(
-        path: PathBuf,
-        sample_count: usize,
-        sample_rate: u32,
-        channels: u16,
-        sample_format: SampleFormat,
-        bits_per_sample: u16,
-    ) -> Result<(), Box<dyn Error>> {
-        let samples_per_channel = sample_count / channels as usize;
-        let channel_samples: Vec<i32> = (1..=samples_per_channel as i32).collect();
-        let all_samples = vec![channel_samples; channels as usize];
-
-        let wav_spec = WavSpec {
-            channels,
-            sample_rate,
-            bits_per_sample,
-            sample_format,
-        };
-
-        let mut writer = WavWriter::create(path, wav_spec)?;
-
-        for i in 0..samples_per_channel {
-            for ch in 0..channels {
-                if let Some(channel_samples) = all_samples.get(ch as usize) {
-                    if let Some(&sample) = channel_samples.get(i) {
-                        writer.write_sample(sample)?;
-                    }
-                }
-            }
-        }
-
-        writer.finalize()?;
-        Ok(())
     }
 }
 

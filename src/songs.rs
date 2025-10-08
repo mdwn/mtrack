@@ -31,7 +31,7 @@ use ringbuf::{HeapCons, HeapProd, HeapRb};
 use tracing::{debug, error, info, warn};
 
 use crate::audio::{
-    sample_source::{AudioTranscoder, SampleSource, WavSampleSource},
+    sample_source::{SampleSource, WavSampleSource},
     TargetFormat,
 };
 use crate::config;
@@ -291,6 +291,50 @@ impl Song {
         self.tracks.clone()
     }
 
+    /// Checks if this song requires transcoding for the given target format
+    pub fn needs_transcoding(&self, target_format: &TargetFormat) -> bool {
+        // Check if any track has different sample rate, format, or bit depth
+        self.tracks.iter().any(|track| {
+            // Read the actual bit depth from the WAV file
+            let actual_bits_per_sample = match std::fs::File::open(&track.file) {
+                Ok(file) => {
+                    match hound::WavReader::new(file) {
+                        Ok(reader) => reader.spec().bits_per_sample,
+                        Err(_) => {
+                            // Fallback to defaults if we can't read the file
+                            match track.sample_format {
+                                hound::SampleFormat::Int => 16,
+                                hound::SampleFormat::Float => 32,
+                            }
+                        }
+                    }
+                }
+                Err(_) => {
+                    // Fallback to defaults if we can't open the file
+                    match track.sample_format {
+                        hound::SampleFormat::Int => 16,
+                        hound::SampleFormat::Float => 32,
+                    }
+                }
+            };
+
+            let source_format = TargetFormat::new(
+                track.sample_rate,
+                track.sample_format,
+                actual_bits_per_sample,
+            );
+
+            if let Ok(source_format) = source_format {
+                // Simple check: if sample rate or format differs, transcoding is needed
+                source_format.sample_rate != target_format.sample_rate
+                    || source_format.sample_format != target_format.sample_format
+                    || source_format.bits_per_sample != target_format.bits_per_sample
+            } else {
+                true // If we can't create source format, assume transcoding is needed
+            }
+        })
+    }
+
     /// Returns the duration string in minutes and seconds.
     pub fn duration_string(&self) -> String {
         let secs = self.duration.as_secs();
@@ -324,6 +368,7 @@ impl Song {
             name: self.name.to_string(),
             duration: Some(duration),
             tracks: self.tracks.iter().map(|track| track.name.clone()).collect(),
+            is_transcoded: false, // TODO: This should be calculated based on target format
         })
     }
 }
@@ -659,13 +704,11 @@ where
             let spec = wav_reader.spec();
             let wav_channels = spec.channels;
 
-            // Create source format from the actual WAV file spec
-            let source_format =
+            // Create source format from the actual WAV file spec (for transcoding detection)
+            let _source_format =
                 TargetFormat::new(spec.sample_rate, spec.sample_format, spec.bits_per_sample)?;
 
-            let converter = AudioTranscoder::new(&source_format, &target_format, wav_channels)?;
-            let sample_source =
-                WavSampleSource::from_file(file_path, target_format.clone(), converter)?;
+            let sample_source = WavSampleSource::from_file(file_path, target_format.clone())?;
 
             let mut file_channel_to_output_channels: HashMap<u16, Vec<usize>> = HashMap::new();
             tracks.into_iter().for_each(|track| {
@@ -1555,5 +1598,61 @@ mod test {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn test_transcoding_detection() {
+        use crate::audio::TargetFormat;
+        use hound::SampleFormat;
+
+        // Create a test song with 44.1kHz sample rate and a track
+        let mut song = super::Song::default();
+        song.sample_rate = 44100;
+        song.sample_format = SampleFormat::Int;
+        song.tracks = vec![super::Track {
+            name: "test".to_string(),
+            file: std::path::PathBuf::new(),
+            file_channel: 1,
+            sample_rate: 44100,
+            sample_format: SampleFormat::Int,
+            duration: std::time::Duration::from_secs(1),
+        }];
+
+        // Test with same format - should not need transcoding
+        let target_format = TargetFormat::new(44100, SampleFormat::Int, 16).unwrap();
+        assert!(!song.needs_transcoding(&target_format));
+
+        // Test with different sample rate - should need transcoding
+        let target_format = TargetFormat::new(48000, SampleFormat::Int, 16).unwrap();
+        assert!(song.needs_transcoding(&target_format));
+
+        // Test with different format - should need transcoding
+        let target_format = TargetFormat::new(44100, SampleFormat::Float, 32).unwrap();
+        assert!(song.needs_transcoding(&target_format));
+    }
+
+    #[test]
+    fn test_no_transcoding_for_identical_formats() {
+        use crate::audio::TargetFormat;
+        use hound::SampleFormat;
+
+        // Test that identical formats don't trigger transcoding
+        let target_format = TargetFormat::new(44100, SampleFormat::Int, 16).unwrap();
+
+        // Create a song with identical format
+        let mut song = super::Song::default();
+        song.sample_rate = 44100;
+        song.sample_format = SampleFormat::Int;
+        song.tracks = vec![super::Track {
+            name: "test".to_string(),
+            file: std::path::PathBuf::new(),
+            file_channel: 1,
+            sample_rate: 44100,
+            sample_format: SampleFormat::Int,
+            duration: std::time::Duration::from_secs(1),
+        }];
+
+        // Should not need transcoding for identical formats
+        assert!(!song.needs_transcoding(&target_format));
     }
 }
