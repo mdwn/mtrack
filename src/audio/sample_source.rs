@@ -14,9 +14,28 @@
 use crate::audio::TargetFormat;
 use cpal::Sample as CpalSample;
 use hound::WavReader;
-use rubato::{Resampler, SincFixedIn, SincInterpolationParameters};
+use rubato::{calculate_cutoff, Resampler, SincFixedIn, SincInterpolationParameters};
 use std::error::Error;
 use std::path::Path;
+use std::sync::LazyLock;
+
+// Resampling configuration constants
+/// Length of the sinc interpolation filter (higher = better quality, more CPU)
+/// Using rubato example value for good quality/performance balance
+const SINC_LENGTH: usize = 128;
+/// Cutoff frequency for the anti-aliasing filter (calculated from SINC_LENGTH and window function)
+/// This is calculated once at startup using the actual rubato function
+static F_CUTOFF: LazyLock<f32> = LazyLock::new(|| {
+    // Calculate the optimal cutoff frequency for our specific sinc length and window function
+    calculate_cutoff::<f32>(SINC_LENGTH, rubato::WindowFunction::BlackmanHarris2)
+});
+/// Oversampling factor for improved interpolation quality
+/// Using rubato example value for good quality/performance balance
+const OVERSAMPLING_FACTOR: usize = 256;
+/// Input block size for the rubato resampler
+const INPUT_BLOCK_SIZE: usize = 1024;
+/// Chunk size for processing audio samples in streaming mode
+const CHUNK_SIZE: usize = 1024;
 
 /// A source of audio samples that can be transcoded to a target format
 pub trait SampleSource {
@@ -71,20 +90,24 @@ impl AudioTranscoder {
         let resampler = if needs_resampling {
             // Create rubato resampler for high-quality resampling
             let params = SincInterpolationParameters {
-                sinc_len: 32,
-                f_cutoff: 0.9,
+                sinc_len: SINC_LENGTH,
+                f_cutoff: *F_CUTOFF,
                 interpolation: rubato::SincInterpolationType::Linear,
-                oversampling_factor: 4,
+                oversampling_factor: OVERSAMPLING_FACTOR,
                 window: rubato::WindowFunction::BlackmanHarris2,
             };
 
             let ratio = target_format.sample_rate as f64 / source_format.sample_rate as f64;
+            // Calculate maximum ratio with safety margin to handle extreme cases
+            // like 22.5kHz -> 192kHz (ratio ~8.53) or 8kHz -> 192kHz (ratio ~24)
+            let max_ratio = (ratio * 1.5).max(10.0); // At least 10x, or 1.5x the actual ratio
+
             Some(
                 SincFixedIn::<f32>::new(
-                    ratio, // resampling ratio
-                    2.0,   // maximum resampling ratio (should be >= actual ratio)
+                    ratio,     // resampling ratio
+                    max_ratio, // maximum resampling ratio (should be >= actual ratio)
                     params,
-                    1024,              // input block size
+                    INPUT_BLOCK_SIZE,  // input block size
                     channels as usize, // number of channels
                 )
                 .map_err(|_e| {
@@ -113,7 +136,7 @@ impl AudioTranscoder {
         if let Some(ref mut resampler) = self.resampler {
             let mut all_output = Vec::new();
             resampler.reset();
-            let chunk_size = 1024 * self.channels as usize;
+            let chunk_size = CHUNK_SIZE * self.channels as usize;
             for chunk_start in (0..input.len()).step_by(chunk_size) {
                 let chunk_end = (chunk_start + chunk_size).min(input.len());
                 let chunk = &input[chunk_start..chunk_end];
@@ -357,7 +380,7 @@ impl SampleSource for WavSampleSource {
             if self.transcoder.as_ref().unwrap().current_position
                 >= self.transcoder.as_ref().unwrap().buffer.len()
             {
-                let chunk_size = 1024;
+                let chunk_size = CHUNK_SIZE;
                 let mut input_chunk = Vec::new();
                 let mut is_final_chunk = false;
                 let mut original_sample_count = 0;
@@ -2169,6 +2192,36 @@ mod tests {
             "RMS error too large: {:.6} (expected < 0.1)",
             rms_error
         );
+    }
+
+    #[test]
+    fn test_extreme_resampling_ratio() {
+        // Test extreme resampling ratios that exceed the old hardcoded 2.0 limit
+        let test_cases = vec![
+            (22500, 192000, "22.5kHz -> 192kHz"), // ratio ~8.53
+            (8000, 192000, "8kHz -> 192kHz"),     // ratio ~24
+            (44100, 96000, "44.1kHz -> 96kHz"),   // ratio ~2.18
+        ];
+
+        for (source_rate, target_rate, _description) in test_cases {
+            let source_format =
+                TargetFormat::new(source_rate, hound::SampleFormat::Float, 32).unwrap();
+            let target_format =
+                TargetFormat::new(target_rate, hound::SampleFormat::Float, 32).unwrap();
+
+            let result = AudioTranscoder::new(&source_format, &target_format, 1);
+            match result {
+                Ok(_) => {
+                    // Resampling succeeded - this is expected
+                }
+                Err(e) => {
+                    panic!(
+                        "Extreme resampling should not fail with dynamic max ratio: {:?}",
+                        e
+                    );
+                }
+            }
+        }
     }
 
     #[test]

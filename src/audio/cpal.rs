@@ -171,6 +171,7 @@ impl super::Device for Device {
         let span = span!(Level::INFO, "play song (cpal)");
         let _enter = span.enter();
 
+        let is_transcoded = song.needs_transcoding(&self.target_format);
         info!(
             format = if song.sample_format() == SampleFormat::Float {
                 "float"
@@ -180,6 +181,7 @@ impl super::Device for Device {
             device = self.name,
             song = song.name(),
             duration = song.duration_string(),
+            transcoded = is_transcoded,
             "Playing song."
         );
 
