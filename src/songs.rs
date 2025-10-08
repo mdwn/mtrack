@@ -295,13 +295,33 @@ impl Song {
     pub fn needs_transcoding(&self, target_format: &TargetFormat) -> bool {
         // Check if any track has different sample rate, format, or bit depth
         self.tracks.iter().any(|track| {
+            // Read the actual bit depth from the WAV file
+            let actual_bits_per_sample = match std::fs::File::open(&track.file) {
+                Ok(file) => {
+                    match hound::WavReader::new(file) {
+                        Ok(reader) => reader.spec().bits_per_sample,
+                        Err(_) => {
+                            // Fallback to defaults if we can't read the file
+                            match track.sample_format {
+                                hound::SampleFormat::Int => 16,
+                                hound::SampleFormat::Float => 32,
+                            }
+                        }
+                    }
+                }
+                Err(_) => {
+                    // Fallback to defaults if we can't open the file
+                    match track.sample_format {
+                        hound::SampleFormat::Int => 16,
+                        hound::SampleFormat::Float => 32,
+                    }
+                }
+            };
+
             let source_format = TargetFormat::new(
                 track.sample_rate,
                 track.sample_format,
-                match track.sample_format {
-                    hound::SampleFormat::Int => 16,   // Default to 16-bit for int
-                    hound::SampleFormat::Float => 32, // Default to 32-bit for float
-                },
+                actual_bits_per_sample,
             );
 
             if let Ok(source_format) = source_format {
@@ -1611,5 +1631,30 @@ mod test {
         // Test with different format - should need transcoding
         let target_format = TargetFormat::new(44100, SampleFormat::Float, 32).unwrap();
         assert!(song.needs_transcoding(&target_format));
+    }
+
+    #[test]
+    fn test_no_transcoding_for_identical_formats() {
+        use crate::audio::TargetFormat;
+        use hound::SampleFormat;
+
+        // Test that identical formats don't trigger transcoding
+        let target_format = TargetFormat::new(44100, SampleFormat::Int, 16).unwrap();
+        
+        // Create a song with identical format
+        let mut song = super::Song::default();
+        song.sample_rate = 44100;
+        song.sample_format = SampleFormat::Int;
+        song.tracks = vec![super::Track {
+            name: "test".to_string(),
+            file: std::path::PathBuf::new(),
+            file_channel: 1,
+            sample_rate: 44100,
+            sample_format: SampleFormat::Int,
+            duration: std::time::Duration::from_secs(1),
+        }];
+
+        // Should not need transcoding for identical formats
+        assert!(!song.needs_transcoding(&target_format));
     }
 }

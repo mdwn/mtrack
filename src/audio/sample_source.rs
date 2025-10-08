@@ -324,7 +324,7 @@ impl WavSampleSource {
     pub fn from_file<P: AsRef<Path>, C: SampleConverter>(
         path: P,
         target_format: TargetFormat,
-        converter: C,
+        _converter: C,
     ) -> Result<Self, TranscodingError> {
         let file = std::fs::File::open(path)?;
         let wav_reader = WavReader::new(file)?;
@@ -335,11 +335,14 @@ impl WavSampleSource {
             TargetFormat::new(spec.sample_rate, spec.sample_format, spec.bits_per_sample)
                 .map_err(|e| TranscodingError::SampleConversionFailed(e.to_string()))?;
 
-        // Check if transcoding is needed
-        let needs_resampling = converter.needs_resampling(&source_format, &target_format);
+        // Check if transcoding is needed (any format difference)
+        let needs_transcoding = source_format.sample_rate != target_format.sample_rate
+            || source_format.sample_format != target_format.sample_format
+            || source_format.bits_per_sample != target_format.bits_per_sample;
+        
 
-        // Create transcoder if resampling is needed
-        let transcoder = if needs_resampling {
+        // Create transcoder if transcoding is needed
+        let transcoder = if needs_transcoding {
             Some(AudioTranscoder::new(
                 &source_format,
                 &target_format,
@@ -371,10 +374,8 @@ impl SampleSource for WavSampleSource {
 
         // Handle transcoding if needed
         if self.transcoder.is_some() {
-            // If no resampling needed, pass through directly
-            if self.transcoder.as_ref().unwrap().resampler.is_none() {
-                return self.read_next_sample();
-            }
+            // Always use transcoding logic when transcoder is present
+            // (even if only format conversion is needed)
 
             // Check if we need to fill the transcoder's buffer
             if self.transcoder.as_ref().unwrap().current_position
