@@ -31,7 +31,7 @@ use ringbuf::{HeapCons, HeapProd, HeapRb};
 use tracing::{debug, error, info, warn};
 
 use crate::audio::{
-    sample_source::{AudioTranscoder, SampleSource, WavSampleSource},
+    sample_source::{SampleSource, WavSampleSource},
     TargetFormat,
 };
 use crate::config;
@@ -704,13 +704,12 @@ where
             let spec = wav_reader.spec();
             let wav_channels = spec.channels;
 
-            // Create source format from the actual WAV file spec
-            let source_format =
+            // Create source format from the actual WAV file spec (for transcoding detection)
+            let _source_format =
                 TargetFormat::new(spec.sample_rate, spec.sample_format, spec.bits_per_sample)?;
 
-            let converter = AudioTranscoder::new(&source_format, &target_format, wav_channels)?;
             let sample_source =
-                WavSampleSource::from_file(file_path, target_format.clone(), converter)?;
+                WavSampleSource::from_file(file_path, target_format.clone())?;
 
             let mut file_channel_to_output_channels: HashMap<u16, Vec<usize>> = HashMap::new();
             tracks.into_iter().for_each(|track| {

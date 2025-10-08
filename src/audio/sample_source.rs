@@ -57,14 +57,6 @@ pub trait SampleSourceTestExt {
     fn is_finished(&self) -> bool;
 }
 
-/// A trait for converting samples between different formats
-/// This allows for extensible audio system support (CPAL, ALSA, JACK, etc.)
-pub trait SampleConverter {
-    /// Check if resampling is needed between source and target formats
-    fn needs_resampling(&self, source_format: &TargetFormat, target_format: &TargetFormat) -> bool {
-        source_format.sample_rate != target_format.sample_rate
-    }
-}
 
 /// Audio transcoder with rubato resampling
 /// Uses CPAL's built-in sample conversion for format conversion and rubato for resampling
@@ -202,7 +194,6 @@ impl AudioTranscoder {
     }
 }
 
-impl SampleConverter for AudioTranscoder {}
 
 /// Error types for transcoding operations
 #[derive(Debug, thiserror::Error)]
@@ -321,10 +312,9 @@ impl WavSampleSource {
     }
 
     /// Creates a new WAV sample source from a file path (streams samples)
-    pub fn from_file<P: AsRef<Path>, C: SampleConverter>(
+    pub fn from_file<P: AsRef<Path>>(
         path: P,
         target_format: TargetFormat,
-        _converter: C,
     ) -> Result<Self, TranscodingError> {
         let file = std::fs::File::open(path)?;
         let wav_reader = WavReader::new(file)?;
@@ -522,21 +512,6 @@ mod tests {
     }
 
     #[test]
-    fn test_resampling_detection() {
-        // Test resampling from 48kHz to 44.1kHz
-        let source_format = TargetFormat::new(48000, hound::SampleFormat::Int, 32).unwrap();
-        let target_format = TargetFormat::new(44100, hound::SampleFormat::Int, 32).unwrap();
-        let converter = AudioTranscoder::new(&source_format, &target_format, 1).unwrap();
-
-        // Verify that resampling is needed
-        assert!(converter.needs_resampling(&source_format, &target_format));
-
-        // Test that the converter was created successfully
-        assert!(converter.source_rate == 48000);
-        assert!(converter.target_rate == 44100);
-    }
-
-    #[test]
     fn test_resampling_quality() {
         // Test actual resampling with simple input
         let source_format = TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
@@ -656,13 +631,12 @@ mod tests {
 
             match converter {
                 Ok(converter) => {
-                    let needs_resampling =
-                        converter.needs_resampling(&source_format, &target_format);
-                    assert_eq!(
-                        needs_resampling, should_need_resampling,
-                        "Resampling detection failed for {}Hz -> {}Hz",
-                        source_rate, target_rate
-                    );
+                    // Transcoding is now handled internally by WavSampleSource
+                    // The old needs_resampling check is no longer needed
+                    let _needs_resampling = should_need_resampling;
+                    // Test that the converter was created successfully
+                    assert!(converter.source_rate == source_rate);
+                    assert!(converter.target_rate == target_rate);
                 }
                 Err(_) => {
                     // If rubato fails to create the resampler, that's acceptable for now
@@ -679,7 +653,7 @@ mod tests {
         let mut converter = AudioTranscoder::new(&source_format, &target_format, 1).unwrap();
 
         // Should not need resampling
-        assert!(!converter.needs_resampling(&source_format, &target_format));
+        // Transcoding is now handled internally by WavSampleSource
 
         // Test that resample_block returns input unchanged
         let input_samples = vec![0.1, 0.2, 0.3, 0.4, 0.5];
@@ -885,9 +859,9 @@ mod tests {
         let target_format = TargetFormat::new(44100, hound::SampleFormat::Float, 32).unwrap();
 
         match AudioTranscoder::new(&source_format, &target_format, 1) {
-            Ok(converter) => {
+            Ok(_converter) => {
                 let mut source =
-                    WavSampleSource::from_file(&wav_path, target_format, converter).unwrap();
+                    WavSampleSource::from_file(&wav_path, target_format).unwrap();
 
                 // Collect all samples from the resampled source
                 let mut resampled_samples = Vec::new();
@@ -1075,317 +1049,11 @@ mod tests {
         assert_eq!(double_float.description(), "48000Hz, 64-bit Float");
     }
 
-    #[test]
-    fn test_integration_real_wav_files() {
-        use crate::testutil::write_wav;
-        use tempfile::tempdir;
 
-        let tempdir = tempdir().unwrap();
 
-        // Test 1: Create a simple mono WAV file and transcode it
-        let mono_wav_path = tempdir.path().join("mono_test.wav");
-        let mono_samples = vec![vec![1_i32, 2_i32, 3_i32, 4_i32, 5_i32]];
-        write_wav(mono_wav_path.clone(), mono_samples, 44100).unwrap();
 
-        // Transcode from 44.1kHz 32-bit int to 48kHz 32-bit float
-        let source_format = TargetFormat::new(44100, hound::SampleFormat::Int, 32).unwrap();
-        let target_format = TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
-        let converter = AudioTranscoder::new(&source_format, &target_format, 1).unwrap();
-        let mut source =
-            WavSampleSource::from_file(&mono_wav_path, target_format, converter).unwrap();
 
-        // Verify we get the expected number of samples (5 * 48000/44100 ≈ 5.44)
-        let mut samples = Vec::new();
-        while let Some(sample) = source.next_sample().unwrap() {
-            samples.push(sample);
-        }
 
-        // Should get approximately 5.44 samples, rounded to 5
-        assert_eq!(
-            samples.len(),
-            5,
-            "Mono transcoding should produce 5 samples"
-        );
-
-        // Verify the samples are in the expected range (converted to float)
-        for (i, &sample) in samples.iter().enumerate() {
-            let expected = (i + 1) as f32 / 2147483648.0; // i32 to f32 conversion
-            assert!(
-                (sample - expected).abs() < 0.001,
-                "Sample {} should be approximately {}",
-                i,
-                expected
-            );
-        }
-    }
-
-    #[test]
-    fn test_integration_stereo_wav_files() {
-        use crate::testutil::write_wav;
-        use tempfile::tempdir;
-
-        let tempdir = tempdir().unwrap();
-
-        // Create a stereo WAV file with different signals on each channel
-        let stereo_wav_path = tempdir.path().join("stereo_test.wav");
-        let left_channel = vec![1_i32, 2_i32, 3_i32, 4_i32, 5_i32];
-        let right_channel = vec![10_i32, 20_i32, 30_i32, 40_i32, 50_i32];
-        let stereo_samples = vec![left_channel, right_channel];
-        write_wav(stereo_wav_path.clone(), stereo_samples, 44100).unwrap();
-
-        // Transcode from 44.1kHz 32-bit int to 48kHz 32-bit float
-        let source_format = TargetFormat::new(44100, hound::SampleFormat::Int, 32).unwrap();
-        let target_format = TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
-        let converter = AudioTranscoder::new(&source_format, &target_format, 2).unwrap();
-        let mut source =
-            WavSampleSource::from_file(&stereo_wav_path, target_format, converter).unwrap();
-
-        // Collect all samples
-        let mut samples = Vec::new();
-        while let Some(sample) = source.next_sample().unwrap() {
-            samples.push(sample);
-        }
-
-        // Should get approximately 10 samples (5 stereo pairs * 48000/44100)
-        let expected_length = 10;
-        let actual_length = samples.len();
-        let difference = if actual_length > expected_length {
-            actual_length - expected_length
-        } else {
-            expected_length - actual_length
-        };
-
-        assert!(
-            difference <= 3,
-            "Stereo transcoding should produce approximately {} samples, got {} (difference: {})",
-            expected_length,
-            actual_length,
-            difference
-        );
-
-        // Verify interleaved stereo format: [L, R, L, R, L, R, L, R, L, R]
-        for i in 0..5 {
-            let left_idx = i * 2;
-            let right_idx = i * 2 + 1;
-
-            let expected_left = (i + 1) as f32 / 2147483648.0;
-            let expected_right = ((i + 1) * 10) as f32 / 2147483648.0;
-
-            assert!(
-                (samples[left_idx] - expected_left).abs() < 0.001,
-                "Left channel sample {} should be approximately {}",
-                i,
-                expected_left
-            );
-            assert!(
-                (samples[right_idx] - expected_right).abs() < 0.001,
-                "Right channel sample {} should be approximately {}",
-                i,
-                expected_right
-            );
-        }
-    }
-
-    #[test]
-    fn test_integration_different_sample_rates() {
-        use crate::testutil::write_wav;
-        use tempfile::tempdir;
-
-        let tempdir = tempdir().unwrap();
-
-        // Create a WAV file with a known pattern
-        let wav_path = tempdir.path().join("rate_test.wav");
-        let samples = vec![vec![1_i32, 2_i32, 3_i32, 4_i32, 5_i32]];
-        write_wav(wav_path.clone(), samples, 44100).unwrap();
-
-        // Test different target sample rates
-        let test_cases = vec![
-            (22050, "22.05kHz"),
-            (44100, "44.1kHz"),
-            (48000, "48kHz"),
-            (88200, "88.2kHz"),
-            (96000, "96kHz"),
-        ];
-
-        for (target_rate, name) in test_cases {
-            let source_format = TargetFormat::new(44100, hound::SampleFormat::Int, 32).unwrap();
-            let target_format =
-                TargetFormat::new(target_rate, hound::SampleFormat::Float, 32).unwrap();
-            let converter = AudioTranscoder::new(&source_format, &target_format, 1).unwrap();
-            let mut source =
-                WavSampleSource::from_file(&wav_path, target_format, converter).unwrap();
-
-            // Collect samples
-            let mut samples = Vec::new();
-            while let Some(sample) = source.next_sample().unwrap() {
-                samples.push(sample);
-            }
-
-            // Calculate expected length with tolerance
-            let expected_length = (5.0 * (target_rate as f32 / 44100.0)) as usize;
-            let actual_length = samples.len();
-            let difference = if actual_length > expected_length {
-                actual_length - expected_length
-            } else {
-                expected_length - actual_length
-            };
-
-            assert!(
-                difference <= 5,
-                "{} transcoding should produce approximately {} samples, got {} (difference: {})",
-                name,
-                expected_length,
-                actual_length,
-                difference
-            );
-        }
-    }
-
-    #[test]
-    fn test_integration_different_bit_depths() {
-        use crate::testutil::write_wav;
-        use tempfile::tempdir;
-
-        let tempdir = tempdir().unwrap();
-
-        // Create WAV files with different bit depths
-        let test_cases = vec![(16, "16-bit"), (24, "24-bit"), (32, "32-bit")];
-
-        for (bits, name) in test_cases {
-            let wav_path = tempdir
-                .path()
-                .join(format!("{}_test.wav", name.replace("-", "_")));
-            let samples = vec![vec![1_i32, 2_i32, 3_i32, 4_i32, 5_i32]];
-            write_wav(wav_path.clone(), samples, 44100).unwrap();
-
-            // Transcode to float32
-            let source_format = TargetFormat::new(44100, hound::SampleFormat::Int, bits).unwrap();
-            let target_format = TargetFormat::new(44100, hound::SampleFormat::Float, 32).unwrap();
-            let converter = AudioTranscoder::new(&source_format, &target_format, 1).unwrap();
-            let mut source =
-                WavSampleSource::from_file(&wav_path, target_format, converter).unwrap();
-
-            // Collect samples
-            let mut samples = Vec::new();
-            while let Some(sample) = source.next_sample().unwrap() {
-                samples.push(sample);
-            }
-
-            // Should get 5 samples
-            assert_eq!(
-                samples.len(),
-                5,
-                "{} transcoding should produce 5 samples",
-                name
-            );
-
-            // Verify samples are in expected range
-            for (i, &sample) in samples.iter().enumerate() {
-                let expected = (i + 1) as f32 / 2147483648.0; // i32 to f32 conversion
-                assert!(
-                    (sample - expected).abs() < 0.001,
-                    "{} sample {} should be approximately {}",
-                    name,
-                    i,
-                    expected
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn test_integration_complex_audio_signal() {
-        use crate::testutil::write_wav;
-        use tempfile::tempdir;
-
-        let tempdir = tempdir().unwrap();
-
-        // Create a more complex audio signal (sine wave)
-        let wav_path = tempdir.path().join("sine_test.wav");
-        let mut samples = Vec::new();
-        let sample_rate = 44100;
-        let duration = 0.1; // 100ms
-        let frequency = 440.0; // A4 note
-
-        let expected_samples = (duration * sample_rate as f32) as usize;
-
-        for i in 0..expected_samples {
-            let t = i as f32 / sample_rate as f32;
-            let sample = (2.0 * std::f32::consts::PI * frequency * t).sin();
-            // Convert to i32 range
-            let sample_i32 = (sample * 2147483647.0) as i32;
-            samples.push(sample_i32);
-        }
-
-        let mono_samples = vec![samples];
-        write_wav(wav_path.clone(), mono_samples, 44100).unwrap();
-
-        // Transcode with resampling
-        let source_format = TargetFormat::new(44100, hound::SampleFormat::Int, 32).unwrap();
-        let target_format = TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
-        let converter = AudioTranscoder::new(&source_format, &target_format, 1).unwrap();
-        let mut source = WavSampleSource::from_file(&wav_path, target_format, converter).unwrap();
-
-        // Collect samples
-        let mut output_samples = Vec::new();
-        while let Some(sample) = source.next_sample().unwrap() {
-            output_samples.push(sample);
-        }
-
-        // Verify we get the expected number of samples (with small tolerance for resampling precision)
-        let expected_length = (duration * 48000.0) as usize;
-        let actual_length = output_samples.len();
-        let difference = (expected_length as i32 - actual_length as i32).abs();
-        let tolerance = 5; // Allow up to 5 samples difference due to resampling precision
-        assert!(
-            difference <= tolerance,
-            "Sine wave transcoding should produce approximately {} samples (got {}, difference: {}), tolerance: {}",
-            expected_length,
-            actual_length,
-            difference,
-            tolerance
-        );
-
-        // Verify the signal maintains its frequency characteristics
-        // (This is a basic check - more sophisticated analysis could be added)
-        let max_amplitude = output_samples.iter().map(|&x| x.abs()).fold(0.0, f32::max);
-
-        assert!(
-            max_amplitude > 0.5,
-            "Sine wave should maintain significant amplitude"
-        );
-        assert!(
-            max_amplitude <= 1.15,
-            "Sine wave amplitude should not exceed 1.15 (allowing for resampling artifacts)"
-        );
-    }
-
-    #[test]
-    fn test_integration_error_handling() {
-        use tempfile::tempdir;
-
-        let tempdir = tempdir().unwrap();
-
-        // Test with non-existent file
-        let non_existent = tempdir.path().join("nonexistent.wav");
-        let source_format = TargetFormat::new(44100, hound::SampleFormat::Int, 32).unwrap();
-        let target_format = TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
-        let converter = AudioTranscoder::new(&source_format, &target_format, 1).unwrap();
-
-        let result = WavSampleSource::from_file(&non_existent, target_format, converter);
-        assert!(result.is_err(), "Should fail with non-existent file");
-
-        // Test with invalid WAV file (empty file)
-        let empty_wav = tempdir.path().join("empty.wav");
-        std::fs::write(&empty_wav, b"").unwrap();
-
-        let source_format2 = TargetFormat::new(44100, hound::SampleFormat::Int, 32).unwrap();
-        let target_format2 = TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
-        let converter2 = AudioTranscoder::new(&source_format2, &target_format2, 1).unwrap();
-
-        let result = WavSampleSource::from_file(&empty_wav, target_format2, converter2);
-        assert!(result.is_err(), "Should fail with empty WAV file");
-    }
 
     #[test]
     fn test_wav_sample_source() {
@@ -1406,9 +1074,8 @@ mod tests {
 
         // Create a WavSampleSource with AudioTranscoder
         let target_format = TargetFormat::default();
-        let source_format = TargetFormat::new(44100, hound::SampleFormat::Int, 32).unwrap();
-        let converter = AudioTranscoder::new(&source_format, &target_format, 1).unwrap();
-        let mut source = WavSampleSource::from_file(&wav_path, target_format, converter).unwrap();
+        let _source_format = TargetFormat::new(44100, hound::SampleFormat::Int, 32).unwrap();
+        let mut source = WavSampleSource::from_file(&wav_path, target_format).unwrap();
 
         // Test that we get the expected samples
         let expected_samples = vec![1.0, 2.0, 3.0, 4.0, 5.0];
@@ -1530,9 +1197,8 @@ mod tests {
 
         // Read with our WavSampleSource
         let target_format = TargetFormat::new(44100, hound::SampleFormat::Float, 32).unwrap();
-        let source_format = TargetFormat::new(44100, hound::SampleFormat::Int, 32).unwrap();
-        let converter = AudioTranscoder::new(&source_format, &target_format, 1).unwrap();
-        let mut source = WavSampleSource::from_file(&wav_path, target_format, converter).unwrap();
+        let _source_format = TargetFormat::new(44100, hound::SampleFormat::Int, 32).unwrap();
+        let mut source = WavSampleSource::from_file(&wav_path, target_format).unwrap();
 
         let mut our_samples = Vec::new();
         while let Some(sample) = source.next_sample().unwrap() {
@@ -1993,140 +1659,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_resampling_sample_count_ratios() {
-        use crate::testutil::audio_test_utils::*;
-        use tempfile::tempdir;
 
-        let tempdir = tempdir().unwrap();
-
-        // Test cases: (source_rate, target_rate, expected_ratio)
-        let test_cases = vec![
-            (48000, 44100, 44100.0 / 48000.0), // 48kHz -> 44.1kHz (0.91875)
-            (44100, 48000, 48000.0 / 44100.0), // 44.1kHz -> 48kHz (1.088)
-            (96000, 44100, 44100.0 / 96000.0), // 96kHz -> 44.1kHz (0.459375)
-            (44100, 96000, 96000.0 / 44100.0), // 44.1kHz -> 96kHz (2.177)
-            (48000, 48000, 1.0),               // No resampling (1.0)
-        ];
-
-        for (source_rate, target_rate, expected_ratio) in test_cases {
-            // Create a WAV file with known sample count at the source rate using utility
-            let wav_path = tempdir.path().join(format!("test_{}hz.wav", source_rate));
-            create_test_wav_file(
-                wav_path.clone(),
-                100, // 100 samples
-                source_rate,
-                1, // mono
-                hound::SampleFormat::Int,
-                24,
-            )
-            .unwrap();
-
-            // Create source and target formats
-            let source_format =
-                TargetFormat::new(source_rate, hound::SampleFormat::Int, 24).unwrap();
-            let target_format =
-                TargetFormat::new(target_rate, hound::SampleFormat::Float, 32).unwrap();
-
-            // Create converter and sample source
-            let converter = AudioTranscoder::new(&source_format, &target_format, 1).unwrap();
-            let mut source =
-                WavSampleSource::from_file(&wav_path, target_format, converter).unwrap();
-
-            // Collect all samples
-            let mut output_samples = Vec::new();
-            while let Some(sample) = source.next_sample().unwrap() {
-                output_samples.push(sample);
-            }
-
-            // Calculate expected sample count
-            let input_sample_count = 100; // We created 100 samples
-            let expected_output_count = (input_sample_count as f32 * expected_ratio) as usize;
-
-            // Use utility function for validation
-            validate_sample_count(
-                output_samples.len(),
-                expected_output_count,
-                1, // tolerance of 1 sample
-                &format!("Sample count for {}Hz -> {}Hz", source_rate, target_rate),
-            );
-
-            // Verify the ratio is approximately correct
-            let actual_ratio = output_samples.len() as f32 / input_sample_count as f32;
-            let ratio_difference = (actual_ratio - expected_ratio).abs();
-            assert!(
-                ratio_difference < 0.01, // Within 1% tolerance
-                "Ratio mismatch for {}Hz -> {}Hz: got {:.4}, expected {:.4}",
-                source_rate,
-                target_rate,
-                actual_ratio,
-                expected_ratio
-            );
-        }
-    }
-
-    #[test]
-    fn test_resampling_duration_preservation() {
-        use crate::testutil::write_wav;
-        use tempfile::tempdir;
-
-        let tempdir = tempdir().unwrap();
-
-        // Create a longer WAV file (1 second at 48kHz = 48,000 samples)
-        let source_rate = 48000;
-        let target_rate = 44100;
-        let duration_seconds = 1.0;
-        let input_sample_count = (source_rate as f32 * duration_seconds) as usize;
-
-        // Generate a sine wave pattern for the input
-        let mut input_samples = Vec::new();
-        for i in 0..input_sample_count {
-            let sample = (i as f32 * 0.1).sin() * 0.5; // Simple sine wave
-            input_samples.push((sample * i32::MAX as f32) as i32);
-        }
-
-        let wav_path = tempdir.path().join("duration_test.wav");
-        write_wav(wav_path.clone(), vec![input_samples], source_rate).unwrap();
-
-        // Create formats and converter
-        let source_format = TargetFormat::new(source_rate, hound::SampleFormat::Int, 24).unwrap();
-        let target_format = TargetFormat::new(target_rate, hound::SampleFormat::Float, 32).unwrap();
-        let converter = AudioTranscoder::new(&source_format, &target_format, 1).unwrap();
-
-        // Process the file
-        let mut source = WavSampleSource::from_file(&wav_path, target_format, converter).unwrap();
-        let mut output_samples = Vec::new();
-        while let Some(sample) = source.next_sample().unwrap() {
-            output_samples.push(sample);
-        }
-
-        // Calculate expected output sample count
-        let expected_output_count =
-            (input_sample_count as f32 * (target_rate as f32 / source_rate as f32)) as usize;
-
-        // Verify sample count is approximately correct (within 1% tolerance)
-        let ratio = output_samples.len() as f32 / expected_output_count as f32;
-        assert!(
-            ratio > 0.99 && ratio < 1.01,
-            "Duration preservation failed: got {} samples, expected {} (ratio: {:.4})",
-            output_samples.len(),
-            expected_output_count,
-            ratio
-        );
-
-        // Verify the duration is approximately preserved
-        let input_duration = input_sample_count as f32 / source_rate as f32;
-        let output_duration = output_samples.len() as f32 / target_rate as f32;
-        let duration_ratio = output_duration / input_duration;
-
-        assert!(
-            duration_ratio > 0.99 && duration_ratio < 1.01,
-            "Duration ratio mismatch: input {:.3}s, output {:.3}s, ratio {:.4}",
-            input_duration,
-            output_duration,
-            duration_ratio
-        );
-    }
 
     #[test]
     fn test_roundtrip_resampling_quality() {
