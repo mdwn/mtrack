@@ -21,8 +21,8 @@ use std::sync::LazyLock;
 
 // Resampling configuration constants
 /// Length of the sinc interpolation filter (higher = better quality, more CPU)
-/// Using rubato example value for good quality/performance balance
-const SINC_LENGTH: usize = 128;
+/// Balanced for good quality without excessive performance impact
+const SINC_LENGTH: usize = 64;
 /// Cutoff frequency for the anti-aliasing filter (calculated from SINC_LENGTH and window function)
 /// This is calculated once at startup using the actual rubato function
 static F_CUTOFF: LazyLock<f32> = LazyLock::new(|| {
@@ -30,8 +30,8 @@ static F_CUTOFF: LazyLock<f32> = LazyLock::new(|| {
     calculate_cutoff::<f32>(SINC_LENGTH, rubato::WindowFunction::BlackmanHarris2)
 });
 /// Oversampling factor for improved interpolation quality
-/// Using rubato example value for good quality/performance balance
-const OVERSAMPLING_FACTOR: usize = 256;
+/// Balanced for good quality without excessive performance impact
+const OVERSAMPLING_FACTOR: usize = 64;
 /// Input block size for the rubato resampler
 const INPUT_BLOCK_SIZE: usize = 1024;
 /// Chunk size for processing audio samples in streaming mode
