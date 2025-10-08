@@ -88,7 +88,6 @@ pub mod audio_test_utils {
 
         10.0 * (signal_power / noise_power).log10()
     }
-
 }
 
 /// Wait for the given predicate to return true or fail.

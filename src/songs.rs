@@ -708,8 +708,7 @@ where
             let _source_format =
                 TargetFormat::new(spec.sample_rate, spec.sample_format, spec.bits_per_sample)?;
 
-            let sample_source =
-                WavSampleSource::from_file(file_path, target_format.clone())?;
+            let sample_source = WavSampleSource::from_file(file_path, target_format.clone())?;
 
             let mut file_channel_to_output_channels: HashMap<u16, Vec<usize>> = HashMap::new();
             tracks.into_iter().for_each(|track| {
@@ -1639,7 +1638,7 @@ mod test {
 
         // Test that identical formats don't trigger transcoding
         let target_format = TargetFormat::new(44100, SampleFormat::Int, 16).unwrap();
-        
+
         // Create a song with identical format
         let mut song = super::Song::default();
         song.sample_rate = 44100;

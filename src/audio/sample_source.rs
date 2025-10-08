@@ -57,7 +57,6 @@ pub trait SampleSourceTestExt {
     fn is_finished(&self) -> bool;
 }
 
-
 /// Audio transcoder with rubato resampling
 /// Uses CPAL's built-in sample conversion for format conversion and rubato for resampling
 pub struct AudioTranscoder {
@@ -194,7 +193,6 @@ impl AudioTranscoder {
     }
 }
 
-
 /// Error types for transcoding operations
 #[derive(Debug, thiserror::Error)]
 pub enum TranscodingError {
@@ -329,7 +327,6 @@ impl WavSampleSource {
         let needs_transcoding = source_format.sample_rate != target_format.sample_rate
             || source_format.sample_format != target_format.sample_format
             || source_format.bits_per_sample != target_format.bits_per_sample;
-        
 
         // Create transcoder if transcoding is needed
         let transcoder = if needs_transcoding {
@@ -860,8 +857,7 @@ mod tests {
 
         match AudioTranscoder::new(&source_format, &target_format, 1) {
             Ok(_converter) => {
-                let mut source =
-                    WavSampleSource::from_file(&wav_path, target_format).unwrap();
+                let mut source = WavSampleSource::from_file(&wav_path, target_format).unwrap();
 
                 // Collect all samples from the resampled source
                 let mut resampled_samples = Vec::new();
@@ -1048,12 +1044,6 @@ mod tests {
         assert_eq!(float_quality.description(), "48000Hz, 32-bit Float");
         assert_eq!(double_float.description(), "48000Hz, 64-bit Float");
     }
-
-
-
-
-
-
 
     #[test]
     fn test_wav_sample_source() {
@@ -1658,8 +1648,6 @@ mod tests {
             expected_large_length
         );
     }
-
-
 
     #[test]
     fn test_roundtrip_resampling_quality() {
