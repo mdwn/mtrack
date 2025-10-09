@@ -31,7 +31,7 @@ use ringbuf::{HeapCons, HeapProd, HeapRb};
 use tracing::{debug, error, info, warn};
 
 use crate::audio::{
-    sample_source::{SampleSource, WavSampleSource},
+    sample_source::{create_wav_sample_source, AnySampleSource, SampleSource},
     TargetFormat,
 };
 use crate::config;
@@ -657,7 +657,7 @@ where
 
 /// The sample source and the file channel mapping.
 struct SampleSourceAndMapping {
-    sample_source: WavSampleSource,
+    sample_source: AnySampleSource,
     file_channel_to_output_channels: HashMap<u16, Vec<usize>>,
     num_channels: u16,
 }
@@ -708,7 +708,7 @@ where
             let _source_format =
                 TargetFormat::new(spec.sample_rate, spec.sample_format, spec.bits_per_sample)?;
 
-            let sample_source = WavSampleSource::from_file(file_path, target_format.clone())?;
+            let sample_source = create_wav_sample_source(file_path, target_format.clone())?;
 
             let mut file_channel_to_output_channels: HashMap<u16, Vec<usize>> = HashMap::new();
             tracks.into_iter().for_each(|track| {
