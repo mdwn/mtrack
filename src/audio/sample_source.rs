@@ -14,7 +14,7 @@
 use crate::audio::TargetFormat;
 use cpal::Sample as CpalSample;
 use hound::WavReader;
-use rubato::{calculate_cutoff, Resampler, SincFixedIn, SincInterpolationParameters};
+use rubato::{calculate_cutoff, SincFixedIn, SincInterpolationParameters, VecResampler};
 use std::error::Error;
 use std::path::Path;
 use std::sync::LazyLock;
@@ -60,13 +60,16 @@ pub trait SampleSourceTestExt {
 /// Audio transcoder with rubato resampling
 /// Uses CPAL's built-in sample conversion for format conversion and rubato for resampling
 pub struct AudioTranscoder {
-    resampler: Option<SincFixedIn<f32>>,
+    resampler: Option<Box<dyn VecResampler<f32>>>,
     source_rate: u32,
     target_rate: u32,
     channels: u16, // Number of channels for resampling
     // Streaming state
     current_position: usize,
     buffer: Vec<f32>,
+    // Resampling buffers
+    input_buffer: Vec<Vec<f32>>,
+    output_buffer: Vec<Vec<f32>>,
 }
 
 impl AudioTranscoder {
@@ -78,7 +81,7 @@ impl AudioTranscoder {
     ) -> Result<Self, TranscodingError> {
         let needs_resampling = source_format.sample_rate != target_format.sample_rate;
 
-        let resampler = if needs_resampling {
+        let resampler: Option<Box<dyn VecResampler<f32>>> = if needs_resampling {
             // Create rubato resampler for high-quality resampling
             let params = SincInterpolationParameters {
                 sinc_len: SINC_LENGTH,
@@ -94,7 +97,7 @@ impl AudioTranscoder {
             let max_ratio = (ratio * 1.5).max(10.0); // At least 10x, or 1.5x the actual ratio
 
             Some(
-                SincFixedIn::<f32>::new(
+                Box::new(SincFixedIn::<f32>::new(
                     ratio,     // resampling ratio
                     max_ratio, // maximum resampling ratio (should be >= actual ratio)
                     params,
@@ -106,10 +109,20 @@ impl AudioTranscoder {
                         source_format.sample_rate,
                         target_format.sample_rate,
                     )
-                })?,
+                })?),
             )
         } else {
             None
+        };
+
+        // Initialize input and output buffers if we have a resampler
+        let (input_buffer, output_buffer) = if let Some(ref resampler) = resampler {
+            (
+                resampler.input_buffer_allocate(true),
+                resampler.output_buffer_allocate(true)
+            )
+        } else {
+            (Vec::new(), Vec::new())
         };
 
         Ok(AudioTranscoder {
@@ -119,48 +132,59 @@ impl AudioTranscoder {
             channels,
             current_position: usize::MAX,
             buffer: Vec::new(),
+            input_buffer,
+            output_buffer,
         })
     }
 
     /// Resamples a block of samples using rubato or simple resampling
     pub fn resample_block(&mut self, input: &[f32]) -> Result<Vec<f32>, TranscodingError> {
         if let Some(ref mut resampler) = self.resampler {
-            let mut all_output = Vec::new();
-            resampler.reset();
-            let chunk_size = CHUNK_SIZE * self.channels as usize;
+            let input_frames_next = resampler.input_frames_next();
+            let _output_frames_next = resampler.output_frames_next();
+            let chunk_size = input_frames_next * self.channels as usize;
+            
+            // Pre-allocate output vector with estimated capacity
+            let estimated_output_len = (input.len() as f32 * (self.target_rate as f32 / self.source_rate as f32)) as usize;
+            let mut all_output = Vec::with_capacity(estimated_output_len);
             for chunk_start in (0..input.len()).step_by(chunk_size) {
                 let chunk_end = (chunk_start + chunk_size).min(input.len());
                 let chunk = &input[chunk_start..chunk_end];
 
-                let mut padded_chunk = chunk.to_vec();
-                while padded_chunk.len() < chunk_size {
-                    padded_chunk.push(0.0);
+                // Clear and populate the struct-level input buffer
+                for channel in 0..self.channels as usize {
+                    self.input_buffer[channel].fill(0.0);
+                    self.output_buffer[channel].fill(0.0);
                 }
-                let input_2d = if self.channels == 1 {
-                    vec![padded_chunk]
-                } else {
-                    let mut channel_vectors = vec![Vec::new(); self.channels as usize];
-                    for (i, &sample) in padded_chunk.iter().enumerate() {
-                        channel_vectors[i % self.channels as usize].push(sample);
+                
+                // Copy chunk data into input buffer (deinterleaved)
+                for (i, &sample) in chunk.iter().enumerate() {
+                    let channel = i % self.channels as usize;
+                    let frame = i / self.channels as usize;
+                    if frame < self.input_buffer[channel].len() {
+                        self.input_buffer[channel][frame] = sample;
                     }
-                    channel_vectors
+                }
+
+                // Use process_into_buffer with struct-level output buffer
+                let output_frames = if resampler.output_frames_next() > 0 {
+                    let (_input_frames_used, output_frames_written) = resampler.process_into_buffer(&self.input_buffer, &mut self.output_buffer, None).map_err(|e| {
+                        eprintln!("Rubato resampling failed: {:?}", e);
+                        TranscodingError::ResamplingFailed(self.source_rate, self.target_rate)
+                    })?;
+                    output_frames_written
+                } else {
+                    0
                 };
 
-                let output = resampler.process(&input_2d, None).map_err(|e| {
-                    eprintln!("Rubato resampling failed: {:?}", e);
-                    TranscodingError::ResamplingFailed(self.source_rate, self.target_rate)
-                })?;
-
-                if self.channels == 1 {
-                    all_output.extend_from_slice(&output[0]);
-                } else {
-                    let max_len = output.iter().map(|v| v.len()).max().unwrap_or(0);
-                    for i in 0..max_len {
-                        for (_channel, channel_output) in
-                            output.iter().enumerate().take(self.channels as usize)
-                        {
-                            if i < channel_output.len() {
-                                all_output.push(channel_output[i]);
+                // Collect output from struct-level output buffer
+                if output_frames > 0 {
+                    if self.channels == 1 {
+                        all_output.extend_from_slice(&self.output_buffer[0][0..output_frames]);
+                    } else {
+                        for frame in 0..output_frames {
+                            for channel in 0..self.channels as usize {
+                                all_output.push(self.output_buffer[channel][frame]);
                             }
                         }
                     }
@@ -264,46 +288,17 @@ impl WavSampleSource {
             return Ok(None);
         }
 
-        let sample = match self.spec.bits_per_sample {
-            16 => {
-                if let Some(sample_result) = self.wav_reader.samples::<i16>().next() {
-                    match sample_result {
-                        Ok(sample) => Some(sample.to_sample::<f32>()),
-                        Err(e) => return Err(TranscodingError::WavError(e)),
-                    }
-                } else {
-                    None
+        let sample = if let Some(sample) = self.wav_reader.samples::<i32>().next() {
+            match sample {
+                Ok(sample) => {
+                    // Normalize based on bit depth
+                    let shifted = sample >> (32 - self.spec.bits_per_sample);
+                    Some(shifted.to_sample::<f32>())
                 }
+                Err(e) => return Err(TranscodingError::WavError(e)),
             }
-            24 => {
-                if let Some(sample_result) = self.wav_reader.samples::<i32>().next() {
-                    match sample_result {
-                        Ok(sample) => {
-                            let shifted = sample >> 8; // Shift from 24-bit to 16-bit range
-                            Some((shifted as i16).to_sample::<f32>())
-                        }
-                        Err(e) => return Err(TranscodingError::WavError(e)),
-                    }
-                } else {
-                    None
-                }
-            }
-            32 => {
-                if let Some(sample_result) = self.wav_reader.samples::<i32>().next() {
-                    match sample_result {
-                        Ok(sample) => Some(sample.to_sample::<f32>()),
-                        Err(e) => return Err(TranscodingError::WavError(e)),
-                    }
-                } else {
-                    None
-                }
-            }
-            _ => {
-                return Err(TranscodingError::SampleConversionFailed(format!(
-                    "Unsupported bit depth: {}",
-                    self.spec.bits_per_sample
-                )))
-            }
+        } else {
+            None
         };
 
         Ok(sample)
