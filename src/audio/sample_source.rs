@@ -265,6 +265,16 @@ where
         let expected_input_frames = resampler.input_frames_next();
         let expected_input_samples = expected_input_frames * self.channels as usize;
         drop(resampler);
+        
+        // Debug: Print expected input size
+        static mut INPUT_DEBUG_COUNT: u32 = 0;
+        unsafe {
+            INPUT_DEBUG_COUNT += 1;
+            if INPUT_DEBUG_COUNT <= 5 {
+                println!("[AudioTranscoder] collect_and_process_input: expected_input_frames={}, expected_input_samples={}, channels={}", 
+                    expected_input_frames, expected_input_samples, self.channels);
+            }
+        }
 
         // Collect samples until we have enough for one resampler chunk
         while samples_collected < expected_input_samples {
@@ -277,6 +287,16 @@ where
                         input_buffer[channel][frame] = sample;
                         samples_collected += 1;
                         self.resampling_state.actual_input_length += 1;
+                        
+                        // Debug: Print sample collection progress
+                        static mut COLLECT_DEBUG_COUNT: u32 = 0;
+                        unsafe {
+                            COLLECT_DEBUG_COUNT += 1;
+                            if COLLECT_DEBUG_COUNT <= 10 {
+                                println!("[AudioTranscoder] Collected sample #{}: value={:.6}, channel={}, frame={}, samples_collected={}/{}", 
+                                    COLLECT_DEBUG_COUNT, sample, channel, frame, samples_collected, expected_input_samples);
+                            }
+                        }
                     }
                 }
                 Ok(None) => {
@@ -552,9 +572,14 @@ impl SampleSource for WavSampleSource {
 impl WavSampleSource {
     /// Creates a new WAV sample source from a file path
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, TranscodingError> {
-        let file = std::fs::File::open(path)?;
+        let file = std::fs::File::open(&path)?;
         let wav_reader = WavReader::new(file)?;
-
+        let spec = wav_reader.spec();
+        
+        // Debug: Print WAV file specifications
+        println!("[WavSampleSource] File: {:?}, spec: sample_rate={}, channels={}, bits_per_sample={}, sample_format={:?}", 
+            path.as_ref(), spec.sample_rate, spec.channels, spec.bits_per_sample, spec.sample_format);
+        
         Ok(Self {
             wav_reader,
             is_finished: false,
