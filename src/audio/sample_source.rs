@@ -555,7 +555,11 @@ impl SampleSource for WavSampleSource {
             Some(Ok(sample)) => {
                 // Convert i32 to f32 with proper scaling
                 let bits_per_sample = self.wav_reader.spec().bits_per_sample;
-                let shifted = sample >> (32 - bits_per_sample);
+                
+                // Convert samples to the correct position for f32 conversion
+                // Samples are read in the lower bits, but to_sample::<f32>() expects them in the upper bits
+                let shifted = sample << (32 - bits_per_sample);
+                
                 let result = shifted.to_sample::<f32>();
                 
                 // Debug: Print sample values for first few samples
