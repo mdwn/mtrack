@@ -340,7 +340,7 @@ mod test {
 
     #[test]
     fn output_callback() -> Result<(), Box<dyn Error>> {
-        let tempdir = tempfile::tempdir()?.into_path();
+        let tempdir = tempfile::tempdir()?.keep();
         let tempwav1 = "tempwav1.wav";
         let tempwav2 = "tempwav2.wav";
 
@@ -389,7 +389,7 @@ mod test {
 
     #[test]
     fn stop_callback_immediately() -> Result<(), Box<dyn Error>> {
-        let tempdir = tempfile::tempdir()?.into_path();
+        let tempdir = tempfile::tempdir()?.keep();
         let tempwav1 = "tempwav1.wav";
         let tempwav2 = "tempwav2.wav";
 
@@ -431,7 +431,7 @@ mod test {
 
     #[test]
     fn stop_callback_on_frame_boundary() -> Result<(), Box<dyn Error>> {
-        let tempdir = tempfile::tempdir()?.into_path();
+        let tempdir = tempfile::tempdir()?.keep();
         let tempwav1 = "tempwav1.wav";
         let tempwav2 = "tempwav2.wav";
 
