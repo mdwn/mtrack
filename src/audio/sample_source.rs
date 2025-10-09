@@ -278,6 +278,16 @@ where
 
         // Collect samples until we have enough for one resampler chunk
         while samples_collected < expected_input_samples {
+            // Debug: Print loop progress
+            static mut LOOP_DEBUG_COUNT: u32 = 0;
+            unsafe {
+                LOOP_DEBUG_COUNT += 1;
+                if LOOP_DEBUG_COUNT <= 20 {
+                    println!("[AudioTranscoder] Loop iteration #{}: samples_collected={}/{}", 
+                        LOOP_DEBUG_COUNT, samples_collected, expected_input_samples);
+                }
+            }
+            
             match self.source.next_sample() {
                 Ok(Some(sample)) => {
                     count_actual_samples += 1;
@@ -292,7 +302,7 @@ where
                         static mut COLLECT_DEBUG_COUNT: u32 = 0;
                         unsafe {
                             COLLECT_DEBUG_COUNT += 1;
-                            if COLLECT_DEBUG_COUNT <= 10 {
+                            if COLLECT_DEBUG_COUNT <= 2048 {  // Show all samples needed
                                 println!("[AudioTranscoder] Collected sample #{}: value={:.6}, channel={}, frame={}, samples_collected={}/{}", 
                                     COLLECT_DEBUG_COUNT, sample, channel, frame, samples_collected, expected_input_samples);
                             }
@@ -552,7 +562,7 @@ impl SampleSource for WavSampleSource {
                 static mut WAV_SAMPLE_COUNT: u32 = 0;
                 unsafe {
                     WAV_SAMPLE_COUNT += 1;
-                    if WAV_SAMPLE_COUNT <= 10 {
+                    if WAV_SAMPLE_COUNT <= 2048 {  // Show all samples needed
                         println!("[WavSampleSource] Sample #{}: raw={}, bits={}, shifted={}, result={:.6}", 
                             WAV_SAMPLE_COUNT, sample, bits_per_sample, shifted, result);
                     }
