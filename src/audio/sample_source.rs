@@ -49,14 +49,17 @@ pub struct AudioTranscoder<S: SampleSource> {
     channels: u16,
     // Streaming state
     current_position: usize,
-    buffer: Vec<f32>,
+    current_frame: usize,
+    is_first_chunk: bool,
+    output_frames_written: usize,
     // Resampling buffers (wrapped in Mutex for thread safety)
     input_buffer: Mutex<Vec<Vec<f32>>>,
     output_buffer: Mutex<Vec<Vec<f32>>>,
-    // Pre-allocated output buffer to avoid allocations in resample_block
-    final_output_buffer: Mutex<Vec<f32>>,
     // Input collection buffer
     input_collection_buffer: Vec<f32>,
+    actual_input_length: usize,
+    total_input_frames: usize,
+    total_output_frames: usize,
     is_finished: bool,
 }
 
@@ -65,19 +68,54 @@ where
     S: SampleSource,
 {
     fn next_sample(&mut self) -> Result<Option<f32>, TranscodingError> {
-        if self.is_finished {
+        // If no resampler, just pass through directly
+        if self.resampler.is_none() {
+            return self.source.next_sample();
+        }
+
+        // Only return None if we're finished AND we've exhausted the output buffer
+        if self.is_finished && self.current_frame >= self.output_frames_written {
             return Ok(None);
         }
 
-        // If we have samples in our buffer, return the next one
-        if self.current_position < self.buffer.len() {
-            let sample = self.buffer[self.current_position];
-            self.current_position += 1;
-            return Ok(Some(sample));
+        // If we have samples in our output buffer, return the next one
+        {
+            let output_buffer = self.output_buffer.lock().unwrap();
+            if self.current_frame < self.output_frames_written {
+                let sample = {
+                    let channel = self.current_position % self.channels as usize;
+                    output_buffer[channel][self.current_frame]
+                };
+                
+                // Move to next sample
+                self.current_position = self.current_position.saturating_add(1);
+                if self.current_position % self.channels as usize == 0 {
+                    if self.current_frame + 1 < self.output_frames_written {
+                        self.current_frame = self.current_frame.saturating_add(1);
+                    } else {
+                        // We've exhausted the current buffer, reset and collect more input
+                        self.current_frame = 0;
+                        self.current_position = 0;
+                        // Drop the lock before calling collect_and_process_input
+                        drop(output_buffer);
+                        if self.is_finished {
+                            return Ok(None);
+                        } else {
+                            return self.collect_and_process_input();
+                        }
+                    }
+                }
+                
+                return Ok(Some(sample));
+            }
         }
 
         // Buffer is empty, collect more samples from source
-        self.collect_and_process_input()
+        if self.is_finished {
+            Ok(None)
+        } else {
+            self.collect_and_process_input()
+        }
     }
 }
 
@@ -123,11 +161,11 @@ where
                 resampler_lock.output_buffer_allocate(true)
             )
         } else {
-            (Vec::new(), Vec::new())
+            // For pass-through, create buffers with the right number of channels
+            let input_buffer = vec![Vec::new(); channels as usize];
+            let output_buffer = vec![Vec::new(); channels as usize];
+            (input_buffer, output_buffer)
         };
-
-        // Pre-allocate final output buffer with reasonable capacity
-        let final_output_buffer = Vec::with_capacity(4096); // 4K samples should handle most chunks
 
         Ok(AudioTranscoder {
             source,
@@ -136,11 +174,15 @@ where
             target_rate: target_format.sample_rate,
             channels,
             current_position: usize::MAX,
-            buffer: Vec::new(),
+            current_frame: 0,
+            is_first_chunk: true,
+            output_frames_written: 0,
             input_buffer: Mutex::new(input_buffer),
             output_buffer: Mutex::new(output_buffer),
-            final_output_buffer: Mutex::new(final_output_buffer),
             input_collection_buffer: Vec::with_capacity(CHUNK_SIZE),
+            actual_input_length: 0,
+            total_input_frames: 0,
+            total_output_frames: 0,
             is_finished: false,
         })
     }
@@ -151,10 +193,12 @@ where
         self.input_collection_buffer.clear();
         
         // Collect samples from the source
+        self.actual_input_length = 0;
         for _ in 0..CHUNK_SIZE {
             match self.source.next_sample() {
                 Ok(Some(sample)) => {
                     self.input_collection_buffer.push(sample);
+                    self.actual_input_length += 1;
                 }
                 Ok(None) => {
                     // End of source - pad with zeros for consistent resampling
@@ -174,22 +218,50 @@ where
             return Ok(None);
         }
 
+        if self.is_first_chunk {
+            self.is_first_chunk = false;
+            let output_delay = self.resampler.as_ref().unwrap().lock().unwrap().output_delay();
+            self.current_frame = output_delay;
+            self.current_position = 0;
+        }
+
+        // Update total input frames
+        self.total_input_frames += self.actual_input_length / self.channels as usize;
+        
         // Process the collected samples
-        if self.resampler.is_some() {
+        let raw_output_frames = if self.resampler.is_some() {
             // Process through the resampler
-            let processed = self.resample_block(&self.input_collection_buffer)?;
-            self.buffer = processed;
+            self.resample_block(&self.input_collection_buffer)?
         } else {
             // No resampling needed, just pass through
-            self.buffer = self.input_collection_buffer.clone();
-        }
+            let mut output_buffer = self.output_buffer.lock().unwrap();
+            for channel in 0..self.channels as usize {
+                output_buffer[channel].clear();
+                output_buffer[channel].extend_from_slice(&self.input_collection_buffer);
+            }
+            self.input_collection_buffer.len() / self.channels as usize
+        };
         
+        self.output_frames_written = raw_output_frames;
+        
+        // Update total output frames with the actual amount
+        self.total_output_frames += raw_output_frames;
+        
+        // Set initial position
         self.current_position = 0;
+        self.current_frame = 0;
         
         // Return the first sample from the processed buffer
-        if !self.buffer.is_empty() {
-            let sample = self.buffer[0];
-            self.current_position = 1;
+        let output_buffer = self.output_buffer.lock().unwrap();
+        if !output_buffer[0].is_empty() && self.current_frame < self.output_frames_written {
+            let sample = {
+                let channel = self.current_position % self.channels as usize;
+                output_buffer[channel][self.current_frame]
+            };
+            self.current_position = self.current_position.saturating_add(1);
+            if self.current_position % self.channels as usize == 0 {
+                self.current_frame = self.current_frame.saturating_add(1);
+            }
             Ok(Some(sample))
         } else {
             Ok(None)
@@ -197,19 +269,14 @@ where
     }
 
     /// Resamples a block of samples using rubato or simple resampling
-    pub fn resample_block(&self, input: &[f32]) -> Result<Vec<f32>, TranscodingError> {
+    pub fn resample_block(&self, input: &[f32]) -> Result<usize, TranscodingError> {
         if let Some(ref resampler_arc) = self.resampler {
             let mut resampler = resampler_arc.lock().unwrap();
             let input_frames_next = resampler.input_frames_next();
             let _output_frames_next = resampler.output_frames_next();
             let chunk_size = input_frames_next * self.channels as usize;
             
-            // Clear and reuse the pre-allocated output buffer
-            let mut final_output_buffer = self.final_output_buffer.lock().unwrap();
-            final_output_buffer.clear();
-            let estimated_output_len = (input.len() as f32 * (self.target_rate as f32 / self.source_rate as f32)) as usize;
-            final_output_buffer.reserve(estimated_output_len);
-            let mut is_first_chunk = true;
+            
             
             let mut input_buffer = self.input_buffer.lock().unwrap();
             let mut output_buffer = self.output_buffer.lock().unwrap();
@@ -233,78 +300,23 @@ where
                     }
                 }
                 
-                // Debug: Check input buffer state (simplified)
-                println!("Processing chunk: {} samples", chunk.len());
+                
 
                 // Use process_into_buffer with struct-level output buffer
-                let output_frames = if resampler.output_frames_next() > 0 {
+                if resampler.output_frames_next() > 0 {
                     let (_input_frames_used, output_frames_written) = resampler.process_into_buffer(&input_buffer, &mut output_buffer, None).map_err(|e| {
                         eprintln!("Rubato resampling failed: {:?}", e);
                         TranscodingError::ResamplingFailed(self.source_rate, self.target_rate)
                     })?;
-                    output_frames_written
+                    return Ok(output_frames_written);
                 } else {
-                    0
-                };
-
-                // Collect output from struct-level output buffer
-                if output_frames > 0 {
-                    if is_first_chunk {
-                        // For the first chunk, skip the delay samples
-                        let delay = resampler.output_delay();
-                        let start_frame = delay.min(output_frames);
-                        let actual_frames = output_frames.saturating_sub(delay);
-                        
-                        if actual_frames > 0 {
-                            if self.channels == 1 {
-                                final_output_buffer.extend_from_slice(&output_buffer[0][start_frame..start_frame + actual_frames]);
-                            } else {
-                                for frame in start_frame..start_frame + actual_frames {
-                                    for channel in 0..self.channels as usize {
-                                        final_output_buffer.push(output_buffer[channel][frame]);
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        // For subsequent chunks, take all output samples
-                        if self.channels == 1 {
-                            final_output_buffer.extend_from_slice(&output_buffer[0][0..output_frames]);
-                        } else {
-                            for frame in 0..output_frames {
-                                for channel in 0..self.channels as usize {
-                                    final_output_buffer.push(output_buffer[channel][frame]);
-                                }
-                            }
-                        }
-                    }
+                    return Ok(0);
                 }
-                
-                is_first_chunk = false;
             }
-
-            let mut expected_output_len =
-                (input.len() as f32 * (self.target_rate as f32 / self.source_rate as f32)) as usize;
-            if expected_output_len >= self.channels as usize * 2 {
-                expected_output_len =
-                    (expected_output_len / self.channels as usize) * self.channels as usize;
-            }
-            let actual_len = final_output_buffer.len();
-
-            match actual_len.cmp(&expected_output_len) {
-                std::cmp::Ordering::Greater => {
-                    final_output_buffer.truncate(expected_output_len);
-                }
-                std::cmp::Ordering::Less => {
-                    final_output_buffer.resize(expected_output_len, 0.0);
-                }
-                std::cmp::Ordering::Equal => {}
-            }
-
-            Ok(final_output_buffer.clone())
+            Ok(0)
         } else {
-            // No resampling needed
-            Ok(input.to_vec())
+            // No resampling needed - return input length in frames
+            Ok(input.len() / self.channels as usize)
         }
     }
 }
@@ -420,7 +432,7 @@ impl SampleSource for WavSampleSource {
         match self.wav_reader.samples::<i32>().next() {
             Some(Ok(sample)) => {
                 // Convert i32 to f32 with proper scaling
-                let shifted = sample >> 16; // Assume 16-bit samples for now
+                let shifted = sample >> (32 - self.wav_reader.spec().bits_per_sample); // Assume 16-bit samples for now
                 Ok(Some(shifted.to_sample::<f32>()))
             }
             Some(Err(e)) => Err(TranscodingError::WavError(e)),
@@ -456,6 +468,7 @@ impl SampleSourceTestExt for WavSampleSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand;
 
 
     /// Calculate high-frequency energy content (simple approximation)
@@ -752,6 +765,254 @@ mod tests {
             }
             Err(_e) => {}
         }
+    }
+
+    #[test]
+    fn test_roundtrip_resampling_quality() {
+        // Test that resampling up and then down preserves quality
+        let original_rate = 44100;
+        let intermediate_rate = 48000;
+        let final_rate = 44100;
+        
+        let source_format_1 = TargetFormat::new(original_rate, hound::SampleFormat::Float, 32).unwrap();
+        let target_format_1 = TargetFormat::new(intermediate_rate, hound::SampleFormat::Float, 32).unwrap();
+        let source_format_2 = TargetFormat::new(intermediate_rate, hound::SampleFormat::Float, 32).unwrap();
+        let target_format_2 = TargetFormat::new(final_rate, hound::SampleFormat::Float, 32).unwrap();
+
+        // Generate a test signal: 1kHz sine wave + small amount of noise
+        let duration = 0.1; // 100ms
+        let num_samples = (original_rate as f32 * duration) as usize;
+        let mut original_samples = Vec::new();
+        
+        for i in 0..num_samples {
+            let t = i as f32 / original_rate as f32;
+            let sine_wave = 0.5 * (2.0 * std::f32::consts::PI * 1000.0 * t).sin();
+            let noise = 0.05 * (rand::random::<f32>() - 0.5);
+            original_samples.push(sine_wave + noise);
+        }
+
+        // First resampling: 44.1kHz -> 48kHz
+        let source_1 = MemorySampleSource::new(original_samples.clone());
+        let mut converter_1 = AudioTranscoder::new_with_source(source_1, &source_format_1, &target_format_1, 1).unwrap();
+        
+        let mut intermediate_samples = Vec::new();
+        loop {
+            match converter_1.next_sample() {
+                Ok(Some(sample)) => intermediate_samples.push(sample),
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
+
+        // Second resampling: 48kHz -> 44.1kHz
+        let source_2 = MemorySampleSource::new(intermediate_samples);
+        let mut converter_2 = AudioTranscoder::new_with_source(source_2, &source_format_2, &target_format_2, 1).unwrap();
+        
+        let mut final_samples = Vec::new();
+        loop {
+            match converter_2.next_sample() {
+                Ok(Some(sample)) => final_samples.push(sample),
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
+
+        // Quality checks
+        assert!(!final_samples.is_empty(), "Final samples should not be empty");
+        
+        // Check that we have a reasonable number of samples (should be close to original)
+        let expected_length = original_samples.len();
+        let length_tolerance = (expected_length as f32 * 0.1) as usize;
+        assert!(
+            final_samples.len() >= expected_length - length_tolerance
+                && final_samples.len() <= expected_length + length_tolerance,
+            "Final length {} should be close to original length {}",
+            final_samples.len(),
+            expected_length
+        );
+
+        // Check that the signal is still recognizable
+        let max_amplitude = final_samples.iter().map(|&x| x.abs()).fold(0.0, f32::max);
+        assert!(
+            max_amplitude > 0.1,
+            "Final signal should have reasonable amplitude, got {}",
+            max_amplitude
+        );
+        assert!(
+            max_amplitude <= 1.0,
+            "Final signal should not be too loud, got {}",
+            max_amplitude
+        );
+    }
+
+    #[test]
+    fn test_resampling_quality_impulse() {
+        // Test resampling quality with impulse signal
+        let source_format = TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
+        let target_format = TargetFormat::new(44100, hound::SampleFormat::Float, 32).unwrap();
+
+        // Generate impulse signal (single sample at maximum amplitude)
+        let mut input_samples = vec![0.0; 100];
+        input_samples[50] = 1.0; // Impulse at sample 50
+        println!("Debug: input_samples.len() = {}, max_input = {}", input_samples.len(), input_samples.iter().map(|&x: &f32| x.abs()).fold(0.0, f32::max));
+
+        let source = MemorySampleSource::new(input_samples);
+        let mut converter = AudioTranscoder::new_with_source(source, &source_format, &target_format, 1).unwrap();
+
+        let mut output_samples = Vec::new();
+        loop {
+            match converter.next_sample() {
+                Ok(Some(sample)) => output_samples.push(sample),
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
+
+        // Basic quality checks
+        assert!(!output_samples.is_empty(), "Output should not be empty");
+        
+        // The impulse should be preserved (some amplitude should remain)
+        let max_amplitude = output_samples.iter().map(|&x| x.abs()).fold(0.0, f32::max);
+        println!("Debug: output_samples.len() = {}", output_samples.len());
+        println!("Debug: max_amplitude = {}", max_amplitude);
+        println!("Debug: first 10 samples: {:?}", &output_samples[0..10.min(output_samples.len())]);
+        println!("Debug: samples around max: {:?}", {
+            let max_idx = output_samples.iter().position(|&x| x.abs() == max_amplitude).unwrap_or(0);
+            let start = max_idx.saturating_sub(5);
+            let end = (max_idx + 5).min(output_samples.len());
+            &output_samples[start..end]
+        });
+        assert!(
+            max_amplitude > 0.1,
+            "Impulse signal should have reasonable amplitude after resampling, got {}",
+            max_amplitude
+        );
+    }
+
+    #[test]
+    fn test_resampling_quality_noise() {
+        // Test resampling quality with white noise
+        let source_format = TargetFormat::new(44100, hound::SampleFormat::Float, 32).unwrap();
+        let target_format = TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
+
+        // Generate white noise
+        let num_samples = 1000;
+        let mut input_samples = Vec::new();
+        for _ in 0..num_samples {
+            // Simple pseudo-random noise
+            let noise = (rand::random::<f32>() - 0.5) * 2.0;
+            input_samples.push(noise);
+        }
+
+        let source = MemorySampleSource::new(input_samples.clone());
+        let mut converter = AudioTranscoder::new_with_source(source, &source_format, &target_format, 1).unwrap();
+
+        let mut output_samples = Vec::new();
+        loop {
+            match converter.next_sample() {
+                Ok(Some(sample)) => output_samples.push(sample),
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
+
+        // Basic quality checks
+        assert!(!output_samples.is_empty(), "Output should not be empty");
+        
+        // Verify output length is approximately correct
+        let expected_ratio = 48000.0 / 44100.0;
+        let expected_length = (num_samples as f32 * expected_ratio) as usize;
+        let length_tolerance = (expected_length as f32 * 0.1) as usize;
+
+        assert!(
+            output_samples.len() >= expected_length - length_tolerance
+                && output_samples.len() <= expected_length + length_tolerance,
+            "Expected ~{} samples, got {}",
+            expected_length,
+            output_samples.len()
+        );
+
+        // Verify the noise characteristics are preserved
+        let input_rms = calculate_rms(&input_samples);
+        let output_rms = calculate_rms(&output_samples);
+
+        // RMS should be similar (within 50% tolerance for FFT resamplers)
+        let rms_ratio = output_rms / input_rms;
+        assert!(
+            rms_ratio > 0.5 && rms_ratio < 1.5,
+            "RMS ratio out of range: {} (input: {}, output: {})",
+            rms_ratio,
+            input_rms,
+            output_rms
+        );
+    }
+
+    #[test]
+    fn test_resampling_multichannel_quality() {
+        // Test resampling quality with multichannel audio
+        let source_format = TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
+        let target_format = TargetFormat::new(44100, hound::SampleFormat::Float, 32).unwrap();
+        let channels = 2;
+
+        // Generate stereo test signal
+        let duration = 0.1; // 100ms
+        let num_frames = (48000.0 * duration) as usize;
+        let mut input_samples = Vec::new();
+        
+        for i in 0..num_frames {
+            let t = i as f32 / 48000.0;
+            // Left channel: 440Hz
+            let left = 0.3 * (2.0 * std::f32::consts::PI * 440.0 * t).sin();
+            // Right channel: 880Hz
+            let right = 0.3 * (2.0 * std::f32::consts::PI * 880.0 * t).sin();
+            input_samples.push(left);
+            input_samples.push(right);
+        }
+
+        let source = MemorySampleSource::new(input_samples);
+        let mut converter = AudioTranscoder::new_with_source(source, &source_format, &target_format, channels).unwrap();
+
+        let mut output_samples = Vec::new();
+        loop {
+            match converter.next_sample() {
+                Ok(Some(sample)) => output_samples.push(sample),
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
+
+        // Basic quality checks
+        assert!(!output_samples.is_empty(), "Output should not be empty");
+        
+        // Should have approximately the right number of samples
+        let expected_length = (num_frames as f32 * (44100.0 / 48000.0) * channels as f32) as usize;
+        let length_tolerance = (expected_length as f32 * 0.1) as usize;
+        
+        assert!(
+            output_samples.len() >= expected_length - length_tolerance
+                && output_samples.len() <= expected_length + length_tolerance,
+            "Expected ~{} samples, got {}",
+            expected_length,
+            output_samples.len()
+        );
+
+        // Check that we have stereo output (even number of samples)
+        assert_eq!(
+            output_samples.len() % 2,
+            0,
+            "Stereo output should have even number of samples, got {}",
+            output_samples.len()
+        );
+    }
+
+    /// Calculate RMS (Root Mean Square) of a signal
+    fn calculate_rms(samples: &[f32]) -> f32 {
+        if samples.is_empty() {
+            return 0.0;
+        }
+
+        let sum_squares: f32 = samples.iter().map(|&x| x * x).sum();
+        (sum_squares / samples.len() as f32).sqrt()
     }
 
 }
