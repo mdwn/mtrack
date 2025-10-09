@@ -801,30 +801,12 @@ where
 
                         // Read one sample from each channel of this source
                         for file_channel in 0..channels[j] {
-                            // Debug: Print when we call next_sample
-                            static mut SONG_SOURCE_CALL_COUNT: u32 = 0;
-                            unsafe {
-                                SONG_SOURCE_CALL_COUNT += 1;
-                                if SONG_SOURCE_CALL_COUNT <= 20 {
-                                    println!("[SongSource] Calling next_sample #{}: file_channel={}, source_index={}", 
-                                        SONG_SOURCE_CALL_COUNT, file_channel, j);
-                                }
-                            }
                             
                             let result = sample_source.next_sample();
                             match result {
                                 Ok(Some(sample)) => {
                                     all_files_finished = false;
                                     
-                                    // Debug: Print sample values
-                                    static mut SONG_SAMPLE_COUNT: u32 = 0;
-                                    unsafe {
-                                        SONG_SAMPLE_COUNT += 1;
-                                        if SONG_SAMPLE_COUNT <= 10 {
-                                            println!("[SongSource] Sample #{}: value={:.6}, file_channel={}", 
-                                                SONG_SAMPLE_COUNT, sample, file_channel);
-                                        }
-                                    }
                                     
                                     if let Some(targets) =
                                         file_channel_to_output_channels.get(&file_channel)
