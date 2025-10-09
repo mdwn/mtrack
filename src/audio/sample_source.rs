@@ -93,13 +93,13 @@ where
                 (self.resampling_state.total_input_frames as f32 * ratio) as usize;
             let expected_output_samples = expected_output_frames * self.channels as usize;
 
+
             if self.output_tracker.samples_read >= expected_output_samples {
                 return Ok(None);
             }
         }
 
         // If we have samples in our output buffer, return the next one
-        self.output_tracker.samples_read = self.output_tracker.samples_read.saturating_add(1);
         {
             let output_buffer = self.buffer_manager.output_buffer.lock().unwrap();
             if self.buffer_manager.current_frame < self.buffer_manager.output_frames_written {
@@ -127,6 +127,8 @@ where
                     }
                 }
 
+                // Only increment after successfully returning a sample
+                self.output_tracker.samples_read = self.output_tracker.samples_read.saturating_add(1);
                 return Ok(Some(sample));
             }
         }
@@ -1472,16 +1474,21 @@ mod tests {
             }
         }
 
+        // Ensure both signals have the same length for SNR calculation
+        let min_len = original_samples.len().min(final_samples.len());
+        let original_truncated = &original_samples[..min_len];
+        let final_truncated = &final_samples[..min_len];
+
         // Calculate SNR between original and final (roundtrip)
-        let snr = calculate_snr(&original_samples, &final_samples);
+        let snr = calculate_snr(original_truncated, final_truncated);
 
         // For roundtrip resampling, 3 dB is actually reasonable due to quantization errors
         assert!(
             snr > 1.0, // Realistic threshold for roundtrip resampling
             "SNR too low: {} dB (expected > 1 dB). Original: {} samples, Final: {} samples",
             snr,
-            original_samples.len(),
-            final_samples.len()
+            original_truncated.len(),
+            final_truncated.len()
         );
     }
 
@@ -1615,9 +1622,17 @@ mod tests {
             }
         }
 
+        // Ensure both signals have the same length for SNR calculation
+        let left_min_len = left_original.len().min(left_output.len());
+        let right_min_len = right_original.len().min(right_output.len());
+        let left_original_truncated = &left_original[..left_min_len];
+        let left_output_truncated = &left_output[..left_min_len];
+        let right_original_truncated = &right_original[..right_min_len];
+        let right_output_truncated = &right_output[..right_min_len];
+
         // Calculate SNR for both channels
-        let left_snr = calculate_snr(&left_original, &left_output);
-        let right_snr = calculate_snr(&right_original, &right_output);
+        let left_snr = calculate_snr(left_original_truncated, left_output_truncated);
+        let right_snr = calculate_snr(right_original_truncated, right_output_truncated);
 
         // Both channels should maintain reasonable SNR (lower threshold for single direction)
         assert!(
