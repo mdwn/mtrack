@@ -15,8 +15,6 @@ use crate::audio::TargetFormat;
 use cpal::Sample as CpalSample;
 use hound::WavReader;
 use rubato::{FftFixedIn, VecResampler};
-use std::cell::RefCell;
-use std::error::Error;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -27,17 +25,12 @@ const INPUT_BLOCK_SIZE: usize = 1024;
 const CHUNK_SIZE: usize = 1024;
 
 /// A source of audio samples that processes an iterator
-pub trait SampleSource {
-    /// The sample type produced by this source
-    type Sample;
-    /// The error type for this source
-    type Error: Error + Send + Sync + 'static;
-
+pub trait SampleSource: Send + Sync {
     /// Get the next sample from the source
     /// Returns Ok(Some(sample)) if a sample is available
     /// Returns Ok(None) if the source is finished
     /// Returns Err(error) if an error occurred
-    fn next_sample(&mut self) -> Result<Option<Self::Sample>, Self::Error>;
+    fn next_sample(&mut self) -> Result<Option<f32>, TranscodingError>;
 }
 
 #[cfg(test)]
@@ -57,11 +50,11 @@ pub struct AudioTranscoder<S: SampleSource> {
     // Streaming state
     current_position: usize,
     buffer: Vec<f32>,
-    // Resampling buffers (wrapped in RefCell for interior mutability)
-    input_buffer: RefCell<Vec<Vec<f32>>>,
-    output_buffer: RefCell<Vec<Vec<f32>>>,
+    // Resampling buffers (wrapped in Mutex for thread safety)
+    input_buffer: Mutex<Vec<Vec<f32>>>,
+    output_buffer: Mutex<Vec<Vec<f32>>>,
     // Pre-allocated output buffer to avoid allocations in resample_block
-    final_output_buffer: RefCell<Vec<f32>>,
+    final_output_buffer: Mutex<Vec<f32>>,
     // Input collection buffer
     input_collection_buffer: Vec<f32>,
     is_finished: bool,
@@ -69,12 +62,9 @@ pub struct AudioTranscoder<S: SampleSource> {
 
 impl<S> SampleSource for AudioTranscoder<S> 
 where 
-    S: SampleSource<Sample = f32, Error = TranscodingError>,
+    S: SampleSource,
 {
-    type Sample = f32;
-    type Error = TranscodingError;
-
-    fn next_sample(&mut self) -> Result<Option<Self::Sample>, Self::Error> {
+    fn next_sample(&mut self) -> Result<Option<f32>, TranscodingError> {
         if self.is_finished {
             return Ok(None);
         }
@@ -93,7 +83,7 @@ where
 
 impl<S> AudioTranscoder<S> 
 where 
-    S: SampleSource<Sample = f32, Error = TranscodingError>,
+    S: SampleSource,
 {
     /// Creates a new AudioTranscoder with a SampleSource
     pub fn new_with_source(
@@ -147,9 +137,9 @@ where
             channels,
             current_position: usize::MAX,
             buffer: Vec::new(),
-            input_buffer: RefCell::new(input_buffer),
-            output_buffer: RefCell::new(output_buffer),
-            final_output_buffer: RefCell::new(final_output_buffer),
+            input_buffer: Mutex::new(input_buffer),
+            output_buffer: Mutex::new(output_buffer),
+            final_output_buffer: Mutex::new(final_output_buffer),
             input_collection_buffer: Vec::with_capacity(CHUNK_SIZE),
             is_finished: false,
         })
@@ -215,14 +205,14 @@ where
             let chunk_size = input_frames_next * self.channels as usize;
             
             // Clear and reuse the pre-allocated output buffer
-            let mut final_output_buffer = self.final_output_buffer.borrow_mut();
+            let mut final_output_buffer = self.final_output_buffer.lock().unwrap();
             final_output_buffer.clear();
             let estimated_output_len = (input.len() as f32 * (self.target_rate as f32 / self.source_rate as f32)) as usize;
             final_output_buffer.reserve(estimated_output_len);
             let mut is_first_chunk = true;
             
-            let mut input_buffer = self.input_buffer.borrow_mut();
-            let mut output_buffer = self.output_buffer.borrow_mut();
+            let mut input_buffer = self.input_buffer.lock().unwrap();
+            let mut output_buffer = self.output_buffer.lock().unwrap();
             
             for chunk_start in (0..input.len()).step_by(chunk_size) {
                 let chunk_end = (chunk_start + chunk_size).min(input.len());
@@ -354,10 +344,7 @@ impl MemorySampleSource {
 }
 
 impl SampleSource for MemorySampleSource {
-    type Sample = f32;
-    type Error = TranscodingError;
-
-    fn next_sample(&mut self) -> Result<Option<Self::Sample>, Self::Error> {
+    fn next_sample(&mut self) -> Result<Option<f32>, TranscodingError> {
         if self.current_index >= self.samples.len() {
             Ok(None)
         } else {
@@ -376,30 +363,13 @@ impl SampleSourceTestExt for MemorySampleSource {
 }
 
 
-/// An enum that can hold different types of SampleSources
-pub enum AnySampleSource {
-    Wav(WavSampleSource),
-    Transcoder(AudioTranscoder<WavSampleSource>),
-}
-
-impl SampleSource for AnySampleSource {
-    type Sample = f32;
-    type Error = TranscodingError;
-
-    fn next_sample(&mut self) -> Result<Option<Self::Sample>, Self::Error> {
-        match self {
-            AnySampleSource::Wav(source) => source.next_sample(),
-            AnySampleSource::Transcoder(source) => source.next_sample(),
-        }
-    }
-}
 
 /// Factory function to create the appropriate SampleSource for a WAV file
 /// Returns either a simple WavSampleSource or an AudioTranscoder with WavSampleSource as source
 pub fn create_wav_sample_source<P: AsRef<Path>>(
     path: P,
     target_format: TargetFormat,
-) -> Result<AnySampleSource, TranscodingError> {
+) -> Result<Box<dyn SampleSource>, TranscodingError> {
     let wav_source = WavSampleSource::from_file(&path)?;
     
     // For now, we need to get the WAV spec to check if transcoding is needed
@@ -427,10 +397,10 @@ pub fn create_wav_sample_source<P: AsRef<Path>>(
             &target_format,
             spec.channels,
         )?;
-        Ok(AnySampleSource::Transcoder(transcoder))
+        Ok(Box::new(transcoder))
     } else {
         // No transcoding needed, just return the WAV source
-        Ok(AnySampleSource::Wav(wav_source))
+        Ok(Box::new(wav_source))
     }
 }
 
@@ -442,10 +412,7 @@ pub struct WavSampleSource {
 }
 
 impl SampleSource for WavSampleSource {
-    type Sample = f32;
-    type Error = TranscodingError;
-
-    fn next_sample(&mut self) -> Result<Option<Self::Sample>, Self::Error> {
+    fn next_sample(&mut self) -> Result<Option<f32>, TranscodingError> {
         if self.is_finished {
             return Ok(None);
         }
