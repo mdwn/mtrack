@@ -55,12 +55,12 @@ pub struct AudioTranscoder<S: SampleSource> {
     // Resampling buffers (wrapped in Mutex for thread safety)
     input_buffer: Mutex<Vec<Vec<f32>>>,
     output_buffer: Mutex<Vec<Vec<f32>>>,
-    // Input collection buffer
-    input_collection_buffer: Vec<f32>,
     actual_input_length: usize,
     total_input_frames: usize,
     total_output_frames: usize,
     is_finished: bool,
+    last_input_frames: usize,
+    samples_read: usize,
 }
 
 impl<S> SampleSource for AudioTranscoder<S> 
@@ -73,12 +73,19 @@ where
             return self.source.next_sample();
         }
 
-        // Only return None if we're finished AND we've exhausted the output buffer
-        if self.is_finished && self.current_frame >= self.output_frames_written {
-            return Ok(None);
+        if self.is_finished {
+            let ratio = self.target_rate as f32 / self.source_rate as f32;
+            let expected_output_frames = (self.total_input_frames as f32 * ratio) as usize;
+            let expected_output_samples = expected_output_frames * self.channels as usize;
+
+            eprintln!("Expected output samples: {}, samples read: {}", expected_output_samples, self.samples_read);
+            if self.samples_read >= expected_output_samples {
+                return Ok(None);
+            }
         }
 
         // If we have samples in our output buffer, return the next one
+        self.samples_read = self.samples_read.saturating_add(1);
         {
             let output_buffer = self.output_buffer.lock().unwrap();
             if self.current_frame < self.output_frames_written {
@@ -98,11 +105,7 @@ where
                         self.current_position = 0;
                         // Drop the lock before calling collect_and_process_input
                         drop(output_buffer);
-                        if self.is_finished {
-                            return Ok(None);
-                        } else {
-                            return self.collect_and_process_input();
-                        }
+                        return self.collect_and_process_input();
                     }
                 }
                 
@@ -110,12 +113,7 @@ where
             }
         }
 
-        // Buffer is empty, collect more samples from source
-        if self.is_finished {
-            Ok(None)
-        } else {
-            self.collect_and_process_input()
-        }
+        self.collect_and_process_input()
     }
 }
 
@@ -179,31 +177,50 @@ where
             output_frames_written: 0,
             input_buffer: Mutex::new(input_buffer),
             output_buffer: Mutex::new(output_buffer),
-            input_collection_buffer: Vec::with_capacity(CHUNK_SIZE),
             actual_input_length: 0,
             total_input_frames: 0,
             total_output_frames: 0,
             is_finished: false,
+            last_input_frames: 0,
+            samples_read: 0,
         })
     }
 
     /// Collects samples from the source iterator and processes them
     fn collect_and_process_input(&mut self) -> Result<Option<f32>, TranscodingError> {
-        // Clear the collection buffer
-        self.input_collection_buffer.clear();
+        // Collect samples from the source into input_buffer
+        let mut input_buffer = self.input_buffer.lock().unwrap();
+        let mut samples_collected = 0;
+        let mut count_actual_samples = 0;
         
-        // Collect samples from the source
-        self.actual_input_length = 0;
-        for _ in 0..CHUNK_SIZE {
+        // Get the expected input size from the resampler
+        let resampler = self.resampler.as_ref().unwrap().lock().unwrap();
+        let expected_input_frames = resampler.input_frames_next();
+        let expected_input_samples = expected_input_frames * self.channels as usize;
+        drop(resampler);
+        
+        // Collect samples until we have enough for one resampler chunk
+        while samples_collected < expected_input_samples {
             match self.source.next_sample() {
                 Ok(Some(sample)) => {
-                    self.input_collection_buffer.push(sample);
-                    self.actual_input_length += 1;
+                    count_actual_samples += 1;
+                    let channel = samples_collected % self.channels as usize;
+                    let frame = samples_collected / self.channels as usize;
+                    if frame < input_buffer[channel].len() {
+                        input_buffer[channel][frame] = sample;
+                        samples_collected += 1;
+                        self.actual_input_length += 1;
+                    }
                 }
                 Ok(None) => {
-                    // End of source - pad with zeros for consistent resampling
-                    while self.input_collection_buffer.len() < CHUNK_SIZE {
-                        self.input_collection_buffer.push(0.0);
+                    // End of source - fill remaining with zeros
+                    while samples_collected < expected_input_samples {
+                        let channel = samples_collected % self.channels as usize;
+                        let frame = samples_collected / self.channels as usize;
+                        if frame < input_buffer[channel].len() {
+                            input_buffer[channel][frame] = 0.0;
+                            samples_collected += 1;
+                        }
                     }
                     self.is_finished = true;
                     break;
@@ -211,12 +228,7 @@ where
                 Err(e) => return Err(e),
             }
         }
-
-        // If no samples collected, we're done
-        if self.input_collection_buffer.is_empty() {
-            self.is_finished = true;
-            return Ok(None);
-        }
+        drop(input_buffer);
 
         if self.is_first_chunk {
             self.is_first_chunk = false;
@@ -225,27 +237,31 @@ where
             self.current_position = 0;
         }
 
-        // Update total input frames
-        self.total_input_frames += self.actual_input_length / self.channels as usize;
+        // Update total input frames only if we have actual input (not flushing)
+        if count_actual_samples > 0 {
+            self.last_input_frames = count_actual_samples / self.channels as usize;
+            self.total_input_frames += self.last_input_frames;
+        }
         
         // Process the collected samples
         let raw_output_frames = if self.resampler.is_some() {
             // Process through the resampler
-            self.resample_block(&self.input_collection_buffer)?
+            self.resample_block()?
         } else {
-            // No resampling needed, just pass through
-            let mut output_buffer = self.output_buffer.lock().unwrap();
-            for channel in 0..self.channels as usize {
-                output_buffer[channel].clear();
-                output_buffer[channel].extend_from_slice(&self.input_collection_buffer);
-            }
-            self.input_collection_buffer.len() / self.channels as usize
+            0
         };
+        
         
         self.output_frames_written = raw_output_frames;
         
         // Update total output frames with the actual amount
         self.total_output_frames += raw_output_frames;
+
+        // Take the delay into account for total frames.
+        if self.current_position != 0 {
+            self.total_output_frames -= self.current_position;
+        }
+
         
         // Set initial position
         self.current_position = 0;
@@ -268,55 +284,55 @@ where
         }
     }
 
-    /// Resamples a block of samples using rubato or simple resampling
-    pub fn resample_block(&self, input: &[f32]) -> Result<usize, TranscodingError> {
+    /// Flushes the resampler with empty input to get remaining output
+    fn flush_resampler(&self) -> Result<usize, TranscodingError> {
         if let Some(ref resampler_arc) = self.resampler {
             let mut resampler = resampler_arc.lock().unwrap();
-            let input_frames_next = resampler.input_frames_next();
-            let _output_frames_next = resampler.output_frames_next();
-            let chunk_size = input_frames_next * self.channels as usize;
-            
-            
-            
             let mut input_buffer = self.input_buffer.lock().unwrap();
             let mut output_buffer = self.output_buffer.lock().unwrap();
             
-            for chunk_start in (0..input.len()).step_by(chunk_size) {
-                let chunk_end = (chunk_start + chunk_size).min(input.len());
-                let chunk = &input[chunk_start..chunk_end];
-
-                // Clear and populate the struct-level input buffer
-                for channel in 0..self.channels as usize {
-                    input_buffer[channel].fill(0.0);
-                    output_buffer[channel].fill(0.0);
-                }
-                
-                // Copy chunk data into input buffer (deinterleaved)
-                for (i, &sample) in chunk.iter().enumerate() {
-                    let channel = i % self.channels as usize;
-                    let frame = i / self.channels as usize;
-                    if frame < input_buffer[channel].len() {
-                        input_buffer[channel][frame] = sample;
-                    }
-                }
-                
-                
-
-                // Use process_into_buffer with struct-level output buffer
-                if resampler.output_frames_next() > 0 {
-                    let (_input_frames_used, output_frames_written) = resampler.process_into_buffer(&input_buffer, &mut output_buffer, None).map_err(|e| {
-                        eprintln!("Rubato resampling failed: {:?}", e);
-                        TranscodingError::ResamplingFailed(self.source_rate, self.target_rate)
-                    })?;
-                    return Ok(output_frames_written);
-                } else {
-                    return Ok(0);
+            // Fill input buffer with zeros
+            for channel in 0..self.channels as usize {
+                for frame in 0..input_buffer[channel].len() {
+                    input_buffer[channel][frame] = 0.0;
                 }
             }
-            Ok(0)
+            
+            // Process through resampler
+            if resampler.output_frames_next() > 0 {
+                let (_input_frames_used, output_frames_written) = resampler.process_into_buffer(&input_buffer, &mut output_buffer, None).map_err(|e| {
+                    eprintln!("Rubato resampling flush failed: {:?}", e);
+                    TranscodingError::ResamplingFailed(self.source_rate, self.target_rate)
+                })?;
+                Ok(output_frames_written)
+            } else {
+                Ok(0)
+            }
         } else {
-            // No resampling needed - return input length in frames
-            Ok(input.len() / self.channels as usize)
+            Ok(0)
+        }
+    }
+
+    /// Resamples a block of samples using rubato or simple resampling
+    pub fn resample_block(&self) -> Result<usize, TranscodingError> {
+        if let Some(ref resampler_arc) = self.resampler {
+            let mut resampler = resampler_arc.lock().unwrap();
+            
+            let input_buffer = self.input_buffer.lock().unwrap();
+            let mut output_buffer = self.output_buffer.lock().unwrap();
+            
+            // Use process_into_buffer with struct-level output buffer
+            if resampler.output_frames_next() > 0 {
+                let (_input_frames_used, output_frames_written) = resampler.process_into_buffer(&input_buffer, &mut output_buffer, None).map_err(|e| {
+                    eprintln!("Rubato resampling failed: {:?}", e);
+                    TranscodingError::ResamplingFailed(self.source_rate, self.target_rate)
+                })?;
+                return Ok(output_frames_written);
+            } else {
+                return Ok(0);
+            }
+        } else {
+            Ok(0)
         }
     }
 }
@@ -975,7 +991,10 @@ mod tests {
         let mut output_samples = Vec::new();
         loop {
             match converter.next_sample() {
-                Ok(Some(sample)) => output_samples.push(sample),
+                Ok(Some(sample)) => {
+                    eprintln!("Multichannel test: sample={}", sample);
+                    output_samples.push(sample);
+                }
                 Ok(None) => break,
                 Err(_) => break,
             }
@@ -987,6 +1006,9 @@ mod tests {
         // Should have approximately the right number of samples
         let expected_length = (num_frames as f32 * (44100.0 / 48000.0) * channels as f32) as usize;
         let length_tolerance = (expected_length as f32 * 0.1) as usize;
+        
+        eprintln!("Multichannel test: num_frames={}, channels={}, expected_length={}, got={}", 
+                  num_frames, channels, expected_length, output_samples.len());
         
         assert!(
             output_samples.len() >= expected_length - length_tolerance
