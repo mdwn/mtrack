@@ -239,6 +239,11 @@ where
             self.current_position = 0;
         }
 
+        // If we have no actual input samples and we've never had any input, return None immediately
+        if count_actual_samples == 0 && self.total_input_frames == 0 {
+            return Ok(None);
+        }
+
         // Update total input frames only if we have actual input (not flushing)
         if count_actual_samples > 0 {
             self.last_input_frames = count_actual_samples / self.channels as usize;
@@ -1028,5 +1033,260 @@ mod tests {
 
         let sum_squares: f32 = samples.iter().map(|&x| x * x).sum();
         (sum_squares / samples.len() as f32).sqrt()
+    }
+
+    #[test]
+    fn test_resampling_empty_input() {
+        // Test behavior with empty input
+        let source_format = TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
+        let target_format = TargetFormat::new(44100, hound::SampleFormat::Float, 32).unwrap();
+        
+        let source = MemorySampleSource::new(vec![]);
+        let mut converter = AudioTranscoder::new_with_source(source, &source_format, &target_format, 1).unwrap();
+        
+        // Empty input should return None immediately
+        assert!(matches!(converter.next_sample(), Ok(None)));
+    }
+
+    #[test]
+    fn test_resampling_single_sample() {
+        // Test with just one sample
+        let source_format = TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
+        let target_format = TargetFormat::new(44100, hound::SampleFormat::Float, 32).unwrap();
+        
+        let source = MemorySampleSource::new(vec![0.5]);
+        let mut converter = AudioTranscoder::new_with_source(source, &source_format, &target_format, 1).unwrap();
+        
+        let mut output_samples = Vec::new();
+        loop {
+            match converter.next_sample() {
+                Ok(Some(sample)) => output_samples.push(sample),
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
+        
+        // Should produce some output even from a single sample
+        assert!(!output_samples.is_empty(), "Single sample should produce some output");
+    }
+
+    #[test]
+    fn test_resampling_extreme_ratios() {
+        // Test very high and very low sample rate ratios
+        let test_cases = vec![
+            (8000, 192000),  // 24:1 upsampling
+            (192000, 8000),  // 1:24 downsampling
+            (44100, 88200),  // 2:1 upsampling
+            (88200, 44100),  // 1:2 downsampling
+        ];
+        
+        for (source_rate, target_rate) in test_cases {
+            let source_format = TargetFormat::new(source_rate, hound::SampleFormat::Float, 32).unwrap();
+            let target_format = TargetFormat::new(target_rate, hound::SampleFormat::Float, 32).unwrap();
+            
+            // Generate a simple test signal
+            let duration = 0.01; // 10ms
+            let num_samples = (source_rate as f32 * duration) as usize;
+            let mut input_samples = Vec::new();
+            
+            for i in 0..num_samples {
+                let t = i as f32 / source_rate as f32;
+                input_samples.push((2.0 * std::f32::consts::PI * 1000.0 * t).sin() * 0.5);
+            }
+            
+            let source = MemorySampleSource::new(input_samples);
+            let mut converter = AudioTranscoder::new_with_source(source, &source_format, &target_format, 1).unwrap();
+            
+            let mut output_samples = Vec::new();
+            let mut sample_count = 0;
+            const MAX_SAMPLES: usize = 1000; // Prevent infinite loops
+            
+            while sample_count < MAX_SAMPLES {
+                match converter.next_sample() {
+                    Ok(Some(sample)) => {
+                        output_samples.push(sample);
+                        sample_count += 1;
+                    },
+                    Ok(None) => break,
+                    Err(_) => break,
+                }
+            }
+            
+            assert!(!output_samples.is_empty(), 
+                "Extreme ratio {}/{} should produce output", source_rate, target_rate);
+            
+            // Check for reasonable amplitude
+            let max_amplitude = output_samples.iter().map(|&x| x.abs()).fold(0.0, f32::max);
+            assert!(max_amplitude > 0.01, 
+                "Extreme ratio {}/{} should have reasonable amplitude, got {}", 
+                source_rate, target_rate, max_amplitude);
+        }
+    }
+
+    #[test]
+    fn test_resampling_long_duration() {
+        // Test with a longer duration signal to ensure stability
+        let source_format = TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
+        let target_format = TargetFormat::new(44100, hound::SampleFormat::Float, 32).unwrap();
+        
+        // Generate a 1-second signal
+        let duration = 1.0;
+        let num_samples = (48000.0 * duration) as usize;
+        let mut input_samples = Vec::new();
+        
+        for i in 0..num_samples {
+            let t = i as f32 / 48000.0;
+            // Mix of frequencies to test aliasing
+            let signal = (2.0 * std::f32::consts::PI * 440.0 * t).sin() * 0.3 +
+                        (2.0 * std::f32::consts::PI * 880.0 * t).sin() * 0.2 +
+                        (2.0 * std::f32::consts::PI * 1760.0 * t).sin() * 0.1;
+            input_samples.push(signal);
+        }
+        
+        let source = MemorySampleSource::new(input_samples);
+        let mut converter = AudioTranscoder::new_with_source(source, &source_format, &target_format, 1).unwrap();
+        
+        let mut output_samples = Vec::new();
+        let mut sample_count = 0;
+        const MAX_SAMPLES: usize = 50000; // Allow for longer processing
+        
+        while sample_count < MAX_SAMPLES {
+            match converter.next_sample() {
+                Ok(Some(sample)) => {
+                    output_samples.push(sample);
+                    sample_count += 1;
+                },
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
+        
+        assert!(!output_samples.is_empty(), "Long duration should produce output");
+        
+        // Check that we got a reasonable number of samples
+        let expected_length = (num_samples as f32 * (44100.0 / 48000.0)) as usize;
+        let length_tolerance = (expected_length as f32 * 0.05) as usize; // 5% tolerance
+        
+        assert!(
+            output_samples.len() >= expected_length - length_tolerance &&
+            output_samples.len() <= expected_length + length_tolerance,
+            "Long duration: expected ~{}, got {}", expected_length, output_samples.len()
+        );
+    }
+
+    #[test]
+    fn test_resampling_high_frequency_content() {
+        // Test with high-frequency content to check for aliasing
+        let source_format = TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
+        let target_format = TargetFormat::new(44100, hound::SampleFormat::Float, 32).unwrap();
+        
+        // Generate signal with high-frequency content (near Nyquist)
+        let num_samples = 1000;
+        let mut input_samples = Vec::new();
+        
+        for i in 0..num_samples {
+            let t = i as f32 / 48000.0;
+            // High frequency signal (20kHz - near Nyquist for 48kHz)
+            let signal = (2.0 * std::f32::consts::PI * 20000.0 * t).sin() * 0.5;
+            input_samples.push(signal);
+        }
+        
+        let source = MemorySampleSource::new(input_samples);
+        let mut converter = AudioTranscoder::new_with_source(source, &source_format, &target_format, 1).unwrap();
+        
+        let mut output_samples = Vec::new();
+        loop {
+            match converter.next_sample() {
+                Ok(Some(sample)) => output_samples.push(sample),
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
+        
+        assert!(!output_samples.is_empty(), "High frequency content should produce output");
+        
+        // Check for aliasing - high frequency content should be attenuated
+        let high_freq_energy = calculate_high_frequency_energy(&output_samples, 44100.0);
+        assert!(
+            high_freq_energy < 0.5, // Should be significantly attenuated
+            "High frequency content should be attenuated, got {}", high_freq_energy
+        );
+    }
+
+    #[test]
+    fn test_resampling_overflow_protection() {
+        // Test with very large values to check for overflow
+        let source_format = TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
+        let target_format = TargetFormat::new(44100, hound::SampleFormat::Float, 32).unwrap();
+        
+        // Test with values near the limits
+        let test_values = vec![
+            vec![1.0, -1.0, 0.999, -0.999], // Near full scale
+            vec![0.0, 0.0, 0.0, 0.0], // All zeros
+            vec![0.5, -0.5, 0.5, -0.5], // Alternating
+        ];
+        
+        for values in test_values {
+            let source = MemorySampleSource::new(values);
+            let mut converter = AudioTranscoder::new_with_source(source, &source_format, &target_format, 1).unwrap();
+            
+            let mut output_samples = Vec::new();
+            let mut sample_count = 0;
+            const MAX_SAMPLES: usize = 100;
+            
+            while sample_count < MAX_SAMPLES {
+                match converter.next_sample() {
+                    Ok(Some(sample)) => {
+                        // Check for NaN or infinity
+                        assert!(sample.is_finite(), "Output should be finite, got {}", sample);
+                        output_samples.push(sample);
+                        sample_count += 1;
+                    },
+                    Ok(None) => break,
+                    Err(_) => break,
+                }
+            }
+            
+            assert!(!output_samples.is_empty(), "Should produce output for edge values");
+        }
+    }
+
+    #[test]
+    fn test_resampling_dc_offset() {
+        // Test DC offset handling
+        let source_format = TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
+        let target_format = TargetFormat::new(44100, hound::SampleFormat::Float, 32).unwrap();
+        
+        // Generate signal with DC offset
+        let dc_offset = 0.1;
+        let num_samples = 100;
+        let mut input_samples = Vec::new();
+        
+        for i in 0..num_samples {
+            let t = i as f32 / 48000.0;
+            let signal = (2.0 * std::f32::consts::PI * 1000.0 * t).sin() * 0.3 + dc_offset;
+            input_samples.push(signal);
+        }
+        
+        let source = MemorySampleSource::new(input_samples);
+        let mut converter = AudioTranscoder::new_with_source(source, &source_format, &target_format, 1).unwrap();
+        
+        let mut output_samples = Vec::new();
+        loop {
+            match converter.next_sample() {
+                Ok(Some(sample)) => output_samples.push(sample),
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
+        
+        assert!(!output_samples.is_empty(), "DC offset test should produce output");
+        
+        // Check that DC offset is preserved (approximately)
+        let mean_value = output_samples.iter().sum::<f32>() / output_samples.len() as f32;
+        assert!(
+            (mean_value - dc_offset).abs() < 0.05, // 5% tolerance
+            "DC offset should be preserved, expected ~{}, got {}", dc_offset, mean_value
+        );
     }
 }
