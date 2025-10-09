@@ -87,6 +87,22 @@ where
             return self.source.next_sample();
         }
 
+        // Debug: Print first few calls to understand what's happening
+        static mut CALL_COUNT: u32 = 0;
+        unsafe {
+            CALL_COUNT += 1;
+            if CALL_COUNT <= 20 {
+                println!("[AudioTranscoder] Call #{}: is_finished={}, samples_read={}, current_frame={}, output_frames_written={}", 
+                    CALL_COUNT, 
+                    self.resampling_state.is_finished,
+                    self.output_tracker.samples_read,
+                    self.buffer_manager.current_frame,
+                    self.buffer_manager.output_frames_written
+                );
+            }
+        }
+
+
         if self.resampling_state.is_finished {
             let ratio = self.target_rate as f32 / self.source_rate as f32;
             let expected_output_frames =
@@ -107,6 +123,7 @@ where
                     let channel = self.buffer_manager.current_position % self.channels as usize;
                     output_buffer[channel][self.buffer_manager.current_frame]
                 };
+
 
                 // Move to next sample
                 self.buffer_manager.current_position =
@@ -129,6 +146,18 @@ where
 
                 // Only increment after successfully returning a sample
                 self.output_tracker.samples_read = self.output_tracker.samples_read.saturating_add(1);
+                
+                // Debug: Print sample values for first few samples
+                static mut SAMPLE_COUNT: u32 = 0;
+                unsafe {
+                    SAMPLE_COUNT += 1;
+                    if SAMPLE_COUNT <= 10 {
+                        let debug_channel = (self.buffer_manager.current_position - 1) % self.channels as usize;
+                        println!("[AudioTranscoder] Sample #{}: value={:.6}, channel={}, frame={}", 
+                            SAMPLE_COUNT, sample, debug_channel, self.buffer_manager.current_frame - 1);
+                    }
+                }
+                
                 return Ok(Some(sample));
             }
         }
@@ -213,6 +242,19 @@ where
 
     /// Collects samples from the source iterator and processes them
     fn collect_and_process_input(&mut self) -> Result<Option<f32>, TranscodingError> {
+        // Debug: Print when this method is called
+        static mut COLLECT_COUNT: u32 = 0;
+        unsafe {
+            COLLECT_COUNT += 1;
+            if COLLECT_COUNT <= 10 {
+                println!("[AudioTranscoder] collect_and_process_input call #{}: is_first_chunk={}, is_finished={}", 
+                    COLLECT_COUNT, 
+                    self.resampling_state.is_first_chunk,
+                    self.resampling_state.is_finished
+                );
+            }
+        }
+
         // Collect samples from the source into input_buffer
         let mut input_buffer = self.buffer_manager.input_buffer.lock().unwrap();
         let mut samples_collected = 0;
@@ -440,6 +482,8 @@ pub fn create_wav_sample_source<P: AsRef<Path>>(
 
     if needs_transcoding {
         // Create transcoder with WAV source as input
+        println!("[create_wav_sample_source] Creating AudioTranscoder: {}Hz->{}Hz, channels={}", 
+            source_format.sample_rate, target_format.sample_rate, spec.channels);
         let transcoder = AudioTranscoder::new_with_source(
             wav_source,
             &source_format,
@@ -449,6 +493,8 @@ pub fn create_wav_sample_source<P: AsRef<Path>>(
         Ok(Box::new(transcoder))
     } else {
         // No transcoding needed, just return the WAV source
+        println!("[create_wav_sample_source] Using WavSampleSource directly: {}Hz, channels={}", 
+            source_format.sample_rate, spec.channels);
         Ok(Box::new(wav_source))
     }
 }
@@ -466,11 +512,33 @@ impl SampleSource for WavSampleSource {
             return Ok(None);
         }
 
+        // Debug: Print first few calls to WavSampleSource
+        static mut WAV_CALL_COUNT: u32 = 0;
+        unsafe {
+            WAV_CALL_COUNT += 1;
+            if WAV_CALL_COUNT <= 10 {
+                println!("[WavSampleSource] Call #{}: is_finished={}", WAV_CALL_COUNT, self.is_finished);
+            }
+        }
+
         match self.wav_reader.samples::<i32>().next() {
             Some(Ok(sample)) => {
                 // Convert i32 to f32 with proper scaling
-                let shifted = sample >> (32 - self.wav_reader.spec().bits_per_sample); // Assume 16-bit samples for now
-                Ok(Some(shifted.to_sample::<f32>()))
+                let bits_per_sample = self.wav_reader.spec().bits_per_sample;
+                let shifted = sample >> (32 - bits_per_sample);
+                let result = shifted.to_sample::<f32>();
+                
+                // Debug: Print sample values for first few samples
+                static mut WAV_SAMPLE_COUNT: u32 = 0;
+                unsafe {
+                    WAV_SAMPLE_COUNT += 1;
+                    if WAV_SAMPLE_COUNT <= 10 {
+                        println!("[WavSampleSource] Sample #{}: raw={}, bits={}, shifted={}, result={:.6}", 
+                            WAV_SAMPLE_COUNT, sample, bits_per_sample, shifted, result);
+                    }
+                }
+                
+                Ok(Some(result))
             }
             Some(Err(e)) => Err(TranscodingError::WavError(e)),
             None => {
@@ -697,6 +765,7 @@ mod tests {
             }
         }
     }
+
 
     #[test]
     fn test_no_resampling_needed() {
