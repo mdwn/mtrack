@@ -13,7 +13,10 @@
 //
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use hound::SampleFormat;
-use mtrack::audio::{sample_source::{AudioTranscoder, MemorySampleSource, SampleSource}, TargetFormat};
+use mtrack::audio::{
+    sample_source::{AudioTranscoder, MemorySampleSource, SampleSource},
+    TargetFormat,
+};
 use std::time::Duration;
 
 fn generate_test_audio(duration_seconds: f32, sample_rate: u32) -> Vec<f32> {
@@ -56,8 +59,10 @@ fn benchmark_resampling(c: &mut Criterion) {
             b.iter(|| {
                 // Create a fresh source and converter for each iteration
                 let source = MemorySampleSource::new(black_box(input_samples.clone()));
-                let mut converter = AudioTranscoder::new_with_source(source, &source_format, &target_format, 1).unwrap();
-                
+                let mut converter =
+                    AudioTranscoder::new_with_source(source, &source_format, &target_format, 1)
+                        .unwrap();
+
                 // Collect all output samples
                 let mut output_samples = Vec::new();
                 loop {
@@ -104,8 +109,14 @@ fn benchmark_multichannel_resampling(c: &mut Criterion) {
             b.iter(|| {
                 // Create a fresh source and converter for each iteration
                 let source = MemorySampleSource::new(black_box(input_samples.clone()));
-                let mut converter = AudioTranscoder::new_with_source(source, &source_format, &target_format, channels).unwrap();
-                
+                let mut converter = AudioTranscoder::new_with_source(
+                    source,
+                    &source_format,
+                    &target_format,
+                    channels,
+                )
+                .unwrap();
+
                 // Collect all output samples
                 let mut output_samples = Vec::new();
                 loop {
@@ -139,8 +150,10 @@ fn benchmark_different_input_sizes(c: &mut Criterion) {
             b.iter(|| {
                 // Create a fresh source and converter for each iteration
                 let source = MemorySampleSource::new(black_box(input_samples.clone()));
-                let mut converter = AudioTranscoder::new_with_source(source, &source_format, &target_format, 1).unwrap();
-                
+                let mut converter =
+                    AudioTranscoder::new_with_source(source, &source_format, &target_format, 1)
+                        .unwrap();
+
                 // Collect all output samples
                 let mut output_samples = Vec::new();
                 loop {
@@ -211,8 +224,10 @@ fn benchmark_format_conversion(c: &mut Criterion) {
             b.iter(|| {
                 // Create a fresh source and converter for each iteration
                 let source = MemorySampleSource::new(black_box(input_samples.clone()));
-                let mut converter = AudioTranscoder::new_with_source(source, &source_format, &target_format, 1).unwrap();
-                
+                let mut converter =
+                    AudioTranscoder::new_with_source(source, &source_format, &target_format, 1)
+                        .unwrap();
+
                 // Collect all output samples
                 let mut output_samples = Vec::new();
                 loop {
@@ -251,8 +266,10 @@ fn benchmark_real_time_performance(c: &mut Criterion) {
         b.iter(|| {
             // Create a fresh source and converter for each iteration
             let source = MemorySampleSource::new(black_box(input_samples.clone()));
-            let mut converter = AudioTranscoder::new_with_source(source, &source_format, &target_format, 2).unwrap();
-            
+            let mut converter =
+                AudioTranscoder::new_with_source(source, &source_format, &target_format, 2)
+                    .unwrap();
+
             // Collect all output samples
             let mut output_samples = Vec::new();
             loop {
@@ -270,11 +287,13 @@ fn benchmark_real_time_performance(c: &mut Criterion) {
     group.bench_function("real_time_ratio", |b| {
         b.iter(|| {
             let start = std::time::Instant::now();
-            
+
             // Create a fresh source and converter for each iteration
             let source = MemorySampleSource::new(black_box(input_samples.clone()));
-            let mut converter = AudioTranscoder::new_with_source(source, &source_format, &target_format, 2).unwrap();
-            
+            let mut converter =
+                AudioTranscoder::new_with_source(source, &source_format, &target_format, 2)
+                    .unwrap();
+
             // Collect all output samples
             let mut output_samples = Vec::new();
             loop {
@@ -284,7 +303,7 @@ fn benchmark_real_time_performance(c: &mut Criterion) {
                     Err(_) => break,
                 }
             }
-            
+
             let duration = start.elapsed();
             let real_time_duration = Duration::from_secs_f32(1.0);
             let ratio = duration.as_secs_f32() / real_time_duration.as_secs_f32();
