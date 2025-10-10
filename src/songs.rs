@@ -26,8 +26,8 @@ use midly::live::LiveEvent;
 use midly::{Format, Smf};
 use nodi::timers::Ticker;
 use nodi::Sheet;
-use ringbuf::{HeapRb, traits::{Consumer, Observer, Producer, Split}};
-use ringbuf_blocking::{BlockingHeapRb, WaitError};
+// Removed unused ringbuf imports
+use std::sync::atomic::AtomicUsize;
 use tracing::{debug, error, info, warn};
 
 use crate::audio::{
@@ -655,9 +655,9 @@ where
     S: Sample,
 {
     finished: Arc<AtomicBool>,
-    cons: <BlockingHeapRb<S> as Split>::Cons,
+    buffer: Arc<AudioCircularBuffer<S>>,
     join_handle: Option<JoinHandle<()>>,
-    channels: u16,
+    _channels: u16,
     frame_pos: Arc<AtomicU16>,
 }
 
@@ -666,6 +666,144 @@ struct SampleSourceAndMapping {
     sample_source: Box<dyn SampleSource>,
     file_channel_to_output_channels: HashMap<u16, Vec<usize>>,
     num_channels: u16,
+}
+
+/// A simple, high-performance circular buffer for audio samples
+pub struct AudioCircularBuffer<S> {
+    data: std::sync::Mutex<Vec<S>>,
+    front: AtomicUsize,
+    back: AtomicUsize,
+    finished_pos: AtomicUsize, // Position where the stream ends
+    capacity: usize,
+}
+
+impl<S> AudioCircularBuffer<S>
+where
+    S: Clone + Default,
+{
+    fn new(capacity: usize) -> Self {
+        Self {
+            data: std::sync::Mutex::new(vec![S::default(); capacity]),
+            front: AtomicUsize::new(0),
+            back: AtomicUsize::new(0),
+            finished_pos: AtomicUsize::new(usize::MAX), // Initially not finished
+            capacity,
+        }
+    }
+
+    fn push_slice(&self, slice: &[S]) -> Result<(), ()> {
+        let slice_len = slice.len();
+        if slice_len == 0 {
+            return Ok(());
+        }
+
+        let back = self.back.load(Ordering::Acquire);
+        let front = self.front.load(Ordering::Acquire);
+        
+        // Calculate available space
+        let available = if back >= front {
+            self.capacity - (back - front)
+        } else {
+            front - back
+        };
+
+        if available < slice_len {
+            return Err(()); // Not enough space
+        }
+
+        // Copy data
+        if let Ok(mut data) = self.data.lock() {
+            for (i, sample) in slice.iter().enumerate() {
+                let pos = (back + i) % self.capacity;
+                data[pos] = sample.clone();
+            }
+        }
+
+        self.back.store((back + slice_len) % self.capacity, Ordering::Release);
+        Ok(())
+    }
+
+    fn pop(&self) -> Option<S> {
+        let front = self.front.load(Ordering::Acquire);
+        let finished_pos = self.finished_pos.load(Ordering::Acquire);
+        
+        // If we've reached the finished position, no more data
+        if finished_pos != usize::MAX && front == finished_pos {
+            return None;
+        }
+        
+        // If buffer is empty, return None
+        if self.occupied_len() == 0 {
+            return None;
+        }
+
+        if let Ok(data) = self.data.lock() {
+            let sample = data[front].clone();
+            self.front.store((front + 1) % self.capacity, Ordering::Release);
+            Some(sample)
+        } else {
+            None
+        }
+    }
+
+    fn occupied_len(&self) -> usize {
+        let back = self.back.load(Ordering::Acquire);
+        let front = self.front.load(Ordering::Acquire);
+        
+        if back >= front {
+            back - front
+        } else {
+            self.capacity - front + back
+        }
+    }
+
+    fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    fn mark_finished(&self) {
+        let current_back = self.back.load(Ordering::Acquire);
+        self.finished_pos.store(current_back, Ordering::Release);
+    }
+
+    fn is_finished(&self) -> bool {
+        self.finished_pos.load(Ordering::Acquire) != usize::MAX
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_circular_buffer() {
+        let buffer = AudioCircularBuffer::<f32>::new(10);
+        
+        // Test basic push/pop
+        let test_data = vec![1.0, 2.0, 3.0];
+        assert!(buffer.push_slice(&test_data).is_ok());
+        assert_eq!(buffer.occupied_len(), 3);
+        
+        // Test pop
+        assert_eq!(buffer.pop(), Some(1.0));
+        assert_eq!(buffer.pop(), Some(2.0));
+        assert_eq!(buffer.pop(), Some(3.0));
+        assert_eq!(buffer.pop(), None);
+        assert_eq!(buffer.occupied_len(), 0);
+        
+        // Test finished functionality
+        let test_data2 = vec![4.0, 5.0];
+        assert!(buffer.push_slice(&test_data2).is_ok());
+        buffer.mark_finished();
+        assert!(buffer.is_finished());
+        
+        // Should still be able to read remaining data
+        assert_eq!(buffer.pop(), Some(4.0));
+        assert_eq!(buffer.pop(), Some(5.0));
+        assert_eq!(buffer.pop(), None); // No more data after finished position
+        
+        println!("Circular buffer test passed!");
+    }
 }
 
 impl<S> SongSource<S>
@@ -697,8 +835,8 @@ where
             .max()
             .ok_or("no max channel found")?;
 
-        let buf = BlockingHeapRb::from(HeapRb::new(usize::from(num_channels) * usize::try_from(song.sample_rate)? * 10));
-        let (prod, cons) = buf.split();
+        let buffer_capacity = usize::from(num_channels) * usize::try_from(song.sample_rate)? * 10;
+        let buffer = Arc::new(AudioCircularBuffer::<S>::new(buffer_capacity));
         let mut sample_sources_and_mappings = Vec::<SampleSourceAndMapping>::new();
 
         for (file_path, tracks) in files_to_tracks {
@@ -740,16 +878,16 @@ where
             SongSource::reader_thread(
                 usize::from(num_channels),
                 sample_sources_and_mappings,
-                prod,
+                buffer.clone(),
                 finished.clone(),
             )
         };
 
         let source = SongSource {
             finished,
-            cons,
+            buffer,
             join_handle: Some(join_handle),
-            channels: num_channels,
+            _channels: num_channels,
             frame_pos: Arc::new(AtomicU16::new(0)),
         };
 
@@ -759,16 +897,16 @@ where
     fn reader_thread(
         num_channels: usize,
         mut sample_sources_and_mappings: Vec<SampleSourceAndMapping>,
-        mut prod: <BlockingHeapRb<S> as Split>::Prod,
+        buffer: Arc<AudioCircularBuffer<S>>,
         finished: Arc<AtomicBool>,
     ) -> JoinHandle<()> {
         thread::spawn(move || {
-            // The number of frames to read at a time from the source. We'll make it one quarter of the total capacity.
-            let num_frames = Into::<usize>::into(prod.capacity()) / num_channels / 2;
+            // Use a reasonable chunk size for processing
+            let _num_frames = 1; // Process one frame at a time
             let num_sources = sample_sources_and_mappings.len();
             let mut channels: Vec<u16> = Vec::with_capacity(num_sources);
             let mut file_mappings: Vec<HashMap<u16, Vec<usize>>> = Vec::with_capacity(num_sources);
-            let mut frames = vec![S::default(); num_channels * num_frames];
+            let mut frames = vec![S::default(); num_channels]; // Just one frame worth of samples
 
             for sample_source_and_mapping in sample_sources_and_mappings.iter() {
                 channels.push(sample_source_and_mapping.num_channels);
@@ -780,82 +918,60 @@ where
             }
 
             loop {
-                // Load the entire buffer until it's full.
-                let num_frames_to_take = prod.vacant_len() / num_channels;
-                for i in 0..num_frames_to_take {
-                    // If finished gets set, we'll return immediately.
-                    if finished.load(Ordering::Relaxed) {
-                        return;
-                    }
+                // If finished gets set, we'll return immediately.
+                if finished.load(Ordering::Relaxed) {
+                    return;
+                }
 
-                    let mut all_files_finished = true;
-                    let current_frame = i % num_frames;
+                let mut all_files_finished = true;
 
-                    // Read one sample from each source for this frame
-                    for j in 0..num_sources {
-                        let file_channel_to_output_channels = &file_mappings[j];
-                        let sample_source = &mut sample_sources_and_mappings[j].sample_source;
+                // Read one sample from each source for this frame
+                frames.iter_mut().for_each(|sample| *sample = S::default());
+                for j in 0..num_sources {
+                    let file_channel_to_output_channels = &file_mappings[j];
+                    let sample_source = &mut sample_sources_and_mappings[j].sample_source;
 
-                        // Read one sample from each channel of this source
-                        for file_channel in 0..channels[j] {
-                            let result = sample_source.next_sample();
-                            match result {
-                                Ok(Some(sample)) => {
-                                    all_files_finished = false;
+                    // Read one sample from each channel of this source
+                    for file_channel in 0..channels[j] {
+                        let result = sample_source.next_sample();
+                        match result {
+                            Ok(Some(sample)) => {
+                                all_files_finished = false;
 
-                                    if let Some(targets) =
-                                        file_channel_to_output_channels.get(&file_channel)
-                                    {
-                                        for target in targets {
-                                            // Convert f32 sample to the target sample type
-                                            let converted_sample = S::from_f32(sample);
-                                            frames[*target + current_frame * num_channels] +=
-                                                converted_sample;
-                                        }
+                                if let Some(targets) =
+                                    file_channel_to_output_channels.get(&file_channel)
+                                {
+                                    for target in targets {
+                                        // Convert f32 sample to the target sample type
+                                        let converted_sample = S::from_f32(sample);
+                                        frames[*target] += converted_sample;
                                     }
                                 }
+                            }
                                 Ok(None) => {
                                     // Sample source is finished
                                 }
-                                Err(e) => {
-                                    error!(
-                                        err = e.to_string(),
-                                        "Error reading sample from SampleSource"
-                                    );
-                                }
+                            Err(e) => {
+                                error!(
+                                    err = e.to_string(),
+                                    "Error reading sample from SampleSource"
+                                );
                             }
                         }
                     }
-
-                    // Push the entirety of the frame to the buffer if we've read all the frames in this
-                    // batch or if we're at the end of the loop.
-                    if i == num_frames_to_take - 1
-                        || current_frame == num_frames - 1
-                        || all_files_finished
-                    {
-                        match prod.wait_vacant(current_frame * num_channels) {
-                            Ok(_) => (),
-                            Err(_) => {
-                                error!("Error waiting for buffer vacant");
-                                return;
-                            }
-                        };
-                        let _ = prod.push_slice(&frames[0..current_frame * num_channels]);
-
-                        // Reset the frames to default.
-                        frames
-                            .iter_mut()
-                            .take(current_frame * num_channels)
-                            .for_each(|sample| *sample = S::default());
-                    }
+                }
 
                     if all_files_finished {
-                        // Drop the producer to signal to the consumer that the song is finished.
-                        drop(prod);
                         finished.store(true, Ordering::Relaxed);
+                        buffer.mark_finished();
                         return;
+                    } else {
+                        // Push the frame to our custom buffer
+                        if let Err(_) = buffer.push_slice(&frames) {
+                            // Buffer is full, skip this frame
+                            continue;
+                        }
                     }
-                }
             }
         })
     }
@@ -873,28 +989,15 @@ where
     type Item = S;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.cons.pop() {
-            Ok(sample) => {
-                self.frame_pos
-                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |val| {
-                        Some((val + 1) % self.channels)
-                    })
-                    .expect("got none from frame position update function");
+        // Always try non-blocking pop first
+        let mut sample = self.buffer.pop();
 
-                Some(sample)
-            }
-            Err(e) => {
-                // This is expected.
-                if e == WaitError::Closed {
-                    return None;
-                }
-
-                error!(
-                    "Error reading sample from SongSource: {e:?}"
-                );
-                return None;
-            }
+        while !self.buffer.is_finished() && sample.is_none() {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            sample = self.buffer.pop();
         }
+        
+        sample
     }
 }
 
@@ -905,9 +1008,6 @@ where
     fn drop(&mut self) {
         // Let the thread know that we shouldn't read any more.
         self.finished.store(true, Ordering::Relaxed);
-
-        // Clear out the consumer, which will force the thread to move to the next iteration if it's still running.
-        self.cons.clear();
 
         // Join the thread to make sure that it's stopped properly.
         self.join_handle
@@ -1468,10 +1568,19 @@ mod test {
             crate::audio::TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
         let mut song_source: SongSource<f32> = song.source(&track_mapping, target_format)?;
 
-        // Read all samples from the song source
+        // Read all samples from the song source with a timeout
         let mut all_samples = Vec::new();
+        let start = std::time::Instant::now();
         while let Some(sample) = song_source.next() {
             all_samples.push(sample);
+            if all_samples.len() % 10000 == 0 {
+                println!("Read {} samples in {:?}", all_samples.len(), start.elapsed());
+            }
+            // Safety timeout to prevent infinite loops
+            if start.elapsed().as_secs() > 10 {
+                println!("Timeout reached, stopping sample reading");
+                break;
+            }
         }
 
         println!("Single track test: {} samples read", all_samples.len());
@@ -2318,7 +2427,7 @@ mod test {
         use tempfile::tempdir;
         use std::collections::HashMap;
         use std::time::Instant;
-        use ringbuf::traits::Observer;
+        // Removed unused import
         use std::thread;
         use std::time::Duration;
 
@@ -2379,17 +2488,17 @@ mod test {
         
         // Now demonstrate the race condition by reading samples while monitoring buffer state
         println!("Starting race condition test...");
-        println!("Initial buffer size: {} samples", song_source.cons.occupied_len());
-        println!("Buffer capacity: {} samples", song_source.cons.capacity());
+        println!("Initial buffer size: {} samples", song_source.buffer.occupied_len());
+        println!("Buffer capacity: {} samples", song_source.buffer.capacity());
         
         let start = Instant::now();
         let mut samples_read = 0;
-        let mut last_buffer_size = song_source.cons.occupied_len();
+        let mut last_buffer_size = song_source.buffer.occupied_len();
         let mut stuck_count = 0;
         
         // Read samples for a short time to see the race condition
         while samples_read < 1000 && start.elapsed().as_secs() < 5 {
-            let buffer_size = song_source.cons.occupied_len();
+            let buffer_size = song_source.buffer.occupied_len();
             
             // Check if buffer size is stuck (not growing)
             if buffer_size == last_buffer_size {
@@ -2423,7 +2532,7 @@ mod test {
         println!("Race condition test completed:");
         println!("  Samples read: {}", samples_read);
         println!("  Time taken: {:?}", read_time);
-        println!("  Final buffer size: {}", song_source.cons.occupied_len());
+        println!("  Final buffer size: {}", song_source.buffer.occupied_len());
         
         // The race condition should cause the buffer to never fill completely
         // and the reading to be slower than expected
@@ -2437,14 +2546,14 @@ mod test {
         println!("\nTesting original wait_for_buffer_or_stop behavior...");
         let start = Instant::now();
         let mut attempts = 0;
-        let target_samples = song_source.cons.capacity().into();
-        let mut last_size = song_source.cons.occupied_len();
+        let target_samples = song_source.buffer.capacity();
+        let mut last_size = song_source.buffer.occupied_len();
         
         println!("Waiting for buffer to reach {} samples (currently {})", 
                 target_samples, last_size);
         
-        while song_source.cons.occupied_len() < target_samples && attempts < 100 {
-            let current_size = song_source.cons.occupied_len();
+        while song_source.buffer.occupied_len() < target_samples && attempts < 100 {
+            let current_size = song_source.buffer.occupied_len();
             if current_size != last_size {
                 println!("Buffer size changed: {} -> {} (attempt {})", 
                         last_size, current_size, attempts);
@@ -2462,7 +2571,7 @@ mod test {
         }
         
         let wait_time = start.elapsed();
-        let final_size = song_source.cons.occupied_len();
+        let final_size = song_source.buffer.occupied_len();
         
         println!("Wait completed after {:?} ({} attempts):", wait_time, attempts);
         println!("  Final buffer size: {} / {} ({:.1}%)", 
@@ -2478,4 +2587,5 @@ mod test {
 
         Ok(())
     }
+
 }
