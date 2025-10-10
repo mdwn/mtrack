@@ -697,9 +697,9 @@ where
             .max()
             .ok_or("no max channel found")?;
 
-        // Get a 30 second buffer here. Raspberry Pis have multiple gigs of memory and 30 seconds at 44.1Khz for 22 channels
-        // is less than 30 MB. At 192KHz, it's ~188 MB. These seem reasonable to me.
-        let buf = HeapRb::new(usize::from(num_channels) * usize::try_from(song.sample_rate)? * 30);
+        // Get a 2 second buffer here. This provides good buffering while minimizing startup delay.
+        // 2 seconds at 48kHz for 4 channels is ~1.5 MB, which is very reasonable.
+        let buf = HeapRb::new(usize::from(num_channels) * usize::try_from(song.sample_rate)? * 2);
         let (prod, cons) = buf.split();
         let mut sample_sources_and_mappings = Vec::<SampleSourceAndMapping>::new();
 
@@ -755,7 +755,8 @@ where
             frame_pos: Arc::new(AtomicU16::new(0)),
         };
 
-        source.wait_for_buffer_or_stop();
+        // Wait for a small amount of samples to be available, but don't wait for full buffer
+        source.wait_for_initial_samples();
 
         Ok(source)
     }
@@ -784,9 +785,9 @@ where
             }
 
             loop {
-                // Wait until the buffer is half empty before proceeding.
-                while prod.occupied_len() > Into::<usize>::into(prod.capacity()) / 2 {
-                    thread::sleep(Duration::from_millis(200))
+                // Only wait if buffer is nearly full (90% capacity) to avoid blocking
+                while prod.occupied_len() > (Into::<usize>::into(prod.capacity()) * 9) / 10 {
+                    thread::sleep(Duration::from_millis(50)) // Shorter sleep for more responsiveness
                 }
 
                 // Load the entire buffer until it's full.
@@ -860,20 +861,36 @@ where
         })
     }
 
-    // Waits for the buffer to fill or for the song to stop. Will return false if the song is stopped.
-    fn wait_for_buffer_or_stop(&self) -> bool {
-        // We'll wait while we're waiting for the buffer to fill or the song to stop.
-        // It's not expected that this will take long.
+    // Waits for a small number of initial samples to be available
+    fn wait_for_initial_samples(&self) -> bool {
+        let target_samples = self.channels as usize * 100; // Wait for 100 frames worth of samples
+        let mut attempts = 0;
+        let max_attempts = 100; // 5 seconds max wait (50ms * 100)
+        
         loop {
             if self.finished.load(Ordering::Relaxed) {
                 return false;
             }
-            if !self.cons.is_empty() {
+            if self.cons.occupied_len() >= target_samples {
                 break;
             }
-            thread::sleep(Duration::from_millis(50))
+            if attempts >= max_attempts {
+                // Timeout - start anyway with whatever samples we have
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+            attempts += 1;
         }
+        true
+    }
 
+    // Waits for the buffer to fill or for the song to stop. Will return false if the song is stopped.
+    fn wait_for_buffer_or_stop(&self) -> bool {
+        // Return immediately - don't wait for buffer to fill
+        // This allows playback to start as soon as samples are available
+        if self.finished.load(Ordering::Relaxed) {
+            return false;
+        }
         true
     }
 
