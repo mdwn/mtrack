@@ -26,7 +26,6 @@ use midly::live::LiveEvent;
 use midly::{Format, Smf};
 use nodi::timers::Ticker;
 use nodi::Sheet;
-use ringbuf::traits::Observer;
 use ringbuf::{
     traits::{Consumer, Producer, Split},
     HeapRb,
@@ -784,11 +783,10 @@ where
             }
 
             loop {
-                // Wait until the buffer is half empty before proceeding.
-                while prod.occupied_len() > Into::<usize>::into(prod.capacity()) / 2 {
-                    thread::sleep(Duration::from_millis(200))
+                // If finished gets set, we'll return immediately.
+                if finished.load(Ordering::Relaxed) {
+                    return;
                 }
-
 
                 let mut all_files_finished = true;
 
