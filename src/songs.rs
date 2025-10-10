@@ -26,7 +26,10 @@ use midly::live::LiveEvent;
 use midly::{Format, Smf};
 use nodi::timers::Ticker;
 use nodi::Sheet;
-use ringbuf::{HeapRb, traits::{Consumer, Producer, Split}};
+use ringbuf::{
+    traits::{Consumer, Producer, Split},
+    HeapRb,
+};
 use ringbuf_blocking::{BlockingHeapRb, WaitError};
 use tracing::{debug, error, info, warn};
 
@@ -697,7 +700,9 @@ where
             .max()
             .ok_or("no max channel found")?;
 
-        let buf = BlockingHeapRb::from(HeapRb::new(usize::from(num_channels) * usize::try_from(song.sample_rate)? * 30));
+        let buf = BlockingHeapRb::from(HeapRb::new(
+            usize::from(num_channels) * usize::try_from(song.sample_rate)? * 30,
+        ));
         let (prod, cons) = buf.split();
         let mut sample_sources_and_mappings = Vec::<SampleSourceAndMapping>::new();
 
@@ -821,7 +826,6 @@ where
                     }
                 }
 
-
                 if all_files_finished {
                     finished.store(true, Ordering::Relaxed);
                     return;
@@ -861,10 +865,8 @@ where
                     return None;
                 }
 
-                error!(
-                    "Error reading sample from SongSource: {e:?}"
-                );
-                return None;
+                error!("Error reading sample from SongSource: {e:?}");
+                None
             }
         }
     }
@@ -2090,63 +2092,77 @@ mod test {
     #[test]
     fn test_file_io_performance() -> Result<(), Box<dyn Error>> {
         use crate::testutil::write_wav_with_bits;
-        use tempfile::tempdir;
-        use std::time::Instant;
-        use std::fs::File;
         use hound::WavReader;
+        use std::fs::File;
+        use std::time::Instant;
+        use tempfile::tempdir;
 
         let tempdir = tempdir().unwrap();
-        
+
         // Create a large WAV file to test I/O performance
         let sample_rate = 44100;
         let duration_samples = 1000000; // ~22.7 seconds of audio
         let amplitude = 0.5;
-        
-        println!("Creating large WAV file with {} samples...", duration_samples);
-        
+
+        println!(
+            "Creating large WAV file with {} samples...",
+            duration_samples
+        );
+
         // Generate a sine wave
         let sine_wave: Vec<f32> = (0..duration_samples)
-            .map(|i| ((i as f32 * 440.0 * 2.0 * std::f32::consts::PI / sample_rate as f32).sin() * amplitude))
+            .map(|i| {
+                ((i as f32 * 440.0 * 2.0 * std::f32::consts::PI / sample_rate as f32).sin()
+                    * amplitude)
+            })
             .collect();
-        
-        let samples: Vec<i32> = sine_wave.iter()
+
+        let samples: Vec<i32> = sine_wave
+            .iter()
             .map(|&x| (x * 8388607.0) as i32) // 24-bit range
             .collect();
-        
+
         // Measure file writing time
         let wav_path = tempdir.path().join("large_test.wav");
         let start = Instant::now();
         write_wav_with_bits(wav_path.clone(), vec![samples], sample_rate, 24).unwrap();
         let write_time = start.elapsed();
-        
+
         println!("File write time: {:?}", write_time);
-        println!("Write speed: {:.2} MB/s", 
-                (duration_samples * 4) as f64 / write_time.as_secs_f64() / 1_000_000.0);
-        
+        println!(
+            "Write speed: {:.2} MB/s",
+            (duration_samples * 4) as f64 / write_time.as_secs_f64() / 1_000_000.0
+        );
+
         // Measure file reading time with hound
         let start = Instant::now();
         let file = File::open(&wav_path)?;
         let mut wav_reader = WavReader::new(file)?;
         let spec = wav_reader.spec();
-        println!("WAV file spec: {}Hz, {}bit, {}ch", spec.sample_rate, spec.bits_per_sample, spec.channels);
-        
+        println!(
+            "WAV file spec: {}Hz, {}bit, {}ch",
+            spec.sample_rate, spec.bits_per_sample, spec.channels
+        );
+
         // Read all samples
         let mut samples_read = 0;
         for _sample in wav_reader.samples::<i32>() {
             samples_read += 1;
         }
         let read_time = start.elapsed();
-        
+
         println!("File read time: {:?}", read_time);
-        println!("Read speed: {:.2} MB/s", 
-                (samples_read * 4) as f64 / read_time.as_secs_f64() / 1_000_000.0);
+        println!(
+            "Read speed: {:.2} MB/s",
+            (samples_read * 4) as f64 / read_time.as_secs_f64() / 1_000_000.0
+        );
         println!("Samples read: {}", samples_read);
-        
+
         // Measure WavSampleSource performance
         let start = Instant::now();
         let mut wav_source = crate::audio::sample_source::WavSampleSource::from_file(&wav_path)?;
         let mut samples_processed = 0;
-        
+
         loop {
             match crate::audio::sample_source::SampleSource::next_sample(&mut wav_source) {
                 Ok(Some(_)) => samples_processed += 1,
@@ -2155,65 +2171,96 @@ mod test {
             }
         }
         let wav_source_time = start.elapsed();
-        
+
         println!("WavSampleSource processing time: {:?}", wav_source_time);
-        println!("WavSampleSource speed: {:.2} MB/s", 
-                (samples_processed * 4) as f64 / wav_source_time.as_secs_f64() / 1_000_000.0);
+        println!(
+            "WavSampleSource speed: {:.2} MB/s",
+            (samples_processed * 4) as f64 / wav_source_time.as_secs_f64() / 1_000_000.0
+        );
         println!("Samples processed: {}", samples_processed);
-        
+
         // Verify we got the expected number of samples
         assert_eq!(samples_read, duration_samples);
         assert_eq!(samples_processed, duration_samples);
-        
+
         Ok(())
     }
 
     #[test]
     fn test_buffer_fill_performance() -> Result<(), Box<dyn Error>> {
         use crate::testutil::write_wav_with_bits;
-        use tempfile::tempdir;
         use std::collections::HashMap;
         use std::time::Instant;
+        use tempfile::tempdir;
 
         let tempdir = tempdir().unwrap();
-        
+
         // Create a test song with multiple tracks to simulate real usage
         let duration_samples = 20000000; // ~453 seconds - extremely long files
         let amplitude = 0.5;
-        
+
         // Create 4 WAV files with different sample rates to force transcoding
         let wav_paths = vec![
             tempdir.path().join("track1.wav"),
-            tempdir.path().join("track2.wav"), 
+            tempdir.path().join("track2.wav"),
             tempdir.path().join("track3.wav"),
             tempdir.path().join("track4.wav"),
         ];
-        
+
         let sample_rates = vec![44100, 48000, 22050, 44100];
         let bit_depths = vec![24, 16, 32, 24];
-        
+
         for (i, wav_path) in wav_paths.iter().enumerate() {
             let freq = 440.0 * (i as f32 + 1.0); // Different frequency per track
             let sine_wave: Vec<f32> = (0..duration_samples)
-                .map(|j| ((j as f32 * freq * 2.0 * std::f32::consts::PI / sample_rates[i] as f32).sin() * amplitude))
+                .map(|j| {
+                    ((j as f32 * freq * 2.0 * std::f32::consts::PI / sample_rates[i] as f32).sin()
+                        * amplitude)
+                })
                 .collect();
-            
-            let samples: Vec<i32> = sine_wave.iter()
+
+            let samples: Vec<i32> = sine_wave
+                .iter()
                 .map(|&x| (x * (1 << (bit_depths[i] - 1)) as f32) as i32) // Scale to bit depth
                 .collect();
-            
-            write_wav_with_bits(wav_path.clone(), vec![samples], sample_rates[i], bit_depths[i]).unwrap();
+
+            write_wav_with_bits(
+                wav_path.clone(),
+                vec![samples],
+                sample_rates[i],
+                bit_depths[i],
+            )
+            .unwrap();
         }
 
         // Create song configuration
         let config_song = crate::config::Song::new(
             "Buffer Fill Test",
-            None, None, None, None,
+            None,
+            None,
+            None,
+            None,
             vec![
-                crate::config::Track::new("Track 1".to_string(), wav_paths[0].to_str().unwrap(), Some(1)),
-                crate::config::Track::new("Track 2".to_string(), wav_paths[1].to_str().unwrap(), Some(1)),
-                crate::config::Track::new("Track 3".to_string(), wav_paths[2].to_str().unwrap(), Some(1)),
-                crate::config::Track::new("Track 4".to_string(), wav_paths[3].to_str().unwrap(), Some(1)),
+                crate::config::Track::new(
+                    "Track 1".to_string(),
+                    wav_paths[0].to_str().unwrap(),
+                    Some(1),
+                ),
+                crate::config::Track::new(
+                    "Track 2".to_string(),
+                    wav_paths[1].to_str().unwrap(),
+                    Some(1),
+                ),
+                crate::config::Track::new(
+                    "Track 3".to_string(),
+                    wav_paths[2].to_str().unwrap(),
+                    Some(1),
+                ),
+                crate::config::Track::new(
+                    "Track 4".to_string(),
+                    wav_paths[3].to_str().unwrap(),
+                    Some(1),
+                ),
             ],
         );
 
@@ -2227,20 +2274,21 @@ mod test {
         track_mapping.insert("Track 4".to_string(), vec![4]);
 
         // Test with target format that requires transcoding
-        let target_format = crate::audio::TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
-        
+        let target_format =
+            crate::audio::TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
+
         // Measure the time to create SongSource (this includes initial buffer fill)
         let start = Instant::now();
         let mut song_source: SongSource<f32> = song.source(&track_mapping, target_format)?;
         let creation_time = start.elapsed();
-        
+
         println!("SongSource creation time: {:?}", creation_time);
-        
+
         // Let's also measure the time to read a larger chunk to see if there are any bottlenecks
         let start = Instant::now();
         let mut samples_read = 0;
         let target_samples = 10000; // Read 10,000 samples
-        
+
         while samples_read < target_samples {
             if let Some(_sample) = song_source.next() {
                 samples_read += 1;
@@ -2248,16 +2296,22 @@ mod test {
                 break;
             }
         }
-        
+
         let large_read_time = start.elapsed();
-        println!("Time to read {} samples: {:?}", samples_read, large_read_time);
-        println!("Samples per second (large read): {:.0}", samples_read as f64 / large_read_time.as_secs_f64());
-        
+        println!(
+            "Time to read {} samples: {:?}",
+            samples_read, large_read_time
+        );
+        println!(
+            "Samples per second (large read): {:.0}",
+            samples_read as f64 / large_read_time.as_secs_f64()
+        );
+
         // Measure time to read first few samples
         let start = Instant::now();
         let mut samples_read = 0;
         let target_samples = 1000; // Read 1000 samples
-        
+
         while samples_read < target_samples {
             if let Some(_sample) = song_source.next() {
                 samples_read += 1;
@@ -2265,21 +2319,30 @@ mod test {
                 break;
             }
         }
-        
+
         let read_time = start.elapsed();
         println!("Time to read {} samples: {:?}", samples_read, read_time);
-        println!("Samples per second: {:.0}", samples_read as f64 / read_time.as_secs_f64());
-        
+        println!(
+            "Samples per second: {:.0}",
+            samples_read as f64 / read_time.as_secs_f64()
+        );
+
         // Verify we got samples
         assert!(samples_read > 0, "No samples read");
-        
+
         // The creation time should be reasonable (under 1 second for this small test)
-        assert!(creation_time.as_secs_f64() < 1.0, 
-                "SongSource creation took too long: {:?}", creation_time);
-        
+        assert!(
+            creation_time.as_secs_f64() < 1.0,
+            "SongSource creation took too long: {:?}",
+            creation_time
+        );
+
         // The read time should be very fast (under 100ms for 1000 samples)
-        assert!(read_time.as_secs_f64() < 0.1, 
-                "Sample reading took too long: {:?}", read_time);
+        assert!(
+            read_time.as_secs_f64() < 0.1,
+            "Sample reading took too long: {:?}",
+            read_time
+        );
 
         Ok(())
     }
@@ -2287,48 +2350,69 @@ mod test {
     #[test]
     fn test_buffer_race_condition() -> Result<(), Box<dyn Error>> {
         use crate::testutil::write_wav_with_bits;
-        use tempfile::tempdir;
-        use std::collections::HashMap;
-        use std::time::Instant;
         use ringbuf::traits::Observer;
+        use std::collections::HashMap;
         use std::thread;
         use std::time::Duration;
+        use std::time::Instant;
+        use tempfile::tempdir;
 
         let tempdir = tempdir().unwrap();
-        
+
         // Create a simple test song
         let duration_samples = 100000; // ~2.3 seconds
         let amplitude = 0.5;
-        
+
         // Create 2 WAV files to force transcoding
         let wav_paths = vec![
             tempdir.path().join("track1.wav"),
             tempdir.path().join("track2.wav"),
         ];
-        
+
         let sample_rates = vec![44100, 48000];
         let bit_depths = vec![24, 16];
-        
+
         for (i, wav_path) in wav_paths.iter().enumerate() {
             let freq = 440.0 * (i as f32 + 1.0);
             let sine_wave: Vec<f32> = (0..duration_samples)
-                .map(|j| ((j as f32 * freq * 2.0 * std::f32::consts::PI / sample_rates[i] as f32).sin() * amplitude))
+                .map(|j| {
+                    ((j as f32 * freq * 2.0 * std::f32::consts::PI / sample_rates[i] as f32).sin()
+                        * amplitude)
+                })
                 .collect();
-            
-            let samples: Vec<i32> = sine_wave.iter()
+
+            let samples: Vec<i32> = sine_wave
+                .iter()
                 .map(|&x| (x * (1 << (bit_depths[i] - 1)) as f32) as i32)
                 .collect();
-            
-            write_wav_with_bits(wav_path.clone(), vec![samples], sample_rates[i], bit_depths[i]).unwrap();
+
+            write_wav_with_bits(
+                wav_path.clone(),
+                vec![samples],
+                sample_rates[i],
+                bit_depths[i],
+            )
+            .unwrap();
         }
 
         // Create song configuration
         let config_song = crate::config::Song::new(
             "Race Condition Test",
-            None, None, None, None,
+            None,
+            None,
+            None,
+            None,
             vec![
-                crate::config::Track::new("Track 1".to_string(), wav_paths[0].to_str().unwrap(), Some(1)),
-                crate::config::Track::new("Track 2".to_string(), wav_paths[1].to_str().unwrap(), Some(1)),
+                crate::config::Track::new(
+                    "Track 1".to_string(),
+                    wav_paths[0].to_str().unwrap(),
+                    Some(1),
+                ),
+                crate::config::Track::new(
+                    "Track 2".to_string(),
+                    wav_paths[1].to_str().unwrap(),
+                    Some(1),
+                ),
             ],
         );
 
@@ -2340,107 +2424,134 @@ mod test {
         track_mapping.insert("Track 2".to_string(), vec![2]);
 
         // Test with target format that requires transcoding
-        let target_format = crate::audio::TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
-        
+        let target_format =
+            crate::audio::TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
+
         println!("Creating SongSource...");
         let start = Instant::now();
         let mut song_source: SongSource<f32> = song.source(&track_mapping, target_format)?;
         let creation_time = start.elapsed();
-        
+
         println!("SongSource creation time: {:?}", creation_time);
-        
+
         // Now demonstrate the race condition by reading samples while monitoring buffer state
         println!("Starting race condition test...");
-        println!("Initial buffer size: {} samples", song_source.cons.occupied_len());
+        println!(
+            "Initial buffer size: {} samples",
+            song_source.cons.occupied_len()
+        );
         println!("Buffer capacity: {} samples", song_source.cons.capacity());
-        
+
         let start = Instant::now();
         let mut samples_read = 0;
         let mut last_buffer_size = song_source.cons.occupied_len();
         let mut stuck_count = 0;
-        
+
         // Read samples for a short time to see the race condition
         while samples_read < 1000 && start.elapsed().as_secs() < 5 {
             let buffer_size = song_source.cons.occupied_len();
-            
+
             // Check if buffer size is stuck (not growing)
             if buffer_size == last_buffer_size {
                 stuck_count += 1;
             } else {
                 stuck_count = 0;
             }
-            
+
             if stuck_count > 10 {
-                println!("RACE CONDITION DETECTED: Buffer size stuck at {} samples for {} iterations", 
-                        buffer_size, stuck_count);
+                println!(
+                    "RACE CONDITION DETECTED: Buffer size stuck at {} samples for {} iterations",
+                    buffer_size, stuck_count
+                );
                 break;
             }
-            
+
             if samples_read % 100 == 0 {
-                println!("Samples read: {}, Buffer size: {}, Time: {:?}", 
-                        samples_read, buffer_size, start.elapsed());
+                println!(
+                    "Samples read: {}, Buffer size: {}, Time: {:?}",
+                    samples_read,
+                    buffer_size,
+                    start.elapsed()
+                );
             }
-            
+
             if let Some(_sample) = song_source.next() {
                 samples_read += 1;
             } else {
                 println!("No more samples available");
                 break;
             }
-            
+
             last_buffer_size = buffer_size;
         }
-        
+
         let read_time = start.elapsed();
         println!("Race condition test completed:");
         println!("  Samples read: {}", samples_read);
         println!("  Time taken: {:?}", read_time);
         println!("  Final buffer size: {}", song_source.cons.occupied_len());
-        
+
         // The race condition should cause the buffer to never fill completely
         // and the reading to be slower than expected
         if stuck_count > 10 {
-            println!("✅ RACE CONDITION CONFIRMED: Buffer was stuck at {} samples", last_buffer_size);
+            println!(
+                "✅ RACE CONDITION CONFIRMED: Buffer was stuck at {} samples",
+                last_buffer_size
+            );
         } else {
             println!("❌ No race condition detected - buffer filled normally");
         }
-        
+
         // Now test what happens when we try to wait for a completely full buffer
         println!("\nTesting original wait_for_buffer_or_stop behavior...");
         let start = Instant::now();
         let mut attempts = 0;
         let target_samples = song_source.cons.capacity().into();
         let mut last_size = song_source.cons.occupied_len();
-        
-        println!("Waiting for buffer to reach {} samples (currently {})", 
-                target_samples, last_size);
-        
+
+        println!(
+            "Waiting for buffer to reach {} samples (currently {})",
+            target_samples, last_size
+        );
+
         while song_source.cons.occupied_len() < target_samples && attempts < 100 {
             let current_size = song_source.cons.occupied_len();
             if current_size != last_size {
-                println!("Buffer size changed: {} -> {} (attempt {})", 
-                        last_size, current_size, attempts);
+                println!(
+                    "Buffer size changed: {} -> {} (attempt {})",
+                    last_size, current_size, attempts
+                );
                 last_size = current_size;
             }
-            
+
             if attempts % 20 == 0 {
-                println!("Attempt {}: Buffer size = {} / {} ({:.1}%)", 
-                        attempts, current_size, target_samples,
-                        (current_size as f64 / target_samples as f64) * 100.0);
+                println!(
+                    "Attempt {}: Buffer size = {} / {} ({:.1}%)",
+                    attempts,
+                    current_size,
+                    target_samples,
+                    (current_size as f64 / target_samples as f64) * 100.0
+                );
             }
-            
+
             thread::sleep(Duration::from_millis(50));
             attempts += 1;
         }
-        
+
         let wait_time = start.elapsed();
         let final_size = song_source.cons.occupied_len();
-        
-        println!("Wait completed after {:?} ({} attempts):", wait_time, attempts);
-        println!("  Final buffer size: {} / {} ({:.1}%)", 
-                final_size, target_samples,
-                (final_size as f64 / target_samples as f64) * 100.0);
-        
+
+        println!(
+            "Wait completed after {:?} ({} attempts):",
+            wait_time, attempts
+        );
+        println!(
+            "  Final buffer size: {} / {} ({:.1}%)",
+            final_size,
+            target_samples,
+            (final_size as f64 / target_samples as f64) * 100.0
+        );
+
         if final_size < target_samples {
             println!("✅ ORIGINAL ISSUE REPRODUCED: Buffer never reached full capacity!");
             println!("   This explains the 10-20 second delay - waiting for impossible condition");
@@ -2448,80 +2559,6 @@ mod test {
             println!("❌ Buffer reached full capacity - original issue not reproduced");
         }
 
-        Ok(())
-    }
-
-    #[test]
-    fn test_songsource_delay() -> Result<(), Box<dyn Error>> {
-        use crate::testutil::write_wav_with_bits;
-        use tempfile::tempdir;
-        use std::collections::HashMap;
-
-        let tempdir = tempdir().unwrap();
-        
-        // Create a simple test file
-        let sample_rate = 44100;
-        let duration_samples = 1000;
-        let frequency = 440.0;
-        let amplitude = 0.5;
-        
-        let sine_wave: Vec<f32> = (0..duration_samples)
-            .map(|i| ((i as f32 * frequency * 2.0 * std::f32::consts::PI / sample_rate as f32).sin() * amplitude))
-            .collect();
-        
-        let wav_path = tempdir.path().join("test_delay.wav");
-        let samples: Vec<i32> = sine_wave.iter()
-            .map(|&x| (x * 8388607.0) as i32)
-            .collect();
-        write_wav_with_bits(wav_path.clone(), vec![samples], sample_rate, 24).unwrap();
-        
-        // Create song configuration
-        let config_song = crate::config::Song::new(
-            "Test Song",
-            None, None, None, None,
-            vec![crate::config::Track::new(
-                "Test Track".to_string(),
-                wav_path.to_str().unwrap(),
-                Some(1),
-            )],
-        );
-        
-        let song = super::Song::new(&tempdir.path(), &config_song)?;
-        
-        // Create track mapping
-        let mut track_mapping = HashMap::new();
-        track_mapping.insert("Test Track".to_string(), vec![1]);
-        
-        // Create target format
-        let target_format = crate::audio::TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
-        
-        // Measure delay
-        let start = std::time::Instant::now();
-        let mut song_source: SongSource<f32> = song.source(&track_mapping, target_format)?;
-        let creation_time = start.elapsed();
-        
-        println!("SongSource creation time: {:?}", creation_time);
-        
-        // Measure time to first sample
-        let start = std::time::Instant::now();
-        let first_sample = song_source.next();
-        let first_sample_time = start.elapsed();
-        
-        println!("Time to first sample: {:?}", first_sample_time);
-        println!("First sample: {:?}", first_sample);
-        
-        // Measure time to read a few samples
-        let start = std::time::Instant::now();
-        let mut samples_read = 0;
-        for _ in 0..100 {
-            if let Some(_) = song_source.next() {
-                samples_read += 1;
-            }
-        }
-        let samples_time = start.elapsed();
-        
-        println!("Time to read {} samples: {:?}", samples_read, samples_time);
-        
         Ok(())
     }
 }
