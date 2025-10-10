@@ -700,7 +700,7 @@ where
         // Get a 2 second buffer here. This provides good buffering while minimizing startup delay.
         // 2 seconds at 48kHz for 4 channels is ~1.5 MB, which is very reasonable.
         let buf = BlockingHeapRb::from(HeapRb::new(usize::from(num_channels) * usize::try_from(song.sample_rate)? * 2));
-        let (prod, mut cons) = buf.split();
+        let (prod, cons) = buf.split();
         let mut sample_sources_and_mappings = Vec::<SampleSourceAndMapping>::new();
 
         for (file_path, tracks) in files_to_tracks {
@@ -746,9 +746,6 @@ where
                 finished.clone(),
             )
         };
-
-        // Wait for the buffer to be filled with the initial samples.
-        cons.wait_occupied(usize::from(num_channels) * usize::try_from(song.sample_rate)? * 2).map_err(|_e| "Error waiting for buffer fill")?;
 
         let source = SongSource {
             finished,
@@ -853,6 +850,8 @@ where
                     }
 
                     if all_files_finished {
+                        // Drop the producer to signal to the consumer that the song is finished.
+                        drop(prod);
                         finished.store(true, Ordering::Relaxed);
                         return;
                     }
