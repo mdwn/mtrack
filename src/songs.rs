@@ -697,9 +697,7 @@ where
             .max()
             .ok_or("no max channel found")?;
 
-        // Get a 2 second buffer here. This provides good buffering while minimizing startup delay.
-        // 2 seconds at 48kHz for 4 channels is ~1.5 MB, which is very reasonable.
-        let buf = BlockingHeapRb::from(HeapRb::new(usize::from(num_channels) * usize::try_from(song.sample_rate)? * 2));
+        let buf = BlockingHeapRb::from(HeapRb::new(usize::from(num_channels) * usize::try_from(song.sample_rate)? * 30));
         let (prod, cons) = buf.split();
         let mut sample_sources_and_mappings = Vec::<SampleSourceAndMapping>::new();
 
