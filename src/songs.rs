@@ -780,6 +780,11 @@ where
             }
 
             loop {
+                // Only wait if buffer is nearly full (90% capacity) to avoid blocking
+                while prod.occupied_len() > (Into::<usize>::into(prod.capacity()) * 9) / 10 {
+                    thread::sleep(Duration::from_millis(50)) // Shorter sleep for more responsiveness
+                }
+
                 // Load the entire buffer until it's full.
                 let num_frames_to_take = prod.vacant_len() / num_channels;
                 for i in 0..num_frames_to_take {
@@ -833,7 +838,6 @@ where
                         || current_frame == num_frames - 1
                         || all_files_finished
                     {
-                        prod.wait_vacant(current_frame * num_channels).map_err(|_e| "Error waiting for buffer vacant")?;
                         let _ = prod.push_slice(&frames[0..current_frame * num_channels]);
 
                         // Reset the frames to default.
