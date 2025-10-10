@@ -16,7 +16,7 @@ use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 use std::{cmp, fmt, thread};
@@ -670,11 +670,14 @@ struct SampleSourceAndMapping {
 
 /// A simple, high-performance circular buffer for audio samples
 pub struct AudioCircularBuffer<S> {
-    data: std::sync::Mutex<Vec<S>>,
+    data: Mutex<Vec<S>>,
     front: AtomicUsize,
     back: AtomicUsize,
     finished_pos: AtomicUsize, // Position where the stream ends
     capacity: usize,
+    // Condition variables for efficient blocking
+    not_empty: Condvar, // Signaled when data becomes available
+    not_full: Condvar,  // Signaled when space becomes available
 }
 
 impl<S> AudioCircularBuffer<S>
@@ -683,11 +686,13 @@ where
 {
     fn new(capacity: usize) -> Self {
         Self {
-            data: std::sync::Mutex::new(vec![S::default(); capacity]),
+            data: Mutex::new(vec![S::default(); capacity]),
             front: AtomicUsize::new(0),
             back: AtomicUsize::new(0),
             finished_pos: AtomicUsize::new(usize::MAX), // Initially not finished
             capacity,
+            not_empty: Condvar::new(),
+            not_full: Condvar::new(),
         }
     }
 
@@ -697,53 +702,76 @@ where
             return Ok(());
         }
 
-        let back = self.back.load(Ordering::Acquire);
-        let front = self.front.load(Ordering::Acquire);
+        let mut data = self.data.lock().unwrap();
         
-        // Calculate available space
-        let available = if back >= front {
-            self.capacity - (back - front)
-        } else {
-            front - back
-        };
-
-        if available < slice_len {
-            return Err(()); // Not enough space
+        // Wait until there's enough space
+        while self.occupied_len() + slice_len > self.capacity {
+            data = self.not_full.wait(data).unwrap();
         }
 
+        let back = self.back.load(Ordering::Acquire);
+        
         // Copy data
-        if let Ok(mut data) = self.data.lock() {
-            for (i, sample) in slice.iter().enumerate() {
-                let pos = (back + i) % self.capacity;
-                data[pos] = sample.clone();
-            }
+        for (i, sample) in slice.iter().enumerate() {
+            let pos = (back + i) % self.capacity;
+            data[pos] = sample.clone();
         }
 
         self.back.store((back + slice_len) % self.capacity, Ordering::Release);
+        
+        // Notify waiting readers
+        self.not_empty.notify_all();
         Ok(())
     }
 
     fn pop(&self) -> Option<S> {
-        let front = self.front.load(Ordering::Acquire);
         let finished_pos = self.finished_pos.load(Ordering::Acquire);
         
         // If we've reached the finished position, no more data
-        if finished_pos != usize::MAX && front == finished_pos {
+        if finished_pos != usize::MAX && self.front.load(Ordering::Acquire) == finished_pos {
             return None;
         }
         
-        // If buffer is empty, return None
+        // If buffer is empty and not finished, return None (non-blocking)
         if self.occupied_len() == 0 {
             return None;
         }
 
-        if let Ok(data) = self.data.lock() {
-            let sample = data[front].clone();
-            self.front.store((front + 1) % self.capacity, Ordering::Release);
-            Some(sample)
-        } else {
-            None
+        let data = self.data.lock().unwrap();
+        let front = self.front.load(Ordering::Acquire);
+        let sample = data[front].clone();
+        self.front.store((front + 1) % self.capacity, Ordering::Release);
+        
+        // Notify waiting writers
+        self.not_full.notify_all();
+        Some(sample)
+    }
+
+    fn pop_blocking(&self) -> Option<S> {
+        let finished_pos = self.finished_pos.load(Ordering::Acquire);
+        
+        // If we've reached the finished position, no more data
+        if finished_pos != usize::MAX && self.front.load(Ordering::Acquire) == finished_pos {
+            return None;
         }
+
+        let mut data = self.data.lock().unwrap();
+        
+        // Wait until data is available or stream is finished
+        while self.occupied_len() == 0 {
+            if self.is_finished() {
+                return None;
+            }
+            data = self.not_empty.wait(data).unwrap();
+        }
+
+        let front = self.front.load(Ordering::Acquire);
+        let sample = data[front].clone();
+        self.front.store((front + 1) % self.capacity, Ordering::Release);
+        
+        // Notify waiting writers
+        self.not_full.notify_all();
+        Some(sample)
     }
 
     fn occupied_len(&self) -> usize {
@@ -989,15 +1017,7 @@ where
     type Item = S;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // Always try non-blocking pop first
-        let mut sample = self.buffer.pop();
-
-        while !self.buffer.is_finished() && sample.is_none() {
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            sample = self.buffer.pop();
-        }
-        
-        sample
+        self.buffer.pop_blocking()
     }
 }
 
