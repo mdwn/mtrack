@@ -56,6 +56,27 @@ pub trait SampleSource: Send + Sync {
     fn next_sample(&mut self) -> Result<Option<f32>, TranscodingError>;
 }
 
+/// A batcher that collects samples and processes them in blocks for efficient transcoding
+/// This bridges the gap between sample-by-sample reading and block-oriented transcoding
+pub struct TranscodingBatcher {
+    source: Box<dyn SampleSource>,
+    channels: u16,
+    block_size: usize,
+    
+    // Buffer for collecting samples
+    input_buffer: Vec<Vec<f32>>,
+    current_frame: usize,
+    
+    // Buffer for processed samples
+    output_buffer: Vec<f32>,
+    output_position: usize,
+    output_length: usize,
+    
+    // State tracking
+    is_finished: bool,
+    needs_processing: bool,
+}
+
 #[cfg(test)]
 pub trait SampleSourceTestExt {
     /// Check if the source is finished (no more samples)
@@ -394,6 +415,109 @@ impl MemorySampleSource {
             samples,
             current_index: 0,
         }
+    }
+}
+
+impl TranscodingBatcher {
+    /// Creates a new TranscodingBatcher
+    pub fn new(source: Box<dyn SampleSource>, channels: u16, block_size: usize) -> Self {
+        let input_buffer = vec![vec![0.0; block_size]; channels as usize];
+        
+        Self {
+            source,
+            channels,
+            block_size,
+            input_buffer,
+            current_frame: 0,
+            output_buffer: Vec::new(),
+            output_position: 0,
+            output_length: 0,
+            is_finished: false,
+            needs_processing: false,
+        }
+    }
+    
+    /// Process a full block of samples through transcoding
+    fn process_block(&mut self) -> Result<(), TranscodingError> {
+        if self.current_frame == 0 {
+            return Ok(()); // No samples to process
+        }
+        
+        // For now, just copy samples through without transcoding
+        // This is a placeholder - in a real implementation, this would do the actual transcoding
+        let frames_to_process = self.current_frame;
+        let mut output_samples = Vec::new();
+        
+        for frame in 0..frames_to_process {
+            for channel in 0..self.channels as usize {
+                output_samples.push(self.input_buffer[channel][frame]);
+            }
+        }
+        
+        self.output_buffer = output_samples;
+        self.output_length = self.output_buffer.len();
+        self.output_position = 0;
+        self.current_frame = 0;
+        self.needs_processing = false;
+        
+        Ok(())
+    }
+}
+
+impl SampleSource for TranscodingBatcher {
+    fn next_sample(&mut self) -> Result<Option<f32>, TranscodingError> {
+        // If we have processed samples available, return them
+        if self.output_position < self.output_length {
+            let sample = self.output_buffer[self.output_position];
+            self.output_position += 1;
+            return Ok(Some(sample));
+        }
+        
+        // If we need to process a new block
+        if self.needs_processing {
+            // println!("TranscodingBatcher: Processing block, current_frame={}, block_size={}", self.current_frame, self.block_size);
+            self.process_block()?;
+            if self.output_position < self.output_length {
+                let sample = self.output_buffer[self.output_position];
+                self.output_position += 1;
+                return Ok(Some(sample));
+            }
+        }
+        
+        // Collect samples until we have a full block
+        while self.current_frame < self.block_size && !self.is_finished {
+            match self.source.next_sample()? {
+                Some(sample) => {
+                    let channel = self.current_frame % self.channels as usize;
+                    let frame = self.current_frame / self.channels as usize;
+                    
+                    if frame < self.block_size {
+                        self.input_buffer[channel][frame] = sample;
+                        self.current_frame += 1;
+                    }
+                }
+                None => {
+                    self.is_finished = true;
+                    break;
+                }
+            }
+        }
+        
+        // If we have a full block or we're finished, process it
+        if self.current_frame >= self.block_size || self.is_finished {
+            // println!("TranscodingBatcher: Triggering block processing, current_frame={}, block_size={}, is_finished={}", self.current_frame, self.block_size, self.is_finished);
+            self.needs_processing = true;
+            self.process_block()?;
+            
+            if self.output_position < self.output_length {
+                let sample = self.output_buffer[self.output_position];
+                self.output_position += 1;
+                return Ok(Some(sample));
+            }
+        }
+        
+        // No more samples
+        Ok(None)
     }
 }
 
