@@ -26,7 +26,7 @@ use midly::live::LiveEvent;
 use midly::{Format, Smf};
 use nodi::timers::Ticker;
 use nodi::Sheet;
-use ringbuf::{HeapRb, traits::{Consumer, Observer, Producer, Split}};
+use ringbuf::{HeapRb, traits::{Consumer, Producer, Split}};
 use ringbuf_blocking::{BlockingHeapRb, WaitError};
 use tracing::{debug, error, info, warn};
 
@@ -763,12 +763,10 @@ where
         finished: Arc<AtomicBool>,
     ) -> JoinHandle<()> {
         thread::spawn(move || {
-            // The number of frames to read at a time from the source. We'll make it one quarter of the total capacity.
-            let num_frames = Into::<usize>::into(prod.capacity()) / num_channels / 2;
             let num_sources = sample_sources_and_mappings.len();
             let mut channels: Vec<u16> = Vec::with_capacity(num_sources);
             let mut file_mappings: Vec<HashMap<u16, Vec<usize>>> = Vec::with_capacity(num_sources);
-            let mut frames = vec![S::default(); num_channels * num_frames];
+            let mut frame = vec![S::default(); num_channels];
 
             for sample_source_and_mapping in sample_sources_and_mappings.iter() {
                 channels.push(sample_source_and_mapping.num_channels);
@@ -780,79 +778,55 @@ where
             }
 
             loop {
-                // Only wait if buffer is nearly full (90% capacity) to avoid blocking
-                while prod.occupied_len() > (Into::<usize>::into(prod.capacity()) * 9) / 10 {
-                    thread::sleep(Duration::from_millis(50)) // Shorter sleep for more responsiveness
+                // If finished gets set, we'll return immediately.
+                if finished.load(Ordering::Relaxed) {
+                    return;
                 }
 
-                // Load the entire buffer until it's full.
-                let num_frames_to_take = prod.vacant_len() / num_channels;
-                for i in 0..num_frames_to_take {
-                    // If finished gets set, we'll return immediately.
-                    if finished.load(Ordering::Relaxed) {
-                        return;
-                    }
+                let mut all_files_finished = true;
 
-                    let mut all_files_finished = true;
-                    let current_frame = i % num_frames;
+                // Read one sample from each source for this frame
+                frame.iter_mut().for_each(|sample| *sample = S::default());
+                for j in 0..num_sources {
+                    let file_channel_to_output_channels = &file_mappings[j];
+                    let sample_source = &mut sample_sources_and_mappings[j].sample_source;
 
-                    // Read one sample from each source for this frame
-                    for j in 0..num_sources {
-                        let file_channel_to_output_channels = &file_mappings[j];
-                        let sample_source = &mut sample_sources_and_mappings[j].sample_source;
+                    // Read one sample from each channel of this source
+                    for file_channel in 0..channels[j] {
+                        let result = sample_source.next_sample();
+                        match result {
+                            Ok(Some(sample)) => {
+                                all_files_finished = false;
 
-                        // Read one sample from each channel of this source
-                        for file_channel in 0..channels[j] {
-                            let result = sample_source.next_sample();
-                            match result {
-                                Ok(Some(sample)) => {
-                                    all_files_finished = false;
-
-                                    if let Some(targets) =
-                                        file_channel_to_output_channels.get(&file_channel)
-                                    {
-                                        for target in targets {
-                                            // Convert f32 sample to the target sample type
-                                            let converted_sample = S::from_f32(sample);
-                                            frames[*target + current_frame * num_channels] +=
-                                                converted_sample;
-                                        }
+                                if let Some(targets) =
+                                    file_channel_to_output_channels.get(&file_channel)
+                                {
+                                    for target in targets {
+                                        // Convert f32 sample to the target sample type
+                                        let converted_sample = S::from_f32(sample);
+                                        frame[*target] += converted_sample;
                                     }
                                 }
-                                Ok(None) => {
-                                    // Sample source is finished
-                                }
-                                Err(e) => {
-                                    error!(
-                                        err = e.to_string(),
-                                        "Error reading sample from SampleSource"
-                                    );
-                                }
+                            }
+                            Ok(None) => {
+                                // Sample source is finished
+                            }
+                            Err(e) => {
+                                error!(
+                                    err = e.to_string(),
+                                    "Error reading sample from SampleSource"
+                                );
                             }
                         }
                     }
+                }
 
-                    // Push the entirety of the frame to the buffer if we've read all the frames in this
-                    // batch or if we're at the end of the loop.
-                    if i == num_frames_to_take - 1
-                        || current_frame == num_frames - 1
-                        || all_files_finished
-                    {
-                        let _ = prod.push_slice(&frames[0..current_frame * num_channels]);
 
-                        // Reset the frames to default.
-                        frames
-                            .iter_mut()
-                            .take(current_frame * num_channels)
-                            .for_each(|sample| *sample = S::default());
-                    }
-
-                    if all_files_finished {
-                        // Drop the producer to signal to the consumer that the song is finished.
-                        drop(prod);
-                        finished.store(true, Ordering::Relaxed);
-                        return;
-                    }
+                if all_files_finished {
+                    finished.store(true, Ordering::Relaxed);
+                    return;
+                } else {
+                    prod.push_slice(&frame);
                 }
             }
         })
@@ -2474,6 +2448,80 @@ mod test {
             println!("❌ Buffer reached full capacity - original issue not reproduced");
         }
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_songsource_delay() -> Result<(), Box<dyn Error>> {
+        use crate::testutil::write_wav_with_bits;
+        use tempfile::tempdir;
+        use std::collections::HashMap;
+
+        let tempdir = tempdir().unwrap();
+        
+        // Create a simple test file
+        let sample_rate = 44100;
+        let duration_samples = 1000;
+        let frequency = 440.0;
+        let amplitude = 0.5;
+        
+        let sine_wave: Vec<f32> = (0..duration_samples)
+            .map(|i| ((i as f32 * frequency * 2.0 * std::f32::consts::PI / sample_rate as f32).sin() * amplitude))
+            .collect();
+        
+        let wav_path = tempdir.path().join("test_delay.wav");
+        let samples: Vec<i32> = sine_wave.iter()
+            .map(|&x| (x * 8388607.0) as i32)
+            .collect();
+        write_wav_with_bits(wav_path.clone(), vec![samples], sample_rate, 24).unwrap();
+        
+        // Create song configuration
+        let config_song = crate::config::Song::new(
+            "Test Song",
+            None, None, None, None,
+            vec![crate::config::Track::new(
+                "Test Track".to_string(),
+                wav_path.to_str().unwrap(),
+                Some(1),
+            )],
+        );
+        
+        let song = super::Song::new(&tempdir.path(), &config_song)?;
+        
+        // Create track mapping
+        let mut track_mapping = HashMap::new();
+        track_mapping.insert("Test Track".to_string(), vec![1]);
+        
+        // Create target format
+        let target_format = crate::audio::TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
+        
+        // Measure delay
+        let start = std::time::Instant::now();
+        let mut song_source: SongSource<f32> = song.source(&track_mapping, target_format)?;
+        let creation_time = start.elapsed();
+        
+        println!("SongSource creation time: {:?}", creation_time);
+        
+        // Measure time to first sample
+        let start = std::time::Instant::now();
+        let first_sample = song_source.next();
+        let first_sample_time = start.elapsed();
+        
+        println!("Time to first sample: {:?}", first_sample_time);
+        println!("First sample: {:?}", first_sample);
+        
+        // Measure time to read a few samples
+        let start = std::time::Instant::now();
+        let mut samples_read = 0;
+        for _ in 0..100 {
+            if let Some(_) = song_source.next() {
+                samples_read += 1;
+            }
+        }
+        let samples_time = start.elapsed();
+        
+        println!("Time to read {} samples: {:?}", samples_read, samples_time);
+        
         Ok(())
     }
 }
