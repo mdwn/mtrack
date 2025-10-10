@@ -996,10 +996,14 @@ where
                     } else {
                         // Push the frame to our custom buffer
                         if let Err(_) = buffer.push_slice(&frames) {
-                            // Buffer is full, skip this frame
+                            // Buffer is full, wait a bit before trying again
+                            thread::sleep(Duration::from_millis(1));
                             continue;
                         }
                     }
+                    
+                    // Small sleep to prevent tight loop
+                    thread::sleep(Duration::from_micros(100));
             }
         })
     }
