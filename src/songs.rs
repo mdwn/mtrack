@@ -697,7 +697,7 @@ where
             .max()
             .ok_or("no max channel found")?;
 
-        let buf = BlockingHeapRb::from(HeapRb::new(usize::from(num_channels) * usize::try_from(song.sample_rate)? * 30));
+        let buf = BlockingHeapRb::from(HeapRb::new(usize::from(num_channels) * usize::try_from(song.sample_rate)? * 10));
         let (prod, cons) = buf.split();
         let mut sample_sources_and_mappings = Vec::<SampleSourceAndMapping>::new();
 
