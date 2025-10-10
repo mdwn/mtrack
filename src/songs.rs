@@ -833,13 +833,7 @@ where
                         || current_frame == num_frames - 1
                         || all_files_finished
                     {
-                        match prod.wait_vacant(current_frame * num_channels) {
-                            Ok(_) => (),
-                            Err(_) => {
-                                error!("Error waiting for buffer vacant");
-                                return;
-                            }
-                        };
+                        prod.wait_vacant(current_frame * num_channels).map_err(|_e| "Error waiting for buffer vacant")?;
                         let _ = prod.push_slice(&frames[0..current_frame * num_channels]);
 
                         // Reset the frames to default.
