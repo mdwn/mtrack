@@ -87,14 +87,11 @@ where
             return self.source.next_sample();
         }
 
-
-
         if self.resampling_state.is_finished {
             let ratio = self.target_rate as f32 / self.source_rate as f32;
             let expected_output_frames =
                 (self.resampling_state.total_input_frames as f32 * ratio) as usize;
             let expected_output_samples = expected_output_frames * self.channels as usize;
-
 
             if self.output_tracker.samples_read >= expected_output_samples {
                 return Ok(None);
@@ -109,7 +106,6 @@ where
                     let channel = self.buffer_manager.current_position % self.channels as usize;
                     output_buffer[channel][self.buffer_manager.current_frame]
                 };
-
 
                 // Move to next sample
                 self.buffer_manager.current_position =
@@ -131,8 +127,9 @@ where
                 }
 
                 // Only increment after successfully returning a sample
-                self.output_tracker.samples_read = self.output_tracker.samples_read.saturating_add(1);
-                
+                self.output_tracker.samples_read =
+                    self.output_tracker.samples_read.saturating_add(1);
+
                 return Ok(Some(sample));
             }
         }
@@ -217,7 +214,6 @@ where
 
     /// Collects samples from the source iterator and processes them
     fn collect_and_process_input(&mut self) -> Result<Option<f32>, TranscodingError> {
-
         // Collect samples from the source into input_buffer
         let mut input_buffer = self.buffer_manager.input_buffer.lock().unwrap();
         let mut samples_collected = 0;
@@ -228,11 +224,9 @@ where
         let expected_input_frames = resampler.input_frames_next();
         let expected_input_samples = expected_input_frames * self.channels as usize;
         drop(resampler);
-        
 
         // Collect samples until we have enough for one resampler chunk
         while samples_collected < expected_input_samples {
-            
             match self.source.next_sample() {
                 Ok(Some(sample)) => {
                     count_actual_samples += 1;
@@ -473,17 +467,16 @@ impl SampleSource for WavSampleSource {
             return Ok(None);
         }
 
-
         match self.wav_reader.samples::<i32>().next() {
             Some(Ok(sample)) => {
                 // Convert i32 to f32 with proper scaling
                 let bits_per_sample = self.wav_reader.spec().bits_per_sample;
-                
+
                 // Convert samples to the correct position for f32 conversion
-                let shifted = sample >> (32 - bits_per_sample);
-                
+                let shifted = sample << (32 - bits_per_sample);
+
                 let result = shifted.to_sample::<f32>();
-                
+
                 Ok(Some(result))
             }
             Some(Err(e)) => Err(TranscodingError::WavError(e)),
@@ -501,12 +494,23 @@ impl WavSampleSource {
         let file = std::fs::File::open(&path)?;
         let wav_reader = WavReader::new(file)?;
         let _spec = wav_reader.spec();
-        
-        
+
         Ok(Self {
             wav_reader,
             is_finished: false,
         })
+    }
+
+    /// Returns the number of channels in the WAV file
+    #[cfg(test)]
+    pub fn channels(&self) -> u16 {
+        self.wav_reader.spec().channels
+    }
+
+    /// Returns the sample rate of the WAV file
+    #[cfg(test)]
+    pub fn sample_rate(&self) -> u32 {
+        self.wav_reader.spec().sample_rate
     }
 }
 
@@ -713,7 +717,6 @@ mod tests {
             }
         }
     }
-
 
     #[test]
     fn test_no_resampling_needed() {
@@ -1731,5 +1734,676 @@ mod tests {
             input_energy,
             output_energy
         );
+    }
+
+    #[test]
+    fn test_wav_sample_source_16bit() {
+        use crate::testutil::write_wav_with_bits;
+        use tempfile::tempdir;
+
+        let tempdir = tempdir().unwrap();
+        let wav_path = tempdir.path().join("test_16bit.wav");
+
+        // Create a 16-bit WAV file with known samples
+        let samples: Vec<i16> = vec![1000, -2000, 3000, -4000, 5000];
+        write_wav_with_bits(wav_path.clone(), vec![samples], 44100, 16).unwrap();
+
+        // Test reading the WAV file
+        let mut wav_source = WavSampleSource::from_file(&wav_path).unwrap();
+
+        let mut read_samples = Vec::new();
+        loop {
+            match wav_source.next_sample() {
+                Ok(Some(sample)) => read_samples.push(sample),
+                Ok(None) => break,
+                Err(e) => panic!("Error reading sample: {}", e),
+            }
+        }
+
+        // Verify we got the expected number of samples
+        assert_eq!(read_samples.len(), 5);
+
+        // Verify the samples are scaled correctly (16-bit to f32)
+        // 16-bit samples should be scaled to [-1.0, 1.0] range
+        let expected_samples = vec![
+            1000.0 / (1 << 15) as f32,  // 1000 / 32768
+            -2000.0 / (1 << 15) as f32, // -2000 / 32768
+            3000.0 / (1 << 15) as f32,  // 3000 / 32768
+            -4000.0 / (1 << 15) as f32, // -4000 / 32768
+            5000.0 / (1 << 15) as f32,  // 5000 / 32768
+        ];
+
+        for (i, (actual, expected)) in read_samples.iter().zip(expected_samples.iter()).enumerate()
+        {
+            assert!(
+                (actual - expected).abs() < 0.0001,
+                "Sample {} mismatch: expected {}, got {}",
+                i,
+                expected,
+                actual
+            );
+        }
+    }
+
+    #[test]
+    fn test_wav_sample_source_24bit() {
+        use crate::testutil::write_wav_with_bits;
+        use tempfile::tempdir;
+
+        let tempdir = tempdir().unwrap();
+        let wav_path = tempdir.path().join("test_24bit.wav");
+
+        // Create a 24-bit WAV file with known samples
+        let samples: Vec<i32> = vec![100000, -200000, 300000, -400000, 500000];
+        write_wav_with_bits(wav_path.clone(), vec![samples], 44100, 24).unwrap();
+
+        // Test reading the WAV file
+        let mut wav_source = WavSampleSource::from_file(&wav_path).unwrap();
+
+        let mut read_samples = Vec::new();
+        loop {
+            match wav_source.next_sample() {
+                Ok(Some(sample)) => read_samples.push(sample),
+                Ok(None) => break,
+                Err(e) => panic!("Error reading sample: {}", e),
+            }
+        }
+
+        // Verify we got the expected number of samples
+        assert_eq!(read_samples.len(), 5);
+
+        // Verify the samples are scaled correctly (24-bit to f32)
+        // 24-bit samples should be scaled to [-1.0, 1.0] range
+        let expected_samples = vec![
+            100000.0 / (1 << 23) as f32,  // 100000 / 8388608
+            -200000.0 / (1 << 23) as f32, // -200000 / 8388608
+            300000.0 / (1 << 23) as f32,  // 300000 / 8388608
+            -400000.0 / (1 << 23) as f32, // -400000 / 8388608
+            500000.0 / (1 << 23) as f32,  // 500000 / 8388608
+        ];
+
+        for (i, (actual, expected)) in read_samples.iter().zip(expected_samples.iter()).enumerate()
+        {
+            assert!(
+                (actual - expected).abs() < 0.0001,
+                "Sample {} mismatch: expected {}, got {}",
+                i,
+                expected,
+                actual
+            );
+        }
+    }
+
+    #[test]
+    fn test_wav_sample_source_32bit() {
+        use crate::testutil::write_wav;
+        use tempfile::tempdir;
+
+        let tempdir = tempdir().unwrap();
+        let wav_path = tempdir.path().join("test_32bit.wav");
+
+        // Create a 32-bit WAV file with known samples
+        let samples: Vec<i32> = vec![1000000, -2000000, 3000000, -4000000, 5000000];
+        write_wav(wav_path.clone(), vec![samples], 44100).unwrap();
+
+        // Test reading the WAV file
+        let mut wav_source = WavSampleSource::from_file(&wav_path).unwrap();
+
+        let mut read_samples = Vec::new();
+        loop {
+            match wav_source.next_sample() {
+                Ok(Some(sample)) => read_samples.push(sample),
+                Ok(None) => break,
+                Err(e) => panic!("Error reading sample: {}", e),
+            }
+        }
+
+        // Verify we got the expected number of samples
+        assert_eq!(read_samples.len(), 5);
+
+        // Verify the samples are scaled correctly (32-bit to f32)
+        // 32-bit samples should be scaled to [-1.0, 1.0] range
+        let expected_samples = vec![
+            0.0004656613,  // 1000000 / 2147483648
+            -0.0009313226, // -2000000 / 2147483648
+            0.0013969839,  // 3000000 / 2147483648
+            -0.0018626451, // -4000000 / 2147483648
+            0.0023283064,  // 5000000 / 2147483648
+        ];
+
+        for (i, (actual, expected)) in read_samples.iter().zip(expected_samples.iter()).enumerate()
+        {
+            assert!(
+                (actual - expected).abs() < 0.0001,
+                "Sample {} mismatch: expected {}, got {}",
+                i,
+                expected,
+                actual
+            );
+        }
+    }
+
+    #[test]
+    fn test_wav_sample_source_stereo() {
+        use crate::testutil::write_wav;
+        use tempfile::tempdir;
+
+        let tempdir = tempdir().unwrap();
+        let wav_path = tempdir.path().join("test_stereo.wav");
+
+        // Create a stereo WAV file
+        let left_samples: Vec<i32> = vec![1000, 2000, 3000];
+        let right_samples: Vec<i32> = vec![-1000, -2000, -3000];
+        write_wav(wav_path.clone(), vec![left_samples, right_samples], 44100).unwrap();
+
+        // Test reading the WAV file
+        let mut wav_source = WavSampleSource::from_file(&wav_path).unwrap();
+
+        let mut read_samples = Vec::new();
+        loop {
+            match wav_source.next_sample() {
+                Ok(Some(sample)) => read_samples.push(sample),
+                Ok(None) => break,
+                Err(e) => panic!("Error reading sample: {}", e),
+            }
+        }
+
+        // Verify we got the expected number of samples (interleaved stereo)
+        assert_eq!(read_samples.len(), 6);
+
+        // Verify the samples are interleaved correctly (L, R, L, R, L, R)
+        let expected_samples = vec![
+            1000.0 / (1 << 31) as f32,  // Left channel, sample 1
+            -1000.0 / (1 << 31) as f32, // Right channel, sample 1
+            2000.0 / (1 << 31) as f32,  // Left channel, sample 2
+            -2000.0 / (1 << 31) as f32, // Right channel, sample 2
+            3000.0 / (1 << 31) as f32,  // Left channel, sample 3
+            -3000.0 / (1 << 31) as f32, // Right channel, sample 3
+        ];
+
+        for (i, (actual, expected)) in read_samples.iter().zip(expected_samples.iter()).enumerate()
+        {
+            assert!(
+                (actual - expected).abs() < 0.0001,
+                "Sample {} mismatch: expected {}, got {}",
+                i,
+                expected,
+                actual
+            );
+        }
+    }
+
+    #[test]
+    fn test_wav_sample_source_empty_file() {
+        use crate::testutil::write_wav;
+        use tempfile::tempdir;
+
+        let tempdir = tempdir().unwrap();
+        let wav_path = tempdir.path().join("test_empty.wav");
+
+        // Create an empty WAV file
+        write_wav(wav_path.clone(), vec![Vec::<i32>::new()], 44100).unwrap();
+
+        // Test reading the empty WAV file
+        let mut wav_source = WavSampleSource::from_file(&wav_path).unwrap();
+
+        // Should return None immediately
+        match wav_source.next_sample() {
+            Ok(None) => {} // Expected
+            Ok(Some(sample)) => panic!("Expected None for empty file, got: {}", sample),
+            Err(e) => panic!("Error reading empty file: {}", e),
+        }
+
+        // Verify is_finished is true
+        assert!(wav_source.is_finished());
+    }
+
+    #[test]
+    fn test_wav_sample_source_nonexistent_file() {
+        let wav_path = std::path::Path::new("nonexistent_file.wav");
+
+        // Should return an error for nonexistent file
+        match WavSampleSource::from_file(wav_path) {
+            Ok(_) => panic!("Expected error for nonexistent file"),
+            Err(_) => {} // Expected
+        }
+    }
+
+    #[test]
+    fn test_wav_sample_source_is_finished() {
+        use crate::testutil::write_wav;
+        use tempfile::tempdir;
+
+        let tempdir = tempdir().unwrap();
+        let wav_path = tempdir.path().join("test_finished.wav");
+
+        // Create a WAV file with a few samples
+        let samples: Vec<i32> = vec![1000, 2000, 3000];
+        write_wav(wav_path.clone(), vec![samples], 44100).unwrap();
+
+        let mut wav_source = WavSampleSource::from_file(&wav_path).unwrap();
+
+        // Initially not finished
+        assert!(!wav_source.is_finished());
+
+        // Read all samples
+        let mut sample_count = 0;
+        loop {
+            match wav_source.next_sample() {
+                Ok(Some(_)) => {
+                    sample_count += 1;
+                    assert!(!wav_source.is_finished()); // Still not finished
+                }
+                Ok(None) => {
+                    assert!(wav_source.is_finished()); // Now finished
+                    break;
+                }
+                Err(e) => panic!("Error reading sample: {}", e),
+            }
+        }
+
+        // Verify we read the expected number of samples
+        assert_eq!(sample_count, 3);
+
+        // Verify is_finished is true after reading all samples
+        assert!(wav_source.is_finished());
+    }
+
+    #[test]
+    fn test_wav_sample_source_amplitude_consistency() {
+        use crate::testutil::write_wav_with_bits;
+        use tempfile::tempdir;
+
+        let tempdir = tempdir().unwrap();
+
+        // Generate the same audio content (sine wave with amplitude 0.5)
+        let sample_rate = 44100;
+        let duration_samples = 1000;
+        let frequency = 440.0; // 440Hz sine wave
+
+        let sine_wave: Vec<f32> = (0..duration_samples)
+            .map(|i| {
+                (i as f32 * frequency * 2.0 * std::f32::consts::PI / sample_rate as f32).sin() * 0.5
+            })
+            .collect();
+
+        // Test 16-bit WAV
+        let wav_16_path = tempdir.path().join("test_16bit_amplitude.wav");
+        let samples_16: Vec<i16> = sine_wave.iter().map(|&x| (x * 32767.0) as i16).collect();
+        write_wav_with_bits(wav_16_path.clone(), vec![samples_16], sample_rate, 16).unwrap();
+
+        // Test 24-bit WAV
+        let wav_24_path = tempdir.path().join("test_24bit_amplitude.wav");
+        let samples_24: Vec<i32> = sine_wave
+            .iter()
+            .map(|&x| (x * 8388607.0) as i32) // 24-bit range
+            .collect();
+        write_wav_with_bits(wav_24_path.clone(), vec![samples_24], sample_rate, 24).unwrap();
+
+        // Test 32-bit WAV
+        let wav_32_path = tempdir.path().join("test_32bit_amplitude.wav");
+        let samples_32: Vec<i32> = sine_wave
+            .iter()
+            .map(|&x| (x * 2147483647.0) as i32) // 32-bit range
+            .collect();
+        write_wav_with_bits(wav_32_path.clone(), vec![samples_32], sample_rate, 32).unwrap();
+
+        // Read samples from each WAV file
+        let mut wav_16_source = WavSampleSource::from_file(&wav_16_path).unwrap();
+        let mut wav_24_source = WavSampleSource::from_file(&wav_24_path).unwrap();
+        let mut wav_32_source = WavSampleSource::from_file(&wav_32_path).unwrap();
+
+        let mut samples_16_read = Vec::new();
+        let mut samples_24_read = Vec::new();
+        let mut samples_32_read = Vec::new();
+
+        for _ in 0..duration_samples {
+            if let Ok(Some(sample)) = wav_16_source.next_sample() {
+                samples_16_read.push(sample);
+            }
+            if let Ok(Some(sample)) = wav_24_source.next_sample() {
+                samples_24_read.push(sample);
+            }
+            if let Ok(Some(sample)) = wav_32_source.next_sample() {
+                samples_32_read.push(sample);
+            }
+        }
+
+        // Calculate RMS for each
+        let rms_16: f32 = (samples_16_read.iter().map(|&x| x * x).sum::<f32>()
+            / samples_16_read.len() as f32)
+            .sqrt();
+        let rms_24: f32 = (samples_24_read.iter().map(|&x| x * x).sum::<f32>()
+            / samples_24_read.len() as f32)
+            .sqrt();
+        let rms_32: f32 = (samples_32_read.iter().map(|&x| x * x).sum::<f32>()
+            / samples_32_read.len() as f32)
+            .sqrt();
+
+        // The RMS should be similar across all bit depths (within 5% tolerance)
+        let expected_rms = 0.5 / (2.0_f32.sqrt()); // RMS of sine wave with amplitude 0.5
+
+        println!(
+            "16-bit RMS: {:.6}, 24-bit RMS: {:.6}, 32-bit RMS: {:.6}, Expected: {:.6}",
+            rms_16, rms_24, rms_32, expected_rms
+        );
+
+        // All should be close to the expected RMS
+        assert!(
+            (rms_16 - expected_rms).abs() / expected_rms < 0.05,
+            "16-bit RMS too different: got {:.6}, expected {:.6}",
+            rms_16,
+            expected_rms
+        );
+        assert!(
+            (rms_24 - expected_rms).abs() / expected_rms < 0.05,
+            "24-bit RMS too different: got {:.6}, expected {:.6}",
+            rms_24,
+            expected_rms
+        );
+        assert!(
+            (rms_32 - expected_rms).abs() / expected_rms < 0.05,
+            "32-bit RMS too different: got {:.6}, expected {:.6}",
+            rms_32,
+            expected_rms
+        );
+
+        // All bit depths should have similar RMS (within 10% of each other)
+        assert!(
+            (rms_16 - rms_24).abs() / rms_16 < 0.1,
+            "16-bit and 24-bit RMS too different: {:.6} vs {:.6}",
+            rms_16,
+            rms_24
+        );
+        assert!(
+            (rms_16 - rms_32).abs() / rms_16 < 0.1,
+            "16-bit and 32-bit RMS too different: {:.6} vs {:.6}",
+            rms_16,
+            rms_32
+        );
+        assert!(
+            (rms_24 - rms_32).abs() / rms_24 < 0.1,
+            "24-bit and 32-bit RMS too different: {:.6} vs {:.6}",
+            rms_24,
+            rms_32
+        );
+    }
+
+    #[test]
+    fn test_wav_sample_source_to_audiotranscoder_amplitude() {
+        use crate::testutil::write_wav_with_bits;
+        use tempfile::tempdir;
+
+        let tempdir = tempdir().unwrap();
+
+        // Generate a sine wave with known amplitude
+        let sample_rate = 44100;
+        let duration_samples = 1000;
+        let frequency = 440.0; // 440Hz sine wave
+        let amplitude = 0.5; // 50% amplitude
+
+        let sine_wave: Vec<f32> = (0..duration_samples)
+            .map(|i| {
+                (i as f32 * frequency * 2.0 * std::f32::consts::PI / sample_rate as f32).sin()
+                    * amplitude
+            })
+            .collect();
+
+        // Create a 24-bit WAV file (common format that needs transcoding)
+        let wav_path = tempdir.path().join("test_transcoding_amplitude.wav");
+        let samples: Vec<i32> = sine_wave
+            .iter()
+            .map(|&x| (x * 8388607.0) as i32) // 24-bit range
+            .collect();
+        write_wav_with_bits(wav_path.clone(), vec![samples], sample_rate, 24).unwrap();
+
+        // Test direct WavSampleSource (no transcoding)
+        let mut wav_source = WavSampleSource::from_file(&wav_path).unwrap();
+        let mut wav_samples = Vec::new();
+        for _ in 0..duration_samples {
+            if let Ok(Some(sample)) = wav_source.next_sample() {
+                wav_samples.push(sample);
+            }
+        }
+        let wav_rms: f32 =
+            (wav_samples.iter().map(|&x| x * x).sum::<f32>() / wav_samples.len() as f32).sqrt();
+
+        // Test WavSampleSource -> AudioTranscoder pipeline
+        let target_format =
+            crate::audio::TargetFormat::new(48000, crate::audio::SampleFormat::Float, 32).unwrap();
+        let mut transcoded_source = create_wav_sample_source(&wav_path, target_format).unwrap();
+
+        let mut transcoded_samples = Vec::new();
+        for _ in 0..duration_samples {
+            if let Ok(Some(sample)) = transcoded_source.next_sample() {
+                transcoded_samples.push(sample);
+            }
+        }
+        let transcoded_rms: f32 = (transcoded_samples.iter().map(|&x| x * x).sum::<f32>()
+            / transcoded_samples.len() as f32)
+            .sqrt();
+
+        // Expected RMS for sine wave with amplitude 0.5
+        let expected_rms = amplitude / (2.0_f32.sqrt()); // 0.5 / √2 ≈ 0.353553
+
+        println!("Direct WavSampleSource RMS: {:.6}", wav_rms);
+        println!(
+            "WavSampleSource -> AudioTranscoder RMS: {:.6}",
+            transcoded_rms
+        );
+        println!("Expected RMS: {:.6}", expected_rms);
+
+        // Direct WavSampleSource should have correct amplitude
+        assert!(
+            (wav_rms - expected_rms).abs() / expected_rms < 0.05,
+            "Direct WavSampleSource RMS too different: got {:.6}, expected {:.6}",
+            wav_rms,
+            expected_rms
+        );
+
+        // Transcoding should not severely attenuate the signal
+        // Allow for some attenuation but not 99% loss
+        let amplitude_ratio = transcoded_rms / wav_rms;
+        assert!(
+            amplitude_ratio > 0.1,
+            "Transcoding severely attenuated signal: ratio {:.6} (expected > 0.1)",
+            amplitude_ratio
+        );
+
+        // The transcoded signal should still have reasonable amplitude
+        assert!(
+            transcoded_rms > 0.01,
+            "Transcoded signal too quiet: RMS {:.6} (expected > 0.01)",
+            transcoded_rms
+        );
+    }
+
+    #[test]
+    fn test_wav_sample_source_different_sample_rates() {
+        use crate::testutil::write_wav;
+        use tempfile::tempdir;
+
+        let tempdir = tempdir().unwrap();
+
+        // Test different sample rates
+        let sample_rates = vec![22050, 44100, 48000, 96000];
+
+        for sample_rate in sample_rates {
+            let wav_path = tempdir.path().join(format!("test_{}.wav", sample_rate));
+
+            // Create a WAV file with a sine wave
+            let duration = 0.01; // 10ms
+            let num_samples = (sample_rate as f32 * duration) as usize;
+            let samples: Vec<i32> = (0..num_samples)
+                .map(|i| {
+                    ((i as f32 * 1000.0 * 2.0 * std::f32::consts::PI / sample_rate as f32).sin()
+                        * (1 << 23) as f32) as i32
+                })
+                .collect();
+
+            write_wav(wav_path.clone(), vec![samples], sample_rate).unwrap();
+
+            // Test reading the WAV file
+            let mut wav_source = WavSampleSource::from_file(&wav_path).unwrap();
+
+            let mut read_samples = Vec::new();
+            loop {
+                match wav_source.next_sample() {
+                    Ok(Some(sample)) => read_samples.push(sample),
+                    Ok(None) => break,
+                    Err(e) => panic!("Error reading sample at {}Hz: {}", sample_rate, e),
+                }
+            }
+
+            // Verify we got the expected number of samples
+            assert_eq!(read_samples.len(), num_samples);
+
+            // Verify the samples have reasonable amplitude (not all zeros)
+            let rms: f32 = (read_samples.iter().map(|&x| x * x).sum::<f32>()
+                / read_samples.len() as f32)
+                .sqrt();
+            assert!(rms > 0.001, "RMS too low for {}Hz: {}", sample_rate, rms);
+        }
+    }
+
+    #[test]
+    fn test_wav_sample_source_4channel() {
+        use crate::testutil::write_wav_with_bits;
+        use tempfile::tempdir;
+
+        let tempdir = tempdir().unwrap();
+        let wav_path = tempdir.path().join("test_4channel.wav");
+
+        // Create a 4-channel WAV file with known samples
+        let channel_0: Vec<i32> = vec![1000, -2000, 3000];
+        let channel_1: Vec<i32> = vec![4000, -5000, 6000];
+        let channel_2: Vec<i32> = vec![7000, -8000, 9000];
+        let channel_3: Vec<i32> = vec![10000, -11000, 12000];
+
+        write_wav_with_bits(
+            wav_path.clone(),
+            vec![channel_0, channel_1, channel_2, channel_3],
+            44100,
+            32,
+        )
+        .unwrap();
+
+        // Test reading the WAV file
+        let mut wav_source = WavSampleSource::from_file(&wav_path).unwrap();
+
+        // Verify channel count
+        assert_eq!(wav_source.channels(), 4);
+
+        // Read samples and verify interleaving
+        let mut samples_read = Vec::new();
+        for _ in 0..12 {
+            // 3 samples per channel * 4 channels
+            if let Ok(Some(sample)) = wav_source.next_sample() {
+                samples_read.push(sample);
+            }
+        }
+
+        // Verify we got the expected number of samples
+        assert_eq!(samples_read.len(), 12);
+
+        // Verify interleaving: samples should be in order channel_0[0], channel_1[0], channel_2[0], channel_3[0], channel_0[1], etc.
+        let expected_samples = vec![
+            1000.0 / (1 << 31) as f32,   // channel_0[0]
+            4000.0 / (1 << 31) as f32,   // channel_1[0]
+            7000.0 / (1 << 31) as f32,   // channel_2[0]
+            10000.0 / (1 << 31) as f32,  // channel_3[0]
+            -2000.0 / (1 << 31) as f32,  // channel_0[1]
+            -5000.0 / (1 << 31) as f32,  // channel_1[1]
+            -8000.0 / (1 << 31) as f32,  // channel_2[1]
+            -11000.0 / (1 << 31) as f32, // channel_3[1]
+            3000.0 / (1 << 31) as f32,   // channel_0[2]
+            6000.0 / (1 << 31) as f32,   // channel_1[2]
+            9000.0 / (1 << 31) as f32,   // channel_2[2]
+            12000.0 / (1 << 31) as f32,  // channel_3[2]
+        ];
+
+        for (i, (actual, expected)) in samples_read.iter().zip(expected_samples.iter()).enumerate()
+        {
+            assert!(
+                (actual - expected).abs() < 0.0001,
+                "Sample {} mismatch: expected {}, got {}",
+                i,
+                expected,
+                actual
+            );
+        }
+    }
+
+    #[test]
+    fn test_wav_sample_source_6channel() {
+        use crate::testutil::write_wav_with_bits;
+        use tempfile::tempdir;
+
+        let tempdir = tempdir().unwrap();
+        let wav_path = tempdir.path().join("test_6channel.wav");
+
+        // Create a 6-channel WAV file (5.1 surround sound)
+        let channel_0: Vec<i32> = vec![1000, -2000]; // Front Left
+        let channel_1: Vec<i32> = vec![3000, -4000]; // Front Right
+        let channel_2: Vec<i32> = vec![5000, -6000]; // Center
+        let channel_3: Vec<i32> = vec![7000, -8000]; // LFE (Low Frequency Effects)
+        let channel_4: Vec<i32> = vec![9000, -10000]; // Rear Left
+        let channel_5: Vec<i32> = vec![11000, -12000]; // Rear Right
+
+        write_wav_with_bits(
+            wav_path.clone(),
+            vec![
+                channel_0, channel_1, channel_2, channel_3, channel_4, channel_5,
+            ],
+            48000,
+            24,
+        )
+        .unwrap();
+
+        // Test reading the WAV file
+        let mut wav_source = WavSampleSource::from_file(&wav_path).unwrap();
+
+        // Verify channel count and sample rate
+        assert_eq!(wav_source.channels(), 6);
+        assert_eq!(wav_source.sample_rate(), 48000);
+
+        // Read samples and verify interleaving
+        let mut samples_read = Vec::new();
+        for _ in 0..12 {
+            // 2 samples per channel * 6 channels
+            if let Ok(Some(sample)) = wav_source.next_sample() {
+                samples_read.push(sample);
+            }
+        }
+
+        // Verify we got the expected number of samples
+        assert_eq!(samples_read.len(), 12);
+
+        // Verify interleaving: samples should be in order channel_0[0], channel_1[0], ..., channel_5[0], channel_0[1], etc.
+        let expected_samples = vec![
+            1000.0 / (1 << 23) as f32,   // channel_0[0] - Front Left
+            -2000.0 / (1 << 23) as f32,  // channel_0[1] - Front Left
+            3000.0 / (1 << 23) as f32,   // channel_1[0] - Front Right
+            -4000.0 / (1 << 23) as f32,  // channel_1[1] - Front Right
+            5000.0 / (1 << 23) as f32,   // channel_2[0] - Center
+            -6000.0 / (1 << 23) as f32,  // channel_2[1] - Center
+            7000.0 / (1 << 23) as f32,   // channel_3[0] - LFE
+            -8000.0 / (1 << 23) as f32,  // channel_3[1] - LFE
+            9000.0 / (1 << 23) as f32,   // channel_4[0] - Rear Left
+            -10000.0 / (1 << 23) as f32, // channel_4[1] - Rear Left
+            11000.0 / (1 << 23) as f32,  // channel_5[0] - Rear Right
+            -12000.0 / (1 << 23) as f32, // channel_5[1] - Rear Right
+        ];
+
+        for (i, (actual, expected)) in samples_read.iter().zip(expected_samples.iter()).enumerate()
+        {
+            assert!(
+                (actual - expected).abs() < 0.0001,
+                "Sample {} mismatch: expected {}, got {}",
+                i,
+                expected,
+                actual
+            );
+        }
     }
 }

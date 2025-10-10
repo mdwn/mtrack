@@ -67,32 +67,6 @@ impl Default for TargetFormat {
     }
 }
 
-#[cfg(test)]
-impl TargetFormat {
-    /// Returns the bytes per sample for this format
-    pub fn bytes_per_sample(&self) -> usize {
-        self.bits_per_sample as usize / 8
-    }
-
-    /// Returns the bytes per second for this format (for a single channel)
-    pub fn bytes_per_second(&self) -> usize {
-        self.sample_rate as usize * self.bytes_per_sample()
-    }
-
-    /// Returns a human-readable description of this format
-    pub fn description(&self) -> String {
-        let format_str = match self.sample_format {
-            SampleFormat::Int => "Integer",
-            SampleFormat::Float => "Float",
-        };
-        format!(
-            "{}Hz, {}-bit {}",
-            self.sample_rate, self.bits_per_sample, format_str
-        )
-    }
-}
-
-/// An audio device that can play songs back.
 pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {
     /// Plays the given song through the audio interface.
     fn play(
