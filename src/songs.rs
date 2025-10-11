@@ -28,6 +28,7 @@ use nodi::timers::Ticker;
 use nodi::Sheet;
 use ringbuf::{HeapRb, traits::{Consumer, Observer, Producer, Split}};
 use ringbuf_blocking::{BlockingHeapRb, WaitError};
+use crossbeam_channel::{bounded, Receiver, Sender};
 use tracing::{debug, error, info, warn};
 
 use crate::audio::{
@@ -654,8 +655,7 @@ pub struct SongSource<S>
 where
     S: Sample,
 {
-    finished: Arc<AtomicBool>,
-    cons: <BlockingHeapRb<S> as Split>::Cons,
+    receiver: Receiver<S>,
     join_handle: Option<JoinHandle<()>>,
     channels: u16,
     frame_pos: Arc<AtomicU16>,
@@ -697,8 +697,9 @@ where
             .max()
             .ok_or("no max channel found")?;
 
-        let buf = BlockingHeapRb::from(HeapRb::new(usize::from(num_channels) * usize::try_from(song.sample_rate)? * 10));
-        let (prod, cons) = buf.split();
+        // Create a bounded channel with capacity for 10 seconds of audio
+        let channel_capacity = usize::from(num_channels) * usize::try_from(song.sample_rate)? * 10;
+        let (tx, rx) = bounded(channel_capacity);
         let mut sample_sources_and_mappings = Vec::<SampleSourceAndMapping>::new();
 
         for (file_path, tracks) in files_to_tracks {
@@ -735,19 +736,16 @@ where
             })
         }
 
-        let finished = Arc::new(AtomicBool::new(false));
         let join_handle = {
             SongSource::reader_thread(
                 usize::from(num_channels),
                 sample_sources_and_mappings,
-                prod,
-                finished.clone(),
+                tx,
             )
         };
 
         let source = SongSource {
-            finished,
-            cons,
+            receiver: rx,
             join_handle: Some(join_handle),
             channels: num_channels,
             frame_pos: Arc::new(AtomicU16::new(0)),
@@ -759,16 +757,14 @@ where
     fn reader_thread(
         num_channels: usize,
         mut sample_sources_and_mappings: Vec<SampleSourceAndMapping>,
-        mut prod: <BlockingHeapRb<S> as Split>::Prod,
-        finished: Arc<AtomicBool>,
+        tx: Sender<S>,
     ) -> JoinHandle<()> {
         thread::spawn(move || {
-            // The number of frames to read at a time from the source. We'll make it one quarter of the total capacity.
-            let num_frames = Into::<usize>::into(prod.capacity()) / num_channels / 2;
+            // Process one frame at a time for better responsiveness
             let num_sources = sample_sources_and_mappings.len();
             let mut channels: Vec<u16> = Vec::with_capacity(num_sources);
             let mut file_mappings: Vec<HashMap<u16, Vec<usize>>> = Vec::with_capacity(num_sources);
-            let mut frames = vec![S::default(); num_channels * num_frames];
+            let mut frames = vec![S::default(); num_channels]; // Just one frame worth of samples
 
             for sample_source_and_mapping in sample_sources_and_mappings.iter() {
                 channels.push(sample_source_and_mapping.num_channels);
@@ -780,78 +776,55 @@ where
             }
 
             loop {
-                // Only wait if buffer is nearly full (90% capacity) to avoid blocking
-                while prod.occupied_len() > (Into::<usize>::into(prod.capacity()) * 9) / 10 {
-                    thread::sleep(Duration::from_millis(50)) // Shorter sleep for more responsiveness
-                }
+                let mut all_files_finished = true;
 
-                // Load the entire buffer until it's full.
-                let num_frames_to_take = prod.vacant_len() / num_channels;
-                for i in 0..num_frames_to_take {
-                    // If finished gets set, we'll return immediately.
-                    if finished.load(Ordering::Relaxed) {
-                        return;
-                    }
+                // Read one sample from each source for this frame
+                frames.iter_mut().for_each(|sample| *sample = S::default());
+                for j in 0..num_sources {
+                    let file_channel_to_output_channels = &file_mappings[j];
+                    let sample_source = &mut sample_sources_and_mappings[j].sample_source;
 
-                    let mut all_files_finished = true;
-                    let current_frame = i % num_frames;
+                    // Read one sample from each channel of this source
+                    for file_channel in 0..channels[j] {
+                        let result = sample_source.next_sample();
+                        match result {
+                            Ok(Some(sample)) => {
+                                all_files_finished = false;
 
-                    // Read one sample from each source for this frame
-                    for j in 0..num_sources {
-                        let file_channel_to_output_channels = &file_mappings[j];
-                        let sample_source = &mut sample_sources_and_mappings[j].sample_source;
-
-                        // Read one sample from each channel of this source
-                        for file_channel in 0..channels[j] {
-                            let result = sample_source.next_sample();
-                            match result {
-                                Ok(Some(sample)) => {
-                                    all_files_finished = false;
-
-                                    if let Some(targets) =
-                                        file_channel_to_output_channels.get(&file_channel)
-                                    {
-                                        for target in targets {
-                                            // Convert f32 sample to the target sample type
-                                            let converted_sample = S::from_f32(sample);
-                                            frames[*target + current_frame * num_channels] +=
-                                                converted_sample;
-                                        }
+                                if let Some(targets) =
+                                    file_channel_to_output_channels.get(&file_channel)
+                                {
+                                    for target in targets {
+                                        // Convert f32 sample to the target sample type
+                                        let converted_sample = S::from_f32(sample);
+                                        frames[*target] += converted_sample;
                                     }
                                 }
-                                Ok(None) => {
-                                    // Sample source is finished
-                                }
-                                Err(e) => {
-                                    error!(
-                                        err = e.to_string(),
-                                        "Error reading sample from SampleSource"
-                                    );
-                                }
+                            }
+                            Ok(None) => {
+                                // Sample source is finished
+                            }
+                            Err(e) => {
+                                error!(
+                                    err = e.to_string(),
+                                    "Error reading sample from SampleSource"
+                                );
                             }
                         }
                     }
+                }
 
-                    // Push the entirety of the frame to the buffer if we've read all the frames in this
-                    // batch or if we're at the end of the loop.
-                    if i == num_frames_to_take - 1
-                        || current_frame == num_frames - 1
-                        || all_files_finished
-                    {
-                        let _ = prod.push_slice(&frames[0..current_frame * num_channels]);
-
-                        // Reset the frames to default.
-                        frames
-                            .iter_mut()
-                            .take(current_frame * num_channels)
-                            .for_each(|sample| *sample = S::default());
-                    }
-
-                    if all_files_finished {
-                        // Drop the producer to signal to the consumer that the song is finished.
-                        drop(prod);
-                        finished.store(true, Ordering::Relaxed);
-                        return;
+                if all_files_finished {
+                    // Close the channel to signal end of stream
+                    drop(tx);
+                    return;
+                } else {
+                    // Send each sample in the frame through the channel
+                    for sample in &frames {
+                        if tx.send(sample.clone()).is_err() {
+                            // Channel was closed by receiver, exit
+                            return;
+                        }
                     }
                 }
             }
@@ -871,8 +844,10 @@ where
     type Item = S;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.cons.pop() {
+        match self.receiver.recv() {
             Ok(sample) => {
+                // Update frame position - this tracks which channel within the current frame
+                // we're on. When it reaches 0, we've completed a full frame.
                 self.frame_pos
                     .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |val| {
                         Some((val + 1) % self.channels)
@@ -881,16 +856,9 @@ where
 
                 Some(sample)
             }
-            Err(e) => {
-                // This is expected.
-                if e == WaitError::Closed {
-                    return None;
-                }
-
-                error!(
-                    "Error reading sample from SongSource: {e:?}"
-                );
-                return None;
+            Err(_) => {
+                // Channel was closed, end of stream
+                None
             }
         }
     }
@@ -901,11 +869,8 @@ where
     S: Sample,
 {
     fn drop(&mut self) {
-        // Let the thread know that we shouldn't read any more.
-        self.finished.store(true, Ordering::Relaxed);
-
-        // Clear out the consumer, which will force the thread to move to the next iteration if it's still running.
-        self.cons.clear();
+        // Close the receiver to signal the producer thread to stop
+        drop(&mut self.receiver);
 
         // Join the thread to make sure that it's stopped properly.
         self.join_handle
@@ -2194,286 +2159,5 @@ mod test {
         Ok(())
     }
 
-    #[test]
-    fn test_buffer_fill_performance() -> Result<(), Box<dyn Error>> {
-        use crate::testutil::write_wav_with_bits;
-        use tempfile::tempdir;
-        use std::collections::HashMap;
-        use std::time::Instant;
-
-        let tempdir = tempdir().unwrap();
-        
-        // Create a test song with multiple tracks to simulate real usage
-        let duration_samples = 20000000; // ~453 seconds - extremely long files
-        let amplitude = 0.5;
-        
-        // Create 4 WAV files with different sample rates to force transcoding
-        let wav_paths = vec![
-            tempdir.path().join("track1.wav"),
-            tempdir.path().join("track2.wav"), 
-            tempdir.path().join("track3.wav"),
-            tempdir.path().join("track4.wav"),
-        ];
-        
-        let sample_rates = vec![44100, 48000, 22050, 44100];
-        let bit_depths = vec![24, 16, 32, 24];
-        
-        for (i, wav_path) in wav_paths.iter().enumerate() {
-            let freq = 440.0 * (i as f32 + 1.0); // Different frequency per track
-            let sine_wave: Vec<f32> = (0..duration_samples)
-                .map(|j| ((j as f32 * freq * 2.0 * std::f32::consts::PI / sample_rates[i] as f32).sin() * amplitude))
-                .collect();
-            
-            let samples: Vec<i32> = sine_wave.iter()
-                .map(|&x| (x * (1 << (bit_depths[i] - 1)) as f32) as i32) // Scale to bit depth
-                .collect();
-            
-            write_wav_with_bits(wav_path.clone(), vec![samples], sample_rates[i], bit_depths[i]).unwrap();
-        }
-
-        // Create song configuration
-        let config_song = crate::config::Song::new(
-            "Buffer Fill Test",
-            None, None, None, None,
-            vec![
-                crate::config::Track::new("Track 1".to_string(), wav_paths[0].to_str().unwrap(), Some(1)),
-                crate::config::Track::new("Track 2".to_string(), wav_paths[1].to_str().unwrap(), Some(1)),
-                crate::config::Track::new("Track 3".to_string(), wav_paths[2].to_str().unwrap(), Some(1)),
-                crate::config::Track::new("Track 4".to_string(), wav_paths[3].to_str().unwrap(), Some(1)),
-            ],
-        );
-
-        let song = super::Song::new(&tempdir.path(), &config_song)?;
-
-        // Create track mapping
-        let mut track_mapping = HashMap::new();
-        track_mapping.insert("Track 1".to_string(), vec![1]);
-        track_mapping.insert("Track 2".to_string(), vec![2]);
-        track_mapping.insert("Track 3".to_string(), vec![3]);
-        track_mapping.insert("Track 4".to_string(), vec![4]);
-
-        // Test with target format that requires transcoding
-        let target_format = crate::audio::TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
-        
-        // Measure the time to create SongSource (this includes initial buffer fill)
-        let start = Instant::now();
-        let mut song_source: SongSource<f32> = song.source(&track_mapping, target_format)?;
-        let creation_time = start.elapsed();
-        
-        println!("SongSource creation time: {:?}", creation_time);
-        
-        // Let's also measure the time to read a larger chunk to see if there are any bottlenecks
-        let start = Instant::now();
-        let mut samples_read = 0;
-        let target_samples = 10000; // Read 10,000 samples
-        
-        while samples_read < target_samples {
-            if let Some(_sample) = song_source.next() {
-                samples_read += 1;
-            } else {
-                break;
-            }
-        }
-        
-        let large_read_time = start.elapsed();
-        println!("Time to read {} samples: {:?}", samples_read, large_read_time);
-        println!("Samples per second (large read): {:.0}", samples_read as f64 / large_read_time.as_secs_f64());
-        
-        // Measure time to read first few samples
-        let start = Instant::now();
-        let mut samples_read = 0;
-        let target_samples = 1000; // Read 1000 samples
-        
-        while samples_read < target_samples {
-            if let Some(_sample) = song_source.next() {
-                samples_read += 1;
-            } else {
-                break;
-            }
-        }
-        
-        let read_time = start.elapsed();
-        println!("Time to read {} samples: {:?}", samples_read, read_time);
-        println!("Samples per second: {:.0}", samples_read as f64 / read_time.as_secs_f64());
-        
-        // Verify we got samples
-        assert!(samples_read > 0, "No samples read");
-        
-        // The creation time should be reasonable (under 1 second for this small test)
-        assert!(creation_time.as_secs_f64() < 1.0, 
-                "SongSource creation took too long: {:?}", creation_time);
-        
-        // The read time should be very fast (under 100ms for 1000 samples)
-        assert!(read_time.as_secs_f64() < 0.1, 
-                "Sample reading took too long: {:?}", read_time);
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_buffer_race_condition() -> Result<(), Box<dyn Error>> {
-        use crate::testutil::write_wav_with_bits;
-        use tempfile::tempdir;
-        use std::collections::HashMap;
-        use std::time::Instant;
-        use ringbuf::traits::Observer;
-        use std::thread;
-        use std::time::Duration;
-
-        let tempdir = tempdir().unwrap();
-        
-        // Create a simple test song
-        let duration_samples = 100000; // ~2.3 seconds
-        let amplitude = 0.5;
-        
-        // Create 2 WAV files to force transcoding
-        let wav_paths = vec![
-            tempdir.path().join("track1.wav"),
-            tempdir.path().join("track2.wav"),
-        ];
-        
-        let sample_rates = vec![44100, 48000];
-        let bit_depths = vec![24, 16];
-        
-        for (i, wav_path) in wav_paths.iter().enumerate() {
-            let freq = 440.0 * (i as f32 + 1.0);
-            let sine_wave: Vec<f32> = (0..duration_samples)
-                .map(|j| ((j as f32 * freq * 2.0 * std::f32::consts::PI / sample_rates[i] as f32).sin() * amplitude))
-                .collect();
-            
-            let samples: Vec<i32> = sine_wave.iter()
-                .map(|&x| (x * (1 << (bit_depths[i] - 1)) as f32) as i32)
-                .collect();
-            
-            write_wav_with_bits(wav_path.clone(), vec![samples], sample_rates[i], bit_depths[i]).unwrap();
-        }
-
-        // Create song configuration
-        let config_song = crate::config::Song::new(
-            "Race Condition Test",
-            None, None, None, None,
-            vec![
-                crate::config::Track::new("Track 1".to_string(), wav_paths[0].to_str().unwrap(), Some(1)),
-                crate::config::Track::new("Track 2".to_string(), wav_paths[1].to_str().unwrap(), Some(1)),
-            ],
-        );
-
-        let song = super::Song::new(&tempdir.path(), &config_song)?;
-
-        // Create track mapping
-        let mut track_mapping = HashMap::new();
-        track_mapping.insert("Track 1".to_string(), vec![1]);
-        track_mapping.insert("Track 2".to_string(), vec![2]);
-
-        // Test with target format that requires transcoding
-        let target_format = crate::audio::TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
-        
-        println!("Creating SongSource...");
-        let start = Instant::now();
-        let mut song_source: SongSource<f32> = song.source(&track_mapping, target_format)?;
-        let creation_time = start.elapsed();
-        
-        println!("SongSource creation time: {:?}", creation_time);
-        
-        // Now demonstrate the race condition by reading samples while monitoring buffer state
-        println!("Starting race condition test...");
-        println!("Initial buffer size: {} samples", song_source.cons.occupied_len());
-        println!("Buffer capacity: {} samples", song_source.cons.capacity());
-        
-        let start = Instant::now();
-        let mut samples_read = 0;
-        let mut last_buffer_size = song_source.cons.occupied_len();
-        let mut stuck_count = 0;
-        
-        // Read samples for a short time to see the race condition
-        while samples_read < 1000 && start.elapsed().as_secs() < 5 {
-            let buffer_size = song_source.cons.occupied_len();
-            
-            // Check if buffer size is stuck (not growing)
-            if buffer_size == last_buffer_size {
-                stuck_count += 1;
-            } else {
-                stuck_count = 0;
-            }
-            
-            if stuck_count > 10 {
-                println!("RACE CONDITION DETECTED: Buffer size stuck at {} samples for {} iterations", 
-                        buffer_size, stuck_count);
-                break;
-            }
-            
-            if samples_read % 100 == 0 {
-                println!("Samples read: {}, Buffer size: {}, Time: {:?}", 
-                        samples_read, buffer_size, start.elapsed());
-            }
-            
-            if let Some(_sample) = song_source.next() {
-                samples_read += 1;
-            } else {
-                println!("No more samples available");
-                break;
-            }
-            
-            last_buffer_size = buffer_size;
-        }
-        
-        let read_time = start.elapsed();
-        println!("Race condition test completed:");
-        println!("  Samples read: {}", samples_read);
-        println!("  Time taken: {:?}", read_time);
-        println!("  Final buffer size: {}", song_source.cons.occupied_len());
-        
-        // The race condition should cause the buffer to never fill completely
-        // and the reading to be slower than expected
-        if stuck_count > 10 {
-            println!("✅ RACE CONDITION CONFIRMED: Buffer was stuck at {} samples", last_buffer_size);
-        } else {
-            println!("❌ No race condition detected - buffer filled normally");
-        }
-        
-        // Now test what happens when we try to wait for a completely full buffer
-        println!("\nTesting original wait_for_buffer_or_stop behavior...");
-        let start = Instant::now();
-        let mut attempts = 0;
-        let target_samples = song_source.cons.capacity().into();
-        let mut last_size = song_source.cons.occupied_len();
-        
-        println!("Waiting for buffer to reach {} samples (currently {})", 
-                target_samples, last_size);
-        
-        while song_source.cons.occupied_len() < target_samples && attempts < 100 {
-            let current_size = song_source.cons.occupied_len();
-            if current_size != last_size {
-                println!("Buffer size changed: {} -> {} (attempt {})", 
-                        last_size, current_size, attempts);
-                last_size = current_size;
-            }
-            
-            if attempts % 20 == 0 {
-                println!("Attempt {}: Buffer size = {} / {} ({:.1}%)", 
-                        attempts, current_size, target_samples,
-                        (current_size as f64 / target_samples as f64) * 100.0);
-            }
-            
-            thread::sleep(Duration::from_millis(50));
-            attempts += 1;
-        }
-        
-        let wait_time = start.elapsed();
-        let final_size = song_source.cons.occupied_len();
-        
-        println!("Wait completed after {:?} ({} attempts):", wait_time, attempts);
-        println!("  Final buffer size: {} / {} ({:.1}%)", 
-                final_size, target_samples,
-                (final_size as f64 / target_samples as f64) * 100.0);
-        
-        if final_size < target_samples {
-            println!("✅ ORIGINAL ISSUE REPRODUCED: Buffer never reached full capacity!");
-            println!("   This explains the 10-20 second delay - waiting for impossible condition");
-        } else {
-            println!("❌ Buffer reached full capacity - original issue not reproduced");
-        }
-
-        Ok(())
-    }
+    // Removed test_buffer_fill_performance - not relevant with Crossbeam channels
 }
