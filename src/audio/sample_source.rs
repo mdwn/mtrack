@@ -225,33 +225,45 @@ where
         let expected_input_samples = expected_input_frames * self.channels as usize;
         drop(resampler);
 
-        // Collect samples until we have enough for one resampler chunk
+        // Collect samples in batches to reduce CPU usage
+        let batch_size = 64; // Process 64 samples at a time
         while samples_collected < expected_input_samples {
-            match self.source.next_sample() {
-                Ok(Some(sample)) => {
-                    count_actual_samples += 1;
-                    let channel = samples_collected % self.channels as usize;
-                    let frame = samples_collected / self.channels as usize;
-                    if frame < input_buffer[channel].len() {
-                        input_buffer[channel][frame] = sample;
-                        samples_collected += 1;
-                        self.resampling_state.actual_input_length += 1;
-                    }
-                }
-                Ok(None) => {
-                    // End of source - fill remaining with zeros
-                    while samples_collected < expected_input_samples {
+            let remaining_samples = expected_input_samples - samples_collected;
+            let current_batch_size = std::cmp::min(batch_size, remaining_samples);
+            
+            // Collect a batch of samples
+            for _ in 0..current_batch_size {
+                match self.source.next_sample() {
+                    Ok(Some(sample)) => {
+                        count_actual_samples += 1;
                         let channel = samples_collected % self.channels as usize;
                         let frame = samples_collected / self.channels as usize;
                         if frame < input_buffer[channel].len() {
-                            input_buffer[channel][frame] = 0.0;
+                            input_buffer[channel][frame] = sample;
                             samples_collected += 1;
+                            self.resampling_state.actual_input_length += 1;
                         }
                     }
-                    self.resampling_state.is_finished = true;
-                    break;
+                    Ok(None) => {
+                        // End of source - fill remaining with zeros
+                        while samples_collected < expected_input_samples {
+                            let channel = samples_collected % self.channels as usize;
+                            let frame = samples_collected / self.channels as usize;
+                            if frame < input_buffer[channel].len() {
+                                input_buffer[channel][frame] = 0.0;
+                                samples_collected += 1;
+                            }
+                        }
+                        self.resampling_state.is_finished = true;
+                        break;
+                    }
+                    Err(e) => return Err(e),
                 }
-                Err(e) => return Err(e),
+            }
+            
+            // Small sleep between batches to reduce CPU usage
+            if samples_collected < expected_input_samples {
+                std::thread::sleep(std::time::Duration::from_micros(10));
             }
         }
         drop(input_buffer);
