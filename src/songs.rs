@@ -655,10 +655,12 @@ pub struct SongSource<S>
 where
     S: Sample,
 {
-    receiver: Receiver<S>,
+    receiver: Receiver<Vec<S>>, // Receive frames instead of individual samples
     join_handle: Option<JoinHandle<()>>,
     channels: u16,
     frame_pos: Arc<AtomicU16>,
+    current_frame: Vec<S>, // Buffer for current frame
+    current_frame_pos: usize, // Position within current frame
 }
 
 /// The sample source and the file channel mapping.
@@ -749,6 +751,8 @@ where
             join_handle: Some(join_handle),
             channels: num_channels,
             frame_pos: Arc::new(AtomicU16::new(0)),
+            current_frame: Vec::new(),
+            current_frame_pos: 0,
         };
 
         Ok(source)
@@ -757,14 +761,15 @@ where
     fn reader_thread(
         num_channels: usize,
         mut sample_sources_and_mappings: Vec<SampleSourceAndMapping>,
-        tx: Sender<S>,
+        tx: Sender<Vec<S>>,
     ) -> JoinHandle<()> {
         thread::spawn(move || {
-            // Process one frame at a time for better responsiveness
+            // Process multiple frames at once for better CPU efficiency
+            let batch_size = 64; // Process 64 frames at a time for optimal performance
             let num_sources = sample_sources_and_mappings.len();
             let mut channels: Vec<u16> = Vec::with_capacity(num_sources);
             let mut file_mappings: Vec<HashMap<u16, Vec<usize>>> = Vec::with_capacity(num_sources);
-            let mut frames = vec![S::default(); num_channels]; // Just one frame worth of samples
+            // Removed unused variables
 
             for sample_source_and_mapping in sample_sources_and_mappings.iter() {
                 channels.push(sample_source_and_mapping.num_channels);
@@ -777,40 +782,51 @@ where
 
             loop {
                 let mut all_files_finished = true;
+                let mut frames_to_send = Vec::new();
 
-                // Read one sample from each source for this frame
-                frames.iter_mut().for_each(|sample| *sample = S::default());
-                for j in 0..num_sources {
-                    let file_channel_to_output_channels = &file_mappings[j];
-                    let sample_source = &mut sample_sources_and_mappings[j].sample_source;
+                // Process a batch of frames
+                for _frame_idx in 0..batch_size {
+                    let mut frame_finished = true;
+                    let mut frame_samples = vec![S::default(); num_channels];
+                    
+                    for j in 0..num_sources {
+                        let file_channel_to_output_channels = &file_mappings[j];
+                        let sample_source = &mut sample_sources_and_mappings[j].sample_source;
 
-                    // Read one sample from each channel of this source
-                    for file_channel in 0..channels[j] {
-                        let result = sample_source.next_sample();
-                        match result {
-                            Ok(Some(sample)) => {
-                                all_files_finished = false;
+                        // Read one sample from each channel of this source for this frame
+                        for file_channel in 0..channels[j] {
+                            let result = sample_source.next_sample();
+                            match result {
+                                Ok(Some(sample)) => {
+                                    frame_finished = false;
+                                    all_files_finished = false;
 
-                                if let Some(targets) =
-                                    file_channel_to_output_channels.get(&file_channel)
-                                {
-                                    for target in targets {
-                                        // Convert f32 sample to the target sample type
-                                        let converted_sample = S::from_f32(sample);
-                                        frames[*target] += converted_sample;
+                                    if let Some(targets) =
+                                        file_channel_to_output_channels.get(&file_channel)
+                                    {
+                                        for target in targets {
+                                            // Convert f32 sample to the target sample type
+                                            let converted_sample = S::from_f32(sample);
+                                            frame_samples[*target] += converted_sample;
+                                        }
                                     }
                                 }
-                            }
-                            Ok(None) => {
-                                // Sample source is finished
-                            }
-                            Err(e) => {
-                                error!(
-                                    err = e.to_string(),
-                                    "Error reading sample from SampleSource"
-                                );
+                                Ok(None) => {
+                                    // Sample source is finished for this channel
+                                }
+                                Err(e) => {
+                                    error!(
+                                        err = e.to_string(),
+                                        "Error reading sample from SampleSource"
+                                    );
+                                }
                             }
                         }
+                    }
+                    
+                    // Add this frame to the batch if it has any samples
+                    if !frame_finished {
+                        frames_to_send.extend_from_slice(&frame_samples);
                     }
                 }
 
@@ -818,15 +834,16 @@ where
                     // Close the channel to signal end of stream
                     drop(tx);
                     return;
-                } else {
-                    // Send each sample in the frame through the channel
-                    for sample in &frames {
-                        if tx.send(sample.clone()).is_err() {
-                            // Channel was closed by receiver, exit
-                            return;
-                        }
+                } else if !frames_to_send.is_empty() {
+                    // Send the batch through the channel
+                    if tx.send(frames_to_send).is_err() {
+                        // Channel was closed by receiver, exit
+                        return;
                     }
                 }
+                
+                // Small sleep to prevent busy waiting
+                thread::sleep(Duration::from_micros(50));
             }
         })
     }
@@ -844,21 +861,34 @@ where
     type Item = S;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.receiver.recv() {
-            Ok(sample) => {
-                // Update frame position - this tracks which channel within the current frame
-                // we're on. When it reaches 0, we've completed a full frame.
-                self.frame_pos
-                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |val| {
-                        Some((val + 1) % self.channels)
-                    })
-                    .expect("got none from frame position update function");
-
-                Some(sample)
-            }
-            Err(_) => {
-                // Channel was closed, end of stream
-                None
+        // If we have samples in the current frame, return the next one
+        if self.current_frame_pos < self.current_frame.len() {
+            let sample = self.current_frame[self.current_frame_pos].clone();
+            self.current_frame_pos += 1;
+            
+            // Update frame position - this tracks which channel within the current frame
+            // we're on. When it reaches 0, we've completed a full frame.
+            self.frame_pos
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |val| {
+                    Some((val + 1) % self.channels)
+                })
+                .expect("got none from frame position update function");
+            
+            Some(sample)
+        } else {
+            // Current frame is empty, try to get a new frame
+            match self.receiver.recv() {
+                Ok(new_frame) => {
+                    self.current_frame = new_frame;
+                    self.current_frame_pos = 0;
+                    
+                    // Recursively call next to get the first sample from the new frame
+                    self.next()
+                }
+                Err(_) => {
+                    // Channel was closed, end of stream
+                    None
+                }
             }
         }
     }

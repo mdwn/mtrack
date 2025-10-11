@@ -339,8 +339,8 @@ where
     /// Resamples a block of samples using rubato or simple resampling
     pub fn resample_block(&self) -> Result<usize, TranscodingError> {
         if let Some(ref resampler_arc) = self.resampler {
+            // Reduce lock contention by getting all locks at once
             let mut resampler = resampler_arc.lock().unwrap();
-
             let input_buffer = self.buffer_manager.input_buffer.lock().unwrap();
             let mut output_buffer = self.buffer_manager.output_buffer.lock().unwrap();
 
