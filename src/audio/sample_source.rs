@@ -100,7 +100,11 @@ where
                 // Move to next sample
                 self.buffer_manager.current_position =
                     self.buffer_manager.current_position.saturating_add(1);
-                if self.buffer_manager.current_position.is_multiple_of(self.channels as usize) {
+                if self
+                    .buffer_manager
+                    .current_position
+                    .is_multiple_of(self.channels as usize)
+                {
                     if self.buffer_manager.current_frame + 1
                         < self.buffer_manager.output_frames_written
                     {
@@ -291,7 +295,6 @@ where
         }
         drop(input_buffer);
 
-
         if self.resampling_state.is_first_chunk {
             self.resampling_state.is_first_chunk = false;
             // Store output delay for later use, but don't set current_frame yet
@@ -371,7 +374,11 @@ where
             };
             self.buffer_manager.current_position =
                 self.buffer_manager.current_position.saturating_add(1);
-            if self.buffer_manager.current_position.is_multiple_of(self.channels as usize) {
+            if self
+                .buffer_manager
+                .current_position
+                .is_multiple_of(self.channels as usize)
+            {
                 self.buffer_manager.current_frame =
                     self.buffer_manager.current_frame.saturating_add(1);
             }
@@ -688,7 +695,10 @@ mod tests {
 
                 // Basic checks
                 assert!(!output_samples.is_empty(), "Output should not be empty");
-                assert!(!output_samples.is_empty(), "Should have some output samples");
+                assert!(
+                    !output_samples.is_empty(),
+                    "Should have some output samples"
+                );
 
                 // Verify the signal is still recognizable (basic quality check)
                 let max_amplitude = output_samples.iter().map(|&x| x.abs()).fold(0.0, f32::max);
@@ -890,7 +900,10 @@ mod tests {
                     !output_samples.is_empty(),
                     "Should have some output samples"
                 );
-                assert!(!output_samples.is_empty(), "Should have some output samples");
+                assert!(
+                    !output_samples.is_empty(),
+                    "Should have some output samples"
+                );
 
                 // Verify the signal is still a sine wave (basic quality check)
                 let max_amplitude = output_samples.iter().map(|&x| x.abs()).fold(0.0, f32::max);

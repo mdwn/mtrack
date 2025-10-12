@@ -364,9 +364,7 @@ impl Song {
     pub fn to_proto(&self) -> Result<player::v1::Song, std::io::Error> {
         let duration = match prost_types::Duration::try_from(self.duration) {
             Ok(duration) => duration,
-            Err(e) => {
-                  return Err(std::io::Error::other(e.to_string()))
-            }
+            Err(e) => return Err(std::io::Error::other(e.to_string())),
         };
         Ok(player::v1::Song {
             name: self.name.to_string(),

@@ -89,10 +89,7 @@ impl Player {
             return controllers.clone();
         } else if let Some(controller) = &self.controller {
             if let Controller::Multi(multi) = controller {
-                return multi
-                    .values()
-                    .cloned()
-                    .collect();
+                return multi.values().cloned().collect();
             }
 
             return vec![controller.clone()];

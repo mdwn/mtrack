@@ -12,6 +12,12 @@ mismatched sample rates and formats, making it easier to deal with files from mu
 sources. This also adds the ability to configure the target output format for an audio
 device.
 
+A new way of reading files has been added: SampleSources, which will hopefully allow us
+to build different types of input sources in the future. This will make it easier to
+introduce other input file types like FLAC, Ogg, MP3, etc. Along with this was a good
+bit of performance tuning. The transcoding introduces increased performance requirements,
+but this was reduced as much as possible.
+
 ## [0.5.0]
 
 Initialization of a songs directory is now easier, as mtrack can be given an `--init` flag
