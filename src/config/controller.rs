@@ -43,9 +43,6 @@ pub enum Controller {
     Osc(Box<OscController>),
 }
 
-#[derive(Deserialize)]
-pub struct KeyboardController {}
-
 /// The configuration that maps MIDI events to controller messages.
 #[derive(Deserialize, Clone)]
 pub struct MidiController {

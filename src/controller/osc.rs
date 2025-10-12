@@ -172,7 +172,7 @@ impl super::Driver for Driver {
                 if let Some(packet) = packet {
                     if Self::handle_packet(&player, &osc_events, &packet)
                         .await
-                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?
+                        .map_err(|e| io::Error::other(e.to_string()))?
                     {
                         if let Err(e) = Self::broadcast(&player, &osc_events, &tx_sender).await {
                             error!(err = e, "Error broadcasting player status");

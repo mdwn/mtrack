@@ -79,7 +79,7 @@ impl super::Driver for Driver {
 
             if let Err(e) = device
                 .watch_events(midi_events_tx)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
+                .map_err(|e| io::Error::other(e.to_string()))
             {
                 error!(err = e.to_string(), "Error watching MIDI events");
             }
@@ -216,15 +216,24 @@ mod test {
             || playlist.current().name() == "Song 1",
             "Playlist never became Song 1",
         );
+
+        // Add small delay to ensure state is stable before next event
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
         // This invalid event should have no impact.
         midi_device.mock_event(&invalid_buf);
         midi_device.mock_event(&unrecognized_buf);
         midi_device.mock_event(&next_buf);
+
         println!("Playlist -> Song 3");
         eventually(
             || playlist.current().name() == "Song 3",
             "Playlist never became Song 3",
         );
+
+        // Add delay between transitions
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
         midi_device.mock_event(&unrecognized_buf);
         midi_device.mock_event(&next_buf);
         println!("Playlist -> Song 5");
@@ -232,6 +241,9 @@ mod test {
             || playlist.current().name() == "Song 5",
             "Playlist never became Song 5",
         );
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
         midi_device.mock_event(&unrecognized_buf);
         midi_device.mock_event(&next_buf);
         println!("Playlist -> Song 7");
@@ -239,6 +251,9 @@ mod test {
             || playlist.current().name() == "Song 7",
             "Playlist never became Song 7",
         );
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
         midi_device.mock_event(&unrecognized_buf);
         midi_device.mock_event(&prev_buf);
         println!("Playlist -> Song 5");
@@ -246,6 +261,9 @@ mod test {
             || playlist.current().name() == "Song 5",
             "Playlist never became Song 5",
         );
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
         println!("Switch to AllSongs");
         midi_device.mock_event(&unrecognized_buf);
         midi_device.mock_event(&all_songs_buf);
@@ -253,6 +271,9 @@ mod test {
             || all_songs_playlist.current().name() == "Song 1",
             "All Songs Playlist never became Song 1",
         );
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
         println!("AllSongs -> Song 10");
         midi_device.mock_event(&unrecognized_buf);
         midi_device.mock_event(&next_buf);
@@ -260,6 +281,9 @@ mod test {
             || all_songs_playlist.current().name() == "Song 10",
             "All Songs Playlist never became Song 10",
         );
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
         println!("AllSongs -> Song 2");
         midi_device.mock_event(&unrecognized_buf);
         midi_device.mock_event(&next_buf);
@@ -267,6 +291,9 @@ mod test {
             || all_songs_playlist.current().name() == "Song 2",
             "All Songs Playlist never became Song 2",
         );
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
         println!("AllSongs -> Song 10");
         midi_device.mock_event(&unrecognized_buf);
         midi_device.mock_event(&prev_buf);
@@ -274,6 +301,9 @@ mod test {
             || all_songs_playlist.current().name() == "Song 10",
             "All Songs Playlist never became Song 10",
         );
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
         println!("Switch to Playlist");
         midi_device.mock_event(&unrecognized_buf);
         midi_device.mock_event(&playlist_buf);
@@ -281,6 +311,9 @@ mod test {
             || playlist.current().name() == "Song 5",
             "Playlist never became Song 5",
         );
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
         println!("Playlist -> Song 7");
         midi_device.mock_event(&unrecognized_buf);
         midi_device.mock_event(&next_buf);
@@ -288,9 +321,15 @@ mod test {
             || playlist.current().name() == "Song 7",
             "Playlist never became Song 7",
         );
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
         midi_device.mock_event(&unrecognized_buf);
         midi_device.mock_event(&play_buf);
         eventually(|| device.is_playing(), "Song never started playing");
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
         midi_device.mock_event(&unrecognized_buf);
         midi_device.mock_event(&stop_buf);
         eventually(|| !device.is_playing(), "Song never stopped playing");

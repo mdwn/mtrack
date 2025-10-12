@@ -20,7 +20,6 @@ use crate::config;
 use crate::player::Player;
 
 mod grpc;
-mod keyboard;
 mod midi;
 mod osc;
 
@@ -44,7 +43,6 @@ impl Controller {
             let player = player.clone();
             let driver: Arc<dyn Driver> = match config {
                 config::Controller::Grpc(config) => grpc::Driver::new(config, player)?,
-                config::Controller::Keyboard => keyboard::Driver::new(player),
                 config::Controller::Osc(config) => osc::Driver::new(config, player)?,
                 config::Controller::Midi(config) => midi::Driver::new(config, player)?,
                 _ => return Err("unexpected controller type".into()),
