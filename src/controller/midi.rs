@@ -79,7 +79,7 @@ impl super::Driver for Driver {
 
             if let Err(e) = device
                 .watch_events(midi_events_tx)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
+                .map_err(|e| io::Error::other(e.to_string()))
             {
                 error!(err = e.to_string(), "Error watching MIDI events");
             }

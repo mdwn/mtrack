@@ -64,7 +64,7 @@ impl super::Driver for Driver {
             let reflection_service = tonic_reflection::server::Builder::configure()
                 .register_encoded_file_descriptor_set(FILE_DESCRIPTOR_SET)
                 .build_v1()
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(io::Error::other)?;
 
             info!("Starting gRPC server");
 
@@ -75,7 +75,7 @@ impl super::Driver for Driver {
                 }))
                 .serve(addr)
                 .await
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+                .map_err(io::Error::other)
         })
     }
 }

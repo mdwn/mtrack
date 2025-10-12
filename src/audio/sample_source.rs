@@ -100,7 +100,7 @@ where
                 // Move to next sample
                 self.buffer_manager.current_position =
                     self.buffer_manager.current_position.saturating_add(1);
-                if self.buffer_manager.current_position % self.channels as usize == 0 {
+                if self.buffer_manager.current_position.is_multiple_of(self.channels as usize) {
                     if self.buffer_manager.current_frame + 1
                         < self.buffer_manager.output_frames_written
                     {
@@ -371,7 +371,7 @@ where
             };
             self.buffer_manager.current_position =
                 self.buffer_manager.current_position.saturating_add(1);
-            if self.buffer_manager.current_position % self.channels as usize == 0 {
+            if self.buffer_manager.current_position.is_multiple_of(self.channels as usize) {
                 self.buffer_manager.current_frame =
                     self.buffer_manager.current_frame.saturating_add(1);
             }
@@ -393,7 +393,7 @@ where
             if resampler.output_frames_next() > 0 {
                 let (_input_frames_used, output_frames_written) = resampler
                     .process_into_buffer(&input_buffer, &mut output_buffer, None)
-                    .map_err(|e| {
+                    .map_err(|_e| {
                         TranscodingError::ResamplingFailed(self.source_rate, self.target_rate)
                     })?;
 
@@ -688,7 +688,7 @@ mod tests {
 
                 // Basic checks
                 assert!(!output_samples.is_empty(), "Output should not be empty");
-                assert!(output_samples.len() > 0, "Should have some output samples");
+                assert!(!output_samples.is_empty(), "Should have some output samples");
 
                 // Verify the signal is still recognizable (basic quality check)
                 let max_amplitude = output_samples.iter().map(|&x| x.abs()).fold(0.0, f32::max);
@@ -890,7 +890,7 @@ mod tests {
                     !output_samples.is_empty(),
                     "Should have some output samples"
                 );
-                assert!(output_samples.len() > 0, "Should have some output samples");
+                assert!(!output_samples.is_empty(), "Should have some output samples");
 
                 // Verify the signal is still a sine wave (basic quality check)
                 let max_amplitude = output_samples.iter().map(|&x| x.abs()).fold(0.0, f32::max);
@@ -1654,7 +1654,7 @@ mod tests {
             // RMS should be preserved within 10% tolerance
             let rms_ratio = output_rms / input_rms;
             assert!(
-                rms_ratio >= 0.9 && rms_ratio <= 1.1,
+                (0.9..=1.1).contains(&rms_ratio),
                 "RMS ratio out of range for {}Hz->{}Hz: {} (input: {}, output: {})",
                 source_rate,
                 target_rate,
@@ -1808,7 +1808,7 @@ mod tests {
         // RMS should be preserved within 15% tolerance for complex signals
         let rms_ratio = output_rms / input_rms;
         assert!(
-            rms_ratio >= 0.85 && rms_ratio <= 1.15,
+            (0.85..=1.15).contains(&rms_ratio),
             "RMS ratio out of range for complex signal: {} (input: {}, output: {})",
             rms_ratio,
             input_rms,
@@ -1822,7 +1822,7 @@ mod tests {
         let energy_ratio = output_energy / input_energy;
 
         assert!(
-            energy_ratio >= 0.7 && energy_ratio <= 1.3,
+            (0.7..=1.3).contains(&energy_ratio),
             "Energy ratio out of range for complex signal: {} (input: {}, output: {})",
             energy_ratio,
             input_energy,
@@ -2057,9 +2057,8 @@ mod tests {
         let wav_path = std::path::Path::new("nonexistent_file.wav");
 
         // Should return an error for nonexistent file
-        match WavSampleSource::from_file(wav_path) {
-            Ok(_) => panic!("Expected error for nonexistent file"),
-            Err(_) => {} // Expected
+        if WavSampleSource::from_file(wav_path).is_ok() {
+            panic!("Expected error for nonexistent file")
         }
     }
 
@@ -2270,7 +2269,7 @@ mod tests {
         );
         println!(
             "Difference: {} extra samples",
-            sample_count as i32 - expected_samples as i32
+            sample_count - expected_samples
         );
 
         // Should be close to expected (allow some tolerance for resampler buffering)

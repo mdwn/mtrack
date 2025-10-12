@@ -365,10 +365,7 @@ impl Song {
         let duration = match prost_types::Duration::try_from(self.duration) {
             Ok(duration) => duration,
             Err(e) => {
-                return Err(std::io::Error::new::<String>(
-                    std::io::ErrorKind::Other,
-                    e.to_string(),
-                ))
+                  return Err(std::io::Error::other(e.to_string()))
             }
         };
         Ok(player::v1::Song {

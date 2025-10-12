@@ -90,8 +90,8 @@ impl Player {
         } else if let Some(controller) = &self.controller {
             if let Controller::Multi(multi) = controller {
                 return multi
-                    .iter()
-                    .map(|(_, controller)| controller.clone())
+                    .values()
+                    .cloned()
                     .collect();
             }
 
