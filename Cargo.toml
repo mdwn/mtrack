@@ -53,11 +53,6 @@ crossbeam-channel = "0.5.15"
 
 [dev-dependencies]
 tempfile = "3.14.0"
-criterion = { version = "0.5", features = ["html_reports"] }
-
-[[bench]]
-name = "transcoding"
-harness = false
 
 [build-dependencies]
 prost-build = "0.13.4"
