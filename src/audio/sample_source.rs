@@ -237,7 +237,6 @@ where
 
     /// Collects samples from the source iterator and processes them
     fn collect_and_process_input(&mut self) -> Result<Option<f32>, TranscodingError> {
-        let start = std::time::Instant::now();
         // Collect samples from the source into input_buffer
         let mut input_buffer = self.buffer_manager.input_buffer.lock().unwrap();
         let mut samples_collected = 0;
@@ -292,13 +291,6 @@ where
         }
         drop(input_buffer);
 
-        let collect_time = start.elapsed();
-        if collect_time > std::time::Duration::from_millis(1) {
-            println!(
-                "AudioTranscoder collect_and_process_input took: {:?}",
-                collect_time
-            );
-        }
 
         if self.resampling_state.is_first_chunk {
             self.resampling_state.is_first_chunk = false;
@@ -402,7 +394,6 @@ where
                 let (_input_frames_used, output_frames_written) = resampler
                     .process_into_buffer(&input_buffer, &mut output_buffer, None)
                     .map_err(|e| {
-                        eprintln!("Rubato resampling failed: {:?}", e);
                         TranscodingError::ResamplingFailed(self.source_rate, self.target_rate)
                     })?;
 
