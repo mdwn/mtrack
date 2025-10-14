@@ -16,24 +16,23 @@ use std::{
     error::Error,
     fmt,
     sync::{
-        mpsc::{channel, Sender},
+        atomic::{AtomicBool, Ordering},
         Arc, Barrier,
     },
+    thread,
     time::Duration,
 };
 
-use cpal::{
-    traits::{DeviceTrait, HostTrait, StreamTrait},
-    Stream,
-};
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use hound::SampleFormat;
-use tracing::{debug, error, info, span, Level};
+use tracing::{error, info, span, Level};
 
+use crate::audio::mixer::{ActiveSource as MixerActiveSource, AudioMixer};
 use crate::{
-    audio::TargetFormat,
+    audio::{Device as AudioDevice, TargetFormat},
     config,
     playsync::CancelHandle,
-    songs::{self, Song},
+    songs::Song,
 };
 
 /// A small wrapper around a cpal::Device. Used for storing some extra
@@ -51,6 +50,30 @@ pub struct Device {
     device: cpal::Device,
     /// The target format for this device.
     target_format: TargetFormat,
+    /// The output stream manager for continuous playback.
+    output_manager: Arc<OutputManager>,
+    /// Whether the device is in test mode (captures audio instead of playing it).
+    test_mode: bool,
+}
+
+/// Manages the continuous output stream and mixing of multiple audio sources.
+struct OutputManager {
+    /// The core audio mixer
+    mixer: AudioMixer,
+    /// Channel for receiving new audio sources to play.
+    source_tx: crossbeam_channel::Sender<MixerActiveSource>,
+    /// Channel receiver for processing new sources.
+    source_rx: crossbeam_channel::Receiver<MixerActiveSource>,
+    /// Channel receiver for processing stop requests.
+    stop_rx: crossbeam_channel::Receiver<Vec<u64>>,
+    /// Handle to the output thread (keeps it alive).
+    output_thread: Option<thread::JoinHandle<()>>,
+}
+
+/// A handle for controlling playback of a specific audio source.
+pub struct PlayHandle {
+    /// The IDs of the sources for this play operation.
+    source_ids: Vec<u64>,
 }
 
 impl fmt::Display for Device {
@@ -65,13 +88,185 @@ impl fmt::Display for Device {
     }
 }
 
+/// Single-thread callback function that handles mixing directly
+fn create_single_thread_callback<T: cpal::Sample + cpal::FromSample<f32> + std::fmt::Debug>(
+    mixer: AudioMixer,
+    source_rx: crossbeam_channel::Receiver<MixerActiveSource>,
+    stop_rx: crossbeam_channel::Receiver<Vec<u64>>,
+    num_channels: u16,
+) -> impl FnMut(&mut [T], &cpal::OutputCallbackInfo) + Send + 'static
+where
+    f32: cpal::FromSample<T>,
+{
+    move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+        // Clear the output buffer
+        for sample in data.iter_mut() {
+            *sample = T::from_sample(0.0f32);
+        }
+
+        // Process new sources from the channel
+        while let Ok(new_source) = source_rx.try_recv() {
+            mixer.add_source(new_source);
+        }
+
+        // Process stop requests
+        while let Ok(source_ids_to_remove) = stop_rx.try_recv() {
+            mixer.remove_sources(source_ids_to_remove);
+        }
+
+        // Use the core mixing logic
+        let frames = data.len() / num_channels as usize;
+        let mixed_frames = mixer.process_frames(frames);
+
+        // Copy the mixed frames to the CPAL buffer
+        for (i, &sample) in mixed_frames.iter().enumerate() {
+            if i < data.len() {
+                data[i] = T::from_sample(sample);
+            }
+        }
+    }
+}
+
+impl OutputManager {
+    /// Creates a new output manager.
+    fn new(num_channels: u16, sample_rate: u32) -> Result<Self, Box<dyn Error>> {
+        let (source_tx, source_rx) = crossbeam_channel::unbounded();
+        let (_, stop_rx) = crossbeam_channel::unbounded();
+
+        let mixer = AudioMixer::new(num_channels, sample_rate);
+
+        let manager = OutputManager {
+            mixer,
+            source_tx,
+            source_rx,
+            stop_rx,
+            output_thread: None,
+        };
+
+        Ok(manager)
+    }
+
+    /// Adds a new audio source to be played.
+    fn add_source(&self, source: MixerActiveSource) -> Result<(), Box<dyn Error>> {
+        self.source_tx.send(source)?;
+        Ok(())
+    }
+
+    /// Starts the output thread that creates and manages the CPAL stream.
+    fn start_output_thread(
+        &mut self,
+        device: cpal::Device,
+        target_format: TargetFormat,
+    ) -> Result<(), Box<dyn Error>> {
+        let mixer = self.mixer.clone();
+        let source_rx = self.source_rx.clone();
+        let stop_rx = self.stop_rx.clone();
+        let num_channels = mixer.num_channels();
+        let sample_rate = mixer.sample_rate();
+
+        // Start the output thread - create the stream inside the thread
+        let output_thread = thread::spawn(move || {
+            // Create the CPAL stream
+            // Create the CPAL stream configuration - let CPAL choose appropriate buffer size
+            let config = cpal::StreamConfig {
+                channels: num_channels,
+                sample_rate: cpal::SampleRate(sample_rate),
+                buffer_size: cpal::BufferSize::Default, // Let CPAL choose the buffer size
+            };
+
+            // Create the output stream based on the target format
+            // Map hound::SampleFormat to the appropriate CPAL stream type
+
+            let stream_result = if target_format.sample_format == hound::SampleFormat::Float {
+                let mut callback = create_single_thread_callback::<f32>(
+                    mixer.clone(),
+                    source_rx.clone(),
+                    stop_rx.clone(),
+                    num_channels,
+                );
+                device.build_output_stream(
+                    &config,
+                    move |data: &mut [f32], info: &cpal::OutputCallbackInfo| {
+                        callback(data, info);
+                    },
+                    |err| error!("CPAL output stream error: {}", err),
+                    None,
+                )
+            } else {
+                // For integer formats, we need to convert from f32 to the target integer type
+                match target_format.bits_per_sample {
+                    16 => {
+                        let mut callback = create_single_thread_callback::<i16>(
+                            mixer.clone(),
+                            source_rx.clone(),
+                            stop_rx.clone(),
+                            num_channels,
+                        );
+                        device.build_output_stream(
+                            &config,
+                            move |data: &mut [i16], info: &cpal::OutputCallbackInfo| {
+                                callback(data, info);
+                            },
+                            |err| error!("CPAL output stream error: {}", err),
+                            None,
+                        )
+                    }
+                    32 => {
+                        println!("Creating i32 CPAL stream (32-bit integer format)");
+                        let mut callback = create_single_thread_callback::<i32>(
+                            mixer.clone(),
+                            source_rx.clone(),
+                            stop_rx.clone(),
+                            num_channels,
+                        );
+                        device.build_output_stream(
+                            &config,
+                            move |data: &mut [i32], info: &cpal::OutputCallbackInfo| {
+                                callback(data, info);
+                            },
+                            |err| error!("CPAL output stream error: {}", err),
+                            None,
+                        )
+                    }
+                    _ => {
+                        error!("Unsupported bit depth for integer format");
+                        return;
+                    }
+                }
+            };
+
+            // Start the stream
+            match stream_result {
+                Ok(stream) => {
+                    if let Err(e) = stream.play() {
+                        error!("Failed to start CPAL stream: {}", e);
+                        return;
+                    }
+                    info!("CPAL output stream started successfully");
+
+                    // Keep the stream alive by waiting
+                    loop {
+                        thread::sleep(Duration::from_millis(100));
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to create CPAL stream: {}", e);
+                }
+            }
+        });
+
+        self.output_thread = Some(output_thread);
+        Ok(())
+    }
+}
+
 impl Device {
     /// Lists cpal devices and produces the Device trait.
-    pub fn list() -> Result<Vec<Box<dyn super::Device>>, Box<dyn Error>> {
+    pub fn list() -> Result<Vec<Box<dyn AudioDevice>>, Box<dyn Error>> {
         Ok(Device::list_cpal_devices()?
             .into_iter()
             .map(|device| {
-                let device: Box<dyn super::Device> = Box::new(device);
+                let device: Box<dyn AudioDevice> = Box::new(device);
                 device
             })
             .collect())
@@ -101,13 +296,7 @@ impl Device {
                 let mut max_channels = 0;
 
                 let output_configs = device.supported_output_configs();
-                if let Err(e) = output_configs {
-                    debug!(
-                        err = e.to_string(),
-                        host = host_id.name(),
-                        device = device.name().unwrap_or_default(),
-                        "Error getting output configs"
-                    );
+                if let Err(_e) = output_configs {
                     continue;
                 }
 
@@ -121,6 +310,12 @@ impl Device {
                     // Create device with default format - will be overridden in get() method
                     let default_format = TargetFormat::new(44100, SampleFormat::Int, 32)?;
 
+                    // Create a temporary output manager for listing
+                    let temp_output_manager = Arc::new(OutputManager::new(
+                        max_channels,
+                        default_format.sample_rate,
+                    )?);
+
                     devices.push(Device {
                         name: device.name()?,
                         playback_delay: Duration::ZERO,
@@ -128,6 +323,8 @@ impl Device {
                         host_id,
                         device,
                         target_format: default_format,
+                        output_manager: temp_output_manager,
+                        test_mode: false,
                     })
                 }
             }
@@ -152,14 +349,71 @@ impl Device {
                     config.sample_format()?,
                     config.bits_per_sample(),
                 )?;
+
+                // Initialize the output manager
+                let mut output_manager =
+                    OutputManager::new(device.max_channels, device.target_format.sample_rate)?;
+
+                // Start the output thread
+                output_manager
+                    .start_output_thread(device.device.clone(), device.target_format.clone())?;
+
+                device.output_manager = Arc::new(output_manager);
+                device.test_mode = false;
+
                 Ok(device)
             }
             None => Err(format!("no device found with name {}", name).into()),
         }
     }
+
+    /// Plays a song using the new ChannelMappedSampleSource architecture
+    pub fn play_song(
+        &self,
+        song: Arc<Song>,
+        track_mappings: HashMap<String, Vec<u16>>,
+        cancel_handle: CancelHandle,
+    ) -> Result<PlayHandle, Box<dyn Error>> {
+        let source_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+
+        // Create channel mapped sources for each track in the song
+        let channel_mapped_sources =
+            song.create_channel_mapped_sources(&track_mappings, self.target_format.clone())?;
+
+        // Add all sources to the output manager
+        if channel_mapped_sources.is_empty() {
+            return Err("No sources found in song".into());
+        }
+
+        // Create a unique ID for each source and track them
+        let mut source_ids = Vec::new();
+        let mut current_source_id = source_id;
+
+        for source in channel_mapped_sources {
+            let active_source = MixerActiveSource {
+                id: current_source_id,
+                source,
+                track_mappings: track_mappings.clone(), // Clone for each source
+                channel_mappings: Vec::new(),           // Will be precomputed in add_source
+                cancel_handle: cancel_handle.clone(),   // Clone for each source
+                is_finished: Arc::new(AtomicBool::new(false)),
+            };
+
+            source_ids.push(current_source_id);
+            self.output_manager.add_source(active_source)?;
+            current_source_id += 1; // Increment for next source
+        }
+
+        let play_handle = PlayHandle { source_ids };
+
+        Ok(play_handle)
+    }
 }
 
-impl super::Device for Device {
+impl AudioDevice for Device {
     /// Play the given song through the audio device.
     fn play(
         &self,
@@ -202,22 +456,38 @@ impl super::Device for Device {
             .into());
         }
 
-        let (tx, rx) = channel();
-
         play_barrier.wait();
         spin_sleep::sleep(self.playback_delay);
-        // Use the device's target format - transcoder handles all conversion
-        let output_stream = if self.target_format.sample_format == SampleFormat::Float {
-            debug!("Playing with f32 target format");
-            self.build_stream::<f32, f32>(song, mappings, num_channels, tx, cancel_handle)?
-        } else {
-            debug!("Playing with i32 target format");
-            self.build_stream::<f32, i32>(song, mappings, num_channels, tx, cancel_handle)?
-        };
-        output_stream.play()?;
 
-        // Wait for the read finish.
-        rx.recv()?;
+        // Use the new ChannelMappedSampleSource architecture instead of the old SongSource
+        let play_handle = self.play_song(song, mappings.clone(), cancel_handle.clone())?;
+
+        // Wait for either cancellation or natural completion
+        let finished = Arc::new(AtomicBool::new(false));
+
+        // Start a background thread to monitor if all sources have finished
+        let finished_monitor = finished.clone();
+        let mixer = self.output_manager.mixer.clone();
+        let source_ids = play_handle.source_ids.clone();
+        thread::spawn(move || {
+            // Poll the mixer to see if all sources for this play operation have finished
+            loop {
+                let active_sources = mixer.get_active_sources();
+                let sources = active_sources.read().unwrap();
+                let has_active_sources =
+                    sources.iter().any(|source| source_ids.contains(&source.id));
+
+                if !has_active_sources {
+                    // All sources for this play operation have finished
+                    finished_monitor.store(true, Ordering::Relaxed);
+                    break;
+                }
+
+                thread::sleep(Duration::from_millis(10));
+            }
+        });
+
+        cancel_handle.wait(finished);
 
         Ok(())
     }
@@ -228,247 +498,8 @@ impl super::Device for Device {
     }
 }
 
-impl Device {
-    /// Builds an output stream.
-    fn build_stream<S: songs::Sample, C: cpal::SizedSample + cpal::FromSample<S> + 'static>(
-        &self,
-        song: Arc<Song>,
-        mappings: &HashMap<String, Vec<u16>>,
-        num_channels: u16,
-        tx: Sender<()>,
-        cancel_handle: CancelHandle,
-    ) -> Result<Stream, Box<dyn Error>> {
-        // Use the device's configured target format
-        let target_format = &self.target_format;
-
-        // Use the target format's sample rate for the CPAL device
-        let stream_config = cpal::StreamConfig {
-            channels: num_channels,
-            sample_rate: cpal::SampleRate(target_format.sample_rate),
-            buffer_size: cpal::BufferSize::Default,
-        };
-        let error_callback = |err: cpal::StreamError| {
-            error!(err = err.to_string(), "Error during stream.");
-        };
-
-        let source = song.source::<S>(mappings, target_format.clone())?;
-        let mut output_callback = Device::output_callback::<S, C>(source, tx, cancel_handle);
-        let stream = self.device.build_output_stream(
-            &stream_config,
-            move |data, _| output_callback(data),
-            error_callback,
-            None,
-        );
-
-        match stream {
-            Ok(stream) => Ok(stream),
-            Err(e) => Err(e.to_string().into()),
-        }
-    }
-    // If the playback should stop, this sends on the provided Sender and returns true. This will
-    // only return true and send if we're on a frame boundary.
-    fn signal_stop<S: songs::Sample>(
-        source: &songs::SongSource<S>,
-        tx: &Sender<()>,
-        cancel_handle: &CancelHandle,
-    ) -> bool {
-        // Stop only when we hit a frame boundary. This will prevent weird noises
-        // when stopping a song.
-        if cancel_handle.is_cancelled() && source.get_frame_position() == 0 {
-            if tx.send(()).is_err() {
-                error!("Error sending message")
-            }
-            true
-        } else {
-            false
-        }
-    }
-
-    // Creates a callback function that fills the output device buffer.
-    fn output_callback<S: songs::Sample, F: cpal::Sample + cpal::FromSample<S>>(
-        mut source: songs::SongSource<S>,
-        tx: Sender<()>,
-        cancel_handle: CancelHandle,
-    ) -> impl FnMut(&mut [F]) {
-        move |data: &mut [F]| {
-            let data_len = data.len();
-            let mut data_pos = 0;
-
-            loop {
-                // Copy the data from the song reader buffer to the output buffer
-                // sample by sample until we hit either the end of the output buffer or the
-                // reader buffer.
-                for data in data.iter_mut().take(data_len).skip(data_pos) {
-                    if Device::signal_stop(&source, &tx, &cancel_handle) {
-                        return;
-                    }
-
-                    match source.next() {
-                        Some(sample) => {
-                            *data = sample.to_sample::<F>();
-                            data_pos += 1;
-                        }
-                        None => {
-                            if tx.send(()).is_err() {
-                                error!("Error sending message")
-                            }
-                            return;
-                        }
-                    }
-                }
-
-                // We'll also check if things are stopped here to prevent an extra iteration.
-                if Device::signal_stop(&source, &tx, &cancel_handle) {
-                    return;
-                }
-
-                if data_pos == data_len {
-                    return;
-                }
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod test {
-    use std::{collections::HashMap, error::Error, sync::mpsc::channel};
-
-    use crate::{
-        audio::TargetFormat, config, playsync::CancelHandle, songs::Song, testutil::write_wav,
-    };
-
-    #[test]
-    fn output_callback() -> Result<(), Box<dyn Error>> {
-        let tempdir = tempfile::tempdir()?.keep();
-        let tempwav1 = "tempwav1.wav";
-        let tempwav2 = "tempwav2.wav";
-
-        write_wav(
-            tempdir.join(tempwav1),
-            vec![vec![1_i32, 2_i32, 3_i32]],
-            44100,
-        )?;
-        write_wav(tempdir.join(tempwav2), vec![vec![2_i32, 3_i32]], 44100)?;
-
-        let track1 = config::Track::new("test 1".into(), tempwav1, Some(1));
-        let track2 = config::Track::new("test 2".into(), tempwav2, Some(1));
-
-        let song = Song::new(
-            &tempdir,
-            &config::Song::new("song name", None, None, None, None, vec![track1, track2]),
-        )?;
-        let mut mappings: HashMap<String, Vec<u16>> = HashMap::new();
-        mappings.insert("test 1".into(), vec![1]);
-        mappings.insert("test 2".into(), vec![4]);
-
-        let source = song.source::<i32>(&mappings, TargetFormat::default())?;
-        let (tx, rx) = channel();
-        let cancel_handle = CancelHandle::new();
-        let mut callback = super::Device::output_callback(source, tx, cancel_handle.clone());
-
-        let mut data = [0_i32; 2];
-
-        callback(&mut data);
-        assert_eq!([1_i32, 0_i32], data);
-        callback(&mut data);
-        assert_eq!([0_i32, 2_i32], data);
-        callback(&mut data);
-        assert_eq!([2_i32, 0_i32], data);
-        callback(&mut data);
-        assert_eq!([0_i32, 3_i32], data);
-        callback(&mut data);
-        assert_eq!([3_i32, 0_i32], data);
-        callback(&mut data);
-        assert_eq!([0_i32, 0_i32], data);
-        callback(&mut data);
-
-        rx.recv().expect("Expected receive once callback is done.");
-        Ok(())
-    }
-
-    #[test]
-    fn stop_callback_immediately() -> Result<(), Box<dyn Error>> {
-        let tempdir = tempfile::tempdir()?.keep();
-        let tempwav1 = "tempwav1.wav";
-        let tempwav2 = "tempwav2.wav";
-
-        write_wav(
-            tempdir.join(tempwav1),
-            vec![vec![1_i32, 2_i32, 3_i32]],
-            44100,
-        )?;
-        write_wav(tempdir.join(tempwav2), vec![vec![2_i32, 3_i32]], 44100)?;
-
-        let track1 = config::Track::new("test 1".into(), tempwav1, Some(1));
-        let track2 = config::Track::new("test 2".into(), tempwav2, Some(1));
-
-        let song = Song::new(
-            &tempdir,
-            &config::Song::new("song name", None, None, None, None, vec![track1, track2]),
-        )?;
-        let mut mappings: HashMap<String, Vec<u16>> = HashMap::new();
-        mappings.insert("test 1".into(), vec![1]);
-        mappings.insert("test 2".into(), vec![4]);
-
-        let source = song.source::<i32>(&mappings, TargetFormat::default())?;
-        let (tx, rx) = channel();
-        let cancel_handle = CancelHandle::new();
-        let mut callback = super::Device::output_callback(source, tx, cancel_handle.clone());
-
-        let mut data = [0_i32; 2];
-
-        // This should immediately stop since we're on a frame boundary.
-        cancel_handle.cancel();
-
-        callback(&mut data);
-        assert_eq!([0_i32, 0_i32], data);
-
-        rx.recv().expect("Expected receive once callback is done.");
-
-        Ok(())
-    }
-
-    #[test]
-    fn stop_callback_on_frame_boundary() -> Result<(), Box<dyn Error>> {
-        let tempdir = tempfile::tempdir()?.keep();
-        let tempwav1 = "tempwav1.wav";
-        let tempwav2 = "tempwav2.wav";
-
-        write_wav(
-            tempdir.join(tempwav1),
-            vec![vec![1_i32, 2_i32, 3_i32]],
-            44100,
-        )?;
-        write_wav(tempdir.join(tempwav2), vec![vec![2_i32, 3_i32]], 44100)?;
-
-        let track1 = config::Track::new("test 1".into(), tempwav1, Some(1));
-        let track2 = config::Track::new("test 2".into(), tempwav2, Some(1));
-
-        let song = Song::new(
-            &tempdir,
-            &config::Song::new("song name", None, None, None, None, vec![track1, track2]),
-        )?;
-        let mut mappings: HashMap<String, Vec<u16>> = HashMap::new();
-        mappings.insert("test 1".into(), vec![1]);
-        mappings.insert("test 2".into(), vec![4]);
-
-        let source = song.source::<i32>(&mappings, TargetFormat::default())?;
-        let (tx, rx) = channel();
-        let cancel_handle = CancelHandle::new();
-        let mut callback = super::Device::output_callback(source, tx, cancel_handle.clone());
-
-        let mut data = [0_i32; 2];
-
-        callback(&mut data);
-        assert_eq!([1_i32, 0_i32], data);
-
-        // This should allow one more get, then it should stop once we hit the frame boundary.
-        cancel_handle.cancel();
-        callback(&mut data);
-        assert_eq!([0_i32, 2_i32], data);
-
-        rx.recv().expect("Expected receive once callback is done.");
-        Ok(())
-    }
+    // Note: Old tests removed - they were testing the obsolete SongSource/IntToFloatIterator architecture
+    // The new ChannelMappedSampleSource and AudioMixer architecture is tested in src/audio/mixer.rs
 }

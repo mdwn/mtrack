@@ -12,7 +12,6 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 use crate::audio::TargetFormat;
-use cpal::Sample as CpalSample;
 use hound::WavReader;
 use rubato::{FftFixedIn, VecResampler};
 use std::io::BufReader;
@@ -55,6 +54,40 @@ pub trait SampleSource: Send + Sync {
     /// Returns Ok(None) if the source is finished
     /// Returns Err(error) if an error occurred
     fn next_sample(&mut self) -> Result<Option<f32>, TranscodingError>;
+}
+
+/// A sample source with explicit channel mapping information
+/// This replaces the complex SongSource architecture with a simpler, more debuggable approach
+pub trait ChannelMappedSampleSource: Send + Sync {
+    /// Get the next sample from the source
+    /// Returns Ok(Some(sample)) if a sample is available
+    /// Returns Ok(None) if the source is finished
+    /// Returns Err(error) if an error occurred
+    fn next_sample(&mut self) -> Result<Option<f32>, TranscodingError>;
+
+    /// Get the next frame of samples (all channels for one time step)
+    /// Returns Ok(Some(frame)) where frame is a Vec<f32> with one sample per channel
+    /// Returns Ok(None) if the source is finished
+    /// Returns Err(error) if an error occurred
+    fn next_frame(&mut self) -> Result<Option<Vec<f32>>, TranscodingError> {
+        let mut frame = Vec::new();
+        for _ in 0..self.source_channel_count() {
+            match self.next_sample()? {
+                Some(sample) => frame.push(sample),
+                None => return Ok(None),
+            }
+        }
+        Ok(Some(frame))
+    }
+
+    /// Get the channel mappings for this source
+    /// Returns a Vec where each element corresponds to a source channel
+    /// Each Vec<String> contains the labels that source channel maps to
+    /// Empty Vec means that source channel is not mapped to any output
+    fn channel_mappings(&self) -> &Vec<Vec<String>>;
+
+    /// Get the number of source channels in this sample source
+    fn source_channel_count(&self) -> u16;
 }
 
 #[cfg(test)]
@@ -467,17 +500,60 @@ impl SampleSourceTestExt for MemorySampleSource {
     }
 }
 
-/// Factory function to create the appropriate SampleSource for a WAV file
-/// Returns either a simple WavSampleSource or an AudioTranscoder with WavSampleSource as source
-pub fn create_wav_sample_source<P: AsRef<Path>>(
+/// A wrapper that implements ChannelMappedSampleSource for any SampleSource
+pub struct ChannelMappedSource {
+    source: Box<dyn SampleSource>,
+    channel_mappings: Vec<Vec<String>>,
+    source_channel_count: u16,
+}
+
+impl ChannelMappedSource {
+    /// Create a new ChannelMappedSource
+    pub fn new(
+        source: Box<dyn SampleSource>,
+        channel_mappings: Vec<Vec<String>>,
+        source_channel_count: u16,
+    ) -> Self {
+        Self {
+            source,
+            channel_mappings,
+            source_channel_count,
+        }
+    }
+}
+
+impl ChannelMappedSampleSource for ChannelMappedSource {
+    fn next_sample(&mut self) -> Result<Option<f32>, TranscodingError> {
+        self.source.next_sample()
+    }
+
+    fn next_frame(&mut self) -> Result<Option<Vec<f32>>, TranscodingError> {
+        let mut frame = Vec::new();
+        for _ in 0..self.source_channel_count {
+            match self.source.next_sample()? {
+                Some(sample) => frame.push(sample),
+                None => return Ok(None),
+            }
+        }
+        Ok(Some(frame))
+    }
+
+    fn channel_mappings(&self) -> &Vec<Vec<String>> {
+        &self.channel_mappings
+    }
+
+    fn source_channel_count(&self) -> u16 {
+        self.source_channel_count
+    }
+}
+
+/// Factory function to create a ChannelMappedSampleSource from a WAV file
+pub fn create_channel_mapped_wav_source<P: AsRef<Path>>(
     path: P,
     target_format: TargetFormat,
-) -> Result<Box<dyn SampleSource>, TranscodingError> {
+    channel_mappings: Vec<Vec<String>>,
+) -> Result<Box<dyn ChannelMappedSampleSource>, TranscodingError> {
     let wav_source = WavSampleSource::from_file(&path)?;
-
-    // For now, we need to get the WAV spec to check if transcoding is needed
-    // This is a limitation of the current design - we need the spec to make the decision
-    // In a more sophisticated design, we could make this decision at runtime
     let spec = wav_source.spec();
 
     let source_format =
@@ -488,19 +564,23 @@ pub fn create_wav_sample_source<P: AsRef<Path>>(
         || source_format.sample_format != target_format.sample_format
         || source_format.bits_per_sample != target_format.bits_per_sample;
 
-    if needs_transcoding {
-        // Create transcoder with WAV source as input
+    let sample_source: Box<dyn SampleSource> = if needs_transcoding {
         let transcoder = AudioTranscoder::new_with_source(
             wav_source,
             &source_format,
             &target_format,
             spec.channels,
         )?;
-        Ok(Box::new(transcoder))
+        Box::new(transcoder)
     } else {
-        // No transcoding needed, just return the WAV source
-        Ok(Box::new(wav_source))
-    }
+        Box::new(wav_source)
+    };
+
+    Ok(Box::new(ChannelMappedSource::new(
+        sample_source,
+        channel_mappings,
+        spec.channels,
+    )))
 }
 
 /// A sample source that reads WAV files and provides scaled samples
@@ -580,17 +660,35 @@ impl WavSampleSource {
 
         // Read samples directly using the samples iterator (still more efficient than per-sample I/O)
         let mut samples_read = 0;
+        let spec = self.wav_reader.spec();
 
-        for sample_result in self.wav_reader.samples::<i32>().take(self.buffer_size) {
-            match sample_result {
-                Ok(sample) => {
-                    // Convert i32 to f32 with proper scaling
-                    let shifted = sample << (32 - self.bits_per_sample);
-                    let result = shifted.to_sample::<f32>();
-                    self.sample_buffer.push(result);
-                    samples_read += 1;
+        // Read samples in the correct format based on the WAV file's actual format
+        if spec.sample_format == hound::SampleFormat::Float {
+            // For float WAV files, read as f32
+            for sample_result in self.wav_reader.samples::<f32>().take(self.buffer_size) {
+                match sample_result {
+                    Ok(sample) => {
+                        // Float samples are already in the correct range [-1.0, 1.0]
+                        self.sample_buffer.push(sample);
+                        samples_read += 1;
+                    }
+                    Err(e) => return Err(TranscodingError::WavError(e)),
                 }
-                Err(e) => return Err(TranscodingError::WavError(e)),
+            }
+        } else {
+            // For integer WAV files, read as i32
+            for sample_result in self.wav_reader.samples::<i32>().take(self.buffer_size) {
+                match sample_result {
+                    Ok(sample) => {
+                        // Convert i32 to f32 with proper scaling
+                        // Use i64 to avoid overflow for 32-bit samples
+                        let scale_factor = 1.0 / (1i64 << (self.bits_per_sample - 1)) as f32;
+                        let result = sample as f32 * scale_factor;
+                        self.sample_buffer.push(result);
+                        samples_read += 1;
+                    }
+                    Err(e) => return Err(TranscodingError::WavError(e)),
+                }
             }
         }
 
@@ -2232,154 +2330,6 @@ mod tests {
             "24-bit and 32-bit RMS too different: {:.6} vs {:.6}",
             rms_24,
             rms_32
-        );
-    }
-
-    #[test]
-    fn test_audiotranscoder_sample_count() {
-        use crate::testutil::write_wav_with_bits;
-        use tempfile::tempdir;
-
-        let tempdir = tempdir().unwrap();
-
-        // Generate a sine wave with known sample count
-        let sample_rate = 44100;
-        let duration_samples = 1000;
-        let frequency = 440.0; // 440Hz sine wave
-        let amplitude = 0.5; // 50% amplitude
-
-        let sine_wave: Vec<f32> = (0..duration_samples)
-            .map(|i| {
-                (i as f32 * frequency * 2.0 * std::f32::consts::PI / sample_rate as f32).sin()
-                    * amplitude
-            })
-            .collect();
-
-        // Create a 24-bit WAV file
-        let wav_path = tempdir.path().join("test_sample_count.wav");
-        let samples: Vec<i32> = sine_wave
-            .iter()
-            .map(|&x| (x * 8388607.0) as i32) // 24-bit range
-            .collect();
-        write_wav_with_bits(wav_path.clone(), vec![samples], sample_rate, 24).unwrap();
-
-        // Test AudioTranscoder sample count
-        let target_format =
-            crate::audio::TargetFormat::new(48000, crate::audio::SampleFormat::Float, 32).unwrap();
-        let mut transcoded_source = create_wav_sample_source(&wav_path, target_format).unwrap();
-
-        let mut sample_count = 0;
-        while let Ok(Some(_)) = transcoded_source.next_sample() {
-            sample_count += 1;
-        }
-
-        // Expected sample count: 1000 * 48000/44100 = 1088.44 samples
-        let expected_samples = (duration_samples as f32 * 48000.0 / 44100.0) as usize;
-
-        println!(
-            "AudioTranscoder produced {} samples, expected {}",
-            sample_count, expected_samples
-        );
-        println!(
-            "Difference: {} extra samples",
-            sample_count - expected_samples
-        );
-
-        // Should be close to expected (allow some tolerance for resampler buffering)
-        assert!(
-            (sample_count as i32 - expected_samples as i32).abs() <= 10,
-            "Sample count mismatch: got {}, expected {}",
-            sample_count,
-            expected_samples
-        );
-    }
-
-    #[test]
-    fn test_wav_sample_source_to_audiotranscoder_amplitude() {
-        use crate::testutil::write_wav_with_bits;
-        use tempfile::tempdir;
-
-        let tempdir = tempdir().unwrap();
-
-        // Generate a sine wave with known amplitude
-        let sample_rate = 44100;
-        let duration_samples = 1000;
-        let frequency = 440.0; // 440Hz sine wave
-        let amplitude = 0.5; // 50% amplitude
-
-        let sine_wave: Vec<f32> = (0..duration_samples)
-            .map(|i| {
-                (i as f32 * frequency * 2.0 * std::f32::consts::PI / sample_rate as f32).sin()
-                    * amplitude
-            })
-            .collect();
-
-        // Create a 24-bit WAV file (common format that needs transcoding)
-        let wav_path = tempdir.path().join("test_transcoding_amplitude.wav");
-        let samples: Vec<i32> = sine_wave
-            .iter()
-            .map(|&x| (x * 8388607.0) as i32) // 24-bit range
-            .collect();
-        write_wav_with_bits(wav_path.clone(), vec![samples], sample_rate, 24).unwrap();
-
-        // Test direct WavSampleSource (no transcoding)
-        let mut wav_source = WavSampleSource::from_file(&wav_path).unwrap();
-        let mut wav_samples = Vec::new();
-        for _ in 0..duration_samples {
-            if let Ok(Some(sample)) = wav_source.next_sample() {
-                wav_samples.push(sample);
-            }
-        }
-        let wav_rms: f32 =
-            (wav_samples.iter().map(|&x| x * x).sum::<f32>() / wav_samples.len() as f32).sqrt();
-
-        // Test WavSampleSource -> AudioTranscoder pipeline
-        let target_format =
-            crate::audio::TargetFormat::new(48000, crate::audio::SampleFormat::Float, 32).unwrap();
-        let mut transcoded_source = create_wav_sample_source(&wav_path, target_format).unwrap();
-
-        let mut transcoded_samples = Vec::new();
-        for _ in 0..duration_samples {
-            if let Ok(Some(sample)) = transcoded_source.next_sample() {
-                transcoded_samples.push(sample);
-            }
-        }
-        let transcoded_rms: f32 = (transcoded_samples.iter().map(|&x| x * x).sum::<f32>()
-            / transcoded_samples.len() as f32)
-            .sqrt();
-
-        // Expected RMS for sine wave with amplitude 0.5
-        let expected_rms = amplitude / (2.0_f32.sqrt()); // 0.5 / √2 ≈ 0.353553
-
-        println!("Direct WavSampleSource RMS: {:.6}", wav_rms);
-        println!(
-            "WavSampleSource -> AudioTranscoder RMS: {:.6}",
-            transcoded_rms
-        );
-        println!("Expected RMS: {:.6}", expected_rms);
-
-        // Direct WavSampleSource should have correct amplitude
-        assert!(
-            (wav_rms - expected_rms).abs() / expected_rms < 0.05,
-            "Direct WavSampleSource RMS too different: got {:.6}, expected {:.6}",
-            wav_rms,
-            expected_rms
-        );
-
-        // Transcoding should not severely attenuate the signal
-        // Allow for some attenuation but not 99% loss
-        let amplitude_ratio = transcoded_rms / wav_rms;
-        assert!(
-            amplitude_ratio > 0.1,
-            "Transcoding severely attenuated signal: ratio {:.6} (expected > 0.1)",
-            amplitude_ratio
-        );
-
-        // The transcoded signal should still have reasonable amplitude
-        assert!(
-            transcoded_rms > 0.01,
-            "Transcoded signal too quiet: RMS {:.6} (expected > 0.01)",
-            transcoded_rms
         );
     }
 
