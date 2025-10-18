@@ -43,6 +43,16 @@ pub fn mix_samples_simd(
         }
     }
     
+    #[cfg(target_arch = "aarch64")]
+    {
+        if is_aarch64_feature_detected!("neon") {
+            unsafe {
+                mix_samples_neon(frame, source_frame, channel_mappings);
+                return;
+            }
+        }
+    }
+    
     // Fallback to scalar implementation for all platforms
     mix_samples_scalar(frame, source_frame, channel_mappings);
 }
@@ -65,6 +75,16 @@ pub fn clear_buffer_simd(buffer: &mut [f32]) {
         }
     }
     
+    #[cfg(target_arch = "aarch64")]
+    {
+        if is_aarch64_feature_detected!("neon") {
+            unsafe {
+                clear_buffer_neon(buffer);
+                return;
+            }
+        }
+    }
+    
     // Fallback to scalar implementation
     clear_buffer_scalar(buffer);
 }
@@ -82,6 +102,16 @@ pub fn copy_buffer_simd(dst: &mut [f32], src: &[f32]) {
         if is_x86_feature_detected!("sse2") {
             unsafe {
                 copy_buffer_sse2(dst, src);
+                return;
+            }
+        }
+    }
+    
+    #[cfg(target_arch = "aarch64")]
+    {
+        if is_aarch64_feature_detected!("neon") {
+            unsafe {
+                copy_buffer_neon(dst, src);
                 return;
             }
         }
@@ -296,6 +326,121 @@ unsafe fn copy_buffer_sse2(dst: &mut [f32], src: &[f32]) {
     while idx + SIMD_WIDTH <= len {
         let src_vec = _mm_loadu_ps(src.as_ptr().add(idx));
         _mm_storeu_ps(dst.as_mut_ptr().add(idx), src_vec);
+        idx += SIMD_WIDTH;
+    }
+    
+    // Handle remaining samples
+    for i in idx..len {
+        dst[i] = src[i];
+    }
+}
+
+// ============================================================================
+// ARM NEON Implementations
+// ============================================================================
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn mix_samples_neon(
+    frame: &mut [f32],
+    source_frame: &[f32],
+    channel_mappings: &[Vec<usize>],
+) {
+    // Process 8 samples at a time with NEON (2x 4-sample vectors)
+    const SIMD_WIDTH: usize = 8;
+    
+    for (source_channel, &sample) in source_frame.iter().enumerate() {
+        if let Some(output_channels) = channel_mappings.get(source_channel) {
+            // Process output channels in SIMD chunks
+            let mut output_idx = 0;
+            while output_idx + SIMD_WIDTH <= output_channels.len() {
+                let indices = &output_channels[output_idx..output_idx + SIMD_WIDTH];
+                
+                // Load 8 indices and samples
+                let mut indices_simd = [0i32; SIMD_WIDTH];
+                let mut samples_simd = [0.0f32; SIMD_WIDTH];
+                
+                for (i, &idx) in indices.iter().enumerate() {
+                    if idx < frame.len() {
+                        indices_simd[i] = idx as i32;
+                        samples_simd[i] = sample;
+                    }
+                }
+                
+                // Load current frame values
+                let mut frame_values = [0.0f32; SIMD_WIDTH];
+                for (i, &idx) in indices.iter().enumerate() {
+                    if idx < frame.len() {
+                        frame_values[i] = frame[idx];
+                    }
+                }
+                
+                // Perform SIMD addition (2x 4-sample vectors)
+                let frame_vec1 = vld1q_f32(frame_values.as_ptr());
+                let sample_vec1 = vld1q_f32(samples_simd.as_ptr());
+                let result_vec1 = vaddq_f32(frame_vec1, sample_vec1);
+                
+                let frame_vec2 = vld1q_f32(frame_values.as_ptr().add(4));
+                let sample_vec2 = vld1q_f32(samples_simd.as_ptr().add(4));
+                let result_vec2 = vaddq_f32(frame_vec2, sample_vec2);
+                
+                // Store results back
+                let mut result = [0.0f32; SIMD_WIDTH];
+                vst1q_f32(result.as_mut_ptr(), result_vec1);
+                vst1q_f32(result.as_mut_ptr().add(4), result_vec2);
+                
+                for (i, &idx) in indices.iter().enumerate() {
+                    if idx < frame.len() {
+                        frame[idx] = result[i];
+                    }
+                }
+                
+                output_idx += SIMD_WIDTH;
+            }
+            
+            // Handle remaining samples
+            for &output_index in &output_channels[output_idx..] {
+                if output_index < frame.len() {
+                    frame[output_index] += sample;
+                }
+            }
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn clear_buffer_neon(buffer: &mut [f32]) {
+    const SIMD_WIDTH: usize = 8;  // Process 8 samples at a time
+    let mut idx = 0;
+    
+    // Process 8 samples at a time (2x 4-sample vectors)
+    while idx + SIMD_WIDTH <= buffer.len() {
+        let zero_vec = vdupq_n_f32(0.0);
+        vst1q_f32(buffer.as_mut_ptr().add(idx), zero_vec);
+        vst1q_f32(buffer.as_mut_ptr().add(idx + 4), zero_vec);
+        idx += SIMD_WIDTH;
+    }
+    
+    // Handle remaining samples
+    for i in idx..buffer.len() {
+        buffer[i] = 0.0;
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn copy_buffer_neon(dst: &mut [f32], src: &[f32]) {
+    const SIMD_WIDTH: usize = 8;  // Process 8 samples at a time
+    let len = std::cmp::min(dst.len(), src.len());
+    let mut idx = 0;
+    
+    // Process 8 samples at a time (2x 4-sample vectors)
+    while idx + SIMD_WIDTH <= len {
+        let src_vec1 = vld1q_f32(src.as_ptr().add(idx));
+        let src_vec2 = vld1q_f32(src.as_ptr().add(idx + 4));
+        vst1q_f32(dst.as_mut_ptr().add(idx), src_vec1);
+        vst1q_f32(dst.as_mut_ptr().add(idx + 4), src_vec2);
         idx += SIMD_WIDTH;
     }
     
