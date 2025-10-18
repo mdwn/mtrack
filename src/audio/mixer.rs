@@ -14,8 +14,9 @@
 // Core audio mixing logic that can be used by both CPAL and test implementations
 use crate::audio::sample_source::ChannelMappedSampleSource;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::Instant;
 
 /// Core audio mixing logic that's independent of any audio backend
 #[derive(Clone)]
@@ -26,6 +27,10 @@ pub struct AudioMixer {
     num_channels: u16,
     /// Sample rate
     sample_rate: u32,
+    /// Performance monitoring
+    frame_count: Arc<AtomicUsize>,
+    total_frame_time: Arc<AtomicUsize>, // in microseconds
+    max_frame_time: Arc<AtomicUsize>,   // in microseconds
 }
 
 /// Represents an active audio source in the mixer
@@ -52,6 +57,9 @@ impl AudioMixer {
             active_sources: Arc::new(RwLock::new(Vec::new())),
             num_channels,
             sample_rate,
+            frame_count: Arc::new(AtomicUsize::new(0)),
+            total_frame_time: Arc::new(AtomicUsize::new(0)),
+            max_frame_time: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -106,10 +114,11 @@ impl AudioMixer {
         });
     }
 
-    /// Processes one frame of audio mixing
+    /// Processes one frame of audio mixing with performance monitoring
     /// This is the core mixing logic extracted from the CPAL callback
     /// Minimizes lock duration by cloning Arc references and processing without holding the lock
     pub fn process_frame(&self) -> Vec<f32> {
+        let start_time = Instant::now();
         let mut frame = vec![0.0f32; self.num_channels as usize];
 
         // Get a snapshot of source references to process (minimize lock duration)
@@ -170,6 +179,28 @@ impl AudioMixer {
             });
         }
 
+        // Update performance statistics
+        let frame_time = start_time.elapsed();
+        let frame_time_us = frame_time.as_micros() as usize;
+
+        self.frame_count.fetch_add(1, Ordering::Relaxed);
+        self.total_frame_time
+            .fetch_add(frame_time_us, Ordering::Relaxed);
+
+        // Update max frame time (using compare_and_swap for thread safety)
+        let mut current_max = self.max_frame_time.load(Ordering::Relaxed);
+        while frame_time_us > current_max {
+            match self.max_frame_time.compare_exchange_weak(
+                current_max,
+                frame_time_us,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(x) => current_max = x,
+            }
+        }
+
         frame
     }
 
@@ -198,6 +229,22 @@ impl AudioMixer {
     /// Gets a reference to the active sources (for CPAL integration)
     pub fn get_active_sources(&self) -> Arc<RwLock<Vec<Arc<Mutex<ActiveSource>>>>> {
         self.active_sources.clone()
+    }
+
+    /// Gets performance statistics
+    #[allow(dead_code)]
+    pub fn get_performance_stats(&self) -> (usize, f64, usize) {
+        let frame_count = self.frame_count.load(Ordering::Relaxed);
+        let total_time = self.total_frame_time.load(Ordering::Relaxed);
+        let max_time = self.max_frame_time.load(Ordering::Relaxed);
+
+        let avg_time = if frame_count > 0 {
+            total_time as f64 / frame_count as f64
+        } else {
+            0.0
+        };
+
+        (frame_count, avg_time, max_time)
     }
 }
 
