@@ -323,11 +323,11 @@ mod tests {
         assert_eq!(frames[33], 0.2); // Channel 2, frame 2
 
         // All other channels should be 0.0
-        for i in 2..32 {
-            assert_eq!(frames[i], 0.0);
+        for frame in frames.iter().take(32).skip(2) {
+            assert_eq!(*frame, 0.0);
         }
-        for i in 34..64 {
-            assert_eq!(frames[i], 0.0);
+        for frame in frames.iter().take(64).skip(34) {
+            assert_eq!(*frame, 0.0);
         }
     }
 }
