@@ -223,7 +223,8 @@ impl OutputManager {
             // Map hound::SampleFormat to the appropriate CPAL stream type
 
             let stream_result = if target_format.sample_format == hound::SampleFormat::Float {
-                let mut callback = create_single_thread_callback::<f32>(
+                // Use SIMD-optimized callback for f32 samples
+                let mut callback = create_simd_callback(
                     mixer.clone(),
                     source_rx.clone(),
                     num_channels,

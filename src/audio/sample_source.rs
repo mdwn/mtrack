@@ -833,9 +833,14 @@ mod tests {
             return 0.0;
         }
 
-        // Use SIMD-optimized high-frequency energy calculation
-        // This calculates the sum of squared differences between consecutive samples
-        simd::calculate_high_frequency_energy_simd(samples)
+        // Simple high-pass filter approximation: difference between consecutive samples
+        let mut high_freq_energy = 0.0;
+        for i in 1..samples.len() {
+            let diff = samples[i] - samples[i - 1];
+            high_freq_energy += diff * diff;
+        }
+
+        high_freq_energy / (samples.len() - 1) as f32
     }
 
     #[test]
@@ -1394,14 +1399,14 @@ mod tests {
         );
     }
 
-    /// Calculate RMS (Root Mean Square) of a signal using SIMD optimization
+    /// Calculate RMS (Root Mean Square) of a signal
     fn calculate_rms(samples: &[f32]) -> f32 {
         if samples.is_empty() {
             return 0.0;
         }
 
-        // Use SIMD-optimized RMS calculation with runtime feature detection
-        simd::calculate_rms_simd(samples)
+        let sum_squares: f32 = samples.iter().map(|&x| x * x).sum();
+        (sum_squares / samples.len() as f32).sqrt()
     }
 
     #[test]
