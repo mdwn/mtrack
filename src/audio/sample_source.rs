@@ -557,9 +557,11 @@ impl SampleSource for MemorySampleSource {
 
     fn duration(&self) -> Option<std::time::Duration> {
         // Calculate duration from sample count and sample rate
-        let total_samples = self.samples.len() as u64;
-        let duration_secs = total_samples / self.sample_rate as u64;
-        Some(std::time::Duration::from_secs(duration_secs))
+        // For interleaved samples, we need to account for the channel count
+        let total_samples = self.samples.len() as f64;
+        let samples_per_channel = total_samples / self.channel_count as f64;
+        let duration_secs = samples_per_channel / self.sample_rate as f64;
+        Some(std::time::Duration::from_secs_f64(duration_secs))
     }
 }
 
@@ -914,6 +916,54 @@ mod tests {
         // Test that we get None when finished
         assert!(source.next_sample().unwrap().is_none());
         assert!(SampleSourceTestExt::is_finished(&source));
+    }
+
+    #[test]
+    fn test_memory_sample_source_duration_mono() {
+        // Test duration calculation for mono audio
+        let samples = vec![1.0, 2.0, 3.0, 4.0, 5.0]; // 5 samples
+        let source = MemorySampleSource::new(samples.clone(), 1, 44100);
+        
+        // Calculate expected duration using the same formula as the implementation
+        let total_samples = samples.len() as f64;
+        let samples_per_channel = total_samples / 1.0; // mono
+        let duration_secs = samples_per_channel / 44100.0;
+        let expected_duration = std::time::Duration::from_secs_f64(duration_secs);
+        
+        let actual_duration = source.duration().unwrap();
+        
+        // Allow for small rounding differences
+        let diff = if actual_duration > expected_duration {
+            actual_duration - expected_duration
+        } else {
+            expected_duration - actual_duration
+        };
+        assert!(diff < std::time::Duration::from_micros(1), 
+                "Duration mismatch: expected {:?}, got {:?}", expected_duration, actual_duration);
+    }
+
+    #[test]
+    fn test_memory_sample_source_duration_stereo() {
+        // Test duration calculation for stereo audio
+        let samples = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]; // 6 samples (3 frames * 2 channels)
+        let source = MemorySampleSource::new(samples.clone(), 2, 44100);
+        
+        // Calculate expected duration using the same formula as the implementation
+        let total_samples = samples.len() as f64;
+        let samples_per_channel = total_samples / 2.0; // stereo
+        let duration_secs = samples_per_channel / 44100.0;
+        let expected_duration = std::time::Duration::from_secs_f64(duration_secs);
+        
+        let actual_duration = source.duration().unwrap();
+        
+        // Allow for small rounding differences
+        let diff = if actual_duration > expected_duration {
+            actual_duration - expected_duration
+        } else {
+            expected_duration - actual_duration
+        };
+        assert!(diff < std::time::Duration::from_micros(1), 
+                "Duration mismatch: expected {:?}, got {:?}", expected_duration, actual_duration);
     }
 
     #[test]
