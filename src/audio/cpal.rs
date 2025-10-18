@@ -64,17 +64,10 @@ struct OutputManager {
     source_tx: crossbeam_channel::Sender<MixerActiveSource>,
     /// Channel receiver for processing new sources.
     source_rx: crossbeam_channel::Receiver<MixerActiveSource>,
-    /// Channel receiver for processing stop requests.
-    stop_rx: crossbeam_channel::Receiver<Vec<u64>>,
     /// Handle to the output thread (keeps it alive).
     output_thread: Option<thread::JoinHandle<()>>,
 }
 
-/// A handle for controlling playback of a specific audio source.
-pub struct PlayHandle {
-    /// The IDs of the sources for this play operation.
-    source_ids: Vec<u64>,
-}
 
 impl fmt::Display for Device {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -92,7 +85,6 @@ impl fmt::Display for Device {
 fn create_single_thread_callback<T: cpal::Sample + cpal::FromSample<f32> + std::fmt::Debug>(
     mixer: AudioMixer,
     source_rx: crossbeam_channel::Receiver<MixerActiveSource>,
-    stop_rx: crossbeam_channel::Receiver<Vec<u64>>,
     num_channels: u16,
 ) -> impl FnMut(&mut [T], &cpal::OutputCallbackInfo) + Send + 'static
 where
@@ -109,11 +101,6 @@ where
             mixer.add_source(new_source);
         }
 
-        // Process stop requests
-        while let Ok(source_ids_to_remove) = stop_rx.try_recv() {
-            mixer.remove_sources(source_ids_to_remove);
-        }
-
         // Use the core mixing logic
         let frames = data.len() / num_channels as usize;
         let mixed_frames = mixer.process_frames(frames);
@@ -127,11 +114,30 @@ where
     }
 }
 
+impl Drop for OutputManager {
+    fn drop(&mut self) {
+        // Stop all active sources when the output manager is dropped
+        if let Ok(active_sources) = self.mixer.get_active_sources().read() {
+            let source_ids: Vec<u64> = active_sources.iter().map(|source| source.id).collect();
+            if !source_ids.is_empty() {
+                self.mixer.remove_sources(source_ids);
+            }
+        }
+        
+        // Close the channels to signal the audio callback to stop
+        // Note: The channels will be automatically dropped when the struct is dropped
+        
+        // Wait for the output thread to finish
+        if let Some(thread) = self.output_thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
 impl OutputManager {
     /// Creates a new output manager.
     fn new(num_channels: u16, sample_rate: u32) -> Result<Self, Box<dyn Error>> {
         let (source_tx, source_rx) = crossbeam_channel::unbounded();
-        let (_, stop_rx) = crossbeam_channel::unbounded();
 
         let mixer = AudioMixer::new(num_channels, sample_rate);
 
@@ -139,7 +145,6 @@ impl OutputManager {
             mixer,
             source_tx,
             source_rx,
-            stop_rx,
             output_thread: None,
         };
 
@@ -152,6 +157,7 @@ impl OutputManager {
         Ok(())
     }
 
+
     /// Starts the output thread that creates and manages the CPAL stream.
     fn start_output_thread(
         &mut self,
@@ -160,7 +166,6 @@ impl OutputManager {
     ) -> Result<(), Box<dyn Error>> {
         let mixer = self.mixer.clone();
         let source_rx = self.source_rx.clone();
-        let stop_rx = self.stop_rx.clone();
         let num_channels = mixer.num_channels();
         let sample_rate = mixer.sample_rate();
 
@@ -181,7 +186,6 @@ impl OutputManager {
                 let mut callback = create_single_thread_callback::<f32>(
                     mixer.clone(),
                     source_rx.clone(),
-                    stop_rx.clone(),
                     num_channels,
                 );
                 device.build_output_stream(
@@ -199,7 +203,6 @@ impl OutputManager {
                         let mut callback = create_single_thread_callback::<i16>(
                             mixer.clone(),
                             source_rx.clone(),
-                            stop_rx.clone(),
                             num_channels,
                         );
                         device.build_output_stream(
@@ -216,7 +219,6 @@ impl OutputManager {
                         let mut callback = create_single_thread_callback::<i32>(
                             mixer.clone(),
                             source_rx.clone(),
-                            stop_rx.clone(),
                             num_channels,
                         );
                         device.build_output_stream(
@@ -367,50 +369,6 @@ impl Device {
         }
     }
 
-    /// Plays a song using the new ChannelMappedSampleSource architecture
-    pub fn play_song(
-        &self,
-        song: Arc<Song>,
-        track_mappings: HashMap<String, Vec<u16>>,
-        cancel_handle: CancelHandle,
-    ) -> Result<PlayHandle, Box<dyn Error>> {
-        let source_id = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as u64;
-
-        // Create channel mapped sources for each track in the song
-        let channel_mapped_sources =
-            song.create_channel_mapped_sources(&track_mappings, self.target_format.clone())?;
-
-        // Add all sources to the output manager
-        if channel_mapped_sources.is_empty() {
-            return Err("No sources found in song".into());
-        }
-
-        // Create a unique ID for each source and track them
-        let mut source_ids = Vec::new();
-        let mut current_source_id = source_id;
-
-        for source in channel_mapped_sources {
-            let active_source = MixerActiveSource {
-                id: current_source_id,
-                source,
-                track_mappings: track_mappings.clone(), // Clone for each source
-                channel_mappings: Vec::new(),           // Will be precomputed in add_source
-                cancel_handle: cancel_handle.clone(),   // Clone for each source
-                is_finished: Arc::new(AtomicBool::new(false)),
-            };
-
-            source_ids.push(current_source_id);
-            self.output_manager.add_source(active_source)?;
-            current_source_id += 1; // Increment for next source
-        }
-
-        let play_handle = PlayHandle { source_ids };
-
-        Ok(play_handle)
-    }
 }
 
 impl AudioDevice for Device {
@@ -459,8 +417,38 @@ impl AudioDevice for Device {
         play_barrier.wait();
         spin_sleep::sleep(self.playback_delay);
 
-        // Use the new ChannelMappedSampleSource architecture instead of the old SongSource
-        let play_handle = self.play_song(song, mappings.clone(), cancel_handle.clone())?;
+        // Create channel mapped sources for each track in the song
+        let channel_mapped_sources =
+            song.create_channel_mapped_sources(mappings, self.target_format.clone())?;
+
+        // Add all sources to the output manager
+        if channel_mapped_sources.is_empty() {
+            return Err("No sources found in song".into());
+        }
+
+        // Create a unique ID for each source and track them
+        let source_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+
+        let mut source_ids = Vec::new();
+        let mut current_source_id = source_id;
+
+        for source in channel_mapped_sources {
+            let active_source = MixerActiveSource {
+                id: current_source_id,
+                source,
+                track_mappings: mappings.clone(), // Clone for each source
+                channel_mappings: Vec::new(),     // Will be precomputed in add_source
+                cancel_handle: cancel_handle.clone(), // Clone for each source
+                is_finished: Arc::new(AtomicBool::new(false)),
+            };
+
+            source_ids.push(current_source_id);
+            self.output_manager.add_source(active_source)?;
+            current_source_id += 1; // Increment for next source
+        }
 
         // Wait for either cancellation or natural completion
         let finished = Arc::new(AtomicBool::new(false));
@@ -468,7 +456,6 @@ impl AudioDevice for Device {
         // Start a background thread to monitor if all sources have finished
         let finished_monitor = finished.clone();
         let mixer = self.output_manager.mixer.clone();
-        let source_ids = play_handle.source_ids.clone();
         thread::spawn(move || {
             // Poll the mixer to see if all sources for this play operation have finished
             loop {
