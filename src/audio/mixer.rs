@@ -15,13 +15,13 @@
 use crate::audio::sample_source::ChannelMappedSampleSource;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 /// Core audio mixing logic that's independent of any audio backend
 #[derive(Clone)]
 pub struct AudioMixer {
     /// Active audio sources currently playing
-    active_sources: Arc<RwLock<Vec<ActiveSource>>>,
+    active_sources: Arc<RwLock<Vec<Arc<Mutex<ActiveSource>>>>>,
     /// Number of output channels
     num_channels: u16,
     /// Sample rate
@@ -94,29 +94,41 @@ impl AudioMixer {
         source.channel_mappings = channel_mappings;
 
         let mut sources = self.active_sources.write().unwrap();
-        sources.push(source);
+        sources.push(Arc::new(Mutex::new(source)));
     }
 
     /// Removes sources by ID
     pub fn remove_sources(&self, source_ids: Vec<u64>) {
         let mut sources = self.active_sources.write().unwrap();
-        sources.retain(|source| !source_ids.contains(&source.id));
+        sources.retain(|source| {
+            let source_guard = source.lock().unwrap();
+            !source_ids.contains(&source_guard.id)
+        });
     }
 
     /// Processes one frame of audio mixing
     /// This is the core mixing logic extracted from the CPAL callback
+    /// Minimizes lock duration by cloning Arc references and processing without holding the lock
     pub fn process_frame(&self) -> Vec<f32> {
         let mut frame = vec![0.0f32; self.num_channels as usize];
 
-        let mut sources = self.active_sources.write().unwrap();
+        // Get a snapshot of source references to process (minimize lock duration)
+        let sources_to_process = {
+            let sources = self.active_sources.read().unwrap();
+            sources.clone()
+        };
+
         let mut finished_source_ids = Vec::new();
 
-        sources.retain_mut(|active_source| {
+        // Process each source without holding the lock
+        for active_source_arc in sources_to_process {
+            let mut active_source = active_source_arc.lock().unwrap();
+
             if active_source.is_finished.load(Ordering::Relaxed)
                 || active_source.cancel_handle.is_cancelled()
             {
                 finished_source_ids.push(active_source.id);
-                return false;
+                continue;
             }
 
             // Get next frame from this source
@@ -137,18 +149,26 @@ impl AudioMixer {
                             }
                         }
                     }
-                    true
                 }
                 Ok(None) => {
                     active_source.is_finished.store(true, Ordering::Relaxed);
-                    false
+                    finished_source_ids.push(active_source.id);
                 }
                 Err(_) => {
                     active_source.is_finished.store(true, Ordering::Relaxed);
-                    false
+                    finished_source_ids.push(active_source.id);
                 }
             }
-        });
+        }
+
+        // Remove finished sources in a separate, quick write lock
+        if !finished_source_ids.is_empty() {
+            let mut sources = self.active_sources.write().unwrap();
+            sources.retain(|source| {
+                let source_guard = source.lock().unwrap();
+                !finished_source_ids.contains(&source_guard.id)
+            });
+        }
 
         frame
     }
@@ -176,7 +196,7 @@ impl AudioMixer {
     }
 
     /// Gets a reference to the active sources (for CPAL integration)
-    pub fn get_active_sources(&self) -> Arc<RwLock<Vec<ActiveSource>>> {
+    pub fn get_active_sources(&self) -> Arc<RwLock<Vec<Arc<Mutex<ActiveSource>>>>> {
         self.active_sources.clone()
     }
 }

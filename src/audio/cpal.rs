@@ -119,7 +119,13 @@ impl Drop for OutputManager {
     fn drop(&mut self) {
         // Stop all active sources when the output manager is dropped
         if let Ok(active_sources) = self.mixer.get_active_sources().read() {
-            let source_ids: Vec<u64> = active_sources.iter().map(|source| source.id).collect();
+            let source_ids: Vec<u64> = active_sources
+                .iter()
+                .map(|source| {
+                    let source_guard = source.lock().unwrap();
+                    source_guard.id
+                })
+                .collect();
             if !source_ids.is_empty() {
                 self.mixer.remove_sources(source_ids);
             }
@@ -458,8 +464,10 @@ impl AudioDevice for Device {
             loop {
                 let active_sources = mixer.get_active_sources();
                 let sources = active_sources.read().unwrap();
-                let has_active_sources =
-                    sources.iter().any(|source| source_ids.contains(&source.id));
+                let has_active_sources = sources.iter().any(|source| {
+                    let source_guard = source.lock().unwrap();
+                    source_ids.contains(&source_guard.id)
+                });
 
                 if !has_active_sources {
                     // All sources for this play operation have finished
