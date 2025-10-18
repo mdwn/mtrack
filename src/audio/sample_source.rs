@@ -66,7 +66,11 @@ pub trait SampleSource: Send + Sync {
     fn bits_per_sample(&self) -> u16;
 
     /// Get the sample format of this source
-    fn sample_format(&self) -> hound::SampleFormat;
+    fn sample_format(&self) -> crate::audio::SampleFormat;
+
+    /// Get the duration of this source (if known)
+    /// Returns None if the duration is unknown or infinite
+    fn duration(&self) -> Option<std::time::Duration>;
 }
 
 /// A sample source with explicit channel mapping information
@@ -223,8 +227,13 @@ where
         self.target_bits_per_sample
     }
 
-    fn sample_format(&self) -> hound::SampleFormat {
-        hound::SampleFormat::Float // AudioTranscoder outputs float samples
+    fn sample_format(&self) -> crate::audio::SampleFormat {
+        crate::audio::SampleFormat::Float // AudioTranscoder outputs float samples
+    }
+
+    fn duration(&self) -> Option<std::time::Duration> {
+        // Delegate to the underlying source - transcoding doesn't change duration
+        self.source.duration()
     }
 }
 
@@ -542,8 +551,15 @@ impl SampleSource for MemorySampleSource {
         32 // Memory samples are typically 32-bit float
     }
 
-    fn sample_format(&self) -> hound::SampleFormat {
-        hound::SampleFormat::Float // Memory samples are float
+    fn sample_format(&self) -> crate::audio::SampleFormat {
+        crate::audio::SampleFormat::Float // Memory samples are float
+    }
+
+    fn duration(&self) -> Option<std::time::Duration> {
+        // Calculate duration from sample count and sample rate
+        let total_samples = self.samples.len() as u64;
+        let duration_secs = total_samples / self.sample_rate as u64;
+        Some(std::time::Duration::from_secs(duration_secs))
     }
 }
 
@@ -623,8 +639,12 @@ impl SampleSource for SampleSourceWrapper {
         self.source.bits_per_sample()
     }
 
-    fn sample_format(&self) -> hound::SampleFormat {
+    fn sample_format(&self) -> crate::audio::SampleFormat {
         self.source.sample_format()
+    }
+
+    fn duration(&self) -> Option<std::time::Duration> {
+        self.source.duration()
     }
 }
 
@@ -679,7 +699,8 @@ pub struct WavSampleSource {
     bits_per_sample: u16,
     channels: u16,
     sample_rate: u32,
-    sample_format: hound::SampleFormat,
+    sample_format: crate::audio::SampleFormat,
+    duration: std::time::Duration,
 }
 
 impl SampleSource for WavSampleSource {
@@ -717,8 +738,12 @@ impl SampleSource for WavSampleSource {
         self.bits_per_sample
     }
 
-    fn sample_format(&self) -> hound::SampleFormat {
+    fn sample_format(&self) -> crate::audio::SampleFormat {
         self.sample_format
+    }
+
+    fn duration(&self) -> Option<std::time::Duration> {
+        Some(self.duration)
     }
 }
 
@@ -727,9 +752,17 @@ impl WavSampleSource {
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, TranscodingError> {
         let wav_reader = WavReader::open(&path)?;
         let spec = wav_reader.spec();
+        let duration = std::time::Duration::from_secs(
+            u64::from(wav_reader.duration()) / u64::from(spec.sample_rate),
+        );
 
         // Use a reasonable buffer size - 1024 samples per channel
         let buffer_size = 1024;
+
+        let sample_format = match spec.sample_format {
+            hound::SampleFormat::Float => crate::audio::SampleFormat::Float,
+            hound::SampleFormat::Int => crate::audio::SampleFormat::Int,
+        };
 
         Ok(Self {
             wav_reader,
@@ -740,7 +773,8 @@ impl WavSampleSource {
             bits_per_sample: spec.bits_per_sample,
             channels: spec.channels,
             sample_rate: spec.sample_rate,
-            sample_format: spec.sample_format,
+            sample_format,
+            duration,
         })
     }
 
@@ -812,6 +846,31 @@ impl SampleSourceTestExt for WavSampleSource {
     }
 }
 
+/// Create a SampleSource from a file, automatically detecting the file type
+pub fn create_sample_source_from_file<P: AsRef<Path>>(
+    path: P,
+) -> Result<Box<dyn SampleSource>, TranscodingError> {
+    let path = path.as_ref();
+
+    // Get file extension to determine type
+    let extension = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    match extension.as_str() {
+        "wav" => {
+            let wav_source = WavSampleSource::from_file(path)?;
+            Ok(Box::new(wav_source))
+        }
+        _ => Err(TranscodingError::SampleConversionFailed(format!(
+            "Unsupported file format: {}",
+            extension
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -860,8 +919,10 @@ mod tests {
     #[test]
     fn test_resampling_quality() {
         // Test actual resampling with simple input
-        let source_format = TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
-        let target_format = TargetFormat::new(44100, hound::SampleFormat::Float, 32).unwrap();
+        let source_format =
+            TargetFormat::new(48000, crate::audio::SampleFormat::Float, 32).unwrap();
+        let target_format =
+            TargetFormat::new(44100, crate::audio::SampleFormat::Float, 32).unwrap();
 
         // Create a mock source for testing
         let mock_source = MemorySampleSource::new(vec![0.1, 0.2, 0.3, 0.4, 0.5], 1, 44100);
@@ -920,9 +981,9 @@ mod tests {
 
         for (source_rate, target_rate) in test_cases {
             let source_format =
-                TargetFormat::new(source_rate, hound::SampleFormat::Float, 32).unwrap();
+                TargetFormat::new(source_rate, crate::audio::SampleFormat::Float, 32).unwrap();
             let target_format =
-                TargetFormat::new(target_rate, hound::SampleFormat::Float, 32).unwrap();
+                TargetFormat::new(target_rate, crate::audio::SampleFormat::Float, 32).unwrap();
 
             // Create a mock source for testing
             let mock_source = MemorySampleSource::new(vec![0.1, 0.2, 0.3], 1, 44100);
@@ -953,8 +1014,10 @@ mod tests {
 
     #[test]
     fn test_rubato_configuration_debug() {
-        let source_format = TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
-        let target_format = TargetFormat::new(44100, hound::SampleFormat::Float, 32).unwrap();
+        let source_format =
+            TargetFormat::new(48000, crate::audio::SampleFormat::Float, 32).unwrap();
+        let target_format =
+            TargetFormat::new(44100, crate::audio::SampleFormat::Float, 32).unwrap();
 
         // Create a mock source for testing
         let mock_source = MemorySampleSource::new(vec![1.0, 2.0, 3.0, 4.0, 5.0], 1, 44100);
@@ -987,9 +1050,9 @@ mod tests {
 
         for (source_rate, target_rate, should_need_resampling) in test_cases {
             let source_format =
-                TargetFormat::new(source_rate, hound::SampleFormat::Float, 32).unwrap();
+                TargetFormat::new(source_rate, crate::audio::SampleFormat::Float, 32).unwrap();
             let target_format =
-                TargetFormat::new(target_rate, hound::SampleFormat::Float, 32).unwrap();
+                TargetFormat::new(target_rate, crate::audio::SampleFormat::Float, 32).unwrap();
 
             // Create a mock source for testing
             let mock_source = MemorySampleSource::new(vec![0.1, 0.2, 0.3], 1, 44100);
@@ -1015,8 +1078,10 @@ mod tests {
     #[test]
     fn test_no_resampling_needed() {
         // Test when no resampling is needed
-        let source_format = TargetFormat::new(44100, hound::SampleFormat::Float, 32).unwrap();
-        let target_format = TargetFormat::new(44100, hound::SampleFormat::Float, 32).unwrap();
+        let source_format =
+            TargetFormat::new(44100, crate::audio::SampleFormat::Float, 32).unwrap();
+        let target_format =
+            TargetFormat::new(44100, crate::audio::SampleFormat::Float, 32).unwrap();
         // Create a mock source for testing
         let mock_source = MemorySampleSource::new(vec![0.1, 0.2, 0.3, 0.4, 0.5], 1, 44100);
         let mut converter =
@@ -1049,8 +1114,10 @@ mod tests {
     #[test]
     fn test_resampling_quality_sine_wave() {
         // Test resampling quality with a sine wave signal
-        let source_format = TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
-        let target_format = TargetFormat::new(44100, hound::SampleFormat::Float, 32).unwrap();
+        let source_format =
+            TargetFormat::new(48000, crate::audio::SampleFormat::Float, 32).unwrap();
+        let target_format =
+            TargetFormat::new(44100, crate::audio::SampleFormat::Float, 32).unwrap();
 
         // Generate a 1kHz sine wave at 48kHz
         let frequency = 1000.0; // 1kHz
@@ -1129,13 +1196,13 @@ mod tests {
         let final_rate = 44100;
 
         let source_format_1 =
-            TargetFormat::new(original_rate, hound::SampleFormat::Float, 32).unwrap();
+            TargetFormat::new(original_rate, crate::audio::SampleFormat::Float, 32).unwrap();
         let target_format_1 =
-            TargetFormat::new(intermediate_rate, hound::SampleFormat::Float, 32).unwrap();
+            TargetFormat::new(intermediate_rate, crate::audio::SampleFormat::Float, 32).unwrap();
         let source_format_2 =
-            TargetFormat::new(intermediate_rate, hound::SampleFormat::Float, 32).unwrap();
+            TargetFormat::new(intermediate_rate, crate::audio::SampleFormat::Float, 32).unwrap();
         let target_format_2 =
-            TargetFormat::new(final_rate, hound::SampleFormat::Float, 32).unwrap();
+            TargetFormat::new(final_rate, crate::audio::SampleFormat::Float, 32).unwrap();
 
         // Generate a test signal: 1kHz sine wave + small amount of noise
         let duration = 0.1; // 100ms
@@ -1214,8 +1281,10 @@ mod tests {
     #[test]
     fn test_resampling_quality_impulse() {
         // Test resampling quality with impulse signal
-        let source_format = TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
-        let target_format = TargetFormat::new(44100, hound::SampleFormat::Float, 32).unwrap();
+        let source_format =
+            TargetFormat::new(48000, crate::audio::SampleFormat::Float, 32).unwrap();
+        let target_format =
+            TargetFormat::new(44100, crate::audio::SampleFormat::Float, 32).unwrap();
 
         // Generate impulse signal (single sample at maximum amplitude)
         let mut input_samples = vec![0.0; 100];
@@ -1272,8 +1341,10 @@ mod tests {
     #[test]
     fn test_resampling_quality_noise() {
         // Test resampling quality with white noise
-        let source_format = TargetFormat::new(44100, hound::SampleFormat::Float, 32).unwrap();
-        let target_format = TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
+        let source_format =
+            TargetFormat::new(44100, crate::audio::SampleFormat::Float, 32).unwrap();
+        let target_format =
+            TargetFormat::new(48000, crate::audio::SampleFormat::Float, 32).unwrap();
 
         // Generate white noise
         let num_samples = 1000;
@@ -1331,8 +1402,10 @@ mod tests {
     #[test]
     fn test_resampling_multichannel_quality() {
         // Test resampling quality with multichannel audio
-        let source_format = TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
-        let target_format = TargetFormat::new(44100, hound::SampleFormat::Float, 32).unwrap();
+        let source_format =
+            TargetFormat::new(48000, crate::audio::SampleFormat::Float, 32).unwrap();
+        let target_format =
+            TargetFormat::new(44100, crate::audio::SampleFormat::Float, 32).unwrap();
         let channels = 2;
 
         // Generate stereo test signal
@@ -1403,8 +1476,10 @@ mod tests {
     #[test]
     fn test_resampling_empty_input() {
         // Test behavior with empty input
-        let source_format = TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
-        let target_format = TargetFormat::new(44100, hound::SampleFormat::Float, 32).unwrap();
+        let source_format =
+            TargetFormat::new(48000, crate::audio::SampleFormat::Float, 32).unwrap();
+        let target_format =
+            TargetFormat::new(44100, crate::audio::SampleFormat::Float, 32).unwrap();
 
         let source = MemorySampleSource::new(vec![], 1, 44100);
         let mut converter =
@@ -1417,8 +1492,10 @@ mod tests {
     #[test]
     fn test_resampling_single_sample() {
         // Test with just one sample
-        let source_format = TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
-        let target_format = TargetFormat::new(44100, hound::SampleFormat::Float, 32).unwrap();
+        let source_format =
+            TargetFormat::new(48000, crate::audio::SampleFormat::Float, 32).unwrap();
+        let target_format =
+            TargetFormat::new(44100, crate::audio::SampleFormat::Float, 32).unwrap();
 
         let source = MemorySampleSource::new(vec![0.5], 1, 44100);
         let mut converter =
@@ -1452,9 +1529,9 @@ mod tests {
 
         for (source_rate, target_rate) in test_cases {
             let source_format =
-                TargetFormat::new(source_rate, hound::SampleFormat::Float, 32).unwrap();
+                TargetFormat::new(source_rate, crate::audio::SampleFormat::Float, 32).unwrap();
             let target_format =
-                TargetFormat::new(target_rate, hound::SampleFormat::Float, 32).unwrap();
+                TargetFormat::new(target_rate, crate::audio::SampleFormat::Float, 32).unwrap();
 
             // Generate a simple test signal
             let duration = 0.01; // 10ms
@@ -1508,8 +1585,10 @@ mod tests {
     #[test]
     fn test_resampling_long_duration() {
         // Test with a longer duration signal to ensure stability
-        let source_format = TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
-        let target_format = TargetFormat::new(44100, hound::SampleFormat::Float, 32).unwrap();
+        let source_format =
+            TargetFormat::new(48000, crate::audio::SampleFormat::Float, 32).unwrap();
+        let target_format =
+            TargetFormat::new(44100, crate::audio::SampleFormat::Float, 32).unwrap();
 
         // Generate a 1-second signal
         let duration = 1.0;
@@ -1565,8 +1644,10 @@ mod tests {
     #[test]
     fn test_resampling_high_frequency_content() {
         // Test with high-frequency content to check for aliasing
-        let source_format = TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
-        let target_format = TargetFormat::new(44100, hound::SampleFormat::Float, 32).unwrap();
+        let source_format =
+            TargetFormat::new(48000, crate::audio::SampleFormat::Float, 32).unwrap();
+        let target_format =
+            TargetFormat::new(44100, crate::audio::SampleFormat::Float, 32).unwrap();
 
         // Generate signal with high-frequency content (near Nyquist)
         let num_samples = 1000;
@@ -1609,8 +1690,10 @@ mod tests {
     #[test]
     fn test_resampling_overflow_protection() {
         // Test with very large values to check for overflow
-        let source_format = TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
-        let target_format = TargetFormat::new(44100, hound::SampleFormat::Float, 32).unwrap();
+        let source_format =
+            TargetFormat::new(48000, crate::audio::SampleFormat::Float, 32).unwrap();
+        let target_format =
+            TargetFormat::new(44100, crate::audio::SampleFormat::Float, 32).unwrap();
 
         // Test with values near the limits
         let test_values = vec![
@@ -1656,8 +1739,10 @@ mod tests {
     #[test]
     fn test_resampling_dc_offset() {
         // Test DC offset handling
-        let source_format = TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
-        let target_format = TargetFormat::new(44100, hound::SampleFormat::Float, 32).unwrap();
+        let source_format =
+            TargetFormat::new(48000, crate::audio::SampleFormat::Float, 32).unwrap();
+        let target_format =
+            TargetFormat::new(44100, crate::audio::SampleFormat::Float, 32).unwrap();
 
         // Generate signal with DC offset
         let dc_offset = 0.1;
@@ -1701,8 +1786,10 @@ mod tests {
     #[test]
     fn test_resampling_simple_snr() {
         // Simple test: just resample a sine wave once and check SNR
-        let source_format = TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
-        let target_format = TargetFormat::new(44100, hound::SampleFormat::Float, 32).unwrap();
+        let source_format =
+            TargetFormat::new(48000, crate::audio::SampleFormat::Float, 32).unwrap();
+        let target_format =
+            TargetFormat::new(44100, crate::audio::SampleFormat::Float, 32).unwrap();
 
         // Generate a simple sine wave
         let frequency = 1000.0; // 1kHz
@@ -1747,9 +1834,11 @@ mod tests {
     #[test]
     fn test_resampling_snr_quality() {
         // Test that resampling maintains reasonable SNR between input and output signals
-        let source_format = TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
-        let target_format = TargetFormat::new(44100, hound::SampleFormat::Float, 32).unwrap();
-        let back_format = TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
+        let source_format =
+            TargetFormat::new(48000, crate::audio::SampleFormat::Float, 32).unwrap();
+        let target_format =
+            TargetFormat::new(44100, crate::audio::SampleFormat::Float, 32).unwrap();
+        let back_format = TargetFormat::new(48000, crate::audio::SampleFormat::Float, 32).unwrap();
 
         // Generate a clean 1kHz sine wave at 48kHz
         let frequency = 1000.0; // 1kHz
@@ -1820,9 +1909,9 @@ mod tests {
 
         for (source_rate, target_rate, frequency) in test_cases {
             let source_format =
-                TargetFormat::new(source_rate, hound::SampleFormat::Float, 32).unwrap();
+                TargetFormat::new(source_rate, crate::audio::SampleFormat::Float, 32).unwrap();
             let target_format =
-                TargetFormat::new(target_rate, hound::SampleFormat::Float, 32).unwrap();
+                TargetFormat::new(target_rate, crate::audio::SampleFormat::Float, 32).unwrap();
 
             // Generate sine wave at the specified frequency
             let duration = 0.05; // 50ms
@@ -1871,8 +1960,10 @@ mod tests {
     #[test]
     fn test_resampling_snr_multichannel() {
         // Test SNR preservation in multichannel (stereo) scenarios
-        let source_format = TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
-        let target_format = TargetFormat::new(44100, hound::SampleFormat::Float, 32).unwrap();
+        let source_format =
+            TargetFormat::new(48000, crate::audio::SampleFormat::Float, 32).unwrap();
+        let target_format =
+            TargetFormat::new(44100, crate::audio::SampleFormat::Float, 32).unwrap();
 
         // Generate stereo signal with different frequencies per channel
         let duration = 0.1; // 100ms
@@ -1904,7 +1995,7 @@ mod tests {
         }
 
         // Second resampling: 44.1kHz -> 48kHz (roundtrip for fair comparison)
-        let back_format = TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
+        let back_format = TargetFormat::new(48000, crate::audio::SampleFormat::Float, 32).unwrap();
         let source_2 = MemorySampleSource::new(intermediate_samples, 1, 44100);
         let mut converter_2 =
             AudioTranscoder::new_with_source(source_2, &target_format, &back_format, 2).unwrap();
@@ -1967,8 +2058,10 @@ mod tests {
     #[test]
     fn test_resampling_rms_complex_signal() {
         // Test RMS preservation with complex multi-frequency signals
-        let source_format = TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
-        let target_format = TargetFormat::new(44100, hound::SampleFormat::Float, 32).unwrap();
+        let source_format =
+            TargetFormat::new(48000, crate::audio::SampleFormat::Float, 32).unwrap();
+        let target_format =
+            TargetFormat::new(44100, crate::audio::SampleFormat::Float, 32).unwrap();
 
         // Generate complex signal with multiple harmonics (fundamental + overtones)
         let duration = 0.1; // 100ms
@@ -2612,30 +2705,5 @@ mod tests {
                 actual
             );
         }
-    }
-}
-
-/// Create a SampleSource from a file, automatically detecting the file type
-pub fn create_sample_source_from_file<P: AsRef<Path>>(
-    path: P,
-) -> Result<Box<dyn SampleSource>, TranscodingError> {
-    let path = path.as_ref();
-
-    // Get file extension to determine type
-    let extension = path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-
-    match extension.as_str() {
-        "wav" => {
-            let wav_source = WavSampleSource::from_file(path)?;
-            Ok(Box::new(wav_source))
-        }
-        _ => Err(TranscodingError::SampleConversionFailed(format!(
-            "Unsupported file format: {}",
-            extension
-        ))),
     }
 }

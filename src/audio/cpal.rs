@@ -24,12 +24,11 @@ use std::{
 };
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use hound::SampleFormat;
 use tracing::{error, info, span, Level};
 
 use crate::audio::mixer::{ActiveSource as MixerActiveSource, AudioMixer};
 use crate::{
-    audio::{Device as AudioDevice, TargetFormat},
+    audio::{Device as AudioDevice, SampleFormat, TargetFormat},
     config,
     playsync::CancelHandle,
     songs::Song,
@@ -183,7 +182,8 @@ impl OutputManager {
             // Create the output stream based on the target format
             // Map hound::SampleFormat to the appropriate CPAL stream type
 
-            let stream_result = if target_format.sample_format == hound::SampleFormat::Float {
+            let stream_result = if target_format.sample_format == crate::audio::SampleFormat::Float
+            {
                 let mut callback = create_single_thread_callback::<f32>(
                     mixer.clone(),
                     source_rx.clone(),

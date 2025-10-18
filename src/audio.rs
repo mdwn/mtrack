@@ -12,7 +12,6 @@ use std::any::Any;
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-use hound::SampleFormat;
 use std::{error::Error, fmt, sync::Arc};
 
 use crate::config;
@@ -22,51 +21,13 @@ use std::collections::HashMap;
 use std::sync::Barrier;
 
 pub mod cpal;
+pub mod format;
 pub mod mixer;
 pub mod mock;
 pub mod sample_source;
 
-/// Target audio format for transcoding
-#[derive(Debug, Clone, PartialEq)]
-pub struct TargetFormat {
-    /// Sample rate in Hz
-    pub sample_rate: u32,
-    /// Sample format (integer or float)
-    pub sample_format: SampleFormat,
-    /// Bits per sample
-    pub bits_per_sample: u16,
-}
-
-impl TargetFormat {
-    /// Creates a new TargetFormat
-    pub fn new(
-        sample_rate: u32,
-        sample_format: SampleFormat,
-        bits_per_sample: u16,
-    ) -> Result<Self, Box<dyn Error>> {
-        // Basic sanity check - let the audio interface decide what's actually supported
-        if sample_rate == 0 {
-            return Err("Sample rate must be greater than 0".into());
-        }
-
-        Ok(TargetFormat {
-            sample_rate,
-            sample_format,
-            bits_per_sample,
-        })
-    }
-}
-
-impl Default for TargetFormat {
-    /// Creates a default target format (44.1kHz, 16-bit integer)
-    fn default() -> Self {
-        TargetFormat {
-            sample_rate: 44100,
-            sample_format: SampleFormat::Int,
-            bits_per_sample: 16,
-        }
-    }
-}
+// Re-export the format types for backward compatibility
+pub use format::{SampleFormat, TargetFormat};
 
 pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {
     /// Plays the given song through the audio interface.
