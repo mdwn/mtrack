@@ -25,6 +25,7 @@ pub mod cpal;
 pub mod mixer;
 pub mod mock;
 pub mod sample_source;
+pub mod simd;
 
 /// Target audio format for transcoding
 #[derive(Debug, Clone, PartialEq)]

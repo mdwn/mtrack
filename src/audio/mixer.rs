@@ -13,6 +13,7 @@
 //
 // Core audio mixing logic that can be used by both CPAL and test implementations
 use crate::audio::sample_source::ChannelMappedSampleSource;
+use crate::audio::simd;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
@@ -107,6 +108,9 @@ impl AudioMixer {
     /// This is the core mixing logic extracted from the CPAL callback
     pub fn process_frame(&self) -> Vec<f32> {
         let mut frame = vec![0.0f32; self.num_channels as usize];
+        
+        // Use SIMD to initialize the frame buffer with zeros
+        simd::clear_buffer_simd(&mut frame);
 
         let mut sources = self.active_sources.write().unwrap();
         let mut finished_source_ids = Vec::new();
@@ -122,21 +126,8 @@ impl AudioMixer {
             // Get next frame from this source
             match active_source.source.next_frame() {
                 Ok(Some(source_frame)) => {
-                    // Process each channel in the source frame using precomputed mappings
-                    for (source_channel, &sample) in source_frame.iter().enumerate() {
-                        // Use precomputed channel mappings for optimal performance
-                        if let Some(output_channels) =
-                            active_source.channel_mappings.get(source_channel)
-                        {
-                            // Map this sample to all precomputed output channels
-                            for &output_index in output_channels {
-                                if output_index < frame.len() {
-                                    // Mix: add new sample to existing
-                                    frame[output_index] += sample;
-                                }
-                            }
-                        }
-                    }
+                    // Use SIMD-optimized mixing with runtime feature detection
+                    simd::mix_samples_simd(&mut frame, &source_frame, &active_source.channel_mappings);
                     true
                 }
                 Ok(None) => {
@@ -159,7 +150,10 @@ impl AudioMixer {
 
         for _ in 0..num_frames {
             let frame = self.process_frame();
-            frames.extend(frame);
+            // Use SIMD-optimized buffer copying for frame extension
+            let start_idx = frames.len();
+            frames.resize(start_idx + frame.len(), 0.0);
+            simd::copy_buffer_simd(&mut frames[start_idx..], &frame);
         }
 
         frames

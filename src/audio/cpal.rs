@@ -28,6 +28,7 @@ use hound::SampleFormat;
 use tracing::{error, info, span, Level};
 
 use crate::audio::mixer::{ActiveSource as MixerActiveSource, AudioMixer};
+use crate::audio::simd;
 use crate::{
     audio::{Device as AudioDevice, TargetFormat},
     config,
@@ -83,8 +84,32 @@ impl fmt::Display for Device {
     }
 }
 
+/// SIMD-optimized callback for f32 samples
+fn create_simd_callback(
+    mixer: AudioMixer,
+    source_rx: crossbeam_channel::Receiver<MixerActiveSource>,
+    num_channels: u16,
+) -> impl FnMut(&mut [f32], &cpal::OutputCallbackInfo) + Send + 'static {
+    move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+        // Clear the output buffer using SIMD
+        simd::clear_buffer_simd(data);
+
+        // Process new sources from the channel
+        while let Ok(new_source) = source_rx.try_recv() {
+            mixer.add_source(new_source);
+        }
+
+        // Use the core mixing logic
+        let frames = data.len() / num_channels as usize;
+        let mixed_frames = mixer.process_frames(frames);
+
+        // Copy the mixed frames to the CPAL buffer using SIMD
+        simd::copy_buffer_simd(data, &mixed_frames);
+    }
+}
+
 /// Single-thread callback function that handles mixing directly
-fn create_single_thread_callback<T: cpal::Sample + cpal::FromSample<f32> + std::fmt::Debug>(
+fn create_single_thread_callback<T: cpal::Sample + cpal::FromSample<f32> + std::fmt::Debug + 'static>(
     mixer: AudioMixer,
     source_rx: crossbeam_channel::Receiver<MixerActiveSource>,
     num_channels: u16,
@@ -93,9 +118,16 @@ where
     f32: cpal::FromSample<T>,
 {
     move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
-        // Clear the output buffer
-        for sample in data.iter_mut() {
-            *sample = T::from_sample(0.0f32);
+        // Clear the output buffer using SIMD optimization for f32
+        if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f32>() {
+            // For f32, we can use SIMD optimization
+            let f32_data: &mut [f32] = unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr() as *mut f32, data.len()) };
+            simd::clear_buffer_simd(f32_data);
+        } else {
+            // For other types, use the original loop
+            for sample in data.iter_mut() {
+                *sample = T::from_sample(0.0f32);
+            }
         }
 
         // Process new sources from the channel
@@ -107,10 +139,17 @@ where
         let frames = data.len() / num_channels as usize;
         let mixed_frames = mixer.process_frames(frames);
 
-        // Copy the mixed frames to the CPAL buffer
-        for (i, &sample) in mixed_frames.iter().enumerate() {
-            if i < data.len() {
-                data[i] = T::from_sample(sample);
+        // Copy the mixed frames to the CPAL buffer using SIMD optimization for f32
+        if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f32>() {
+            // For f32, we can use SIMD optimization
+            let f32_data: &mut [f32] = unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr() as *mut f32, data.len()) };
+            simd::copy_buffer_simd(f32_data, &mixed_frames);
+        } else {
+            // For other types, use the original loop
+            for (i, &sample) in mixed_frames.iter().enumerate() {
+                if i < data.len() {
+                    data[i] = T::from_sample(sample);
+                }
             }
         }
     }

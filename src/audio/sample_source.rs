@@ -12,6 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 use crate::audio::TargetFormat;
+use crate::audio::simd;
 use hound::WavReader;
 use rubato::{FftFixedIn, VecResampler};
 use std::io::BufReader;
@@ -336,13 +337,21 @@ where
                         }
                     }
                     Ok(None) => {
-                        // End of source - fill remaining with zeros
+                        // End of source - fill remaining with zeros using SIMD optimization
                         while samples_collected < expected_input_samples {
                             let channel = samples_collected % self.channels as usize;
                             let frame = samples_collected / self.channels as usize;
                             if frame < input_buffer[channel].len() {
-                                input_buffer[channel][frame] = 0.0;
-                                samples_collected += 1;
+                                // Use SIMD to clear remaining samples in this channel
+                                let remaining_samples = expected_input_samples - samples_collected;
+                                let channel_remaining = remaining_samples.min(input_buffer[channel].len() - frame);
+                                if channel_remaining > 0 {
+                                    simd::clear_buffer_simd(&mut input_buffer[channel][frame..frame + channel_remaining]);
+                                    samples_collected += channel_remaining;
+                                } else {
+                                    input_buffer[channel][frame] = 0.0;
+                                    samples_collected += 1;
+                                }
                             }
                         }
                         self.resampling_state.is_finished = true;
@@ -824,14 +833,9 @@ mod tests {
             return 0.0;
         }
 
-        // Simple high-pass filter approximation: difference between consecutive samples
-        let mut high_freq_energy = 0.0;
-        for i in 1..samples.len() {
-            let diff = samples[i] - samples[i - 1];
-            high_freq_energy += diff * diff;
-        }
-
-        high_freq_energy / (samples.len() - 1) as f32
+        // Use SIMD-optimized high-frequency energy calculation
+        // This calculates the sum of squared differences between consecutive samples
+        simd::calculate_high_frequency_energy_simd(samples)
     }
 
     #[test]
@@ -1390,14 +1394,14 @@ mod tests {
         );
     }
 
-    /// Calculate RMS (Root Mean Square) of a signal
+    /// Calculate RMS (Root Mean Square) of a signal using SIMD optimization
     fn calculate_rms(samples: &[f32]) -> f32 {
         if samples.is_empty() {
             return 0.0;
         }
 
-        let sum_squares: f32 = samples.iter().map(|&x| x * x).sum();
-        (sum_squares / samples.len() as f32).sqrt()
+        // Use SIMD-optimized RMS calculation with runtime feature detection
+        simd::calculate_rms_simd(samples)
     }
 
     #[test]
