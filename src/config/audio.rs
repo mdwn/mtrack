@@ -81,7 +81,7 @@ impl Audio {
     pub fn sample_format(&self) -> Result<SampleFormat, Box<dyn Error>> {
         match self.sample_format.as_deref() {
             Some(format) => SampleFormat::from_str(format),
-            None => Ok(SampleFormat::Float), // Default to float for better precision
+            None => Ok(SampleFormat::Int),
         }
     }
 
