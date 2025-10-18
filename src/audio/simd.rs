@@ -346,8 +346,8 @@ unsafe fn mix_samples_neon(
     source_frame: &[f32],
     channel_mappings: &[Vec<usize>],
 ) {
-    // Process 8 samples at a time with NEON (2x 4-sample vectors)
-    const SIMD_WIDTH: usize = 8;
+    // Process 32 samples at a time with NEON (8x 4-sample vectors)
+    const SIMD_WIDTH: usize = 32;
     
     for (source_channel, &sample) in source_frame.iter().enumerate() {
         if let Some(output_channels) = channel_mappings.get(source_channel) {
@@ -356,7 +356,7 @@ unsafe fn mix_samples_neon(
             while output_idx + SIMD_WIDTH <= output_channels.len() {
                 let indices = &output_channels[output_idx..output_idx + SIMD_WIDTH];
                 
-                // Load 8 indices and samples
+                // Load 32 indices and samples
                 let mut indices_simd = [0i32; SIMD_WIDTH];
                 let mut samples_simd = [0.0f32; SIMD_WIDTH];
                 
@@ -375,7 +375,7 @@ unsafe fn mix_samples_neon(
                     }
                 }
                 
-                // Perform SIMD addition (2x 4-sample vectors)
+                // Perform SIMD addition (8x 4-sample vectors for 32 samples total)
                 let frame_vec1 = vld1q_f32(frame_values.as_ptr());
                 let sample_vec1 = vld1q_f32(samples_simd.as_ptr());
                 let result_vec1 = vaddq_f32(frame_vec1, sample_vec1);
@@ -384,10 +384,40 @@ unsafe fn mix_samples_neon(
                 let sample_vec2 = vld1q_f32(samples_simd.as_ptr().add(4));
                 let result_vec2 = vaddq_f32(frame_vec2, sample_vec2);
                 
+                let frame_vec3 = vld1q_f32(frame_values.as_ptr().add(8));
+                let sample_vec3 = vld1q_f32(samples_simd.as_ptr().add(8));
+                let result_vec3 = vaddq_f32(frame_vec3, sample_vec3);
+                
+                let frame_vec4 = vld1q_f32(frame_values.as_ptr().add(12));
+                let sample_vec4 = vld1q_f32(samples_simd.as_ptr().add(12));
+                let result_vec4 = vaddq_f32(frame_vec4, sample_vec4);
+                
+                let frame_vec5 = vld1q_f32(frame_values.as_ptr().add(16));
+                let sample_vec5 = vld1q_f32(samples_simd.as_ptr().add(16));
+                let result_vec5 = vaddq_f32(frame_vec5, sample_vec5);
+                
+                let frame_vec6 = vld1q_f32(frame_values.as_ptr().add(20));
+                let sample_vec6 = vld1q_f32(samples_simd.as_ptr().add(20));
+                let result_vec6 = vaddq_f32(frame_vec6, sample_vec6);
+                
+                let frame_vec7 = vld1q_f32(frame_values.as_ptr().add(24));
+                let sample_vec7 = vld1q_f32(samples_simd.as_ptr().add(24));
+                let result_vec7 = vaddq_f32(frame_vec7, sample_vec7);
+                
+                let frame_vec8 = vld1q_f32(frame_values.as_ptr().add(28));
+                let sample_vec8 = vld1q_f32(samples_simd.as_ptr().add(28));
+                let result_vec8 = vaddq_f32(frame_vec8, sample_vec8);
+                
                 // Store results back
                 let mut result = [0.0f32; SIMD_WIDTH];
                 vst1q_f32(result.as_mut_ptr(), result_vec1);
                 vst1q_f32(result.as_mut_ptr().add(4), result_vec2);
+                vst1q_f32(result.as_mut_ptr().add(8), result_vec3);
+                vst1q_f32(result.as_mut_ptr().add(12), result_vec4);
+                vst1q_f32(result.as_mut_ptr().add(16), result_vec5);
+                vst1q_f32(result.as_mut_ptr().add(20), result_vec6);
+                vst1q_f32(result.as_mut_ptr().add(24), result_vec7);
+                vst1q_f32(result.as_mut_ptr().add(28), result_vec8);
                 
                 for (i, &idx) in indices.iter().enumerate() {
                     if idx < frame.len() {
@@ -411,14 +441,20 @@ unsafe fn mix_samples_neon(
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 unsafe fn clear_buffer_neon(buffer: &mut [f32]) {
-    const SIMD_WIDTH: usize = 8;  // Process 8 samples at a time
+    const SIMD_WIDTH: usize = 32;  // Process 32 samples at a time
     let mut idx = 0;
     
-    // Process 8 samples at a time (2x 4-sample vectors)
+    // Process 32 samples at a time (8x 4-sample vectors)
     while idx + SIMD_WIDTH <= buffer.len() {
         let zero_vec = vdupq_n_f32(0.0);
         vst1q_f32(buffer.as_mut_ptr().add(idx), zero_vec);
         vst1q_f32(buffer.as_mut_ptr().add(idx + 4), zero_vec);
+        vst1q_f32(buffer.as_mut_ptr().add(idx + 8), zero_vec);
+        vst1q_f32(buffer.as_mut_ptr().add(idx + 12), zero_vec);
+        vst1q_f32(buffer.as_mut_ptr().add(idx + 16), zero_vec);
+        vst1q_f32(buffer.as_mut_ptr().add(idx + 20), zero_vec);
+        vst1q_f32(buffer.as_mut_ptr().add(idx + 24), zero_vec);
+        vst1q_f32(buffer.as_mut_ptr().add(idx + 28), zero_vec);
         idx += SIMD_WIDTH;
     }
     
@@ -431,16 +467,28 @@ unsafe fn clear_buffer_neon(buffer: &mut [f32]) {
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 unsafe fn copy_buffer_neon(dst: &mut [f32], src: &[f32]) {
-    const SIMD_WIDTH: usize = 8;  // Process 8 samples at a time
+    const SIMD_WIDTH: usize = 32;  // Process 32 samples at a time
     let len = std::cmp::min(dst.len(), src.len());
     let mut idx = 0;
     
-    // Process 8 samples at a time (2x 4-sample vectors)
+    // Process 32 samples at a time (8x 4-sample vectors)
     while idx + SIMD_WIDTH <= len {
         let src_vec1 = vld1q_f32(src.as_ptr().add(idx));
         let src_vec2 = vld1q_f32(src.as_ptr().add(idx + 4));
+        let src_vec3 = vld1q_f32(src.as_ptr().add(idx + 8));
+        let src_vec4 = vld1q_f32(src.as_ptr().add(idx + 12));
+        let src_vec5 = vld1q_f32(src.as_ptr().add(idx + 16));
+        let src_vec6 = vld1q_f32(src.as_ptr().add(idx + 20));
+        let src_vec7 = vld1q_f32(src.as_ptr().add(idx + 24));
+        let src_vec8 = vld1q_f32(src.as_ptr().add(idx + 28));
         vst1q_f32(dst.as_mut_ptr().add(idx), src_vec1);
         vst1q_f32(dst.as_mut_ptr().add(idx + 4), src_vec2);
+        vst1q_f32(dst.as_mut_ptr().add(idx + 8), src_vec3);
+        vst1q_f32(dst.as_mut_ptr().add(idx + 12), src_vec4);
+        vst1q_f32(dst.as_mut_ptr().add(idx + 16), src_vec5);
+        vst1q_f32(dst.as_mut_ptr().add(idx + 20), src_vec6);
+        vst1q_f32(dst.as_mut_ptr().add(idx + 24), src_vec7);
+        vst1q_f32(dst.as_mut_ptr().add(idx + 28), src_vec8);
         idx += SIMD_WIDTH;
     }
     
