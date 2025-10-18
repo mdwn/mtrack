@@ -176,64 +176,18 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
 
-    /// Mock sample source for testing
-    struct MockSampleSource {
+    /// Helper function to create a test source using MemorySampleSource wrapped in ChannelMappedSource
+    fn create_test_source(
         samples: Vec<f32>,
-        position: usize,
         channel_count: u16,
         mappings: Vec<Vec<String>>,
-    }
-
-    impl MockSampleSource {
-        fn new(samples: Vec<f32>, channel_count: u16, mappings: Vec<Vec<String>>) -> Self {
-            Self {
-                samples,
-                position: 0,
-                channel_count,
-                mappings,
-            }
-        }
-    }
-
-    impl ChannelMappedSampleSource for MockSampleSource {
-        fn next_sample(
-            &mut self,
-        ) -> Result<Option<f32>, crate::audio::sample_source::TranscodingError> {
-            if self.position < self.samples.len() {
-                let sample = self.samples[self.position];
-                self.position += 1;
-                Ok(Some(sample))
-            } else {
-                Ok(None)
-            }
-        }
-
-        fn next_frame(
-            &mut self,
-        ) -> Result<Option<Vec<f32>>, crate::audio::sample_source::TranscodingError> {
-            if self.position < self.samples.len() {
-                let mut frame = Vec::new();
-                for _ in 0..self.channel_count {
-                    if self.position < self.samples.len() {
-                        frame.push(self.samples[self.position]);
-                        self.position += 1;
-                    } else {
-                        frame.push(0.0);
-                    }
-                }
-                Ok(Some(frame))
-            } else {
-                Ok(None)
-            }
-        }
-
-        fn source_channel_count(&self) -> u16 {
-            self.channel_count
-        }
-
-        fn channel_mappings(&self) -> &Vec<Vec<String>> {
-            &self.mappings
-        }
+    ) -> Box<dyn ChannelMappedSampleSource> {
+        let memory_source = crate::audio::sample_source::MemorySampleSource::new(samples, channel_count, 44100);
+        Box::new(crate::audio::sample_source::ChannelMappedSource::new(
+            Box::new(memory_source),
+            mappings,
+            channel_count,
+        ))
     }
 
     #[test]
@@ -242,11 +196,11 @@ mod tests {
 
         // Create a test source with known samples - single channel
         let samples = vec![0.5, 0.8]; // 2 frames of 1 channel
-        let source = MockSampleSource::new(samples, 1, vec![vec!["test".to_string()]]);
+        let source = create_test_source(samples, 1, vec![vec!["test".to_string()]]);
 
         let active_source = ActiveSource {
             id: 1,
-            source: Box::new(source),
+            source,
             track_mappings: {
                 let mut map = HashMap::new();
                 map.insert("test".to_string(), vec![1]); // Map to channel 1 only
@@ -276,12 +230,12 @@ mod tests {
         let mixer = AudioMixer::new(2, 44100);
 
         // Add two sources
-        let source1 = MockSampleSource::new(
+        let source1 = create_test_source(
             vec![0.5, 0.3],
             2,
             vec![vec!["ch0".to_string()], vec!["ch1".to_string()]],
         );
-        let source2 = MockSampleSource::new(
+        let source2 = create_test_source(
             vec![0.2, 0.1],
             2,
             vec![vec!["ch0".to_string()], vec!["ch1".to_string()]],
@@ -289,7 +243,7 @@ mod tests {
 
         let active_source1 = ActiveSource {
             id: 1,
-            source: Box::new(source1),
+            source: source1,
             track_mappings: {
                 let mut map = HashMap::new();
                 map.insert("ch0".to_string(), vec![1]);
@@ -303,7 +257,7 @@ mod tests {
 
         let active_source2 = ActiveSource {
             id: 2,
-            source: Box::new(source2),
+            source: source2,
             track_mappings: {
                 let mut map = HashMap::new();
                 map.insert("ch0".to_string(), vec![1]);
@@ -337,7 +291,7 @@ mod tests {
         samples[32] = 0.8; // Channel 0, frame 1
         samples[33] = 0.2; // Channel 1, frame 1
 
-        let source = MockSampleSource::new(samples, 32, {
+        let source = create_test_source(samples, 32, {
             let mut mappings = vec![vec![]; 32];
             mappings[0] = vec!["ch0".to_string()];
             mappings[1] = vec!["ch1".to_string()];
@@ -345,7 +299,7 @@ mod tests {
         });
         let active_source = ActiveSource {
             id: 1,
-            source: Box::new(source),
+            source,
             track_mappings: {
                 let mut map = HashMap::new();
                 map.insert("ch0".to_string(), vec![1]); // Map to channel 1

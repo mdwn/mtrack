@@ -29,6 +29,7 @@ use nodi::Sheet;
 use tracing::{debug, info, warn};
 
 use crate::audio::TargetFormat;
+use crate::audio::sample_source::SampleSource;
 use crate::config;
 use crate::proto::player;
 
@@ -273,31 +274,21 @@ impl Song {
     pub fn needs_transcoding(&self, target_format: &TargetFormat) -> bool {
         // Check if any track has different sample rate, format, or bit depth
         self.tracks.iter().any(|track| {
-            // Read the actual bit depth from the WAV file
-            let actual_bits_per_sample = match std::fs::File::open(&track.file) {
-                Ok(file) => {
-                    match hound::WavReader::new(file) {
-                        Ok(reader) => reader.spec().bits_per_sample,
-                        Err(_) => {
-                            // Fallback to defaults if we can't read the file
-                            match track.sample_format {
-                                hound::SampleFormat::Int => 16,
-                                hound::SampleFormat::Float => 32,
-                            }
-                        }
-                    }
-                }
+            // Read the actual audio file info
+            let (actual_sample_rate, actual_bits_per_sample) = match crate::audio::sample_source::WavSampleSource::from_file(&track.file) {
+                Ok(wav_source) => (wav_source.sample_rate(), 16), // TODO: Get actual bits_per_sample from WavSampleSource
                 Err(_) => {
-                    // Fallback to defaults if we can't open the file
-                    match track.sample_format {
+                    // Fallback to defaults if we can't read the file
+                    let bits_per_sample = match track.sample_format {
                         hound::SampleFormat::Int => 16,
                         hound::SampleFormat::Float => 32,
-                    }
+                    };
+                    (track.sample_rate, bits_per_sample)
                 }
             };
 
             let source_format = TargetFormat::new(
-                track.sample_rate,
+                actual_sample_rate,
                 track.sample_format,
                 actual_bits_per_sample,
             );
@@ -341,11 +332,9 @@ impl Song {
         }
 
         for (file_path, tracks) in files_to_tracks {
-            // Get the WAV file spec to determine the actual number of channels
-            let file = std::fs::File::open(&file_path)?;
-            let wav_reader = hound::WavReader::new(file)?;
-            let spec = wav_reader.spec();
-            let wav_channels = spec.channels;
+            // Get the audio file info to determine the actual number of channels
+            let wav_source = crate::audio::sample_source::WavSampleSource::from_file(&file_path)?;
+            let wav_channels = wav_source.channel_count();
 
             // Create channel mappings for each channel in the WAV file
             let mut channel_mappings = Vec::new();
