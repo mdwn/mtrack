@@ -923,23 +923,27 @@ mod tests {
         // Test duration calculation for mono audio
         let samples = vec![1.0, 2.0, 3.0, 4.0, 5.0]; // 5 samples
         let source = MemorySampleSource::new(samples.clone(), 1, 44100);
-        
+
         // Calculate expected duration using the same formula as the implementation
         let total_samples = samples.len() as f64;
         let samples_per_channel = total_samples / 1.0; // mono
         let duration_secs = samples_per_channel / 44100.0;
         let expected_duration = std::time::Duration::from_secs_f64(duration_secs);
-        
+
         let actual_duration = source.duration().unwrap();
-        
+
         // Allow for small rounding differences
         let diff = if actual_duration > expected_duration {
             actual_duration - expected_duration
         } else {
             expected_duration - actual_duration
         };
-        assert!(diff < std::time::Duration::from_micros(1), 
-                "Duration mismatch: expected {:?}, got {:?}", expected_duration, actual_duration);
+        assert!(
+            diff < std::time::Duration::from_micros(1),
+            "Duration mismatch: expected {:?}, got {:?}",
+            expected_duration,
+            actual_duration
+        );
     }
 
     #[test]
@@ -947,23 +951,27 @@ mod tests {
         // Test duration calculation for stereo audio
         let samples = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]; // 6 samples (3 frames * 2 channels)
         let source = MemorySampleSource::new(samples.clone(), 2, 44100);
-        
+
         // Calculate expected duration using the same formula as the implementation
         let total_samples = samples.len() as f64;
         let samples_per_channel = total_samples / 2.0; // stereo
         let duration_secs = samples_per_channel / 44100.0;
         let expected_duration = std::time::Duration::from_secs_f64(duration_secs);
-        
+
         let actual_duration = source.duration().unwrap();
-        
+
         // Allow for small rounding differences
         let diff = if actual_duration > expected_duration {
             actual_duration - expected_duration
         } else {
             expected_duration - actual_duration
         };
-        assert!(diff < std::time::Duration::from_micros(1), 
-                "Duration mismatch: expected {:?}, got {:?}", expected_duration, actual_duration);
+        assert!(
+            diff < std::time::Duration::from_micros(1),
+            "Duration mismatch: expected {:?}, got {:?}",
+            expected_duration,
+            actual_duration
+        );
     }
 
     #[test]
