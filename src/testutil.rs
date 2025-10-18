@@ -141,8 +141,9 @@ pub fn write_wav_with_bits<S: hound::Sample + Copy + 'static>(
     // Determine sample format based on the type
     let sample_format = if std::any::TypeId::of::<S>() == std::any::TypeId::of::<f32>() {
         SampleFormat::Float
-    } else if std::any::TypeId::of::<S>() == std::any::TypeId::of::<i32>() 
-        || std::any::TypeId::of::<S>() == std::any::TypeId::of::<i16>() {
+    } else if std::any::TypeId::of::<S>() == std::any::TypeId::of::<i32>()
+        || std::any::TypeId::of::<S>() == std::any::TypeId::of::<i16>()
+    {
         SampleFormat::Int
     } else {
         return Err("Unsupported sample format".into());

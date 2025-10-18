@@ -1,3 +1,16 @@
+// Copyright (C) 2025 Michael Wilson <mike@mdwn.dev>
+//
+// This program is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free Software
+// Foundation, version 3.
+//
+// This program is distributed in the hope that it will be useful, but WITHOUT
+// ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License along with
+// this program. If not, see <https://www.gnu.org/licenses/>.
+//
 // Core audio mixing logic that can be used by both CPAL and test implementations
 use crate::audio::sample_source::ChannelMappedSampleSource;
 use std::collections::HashMap;
@@ -182,7 +195,8 @@ mod tests {
         channel_count: u16,
         mappings: Vec<Vec<String>>,
     ) -> Box<dyn ChannelMappedSampleSource> {
-        let memory_source = crate::audio::sample_source::MemorySampleSource::new(samples, channel_count, 44100);
+        let memory_source =
+            crate::audio::sample_source::MemorySampleSource::new(samples, channel_count, 44100);
         Box::new(crate::audio::sample_source::ChannelMappedSource::new(
             Box::new(memory_source),
             mappings,

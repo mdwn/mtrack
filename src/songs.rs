@@ -28,8 +28,8 @@ use nodi::Sheet;
 
 use tracing::{debug, info, warn};
 
-use crate::audio::TargetFormat;
 use crate::audio::sample_source::SampleSource;
+use crate::audio::TargetFormat;
 use crate::config;
 use crate::proto::player;
 
@@ -283,7 +283,7 @@ impl Song {
                         track.sample_format,
                         sample_source.bits_per_sample(),
                     );
-                    
+
                     if let Ok(source_format) = source_format {
                         // Check if any format parameter differs
                         source_format.sample_rate != target_format.sample_rate
@@ -934,10 +934,7 @@ mod test {
         assert_eq!(first_song.num_channels, 1, "Unexpected number of channels");
         let track = tracks.first().unwrap();
         assert_eq!(track.name, "mono_track", "Unexpected name");
-        assert!(
-            fs::exists(&track.file).unwrap(),
-            "Track file not found"
-        );
+        assert!(fs::exists(&track.file).unwrap(), "Track file not found");
         Ok(())
     }
 

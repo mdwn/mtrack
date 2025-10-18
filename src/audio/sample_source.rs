@@ -54,17 +54,17 @@ pub trait SampleSource: Send + Sync {
     /// Returns Ok(None) if the source is finished
     /// Returns Err(error) if an error occurred
     fn next_sample(&mut self) -> Result<Option<f32>, TranscodingError>;
-    
+
     /// Get the number of channels in this source
     fn channel_count(&self) -> u16;
-    
+
     /// Get the sample rate of this source
     #[allow(dead_code)]
     fn sample_rate(&self) -> u32;
-    
+
     /// Get the bits per sample of this source
     fn bits_per_sample(&self) -> u16;
-    
+
     /// Get the sample format of this source
     fn sample_format(&self) -> hound::SampleFormat;
 }
@@ -210,19 +210,19 @@ where
             }
         }
     }
-    
+
     fn channel_count(&self) -> u16 {
         self.channels
     }
-    
+
     fn sample_rate(&self) -> u32 {
         self.target_rate
     }
-    
+
     fn bits_per_sample(&self) -> u16 {
         self.target_bits_per_sample
     }
-    
+
     fn sample_format(&self) -> hound::SampleFormat {
         hound::SampleFormat::Float // AudioTranscoder outputs float samples
     }
@@ -529,19 +529,19 @@ impl SampleSource for MemorySampleSource {
             Ok(Some(sample))
         }
     }
-    
+
     fn channel_count(&self) -> u16 {
         self.channel_count
     }
-    
+
     fn sample_rate(&self) -> u32 {
         self.sample_rate
     }
-    
+
     fn bits_per_sample(&self) -> u16 {
         32 // Memory samples are typically 32-bit float
     }
-    
+
     fn sample_format(&self) -> hound::SampleFormat {
         hound::SampleFormat::Float // Memory samples are float
     }
@@ -610,19 +610,19 @@ impl SampleSource for SampleSourceWrapper {
     fn next_sample(&mut self) -> Result<Option<f32>, TranscodingError> {
         self.source.next_sample()
     }
-    
+
     fn channel_count(&self) -> u16 {
         self.source.channel_count()
     }
-    
+
     fn sample_rate(&self) -> u32 {
         self.source.sample_rate()
     }
-    
+
     fn bits_per_sample(&self) -> u16 {
         self.source.bits_per_sample()
     }
-    
+
     fn sample_format(&self) -> hound::SampleFormat {
         self.source.sample_format()
     }
@@ -638,7 +638,8 @@ pub fn create_channel_mapped_sample_source(
         source.sample_rate(),
         source.sample_format(),
         source.bits_per_sample(),
-    ).map_err(|e| TranscodingError::SampleConversionFailed(e.to_string()))?;
+    )
+    .map_err(|e| TranscodingError::SampleConversionFailed(e.to_string()))?;
 
     let needs_transcoding = source_format.sample_rate != target_format.sample_rate
         || source_format.sample_format != target_format.sample_format
@@ -664,7 +665,6 @@ pub fn create_channel_mapped_sample_source(
         channel_count,
     )))
 }
-
 
 /// A sample source that reads WAV files and provides scaled samples
 /// This is the raw WAV reading component - no transcoding logic
@@ -704,19 +704,19 @@ impl SampleSource for WavSampleSource {
         self.buffer_position += 1;
         Ok(Some(sample))
     }
-    
+
     fn channel_count(&self) -> u16 {
         self.channels
     }
-    
+
     fn sample_rate(&self) -> u32 {
         self.sample_rate
     }
-    
+
     fn bits_per_sample(&self) -> u16 {
         self.bits_per_sample
     }
-    
+
     fn sample_format(&self) -> hound::SampleFormat {
         self.sample_format
     }
@@ -743,7 +743,6 @@ impl WavSampleSource {
             sample_format: spec.sample_format,
         })
     }
-
 
     /// Refills the sample buffer by reading a chunk from the WAV file
     fn refill_buffer(&mut self) -> Result<(), TranscodingError> {
@@ -2616,29 +2615,27 @@ mod tests {
     }
 }
 
-
 /// Create a SampleSource from a file, automatically detecting the file type
 pub fn create_sample_source_from_file<P: AsRef<Path>>(
     path: P,
 ) -> Result<Box<dyn SampleSource>, TranscodingError> {
     let path = path.as_ref();
-    
+
     // Get file extension to determine type
     let extension = path
         .extension()
         .and_then(|ext| ext.to_str())
         .unwrap_or("")
         .to_lowercase();
-    
+
     match extension.as_str() {
         "wav" => {
             let wav_source = WavSampleSource::from_file(path)?;
             Ok(Box::new(wav_source))
         }
-        _ => {
-            Err(TranscodingError::SampleConversionFailed(
-                format!("Unsupported file format: {}", extension)
-            ))
-        }
+        _ => Err(TranscodingError::SampleConversionFailed(format!(
+            "Unsupported file format: {}",
+            extension
+        ))),
     }
 }

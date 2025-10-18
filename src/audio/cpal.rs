@@ -68,7 +68,6 @@ struct OutputManager {
     output_thread: Option<thread::JoinHandle<()>>,
 }
 
-
 impl fmt::Display for Device {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -123,10 +122,10 @@ impl Drop for OutputManager {
                 self.mixer.remove_sources(source_ids);
             }
         }
-        
+
         // Close the channels to signal the audio callback to stop
         // Note: The channels will be automatically dropped when the struct is dropped
-        
+
         // Wait for the output thread to finish
         if let Some(thread) = self.output_thread.take() {
             let _ = thread.join();
@@ -156,7 +155,6 @@ impl OutputManager {
         self.source_tx.send(source)?;
         Ok(())
     }
-
 
     /// Starts the output thread that creates and manages the CPAL stream.
     fn start_output_thread(
@@ -368,7 +366,6 @@ impl Device {
             None => Err(format!("no device found with name {}", name).into()),
         }
     }
-
 }
 
 impl AudioDevice for Device {
