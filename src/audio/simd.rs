@@ -20,6 +20,9 @@ use std::arch::x86_64::*;
 #[cfg(target_arch = "aarch64")]
 use std::arch::aarch64::*;
 
+#[cfg(target_arch = "aarch64")]
+use std::arch::is_aarch64_feature_detected;
+
 /// SIMD-optimized audio mixing with runtime feature detection
 /// Falls back to scalar implementation on non-SIMD platforms
 pub fn mix_samples_simd(
