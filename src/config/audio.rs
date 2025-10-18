@@ -14,8 +14,9 @@
 use std::{error::Error, time::Duration};
 
 use duration_string::DurationString;
-use hound::SampleFormat;
 use serde::Deserialize;
+
+use crate::audio::SampleFormat;
 
 const DEFAULT_AUDIO_PLAYBACK_DELAY: Duration = Duration::ZERO;
 
@@ -71,9 +72,7 @@ impl Audio {
     /// Returns the target sample format (default: Float)
     pub fn sample_format(&self) -> Result<SampleFormat, Box<dyn Error>> {
         match self.sample_format.as_deref() {
-            Some("float") | Some("Float") => Ok(SampleFormat::Float),
-            Some("int") | Some("Int") => Ok(SampleFormat::Int),
-            Some(format) => Err(format!("Unsupported sample format: {}", format).into()),
+            Some(format) => SampleFormat::from_str(format),
             None => Ok(SampleFormat::Float), // Default to float for better precision
         }
     }

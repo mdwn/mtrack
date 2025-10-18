@@ -19,7 +19,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::{cmp, fmt};
 
-use hound::{SampleFormat, WavReader};
+use crate::audio::sample_source::create_sample_source_from_file;
+use crate::audio::SampleFormat;
 use midly::live::LiveEvent;
 use midly::{Format, Smf};
 use nodi::timers::Ticker;
@@ -52,7 +53,7 @@ pub struct Song {
     /// The sample rate of this song.
     sample_rate: u32,
     /// The sample format.
-    sample_format: hound::SampleFormat,
+    sample_format: SampleFormat,
     /// The total duration of the song.
     duration: Duration,
     /// The individual audio tracks.
@@ -551,11 +552,10 @@ impl Track {
         let file_channel = config.file_channel();
         let name = config.name();
 
-        let reader = WavReader::open(&track_file)?;
-        let spec = reader.spec();
-        let sample_rate = spec.sample_rate;
-        let duration = Duration::from_secs(u64::from(reader.duration()) / u64::from(sample_rate));
-        if spec.channels > 1 && file_channel.is_none() {
+        let source = create_sample_source_from_file(&track_file)?;
+        let sample_rate = source.sample_rate();
+        let duration = source.duration().unwrap_or(Duration::ZERO);
+        if source.channel_count() > 1 && file_channel.is_none() {
             return Err(format!(
                 "track {} has more than one channel but file_channel is not specified",
                 name,
@@ -569,7 +569,7 @@ impl Track {
             file: track_file.clone(),
             file_channel,
             sample_rate,
-            sample_format: spec.sample_format,
+            sample_format: source.sample_format().into(),
             duration,
         })
     }
@@ -586,12 +586,11 @@ impl Track {
 
         assert_eq!(extension, "wav", "Expected file name to end in '.wav'");
         let track_name = stem.to_string();
-        let reader = WavReader::open(track_path)?;
-        let spec = reader.spec();
-        let sample_rate = spec.sample_rate;
-        let sample_format = spec.sample_format;
-        let duration = Duration::from_secs(u64::from(reader.duration()) / u64::from(sample_rate));
-        let tracks = match spec.channels {
+        let source = create_sample_source_from_file(track_path)?;
+        let sample_rate = source.sample_rate();
+        let sample_format = source.sample_format().into();
+        let duration = source.duration().unwrap_or(Duration::ZERO);
+        let tracks = match source.channel_count() {
             0 => vec![],
             1 => vec![Track {
                 name: track_name,
@@ -619,7 +618,7 @@ impl Track {
                     duration,
                 },
             ],
-            _ => (0..spec.channels)
+            _ => (0..source.channel_count())
                 .map(|channel| Track {
                     name: format!("{track_name}-{channel}"),
                     file: track_path.to_path_buf(),
@@ -1044,9 +1043,9 @@ mod test {
 
     #[test]
     fn test_transcoding_detection() {
+        use crate::audio::SampleFormat;
         use crate::audio::TargetFormat;
         use crate::testutil::write_wav_with_bits;
-        use hound::SampleFormat;
         use tempfile::tempdir;
 
         let tempdir = tempdir().unwrap();
@@ -1086,9 +1085,9 @@ mod test {
 
     #[test]
     fn test_no_transcoding_for_identical_formats() {
+        use crate::audio::SampleFormat;
         use crate::audio::TargetFormat;
         use crate::testutil::write_wav_with_bits;
-        use hound::SampleFormat;
         use tempfile::tempdir;
 
         let tempdir = tempdir().unwrap();
@@ -1123,8 +1122,6 @@ mod test {
     #[test]
     fn test_file_io_performance() -> Result<(), Box<dyn Error>> {
         use crate::testutil::write_wav_with_bits;
-        use hound::WavReader;
-        use std::fs::File;
         use std::time::Instant;
         use tempfile::tempdir;
 
@@ -1165,19 +1162,19 @@ mod test {
             (duration_samples * 4) as f64 / write_time.as_secs_f64() / 1_000_000.0
         );
 
-        // Measure file reading time with hound
+        // Measure file reading time with sample source
         let start = Instant::now();
-        let file = File::open(&wav_path)?;
-        let mut wav_reader = WavReader::new(file)?;
-        let spec = wav_reader.spec();
+        let mut source = crate::audio::sample_source::create_sample_source_from_file(&wav_path)?;
         println!(
             "WAV file spec: {}Hz, {}bit, {}ch",
-            spec.sample_rate, spec.bits_per_sample, spec.channels
+            source.sample_rate(),
+            source.bits_per_sample(),
+            source.channel_count()
         );
 
         // Read all samples
         let mut samples_read = 0;
-        for _sample in wav_reader.samples::<i32>() {
+        while let Ok(Some(_)) = source.next_sample() {
             samples_read += 1;
         }
         let read_time = start.elapsed();

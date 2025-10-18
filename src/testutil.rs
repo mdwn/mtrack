@@ -24,41 +24,6 @@ use std::{
 #[cfg(test)]
 use hound::{SampleFormat, WavSpec, WavWriter};
 
-/// Audio test utilities for generating test signals and validating results
-#[cfg(test)]
-pub mod audio_test_utils {
-    /// Calculate RMS (Root Mean Square) of a signal
-    pub fn calculate_rms(samples: &[f32]) -> f32 {
-        if samples.is_empty() {
-            return 0.0;
-        }
-
-        let sum_squares: f32 = samples.iter().map(|&x| x * x).sum();
-        (sum_squares / samples.len() as f32).sqrt()
-    }
-
-    /// Calculate Signal-to-Noise Ratio (SNR) in dB
-    pub fn calculate_snr(original: &[f32], processed: &[f32]) -> f32 {
-        if original.len() != processed.len() {
-            return 0.0;
-        }
-
-        let signal_power = calculate_rms(original).powi(2);
-        let noise_power = original
-            .iter()
-            .zip(processed.iter())
-            .map(|(o, p)| (o - p).powi(2))
-            .sum::<f32>()
-            / original.len() as f32;
-
-        if noise_power == 0.0 {
-            return f32::INFINITY;
-        }
-
-        10.0 * (signal_power / noise_power).log10()
-    }
-}
-
 /// Wait for the given predicate to return true or fail.
 #[inline]
 #[cfg(test)]
@@ -169,4 +134,39 @@ pub fn write_wav_with_bits<S: hound::Sample + Copy + 'static>(
     }
 
     Ok(())
+}
+
+/// Audio test utilities for generating test signals and validating results
+#[cfg(test)]
+pub mod audio_test_utils {
+    /// Calculate RMS (Root Mean Square) of a signal
+    pub fn calculate_rms(samples: &[f32]) -> f32 {
+        if samples.is_empty() {
+            return 0.0;
+        }
+
+        let sum_squares: f32 = samples.iter().map(|&x| x * x).sum();
+        (sum_squares / samples.len() as f32).sqrt()
+    }
+
+    /// Calculate Signal-to-Noise Ratio (SNR) in dB
+    pub fn calculate_snr(original: &[f32], processed: &[f32]) -> f32 {
+        if original.len() != processed.len() {
+            return 0.0;
+        }
+
+        let signal_power = calculate_rms(original).powi(2);
+        let noise_power = original
+            .iter()
+            .zip(processed.iter())
+            .map(|(o, p)| (o - p).powi(2))
+            .sum::<f32>()
+            / original.len() as f32;
+
+        if noise_power == 0.0 {
+            return f32::INFINITY;
+        }
+
+        10.0 * (signal_power / noise_power).log10()
+    }
 }
