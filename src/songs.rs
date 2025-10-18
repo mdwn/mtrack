@@ -15,11 +15,9 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::Arc;
-use std::thread::JoinHandle;
 use std::time::Duration;
-use std::{cmp, fmt, thread};
+use std::{cmp, fmt};
 
 use hound::{SampleFormat, WavReader};
 use midly::live::LiveEvent;
@@ -27,14 +25,11 @@ use midly::{Format, Smf};
 use nodi::timers::Ticker;
 use nodi::Sheet;
 // Removed unused ringbuf imports after migration to Crossbeam channels
-use crossbeam_channel::{bounded, Receiver, Sender};
 
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
-use crate::audio::{
-    sample_source::{create_wav_sample_source, SampleSource},
-    TargetFormat,
-};
+use crate::audio::sample_source::SampleSource;
+use crate::audio::TargetFormat;
 use crate::config;
 use crate::proto::player;
 
@@ -66,29 +61,6 @@ pub struct Song {
 
 /// A simple sample for songs. Boils down to i32 or f32, which we can be reasonably assured that
 /// hound is able to read.
-pub trait Sample:
-    cpal::SizedSample + hound::Sample + Default + Send + Sync + std::ops::AddAssign + 'static
-{
-    /// Converts from f32 to this sample type
-    fn from_f32(value: f32) -> Self;
-}
-impl Sample for i32 {
-    fn from_f32(value: f32) -> Self {
-        (value * 2147483647.0) as i32
-    }
-}
-
-impl Sample for i16 {
-    fn from_f32(value: f32) -> Self {
-        (value * 32767.0) as i16
-    }
-}
-impl Sample for f32 {
-    fn from_f32(value: f32) -> Self {
-        value
-    }
-}
-
 impl Song {
     // Create a new song.
     pub fn new(start_path: &Path, config: &config::Song) -> Result<Song, Box<dyn Error>> {
@@ -302,42 +274,29 @@ impl Song {
     pub fn needs_transcoding(&self, target_format: &TargetFormat) -> bool {
         // Check if any track has different sample rate, format, or bit depth
         self.tracks.iter().any(|track| {
-            // Read the actual bit depth from the WAV file
-            let actual_bits_per_sample = match std::fs::File::open(&track.file) {
-                Ok(file) => {
-                    match hound::WavReader::new(file) {
-                        Ok(reader) => reader.spec().bits_per_sample,
-                        Err(_) => {
-                            // Fallback to defaults if we can't read the file
-                            match track.sample_format {
-                                hound::SampleFormat::Int => 16,
-                                hound::SampleFormat::Float => 32,
-                            }
-                        }
+            // Use the generic SampleSource infrastructure to check transcoding needs
+            match crate::audio::sample_source::create_sample_source_from_file(&track.file) {
+                Ok(sample_source) => {
+                    // Create source format from the SampleSource metadata
+                    let source_format = TargetFormat::new(
+                        sample_source.sample_rate(),
+                        track.sample_format,
+                        sample_source.bits_per_sample(),
+                    );
+
+                    if let Ok(source_format) = source_format {
+                        // Check if any format parameter differs
+                        source_format.sample_rate != target_format.sample_rate
+                            || source_format.sample_format != target_format.sample_format
+                            || source_format.bits_per_sample != target_format.bits_per_sample
+                    } else {
+                        true // If we can't create source format, assume transcoding is needed
                     }
                 }
                 Err(_) => {
-                    // Fallback to defaults if we can't open the file
-                    match track.sample_format {
-                        hound::SampleFormat::Int => 16,
-                        hound::SampleFormat::Float => 32,
-                    }
+                    // Fallback: assume transcoding is needed if we can't read the file
+                    true
                 }
-            };
-
-            let source_format = TargetFormat::new(
-                track.sample_rate,
-                track.sample_format,
-                actual_bits_per_sample,
-            );
-
-            if let Ok(source_format) = source_format {
-                // Simple check: if sample rate or format differs, transcoding is needed
-                source_format.sample_rate != target_format.sample_rate
-                    || source_format.sample_format != target_format.sample_format
-                    || source_format.bits_per_sample != target_format.bits_per_sample
-            } else {
-                true // If we can't create source format, assume transcoding is needed
             }
         })
     }
@@ -348,16 +307,62 @@ impl Song {
         format!("{}:{:02}", secs / 60, secs % 60)
     }
 
-    /// Returns a rodio source for the song.
-    pub fn source<S>(
+    /// Creates ChannelMappedSampleSource instances for each track in the song
+    /// This is the new, simpler architecture that replaces SongSource
+    pub fn create_channel_mapped_sources(
         &self,
         track_mappings: &HashMap<String, Vec<u16>>,
         target_format: TargetFormat,
-    ) -> Result<SongSource<S>, Box<dyn Error>>
-    where
-        S: Sample,
+    ) -> Result<Vec<Box<dyn crate::audio::sample_source::ChannelMappedSampleSource>>, Box<dyn Error>>
     {
-        SongSource::<S>::new(self, track_mappings, target_format)
+        use crate::audio::sample_source::create_channel_mapped_sample_source;
+        use crate::audio::sample_source::create_sample_source_from_file;
+
+        let mut sources = Vec::new();
+
+        // Group tracks by file (like the old SongSource did)
+        let mut files_to_tracks = HashMap::<PathBuf, Vec<&Track>>::new();
+        for track in &self.tracks {
+            files_to_tracks
+                .entry(track.file.clone())
+                .or_default()
+                .push(track);
+        }
+
+        for (file_path, tracks) in files_to_tracks {
+            // Get the audio file info to determine the actual number of channels
+            let wav_source = crate::audio::sample_source::WavSampleSource::from_file(&file_path)?;
+            let wav_channels = wav_source.channel_count();
+
+            // Create channel mappings for each channel in the WAV file
+            let mut channel_mappings = Vec::new();
+            for channel in 0..wav_channels {
+                let mut labels = Vec::new();
+
+                // Find tracks that use this channel
+                for track in &tracks {
+                    if track.file_channel == (channel + 1) {
+                        // Check if this track name is in the track mappings
+                        if track_mappings.contains_key(&track.name) {
+                            labels.push(track.name.clone());
+                        }
+                    }
+                }
+
+                channel_mappings.push(labels);
+            }
+
+            // Create the channel mapped source for this file
+            let sample_source = create_sample_source_from_file(&file_path)?;
+            let source = create_channel_mapped_sample_source(
+                sample_source,
+                target_format.clone(),
+                channel_mappings,
+            )?;
+
+            sources.push(source);
+        }
+        Ok(sources)
     }
 
     /// Returns a proto version of the song.
@@ -645,349 +650,6 @@ impl Track {
     }
 }
 
-/// A source for all of the combined tracks in the song.
-pub struct SongSource<S>
-where
-    S: Sample,
-{
-    receiver: Receiver<Arc<[S]>>, // Receive Arc<[S]> for zero-copy sharing
-    join_handle: Option<JoinHandle<()>>,
-    channels: u16,
-    frame_pos: Arc<AtomicU16>,
-    current_frame: Option<Arc<[S]>>, // Buffer for current frame
-    current_frame_pos: usize,        // Position within current frame
-    finished: Arc<AtomicBool>,       // Signals when all sources are finished
-}
-
-/// The sample source and the file channel mapping.
-struct SampleSourceAndMapping {
-    sample_source: Box<dyn SampleSource>,
-    file_channel_to_output_channels: Vec<Vec<usize>>, // Vec for O(1) access instead of HashMap
-    num_channels: u16,
-}
-
-impl<S> SongSource<S>
-where
-    S: Sample,
-{
-    fn new(
-        song: &Song,
-        track_mapping: &HashMap<String, Vec<u16>>,
-        target_format: TargetFormat,
-    ) -> Result<SongSource<S>, Box<dyn Error>> {
-        let mut files_to_tracks = HashMap::<PathBuf, Vec<&Track>>::new();
-
-        song.tracks.iter().for_each(|track| {
-            let file_path = &track.file;
-            if !files_to_tracks.contains_key(file_path) {
-                files_to_tracks.insert(file_path.clone(), Vec::new());
-            }
-
-            files_to_tracks
-                .get_mut(file_path)
-                .expect("unable to get tracks")
-                .push(track);
-        });
-
-        let num_channels = *track_mapping
-            .iter()
-            .flat_map(|entry| entry.1)
-            .max()
-            .ok_or("no max channel found")?;
-
-        // Create a bounded channel with capacity for 2 seconds of audio
-        // This provides sufficient buffering for producer/consumer speed differences
-        // while keeping memory usage reasonable for long-duration audio
-        let channel_capacity = usize::from(num_channels) * usize::try_from(song.sample_rate)? * 2;
-        let (tx, rx) = bounded::<Arc<[S]>>(channel_capacity);
-        let mut sample_sources_and_mappings = Vec::<SampleSourceAndMapping>::new();
-
-        for (file_path, tracks) in files_to_tracks {
-            // Get the WAV file spec to determine the actual source format
-            let file = std::fs::File::open(&file_path)?;
-            let wav_reader = hound::WavReader::new(file)?;
-            let spec = wav_reader.spec();
-            let wav_channels = spec.channels;
-
-            // Create source format from the actual WAV file spec (for transcoding detection)
-            let _source_format =
-                TargetFormat::new(spec.sample_rate, spec.sample_format, spec.bits_per_sample)?;
-
-            let sample_source = create_wav_sample_source(file_path, target_format.clone())?;
-
-            // Pre-compute channel mappings for O(1) access instead of HashMap lookups
-            let mut file_channel_to_output_channels: HashMap<u16, Vec<usize>> = HashMap::new();
-            tracks.into_iter().for_each(|track| {
-                let file_channel = track.file_channel - 1;
-                if let Some(channel_mappings) = track_mapping.get(&track.name.to_string()) {
-                    channel_mappings.iter().for_each(|channel_mapping| {
-                        let output_channel = channel_mapping - 1;
-                        file_channel_to_output_channels
-                            .entry(file_channel)
-                            .or_default()
-                            .push(output_channel.into());
-                    })
-                }
-            });
-
-            // Convert HashMap to Vec for O(1) access - much faster than HashMap lookups
-            let max_file_channel = file_channel_to_output_channels
-                .keys()
-                .max()
-                .copied()
-                .unwrap_or(0);
-            let mut channel_mappings_vec = vec![Vec::new(); (max_file_channel + 1) as usize];
-            for (file_channel, output_channels) in file_channel_to_output_channels {
-                channel_mappings_vec[file_channel as usize] = output_channels;
-            }
-
-            sample_sources_and_mappings.push(SampleSourceAndMapping {
-                sample_source,
-                file_channel_to_output_channels: channel_mappings_vec,
-                num_channels: wav_channels,
-            })
-        }
-
-        let finished = Arc::new(AtomicBool::new(false));
-        let join_handle = {
-            SongSource::reader_thread(
-                usize::from(num_channels),
-                sample_sources_and_mappings,
-                tx,
-                finished.clone(),
-            )
-        };
-        let source = SongSource {
-            receiver: rx,
-            join_handle: Some(join_handle),
-            channels: num_channels,
-            frame_pos: Arc::new(AtomicU16::new(0)),
-            current_frame: None,
-            current_frame_pos: 0,
-            finished: finished.clone(),
-        };
-
-        Ok(source)
-    }
-
-    fn reader_thread(
-        num_channels: usize,
-        mut sample_sources_and_mappings: Vec<SampleSourceAndMapping>,
-        tx: Sender<Arc<[S]>>,
-        finished: Arc<AtomicBool>,
-    ) -> JoinHandle<()> {
-        thread::spawn(move || {
-            // Start with smaller batches to reduce initial CPU spike
-            let mut batch_size = 16; // Start with smaller batches
-            let mut frames_processed = 0;
-            let num_sources = sample_sources_and_mappings.len();
-            let mut channels: Vec<u16> = Vec::with_capacity(num_sources);
-            let mut file_mappings: Vec<Vec<Vec<usize>>> = Vec::with_capacity(num_sources);
-
-            for sample_source_and_mapping in sample_sources_and_mappings.iter() {
-                channels.push(sample_source_and_mapping.num_channels);
-                file_mappings.push(
-                    sample_source_and_mapping
-                        .file_channel_to_output_channels
-                        .clone(),
-                );
-            }
-
-            // Pre-allocate reusable buffers to eliminate temporary allocations
-            let max_batch_size = 64; // Maximum batch size we'll use
-            let mut frame_samples = vec![S::default(); num_channels]; // Reusable frame buffer
-            let mut frames_to_send = Vec::with_capacity(max_batch_size * num_channels); // Reusable batch buffer
-
-            loop {
-                // Check if we should stop (cancellation or all sources finished)
-                if finished.load(Ordering::Relaxed) {
-                    drop(tx);
-                    return;
-                }
-
-                let mut all_files_finished = true;
-                // Clear the reusable batch buffer
-                frames_to_send.clear();
-
-                // Process frames continuously until we have a reasonable batch size
-                let target_batch_samples = batch_size * num_channels;
-                let mut samples_collected = 0;
-
-                while samples_collected < target_batch_samples {
-                    let mut frame_finished = true;
-                    // Clear the reusable frame buffer
-                    frame_samples.fill(S::default());
-
-                    for j in 0..num_sources {
-                        let file_channel_to_output_channels = &file_mappings[j];
-                        let sample_source = &mut sample_sources_and_mappings[j].sample_source;
-
-                        // Read one sample from each channel of this source for this frame
-                        for file_channel in 0..channels[j] {
-                            let result = sample_source.next_sample();
-                            match result {
-                                Ok(Some(sample)) => {
-                                    frame_finished = false;
-                                    all_files_finished = false;
-
-                                    // Only use this sample if it's mapped to an output channel
-                                    // Use direct Vec indexing instead of HashMap lookup for O(1) access
-                                    if (file_channel as usize)
-                                        < file_channel_to_output_channels.len()
-                                    {
-                                        let targets =
-                                            &file_channel_to_output_channels[file_channel as usize];
-                                        for target in targets {
-                                            // Convert f32 sample to the target sample type
-                                            let converted_sample = S::from_f32(sample);
-                                            frame_samples[*target] += converted_sample;
-                                        }
-                                    }
-                                }
-                                Ok(None) => {
-                                    // Sample source is finished for this channel
-                                }
-                                Err(e) => {
-                                    error!(
-                                        err = e.to_string(),
-                                        "Error reading sample from SampleSource"
-                                    );
-                                }
-                            }
-                        }
-                    }
-
-                    // Add this frame to the batch if it has any samples
-                    if !frame_finished {
-                        frames_to_send.extend_from_slice(&frame_samples);
-                        samples_collected += num_channels;
-                    } else {
-                        // If this frame is finished, we're done collecting samples
-                        break;
-                    }
-                }
-
-                if all_files_finished {
-                    // All sources are finished, set the finished flag and close the channel
-                    finished.store(true, Ordering::Relaxed);
-                    drop(tx);
-                    return;
-                } else if !frames_to_send.is_empty() {
-                    // Convert Vec to Arc<[S]> for zero-copy sharing
-                    // Create a copy of the current batch for sending
-                    let batch_copy = frames_to_send.clone();
-                    let arc_frame: Arc<[S]> = Arc::from(batch_copy);
-                    if tx.send(arc_frame).is_err() {
-                        // Channel was closed by receiver, exit
-                        return;
-                    }
-                }
-
-                // Gradually increase batch size to reduce initial CPU spike
-                frames_processed += 1;
-                if frames_processed > 100 && batch_size < 64 {
-                    batch_size = 32; // Increase to medium batches
-                }
-                if frames_processed > 500 && batch_size < 64 {
-                    batch_size = 64; // Full batch size after warmup
-                }
-
-                // Adaptive sleep - longer during initial phase to reduce CPU spike
-                let sleep_duration = if frames_processed < 100 {
-                    Duration::from_millis(1) // Longer sleep during initial phase
-                } else {
-                    Duration::from_micros(50) // Normal sleep after warmup
-                };
-                thread::sleep(sleep_duration);
-            }
-        })
-    }
-
-    /// Gets the current frame position in the song source.
-    pub fn get_frame_position(&self) -> u16 {
-        self.frame_pos.load(Ordering::Relaxed)
-    }
-}
-
-impl<S> Iterator for SongSource<S>
-where
-    S: Sample,
-{
-    type Item = S;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        // If we have samples in the current frame, return the next one
-        if let Some(ref frame) = self.current_frame {
-            if self.current_frame_pos < frame.len() {
-                let sample = frame[self.current_frame_pos];
-                self.current_frame_pos += 1;
-
-                // Update frame position - this tracks which channel within the current frame
-                // we're on. When it reaches 0, we've completed a full frame.
-                self.frame_pos
-                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |val| {
-                        Some((val + 1) % self.channels)
-                    })
-                    .expect("got none from frame position update function");
-
-                Some(sample)
-            } else {
-                // Current frame is exhausted, try to get a new frame
-                match self.receiver.recv() {
-                    Ok(new_frame) => {
-                        self.current_frame = Some(new_frame);
-                        self.current_frame_pos = 0;
-
-                        // Recursively call next to get the first sample from the new frame
-                        self.next()
-                    }
-                    Err(_) => {
-                        // Channel was closed, end of stream
-                        None
-                    }
-                }
-            }
-        } else {
-            // No current frame, try to get a new frame
-            match self.receiver.recv() {
-                Ok(new_frame) => {
-                    self.current_frame = Some(new_frame);
-                    self.current_frame_pos = 0;
-
-                    // Recursively call next to get the first sample from the new frame
-                    self.next()
-                }
-                Err(_) => {
-                    // Channel was closed, end of stream
-                    None
-                }
-            }
-        }
-    }
-}
-
-impl<S> SongSource<S> where S: Sample {}
-
-impl<S> Drop for SongSource<S>
-where
-    S: Sample,
-{
-    fn drop(&mut self) {
-        // Signal the reader thread to stop
-        self.finished.store(true, Ordering::Relaxed);
-
-        // Close the receiver to signal the producer thread to stop
-        let _ = &mut self.receiver;
-
-        // Join the thread to make sure that it's stopped properly.
-        self.join_handle
-            .take()
-            .expect("No join handle found")
-            .join()
-            .expect("Join failed");
-    }
-}
-
 /// Contains a parsed timer and MIDI sheet for playback.
 pub struct MidiSheet {
     pub ticker: Ticker,
@@ -1107,7 +769,6 @@ pub fn get_all_songs(path: &Path) -> Result<Arc<Songs>, Box<dyn Error>> {
 #[cfg(test)]
 mod test {
     use std::{
-        collections::HashMap,
         error::Error,
         fs, io,
         path::{Path, PathBuf},
@@ -1115,106 +776,10 @@ mod test {
 
     use thiserror::Error;
 
-    use crate::{audio::TargetFormat, config, songs::initialize_songs, testutil::write_wav};
-
-    use super::{get_all_songs, Sample, SongSource};
-
-    #[test]
-    fn song_source_frame_read() -> Result<(), Box<dyn Error>> {
-        let mut source = test_source()?;
-
-        // First frame should have first samples, second frame second, and so on.
-        let frame = get_frame(4, &mut source)?.expect("Expected a frame");
-        assert_eq!(vec![1_i32, 0_i32, 0_i32, 2_i32], frame);
-
-        let frame = get_frame(4, &mut source)?.expect("Expected a frame");
-        assert_eq!(vec![2_i32, 0_i32, 0_i32, 3_i32], frame);
-
-        // Track 3 is added to track 2 samples.
-        let frame = get_frame(4, &mut source)?.expect("Expected a frame");
-        assert_eq!(vec![3_i32, 0_i32, 0_i32, 5_i32], frame);
-
-        // Track 2 has ended, but track 3 isn't done yet.
-        let frame = get_frame(4, &mut source)?.expect("Expected a frame");
-        assert_eq!(vec![4_i32, 0_i32, 0_i32, 2_i32], frame);
-
-        // Track 3 has ended.
-        let frame = get_frame(4, &mut source)?.expect("Expected a frame");
-        assert_eq!(vec![5_i32, 0_i32, 0_i32, 0_i32], frame);
-
-        // All tracks have ended, we expect None.
-        let frame = get_frame(4, &mut source)?;
-        assert!(frame.is_none());
-
-        Ok(())
-    }
-
-    fn test_source() -> Result<SongSource<i32>, Box<dyn Error>> {
-        let tempdir = tempfile::tempdir()?.keep();
-        let tempwav1 = "tempwav1.wav";
-        let tempwav2 = "tempwav2.wav";
-        let tempwav3 = "tempwav3.wav";
-
-        write_wav(
-            tempdir.join(tempwav1),
-            vec![vec![1_i32, 2_i32, 3_i32, 4_i32, 5_i32]],
-            44100,
-        )?;
-        write_wav(
-            tempdir.join(tempwav2),
-            vec![vec![2_i32, 3_i32, 4_i32]],
-            44100,
-        )?;
-        write_wav(
-            tempdir.join(tempwav3),
-            vec![vec![0_i32, 0_i32, 1_i32, 2_i32]],
-            44100,
-        )?;
-
-        let track1 = config::Track::new("test 1".into(), tempwav1, Some(1));
-        let track2 = config::Track::new("test 2".into(), tempwav2, Some(1));
-        let track3 = config::Track::new("test 3".into(), tempwav3, Some(1));
-
-        let song = super::Song::new(
-            &tempdir,
-            &config::Song::new(
-                "song name",
-                None,
-                None,
-                None,
-                None,
-                vec![track1, track2, track3],
-            ),
-        )?;
-        let mut mapping: HashMap<String, Vec<u16>> = HashMap::new();
-        mapping.insert("test 1".into(), vec![1]);
-        mapping.insert("test 2".into(), vec![4]);
-        mapping.insert("test 3".into(), vec![4]);
-
-        song.source(&mapping, TargetFormat::default())
-    }
-
-    fn get_frame<S: Sample>(
-        frame_size: u16,
-        source: &mut SongSource<S>,
-    ) -> Result<Option<Vec<S>>, Box<dyn Error>> {
-        let mut frame = Vec::new();
-
-        for i in 0..frame_size {
-            match source.next() {
-                Some(sample) => frame.push(sample),
-                None => {
-                    if i == 0 {
-                        return Ok(None);
-                    } else {
-                        return Err("Stopped mid frame".into());
-                    }
-                }
-            };
-        }
-
-        Ok(Some(frame))
-    }
+    use crate::{
+        songs::{get_all_songs, initialize_songs},
+        testutil::write_wav,
+    };
 
     fn count_songs(path: &Path) -> Result<usize, TestError> {
         let songs = get_all_songs(path)?;
@@ -1230,7 +795,7 @@ mod test {
     }
 
     fn create_mono_song(path: &Path) -> Result<(), Box<dyn Error>> {
-        let song_path = create_song_dir(&path, "1 Song with mono track")?;
+        let song_path = create_song_dir(path, "1 Song with mono track")?;
 
         write_wav(
             song_path.join("mono_track.wav"),
@@ -1369,10 +934,7 @@ mod test {
         assert_eq!(first_song.num_channels, 1, "Unexpected number of channels");
         let track = tracks.first().unwrap();
         assert_eq!(track.name, "mono_track", "Unexpected name");
-        assert!(
-            fs::exists(track.file.to_path_buf()).unwrap(),
-            "Track file not found"
-        );
+        assert!(fs::exists(&track.file).unwrap(), "Track file not found");
         Ok(())
     }
 
@@ -1466,8 +1028,6 @@ mod test {
 
     #[test]
     fn test_write_wav_formats() -> Result<(), Box<dyn Error>> {
-        use crate::testutil::write_wav;
-
         let tempdir = tempfile::tempdir()?.keep();
 
         let i32_samples: Vec<i32> = vec![1, 2, 3, 4, 5];
@@ -1483,923 +1043,33 @@ mod test {
     }
 
     #[test]
-    fn test_song_source_single_track_single_channel() -> Result<(), Box<dyn Error>> {
-        use crate::testutil::write_wav_with_bits;
-        use std::collections::HashMap;
-        use tempfile::tempdir;
-
-        let tempdir = tempdir().unwrap();
-
-        // Create a simple test: one track, one channel output
-        let sample_rate = 44100;
-        let duration_samples = 1000;
-        let frequency = 440.0; // 440Hz sine wave
-        let amplitude = 0.5; // 50% amplitude
-
-        // Generate reference sine wave
-        let sine_wave: Vec<f32> = (0..duration_samples)
-            .map(|i| {
-                (i as f32 * frequency * 2.0 * std::f32::consts::PI / sample_rate as f32).sin()
-                    * amplitude
-            })
-            .collect();
-
-        // Create a single WAV file
-        let wav_path = tempdir.path().join("test_single_track.wav");
-        let samples: Vec<i32> = sine_wave
-            .iter()
-            .map(|&x| (x * 8388607.0) as i32) // 24-bit range
-            .collect();
-        write_wav_with_bits(wav_path.clone(), vec![samples], sample_rate, 24).unwrap();
-
-        // Create a simple song configuration: one track, one output channel
-        let config_song = crate::config::Song::new(
-            "Test Song",
-            None, // No MIDI event
-            None, // No MIDI file
-            None, // No MIDI playback
-            None, // No light shows
-            vec![crate::config::Track::new(
-                "Test Track".to_string(),
-                wav_path.to_str().unwrap(),
-                Some(1), // Channel 1
-            )],
-        );
-
-        // Create the songs module Song
-        let song = super::Song::new(&tempdir.path(), &config_song)?;
-
-        // Create track mapping: track name -> output channels
-        let mut track_mapping = HashMap::new();
-        track_mapping.insert("Test Track".to_string(), vec![1]); // Map to output channel 1
-
-        // Create SongSource with target format that requires transcoding
-        let target_format =
-            crate::audio::TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
-        let mut song_source: SongSource<f32> = song.source(&track_mapping, target_format)?;
-
-        // Read all samples from the song source
-        let mut all_samples = Vec::new();
-        while let Some(sample) = song_source.next() {
-            all_samples.push(sample);
-        }
-
-        println!("Single track test: {} samples read", all_samples.len());
-
-        // Verify we got samples
-        assert!(!all_samples.is_empty(), "No samples read from song source");
-
-        // Calculate RMS of the output
-        let output_rms: f32 =
-            (all_samples.iter().map(|&x| x * x).sum::<f32>() / all_samples.len() as f32).sqrt();
-
-        // Expected RMS for sine wave with amplitude 0.5
-        let expected_rms = amplitude / (2.0_f32.sqrt()); // 0.5 / √2 ≈ 0.353553
-
-        println!("Single track output RMS: {:.6}", output_rms);
-        println!("Expected RMS: {:.6}", expected_rms);
-
-        // Check amplitude ratio
-        let amplitude_ratio = output_rms / expected_rms;
-        println!("Amplitude ratio: {:.6}", amplitude_ratio);
-
-        // The output should have reasonable amplitude (not severely attenuated)
-        assert!(
-            amplitude_ratio > 0.1,
-            "Single track severely attenuated: ratio {:.6} (expected > 0.1)",
-            amplitude_ratio
-        );
-
-        // The output should not be too quiet
-        assert!(
-            output_rms > 0.01,
-            "Single track too quiet: RMS {:.6} (expected > 0.01)",
-            output_rms
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_song_source_two_track_two_channel() -> Result<(), Box<dyn Error>> {
-        use crate::testutil::write_wav_with_bits;
-        use std::collections::HashMap;
-        use tempfile::tempdir;
-
-        let tempdir = tempdir().unwrap();
-
-        // Create two multichannel sources with different frequencies
-        let sample_rate = 44100;
-        let duration_samples = 1000;
-        let amplitude = 0.5;
-
-        // Source 1: 4-channel with 440Hz sine wave
-        let freq1 = 440.0;
-        let sine_wave_1: Vec<f32> = (0..duration_samples)
-            .map(|i| {
-                (i as f32 * freq1 * 2.0 * std::f32::consts::PI / sample_rate as f32).sin()
-                    * amplitude
-            })
-            .collect();
-
-        // Source 2: 4-channel with 880Hz sine wave
-        let freq2 = 880.0;
-        let sine_wave_2: Vec<f32> = (0..duration_samples)
-            .map(|i| {
-                (i as f32 * freq2 * 2.0 * std::f32::consts::PI / sample_rate as f32).sin()
-                    * amplitude
-            })
-            .collect();
-
-        // Create 4-channel WAV files (stereo + 2 extra channels)
-        let wav_path_1 = tempdir.path().join("source_1_4ch.wav");
-        let wav_path_2 = tempdir.path().join("source_2_4ch.wav");
-
-        // Source 1: 4 channels, all with 440Hz sine wave
-        let samples_1: Vec<Vec<i32>> = (0..4)
-            .map(|_| {
-                sine_wave_1
-                    .iter()
-                    .map(|&x| (x * 8388607.0) as i32) // 24-bit range
-                    .collect()
-            })
-            .collect();
-        write_wav_with_bits(wav_path_1.clone(), samples_1, sample_rate, 24).unwrap();
-
-        // Source 2: 4 channels, all with 880Hz sine wave
-        let samples_2: Vec<Vec<i32>> = (0..4)
-            .map(|_| {
-                sine_wave_2
-                    .iter()
-                    .map(|&x| (x * 8388607.0) as i32) // 24-bit range
-                    .collect()
-            })
-            .collect();
-        write_wav_with_bits(wav_path_2.clone(), samples_2, sample_rate, 24).unwrap();
-
-        // Create song configuration: two tracks, each using one channel
-        let config_song = crate::config::Song::new(
-            "Two Track Test",
-            None,
-            None,
-            None,
-            None,
-            vec![
-                crate::config::Track::new(
-                    "Track 1".to_string(),
-                    wav_path_1.to_str().unwrap(),
-                    Some(1), // Channel 1 from source 1
-                ),
-                crate::config::Track::new(
-                    "Track 2".to_string(),
-                    wav_path_2.to_str().unwrap(),
-                    Some(2), // Channel 2 from source 2
-                ),
-            ],
-        );
-
-        // Create the songs module Song
-        let song = super::Song::new(&tempdir.path(), &config_song)?;
-
-        // Create track mapping: each track to a different output channel
-        let mut track_mapping = HashMap::new();
-        track_mapping.insert("Track 1".to_string(), vec![1]); // Track 1 -> output channel 1
-        track_mapping.insert("Track 2".to_string(), vec![2]); // Track 2 -> output channel 2
-
-        // Create SongSource with target format that requires transcoding
-        let target_format =
-            crate::audio::TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
-        let mut song_source: SongSource<f32> = song.source(&track_mapping, target_format)?;
-
-        // Read all samples from the song source
-        let mut all_samples = Vec::new();
-        while let Some(sample) = song_source.next() {
-            all_samples.push(sample);
-        }
-
-        println!("Two track test: {} samples read", all_samples.len());
-
-        // Verify we got samples
-        assert!(!all_samples.is_empty(), "No samples read from song source");
-
-        // The output should be interleaved: [ch1_sample1, ch2_sample1, ch1_sample2, ch2_sample2, ...]
-        // So we need to separate the channels
-        let mut channel_1_samples = Vec::new();
-        let mut channel_2_samples = Vec::new();
-
-        for (i, &sample) in all_samples.iter().enumerate() {
-            if i % 2 == 0 {
-                channel_1_samples.push(sample);
-            } else {
-                channel_2_samples.push(sample);
-            }
-        }
-
-        // Calculate RMS for each channel
-        let ch1_rms: f32 = (channel_1_samples.iter().map(|&x| x * x).sum::<f32>()
-            / channel_1_samples.len() as f32)
-            .sqrt();
-        let ch2_rms: f32 = (channel_2_samples.iter().map(|&x| x * x).sum::<f32>()
-            / channel_2_samples.len() as f32)
-            .sqrt();
-
-        // Expected RMS for sine wave with amplitude 0.5
-        let expected_rms = amplitude / (2.0_f32.sqrt()); // 0.5 / √2 ≈ 0.353553
-
-        println!("Channel 1 (440Hz) RMS: {:.6}", ch1_rms);
-        println!("Channel 2 (880Hz) RMS: {:.6}", ch2_rms);
-        println!("Expected RMS: {:.6}", expected_rms);
-
-        // Check amplitude ratios
-        let ch1_ratio = ch1_rms / expected_rms;
-        let ch2_ratio = ch2_rms / expected_rms;
-        println!("Channel 1 amplitude ratio: {:.6}", ch1_ratio);
-        println!("Channel 2 amplitude ratio: {:.6}", ch2_ratio);
-
-        // Both channels should have reasonable amplitude (not severely attenuated)
-        assert!(
-            ch1_ratio > 0.1,
-            "Channel 1 severely attenuated: ratio {:.6} (expected > 0.1)",
-            ch1_ratio
-        );
-        assert!(
-            ch2_ratio > 0.1,
-            "Channel 2 severely attenuated: ratio {:.6} (expected > 0.1)",
-            ch2_ratio
-        );
-
-        // Both channels should not be too quiet
-        assert!(
-            ch1_rms > 0.01,
-            "Channel 1 too quiet: RMS {:.6} (expected > 0.01)",
-            ch1_rms
-        );
-        assert!(
-            ch2_rms > 0.01,
-            "Channel 2 too quiet: RMS {:.6} (expected > 0.01)",
-            ch2_rms
-        );
-
-        // Verify we have a reasonable number of samples per channel
-        // Account for potential sample rate conversion (44.1kHz -> 48kHz)
-        let expected_samples_per_channel = (duration_samples as f32 * 48000.0 / 44100.0) as usize;
-        let tolerance = (expected_samples_per_channel as f32 * 0.05) as usize; // 5% tolerance
-
-        assert!(
-            (channel_1_samples.len() as i32 - expected_samples_per_channel as i32).abs()
-                <= tolerance as i32,
-            "Channel 1 sample count mismatch: got {}, expected {} ± {}",
-            channel_1_samples.len(),
-            expected_samples_per_channel,
-            tolerance
-        );
-        assert!(
-            (channel_2_samples.len() as i32 - expected_samples_per_channel as i32).abs()
-                <= tolerance as i32,
-            "Channel 2 sample count mismatch: got {}, expected {} ± {}",
-            channel_2_samples.len(),
-            expected_samples_per_channel,
-            tolerance
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_arc_frame_boundaries() -> Result<(), Box<dyn Error>> {
-        use crate::testutil::write_wav_with_bits;
-        use std::collections::HashMap;
-        use tempfile::tempdir;
-
-        let tempdir = tempdir().unwrap();
-
-        // Create a simple 2-channel test with known samples
-        let sample_rate = 44100;
-        let duration_samples = 100;
-        let amplitude = 0.5;
-
-        // Generate test signals with distinct patterns
-        let left_signal: Vec<f32> = (0..duration_samples)
-            .map(|i| {
-                (i as f32 * 440.0 * 2.0 * std::f32::consts::PI / sample_rate as f32).sin()
-                    * amplitude
-            })
-            .collect();
-
-        let right_signal: Vec<f32> = (0..duration_samples)
-            .map(|i| {
-                (i as f32 * 880.0 * 2.0 * std::f32::consts::PI / sample_rate as f32).sin()
-                    * amplitude
-            })
-            .collect();
-
-        // Create a 2-channel WAV file
-        let wav_path = tempdir.path().join("test_frame_boundaries.wav");
-        let samples: Vec<Vec<i32>> = vec![
-            left_signal
-                .iter()
-                .map(|&x| (x * 8388607.0) as i32)
-                .collect(),
-            right_signal
-                .iter()
-                .map(|&x| (x * 8388607.0) as i32)
-                .collect(),
-        ];
-        write_wav_with_bits(wav_path.clone(), samples, sample_rate, 24).unwrap();
-
-        // Create song configuration
-        let config_song = crate::config::Song::new(
-            "Frame Boundary Test",
-            None,
-            None,
-            None,
-            None,
-            vec![crate::config::Track::new(
-                "Test Track".to_string(),
-                wav_path.to_str().unwrap(),
-                Some(1), // Use channel 1
-            )],
-        );
-
-        // Create the songs module Song
-        let song = super::Song::new(&tempdir.path(), &config_song)?;
-
-        // Create track mapping: track to both output channels
-        let mut track_mapping = HashMap::new();
-        track_mapping.insert("Test Track".to_string(), vec![1, 2]); // Map to output channels 1 and 2
-
-        // Create SongSource with target format
-        let target_format =
-            crate::audio::TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
-        let mut song_source: SongSource<f32> = song.source(&track_mapping, target_format)?;
-
-        // Test 1: Verify frame boundary integrity
-        let mut all_samples = Vec::new();
-        let mut frame_count = 0;
-        let mut current_frame_samples = Vec::new();
-
-        while let Some(sample) = song_source.next() {
-            all_samples.push(sample);
-            current_frame_samples.push(sample);
-
-            // Check if we've completed a frame (2 samples for 2 output channels)
-            if current_frame_samples.len() == 2 {
-                frame_count += 1;
-
-                // Verify frame boundary: samples should be from the same source frame
-                // (This is more of a structural test - the actual verification is in the sample values)
-                current_frame_samples.clear();
-            }
-        }
-
-        println!(
-            "Arc frame boundaries test: {} total samples, {} frames",
-            all_samples.len(),
-            frame_count
-        );
-
-        // Test 2: Verify we got the expected number of samples
-        let expected_samples = (duration_samples as f32 * 48000.0 / 44100.0) as usize * 2; // 2 output channels
-        assert!(
-            (all_samples.len() as i32 - expected_samples as i32).abs() <= 10,
-            "Sample count mismatch: got {}, expected {} ± 10",
-            all_samples.len(),
-            expected_samples
-        );
-
-        // Test 3: Verify channel separation (interleaved samples)
-        let mut left_channel = Vec::new();
-        let mut right_channel = Vec::new();
-
-        for (i, &sample) in all_samples.iter().enumerate() {
-            if i % 2 == 0 {
-                left_channel.push(sample);
-            } else {
-                right_channel.push(sample);
-            }
-        }
-
-        // Test 4: Verify both channels have content (not silent)
-        let left_rms: f32 =
-            (left_channel.iter().map(|&x| x * x).sum::<f32>() / left_channel.len() as f32).sqrt();
-        let right_rms: f32 =
-            (right_channel.iter().map(|&x| x * x).sum::<f32>() / right_channel.len() as f32).sqrt();
-
-        assert!(
-            left_rms > 0.01,
-            "Left channel too quiet: RMS {:.6}",
-            left_rms
-        );
-        assert!(
-            right_rms > 0.01,
-            "Right channel too quiet: RMS {:.6}",
-            right_rms
-        );
-
-        // Test 5: Verify frame boundaries are respected
-        // Each frame should contain exactly 2 samples (for 2 output channels)
-        assert_eq!(
-            all_samples.len() % 2,
-            0,
-            "Total samples should be even (2 channels)"
-        );
-
-        // Test 6: Verify no samples are lost or duplicated
-        // The frame count should match the expected number of frames
-        let expected_frames = all_samples.len() / 2;
-        assert_eq!(
-            frame_count, expected_frames,
-            "Frame count mismatch: got {}, expected {}",
-            frame_count, expected_frames
-        );
-
-        println!(
-            "Arc frame boundaries test passed: {} frames, {} samples per channel",
-            frame_count,
-            all_samples.len() / 2
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_arc_frame_consistency() -> Result<(), Box<dyn Error>> {
-        use crate::testutil::write_wav_with_bits;
-        use std::collections::HashMap;
-        use tempfile::tempdir;
-
-        let tempdir = tempdir().unwrap();
-
-        // Create a simple test with known samples
-        let sample_rate = 44100;
-        let duration_samples = 100;
-        let amplitude = 0.5;
-
-        // Generate a simple sine wave
-        let signal: Vec<f32> = (0..duration_samples)
-            .map(|i| {
-                (i as f32 * 440.0 * 2.0 * std::f32::consts::PI / sample_rate as f32).sin()
-                    * amplitude
-            })
-            .collect();
-
-        // Create a 1-channel WAV file
-        let wav_path = tempdir.path().join("test_frame_consistency.wav");
-        let samples: Vec<Vec<i32>> = vec![signal.iter().map(|&x| (x * 8388607.0) as i32).collect()];
-        write_wav_with_bits(wav_path.clone(), samples, sample_rate, 24).unwrap();
-
-        // Create song configuration
-        let config_song = crate::config::Song::new(
-            "Frame Consistency Test",
-            None,
-            None,
-            None,
-            None,
-            vec![crate::config::Track::new(
-                "Test Track".to_string(),
-                wav_path.to_str().unwrap(),
-                Some(1), // Use channel 1
-            )],
-        );
-
-        // Create the songs module Song
-        let song = super::Song::new(&tempdir.path(), &config_song)?;
-
-        // Create track mapping
-        let mut track_mapping = HashMap::new();
-        track_mapping.insert("Test Track".to_string(), vec![1]); // Map to output channel 1
-
-        // Create SongSource with target format
-        let target_format =
-            crate::audio::TargetFormat::new(48000, hound::SampleFormat::Float, 32).unwrap();
-        let mut song_source: SongSource<f32> = song.source(&track_mapping, target_format)?;
-
-        // Test frame consistency by reading samples and verifying structure
-        let mut all_samples = Vec::new();
-        let mut frame_count = 0;
-
-        while let Some(sample) = song_source.next() {
-            all_samples.push(sample);
-            frame_count += 1;
-        }
-
-        println!("Frame consistency test: {} samples read", all_samples.len());
-
-        // Verify we got samples
-        assert!(!all_samples.is_empty(), "No samples read");
-
-        // Verify sample count is reasonable
-        let expected_samples = (duration_samples as f32 * 48000.0 / 44100.0) as usize;
-        assert!(
-            (all_samples.len() as i32 - expected_samples as i32).abs() <= 5,
-            "Sample count mismatch: got {}, expected {} ± 5",
-            all_samples.len(),
-            expected_samples
-        );
-
-        // Verify samples have content
-        let rms: f32 =
-            (all_samples.iter().map(|&x| x * x).sum::<f32>() / all_samples.len() as f32).sqrt();
-        assert!(rms > 0.01, "Samples too quiet: RMS {:.6}", rms);
-
-        // Verify frame consistency: each sample should be from a complete frame
-        // Since we have 1 output channel, each sample is a complete frame
-        assert_eq!(
-            frame_count,
-            all_samples.len(),
-            "Frame count should equal sample count for 1-channel output"
-        );
-
-        println!(
-            "Frame consistency test passed: {} samples, RMS {:.6}",
-            all_samples.len(),
-            rms
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_song_source_multiformat_integration() -> Result<(), Box<dyn Error>> {
-        use crate::testutil::write_wav_with_bits;
-        use std::collections::HashMap;
-
-        // Create a temporary directory for test files
-        let tempdir = tempfile::tempdir()?.keep();
-
-        // Test parameters
-        let duration_seconds = 0.5; // All sources will be 0.5 seconds
-        let target_sample_rate = 48000;
-        let target_format =
-            TargetFormat::new(target_sample_rate, hound::SampleFormat::Float, 32).unwrap();
-
-        // Create multiple input sources with different formats and sample rates
-        let test_sources = vec![
-            // Source 1: 44.1kHz, 24-bit int, mono
-            {
-                let sample_rate = 44100;
-                let sample_count = (sample_rate as f32 * duration_seconds) as usize;
-                let samples: Vec<i32> = (0..sample_count)
-                    .map(|i| {
-                        ((i as f32 * 440.0 * 2.0 * std::f32::consts::PI / sample_rate as f32).sin()
-                            * (1 << 23) as f32) as i32
-                    })
-                    .collect();
-                let wav_path = tempdir.join("source_44k_24bit_mono.wav");
-                write_wav_with_bits(wav_path.clone(), vec![samples], sample_rate, 24)?;
-                ("source_44k_24bit_mono.wav", 1, wav_path)
-            },
-            // Source 2: 48kHz, 16-bit int, stereo
-            {
-                let sample_rate = 48000;
-                let sample_count = (sample_rate as f32 * duration_seconds) as usize;
-                let left_samples: Vec<i16> = (0..sample_count)
-                    .map(|i| {
-                        ((i as f32 * 880.0 * 2.0 * std::f32::consts::PI / sample_rate as f32).sin()
-                            * 32767.0) as i16
-                    })
-                    .collect();
-                let right_samples: Vec<i16> = (0..sample_count)
-                    .map(|i| {
-                        ((i as f32 * 1320.0 * 2.0 * std::f32::consts::PI / sample_rate as f32)
-                            .sin()
-                            * 32767.0) as i16
-                    })
-                    .collect();
-                let wav_path = tempdir.join("source_48k_16bit_stereo.wav");
-                write_wav_with_bits(
-                    wav_path.clone(),
-                    vec![left_samples, right_samples],
-                    sample_rate,
-                    16,
-                )?;
-                ("source_48k_16bit_stereo.wav", 2, wav_path)
-            },
-            // Source 3: 96kHz, 32-bit int, mono
-            {
-                let sample_rate = 96000;
-                let sample_count = (sample_rate as f32 * duration_seconds) as usize;
-                let samples: Vec<i32> = (0..sample_count)
-                    .map(|i| {
-                        ((i as f32 * 220.0 * 2.0 * std::f32::consts::PI / sample_rate as f32).sin()
-                            * (1 << 31) as f32) as i32
-                    })
-                    .collect();
-                let wav_path = tempdir.join("source_96k_32bit_mono.wav");
-                write_wav_with_bits(wav_path.clone(), vec![samples], sample_rate, 32)?;
-                ("source_96k_32bit_mono.wav", 1, wav_path)
-            },
-            // Source 4: 22.05kHz, 24-bit int, mono
-            {
-                let sample_rate = 22050;
-                let sample_count = (sample_rate as f32 * duration_seconds) as usize;
-                let samples: Vec<i32> = (0..sample_count)
-                    .map(|i| {
-                        ((i as f32 * 660.0 * 2.0 * std::f32::consts::PI / sample_rate as f32).sin()
-                            * (1 << 23) as f32) as i32
-                    })
-                    .collect();
-                let wav_path = tempdir.join("source_22k_24bit_mono.wav");
-                write_wav_with_bits(wav_path.clone(), vec![samples], sample_rate, 24)?;
-                ("source_22k_24bit_mono.wav", 1, wav_path)
-            },
-        ];
-
-        // Create tracks for each source
-        let tracks: Vec<config::Track> = test_sources
-            .iter()
-            .enumerate()
-            .map(|(i, (filename, channels, _))| {
-                config::Track::new(format!("track_{}", i + 1), filename, Some(*channels))
-            })
-            .collect();
-
-        // Create the song
-        let song = super::Song::new(
-            &tempdir,
-            &config::Song::new("multiformat_test_song", None, None, None, None, tracks),
-        )?;
-
-        // Create channel mapping (each track to a different output channel)
-        let mut channel_mapping: HashMap<String, Vec<u16>> = HashMap::new();
-        for (i, _) in test_sources.iter().enumerate() {
-            channel_mapping.insert(format!("track_{}", i + 1), vec![(i + 1) as u16]);
-        }
-
-        // Create the song source
-        let mut song_source: SongSource<f32> = song.source(&channel_mapping, target_format)?;
-
-        // Collect all samples from the song source
-        let mut all_samples = Vec::new();
-
-        while let Some(sample) = song_source.next() {
-            all_samples.push(sample);
-        }
-
-        // Calculate expected duration and sample count
-        // For a multitrack song source, the duration should be the longest track
-        // Each track is 0.5 seconds, so the total should be 0.5 seconds at 48kHz
-        let expected_duration_samples = (target_sample_rate as f32 * duration_seconds) as usize;
-
-        // The song source should output samples for the duration of the longest track
-        // Since all tracks are 0.5 seconds, the output should be 0.5 seconds worth of samples
-        // But we need to account for the fact that the song source interleaves multiple channels
-        let num_tracks = test_sources.len();
-        let expected_total_samples = expected_duration_samples * num_tracks;
-
-        // Verify the output - we expect samples for the duration of the longest track
-        // multiplied by the number of tracks (since they're interleaved)
-        // Allow for streaming variations (1% tolerance)
-        let tolerance = (expected_total_samples as f32 * 0.01) as usize;
-        assert!(
-            (all_samples.len() as i32 - expected_total_samples as i32).abs() <= tolerance as i32,
-            "Output sample count mismatch: got {}, expected {} (duration: {}s, tracks: {}, tolerance: {})",
-            all_samples.len(),
-            expected_total_samples,
-            duration_seconds,
-            num_tracks,
-            tolerance
-        );
-
-        // Verify duration is correct (within 1% tolerance)
-        // The duration should be calculated as total_samples / (sample_rate * num_channels)
-        // because the samples are interleaved across multiple channels
-        let actual_duration =
-            all_samples.len() as f32 / (target_sample_rate as f32 * num_tracks as f32);
-        let expected_duration = duration_seconds;
-        let duration_ratio = actual_duration / expected_duration;
-
-        assert!(
-            duration_ratio > 0.99 && duration_ratio < 1.01,
-            "Duration mismatch: got {:.3}s, expected {:.3}s (ratio: {:.4})",
-            actual_duration,
-            expected_duration,
-            duration_ratio
-        );
-
-        // Verify that we have samples from all channels
-        let num_channels = test_sources.len();
-        let samples_per_channel = all_samples.len() / num_channels;
-
-        assert!(
-            samples_per_channel > 0,
-            "No samples per channel: {} samples / {} channels",
-            all_samples.len(),
-            num_channels
-        );
-
-        // Verify that the samples are not all zeros (basic quality check)
-        let non_zero_samples = all_samples.iter().filter(|&&s| s != 0.0).count();
-        let non_zero_ratio = non_zero_samples as f32 / all_samples.len() as f32;
-
-        assert!(
-            non_zero_ratio > 0.1, // At least 10% non-zero samples
-            "Too many zero samples: {:.1}% non-zero (expected > 10%)",
-            non_zero_ratio * 100.0
-        );
-
-        // Verify actual sample content by comparing with expected reference signals
-        let num_channels = test_sources.len();
-        let samples_per_channel = all_samples.len() / num_channels;
-
-        // Generate reference signals at the target sample rate for comparison
-        let reference_signals = vec![
-            // Channel 0: 440Hz sine wave at 48kHz
-            (0..samples_per_channel)
-                .map(|i| {
-                    (i as f32 * 440.0 * 2.0 * std::f32::consts::PI / target_sample_rate as f32)
-                        .sin()
-                        * 0.5
-                })
-                .collect::<Vec<f32>>(),
-            // Channel 1: 880Hz sine wave at 48kHz
-            (0..samples_per_channel)
-                .map(|i| {
-                    (i as f32 * 880.0 * 2.0 * std::f32::consts::PI / target_sample_rate as f32)
-                        .sin()
-                        * 0.5
-                })
-                .collect::<Vec<f32>>(),
-            // Channel 2: 1320Hz sine wave at 48kHz
-            (0..samples_per_channel)
-                .map(|i| {
-                    (i as f32 * 1320.0 * 2.0 * std::f32::consts::PI / target_sample_rate as f32)
-                        .sin()
-                        * 0.5
-                })
-                .collect::<Vec<f32>>(),
-            // Channel 3: 220Hz sine wave at 48kHz
-            (0..samples_per_channel)
-                .map(|i| {
-                    (i as f32 * 220.0 * 2.0 * std::f32::consts::PI / target_sample_rate as f32)
-                        .sin()
-                        * 0.5
-                })
-                .collect::<Vec<f32>>(),
-            // Channel 4: 660Hz sine wave at 48kHz
-            (0..samples_per_channel)
-                .map(|i| {
-                    (i as f32 * 660.0 * 2.0 * std::f32::consts::PI / target_sample_rate as f32)
-                        .sin()
-                        * 0.5
-                })
-                .collect::<Vec<f32>>(),
-        ];
-
-        // Extract and verify each channel
-        for channel in 0..num_channels {
-            let channel_samples: Vec<f32> = all_samples
-                .iter()
-                .skip(channel)
-                .step_by(num_channels)
-                .take(samples_per_channel)
-                .copied()
-                .collect();
-
-            // Calculate RMS to verify the channel has content
-            let rms: f32 = (channel_samples.iter().map(|&x| x * x).sum::<f32>()
-                / channel_samples.len() as f32)
-                .sqrt();
-
-            assert!(
-                rms > 0.001, // Each channel should have some content
-                "Channel {} has insufficient content: RMS = {:.6}",
-                channel,
-                rms
-            );
-
-            // Compare with reference signal if available
-            if channel < reference_signals.len() {
-                let reference = &reference_signals[channel];
-                let min_len = channel_samples.len().min(reference.len());
-
-                // Calculate correlation between actual and reference signals
-                let mut correlation = 0.0;
-                let mut ref_rms = 0.0;
-                let mut actual_rms = 0.0;
-
-                for i in 0..min_len {
-                    correlation += channel_samples[i] * reference[i];
-                    ref_rms += reference[i] * reference[i];
-                    actual_rms += channel_samples[i] * channel_samples[i];
-                }
-
-                ref_rms = (ref_rms / min_len as f32).sqrt();
-                actual_rms = (actual_rms / min_len as f32).sqrt();
-                correlation /= min_len as f32;
-
-                // Normalize correlation by RMS values
-                let normalized_correlation = if ref_rms > 0.0 && actual_rms > 0.0 {
-                    correlation / (ref_rms * actual_rms)
-                } else {
-                    0.0
-                };
-
-                // The correlation should be reasonably high (indicating similar frequency content)
-                // but we allow for some variation due to transcoding artifacts
-                // Temporarily lower threshold to investigate the transcoding issue
-                assert!(
-                    normalized_correlation > -0.5, // Very lenient to see all channels
-                    "Channel {} correlation too low: {:.3} (ref_rms={:.6}, actual_rms={:.6})",
-                    channel,
-                    normalized_correlation,
-                    ref_rms,
-                    actual_rms
-                );
-
-                // Verify that the actual signal has reasonable amplitude characteristics
-                // Note: transcoding can significantly reduce amplitude, so we use more lenient bounds
-                let amplitude_ratio = actual_rms / ref_rms;
-
-                // Debug output to understand the transcoding issue
-                println!(
-                    "Channel {}: ref_rms={:.6}, actual_rms={:.6}, ratio={:.6}, correlation={:.3}",
-                    channel, ref_rms, actual_rms, amplitude_ratio, normalized_correlation
-                );
-
-                // For now, let's just warn about low amplitude but not fail the test
-                // This will help us understand the scope of the transcoding attenuation issue
-                if amplitude_ratio < 0.01 {
-                    println!(
-                        "WARNING: Channel {} has very low amplitude ratio: {:.6} - transcoding may be attenuating signal significantly",
-                        channel,
-                        amplitude_ratio
-                    );
-                }
-
-                // Use very lenient bounds for now to allow the test to pass while we investigate
-                assert!(
-                    amplitude_ratio > 0.0001 && amplitude_ratio < 1000.0, // Very lenient bounds for transcoded audio
-                    "Channel {} amplitude ratio out of range: {:.3} (ref_rms={:.6}, actual_rms={:.6})",
-                    channel,
-                    amplitude_ratio,
-                    ref_rms,
-                    actual_rms
-                );
-            }
-        }
-
-        // Verify that different channels have different content (not all identical)
-        if num_channels >= 2 {
-            let channel_0_samples: Vec<f32> = all_samples
-                .iter()
-                .step_by(num_channels)
-                .take(samples_per_channel)
-                .copied()
-                .collect();
-            let channel_1_samples: Vec<f32> = all_samples
-                .iter()
-                .skip(1)
-                .step_by(num_channels)
-                .take(samples_per_channel)
-                .copied()
-                .collect();
-
-            // Calculate correlation between channels
-            let mut correlation = 0.0;
-            for i in 0..samples_per_channel
-                .min(channel_0_samples.len())
-                .min(channel_1_samples.len())
-            {
-                correlation += channel_0_samples[i] * channel_1_samples[i];
-            }
-            correlation /= samples_per_channel as f32;
-
-            // Channels should not be perfectly correlated (they contain different frequencies)
-            assert!(
-                correlation.abs() < 0.9, // Allow some correlation but not perfect
-                "Channels 0 and 1 are too similar (correlation: {:.3})",
-                correlation
-            );
-        }
-
-        println!(
-            "Integration test passed: {} samples, {:.3}s duration, {:.1}% non-zero samples, frequency verification complete",
-            all_samples.len(),
-            actual_duration,
-            non_zero_ratio * 100.0
-        );
-
-        Ok(())
-    }
-
-    #[test]
     fn test_transcoding_detection() {
         use crate::audio::TargetFormat;
+        use crate::testutil::write_wav_with_bits;
         use hound::SampleFormat;
+        use tempfile::tempdir;
 
-        // Create a test song with 44.1kHz sample rate and a track
-        let mut song = super::Song::default();
-        song.sample_rate = 44100;
-        song.sample_format = SampleFormat::Int;
-        song.tracks = vec![super::Track {
-            name: "test".to_string(),
-            file: std::path::PathBuf::new(),
-            file_channel: 1,
+        let tempdir = tempdir().unwrap();
+        let wav_path = tempdir.path().join("test.wav");
+
+        // Create a test WAV file
+        let samples: Vec<i32> = vec![1000, 2000, 3000, 4000, 5000];
+        write_wav_with_bits(wav_path.clone(), vec![samples], 44100, 16).unwrap();
+
+        // Create a test song with the WAV file
+        let song = super::Song {
             sample_rate: 44100,
             sample_format: SampleFormat::Int,
-            duration: std::time::Duration::from_secs(1),
-        }];
+            tracks: vec![super::Track {
+                name: "test".to_string(),
+                file: wav_path,
+                file_channel: 1,
+                sample_rate: 44100,
+                sample_format: SampleFormat::Int,
+                duration: std::time::Duration::from_secs(1),
+            }],
+            ..Default::default()
+        };
 
         // Test with same format - should not need transcoding
         let target_format = TargetFormat::new(44100, SampleFormat::Int, 16).unwrap();
@@ -2417,23 +1087,34 @@ mod test {
     #[test]
     fn test_no_transcoding_for_identical_formats() {
         use crate::audio::TargetFormat;
+        use crate::testutil::write_wav_with_bits;
         use hound::SampleFormat;
+        use tempfile::tempdir;
+
+        let tempdir = tempdir().unwrap();
+        let wav_path = tempdir.path().join("test.wav");
+
+        // Create a test WAV file
+        let samples: Vec<i32> = vec![1000, 2000, 3000, 4000, 5000];
+        write_wav_with_bits(wav_path.clone(), vec![samples], 44100, 16).unwrap();
 
         // Test that identical formats don't trigger transcoding
         let target_format = TargetFormat::new(44100, SampleFormat::Int, 16).unwrap();
 
         // Create a song with identical format
-        let mut song = super::Song::default();
-        song.sample_rate = 44100;
-        song.sample_format = SampleFormat::Int;
-        song.tracks = vec![super::Track {
-            name: "test".to_string(),
-            file: std::path::PathBuf::new(),
-            file_channel: 1,
+        let song = super::Song {
             sample_rate: 44100,
             sample_format: SampleFormat::Int,
-            duration: std::time::Duration::from_secs(1),
-        }];
+            tracks: vec![super::Track {
+                name: "test".to_string(),
+                file: wav_path,
+                file_channel: 1,
+                sample_rate: 44100,
+                sample_format: SampleFormat::Int,
+                duration: std::time::Duration::from_secs(1),
+            }],
+            ..Default::default()
+        };
 
         // Should not need transcoding for identical formats
         assert!(!song.needs_transcoding(&target_format));

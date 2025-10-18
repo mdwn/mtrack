@@ -49,7 +49,7 @@ impl Device {
     }
 }
 
-impl super::Device for Device {
+impl crate::audio::Device for Device {
     /// A mock device that will sleep for the length of the song duration.
     fn play(
         &self,

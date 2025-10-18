@@ -24,9 +24,6 @@ use std::{
 #[cfg(test)]
 use hound::{SampleFormat, WavSpec, WavWriter};
 
-#[cfg(test)]
-use crate::songs::Sample;
-
 /// Audio test utilities for generating test signals and validating results
 #[cfg(test)]
 pub mod audio_test_utils {
@@ -124,7 +121,7 @@ where
 }
 
 #[cfg(test)]
-pub fn write_wav<S: Sample>(
+pub fn write_wav<S: hound::Sample + Copy + 'static>(
     path: PathBuf,
     samples: Vec<Vec<S>>,
     sample_rate: u32,
@@ -133,7 +130,7 @@ pub fn write_wav<S: Sample>(
 }
 
 #[cfg(test)]
-pub fn write_wav_with_bits<S: Sample>(
+pub fn write_wav_with_bits<S: hound::Sample + Copy + 'static>(
     path: PathBuf,
     samples: Vec<Vec<S>>,
     sample_rate: u32,
@@ -144,9 +141,9 @@ pub fn write_wav_with_bits<S: Sample>(
     // Determine sample format based on the type
     let sample_format = if std::any::TypeId::of::<S>() == std::any::TypeId::of::<f32>() {
         SampleFormat::Float
-    } else if std::any::TypeId::of::<S>() == std::any::TypeId::of::<i32>() {
-        SampleFormat::Int
-    } else if std::any::TypeId::of::<S>() == std::any::TypeId::of::<i16>() {
+    } else if std::any::TypeId::of::<S>() == std::any::TypeId::of::<i32>()
+        || std::any::TypeId::of::<S>() == std::any::TypeId::of::<i16>()
+    {
         SampleFormat::Int
     } else {
         return Err("Unsupported sample format".into());
@@ -165,9 +162,9 @@ pub fn write_wav_with_bits<S: Sample>(
     )?;
 
     // Write a simple set of samples to the wav file.
-    for channel in 0..samples.len() {
-        for sample in &samples[channel] {
-            writer.write_sample(sample.to_owned())?;
+    for channel_samples in &samples {
+        for sample in channel_samples {
+            writer.write_sample(*sample)?;
         }
     }
 

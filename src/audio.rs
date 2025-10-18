@@ -21,7 +21,8 @@ use crate::songs::Song;
 use std::collections::HashMap;
 use std::sync::Barrier;
 
-mod cpal;
+pub mod cpal;
+pub mod mixer;
 pub mod mock;
 pub mod sample_source;
 
