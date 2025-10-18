@@ -16,7 +16,7 @@ use std::{
     error::Error,
     fmt,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Barrier,
     },
     thread,
@@ -34,6 +34,9 @@ use crate::{
     playsync::CancelHandle,
     songs::Song,
 };
+
+/// Global atomic counter for generating unique source IDs
+static SOURCE_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// A small wrapper around a cpal::Device. Used for storing some extra
 /// data that makes multitrack playing more convenient.
@@ -423,16 +426,11 @@ impl AudioDevice for Device {
             return Err("No sources found in song".into());
         }
 
-        // Create a unique ID for each source and track them
-        let source_id = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as u64;
-
+        // Create unique IDs for each source and track them
         let mut source_ids = Vec::new();
-        let mut current_source_id = source_id;
 
         for source in channel_mapped_sources {
+            let current_source_id = SOURCE_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
             let active_source = MixerActiveSource {
                 id: current_source_id,
                 source,
@@ -444,8 +442,10 @@ impl AudioDevice for Device {
 
             source_ids.push(current_source_id);
             self.output_manager.add_source(active_source)?;
-            current_source_id += 1; // Increment for next source
         }
+
+        // Give the mixer a moment to process all the sources before starting monitoring
+        thread::sleep(Duration::from_millis(10));
 
         // Wait for either cancellation or natural completion
         let finished = Arc::new(AtomicBool::new(false));
