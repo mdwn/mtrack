@@ -14,8 +14,10 @@
 use crate::audio::TargetFormat;
 use hound::WavReader;
 use rubato::{FftFixedIn, VecResampler};
+use std::collections::VecDeque;
 use std::io::BufReader;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 // Resampling configuration constants
@@ -655,6 +657,8 @@ pub fn create_channel_mapped_sample_source(
     source: Box<dyn SampleSource>,
     target_format: TargetFormat,
     channel_mappings: Vec<Vec<String>>,
+    buffer_size: usize,
+    buffer_threshold: usize,
 ) -> Result<Box<dyn ChannelMappedSampleSource>, TranscodingError> {
     let source_format = TargetFormat::new(
         source.sample_rate(),
@@ -681,8 +685,16 @@ pub fn create_channel_mapped_sample_source(
     } else {
         source
     };
-    Ok(Box::new(ChannelMappedSource::new(
+
+    // Wrap with BufferedThreadedSampleSource for background buffering
+    let buffered_source = BufferedThreadedSampleSource::new(
         sample_source,
+        buffer_size,      // Use configured buffer size
+        buffer_threshold, // Use configured threshold
+    );
+
+    Ok(Box::new(ChannelMappedSource::new(
+        Box::new(buffered_source),
         channel_mappings,
         channel_count,
     )))
@@ -2762,6 +2774,151 @@ mod tests {
                 expected,
                 actual
             );
+        }
+    }
+}
+
+/// BufferedThreadedSampleSource provides background buffering for sample sources
+/// to eliminate I/O blocking in the audio callback
+pub struct BufferedThreadedSampleSource {
+    /// Inner source to read from
+    inner_source: Arc<Mutex<Box<dyn SampleSource + Send + Sync>>>,
+
+    /// Buffered samples (read ahead)
+    buffer: Arc<Mutex<VecDeque<Vec<f32>>>>,
+
+    /// Worker pool for background reading
+    worker_pool: Arc<rayon::ThreadPool>,
+
+    /// Configuration
+    buffer_size: usize,
+    read_ahead_threshold: usize,
+
+    /// Performance monitoring
+    buffer_hits: Arc<AtomicUsize>,
+    buffer_misses: Arc<AtomicUsize>,
+}
+
+impl BufferedThreadedSampleSource {
+    /// Creates a new buffered threaded sample source
+    pub fn new(
+        source: Box<dyn SampleSource + Send + Sync>,
+        buffer_size: usize,
+        read_ahead_threshold: usize,
+    ) -> Self {
+        let worker_pool = Arc::new(
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(num_cpus::get().min(4)) // Limit to 4 threads max
+                .build()
+                .unwrap(),
+        );
+
+        Self {
+            inner_source: Arc::new(Mutex::new(source)),
+            buffer: Arc::new(Mutex::new(VecDeque::with_capacity(buffer_size))),
+            worker_pool,
+            buffer_size,
+            read_ahead_threshold,
+            buffer_hits: Arc::new(AtomicUsize::new(0)),
+            buffer_misses: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    /// Schedules background reading if buffer is getting low
+    fn schedule_background_read(&self) {
+        let buffer = self.buffer.clone();
+        let source = self.inner_source.clone();
+        let buffer_size = self.buffer_size;
+        let channel_count = self.inner_source.lock().unwrap().channel_count() as usize;
+
+        self.worker_pool.spawn(move || {
+            let mut chunk = Vec::with_capacity(buffer_size);
+
+            // Read chunk of samples in background, grouping by channel count
+            let mut current_frame = Vec::with_capacity(channel_count);
+            for _ in 0..(buffer_size * channel_count) {
+                match source.lock().unwrap().next_sample() {
+                    Ok(Some(sample)) => {
+                        current_frame.push(sample);
+                        if current_frame.len() == channel_count {
+                            chunk.push(current_frame);
+                            current_frame = Vec::with_capacity(channel_count);
+                        }
+                    }
+                    Ok(None) => break, // Source finished
+                    Err(_) => break,   // Error occurred
+                }
+            }
+
+            // Add to buffer
+            if !chunk.is_empty() {
+                buffer.lock().unwrap().extend(chunk);
+            }
+        });
+    }
+
+    /// Gets buffer statistics for performance monitoring
+    #[allow(dead_code)]
+    pub fn get_stats(&self) -> (usize, usize, usize) {
+        let hits = self.buffer_hits.load(Ordering::Relaxed);
+        let misses = self.buffer_misses.load(Ordering::Relaxed);
+        let buffer_len = self.buffer.lock().unwrap().len();
+        (hits, misses, buffer_len)
+    }
+}
+
+impl SampleSource for BufferedThreadedSampleSource {
+    fn next_sample(&mut self) -> Result<Option<f32>, TranscodingError> {
+        // Fast path: return from buffer
+        if let Some(frame) = self.buffer.lock().unwrap().pop_front() {
+            self.buffer_hits.fetch_add(1, Ordering::Relaxed);
+
+            // Trigger background read if buffer is getting low
+            let buffer_len = self.buffer.lock().unwrap().len();
+            if buffer_len < self.read_ahead_threshold {
+                self.schedule_background_read();
+            }
+
+            // Return first sample from frame
+            return Ok(frame.first().copied());
+        }
+
+        // Fallback: read directly (should be rare)
+        self.buffer_misses.fetch_add(1, Ordering::Relaxed);
+        self.inner_source.lock().unwrap().next_sample()
+    }
+
+    fn sample_rate(&self) -> u32 {
+        self.inner_source.lock().unwrap().sample_rate()
+    }
+
+    fn channel_count(&self) -> u16 {
+        self.inner_source.lock().unwrap().channel_count()
+    }
+
+    fn bits_per_sample(&self) -> u16 {
+        self.inner_source.lock().unwrap().bits_per_sample()
+    }
+
+    fn sample_format(&self) -> crate::audio::SampleFormat {
+        self.inner_source.lock().unwrap().sample_format()
+    }
+
+    fn duration(&self) -> Option<std::time::Duration> {
+        self.inner_source.lock().unwrap().duration()
+    }
+}
+
+impl Clone for BufferedThreadedSampleSource {
+    fn clone(&self) -> Self {
+        Self {
+            inner_source: self.inner_source.clone(),
+            buffer: self.buffer.clone(),
+            worker_pool: self.worker_pool.clone(),
+            buffer_size: self.buffer_size,
+            read_ahead_threshold: self.read_ahead_threshold,
+            buffer_hits: self.buffer_hits.clone(),
+            buffer_misses: self.buffer_misses.clone(),
         }
     }
 }

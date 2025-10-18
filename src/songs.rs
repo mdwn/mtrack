@@ -314,6 +314,8 @@ impl Song {
         &self,
         track_mappings: &HashMap<String, Vec<u16>>,
         target_format: TargetFormat,
+        buffer_size: usize,
+        buffer_threshold: usize,
     ) -> Result<Vec<Box<dyn crate::audio::sample_source::ChannelMappedSampleSource>>, Box<dyn Error>>
     {
         use crate::audio::sample_source::create_channel_mapped_sample_source;
@@ -359,6 +361,8 @@ impl Song {
                 sample_source,
                 target_format.clone(),
                 channel_mappings,
+                buffer_size,
+                buffer_threshold,
             )?;
 
             sources.push(source);
@@ -569,7 +573,7 @@ impl Track {
             file: track_file.clone(),
             file_channel,
             sample_rate,
-            sample_format: source.sample_format().into(),
+            sample_format: source.sample_format(),
             duration,
         })
     }
@@ -588,7 +592,7 @@ impl Track {
         let track_name = stem.to_string();
         let source = create_sample_source_from_file(track_path)?;
         let sample_rate = source.sample_rate();
-        let sample_format = source.sample_format().into();
+        let sample_format = source.sample_format();
         let duration = source.duration().unwrap_or(Duration::ZERO);
         let tracks = match source.channel_count() {
             0 => vec![],

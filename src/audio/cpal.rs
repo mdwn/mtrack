@@ -54,8 +54,8 @@ pub struct Device {
     target_format: TargetFormat,
     /// The output stream manager for continuous playback.
     output_manager: Arc<OutputManager>,
-    /// Whether the device is in test mode (captures audio instead of playing it).
-    test_mode: bool,
+    /// Audio configuration for buffering and performance tuning.
+    audio_config: config::Audio,
 }
 
 /// Manages the continuous output stream and mixing of multiple audio sources.
@@ -333,7 +333,7 @@ impl Device {
                         device,
                         target_format: default_format,
                         output_manager: temp_output_manager,
-                        test_mode: false,
+                        audio_config: config::Audio::new("default"), // Default config for listing
                     })
                 }
             }
@@ -368,7 +368,7 @@ impl Device {
                     .start_output_thread(device.device.clone(), device.target_format.clone())?;
 
                 device.output_manager = Arc::new(output_manager);
-                device.test_mode = false;
+                device.audio_config = config;
 
                 Ok(device)
             }
@@ -424,8 +424,12 @@ impl AudioDevice for Device {
         spin_sleep::sleep(self.playback_delay);
 
         // Create channel mapped sources for each track in the song
-        let channel_mapped_sources =
-            song.create_channel_mapped_sources(mappings, self.target_format.clone())?;
+        let channel_mapped_sources = song.create_channel_mapped_sources(
+            mappings,
+            self.target_format.clone(),
+            self.audio_config.buffer_size(),
+            self.audio_config.buffer_threshold(),
+        )?;
 
         // Add all sources to the output manager
         if channel_mapped_sources.is_empty() {

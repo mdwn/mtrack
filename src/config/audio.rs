@@ -29,6 +29,12 @@ pub struct Audio {
     /// Controls how long to wait before playback of an audio file starts.
     playback_delay: Option<String>,
 
+    /// Buffer size for background reading (number of frames to buffer ahead)
+    buffer_size: Option<usize>,
+
+    /// Threshold for triggering background reads (when buffer drops below this)
+    buffer_threshold: Option<usize>,
+
     /// Target sample rate in Hz (default: 44100)
     sample_rate: Option<u32>,
 
@@ -45,6 +51,8 @@ impl Audio {
         Audio {
             device: device.to_string(),
             playback_delay: None,
+            buffer_size: None,
+            buffer_threshold: None,
             sample_rate: None,
             sample_format: None,
             bits_per_sample: None,
@@ -80,5 +88,15 @@ impl Audio {
     /// Returns the target bits per sample (default: 32)
     pub fn bits_per_sample(&self) -> u16 {
         self.bits_per_sample.unwrap_or(32)
+    }
+
+    /// Returns the buffer size for background reading (default: 1024)
+    pub fn buffer_size(&self) -> usize {
+        self.buffer_size.unwrap_or(1024)
+    }
+
+    /// Returns the buffer threshold for triggering background reads (default: 256)
+    pub fn buffer_threshold(&self) -> usize {
+        self.buffer_threshold.unwrap_or(256)
     }
 }
