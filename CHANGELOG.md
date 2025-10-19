@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+[0.6.0]
+
+**Note**: You can now explicitly specify the sample rate, sample format, and bits per
+sample for your audio device. This may be a breaking change depending on the audio files
+you have been using. Please test before playing live!
+
 Transcoding has been added to mtrack. This allows audio files and audio devices to have
 mismatched sample rates and formats, making it easier to deal with files from multiple
 sources. This also adds the ability to configure the target output format for an audio
@@ -17,6 +23,12 @@ to build different types of input sources in the future. This will make it easie
 introduce other input file types like FLAC, Ogg, MP3, etc. Along with this was a good
 bit of performance tuning. The transcoding introduces increased performance requirements,
 but this was reduced as much as possible.
+
+Finally, audio is now played in a constant stream as opposed to opening up a new stream
+per file. Combined with the transcoding work, this should make CPU usage very consistent.
+In my testing, it seems that the biggest performance hit is from libasound's
+speex_resampler_process. The rubato method is extremely efficient, so I recommend targeting
+your audio device's native sample rate/format.
 
 ## [0.5.0]
 

@@ -11,6 +11,21 @@ audio:
   # Run `mtrack devices` to see a list of the devices that mtrack recognizes.
   device: UltraLite-mk5
 
+  # (Optional) The buffer size to use for background reads. Defaults to 1024 samples.
+  buffer_size: 1024
+
+  # (Optional) The threshold for triggering background reads. Defaults to 256 samples.
+  buffer_threshold: 256
+
+  # (Optional) The sample rate to use for the audio device. Defaults to 44100.
+  sample_rate: 44100
+
+  # (Optional) The sample format to use for the audio device. Defaults to int.
+  sample_format: int
+
+  # (Optional) The bits per sample (bit depth) to use for the audio device. Defaults to 32.
+  bits_per_sample: 32
+
   # (Optional) Once a song is started, mtrack will wait this amount before triggering the audio playback.
   playback_delay: 500ms
 
