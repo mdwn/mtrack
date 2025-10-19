@@ -15,6 +15,7 @@ mod audio;
 mod config;
 mod controller;
 mod dmx;
+mod lighting;
 mod midi;
 mod player;
 mod playlist;
@@ -318,6 +319,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             dmx_playback_delay,
                             None,
                             universe_configs,
+                            None, // lighting configuration
                         ))
                     }
                 }
@@ -335,6 +337,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     audio_config,
                     midi_config,
                     dmx_config,
+                    None, // lighting configuration
                     converted_mappings,
                     &repository_path,
                 ),

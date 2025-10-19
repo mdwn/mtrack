@@ -38,6 +38,7 @@ comments:
     extensions:
       - rs
       - proto
+      - pest
     commenter:
       type: line
       comment_char: "//"
