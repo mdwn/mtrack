@@ -379,6 +379,7 @@ mod test {
                 config::Audio::new("mock-device"),
                 Some(config::Midi::new("mock-midi-device", None)),
                 None,
+                None, // lighting configuration
                 HashMap::new(),
                 "assets/songs",
             ),

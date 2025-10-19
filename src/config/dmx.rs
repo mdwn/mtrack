@@ -17,6 +17,8 @@ use std::time::Duration;
 use duration_string::DurationString;
 use serde::Deserialize;
 
+use super::lighting::Lighting;
+
 /// The default DMX dimming speed.
 pub const DEFAULT_OLA_PORT: u16 = 9010;
 pub const DEFAULT_DMX_DIMMING_SPEED_MODIFIER: f64 = 1.0;
@@ -36,6 +38,10 @@ pub struct Dmx {
 
     /// The configuration of devices to universes.
     universes: Vec<Universe>,
+
+    /// The lighting configuration.
+    #[allow(dead_code)]
+    lighting: Option<Lighting>,
 }
 
 impl Dmx {
@@ -45,12 +51,14 @@ impl Dmx {
         playback_delay: Option<String>,
         ola_port: Option<u16>,
         universes: Vec<Universe>,
+        lighting: Option<Lighting>,
     ) -> Dmx {
         Dmx {
             dim_speed_modifier,
             playback_delay,
             ola_port,
             universes,
+            lighting,
         }
     }
     /// Gets the dimming speed modifier.
@@ -76,6 +84,12 @@ impl Dmx {
     /// Converts the configuration into universe configs.
     pub fn universes(&self) -> Vec<Universe> {
         self.universes.clone()
+    }
+
+    /// Gets the lighting configuration.
+    #[allow(dead_code)]
+    pub fn lighting(&self) -> Option<&Lighting> {
+        self.lighting.as_ref()
     }
 }
 

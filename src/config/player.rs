@@ -14,6 +14,7 @@
 use super::audio::Audio;
 use super::controller::Controller;
 use super::dmx::Dmx;
+use super::lighting::Lighting;
 use super::midi::Midi;
 use super::statusevents::StatusEvents;
 use super::trackmappings::TrackMappings;
@@ -43,6 +44,9 @@ pub struct Player {
     midi: Option<Midi>,
     /// The DMX configuration.
     dmx: Option<Dmx>,
+    /// The lighting configuration.
+    #[allow(dead_code)]
+    lighting: Option<Lighting>,
     /// Events to emit to report status out via MIDI.
     status_events: Option<StatusEvents>,
     /// The path to the playlist.
@@ -57,6 +61,7 @@ impl Player {
         audio: Audio,
         midi: Option<Midi>,
         dmx: Option<Dmx>,
+        lighting: Option<Lighting>,
         track_mappings: HashMap<String, Vec<u16>>,
         songs: &str,
     ) -> Player {
@@ -69,6 +74,7 @@ impl Player {
             midi_device: None,
             midi,
             dmx,
+            lighting,
             status_events: None,
             playlist: None,
             songs: songs.to_string(),
@@ -128,6 +134,12 @@ impl Player {
     /// Gets the DMX configuration.
     pub fn dmx(&self) -> Option<&Dmx> {
         self.dmx.as_ref()
+    }
+
+    /// Gets the lighting configuration.
+    #[allow(dead_code)]
+    pub fn lighting(&self) -> Option<&Lighting> {
+        self.lighting.as_ref()
     }
 
     /// Gets the status events configuration.

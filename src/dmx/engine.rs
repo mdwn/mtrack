@@ -389,6 +389,7 @@ mod test {
             None,
             Some(listener.local_addr()?.port()),
             vec![config::Universe::new(5, "universe1".to_string())],
+            None, // lighting configuration
         ))?;
         let cancel_handle = engine.cancel_handle.clone();
         Ok((Arc::new(engine), cancel_handle))
