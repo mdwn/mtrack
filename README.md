@@ -594,18 +594,226 @@ An starting TouchOSC file has been supplied [here](touchosc/mtrack.tosc).
 ## Light shows
 
 Light shows and DMX playback are now supported through the use of the [Open Lighting Architecture](https://www.openlighting.org/).
-Before delving too far into this, let's define some basic DMX information.
+The lighting system has been significantly enhanced with a new tag-based group resolution system that enables venue-agnostic lighting shows.
 
-### Basic DMX information
+### New Lighting System Features
+
+The new lighting system provides:
+
+- **Venue-Agnostic Songs**: Songs use logical groups instead of specific fixture names
+- **Tag-Based Group Resolution**: Fixtures are tagged with capabilities and roles
+- **Intelligent Selection**: System automatically chooses optimal fixtures based on constraints
+- **Venue Portability**: Same lighting show works across different venues
+- **Performance Optimization**: Cached group resolutions for fast lookups
+
+### Configuration Structure
+
+The lighting system uses a three-layer architecture:
+
+1. **Configuration Layer**: Define logical groups with constraints in `mtrack.yaml`
+2. **Venue Layer**: Tag physical fixtures with capabilities in DSL files
+3. **Song Layer**: Use logical groups in song lighting definitions
+
+#### Main Configuration (`mtrack.yaml`)
+
+```yaml
+dmx:
+  # ... existing DMX configuration ...
+  
+  # New lighting system configuration
+  lighting:
+    # Current venue selection - determines which physical fixtures to use
+    current_venue: "main_stage"
+    
+    # Logical groups with role-based constraints
+    groups:
+      # Front wash lights - requires wash + front tags, needs 4-8 fixtures
+      front_wash:
+        name: "front_wash"
+        constraints:
+          - AllOf: ["wash", "front"]
+          - MinCount: 4
+          - MaxCount: 8
+      
+      # Moving head lights - accepts moving_head OR spot tags, prefers premium
+      movers:
+        name: "movers"
+        constraints:
+          - AnyOf: ["moving_head", "spot"]
+          - Prefer: ["premium"]
+          - MinCount: 2
+          - MaxCount: 4
+      
+      # All lights - accepts any light type
+      all_lights:
+        name: "all_lights"
+        constraints:
+          - AnyOf: ["wash", "moving_head", "spot", "strobe", "beam"]
+          - MinCount: 1
+    
+    # Directory configuration for DSL files (auto-discovered)
+    directories:
+      fixture_types: "lighting/fixture_types"
+      venues: "lighting/venues"
+```
+
+#### Fixture Type Definitions (`lighting/fixture_types/`)
+
+```light
+# RGBW Par Can fixture type definition
+fixture_type "RGBW_Par" {
+  channels: 4
+  channel_map: {
+    "dimmer": 1,
+    "red": 2,
+    "green": 3,
+    "blue": 4
+  }
+  special_cases: ["RGB", "Dimmer"]
+}
+
+# Moving Head fixture type definition
+fixture_type "MovingHead" {
+  channels: 16
+  channel_map: {
+    "dimmer": 1,
+    "pan": 2,
+    "pan_fine": 3,
+    "tilt": 4,
+    "tilt_fine": 5,
+    "color_wheel": 6,
+    "gobo_wheel": 7,
+    "gobo_rotation": 8,
+    "focus": 9,
+    "zoom": 10,
+    "iris": 11,
+    "frost": 12,
+    "prism": 13,
+    "effects": 14,
+    "strobe": 15,
+    "control": 16
+  }
+  special_cases: ["MovingHead", "Spot", "Dimmer", "Strobe"]
+}
+```
+
+#### Venue Definitions (`lighting/venues/`)
+
+```light
+# Main Stage venue definition
+venue "main_stage" {
+  # Front wash lights
+  fixture "Wash1" RGBW_Par @ 1:1 tags ["wash", "front", "rgb", "premium"]
+  fixture "Wash2" RGBW_Par @ 1:7 tags ["wash", "front", "rgb", "premium"]
+  fixture "Wash3" RGBW_Par @ 1:13 tags ["wash", "front", "rgb"]
+  fixture "Wash4" RGBW_Par @ 1:19 tags ["wash", "front", "rgb"]
+  
+  # Moving head lights
+  fixture "Mover1" MovingHead @ 1:37 tags ["moving_head", "spot", "premium"]
+  fixture "Mover2" MovingHead @ 1:53 tags ["moving_head", "spot", "premium"]
+  fixture "Mover3" MovingHead @ 1:69 tags ["moving_head", "spot"]
+  
+  # Strobe lights
+  fixture "Strobe1" Strobe @ 1:85 tags ["strobe", "front"]
+  fixture "Strobe2" Strobe @ 1:87 tags ["strobe", "back"]
+}
+
+# Small Club venue definition (same logical groups work!)
+venue "small_club" {
+  # Limited front wash (only 2 fixtures)
+  fixture "Wash1" RGBW_Par @ 1:1 tags ["wash", "front", "rgb"]
+  fixture "Wash2" RGBW_Par @ 1:7 tags ["wash", "front", "rgb"]
+  
+  # Single moving head
+  fixture "Mover1" MovingHead @ 1:13 tags ["moving_head", "spot", "premium"]
+  
+  # Single strobe
+  fixture "Strobe1" Strobe @ 1:29 tags ["strobe", "front"]
+}
+```
+
+#### Song Lighting Definitions
+
+```yaml
+# Example song lighting definition
+song: "example_song"
+lighting:
+  cues:
+    - time: "0:05.000"
+      description: "Front wash on"
+      effects:
+        - type: "static"
+          groups: ["front_wash"]  # ← Logical group!
+          parameters:
+            dimmer: 0.8
+            red: 1.0
+            green: 0.5
+            blue: 0.2
+    
+    - time: "0:10.000"
+      description: "Movers join with color cycle"
+      effects:
+        - type: "color_cycle"
+          groups: ["movers"]  # ← Logical group!
+          parameters:
+            colors: ["red", "blue", "green", "yellow"]
+            speed: 2.0
+            dimmer: 1.0
+```
+
+### Constraint Types
+
+The system supports several constraint types for group resolution:
+
+- **`AllOf`**: All specified tags must be present (e.g., `["wash", "front"]`)
+- **`AnyOf`**: Any of the specified tags must be present (e.g., `["moving_head", "spot"]`)
+- **`Prefer`**: Prefer fixtures with these tags (e.g., `["premium"]`)
+- **`MinCount`**: Minimum number of fixtures required
+- **`MaxCount`**: Maximum number of fixtures allowed
+
+### Benefits
+
+1. **Venue Portability**: Same lighting show works across different venues automatically
+2. **Intelligent Selection**: System prefers premium fixtures when available, falls back to standard
+3. **Flexible Constraints**: Support for complex requirement combinations
+4. **Clear Error Handling**: Know exactly what's missing when requirements aren't met
+5. **Performance**: Cached resolutions for fast lookups
+6. **Maintainable**: Easy to add new venues and fixture types
+
+### Migration Path
+
+- **No breaking changes** - existing functionality continues to work
+- **Gradual adoption** - can mix old and new group definitions
+- **Backward compatibility** - venue-defined groups still supported
+
+## MIDI-Based DMX System
+
+> **Note**: The new tag-based lighting system (described above) is the recommended approach for most users. The MIDI-based DMX system is still supported for specific use cases requiring direct channel control.
+
+### When to Use Each System
+
+**Use the New Tag-Based System when:**
+- You want venue-agnostic lighting shows
+- You prefer high-level effect definitions
+- You want intelligent fixture selection
+- You're creating new lighting shows
+
+**Use the MIDI-Based DMX System when:**
+- You have existing MIDI-based lighting shows
+- You need precise channel-level control
+- You're integrating with existing MIDI workflows
+- You prefer direct DMX channel programming
+
+### Basic DMX Information
 
 DMX is a standard that allows for the controlling of stage devices, primarily lights. Each of these devices will react to data being
 fed into one or more DMX channels. Each DMX channel can be set from `0` to `255`. For example, a multicolor stage light might have 3
 DMX channels: 1 for red, 1 for green, 1 for blue. In order to set the color of the light, you would have to supply these channels with
 data representing the color that you want. DMX data is arranged into universes, where 1 universe consists of 512 channels of DMX data.
 
-### Configuring mtrack for DMX playback
+### Configuring mtrack for Legacy DMX Playback
 
-In order to use light shows, you'll need to set up OLA on your playback device and map your DMX devices into DMX universes. I recommend
+In order to use legacy light shows, you'll need to set up OLA on your playback device and map your DMX devices into DMX universes. I recommend
 following [this tutorial](https://www.openlighting.org/ola/getting-started/). mtrack assumes that OLA is running on the same device.
 
 mtrack can be configured to stream DMX data to OLA universes. This can be done through the mtrack configuration file when using `mtrack start`
@@ -616,7 +824,7 @@ The `dmx-universe-config` argument format is:
 universe=1,name=light-show;universe=2,name=another-light-show
 ```
 
-Light shows can be defined in `Song` files and consist of an array of "universe names" and MIDI files. These universe names correlate to the
+Legacy light shows can be defined in `Song` files and consist of an array of "universe names" and MIDI files. These universe names correlate to the
 names used in the mtrack configuration. For instance, a song with a light show with a universe name of `light-show` will play on the mtrack
 universe with the equivalent name.
 

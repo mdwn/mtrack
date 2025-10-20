@@ -1,0 +1,18 @@
+# Small Club venue definition
+# This shows how the same logical groups work with different physical fixtures
+
+venue "small_club" {
+  # Limited front wash (only 2 fixtures)
+  fixture "Wash1" RGBW_Par @ 1:1 tags ["wash", "front", "rgb"]
+  fixture "Wash2" RGBW_Par @ 1:7 tags ["wash", "front", "rgb"]
+  
+  # No back wash in this venue
+  
+  # Single moving head
+  fixture "Mover1" MovingHead @ 1:13 tags ["moving_head", "spot", "premium"]
+  
+  # Single strobe
+  fixture "Strobe1" Strobe @ 1:29 tags ["strobe", "front"]
+  
+  # No beam lights in this venue
+}

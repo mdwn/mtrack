@@ -79,6 +79,100 @@ dmx:
   - universe: 1
     name: light-show
 
+  # New lighting system configuration with tag-based group resolution
+  lighting:
+    # Current venue selection - determines which physical fixtures to use
+    current_venue: "main_stage"
+    
+    # Simple inline fixture definitions (for basic cases)
+    fixtures:
+      emergency_light: "Emergency @ 1:500"
+    
+    # Logical groups with role-based constraints
+    # These groups work across different venues automatically
+    groups:
+      # Front wash lights - requires wash + front tags, needs 4-8 fixtures
+      front_wash:
+        name: "front_wash"
+        constraints:
+          - AllOf: ["wash", "front"]
+          - MinCount: 4
+          - MaxCount: 8
+      
+      # Back wash lights - requires wash + back tags, needs 2-6 fixtures
+      back_wash:
+        name: "back_wash"
+        constraints:
+          - AllOf: ["wash", "back"]
+          - MinCount: 2
+          - MaxCount: 6
+      
+      # Moving head lights - accepts moving_head OR spot tags, prefers premium
+      movers:
+        name: "movers"
+        constraints:
+          - AnyOf: ["moving_head", "spot"]
+          - Prefer: ["premium"]
+          - MinCount: 2
+          - MaxCount: 4
+      
+      # Strobe lights - requires strobe tag, needs 1-3 fixtures
+      strobes:
+        name: "strobes"
+        constraints:
+          - AllOf: ["strobe"]
+          - MinCount: 1
+          - MaxCount: 3
+      
+      # All lights - accepts any light type, allows empty if no lights available
+      all_lights:
+        name: "all_lights"
+        constraints:
+          - AnyOf: ["wash", "moving_head", "spot", "strobe", "beam"]
+          - MinCount: 1
+          - AllowEmpty: true
+      
+      # Premium lights - only fixtures tagged as premium
+      premium_lights:
+        name: "premium_lights"
+        constraints:
+          - AllOf: ["premium"]
+          - MinCount: 1
+      
+      # RGB-capable lights - requires rgb tag
+      rgb_lights:
+        name: "rgb_lights"
+        constraints:
+          - AllOf: ["rgb"]
+          - MinCount: 1
+      
+      # Front stage area - fixtures in front position
+      front_stage:
+        name: "front_stage"
+        constraints:
+          - AllOf: ["front"]
+          - MinCount: 2
+      
+      # Back stage area - fixtures in back position
+      back_stage:
+        name: "back_stage"
+        constraints:
+          - AllOf: ["back"]
+          - MinCount: 1
+      
+      # Movers with fallback to any lights if no movers available
+      movers_with_fallback:
+        name: "movers_with_fallback"
+        constraints:
+          - AnyOf: ["moving_head", "spot"]
+          - MinCount: 1
+          - FallbackTo: "all_lights"
+    
+    # Directory configuration for DSL files (auto-discovered)
+    directories:
+      fixture_types: "lighting/fixture_types"
+      venues: "lighting/venues"
+
 # The controller definitions. As of now, the valid kinds of controllers are:
 # - grpc
 # - keyboard

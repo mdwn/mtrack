@@ -1,0 +1,25 @@
+# Moving Head fixture type definition
+# This defines a reusable fixture type for moving head lights
+
+fixture_type "MovingHead" {
+  channels: 16
+  channel_map: {
+    "dimmer": 1,
+    "pan": 2,
+    "pan_fine": 3,
+    "tilt": 4,
+    "tilt_fine": 5,
+    "color_wheel": 6,
+    "gobo_wheel": 7,
+    "gobo_rotation": 8,
+    "focus": 9,
+    "zoom": 10,
+    "iris": 11,
+    "frost": 12,
+    "prism": 13,
+    "effects": 14,
+    "strobe": 15,
+    "control": 16
+  }
+  special_cases: ["MovingHead", "Spot", "Dimmer", "Strobe"]
+}

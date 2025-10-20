@@ -15,6 +15,51 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 
+/// Group constraint types for role-based group resolution
+#[derive(Deserialize, Clone, Debug)]
+#[allow(dead_code)]
+pub enum GroupConstraint {
+    /// All of these tags must be present
+    AllOf(Vec<String>),
+    /// Any of these tags must be present
+    AnyOf(Vec<String>),
+    /// Prefer fixtures with these tags
+    Prefer(Vec<String>),
+    /// Minimum number of fixtures required
+    MinCount(usize),
+    /// Maximum number of fixtures allowed
+    MaxCount(usize),
+    /// Fallback to this group if primary group fails
+    FallbackTo(String),
+    /// Allow group to be empty if no fixtures match (graceful degradation)
+    AllowEmpty(bool),
+}
+
+/// Group definition with role-based constraints
+#[derive(Deserialize, Clone, Debug)]
+#[allow(dead_code)]
+pub struct LogicalGroup {
+    /// The name of the group
+    name: String,
+    /// Constraints for resolving this group
+    constraints: Vec<GroupConstraint>,
+}
+
+impl LogicalGroup {
+    #[allow(dead_code)]
+    pub fn new(name: String, constraints: Vec<GroupConstraint>) -> Self {
+        Self { name, constraints }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn constraints(&self) -> &Vec<GroupConstraint> {
+        &self.constraints
+    }
+}
+
 /// A YAML representation of the lighting configuration.
 #[derive(Deserialize, Clone)]
 #[allow(dead_code)]
@@ -25,8 +70,8 @@ pub struct Lighting {
     /// Simple fixture definitions (inline).
     fixtures: Option<HashMap<String, String>>,
 
-    /// Group definitions.
-    groups: Option<HashMap<String, Vec<String>>>,
+    /// Logical group definitions with role-based constraints.
+    groups: Option<HashMap<String, LogicalGroup>>,
 
     /// Directory paths for loading fixture types and venues.
     directories: Option<Directories>,
@@ -49,7 +94,7 @@ impl Lighting {
     pub fn new(
         current_venue: Option<String>,
         fixtures: Option<HashMap<String, String>>,
-        groups: Option<HashMap<String, Vec<String>>>,
+        groups: Option<HashMap<String, LogicalGroup>>,
         directories: Option<Directories>,
     ) -> Lighting {
         Lighting {
@@ -70,8 +115,8 @@ impl Lighting {
         self.fixtures.clone().unwrap_or_default()
     }
 
-    /// Gets the groups.
-    pub fn groups(&self) -> HashMap<String, Vec<String>> {
+    /// Gets the logical groups.
+    pub fn groups(&self) -> HashMap<String, LogicalGroup> {
         self.groups.clone().unwrap_or_default()
     }
 

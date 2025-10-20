@@ -5,6 +5,106 @@ midi_event:
   channel: 16
   program: 0
 
+# Example lighting configuration using logical groups
+# This demonstrates venue-agnostic lighting shows
+lighting:
+  cues:
+    - time: "0:00.000"
+      description: "Song start - all lights off"
+      effects:
+        - type: "static"
+          groups: ["all_lights"]
+          parameters:
+            dimmer: 0.0
+    
+    - time: "0:05.000"
+      description: "Front wash on"
+      effects:
+        - type: "static"
+          groups: ["front_wash"]
+          parameters:
+            dimmer: 0.8
+            red: 1.0
+            green: 0.5
+            blue: 0.2
+    
+    - time: "0:10.000"
+      description: "Movers join with color cycle"
+      effects:
+        - type: "color_cycle"
+          groups: ["movers"]
+          parameters:
+            colors: ["red", "blue", "green", "yellow"]
+            speed: 2.0  # cycles per second
+            dimmer: 1.0
+    
+    - time: "0:15.000"
+      description: "Strobes for impact"
+      effects:
+        - type: "strobe"
+          groups: ["strobes"]
+          parameters:
+            frequency: 8.0  # Hz
+            intensity: 0.9
+            duration: "2.0s"
+    
+    - time: "0:20.000"
+      description: "Back wash for depth"
+      effects:
+        - type: "static"
+          groups: ["back_wash"]
+          parameters:
+            dimmer: 0.6
+            red: 0.3
+            green: 0.8
+            blue: 1.0
+    
+    - time: "0:25.000"
+      description: "All premium lights pulse"
+      effects:
+        - type: "pulse"
+          groups: ["premium_lights"]
+          parameters:
+            base_level: 0.3
+            pulse_amplitude: 0.7
+            frequency: 1.5  # Hz
+            duration: "5.0s"
+    
+    - time: "0:30.000"
+      description: "Front stage chase"
+      effects:
+        - type: "chase"
+          groups: ["front_stage"]
+          parameters:
+            pattern: "linear"
+            speed: 4.0  # steps per second
+            direction: "forward"
+            dimmer: 1.0
+            red: 1.0
+            green: 0.0
+            blue: 0.0
+    
+    - time: "0:35.000"
+      description: "All lights rainbow effect"
+      effects:
+        - type: "rainbow"
+          groups: ["all_lights"]
+          parameters:
+            speed: 1.0  # cycles per second
+            saturation: 1.0
+            brightness: 0.8
+    
+    - time: "0:40.000"
+      description: "Fade to black"
+      effects:
+        - type: "dimmer"
+          groups: ["all_lights"]
+          parameters:
+            start_level: 1.0
+            end_level: 0.0
+            duration: "3.0s"
+            curve: "linear"
+
 tracks:
 - name: click
   file: click.wav

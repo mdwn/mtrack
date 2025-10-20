@@ -5,6 +5,54 @@ midi_event:
   channel: 16
   program: 1
 
+# Simple lighting example for a slow song
+# Shows basic static effects and gentle transitions
+lighting:
+  cues:
+    - time: "0:00.000"
+      description: "Song start - gentle front wash"
+      effects:
+        - type: "static"
+          groups: ["front_wash"]
+          parameters:
+            dimmer: 0.3
+            red: 0.8
+            green: 0.6
+            blue: 0.9
+    
+    - time: "0:30.000"
+      description: "Add back wash for atmosphere"
+      effects:
+        - type: "static"
+          groups: ["back_wash"]
+          parameters:
+            dimmer: 0.2
+            red: 0.4
+            green: 0.7
+            blue: 1.0
+    
+    - time: "1:00.000"
+      description: "Gentle color fade"
+      effects:
+        - type: "dimmer"
+          groups: ["front_wash"]
+          parameters:
+            start_level: 0.3
+            end_level: 0.6
+            duration: "30.0s"
+            curve: "linear"
+    
+    - time: "2:00.000"
+      description: "Fade to black"
+      effects:
+        - type: "dimmer"
+          groups: ["all_lights"]
+          parameters:
+            start_level: 1.0
+            end_level: 0.0
+            duration: "10.0s"
+            curve: "linear"
+
 tracks:
 - name: click
   file: click.wav

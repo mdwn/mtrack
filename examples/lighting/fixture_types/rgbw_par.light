@@ -1,0 +1,13 @@
+# RGBW Par Can fixture type definition
+# This defines a reusable fixture type for RGBW par cans
+
+fixture_type "RGBW_Par" {
+  channels: 4
+  channel_map: {
+    "dimmer": 1,
+    "red": 2,
+    "green": 3,
+    "blue": 4
+  }
+  special_cases: ["RGB", "Dimmer"]
+}
