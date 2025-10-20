@@ -126,6 +126,13 @@ impl Universe {
                 });
     }
 
+    /// Updates the universe with effect commands (bypasses dimming for immediate effect)
+    pub fn update_effect_commands(&self, commands: Vec<(u16, u8)>) {
+        for (channel, value) in commands {
+            self.update_channel_data(channel, value, false); // No dimming for effects
+        }
+    }
+
     /// Starts a thread that writes the universe data to the transmitter.
     pub fn start_thread(&self) -> JoinHandle<()> {
         let rates = self.rates.clone();

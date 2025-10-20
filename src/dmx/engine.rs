@@ -19,7 +19,7 @@ use std::{
     sync::{
         atomic::AtomicBool,
         mpsc::{self, Receiver},
-        Arc, Barrier,
+        Arc, Barrier, Mutex,
     },
     thread::{self, JoinHandle},
     time::Duration,
@@ -31,7 +31,9 @@ use ola::{client::StreamingClientConfig, DmxBuffer, StreamingClient};
 use tracing::{debug, error, info, span, Level};
 
 use crate::{
-    config, midi,
+    config,
+    lighting::{system::LightingSystem, EffectEngine},
+    midi,
     playsync::CancelHandle,
     songs::{MidiSheet, Song},
 };
@@ -47,6 +49,10 @@ pub struct Engine {
     cancel_handle: CancelHandle,
     client_handle: Option<JoinHandle<()>>,
     join_handles: Vec<JoinHandle<()>>,
+    /// Effects engine for processing lighting effects
+    effect_engine: Arc<Mutex<EffectEngine>>,
+    /// Lighting system for fixture and group management
+    lighting_system: Option<LightingSystem>,
 }
 
 /// DmxMessage is a message that can be passed around between senders and receivers.
@@ -58,6 +64,15 @@ pub(super) struct DmxMessage {
 impl Engine {
     /// Creates a new DMX Engine.
     pub fn new(config: &config::Dmx) -> Result<Engine, Box<dyn Error>> {
+        Self::new_with_lighting(config, None, None)
+    }
+
+    /// Creates a new DMX Engine with lighting system.
+    pub fn new_with_lighting(
+        config: &config::Dmx,
+        lighting_config: Option<&config::Lighting>,
+        base_path: Option<&std::path::Path>,
+    ) -> Result<Engine, Box<dyn Error>> {
         let mut maybe_client = None;
         let ola_client_config = StreamingClientConfig {
             server_port: config.ola_port(),
@@ -102,6 +117,21 @@ impl Engine {
             .values()
             .map(|universe| universe.start_thread())
             .collect();
+
+        // Initialize lighting system if config is provided
+        let lighting_system =
+            if let (Some(lighting_config), Some(base_path)) = (lighting_config, base_path) {
+                let mut system = LightingSystem::new();
+                if let Err(e) = system.load(lighting_config, base_path) {
+                    eprintln!("Warning: Failed to load lighting system: {}", e);
+                    None
+                } else {
+                    Some(system)
+                }
+            } else {
+                None
+            };
+
         Ok(Engine {
             dimming_speed_modifier: config.dimming_speed_modifier(),
             playback_delay: config.playback_delay()?,
@@ -109,6 +139,8 @@ impl Engine {
             cancel_handle,
             client_handle: Some(client_handle),
             join_handles,
+            effect_engine: Arc::new(Mutex::new(EffectEngine::new())),
+            lighting_system,
         })
     }
 
@@ -138,6 +170,14 @@ impl Engine {
             duration = song.duration_string(),
             "Playing song DMX."
         );
+
+        // Register fixtures with the effects engine if lighting system is available
+        if let Err(e) = dmx_engine.register_venue_fixtures_safe() {
+            eprintln!("Warning: Failed to register venue fixtures: {}", e);
+        }
+
+        // Start the effects processing loop
+        let effects_handle = Self::start_effects_loop(dmx_engine.clone(), cancel_handle.clone())?;
 
         let (universe_names, playback_delay): (HashSet<String>, Duration) = (
             dmx_engine.universes.keys().cloned().collect(),
@@ -233,9 +273,43 @@ impl Engine {
             result?;
         }
 
+        // Wait for effects loop to finish
+        if let Err(e) = effects_handle.join() {
+            error!("Error waiting for effects loop to stop: {:?}", e);
+        }
+
         info!("DMX playback stopped.");
 
         Ok(())
+    }
+
+    /// Starts the effects processing loop for continuous effect updates
+    pub fn start_effects_loop(
+        dmx_engine: Arc<Engine>,
+        cancel_handle: CancelHandle,
+    ) -> Result<JoinHandle<()>, Box<dyn Error>> {
+        let effects_handle = thread::spawn(move || {
+            let mut last_update = std::time::Instant::now();
+            let target_frame_time = Duration::from_secs_f64(1.0 / 44.0); // 44Hz to match Universe TARGET_HZ
+
+            while !cancel_handle.is_cancelled() {
+                let now = std::time::Instant::now();
+                let elapsed = now.duration_since(last_update);
+
+                if elapsed >= target_frame_time {
+                    // Update effects engine
+                    if let Err(e) = dmx_engine.update_effects() {
+                        error!("Error updating effects: {}", e);
+                    }
+                    last_update = now;
+                }
+
+                // Sleep for a short time to prevent busy waiting
+                thread::sleep(Duration::from_millis(1));
+            }
+        });
+
+        Ok(effects_handle)
     }
 
     /// Handles an incoming MIDI event.
@@ -298,6 +372,125 @@ impl Engine {
         if let Some(universe) = self.universes.get(&universe_name) {
             universe.update_channel_data(channel, value, dim)
         }
+    }
+
+    /// Updates the effects engine and applies any generated commands to universes
+    pub fn update_effects(&self) -> Result<(), Box<dyn std::error::Error>> {
+        // Update the effects engine with a 44Hz frame time (matching Universe TARGET_HZ)
+        let dt = Duration::from_secs_f64(1.0 / 44.0);
+        let mut effect_engine = self.effect_engine.lock().unwrap();
+        let commands = effect_engine.update(dt)?;
+
+        // Group commands by universe
+        let mut universe_commands: std::collections::HashMap<u16, Vec<(u16, u8)>> =
+            std::collections::HashMap::new();
+        for command in commands {
+            universe_commands
+                .entry(command.universe)
+                .or_default()
+                .push((command.channel, command.value));
+        }
+
+        // Apply effect commands to universes
+        for (universe_id, commands) in universe_commands {
+            // Find universe by ID (assuming universe names match the ID)
+            for (universe_name, universe) in &self.universes {
+                if let Ok(config_universe) = universe_name.parse::<u16>() {
+                    if config_universe == universe_id {
+                        universe.update_effect_commands(commands);
+                        break;
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Starts a lighting effect
+    #[allow(dead_code)]
+    pub fn start_effect(
+        &self,
+        effect: crate::lighting::EffectInstance,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut effect_engine = self.effect_engine.lock().unwrap();
+        effect_engine.start_effect(effect)?;
+        Ok(())
+    }
+
+    /// Stops a lighting effect
+    #[allow(dead_code)]
+    pub fn stop_effect(&self, effect_id: &str) {
+        let mut effect_engine = self.effect_engine.lock().unwrap();
+        effect_engine.stop_effect(effect_id);
+    }
+
+    /// Starts a lighting chaser
+    #[allow(dead_code)]
+    pub fn start_chaser(
+        &self,
+        chaser: crate::lighting::Chaser,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut effect_engine = self.effect_engine.lock().unwrap();
+        effect_engine.start_chaser(chaser)?;
+        Ok(())
+    }
+
+    /// Stops a lighting chaser
+    #[allow(dead_code)]
+    pub fn stop_chaser(&self, chaser_id: &str) {
+        let mut effect_engine = self.effect_engine.lock().unwrap();
+        effect_engine.stop_chaser(chaser_id);
+    }
+
+    /// Registers all fixtures from the current venue with the effects engine
+    #[allow(dead_code)]
+    pub fn register_venue_fixtures(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        if let Some(lighting_system) = &self.lighting_system {
+            let fixture_infos = lighting_system.get_current_venue_fixtures()?;
+            let mut effect_engine = self.effect_engine.lock().unwrap();
+
+            for fixture_info in fixture_infos {
+                effect_engine.register_fixture(fixture_info);
+            }
+        }
+        Ok(())
+    }
+
+    /// Registers fixtures for a specific logical group with the effects engine
+    #[allow(dead_code)]
+    pub fn register_group_fixtures(
+        &mut self,
+        group_name: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if let Some(lighting_system) = &mut self.lighting_system {
+            let fixture_infos = lighting_system.get_group_fixtures(group_name)?;
+            let mut effect_engine = self.effect_engine.lock().unwrap();
+
+            for fixture_info in fixture_infos {
+                effect_engine.register_fixture(fixture_info);
+            }
+        }
+        Ok(())
+    }
+
+    /// Gets the lighting system (for external access)
+    #[allow(dead_code)]
+    pub fn lighting_system(&self) -> Option<&LightingSystem> {
+        self.lighting_system.as_ref()
+    }
+
+    /// Registers all fixtures from the current venue (thread-safe version)
+    pub fn register_venue_fixtures_safe(&self) -> Result<(), Box<dyn std::error::Error>> {
+        if let Some(lighting_system) = &self.lighting_system {
+            let fixture_infos = lighting_system.get_current_venue_fixtures()?;
+            let mut effect_engine = self.effect_engine.lock().unwrap();
+
+            for fixture_info in fixture_infos {
+                effect_engine.register_fixture(fixture_info);
+            }
+        }
+        Ok(())
     }
 
     /// Sends messages to OLA.
@@ -436,6 +629,238 @@ mod test {
                 vel: 0.into(),
             },
         }));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_effects_integration() -> Result<(), Box<dyn Error>> {
+        let (engine, _cancel_handle) = create_engine()?;
+
+        // Register a fixture with the effects engine
+        let fixture_info = crate::lighting::effects::FixtureInfo {
+            name: "test_fixture".to_string(),
+            universe: 1,
+            address: 1,
+            fixture_type: "RGBW_Par".to_string(),
+            channels: {
+                let mut channels = std::collections::HashMap::new();
+                channels.insert("dimmer".to_string(), 1);
+                channels.insert("red".to_string(), 2);
+                channels.insert("green".to_string(), 3);
+                channels.insert("blue".to_string(), 4);
+                channels
+            },
+        };
+
+        {
+            let mut effect_engine = engine.effect_engine.lock().unwrap();
+            effect_engine.register_fixture(fixture_info);
+        }
+
+        // Test that we can start and stop effects
+        let mut parameters = std::collections::HashMap::new();
+        parameters.insert("dimmer".to_string(), 0.5);
+
+        let effect = crate::lighting::EffectInstance::new(
+            "test_effect".to_string(),
+            crate::lighting::EffectType::Static {
+                parameters: parameters.clone(),
+                duration: None,
+            },
+            vec!["test_fixture".to_string()],
+        );
+
+        // This should not panic
+        engine.start_effect(effect).unwrap();
+        engine.stop_effect("test_effect");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_lighting_system_integration() -> Result<(), Box<dyn Error>> {
+        // This test verifies that the lighting system can be initialized
+        // without requiring OLA connection by testing the configuration parsing
+
+        // Create a mock lighting config
+        let lighting_config = config::Lighting::new(
+            Some("test_venue".to_string()),
+            Some({
+                let mut fixtures = std::collections::HashMap::new();
+                fixtures.insert("Wash1".to_string(), "RGBW_Par @ 1:1".to_string());
+                fixtures
+            }),
+            Some({
+                let mut groups = std::collections::HashMap::new();
+                let front_wash_group = crate::config::lighting::LogicalGroup::new(
+                    "front_wash".to_string(),
+                    vec![crate::config::lighting::GroupConstraint::AllOf(vec![
+                        "wash".to_string(),
+                        "front".to_string(),
+                    ])],
+                );
+                groups.insert("front_wash".to_string(), front_wash_group);
+                groups
+            }),
+            None, // No directories for this test
+        );
+
+        // Test that the lighting config can be created and accessed
+        assert!(lighting_config.current_venue().is_some());
+        assert_eq!(lighting_config.current_venue().unwrap(), "test_venue");
+
+        // fixtures() returns HashMap directly, not Option<HashMap>
+        assert_eq!(lighting_config.fixtures().len(), 1);
+        assert!(lighting_config.fixtures().contains_key("Wash1"));
+
+        // groups() returns HashMap directly, not Option<HashMap>
+        assert_eq!(lighting_config.groups().len(), 1);
+        assert!(lighting_config.groups().contains_key("front_wash"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_lighting_system_without_config() -> Result<(), Box<dyn Error>> {
+        // This test verifies that DMX config can be created without lighting system
+        let dmx_config = config::Dmx::new(
+            None,
+            None,
+            Some(9090),
+            vec![config::Universe::new(1, "universe1".to_string())],
+            None,
+        );
+
+        // Verify that the DMX config has no lighting configuration
+        assert!(dmx_config.lighting().is_none());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_register_venue_fixtures_without_lighting_system() -> Result<(), Box<dyn Error>> {
+        let (engine, _cancel_handle) = create_engine()?;
+
+        // Should not panic when no lighting system is available
+        engine.register_venue_fixtures_safe()?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_effects_update_without_fixtures() -> Result<(), Box<dyn Error>> {
+        let (engine, _cancel_handle) = create_engine()?;
+
+        // Update effects with no fixtures registered - should not panic
+        engine.update_effects()?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_effects_update_with_fixtures() -> Result<(), Box<dyn Error>> {
+        let (engine, _cancel_handle) = create_engine()?;
+
+        // Register a fixture
+        let fixture_info = crate::lighting::effects::FixtureInfo {
+            name: "test_fixture".to_string(),
+            universe: 1,
+            address: 1,
+            fixture_type: "RGBW_Par".to_string(),
+            channels: {
+                let mut channels = std::collections::HashMap::new();
+                channels.insert("dimmer".to_string(), 1);
+                channels.insert("red".to_string(), 2);
+                channels.insert("green".to_string(), 3);
+                channels.insert("blue".to_string(), 4);
+                channels
+            },
+        };
+
+        {
+            let mut effect_engine = engine.effect_engine.lock().unwrap();
+            effect_engine.register_fixture(fixture_info);
+        }
+
+        // Start an effect
+        let mut parameters = std::collections::HashMap::new();
+        parameters.insert("dimmer".to_string(), 0.8);
+        parameters.insert("red".to_string(), 1.0);
+
+        let effect = crate::lighting::EffectInstance::new(
+            "test_effect".to_string(),
+            crate::lighting::EffectType::Static {
+                parameters,
+                duration: None,
+            },
+            vec!["test_fixture".to_string()],
+        );
+
+        engine.start_effect(effect)?;
+
+        // Update effects - should generate commands
+        engine.update_effects()?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_chaser_integration() -> Result<(), Box<dyn Error>> {
+        let (engine, _cancel_handle) = create_engine()?;
+
+        // Register a fixture
+        let fixture_info = crate::lighting::effects::FixtureInfo {
+            name: "test_fixture".to_string(),
+            universe: 1,
+            address: 1,
+            fixture_type: "RGBW_Par".to_string(),
+            channels: {
+                let mut channels = std::collections::HashMap::new();
+                channels.insert("dimmer".to_string(), 1);
+                channels.insert("red".to_string(), 2);
+                channels
+            },
+        };
+
+        {
+            let mut effect_engine = engine.effect_engine.lock().unwrap();
+            effect_engine.register_fixture(fixture_info);
+        }
+
+        // Create a chaser
+        let mut parameters = std::collections::HashMap::new();
+        parameters.insert("dimmer".to_string(), 1.0);
+        parameters.insert("red".to_string(), 1.0);
+
+        let step_effect = crate::lighting::EffectInstance::new(
+            "step_effect".to_string(),
+            crate::lighting::EffectType::Static {
+                parameters,
+                duration: None,
+            },
+            vec!["test_fixture".to_string()],
+        );
+
+        let step = crate::lighting::ChaserStep {
+            effect: step_effect,
+            hold_time: std::time::Duration::from_millis(100),
+            transition_time: std::time::Duration::from_millis(50),
+            transition_type: crate::lighting::effects::TransitionType::Fade,
+        };
+
+        let chaser =
+            crate::lighting::Chaser::new("test_chaser".to_string(), "Test Chaser".to_string())
+                .add_step(step);
+
+        // Start the chaser
+        engine.start_chaser(chaser)?;
+
+        // Update effects - should process chaser
+        engine.update_effects()?;
+
+        // Stop the chaser
+        engine.stop_chaser("test_chaser");
 
         Ok(())
     }

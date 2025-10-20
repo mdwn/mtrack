@@ -284,6 +284,78 @@ impl LightingSystem {
         result
     }
 
+    /// Gets all fixtures from the current venue for effects engine registration
+    pub fn get_current_venue_fixtures(
+        &self,
+    ) -> Result<Vec<crate::lighting::effects::FixtureInfo>, Box<dyn Error>> {
+        let venue_name = self.current_venue().ok_or("No current venue selected")?;
+        let venue = self
+            .venues
+            .get(venue_name)
+            .ok_or_else(|| format!("Venue '{}' not found", venue_name))?;
+
+        let mut fixture_infos = Vec::new();
+
+        for (name, fixture) in venue.fixtures() {
+            // Get the fixture type to determine channel mapping
+            let fixture_type = self
+                .fixture_types
+                .get(fixture.fixture_type())
+                .ok_or_else(|| format!("Fixture type '{}' not found", fixture.fixture_type()))?;
+
+            let fixture_info = crate::lighting::effects::FixtureInfo {
+                name: name.clone(),
+                universe: fixture.universe() as u16,
+                address: fixture.start_channel(),
+                fixture_type: fixture.fixture_type().to_string(),
+                channels: fixture_type.channels().clone(),
+            };
+
+            fixture_infos.push(fixture_info);
+        }
+
+        Ok(fixture_infos)
+    }
+
+    /// Gets fixtures for a specific logical group
+    pub fn get_group_fixtures(
+        &mut self,
+        group_name: &str,
+    ) -> Result<Vec<crate::lighting::effects::FixtureInfo>, Box<dyn Error>> {
+        let fixture_names = self.resolve_logical_group_graceful(group_name);
+        let venue_name = self.current_venue().ok_or("No current venue selected")?;
+        let venue = self
+            .venues
+            .get(venue_name)
+            .ok_or_else(|| format!("Venue '{}' not found", venue_name))?;
+
+        let mut fixture_infos = Vec::new();
+
+        for name in fixture_names {
+            if let Some(fixture) = venue.fixtures().get(&name) {
+                // Get the fixture type to determine channel mapping
+                let fixture_type =
+                    self.fixture_types
+                        .get(fixture.fixture_type())
+                        .ok_or_else(|| {
+                            format!("Fixture type '{}' not found", fixture.fixture_type())
+                        })?;
+
+                let fixture_info = crate::lighting::effects::FixtureInfo {
+                    name: name.clone(),
+                    universe: fixture.universe() as u16,
+                    address: fixture.start_channel(),
+                    fixture_type: fixture.fixture_type().to_string(),
+                    channels: fixture_type.channels().clone(),
+                };
+
+                fixture_infos.push(fixture_info);
+            }
+        }
+
+        Ok(fixture_infos)
+    }
+
     /// Resolves group constraints to fixture names.
     fn resolve_group_constraints(
         &self,
