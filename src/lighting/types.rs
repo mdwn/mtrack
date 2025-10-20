@@ -74,17 +74,27 @@ pub struct Fixture {
 
     /// The start channel.
     start_channel: u16,
+
+    /// Tags/roles/capabilities associated with this fixture.
+    tags: Vec<String>,
 }
 
 #[allow(dead_code)]
 impl Fixture {
     /// Creates a new fixture.
-    pub fn new(name: String, fixture_type: String, universe: u32, start_channel: u16) -> Fixture {
+    pub fn new(
+        name: String,
+        fixture_type: String,
+        universe: u32,
+        start_channel: u16,
+        tags: Vec<String>,
+    ) -> Fixture {
         Fixture {
             name,
             fixture_type,
             universe,
             start_channel,
+            tags,
         }
     }
 
@@ -106,6 +116,11 @@ impl Fixture {
     /// Gets the start channel.
     pub fn start_channel(&self) -> u16 {
         self.start_channel
+    }
+
+    /// Gets the tags on this fixture.
+    pub fn tags(&self) -> &Vec<String> {
+        &self.tags
     }
 }
 

@@ -1,0 +1,11 @@
+# Strobe fixture type definition
+# This defines a reusable fixture type for strobe lights
+
+fixture_type "Strobe" {
+  channels: 2
+  channel_map: {
+    "dimmer": 1,
+    "strobe_rate": 2
+  }
+  special_cases: ["Strobe", "Dimmer"]
+}

@@ -1,0 +1,27 @@
+# Main Stage venue definition
+# This defines the physical fixtures at the main stage venue
+
+venue "main_stage" {
+  # Front wash lights
+  fixture "Wash1" RGBW_Par @ 1:1 tags ["wash", "front", "rgb", "premium"]
+  fixture "Wash2" RGBW_Par @ 1:7 tags ["wash", "front", "rgb", "premium"]
+  fixture "Wash3" RGBW_Par @ 1:13 tags ["wash", "front", "rgb"]
+  fixture "Wash4" RGBW_Par @ 1:19 tags ["wash", "front", "rgb"]
+  
+  # Back wash lights
+  fixture "BackWash1" RGBW_Par @ 1:25 tags ["wash", "back", "rgb"]
+  fixture "BackWash2" RGBW_Par @ 1:31 tags ["wash", "back", "rgb"]
+  
+  # Moving head lights
+  fixture "Mover1" MovingHead @ 1:37 tags ["moving_head", "spot", "premium"]
+  fixture "Mover2" MovingHead @ 1:53 tags ["moving_head", "spot", "premium"]
+  fixture "Mover3" MovingHead @ 1:69 tags ["moving_head", "spot"]
+  
+  # Strobe lights
+  fixture "Strobe1" Strobe @ 1:85 tags ["strobe", "front"]
+  fixture "Strobe2" Strobe @ 1:87 tags ["strobe", "back"]
+  
+  # Beam lights
+  fixture "Beam1" MovingHead @ 1:89 tags ["beam", "front", "premium"]
+  fixture "Beam2" MovingHead @ 1:105 tags ["beam", "back"]
+}

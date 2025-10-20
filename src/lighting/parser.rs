@@ -200,6 +200,7 @@ fn parse_fixture_definition(pair: pest::iterators::Pair<Rule>) -> Result<Fixture
     let mut fixture_type = String::new();
     let mut universe = 0u32;
     let mut start_channel = 0u16;
+    let mut tags: Vec<String> = Vec::new();
 
     for inner_pair in pair.into_inner() {
         match inner_pair.as_rule() {
@@ -215,6 +216,17 @@ fn parse_fixture_definition(pair: pest::iterators::Pair<Rule>) -> Result<Fixture
                     universe = num;
                 } else {
                     start_channel = num as u16;
+                }
+            }
+            Rule::tags => {
+                for t in inner_pair.into_inner() {
+                    // tag_list
+                    for s in t.into_inner() {
+                        // strings
+                        if let Rule::string = s.as_rule() {
+                            tags.push(s.as_str().trim_matches('"').to_string());
+                        }
+                    }
                 }
             }
             _ => {}
@@ -241,7 +253,13 @@ fn parse_fixture_definition(pair: pest::iterators::Pair<Rule>) -> Result<Fixture
         .into());
     }
 
-    Ok(Fixture::new(name, fixture_type, universe, start_channel))
+    Ok(Fixture::new(
+        name,
+        fixture_type,
+        universe,
+        start_channel,
+        tags,
+    ))
 }
 
 fn parse_group_definition(pair: pest::iterators::Pair<Rule>) -> Result<Group, Box<dyn Error>> {

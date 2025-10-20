@@ -14,7 +14,7 @@
 mod audio;
 mod controller;
 mod dmx;
-mod lighting;
+pub mod lighting;
 #[cfg(test)]
 pub mod midi;
 #[cfg(not(test))]

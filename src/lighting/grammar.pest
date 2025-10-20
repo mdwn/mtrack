@@ -33,7 +33,10 @@ venue = { "venue" ~ string ~ "{" ~ venue_content ~ "}" }
 
 venue_content = { (fixture | group) ~ ("," ~ (fixture | group))* }
 
-fixture = { "fixture" ~ string ~ identifier ~ "@" ~ number ~ ":" ~ number }
+fixture = { "fixture" ~ string ~ identifier ~ "@" ~ number ~ ":" ~ number ~ tags? }
+
+tags = { "tags" ~ tag_list }
+tag_list = { "[" ~ string ~ ("," ~ string)* ~ "]" }
 
 group = { "group" ~ string ~ "=" ~ identifier_list }
 
