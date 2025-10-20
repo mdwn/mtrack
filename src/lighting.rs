@@ -12,11 +12,17 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+pub mod effects;
+pub mod engine;
 pub mod parser;
 pub mod system;
 pub mod types;
 
 // Re-export the main types for convenience
 // These are exported for external use of the lighting module
+#[allow(unused_imports)]
+pub use effects::{Chaser, ChaserStep, Color, EffectInstance, EffectType};
+#[allow(unused_imports)]
+pub use engine::EffectEngine;
 #[allow(unused_imports)]
 pub use types::{Fixture, FixtureType, Group, Venue};
