@@ -13,6 +13,7 @@ excludes:
   - .*\.mid
   - lcov.info
   - .*\.tosc
+  - .*\.light
 licenses:
   - files: any
     ident: GPL-3.0
