@@ -337,10 +337,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     audio_config,
                     midi_config,
                     dmx_config,
-                    None, // lighting configuration
                     converted_mappings,
                     &repository_path,
                 ),
+                None,
             )?;
 
             player.play().await;
@@ -382,7 +382,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 songs.clone(),
             )?;
 
-            let player = Arc::new(player::Player::new(songs, playlist, &player_config)?);
+            let player = Arc::new(player::Player::new(
+                songs,
+                playlist,
+                &player_config,
+                player_path.parent(),
+            )?);
             crate::controller::Controller::new(player_config.controllers(), player)?
                 .join()
                 .await?;

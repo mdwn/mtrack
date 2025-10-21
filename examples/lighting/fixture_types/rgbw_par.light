@@ -9,5 +9,4 @@ fixture_type "RGBW_Par" {
     "green": 3,
     "blue": 4
   }
-  special_cases: ["RGB", "Dimmer"]
 }

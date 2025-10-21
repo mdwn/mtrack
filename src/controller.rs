@@ -181,10 +181,10 @@ mod test {
                 config::Audio::new("mock-device"),
                 None,
                 None,
-                None, // lighting configuration
                 HashMap::new(),
                 "assets/songs",
             ),
+            None,
         )?);
         let playlist = player.get_playlist();
         let all_songs_playlist = player.get_all_songs_playlist();

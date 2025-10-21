@@ -31,10 +31,45 @@ use tracing::{debug, info, warn};
 
 use crate::audio::sample_source::SampleSource;
 use crate::audio::TargetFormat;
-use crate::config::{self, load_dsl_lighting_files, LightingConfiguration};
+use crate::config;
 use crate::proto::player;
 
 const AUDIO_EXTENSIONS: &[&str] = &["wav", "mid"];
+
+/// A resolved DSL lighting show with absolute file path
+#[derive(Debug, Clone)]
+pub struct DslLightingShow {
+    /// The name of the lighting show
+    name: String,
+    /// The absolute path to the DSL file
+    file_path: PathBuf,
+}
+
+impl DslLightingShow {
+    /// Creates a new DSL lighting show
+    pub fn new(start_path: &Path, config: &config::LightingShow) -> Result<Self, Box<dyn Error>> {
+        let file_path = if config.file().starts_with('/') {
+            PathBuf::from(config.file())
+        } else {
+            start_path.join(config.file())
+        };
+
+        Ok(DslLightingShow {
+            name: config.name().to_string(),
+            file_path,
+        })
+    }
+
+    /// Gets the name of the lighting show
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Gets the absolute file path
+    pub fn file_path(&self) -> &Path {
+        &self.file_path
+    }
+}
 
 /// A song with associated tracks for multitrack playback. Can contain:
 /// - An optional MIDI event, which will be played when the song is selected in a playlist.
@@ -48,9 +83,8 @@ pub struct Song {
     midi_playback: Option<MidiPlayback>,
     /// The light show configurations
     light_shows: Vec<LightShow>,
-    /// The lighting configuration
-    #[allow(dead_code)]
-    lighting: Option<LightingConfiguration>,
+    /// The DSL lighting shows (resolved to absolute paths)
+    dsl_lighting_shows: Vec<DslLightingShow>,
     /// The number of channels required to play this song.
     num_channels: u16,
     /// The sample rate of this song.
@@ -79,24 +113,13 @@ impl Song {
                 .collect::<Result<Vec<LightShow>, Box<dyn Error>>>()?,
             None => Vec::default(),
         };
-
-        // Load lighting configuration if present
-        let lighting = match config.lighting() {
-            Some(lighting_shows) => {
-                let dsl_file_paths: Vec<String> = lighting_shows
-                    .iter()
-                    .map(|show| show.file().to_string())
-                    .collect();
-
-                match load_dsl_lighting_files(start_path, &dsl_file_paths) {
-                    Ok(lighting_config) => Some(lighting_config),
-                    Err(e) => {
-                        warn!("Failed to load DSL lighting files: {}", e);
-                        None
-                    }
-                }
-            }
-            None => None,
+        // Resolve DSL lighting shows to absolute paths
+        let dsl_lighting_shows = match config.lighting() {
+            Some(lighting_shows) => lighting_shows
+                .iter()
+                .map(|lighting_show| DslLightingShow::new(start_path, lighting_show))
+                .collect::<Result<Vec<DslLightingShow>, Box<dyn Error>>>()?,
+            None => Vec::new(),
         };
 
         // Calculate the number of channels and sample rate by reading the wav headers of each file.
@@ -138,7 +161,7 @@ impl Song {
             midi_event: config.midi_event()?,
             midi_playback,
             light_shows,
-            lighting,
+            dsl_lighting_shows,
             num_channels,
             sample_rate,
             sample_format: sample_format.unwrap_or(SampleFormat::Int),
@@ -209,7 +232,7 @@ impl Song {
             name,
             midi_playback,
             light_shows,
-            lighting: None, // No lighting in auto-discovered songs
+            dsl_lighting_shows: Vec::new(), // No DSL lighting in auto-discovered songs
             tracks,
             ..Default::default()
         };
@@ -251,7 +274,7 @@ impl Song {
             midi_file,
             midi_playback,
             light_shows,
-            None, // Lighting is stored separately and not exported back to config
+            None, // No DSL lighting shows in config - they're handled separately
             tracks,
         )
     }
@@ -291,10 +314,9 @@ impl Song {
         self.light_shows.clone()
     }
 
-    /// Gets the lighting configuration.
-    #[allow(dead_code)]
-    pub fn lighting(&self) -> Option<LightingConfiguration> {
-        self.lighting.clone()
+    /// Gets the DSL lighting shows.
+    pub fn dsl_lighting_shows(&self) -> &Vec<DslLightingShow> {
+        &self.dsl_lighting_shows
     }
 
     /// Gets the song tracks.
@@ -442,8 +464,8 @@ impl Default for Song {
             name: Default::default(),
             midi_event: Default::default(),
             midi_playback: Default::default(),
-            light_shows: Default::default(),
-            lighting: Default::default(),
+            light_shows: Vec::new(),
+            dsl_lighting_shows: Vec::new(),
             num_channels: Default::default(),
             sample_rate: Default::default(),
             sample_format: SampleFormat::Int,

@@ -16,6 +16,7 @@ use std::{
     collections::HashMap,
     error::Error,
     fmt::Display,
+    path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Barrier,
@@ -76,6 +77,7 @@ impl Player {
         songs: Arc<Songs>,
         playlist: Arc<Playlist>,
         config: &config::Player,
+        base_path: Option<&Path>,
     ) -> Result<Player, Box<dyn Error>> {
         let span = span!(Level::INFO, "player");
         let _enter = span.enter();
@@ -84,7 +86,7 @@ impl Player {
             audio::get_device(config.audio())
         });
         let dmx_engine = Self::wait_for_ok("dmx engine".to_string(), || {
-            dmx::create_engine(config.dmx())
+            dmx::create_engine(config.dmx(), base_path)
         });
         let midi_device = Self::wait_for_ok("midi device".to_string(), || {
             midi::get_device(config.midi(), dmx_engine.clone())
@@ -320,6 +322,9 @@ impl Player {
             }
             if !song.light_shows().is_empty() && dmx_engine.is_some() {
                 num_barriers += song.light_shows().len();
+            }
+            if !song.dsl_lighting_shows().is_empty() && dmx_engine.is_some() {
+                num_barriers += 1; // One barrier for the lighting timeline
             }
             num_barriers
         }));
@@ -618,10 +623,10 @@ mod test {
                 config::Audio::new("mock-device"),
                 Some(config::Midi::new("mock-midi-device", None)),
                 None,
-                None, // lighting configuration
                 HashMap::new(),
                 "assets/songs",
             ),
+            None,
         )?;
         let binding = player.audio_device();
         let device = binding.to_mock()?;

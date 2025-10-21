@@ -379,10 +379,10 @@ mod test {
                 config::Audio::new("mock-device"),
                 Some(config::Midi::new("mock-midi-device", None)),
                 None,
-                None, // lighting configuration
                 HashMap::new(),
                 "assets/songs",
             ),
+            None,
         )?);
         let binding = player.audio_device();
         let device = binding.to_mock()?;

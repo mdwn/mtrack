@@ -17,7 +17,6 @@ use std::collections::HashMap;
 
 /// Group constraint types for role-based group resolution
 #[derive(Deserialize, Clone, Debug)]
-#[allow(dead_code)]
 pub enum GroupConstraint {
     /// All of these tags must be present
     AllOf(Vec<String>),
@@ -37,7 +36,6 @@ pub enum GroupConstraint {
 
 /// Group definition with role-based constraints
 #[derive(Deserialize, Clone, Debug)]
-#[allow(dead_code)]
 pub struct LogicalGroup {
     /// The name of the group
     name: String,
@@ -46,7 +44,7 @@ pub struct LogicalGroup {
 }
 
 impl LogicalGroup {
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn new(name: String, constraints: Vec<GroupConstraint>) -> Self {
         Self { name, constraints }
     }
@@ -62,7 +60,6 @@ impl LogicalGroup {
 
 /// A YAML representation of the lighting configuration.
 #[derive(Deserialize, Clone)]
-#[allow(dead_code)]
 pub struct Lighting {
     /// The current venue selection.
     current_venue: Option<String>,
@@ -79,7 +76,6 @@ pub struct Lighting {
 
 /// Directory configuration for loading fixture types and venues.
 #[derive(Deserialize, Clone)]
-#[allow(dead_code)]
 pub struct Directories {
     /// Directory containing fixture type definitions.
     fixture_types: Option<String>,
@@ -88,9 +84,8 @@ pub struct Directories {
     venues: Option<String>,
 }
 
-#[allow(dead_code)]
 impl Lighting {
-    /// Creates a new lighting configuration.
+    #[cfg(test)]
     pub fn new(
         current_venue: Option<String>,
         fixtures: Option<HashMap<String, String>>,
@@ -126,16 +121,7 @@ impl Lighting {
     }
 }
 
-#[allow(dead_code)]
 impl Directories {
-    /// Creates a new directories configuration.
-    pub fn new(fixture_types: Option<String>, venues: Option<String>) -> Directories {
-        Directories {
-            fixture_types,
-            venues,
-        }
-    }
-
     /// Gets the fixture types directory.
     pub fn fixture_types(&self) -> Option<&str> {
         self.fixture_types.as_deref()

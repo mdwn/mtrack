@@ -21,5 +21,4 @@ fixture_type "MovingHead" {
     "strobe": 15,
     "control": 16
   }
-  special_cases: ["MovingHead", "Spot", "Dimmer", "Strobe"]
 }
