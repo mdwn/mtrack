@@ -17,7 +17,6 @@ use std::time::{Duration, Instant};
 
 /// Core effect types for lighting
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum EffectType {
     /// Static effect with fixed parameter values
     Static {
@@ -68,11 +67,12 @@ pub enum EffectType {
         frequency: f64,
         duration: Option<Duration>,
     },
+    /// Chaser effect
+    Chaser { chaser: Chaser },
 }
 
 /// Color representation
-#[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Color {
     pub r: u8,
     pub g: u8,
@@ -80,19 +80,9 @@ pub struct Color {
     pub w: Option<u8>, // White channel for RGBW fixtures
 }
 
-#[allow(dead_code)]
 impl Color {
     pub fn new(r: u8, g: u8, b: u8) -> Self {
         Self { r, g, b, w: None }
-    }
-
-    pub fn new_rgbw(r: u8, g: u8, b: u8, w: u8) -> Self {
-        Self {
-            r,
-            g,
-            b,
-            w: Some(w),
-        }
     }
 
     pub fn from_hsv(h: f64, s: f64, v: f64) -> Self {
@@ -125,7 +115,6 @@ impl Color {
 
 /// Cycle direction for color cycling effects
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub enum CycleDirection {
     Forward,
     Backward,
@@ -134,17 +123,14 @@ pub enum CycleDirection {
 
 /// Chase pattern for spatial effects
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum ChasePattern {
     Linear,
     Snake,
     Random,
-    Custom(Vec<usize>), // Custom fixture order
 }
 
 /// Chase direction for spatial effects
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub enum ChaseDirection {
     LeftToRight,
     RightToLeft,
@@ -156,7 +142,6 @@ pub enum ChaseDirection {
 
 /// Dimmer curve types
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum DimmerCurve {
     Linear,
     Exponential,
@@ -168,7 +153,6 @@ pub enum DimmerCurve {
 
 /// An instance of an effect with timing and targeting information
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct EffectInstance {
     pub id: String,
     pub effect_type: EffectType,
@@ -181,16 +165,23 @@ pub struct EffectInstance {
     pub enabled: bool,
 }
 
-#[allow(dead_code)]
 impl EffectInstance {
     pub fn new(id: String, effect_type: EffectType, target_fixtures: Vec<String>) -> Self {
+        // Extract duration from effect_type if available
+        let duration = match &effect_type {
+            EffectType::Static { duration, .. } => *duration,
+            EffectType::Strobe { duration, .. } => *duration,
+            EffectType::Pulse { duration, .. } => *duration,
+            _ => None,
+        };
+
         Self {
             id,
             effect_type,
             target_fixtures,
             priority: 0,
             start_time: None,
-            duration: None,
+            duration,
             fade_in: None,
             fade_out: None,
             enabled: true,
@@ -217,7 +208,6 @@ impl EffectInstance {
 
 /// A step in a chaser sequence
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ChaserStep {
     pub effect: EffectInstance,
     pub hold_time: Duration,
@@ -226,8 +216,7 @@ pub struct ChaserStep {
 }
 
 /// Transition types between chaser steps
-#[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TransitionType {
     Snap,      // Instant change
     Fade,      // Smooth transition
@@ -237,20 +226,15 @@ pub enum TransitionType {
 
 /// A chaser sequence
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct Chaser {
     pub id: String,
-    pub name: String,
     pub steps: Vec<ChaserStep>,
     pub loop_mode: LoopMode,
     pub direction: ChaserDirection,
-    pub speed_multiplier: f64,
-    pub enabled: bool,
 }
 
 /// Loop modes for chasers
-#[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LoopMode {
     Once,     // Play once and stop
     Loop,     // Repeat indefinitely
@@ -260,46 +244,38 @@ pub enum LoopMode {
 
 /// Chaser direction
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub enum ChaserDirection {
     Forward,
     Backward,
     Random,
 }
 
-#[allow(dead_code)]
 impl Chaser {
-    pub fn new(id: String, name: String) -> Self {
+    #[cfg(test)]
+    pub fn new(id: String) -> Self {
         Self {
             id,
-            name,
             steps: Vec::new(),
             loop_mode: LoopMode::Loop,
             direction: ChaserDirection::Forward,
-            speed_multiplier: 1.0,
-            enabled: true,
         }
     }
 
+    #[cfg(test)]
     pub fn add_step(mut self, step: ChaserStep) -> Self {
         self.steps.push(step);
         self
     }
 
+    #[cfg(test)]
     pub fn with_loop_mode(mut self, loop_mode: LoopMode) -> Self {
         self.loop_mode = loop_mode;
-        self
-    }
-
-    pub fn with_speed(mut self, speed_multiplier: f64) -> Self {
-        self.speed_multiplier = speed_multiplier;
         self
     }
 }
 
 /// A running instance of a chaser
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ChaserInstance {
     pub chaser: Chaser,
     pub current_step: usize,
@@ -310,7 +286,6 @@ pub struct ChaserInstance {
 
 /// DMX command for sending to fixtures
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct DmxCommand {
     pub universe: u16,
     pub channel: u16,
@@ -319,22 +294,18 @@ pub struct DmxCommand {
 
 /// Error types for the effects system
 #[derive(Debug)]
-#[allow(dead_code)]
 pub enum EffectError {
-    InvalidFixture(String),
-    InvalidParameter(String),
-    InvalidTiming(String),
-    EngineError(String),
+    Fixture(String),
+    Parameter(String),
+    Timing(String),
 }
 
-#[allow(dead_code)]
 impl std::fmt::Display for EffectError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            EffectError::InvalidFixture(msg) => write!(f, "Invalid fixture: {}", msg),
-            EffectError::InvalidParameter(msg) => write!(f, "Invalid parameter: {}", msg),
-            EffectError::InvalidTiming(msg) => write!(f, "Invalid timing: {}", msg),
-            EffectError::EngineError(msg) => write!(f, "Engine error: {}", msg),
+            EffectError::Fixture(msg) => write!(f, "Invalid fixture: {}", msg),
+            EffectError::Parameter(msg) => write!(f, "Invalid parameter: {}", msg),
+            EffectError::Timing(msg) => write!(f, "Invalid timing: {}", msg),
         }
     }
 }
@@ -343,7 +314,6 @@ impl std::error::Error for EffectError {}
 
 /// Information about a fixture for the effects engine
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct FixtureInfo {
     pub name: String,
     pub universe: u16,
@@ -392,13 +362,9 @@ mod tests {
 
     #[test]
     fn test_chaser_creation() {
-        let chaser = Chaser::new("test_chaser".to_string(), "Test Chaser".to_string())
-            .with_loop_mode(LoopMode::Once)
-            .with_speed(1.5);
+        let chaser = Chaser::new("test_chaser".to_string()).with_loop_mode(LoopMode::Once);
 
         assert_eq!(chaser.id, "test_chaser");
-        assert_eq!(chaser.name, "Test Chaser");
-        assert_eq!(chaser.speed_multiplier, 1.5);
         assert!(matches!(chaser.loop_mode, LoopMode::Once));
     }
 }

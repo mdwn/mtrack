@@ -16,6 +16,7 @@ pub mod effects;
 pub mod engine;
 pub mod parser;
 pub mod system;
+pub mod timeline;
 pub mod types;
 
 // Re-export the main types for convenience
@@ -24,5 +25,7 @@ pub mod types;
 pub use effects::{Chaser, ChaserStep, Color, EffectInstance, EffectType};
 #[allow(unused_imports)]
 pub use engine::EffectEngine;
+#[allow(unused_imports)]
+pub use timeline::LightingTimeline;
 #[allow(unused_imports)]
 pub use types::{Fixture, FixtureType, Group, Venue};

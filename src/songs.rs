@@ -79,6 +79,7 @@ impl Song {
                 .collect::<Result<Vec<LightShow>, Box<dyn Error>>>()?,
             None => Vec::default(),
         };
+        let lighting_shows = config.lighting().cloned();
 
         // Load lighting configuration if present
         let lighting = match config.lighting() {
@@ -240,6 +241,7 @@ impl Song {
                 )
             }
         };
+        let lighting = self.lighting();
         let tracks = self
             .tracks()
             .iter()

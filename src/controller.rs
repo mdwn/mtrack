@@ -181,7 +181,6 @@ mod test {
                 config::Audio::new("mock-device"),
                 None,
                 None,
-                None, // lighting configuration
                 HashMap::new(),
                 "assets/songs",
             ),
