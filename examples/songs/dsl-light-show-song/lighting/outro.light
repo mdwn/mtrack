@@ -3,11 +3,11 @@ show "Outro Show" {
     @00:00.000
     all_fixtures: static color: "#333366", dimmer: 20%, fade: 2s
     
-    # Slow color cycle
+    # Slow color cycle (keeps color info)
     @00:10.000
     front_wash: cycle color: "#444488", color: "#6666AA", duration: 10s, dimmer: 30%
     
-    # Pulse effect
+    # Pulse effect (no color - applies to existing fixtures)
     @00:20.000
-    back_wash: pulse dimmer: 10%, dimmer: 40%, duration: 8s
+    back_wash: pulse frequency: 0.5, intensity: 0.3, duty: 50%
 }

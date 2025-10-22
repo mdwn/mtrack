@@ -7,23 +7,19 @@ show "Main Show" {
     @00:04.000
     back_wash: static color: "orange", dimmer: 50%, fade: 500ms
     
-    # Color cycle effect
+    # Color cycle effect (keeps color info)
     @00:16.000
     front_wash, back_wash: cycle color: "red", color: "green", color: "blue", duration: 3s, direction: forward, dimmer: 50%
     
-    # Moving head chase
+    # Moving head chase (no color - applies to existing fixtures)
     @00:30.000
-    movers: chase steps: [
-        {color: "purple", dimmer: 100%, duration: 400ms, transition: fade},
-        {color: "cyan", dimmer: 70%, duration: 400ms, transition: fade},
-        {color: "yellow", dimmer: 70%, duration: 400ms, transition: crossfade}
-    ], loop: pingpong, direction: forward
+    movers: chase pattern: linear, speed: 1.5, direction: left_to_right
     
-    # Strobe effect
+    # Strobe effect (no color - applies to existing fixtures)
     @01:00.000
-    strobe: strobe rate: 8, duty: 20%, duration: 2s, dimmer: 80%
+    strobe: strobe frequency: 8, intensity: 0.8, duration: 2s
     
-    # Fade to black
+    # Fade to black (no color - applies to existing fixtures)
     @01:05.000
-    front_wash, back_wash, movers: dimmer dimmer: 0%, fade: 1000ms
+    front_wash, back_wash, movers: dimmer start: 100%, end: 0%, duration: 1000ms, curve: linear
 }

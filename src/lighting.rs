@@ -21,11 +21,5 @@ pub mod types;
 
 // Re-export the main types for convenience
 // These are exported for external use of the lighting module
-#[allow(unused_imports)]
-pub use effects::{Chaser, ChaserStep, Color, EffectInstance, EffectType};
-#[allow(unused_imports)]
+pub use effects::{Color, EffectInstance, EffectType};
 pub use engine::EffectEngine;
-#[allow(unused_imports)]
-pub use timeline::LightingTimeline;
-#[allow(unused_imports)]
-pub use types::{Fixture, FixtureType, Group, Venue};

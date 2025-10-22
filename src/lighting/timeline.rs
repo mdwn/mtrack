@@ -177,12 +177,46 @@ impl LightingTimeline {
     }
 
     /// Creates a static effect
-    fn create_static_effect(effect: &LightingEffect) -> EffectType {
+    pub fn create_static_effect(effect: &LightingEffect) -> EffectType {
         let mut parameters = HashMap::new();
 
         for (key, value) in effect.parameters() {
-            if let Some(num) = value.as_f64() {
-                parameters.insert(key.clone(), num);
+            match key.as_str() {
+                "color" => {
+                    // Handle color parameter by converting to RGB channels
+                    if let Some(color_str) = value.as_str() {
+                        if let Some(color) = Self::parse_color_string(color_str) {
+                            parameters.insert("red".to_string(), color.r as f64 / 255.0);
+                            parameters.insert("green".to_string(), color.g as f64 / 255.0);
+                            parameters.insert("blue".to_string(), color.b as f64 / 255.0);
+                        }
+                    }
+                }
+                "red" | "green" | "blue" | "white" => {
+                    // Handle individual color channel parameters
+                    if let Some(num) = value.as_f64() {
+                        parameters.insert(key.clone(), num);
+                    }
+                }
+                "dimmer" => {
+                    // Handle dimmer parameter (can be percentage string or number)
+                    if let Some(num) = value.as_f64() {
+                        parameters.insert(key.clone(), num);
+                    } else if let Some(dimmer_str) = value.as_str() {
+                        if dimmer_str.ends_with('%') {
+                            if let Ok(percentage) = dimmer_str.trim_end_matches('%').parse::<f64>()
+                            {
+                                parameters.insert(key.clone(), percentage / 100.0);
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    // Handle other numeric parameters
+                    if let Some(num) = value.as_f64() {
+                        parameters.insert(key.clone(), num);
+                    }
+                }
             }
         }
 
@@ -247,12 +281,46 @@ impl LightingTimeline {
     }
 
     /// Creates a strobe effect
-    fn create_strobe_effect(effect: &LightingEffect) -> EffectType {
+    pub fn create_strobe_effect(effect: &LightingEffect) -> EffectType {
         let mut parameters = HashMap::new();
 
         for (key, value) in effect.parameters() {
-            if let Some(num) = value.as_f64() {
-                parameters.insert(key.clone(), num);
+            match key.as_str() {
+                "color" => {
+                    // Handle color parameter by converting to RGB channels
+                    if let Some(color_str) = value.as_str() {
+                        if let Some(color) = Self::parse_color_string(color_str) {
+                            parameters.insert("red".to_string(), color.r as f64 / 255.0);
+                            parameters.insert("green".to_string(), color.g as f64 / 255.0);
+                            parameters.insert("blue".to_string(), color.b as f64 / 255.0);
+                        }
+                    }
+                }
+                "red" | "green" | "blue" | "white" => {
+                    // Handle individual color channel parameters
+                    if let Some(num) = value.as_f64() {
+                        parameters.insert(key.clone(), num);
+                    }
+                }
+                "dimmer" => {
+                    // Handle dimmer parameter (can be percentage string or number)
+                    if let Some(num) = value.as_f64() {
+                        parameters.insert(key.clone(), num);
+                    } else if let Some(dimmer_str) = value.as_str() {
+                        if dimmer_str.ends_with('%') {
+                            if let Ok(percentage) = dimmer_str.trim_end_matches('%').parse::<f64>()
+                            {
+                                parameters.insert(key.clone(), percentage / 100.0);
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    // Handle other numeric parameters
+                    if let Some(num) = value.as_f64() {
+                        parameters.insert(key.clone(), num);
+                    }
+                }
             }
         }
 
@@ -317,7 +385,7 @@ impl LightingTimeline {
     }
 
     /// Creates a chase effect
-    fn create_chase_effect(effect: &LightingEffect) -> EffectType {
+    pub fn create_chase_effect(effect: &LightingEffect) -> EffectType {
         let mut parameters = HashMap::new();
         let mut pattern = ChasePattern::Linear;
         let mut direction = ChaseDirection::LeftToRight;
@@ -365,6 +433,35 @@ impl LightingTimeline {
                         };
                     }
                 }
+                "color" => {
+                    // Handle color parameter by converting to RGB channels
+                    if let Some(color_str) = value.as_str() {
+                        if let Some(color) = Self::parse_color_string(color_str) {
+                            parameters.insert("red".to_string(), color.r as f64 / 255.0);
+                            parameters.insert("green".to_string(), color.g as f64 / 255.0);
+                            parameters.insert("blue".to_string(), color.b as f64 / 255.0);
+                        }
+                    }
+                }
+                "red" | "green" | "blue" | "white" => {
+                    // Handle individual color channel parameters
+                    if let Some(num) = value.as_f64() {
+                        parameters.insert(key.clone(), num);
+                    }
+                }
+                "dimmer" => {
+                    // Handle dimmer parameter (can be percentage string or number)
+                    if let Some(num) = value.as_f64() {
+                        parameters.insert(key.clone(), num);
+                    } else if let Some(dimmer_str) = value.as_str() {
+                        if dimmer_str.ends_with('%') {
+                            if let Ok(percentage) = dimmer_str.trim_end_matches('%').parse::<f64>()
+                            {
+                                parameters.insert(key.clone(), percentage / 100.0);
+                            }
+                        }
+                    }
+                }
                 _ => {
                     if let Some(num) = value.as_f64() {
                         parameters.insert(key.clone(), num);
@@ -398,12 +495,46 @@ impl LightingTimeline {
     }
 
     /// Creates a pulse effect
-    fn create_pulse_effect(effect: &LightingEffect) -> EffectType {
+    pub fn create_pulse_effect(effect: &LightingEffect) -> EffectType {
         let mut parameters = HashMap::new();
 
         for (key, value) in effect.parameters() {
-            if let Some(num) = value.as_f64() {
-                parameters.insert(key.clone(), num);
+            match key.as_str() {
+                "color" => {
+                    // Handle color parameter by converting to RGB channels
+                    if let Some(color_str) = value.as_str() {
+                        if let Some(color) = Self::parse_color_string(color_str) {
+                            parameters.insert("red".to_string(), color.r as f64 / 255.0);
+                            parameters.insert("green".to_string(), color.g as f64 / 255.0);
+                            parameters.insert("blue".to_string(), color.b as f64 / 255.0);
+                        }
+                    }
+                }
+                "red" | "green" | "blue" | "white" => {
+                    // Handle individual color channel parameters
+                    if let Some(num) = value.as_f64() {
+                        parameters.insert(key.clone(), num);
+                    }
+                }
+                "dimmer" => {
+                    // Handle dimmer parameter (can be percentage string or number)
+                    if let Some(num) = value.as_f64() {
+                        parameters.insert(key.clone(), num);
+                    } else if let Some(dimmer_str) = value.as_str() {
+                        if dimmer_str.ends_with('%') {
+                            if let Ok(percentage) = dimmer_str.trim_end_matches('%').parse::<f64>()
+                            {
+                                parameters.insert(key.clone(), percentage / 100.0);
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    // Handle other numeric parameters
+                    if let Some(num) = value.as_f64() {
+                        parameters.insert(key.clone(), num);
+                    }
+                }
             }
         }
 
@@ -532,31 +663,35 @@ impl LightingTimeline {
     }
 
     /// Parses a color string (e.g., "red", "blue", "#FF0000") to a Color
-    fn parse_color_string(color_str: &str) -> Option<Color> {
-        match color_str.to_lowercase().as_str() {
-            "red" => Some(Color::new(255, 0, 0)),
-            "green" => Some(Color::new(0, 255, 0)),
-            "blue" => Some(Color::new(0, 0, 255)),
-            "yellow" => Some(Color::new(255, 255, 0)),
-            "cyan" => Some(Color::new(0, 255, 255)),
-            "magenta" => Some(Color::new(255, 0, 255)),
-            "white" => Some(Color::new(255, 255, 255)),
-            "black" => Some(Color::new(0, 0, 0)),
-            _ => {
-                // Try to parse as hex color
-                if color_str.starts_with('#') && color_str.len() == 7 {
-                    let hex = &color_str[1..];
-                    if let (Ok(r), Ok(g), Ok(b)) = (
-                        u8::from_str_radix(&hex[0..2], 16),
-                        u8::from_str_radix(&hex[2..4], 16),
-                        u8::from_str_radix(&hex[4..6], 16),
-                    ) {
-                        return Some(Color::new(r, g, b));
-                    }
-                }
-                None
+    pub fn parse_color_string(color_str: &str) -> Option<Color> {
+        // Try named colors first
+        if let Ok(color) = Color::from_name(color_str) {
+            return Some(color);
+        }
+
+        // Try hex colors
+        if color_str.starts_with('#') {
+            if let Ok(color) = Color::from_hex(color_str) {
+                return Some(color);
             }
         }
+
+        // Try RGB format
+        if color_str.starts_with("rgb(") && color_str.ends_with(')') {
+            let rgb_str = &color_str[4..color_str.len() - 1];
+            let parts: Vec<&str> = rgb_str.split(',').collect();
+            if parts.len() == 3 {
+                if let (Ok(r), Ok(g), Ok(b)) = (
+                    parts[0].trim().parse::<u8>(),
+                    parts[1].trim().parse::<u8>(),
+                    parts[2].trim().parse::<u8>(),
+                ) {
+                    return Some(Color::new(r, g, b));
+                }
+            }
+        }
+
+        None
     }
 }
 
@@ -627,5 +762,311 @@ mod tests {
             Some(Color::new(0, 255, 0))
         );
         assert_eq!(LightingTimeline::parse_color_string("unknown"), None);
+    }
+
+    #[test]
+    fn test_timeline_with_dsl_cues() {
+        use crate::config::{LightingCue, LightingEffect};
+        use std::collections::HashMap;
+
+        // Create cues similar to what would come from DSL parsing
+        let mut parameters1 = HashMap::new();
+        parameters1.insert(
+            "color".to_string(),
+            serde_yml::Value::String("blue".to_string()),
+        );
+        parameters1.insert(
+            "dimmer".to_string(),
+            serde_yml::Value::String("60%".to_string()),
+        );
+
+        let mut parameters2 = HashMap::new();
+        parameters2.insert(
+            "color".to_string(),
+            serde_yml::Value::String("red".to_string()),
+        );
+        parameters2.insert(
+            "dimmer".to_string(),
+            serde_yml::Value::String("80%".to_string()),
+        );
+
+        let cues = vec![
+            LightingCue::new(
+                "00:00.000".to_string(),
+                Some("Opening cue".to_string()),
+                vec![LightingEffect::new(
+                    "static".to_string(),
+                    vec!["front_wash".to_string()],
+                    parameters1,
+                )],
+            ),
+            LightingCue::new(
+                "00:05.000".to_string(),
+                Some("Second cue".to_string()),
+                vec![LightingEffect::new(
+                    "static".to_string(),
+                    vec!["back_wash".to_string()],
+                    parameters2,
+                )],
+            ),
+        ];
+
+        let mut timeline = LightingTimeline::new(cues);
+        timeline.start();
+
+        // Test that the first cue triggers at the right time
+        let effects = timeline.update(Duration::from_millis(0));
+        assert_eq!(effects.len(), 1);
+        assert_eq!(effects[0].target_fixtures, vec!["front_wash"]);
+
+        // Test that the second cue triggers at the right time
+        let effects = timeline.update(Duration::from_millis(5000));
+        assert_eq!(effects.len(), 1);
+        assert_eq!(effects[0].target_fixtures, vec!["back_wash"]);
+
+        // Test that no new effects are triggered after all cues
+        let effects = timeline.update(Duration::from_millis(10000));
+        assert_eq!(effects.len(), 0);
+    }
+
+    #[test]
+    fn test_timeline_cue_ordering() {
+        use crate::config::{LightingCue, LightingEffect};
+        use std::collections::HashMap;
+
+        // Create cues in non-chronological order
+        let mut parameters = HashMap::new();
+        parameters.insert(
+            "color".to_string(),
+            serde_yml::Value::String("blue".to_string()),
+        );
+
+        let cues = vec![
+            LightingCue::new(
+                "00:10.000".to_string(),
+                None,
+                vec![LightingEffect::new(
+                    "static".to_string(),
+                    vec!["late_cue".to_string()],
+                    parameters.clone(),
+                )],
+            ),
+            LightingCue::new(
+                "00:05.000".to_string(),
+                None,
+                vec![LightingEffect::new(
+                    "static".to_string(),
+                    vec!["middle_cue".to_string()],
+                    parameters.clone(),
+                )],
+            ),
+            LightingCue::new(
+                "00:00.000".to_string(),
+                None,
+                vec![LightingEffect::new(
+                    "static".to_string(),
+                    vec!["early_cue".to_string()],
+                    parameters,
+                )],
+            ),
+        ];
+
+        let mut timeline = LightingTimeline::new(cues);
+        timeline.start();
+
+        // Verify cues are processed in chronological order
+        let effects = timeline.update(Duration::from_millis(0));
+        assert_eq!(effects.len(), 1);
+        assert_eq!(effects[0].target_fixtures, vec!["early_cue"]);
+
+        let effects = timeline.update(Duration::from_millis(5000));
+        assert_eq!(effects.len(), 1);
+        assert_eq!(effects[0].target_fixtures, vec!["middle_cue"]);
+
+        let effects = timeline.update(Duration::from_millis(10000));
+        assert_eq!(effects.len(), 1);
+        assert_eq!(effects[0].target_fixtures, vec!["late_cue"]);
+    }
+
+    #[test]
+    fn test_timeline_edge_cases() {
+        use crate::config::{LightingCue, LightingEffect};
+        use std::collections::HashMap;
+
+        // Test with empty timeline
+        let timeline = LightingTimeline::new(vec![]);
+        assert_eq!(timeline.cues.len(), 0);
+
+        // Test with cues at the same time
+        let mut parameters = HashMap::new();
+        parameters.insert(
+            "color".to_string(),
+            serde_yml::Value::String("blue".to_string()),
+        );
+
+        let cues = vec![
+            LightingCue::new(
+                "00:05.000".to_string(),
+                None,
+                vec![LightingEffect::new(
+                    "static".to_string(),
+                    vec!["cue1".to_string()],
+                    parameters.clone(),
+                )],
+            ),
+            LightingCue::new(
+                "00:05.000".to_string(),
+                None,
+                vec![LightingEffect::new(
+                    "static".to_string(),
+                    vec!["cue2".to_string()],
+                    parameters,
+                )],
+            ),
+        ];
+
+        let mut timeline = LightingTimeline::new(cues);
+        timeline.start();
+
+        // Both cues should trigger at the same time
+        let effects = timeline.update(Duration::from_millis(5000));
+        assert_eq!(effects.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_color_string() {
+        // Test named colors
+        assert_eq!(
+            LightingTimeline::parse_color_string("red"),
+            Some(Color::new(255, 0, 0))
+        );
+        assert_eq!(
+            LightingTimeline::parse_color_string("blue"),
+            Some(Color::new(0, 0, 255))
+        );
+
+        // Test hex colors
+        assert_eq!(
+            LightingTimeline::parse_color_string("#ff0000"),
+            Some(Color::new(255, 0, 0))
+        );
+        assert_eq!(
+            LightingTimeline::parse_color_string("#00ff00"),
+            Some(Color::new(0, 255, 0))
+        );
+
+        // Test RGB colors
+        assert_eq!(
+            LightingTimeline::parse_color_string("rgb(255, 0, 0)"),
+            Some(Color::new(255, 0, 0))
+        );
+        assert_eq!(
+            LightingTimeline::parse_color_string("rgb(0, 255, 0)"),
+            Some(Color::new(0, 255, 0))
+        );
+
+        // Test invalid colors
+        assert_eq!(LightingTimeline::parse_color_string("invalid"), None);
+        assert_eq!(LightingTimeline::parse_color_string("#gggggg"), None);
+    }
+
+    #[test]
+    fn test_static_effect_color_handling() {
+        use crate::config::LightingEffect;
+        use serde_yml::Value;
+        use std::collections::HashMap;
+
+        // Create a lighting effect with color parameter
+        let mut parameters = HashMap::new();
+        parameters.insert("color".to_string(), Value::String("#ff0000".to_string()));
+        parameters.insert("dimmer".to_string(), Value::String("60%".to_string()));
+
+        let effect = LightingEffect::new(
+            "static".to_string(),
+            vec!["front_wash".to_string()],
+            parameters,
+        );
+
+        // Test that the static effect correctly processes color
+        let effect_type = LightingTimeline::create_static_effect(&effect);
+
+        if let EffectType::Static { parameters, .. } = effect_type {
+            // Verify that color was converted to RGB channels
+            assert!(parameters.contains_key("red"));
+            assert!(parameters.contains_key("green"));
+            assert!(parameters.contains_key("blue"));
+            assert!(parameters.contains_key("dimmer"));
+
+            // Verify RGB values (red should be 1.0, green and blue should be 0.0)
+            assert_eq!(parameters.get("red"), Some(&1.0));
+            assert_eq!(parameters.get("green"), Some(&0.0));
+            assert_eq!(parameters.get("blue"), Some(&0.0));
+        } else {
+            panic!("Expected Static effect type");
+        }
+    }
+
+    #[test]
+    fn test_multiple_effect_types_color_handling() {
+        use crate::config::LightingEffect;
+        use serde_yml::Value;
+        use std::collections::HashMap;
+
+        // Test strobe effect with color
+        let mut strobe_params = HashMap::new();
+        strobe_params.insert("color".to_string(), Value::String("blue".to_string()));
+        strobe_params.insert("frequency".to_string(), Value::String("8".to_string()));
+
+        let strobe_effect = LightingEffect::new(
+            "strobe".to_string(),
+            vec!["strobe_lights".to_string()],
+            strobe_params,
+        );
+
+        let strobe_type = LightingTimeline::create_strobe_effect(&strobe_effect);
+        if let EffectType::Strobe { .. } = strobe_type {
+            // Strobe effect should have been created successfully
+        } else {
+            panic!("Expected Strobe effect type");
+        }
+
+        // Test pulse effect with color
+        let mut pulse_params = HashMap::new();
+        pulse_params.insert(
+            "color".to_string(),
+            Value::String("rgb(0, 255, 0)".to_string()),
+        );
+        pulse_params.insert("frequency".to_string(), Value::String("2".to_string()));
+
+        let pulse_effect = LightingEffect::new(
+            "pulse".to_string(),
+            vec!["pulse_lights".to_string()],
+            pulse_params,
+        );
+
+        let pulse_type = LightingTimeline::create_pulse_effect(&pulse_effect);
+        if let EffectType::Pulse { .. } = pulse_type {
+            // Pulse effect should have been created successfully
+        } else {
+            panic!("Expected Pulse effect type");
+        }
+
+        // Test chase effect with color
+        let mut chase_params = HashMap::new();
+        chase_params.insert("color".to_string(), Value::String("#ffff00".to_string()));
+        chase_params.insert("speed".to_string(), Value::String("1.5".to_string()));
+
+        let chase_effect = LightingEffect::new(
+            "chase".to_string(),
+            vec!["chase_lights".to_string()],
+            chase_params,
+        );
+
+        let chase_type = LightingTimeline::create_chase_effect(&chase_effect);
+        if let EffectType::Chase { .. } = chase_type {
+            // Chase effect should have been created successfully
+        } else {
+            panic!("Expected Chase effect type");
+        }
     }
 }
