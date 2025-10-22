@@ -951,7 +951,7 @@ mod test {
     #[test]
     fn test_song_lighting_integration() -> Result<(), Box<dyn Error>> {
         // Test that we can create lighting configuration and parse it
-        let lighting_config = config::LightingConfiguration::new(vec![config::LightingCue::new(
+        let _lighting_config = config::LightingConfiguration::new(vec![config::LightingCue::new(
             "0:05.000".to_string(),
             Some("Test cue".to_string()),
             vec![config::LightingEffect::new(

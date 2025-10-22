@@ -211,7 +211,6 @@ impl LightShow {
 
 /// A lighting show that references a DSL file.
 #[derive(Deserialize, Clone, Serialize)]
-#[allow(dead_code)]
 pub struct LightingShow {
     /// The name of the lighting show.
     name: String,
@@ -221,19 +220,18 @@ pub struct LightingShow {
 
 impl LightingShow {
     /// Creates a new DSL lighting show.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn new(name: String, file: String) -> Self {
         Self { name, file }
     }
 
     /// Gets the name of the lighting show.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn name(&self) -> &str {
         &self.name
     }
 
     /// Gets the DSL file path.
-    #[allow(dead_code)]
     pub fn file(&self) -> &str {
         &self.file
     }
@@ -241,7 +239,6 @@ impl LightingShow {
 
 /// A YAML representation of lighting configuration for a song.
 #[derive(Deserialize, Clone, Serialize)]
-#[allow(dead_code)]
 pub struct LightingConfiguration {
     /// The lighting cues for this song.
     cues: Vec<LightingCue>,
@@ -249,13 +246,11 @@ pub struct LightingConfiguration {
 
 impl LightingConfiguration {
     /// Creates a new lighting configuration.
-    #[allow(dead_code)]
     pub fn new(cues: Vec<LightingCue>) -> Self {
         Self { cues }
     }
 
     /// Gets the lighting cues.
-    #[allow(dead_code)]
     pub fn cues(&self) -> &Vec<LightingCue> {
         &self.cues
     }
@@ -263,7 +258,7 @@ impl LightingConfiguration {
 
 /// A lighting cue with timing and effects.
 #[derive(Deserialize, Clone, Serialize)]
-#[allow(dead_code)]
+
 pub struct LightingCue {
     /// The time when this cue should trigger (MM:SS.mmm format).
     time: String,
@@ -275,7 +270,6 @@ pub struct LightingCue {
 
 impl LightingCue {
     /// Creates a new lighting cue.
-    #[allow(dead_code)]
     pub fn new(time: String, description: Option<String>, effects: Vec<LightingEffect>) -> Self {
         Self {
             time,
@@ -285,19 +279,17 @@ impl LightingCue {
     }
 
     /// Gets the time of this cue.
-    #[allow(dead_code)]
     pub fn time(&self) -> &str {
         &self.time
     }
 
     /// Gets the description of this cue.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn description(&self) -> Option<&str> {
         self.description.as_deref()
     }
 
     /// Gets the effects for this cue.
-    #[allow(dead_code)]
     pub fn effects(&self) -> &Vec<LightingEffect> {
         &self.effects
     }
@@ -305,7 +297,7 @@ impl LightingCue {
 
 /// A lighting effect with groups and parameters.
 #[derive(Deserialize, Clone, Serialize)]
-#[allow(dead_code)]
+
 pub struct LightingEffect {
     /// The type of effect (static, cycle, strobe, etc.).
     effect_type: String,
@@ -317,7 +309,6 @@ pub struct LightingEffect {
 
 impl LightingEffect {
     /// Creates a new lighting effect.
-    #[allow(dead_code)]
     pub fn new(
         effect_type: String,
         groups: Vec<String>,
@@ -331,26 +322,22 @@ impl LightingEffect {
     }
 
     /// Gets the effect type.
-    #[allow(dead_code)]
     pub fn effect_type(&self) -> &str {
         &self.effect_type
     }
 
     /// Gets the groups this effect applies to.
-    #[allow(dead_code)]
     pub fn groups(&self) -> &Vec<String> {
         &self.groups
     }
 
     /// Gets the parameters for this effect.
-    #[allow(dead_code)]
     pub fn parameters(&self) -> &HashMap<String, Value> {
         &self.parameters
     }
 }
 
 /// Converts DSL light shows to YAML lighting configuration.
-#[allow(dead_code)]
 pub fn convert_dsl_to_lighting_configuration(
     dsl_shows: HashMap<String, crate::lighting::parser::LightShow>,
 ) -> Result<LightingConfiguration, Box<dyn Error>> {
@@ -406,7 +393,6 @@ pub fn convert_dsl_to_lighting_configuration(
 }
 
 /// Formats a Duration as MM:SS.mmm time string.
-#[allow(dead_code)]
 fn format_duration_as_time_string(duration: Duration) -> String {
     let total_ms = duration.as_millis() as u64;
     let minutes = total_ms / (60 * 1000);
@@ -417,7 +403,6 @@ fn format_duration_as_time_string(duration: Duration) -> String {
 }
 
 /// Parses a time string (MM:SS.mmm) to Duration.
-#[allow(dead_code)]
 fn parse_time_string_to_duration(time_str: &str) -> Result<Duration, Box<dyn Error>> {
     let parts: Vec<&str> = time_str.split(':').collect();
 
@@ -464,7 +449,6 @@ fn parse_time_string_to_duration(time_str: &str) -> Result<Duration, Box<dyn Err
 }
 
 /// Loads and parses DSL lighting files for a song.
-#[allow(dead_code)]
 pub fn load_dsl_lighting_files(
     song_path: &Path,
     dsl_file_paths: &[String],

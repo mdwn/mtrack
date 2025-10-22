@@ -26,10 +26,10 @@ pub struct LightingParser;
 
 pub fn parse_fixture_types(content: &str) -> Result<HashMap<String, FixtureType>, Box<dyn Error>> {
     let mut fixture_types = HashMap::new();
-    
+
     let pairs = LightingParser::parse(Rule::file, content)
         .map_err(|e| format!("Failed to parse fixture types DSL: {}", e))?;
-    
+
     for pair in pairs {
         for inner_pair in pair.into_inner() {
             match inner_pair.as_rule() {
@@ -44,16 +44,16 @@ pub fn parse_fixture_types(content: &str) -> Result<HashMap<String, FixtureType>
             }
         }
     }
-    
+
     Ok(fixture_types)
 }
 
 pub fn parse_venues(content: &str) -> Result<HashMap<String, Venue>, Box<dyn Error>> {
     let mut venues = HashMap::new();
-    
+
     let pairs = LightingParser::parse(Rule::file, content)
         .map_err(|e| format!("Failed to parse venues DSL: {}", e))?;
-    
+
     for pair in pairs {
         for inner_pair in pair.into_inner() {
             match inner_pair.as_rule() {
@@ -68,7 +68,7 @@ pub fn parse_venues(content: &str) -> Result<HashMap<String, Venue>, Box<dyn Err
             }
         }
     }
-    
+
     Ok(venues)
 }
 
@@ -215,11 +215,11 @@ fn parse_light_show_definition(
 ) -> Result<LightShow, Box<dyn Error>> {
     let mut name = String::new();
     let mut cues = Vec::new();
-    
+
     for inner_pair in pair.into_inner() {
         match inner_pair.as_rule() {
             Rule::show_name => {
-                    name = inner_pair.as_str().trim_matches('"').to_string();
+                name = inner_pair.as_str().trim_matches('"').to_string();
             }
             Rule::show_content => {
                 // Parse the show content which contains cues
@@ -227,13 +227,13 @@ fn parse_light_show_definition(
                     if content_pair.as_rule() == Rule::cue {
                         let cue = parse_cue_definition(content_pair)?;
                         cues.push(cue);
-                                        }
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                        
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     Ok(LightShow { name, cues })
 }
 
@@ -300,7 +300,7 @@ fn parse_effect_definition(pair: pest::iterators::Pair<Rule>) -> Result<Effect, 
             _ => {}
         }
     }
-    
+
     Ok(Effect {
         groups,
         effect_type,
@@ -496,7 +496,7 @@ fn parse_fixture_type_definition(
             _ => {}
         }
     }
-    
+
     Ok(FixtureType::new(name, channels, special_cases))
 }
 
@@ -560,7 +560,7 @@ fn parse_venue_definition(pair: pest::iterators::Pair<Rule>) -> Result<Venue, Bo
     let mut name = String::new();
     let mut fixtures = HashMap::new();
     let mut groups = HashMap::new();
-    
+
     for pair in pair.into_inner() {
         match pair.as_rule() {
             Rule::string => {
@@ -572,11 +572,11 @@ fn parse_venue_definition(pair: pest::iterators::Pair<Rule>) -> Result<Venue, Bo
             _ => {}
         }
     }
-    
+
     if name.is_empty() {
         return Err("Venue name is required".into());
     }
-    
+
     Ok(Venue::new(name, fixtures, groups))
 }
 
@@ -607,7 +607,7 @@ fn parse_fixture_definition(pair: pest::iterators::Pair<Rule>) -> Result<Fixture
     let mut universe = 0u32;
     let mut start_channel = 0u16;
     let mut tags = Vec::new();
-    
+
     for pair in pair.into_inner() {
         match pair.as_rule() {
             Rule::string => {
@@ -630,7 +630,7 @@ fn parse_fixture_definition(pair: pest::iterators::Pair<Rule>) -> Result<Fixture
             _ => {}
         }
     }
-    
+
     Ok(Fixture::new(
         name,
         fixture_type,
@@ -650,7 +650,7 @@ fn parse_tags(pair: pest::iterators::Pair<Rule>) -> Vec<String> {
 fn parse_group_definition(pair: pest::iterators::Pair<Rule>) -> Result<Group, Box<dyn Error>> {
     let mut name = String::new();
     let mut fixtures = Vec::new();
-    
+
     for pair in pair.into_inner() {
         match pair.as_rule() {
             Rule::string => {
@@ -662,7 +662,7 @@ fn parse_group_definition(pair: pest::iterators::Pair<Rule>) -> Result<Group, Bo
             _ => {}
         }
     }
-    
+
     Ok(Group::new(name, fixtures))
 }
 
@@ -974,10 +974,10 @@ show "Show 2" {
             }
             special_cases: ["RGB", "Dimmer"]
         }"#;
-        
+
         let result = parse_fixture_types(content).unwrap();
         assert_eq!(result.len(), 1);
-        
+
         let fixture_type = result.get("RGBW_Par").unwrap();
         assert_eq!(fixture_type.name(), "RGBW_Par");
         assert_eq!(fixture_type.channels().get("dimmer"), Some(&1));
@@ -990,10 +990,10 @@ show "Show 2" {
     #[test]
     fn test_parse_venue() {
         let content = r#"venue "Club Venue" { }"#;
-        
+
         let result = parse_venues(content).unwrap();
         assert_eq!(result.len(), 1);
-        
+
         let venue = result.get("Club Venue").unwrap();
         assert_eq!(venue.name(), "Club Venue");
         assert_eq!(venue.fixtures().len(), 0);

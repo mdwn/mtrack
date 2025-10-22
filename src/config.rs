@@ -40,8 +40,8 @@ pub use self::midi::MidiTransformer;
 pub use self::player::Player;
 pub use self::playlist::Playlist;
 pub use self::song::{
-    load_dsl_lighting_files, LightShow, LightingConfiguration, LightingCue, LightingEffect, 
-    LightingShow, MidiPlayback, Song,
+    load_dsl_lighting_files, LightShow, LightingConfiguration, LightingCue, LightingEffect,
+    MidiPlayback, Song,
 };
 pub use self::statusevents::StatusEvents;
 pub use self::track::Track;

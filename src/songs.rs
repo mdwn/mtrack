@@ -49,7 +49,6 @@ pub struct Song {
     /// The light show configurations
     light_shows: Vec<LightShow>,
     /// The lighting configuration
-    #[allow(dead_code)]
     lighting: Option<LightingConfiguration>,
     /// The number of channels required to play this song.
     num_channels: u16,
@@ -79,7 +78,7 @@ impl Song {
                 .collect::<Result<Vec<LightShow>, Box<dyn Error>>>()?,
             None => Vec::default(),
         };
-        let lighting_shows = config.lighting().cloned();
+        let _lighting_shows = config.lighting().cloned();
 
         // Load lighting configuration if present
         let lighting = match config.lighting() {
@@ -241,7 +240,7 @@ impl Song {
                 )
             }
         };
-        let lighting = self.lighting();
+        let _lighting = self.lighting();
         let tracks = self
             .tracks()
             .iter()
@@ -294,7 +293,6 @@ impl Song {
     }
 
     /// Gets the lighting configuration.
-    #[allow(dead_code)]
     pub fn lighting(&self) -> Option<LightingConfiguration> {
         self.lighting.clone()
     }
