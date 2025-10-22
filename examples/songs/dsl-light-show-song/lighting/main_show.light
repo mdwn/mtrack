@@ -1,0 +1,29 @@
+show "Main Show" {
+    # Intro - blue wash
+    @00:00.000
+    front_wash: static color: "blue", dimmer: 60%
+    
+    # Add back wash with fade
+    @00:04.000
+    back_wash: static color: "orange", dimmer: 50%, fade: 500ms
+    
+    # Color cycle effect
+    @00:16.000
+    front_wash, back_wash: cycle color: "red", color: "green", color: "blue", duration: 3s, direction: forward, dimmer: 50%
+    
+    # Moving head chase
+    @00:30.000
+    movers: chase steps: [
+        {color: "purple", dimmer: 100%, duration: 400ms, transition: fade},
+        {color: "cyan", dimmer: 70%, duration: 400ms, transition: fade},
+        {color: "yellow", dimmer: 70%, duration: 400ms, transition: crossfade}
+    ], loop: pingpong, direction: forward
+    
+    # Strobe effect
+    @01:00.000
+    strobe: strobe rate: 8, duty: 20%, duration: 2s, dimmer: 80%
+    
+    # Fade to black
+    @01:05.000
+    front_wash, back_wash, movers: dimmer dimmer: 0%, fade: 1000ms
+}

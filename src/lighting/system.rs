@@ -134,7 +134,8 @@ impl LightingSystem {
     fn load_fixture_types_file(&mut self, path: &Path) -> Result<(), Box<dyn Error>> {
         let content = std::fs::read_to_string(path)?;
 
-        match parse_fixture_types(&content) {
+        // TODO: Implement fixture type parsing
+        match self.parse_fixture_types(&content) {
             Ok(types) => {
                 for (name, fixture_type) in types {
                     self.fixture_types.insert(name, fixture_type);
@@ -157,7 +158,7 @@ impl LightingSystem {
     fn load_venue_file(&mut self, path: &Path) -> Result<(), Box<dyn Error>> {
         let content = std::fs::read_to_string(path)?;
 
-        match parse_venues(&content) {
+        match self.parse_venues(&content) {
             Ok(venues) => {
                 for (name, venue) in venues {
                     self.venues.insert(name, venue);

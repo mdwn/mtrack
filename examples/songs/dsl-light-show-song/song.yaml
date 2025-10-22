@@ -1,0 +1,10 @@
+name: "DSL Light Show Song"
+midi_file: "song.mid"
+lighting:
+  - name: "Main Show"
+    file: "lighting/main_show.light"
+  - name: "Outro Show"
+    file: "lighting/outro.light"
+tracks:
+  - name: "Main Track"
+    audio_file: "song.wav"
