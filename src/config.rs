@@ -39,8 +39,8 @@ pub use self::midi::Midi;
 pub use self::midi::MidiTransformer;
 pub use self::player::Player;
 pub use self::playlist::Playlist;
-pub use self::song::LightShow;
-pub use self::song::MidiPlayback;
-pub use self::song::Song;
+pub use self::song::{
+    load_dsl_lighting_files, LightShow, LightingConfiguration, MidiPlayback, Song,
+};
 pub use self::statusevents::StatusEvents;
 pub use self::track::Track;

@@ -31,7 +31,7 @@ use tracing::{debug, info, warn};
 
 use crate::audio::sample_source::SampleSource;
 use crate::audio::TargetFormat;
-use crate::config;
+use crate::config::{self, load_dsl_lighting_files, LightingConfiguration};
 use crate::proto::player;
 
 const AUDIO_EXTENSIONS: &[&str] = &["wav", "mid"];
@@ -48,6 +48,9 @@ pub struct Song {
     midi_playback: Option<MidiPlayback>,
     /// The light show configurations
     light_shows: Vec<LightShow>,
+    /// The lighting configuration
+    #[allow(dead_code)]
+    lighting: Option<LightingConfiguration>,
     /// The number of channels required to play this song.
     num_channels: u16,
     /// The sample rate of this song.
@@ -75,6 +78,25 @@ impl Song {
                 .map(|light_show| LightShow::new(start_path, light_show))
                 .collect::<Result<Vec<LightShow>, Box<dyn Error>>>()?,
             None => Vec::default(),
+        };
+
+        // Load lighting configuration if present
+        let lighting = match config.lighting() {
+            Some(lighting_shows) => {
+                let dsl_file_paths: Vec<String> = lighting_shows
+                    .iter()
+                    .map(|show| show.file().to_string())
+                    .collect();
+
+                match load_dsl_lighting_files(start_path, &dsl_file_paths) {
+                    Ok(lighting_config) => Some(lighting_config),
+                    Err(e) => {
+                        warn!("Failed to load DSL lighting files: {}", e);
+                        None
+                    }
+                }
+            }
+            None => None,
         };
 
         // Calculate the number of channels and sample rate by reading the wav headers of each file.
@@ -116,6 +138,7 @@ impl Song {
             midi_event: config.midi_event()?,
             midi_playback,
             light_shows,
+            lighting,
             num_channels,
             sample_rate,
             sample_format: sample_format.unwrap_or(SampleFormat::Int),
@@ -186,6 +209,7 @@ impl Song {
             name,
             midi_playback,
             light_shows,
+            lighting: None, // No lighting in auto-discovered songs
             tracks,
             ..Default::default()
         };
@@ -227,6 +251,7 @@ impl Song {
             midi_file,
             midi_playback,
             light_shows,
+            None, // Lighting is stored separately and not exported back to config
             tracks,
         )
     }
@@ -264,6 +289,12 @@ impl Song {
     /// Gets the song light shows.
     pub fn light_shows(&self) -> Vec<LightShow> {
         self.light_shows.clone()
+    }
+
+    /// Gets the lighting configuration.
+    #[allow(dead_code)]
+    pub fn lighting(&self) -> Option<LightingConfiguration> {
+        self.lighting.clone()
     }
 
     /// Gets the song tracks.
@@ -412,6 +443,7 @@ impl Default for Song {
             midi_event: Default::default(),
             midi_playback: Default::default(),
             light_shows: Default::default(),
+            lighting: Default::default(),
             num_channels: Default::default(),
             sample_rate: Default::default(),
             sample_format: SampleFormat::Int,

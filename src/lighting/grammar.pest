@@ -11,27 +11,144 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-// Lighting DSL grammar for pest parser
+// Main file rule - can contain any combination of fixture types, venues, and light shows
+file = { (comment | fixture_type | venue | light_show)* }
 
-file = { (comment | fixture_type | venue)* }
+// Light show rules
+light_show = { "show" ~ show_name ~ show_content }
 
-comment = { "#" ~ (!NEWLINE ~ ANY)* }
+show_name = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 
-fixture_type = { "type" ~ string ~ "{" ~ channel_definitions ~ "}" }
+show_content = { "{" ~ (cue | comment | WHITESPACE)* ~ "}" }
 
-channel_definitions = { channel_definition ~ ("," ~ channel_definition)* }
+cue = { time_string ~ (effect | comment | WHITESPACE)* }
 
-channel_definition = { 
-    ("special_cases" ~ ":" ~ special_case_list) |
-    (identifier ~ ":" ~ number) |
-    (identifier ~ ":" ~ string)
+time_string = { "@" ~ (time_mm_ss_mmm | time_ss_mmm) }
+
+time_mm_ss_mmm = { ASCII_DIGIT+ ~ ":" ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ }
+
+time_ss_mmm = { ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ }
+
+effect = { group_list ~ ":" ~ effect_type ~ parameters }
+
+group_list = { group_name ~ ("," ~ group_name)* }
+
+group_name = { (!":" ~ !"," ~ !" " ~ ANY)+ }
+
+effect_type = { "static" | "cycle" | "strobe" | "pulse" | "chase" | "dimmer" | "rainbow" }
+
+parameters = { (parameter ~ ("," ~ parameter)*)? }
+
+parameter = { parameter_name ~ ":" ~ parameter_value }
+
+parameter_name = { (!":" ~ !"," ~ !" " ~ ANY)+ }
+
+parameter_value = { 
+    color_parameter | 
+    dimmer_parameter | 
+    duration_parameter | 
+    fade_parameter | 
+    rate_parameter | 
+    duty_parameter | 
+    direction_parameter | 
+    loop_parameter |
+    step_parameter |
+    transition_parameter |
+    string_value |
+    number_value |
+    simple_value
 }
 
-special_case_list = { string ~ ("," ~ string)* }
+simple_value = { (!"," ~ !" " ~ !"}" ~ ANY)+ }
 
+color_parameter = { 
+    hex_color | 
+    rgb_color | 
+    named_color 
+}
+
+hex_color = { "#" ~ ASCII_HEX_DIGIT{6} }
+
+rgb_color = { "rgb(" ~ ASCII_DIGIT+ ~ "," ~ ASCII_DIGIT+ ~ "," ~ ASCII_DIGIT+ ~ ")" }
+
+named_color = { "\"" ~ ("red" | "green" | "blue" | "white" | "black" | "yellow" | "cyan" | "magenta" | "orange" | "purple") ~ "\"" }
+
+dimmer_parameter = { percentage }
+
+duration_parameter = { time_value ~ time_unit }
+
+fade_parameter = { time_value ~ time_unit }
+
+rate_parameter = { ASCII_DIGIT+ }
+
+duty_parameter = { percentage }
+
+direction_parameter = { "forward" | "backward" | "random" }
+
+loop_parameter = { "once" | "loop" | "pingpong" | "random" }
+
+step_parameter = { "[" ~ step_list ~ "]" }
+
+step_list = { step ~ ("," ~ step)* }
+
+step = { "{" ~ step_content ~ "}" }
+
+step_content = { step_param ~ ("," ~ step_param)* }
+
+step_param = { parameter_name ~ ":" ~ parameter_value }
+
+transition_parameter = { "snap" | "fade" | "crossfade" | "wipe" }
+
+percentage = { ASCII_DIGIT+ ~ "%" }
+
+time_value = { ASCII_DIGIT+ }
+
+time_unit = { "ms" | "s" }
+
+string_value = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+
+number_value = { ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? }
+
+// Additional rules for main branch compatibility
+string = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+
+identifier = { (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+
+number = { ("+" | "-")? ~ ASCII_DIGIT+ }
+
+comment = { "//" ~ (!"\n" ~ ANY)* | "#" ~ (!"\n" ~ ANY)* }
+
+// Fixture type rules
+fixture_type = { "fixture_type" ~ fixture_type_name ~ "{" ~ fixture_type_content ~ "}" }
+
+fixture_type_name = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+
+fixture_type_content = { 
+    (channels | channel_map | special_cases | comment | WHITESPACE)* 
+}
+
+channels = { "channels" ~ ":" ~ number_value }
+
+channel_map = { "channel_map" ~ ":" ~ "{" ~ channel_mapping_list ~ "}" }
+
+channel_mapping_list = { channel_mapping ~ ("," ~ channel_mapping)* }
+
+channel_mapping = { channel_name ~ ":" ~ channel_number }
+
+channel_name = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+
+channel_number = { number_value }
+
+special_cases = { "special_cases" ~ ":" ~ "[" ~ special_case_list ~ "]" }
+
+special_case_list = { special_case ~ ("," ~ special_case)* }
+
+special_case = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+
+// Venue rules - support both simple and complex formats
 venue = { "venue" ~ string ~ "{" ~ venue_content ~ "}" }
 
-venue_content = { (fixture | group) ~ ("," ~ (fixture | group))* }
+venue_content = { (fixture | group | comment | WHITESPACE)* }
 
 fixture = { "fixture" ~ string ~ identifier ~ "@" ~ number ~ ":" ~ number ~ tags? }
 
@@ -42,10 +159,33 @@ group = { "group" ~ string ~ "=" ~ identifier_list }
 
 identifier_list = { identifier ~ ("," ~ identifier)* }
 
-string = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+// Additional rules for complex format support
+venue_name = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 
-identifier = { (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+fixtures = { "fixtures" ~ ":" ~ "[" ~ fixture_list ~ "]" }
 
-number = { ("+" | "-")? ~ ASCII_DIGIT+ }
+fixture_list = { fixture ~ ("," ~ fixture)* }
 
-WHITESPACE = _{ " " | "\t" | NEWLINE }
+fixture_name = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+
+fixture_content = { 
+    (fixture_type_name | universe | address | tags | comment | WHITESPACE)* 
+}
+
+universe = { "universe" ~ ":" ~ number_value }
+
+address = { "address" ~ ":" ~ number_value }
+
+groups = { "groups" ~ ":" ~ "[" ~ venue_group_list ~ "]" }
+
+venue_group_list = { venue_group ~ ("," ~ venue_group)* }
+
+venue_group = { "group" ~ venue_group_name ~ "{" ~ venue_group_content ~ "}" }
+
+venue_group_name = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+
+venue_group_content = { 
+    (fixture_list | comment | WHITESPACE)* 
+}
+
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
