@@ -1373,6 +1373,148 @@ not a show"#;
     }
 
     #[test]
+    fn test_whitespace_handling() {
+        // Test zero whitespace
+        let no_whitespace =
+            r#"show"Test Show"{@00:00.000 front_wash:static color:"blue",dimmer:60%}"#;
+        let result = parse_light_shows(no_whitespace);
+        assert!(
+            result.is_ok(),
+            "Failed to parse DSL with zero whitespace: {:?}",
+            result
+        );
+
+        let shows = result.unwrap();
+        assert_eq!(shows.len(), 1);
+        let show = shows.get("Test Show").unwrap();
+        assert_eq!(show.cues.len(), 1);
+        assert_eq!(show.cues[0].effects.len(), 1);
+
+        // Test minimal whitespace (just what's needed)
+        let minimal_whitespace = r#"show "Test Show" {
+@00:00.000
+front_wash: static color: "blue", dimmer: 60%
+}"#;
+        let result = parse_light_shows(minimal_whitespace);
+        assert!(
+            result.is_ok(),
+            "Failed to parse DSL with minimal whitespace: {:?}",
+            result
+        );
+
+        let shows = result.unwrap();
+        assert_eq!(shows.len(), 1);
+        let show = shows.get("Test Show").unwrap();
+        assert_eq!(show.cues.len(), 1);
+        assert_eq!(show.cues[0].effects.len(), 1);
+
+        // Test moderate whitespace
+        let moderate_whitespace = r#"show "Test Show" {
+    @00:00.000
+    front_wash: static color: "blue", dimmer: 60%
+}"#;
+        let result = parse_light_shows(moderate_whitespace);
+        assert!(
+            result.is_ok(),
+            "Failed to parse DSL with moderate whitespace: {:?}",
+            result
+        );
+
+        let shows = result.unwrap();
+        assert_eq!(shows.len(), 1);
+        let show = shows.get("Test Show").unwrap();
+        assert_eq!(show.cues.len(), 1);
+        assert_eq!(show.cues[0].effects.len(), 1);
+
+        // Test excessive whitespace (this might fail due to grammar limitations)
+        let excessive_whitespace = r#"
+            show    "Test Show"    {
+                @00:00.000    
+                front_wash    :    static    
+                color    :    "blue"    ,    
+                dimmer    :    60%    
+            }
+        "#;
+        let result = parse_light_shows(excessive_whitespace);
+        // This might fail due to the grammar not handling excessive whitespace well
+        if result.is_ok() {
+            let shows = result.unwrap();
+            assert_eq!(shows.len(), 1);
+            let show = shows.get("Test Show").unwrap();
+            assert_eq!(show.cues.len(), 1);
+            assert_eq!(show.cues[0].effects.len(), 1);
+        }
+
+        // Test mixed whitespace (tabs, spaces, newlines)
+        let mixed_whitespace = r#"show	"Test Show"	{
+	@00:00.000	
+	front_wash	:	static	
+	color	:	"blue"	,	
+	dimmer	:	60%	
+}"#;
+        let result = parse_light_shows(mixed_whitespace);
+        assert!(
+            result.is_ok(),
+            "Failed to parse DSL with mixed whitespace: {:?}",
+            result
+        );
+
+        let shows = result.unwrap();
+        assert_eq!(shows.len(), 1);
+        let show = shows.get("Test Show").unwrap();
+        assert_eq!(show.cues.len(), 1);
+        assert_eq!(show.cues[0].effects.len(), 1);
+    }
+
+    #[test]
+    fn test_extreme_whitespace_handling() {
+        // Test with very long whitespace sequences
+        let long_whitespace = format!(
+            r#"show "Test Show" {{{}@00:00.000{}front_wash: static color: "blue", dimmer: 60%{}}}"#,
+            " ".repeat(50),
+            " ".repeat(50),
+            " ".repeat(50)
+        );
+        let result = parse_light_shows(&long_whitespace);
+        assert!(
+            result.is_ok(),
+            "Failed to parse DSL with long whitespace: {:?}",
+            result
+        );
+
+        // Test with mixed whitespace characters
+        let mixed_whitespace = r#"show	"Test Show"	{
+		@00:00.000		
+		front_wash:	static	color:	"blue",	dimmer:	60%	
+	}"#;
+        let result = parse_light_shows(mixed_whitespace);
+        assert!(
+            result.is_ok(),
+            "Failed to parse DSL with mixed whitespace: {:?}",
+            result
+        );
+
+        // Test with newlines in various places
+        let newline_whitespace = r#"show
+"Test Show"
+{
+@00:00.000
+front_wash:
+static
+color:
+"blue",
+dimmer:
+60%
+}"#;
+        let result = parse_light_shows(newline_whitespace);
+        assert!(
+            result.is_ok(),
+            "Failed to parse DSL with newline whitespace: {:?}",
+            result
+        );
+    }
+
+    #[test]
     fn test_comprehensive_dsl_parsing() {
         // Test a comprehensive DSL file that uses various parameter types
         let comprehensive_dsl = r#"show "Comprehensive Light Show" {

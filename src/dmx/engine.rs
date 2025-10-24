@@ -624,10 +624,7 @@ impl Engine {
     }
 
     /// Sends messages to OLA using the injected client.
-    fn ola_thread(
-        client: Arc<Mutex<Box<dyn OlaClient>>>,
-        receiver: Receiver<DmxMessage>,
-    ) {
+    fn ola_thread(client: Arc<Mutex<Box<dyn OlaClient>>>, receiver: Receiver<DmxMessage>) {
         loop {
             match receiver.recv() {
                 Ok(message) => {
