@@ -31,7 +31,7 @@ use tracing::{debug, info, warn};
 
 use crate::audio::sample_source::SampleSource;
 use crate::audio::TargetFormat;
-use crate::config::{self, load_dsl_lighting_files, LightingConfiguration};
+use crate::config;
 use crate::proto::player;
 
 const AUDIO_EXTENSIONS: &[&str] = &["wav", "mid"];
@@ -48,8 +48,8 @@ pub struct Song {
     midi_playback: Option<MidiPlayback>,
     /// The light show configurations
     light_shows: Vec<LightShow>,
-    /// The lighting configuration
-    lighting: Option<LightingConfiguration>,
+    /// The DSL lighting shows
+    lighting: Option<Vec<config::LightingShow>>,
     /// The number of channels required to play this song.
     num_channels: u16,
     /// The sample rate of this song.
@@ -78,26 +78,8 @@ impl Song {
                 .collect::<Result<Vec<LightShow>, Box<dyn Error>>>()?,
             None => Vec::default(),
         };
-        let _lighting_shows = config.lighting().cloned();
-
-        // Load lighting configuration if present
-        let lighting = match config.lighting() {
-            Some(lighting_shows) => {
-                let dsl_file_paths: Vec<String> = lighting_shows
-                    .iter()
-                    .map(|show| show.file().to_string())
-                    .collect();
-
-                match load_dsl_lighting_files(start_path, &dsl_file_paths) {
-                    Ok(lighting_config) => Some(lighting_config),
-                    Err(e) => {
-                        warn!("Failed to load DSL lighting files: {}", e);
-                        None
-                    }
-                }
-            }
-            None => None,
-        };
+        // Store DSL lighting shows directly (no YAML conversion)
+        let lighting_shows = config.lighting().cloned();
 
         // Calculate the number of channels and sample rate by reading the wav headers of each file.
         let tracks = config
@@ -138,7 +120,7 @@ impl Song {
             midi_event: config.midi_event()?,
             midi_playback,
             light_shows,
-            lighting,
+            lighting: lighting_shows,
             num_channels,
             sample_rate,
             sample_format: sample_format.unwrap_or(SampleFormat::Int),
@@ -240,7 +222,7 @@ impl Song {
                 )
             }
         };
-        let _lighting = self.lighting();
+        let lighting = self.lighting_shows().cloned();
         let tracks = self
             .tracks()
             .iter()
@@ -252,7 +234,7 @@ impl Song {
             midi_file,
             midi_playback,
             light_shows,
-            None, // Lighting is stored separately and not exported back to config
+            lighting,
             tracks,
         )
     }
@@ -292,9 +274,9 @@ impl Song {
         self.light_shows.clone()
     }
 
-    /// Gets the lighting configuration.
-    pub fn lighting(&self) -> Option<LightingConfiguration> {
-        self.lighting.clone()
+    /// Gets the DSL lighting shows.
+    pub fn lighting_shows(&self) -> Option<&Vec<config::LightingShow>> {
+        self.lighting.as_ref()
     }
 
     /// Gets the song tracks.

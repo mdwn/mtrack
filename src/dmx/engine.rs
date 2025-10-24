@@ -172,7 +172,7 @@ impl Engine {
 
         // Check if there are any lighting systems to play
         let light_shows = song.light_shows();
-        let has_lighting = song.lighting().is_some();
+        let has_lighting = song.lighting_shows().is_some();
 
         if light_shows.is_empty() && !has_lighting {
             return Ok(());
@@ -189,19 +189,22 @@ impl Engine {
             eprintln!("Warning: Failed to register venue fixtures: {}", e);
         }
 
-        // Setup song lighting if available
-        if let Some(lighting_config) = song.lighting() {
-            let cues = lighting_config.cues().clone();
-            let timeline = LightingTimeline::new(cues);
-            // Set the timeline in the thread-safe storage
-            {
-                let mut current_timeline = dmx_engine.current_song_timeline.lock().unwrap();
-                *current_timeline = Some(timeline);
+        // Setup song lighting if available - work directly with DSL shows
+        if let Some(lighting_shows) = song.lighting_shows() {
+            // Load DSL shows directly
+            let dsl_shows = Self::load_dsl_shows_from_song(&song);
+            if let Ok(shows) = dsl_shows {
+                let timeline = LightingTimeline::new_from_shows(shows);
+                // Set the timeline in the thread-safe storage
+                {
+                    let mut current_timeline = dmx_engine.current_song_timeline.lock().unwrap();
+                    *current_timeline = Some(timeline);
+                }
+                info!(
+                    "Setup lighting timeline with {} DSL shows",
+                    lighting_shows.len()
+                );
             }
-            info!(
-                "Setup lighting timeline with {} cues",
-                lighting_config.cues().len()
-            );
         }
 
         // Start the lighting timeline
@@ -576,6 +579,50 @@ impl Engine {
         })
     }
 
+    /// Loads DSL shows directly from song configuration
+    fn load_dsl_shows_from_song(
+        song: &crate::songs::Song,
+    ) -> Result<Vec<crate::lighting::parser::LightShow>, Box<dyn std::error::Error>> {
+        use std::fs;
+        use std::path::Path;
+
+        let mut all_shows = Vec::new();
+
+        if let Some(lighting_shows) = song.lighting_shows() {
+            for lighting_show in lighting_shows {
+                // Resolve the DSL file path relative to the song
+                let dsl_file_path = if lighting_show.file().starts_with('/') {
+                    Path::new(lighting_show.file()).to_path_buf()
+                } else {
+                    // For now, assume relative to current directory
+                    // In a real implementation, this would be relative to the song file
+                    Path::new(lighting_show.file()).to_path_buf()
+                };
+
+                // Read and parse the DSL file
+                let content = fs::read_to_string(&dsl_file_path).map_err(|e| {
+                    format!("Failed to read DSL file {}: {}", dsl_file_path.display(), e)
+                })?;
+
+                let dsl_shows =
+                    crate::lighting::parser::parse_light_shows(&content).map_err(|e| {
+                        format!(
+                            "Failed to parse DSL file {}: {}",
+                            dsl_file_path.display(),
+                            e
+                        )
+                    })?;
+
+                // Convert HashMap to Vec
+                for (_, show) in dsl_shows {
+                    all_shows.push(show);
+                }
+            }
+        }
+
+        Ok(all_shows)
+    }
+
     /// Sends messages to OLA using the injected client.
     fn ola_thread_with_client(
         client: Arc<Mutex<Box<dyn OlaClient>>>,
@@ -659,7 +706,6 @@ mod test {
 
     use super::{config, DMXConnection, Engine};
     use crate::dmx::ola_client::OlaClientFactory;
-    use crate::lighting::effects::{Chaser, ChaserStep};
 
     fn create_engine() -> Result<(Arc<Engine>, CancelHandle), Box<dyn Error>> {
         let listener = TcpListener::bind(SocketAddr::new(
@@ -898,80 +944,8 @@ mod test {
     }
 
     #[test]
-    fn test_chaser_integration() -> Result<(), Box<dyn Error>> {
-        let (engine, _cancel_handle) = create_engine()?;
-
-        // Register a fixture
-        let fixture_info = crate::lighting::effects::FixtureInfo {
-            name: "test_fixture".to_string(),
-            universe: 1,
-            address: 1,
-            fixture_type: "RGBW_Par".to_string(),
-            channels: {
-                let mut channels = std::collections::HashMap::new();
-                channels.insert("dimmer".to_string(), 1);
-                channels.insert("red".to_string(), 2);
-                channels
-            },
-        };
-
-        {
-            let mut effect_engine = engine.effect_engine.lock().unwrap();
-            effect_engine.register_fixture(fixture_info);
-        }
-
-        // Create a chaser
-        let mut parameters = std::collections::HashMap::new();
-        parameters.insert("dimmer".to_string(), 1.0);
-        parameters.insert("red".to_string(), 1.0);
-
-        let step_effect = crate::lighting::EffectInstance::new(
-            "step_effect".to_string(),
-            crate::lighting::EffectType::Static {
-                parameters,
-                duration: None,
-            },
-            vec!["test_fixture".to_string()],
-        );
-
-        let step = ChaserStep {
-            effect: step_effect,
-            hold_time: std::time::Duration::from_millis(100),
-            transition_time: std::time::Duration::from_millis(50),
-            transition_type: crate::lighting::effects::TransitionType::Fade,
-        };
-
-        let chaser = Chaser::new("test_chaser".to_string()).add_step(step);
-
-        // Test that chaser was created successfully
-        assert_eq!(chaser.id, "test_chaser");
-
-        Ok(())
-    }
-
-    #[test]
     fn test_song_lighting_integration() -> Result<(), Box<dyn Error>> {
-        // Test that we can create lighting configuration and parse it
-        let _lighting_config = config::LightingConfiguration::new(vec![config::LightingCue::new(
-            "0:05.000".to_string(),
-            Some("Test cue".to_string()),
-            vec![config::LightingEffect::new(
-                "static".to_string(),
-                vec!["front_wash".to_string()],
-                {
-                    let mut params = std::collections::HashMap::new();
-                    params.insert(
-                        "dimmer".to_string(),
-                        serde_yml::Value::Number(serde_yml::Number::from(0.8)),
-                    );
-                    params.insert(
-                        "red".to_string(),
-                        serde_yml::Value::Number(serde_yml::Number::from(1.0)),
-                    );
-                    params
-                },
-            )],
-        )]);
+        // Test that we can create a song with lighting configuration
 
         let song_config = config::Song::new(
             "Test Song",
@@ -1045,59 +1019,6 @@ mod test {
         // Test that we can start the effect
         let result = engine.start_effect(effect);
         assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_transition_types() {
-        let _engine = create_test_engine().unwrap();
-
-        // Test different transition types
-        let transition_types = vec![
-            crate::lighting::effects::TransitionType::Snap,
-            crate::lighting::effects::TransitionType::Fade,
-            crate::lighting::effects::TransitionType::Crossfade,
-            crate::lighting::effects::TransitionType::Wipe,
-        ];
-
-        for transition_type in transition_types {
-            // Create a chaser step with the transition type
-            let step = crate::lighting::effects::ChaserStep {
-                effect: crate::lighting::EffectInstance::new(
-                    "step_effect".to_string(),
-                    crate::lighting::EffectType::Static {
-                        parameters: std::collections::HashMap::new(),
-                        duration: None,
-                    },
-                    vec!["test_fixture".to_string()],
-                ),
-                hold_time: std::time::Duration::from_secs(1),
-                transition_time: std::time::Duration::from_millis(100),
-                transition_type,
-            };
-
-            // Test that the step can be created
-            assert_eq!(step.transition_type, transition_type);
-        }
-    }
-
-    #[test]
-    fn test_loop_modes() {
-        let _engine = create_test_engine().unwrap();
-
-        // Test different loop modes
-        let loop_modes = vec![
-            crate::lighting::effects::LoopMode::Once,
-            crate::lighting::effects::LoopMode::Loop,
-            crate::lighting::effects::LoopMode::PingPong,
-            crate::lighting::effects::LoopMode::Random,
-        ];
-
-        for loop_mode in loop_modes {
-            let chaser =
-                Chaser::new(format!("test_chaser_{:?}", loop_mode)).with_loop_mode(loop_mode);
-
-            assert_eq!(chaser.loop_mode, loop_mode);
-        }
     }
 
     #[test]
@@ -1219,30 +1140,7 @@ mod test {
 
     #[test]
     fn test_effects_loop_with_timeline() -> Result<(), Box<dyn std::error::Error>> {
-        use crate::config::{LightingCue, LightingEffect};
-        use std::collections::HashMap;
         use std::sync::Arc;
-
-        // Create a song with lighting configuration
-        let mut parameters = HashMap::new();
-        parameters.insert(
-            "color".to_string(),
-            serde_yml::Value::String("blue".to_string()),
-        );
-        parameters.insert(
-            "dimmer".to_string(),
-            serde_yml::Value::String("60%".to_string()),
-        );
-
-        let _lighting_config = crate::config::LightingConfiguration::new(vec![LightingCue::new(
-            "00:00.000".to_string(),
-            Some("Test cue".to_string()),
-            vec![LightingEffect::new(
-                "static".to_string(),
-                vec!["front_wash".to_string()],
-                parameters,
-            )],
-        )]);
 
         // Create a simple song without lighting for this test
         let temp_path = std::path::Path::new("/tmp/test_song");

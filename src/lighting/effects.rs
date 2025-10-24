@@ -67,8 +67,6 @@ pub enum EffectType {
         frequency: f64,
         duration: Option<Duration>,
     },
-    /// Chaser effect
-    Chaser { chaser: Chaser },
 }
 
 /// Color representation
@@ -285,84 +283,6 @@ impl EffectInstance {
     }
 }
 
-/// A step in a chaser sequence
-#[derive(Debug, Clone)]
-pub struct ChaserStep {
-    pub effect: EffectInstance,
-    pub hold_time: Duration,
-    pub transition_time: Duration,
-    pub transition_type: TransitionType,
-}
-
-/// Transition types between chaser steps
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum TransitionType {
-    Snap,      // Instant change
-    Fade,      // Smooth transition
-    Crossfade, // Overlap with previous step
-    Wipe,      // Sequential transition
-}
-
-/// A chaser sequence
-#[derive(Debug, Clone)]
-pub struct Chaser {
-    pub id: String,
-    pub steps: Vec<ChaserStep>,
-    pub loop_mode: LoopMode,
-    pub direction: ChaserDirection,
-}
-
-/// Loop modes for chasers
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum LoopMode {
-    Once,     // Play once and stop
-    Loop,     // Repeat indefinitely
-    PingPong, // Forward then backward
-    Random,   // Random step order
-}
-
-/// Chaser direction
-#[derive(Debug, Clone, Copy)]
-pub enum ChaserDirection {
-    Forward,
-    Backward,
-    Random,
-}
-
-impl Chaser {
-    #[cfg(test)]
-    pub fn new(id: String) -> Self {
-        Self {
-            id,
-            steps: Vec::new(),
-            loop_mode: LoopMode::Loop,
-            direction: ChaserDirection::Forward,
-        }
-    }
-
-    #[cfg(test)]
-    pub fn add_step(mut self, step: ChaserStep) -> Self {
-        self.steps.push(step);
-        self
-    }
-
-    #[cfg(test)]
-    pub fn with_loop_mode(mut self, loop_mode: LoopMode) -> Self {
-        self.loop_mode = loop_mode;
-        self
-    }
-}
-
-/// A running instance of a chaser
-#[derive(Debug, Clone)]
-pub struct ChaserInstance {
-    pub chaser: Chaser,
-    pub current_step: usize,
-    pub step_start_time: Instant,
-    pub is_running: bool,
-    pub direction: ChaserDirection,
-}
-
 /// DMX command for sending to fixtures
 #[derive(Debug, Clone)]
 pub struct DmxCommand {
@@ -437,13 +357,5 @@ mod tests {
         assert_eq!(effect.id, "test_effect");
         assert_eq!(effect.target_fixtures.len(), 2);
         assert!(effect.enabled);
-    }
-
-    #[test]
-    fn test_chaser_creation() {
-        let chaser = Chaser::new("test_chaser".to_string()).with_loop_mode(LoopMode::Once);
-
-        assert_eq!(chaser.id, "test_chaser");
-        assert!(matches!(chaser.loop_mode, LoopMode::Once));
     }
 }

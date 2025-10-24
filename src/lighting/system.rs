@@ -130,7 +130,7 @@ impl LightingSystem {
     fn load_fixture_types_file(&mut self, path: &Path) -> Result<(), Box<dyn Error>> {
         let content = std::fs::read_to_string(path)?;
 
-        // TODO: Implement fixture type parsing
+        // Parse fixture types from DSL content
         match parse_fixture_types(&content) {
             Ok(types) => {
                 for (name, fixture_type) in types {

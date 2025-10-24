@@ -478,7 +478,6 @@ fn apply_parameters_to_effect_type(
                 }
             }
         }
-        _ => {} // Chaser and other complex types handled elsewhere
     }
 
     Ok(effect_type)
@@ -514,7 +513,14 @@ fn parse_duration_string(value: &str) -> Result<Duration, Box<dyn Error>> {
 
 /// Parses a color string to Color struct
 fn parse_color_string(value: &str) -> Option<Color> {
-    if let Some(hex) = value.strip_prefix('#') {
+    // Strip quotes if present
+    let clean_value = if value.starts_with('"') && value.ends_with('"') {
+        &value[1..value.len() - 1]
+    } else {
+        value
+    };
+
+    if let Some(hex) = clean_value.strip_prefix('#') {
         // Hex color
         if hex.len() == 6 {
             if let (Ok(r), Ok(g), Ok(b)) = (
@@ -526,9 +532,9 @@ fn parse_color_string(value: &str) -> Option<Color> {
             }
         }
         None
-    } else if value.starts_with("rgb(") && value.ends_with(')') {
+    } else if clean_value.starts_with("rgb(") && clean_value.ends_with(')') {
         // RGB color
-        let rgb = &value[4..value.len() - 1];
+        let rgb = &clean_value[4..clean_value.len() - 1];
         let parts: Vec<&str> = rgb.split(',').collect();
         if parts.len() == 3 {
             if let (Ok(r), Ok(g), Ok(b)) = (
@@ -542,7 +548,7 @@ fn parse_color_string(value: &str) -> Option<Color> {
         None
     } else {
         // Named color
-        match value.to_lowercase().as_str() {
+        match clean_value.to_lowercase().as_str() {
             "red" => Some(Color {
                 r: 255,
                 g: 0,
@@ -666,41 +672,19 @@ fn parse_parameter(pair: pest::iterators::Pair<Rule>) -> Result<(String, String)
             Rule::color_parameter => {
                 value = parse_color_parameter(inner_pair)?;
             }
-            Rule::dimmer_parameter => {
-                value = parse_dimmer_parameter(inner_pair)?;
-            }
-            Rule::duration_parameter => {
-                value = parse_duration_parameter(inner_pair)?;
-            }
-            Rule::fade_parameter => {
-                value = parse_fade_parameter(inner_pair)?;
-            }
-            Rule::rate_parameter => {
-                value = parse_rate_parameter(inner_pair)?;
-            }
-            Rule::duty_parameter => {
-                value = parse_duty_parameter(inner_pair)?;
-            }
-            Rule::direction_parameter => {
-                value = parse_direction_parameter(inner_pair)?;
-            }
-            Rule::loop_parameter => {
-                value = parse_loop_parameter(inner_pair)?;
-            }
-            Rule::step_parameter => {
-                value = parse_step_parameter(inner_pair)?;
-            }
-            Rule::transition_parameter => {
-                value = parse_transition_parameter(inner_pair)?;
-            }
-            Rule::string_value => {
-                value = parse_string_parameter(inner_pair)?;
-            }
-            Rule::number_value => {
-                value = parse_number_parameter(inner_pair)?;
-            }
-            Rule::simple_value => {
-                value = parse_simple_parameter(inner_pair)?;
+            Rule::dimmer_parameter
+            | Rule::duration_parameter
+            | Rule::fade_parameter
+            | Rule::rate_parameter
+            | Rule::duty_parameter
+            | Rule::direction_parameter
+            | Rule::loop_parameter
+            | Rule::step_parameter
+            | Rule::transition_parameter
+            | Rule::string_value
+            | Rule::number_value
+            | Rule::simple_value => {
+                value = parse_generic_parameter(inner_pair)?;
             }
             _ => {
                 value = inner_pair.as_str().to_string();
@@ -731,51 +715,8 @@ fn parse_color_parameter(pair: pest::iterators::Pair<Rule>) -> Result<String, Bo
     Ok(pair.as_str().to_string())
 }
 
-fn parse_dimmer_parameter(pair: pest::iterators::Pair<Rule>) -> Result<String, Box<dyn Error>> {
-    Ok(pair.as_str().to_string())
-}
-
-fn parse_duration_parameter(pair: pest::iterators::Pair<Rule>) -> Result<String, Box<dyn Error>> {
-    Ok(pair.as_str().to_string())
-}
-
-fn parse_fade_parameter(pair: pest::iterators::Pair<Rule>) -> Result<String, Box<dyn Error>> {
-    Ok(pair.as_str().to_string())
-}
-
-fn parse_rate_parameter(pair: pest::iterators::Pair<Rule>) -> Result<String, Box<dyn Error>> {
-    Ok(pair.as_str().to_string())
-}
-
-fn parse_duty_parameter(pair: pest::iterators::Pair<Rule>) -> Result<String, Box<dyn Error>> {
-    Ok(pair.as_str().to_string())
-}
-
-fn parse_direction_parameter(pair: pest::iterators::Pair<Rule>) -> Result<String, Box<dyn Error>> {
-    Ok(pair.as_str().to_string())
-}
-
-fn parse_loop_parameter(pair: pest::iterators::Pair<Rule>) -> Result<String, Box<dyn Error>> {
-    Ok(pair.as_str().to_string())
-}
-
-fn parse_step_parameter(pair: pest::iterators::Pair<Rule>) -> Result<String, Box<dyn Error>> {
-    Ok(pair.as_str().to_string())
-}
-
-fn parse_transition_parameter(pair: pest::iterators::Pair<Rule>) -> Result<String, Box<dyn Error>> {
-    Ok(pair.as_str().to_string())
-}
-
-fn parse_string_parameter(pair: pest::iterators::Pair<Rule>) -> Result<String, Box<dyn Error>> {
-    Ok(pair.as_str().to_string())
-}
-
-fn parse_number_parameter(pair: pest::iterators::Pair<Rule>) -> Result<String, Box<dyn Error>> {
-    Ok(pair.as_str().to_string())
-}
-
-fn parse_simple_parameter(pair: pest::iterators::Pair<Rule>) -> Result<String, Box<dyn Error>> {
+/// Generic parameter parser that extracts the string value from any parameter type
+fn parse_generic_parameter(pair: pest::iterators::Pair<Rule>) -> Result<String, Box<dyn Error>> {
     Ok(pair.as_str().to_string())
 }
 
@@ -1498,6 +1439,97 @@ not a show"#;
         let static_effect = &first_cue.effects[0];
         assert!(static_effect.parameters.contains_key("color"));
         assert!(static_effect.parameters.contains_key("dimmer"));
+    }
+
+    #[test]
+    fn test_parameter_population() {
+        // Test that parameters are properly populated in effect types
+        let simple_dsl = r#"show "Parameter Test" {
+    @00:00.000
+    front_wash: static color: "blue", dimmer: 60%
+    
+    @00:05.000
+    back_wash: static color: "red", dimmer: 80%
+}"#;
+
+        let result = parse_light_shows(simple_dsl);
+        assert!(result.is_ok(), "Simple DSL should parse successfully");
+
+        let shows = result.unwrap();
+        assert_eq!(shows.len(), 1);
+
+        let show = shows.get("Parameter Test").unwrap();
+        assert_eq!(show.cues.len(), 2);
+
+        // Test first cue
+        let first_cue = &show.cues[0];
+        assert_eq!(first_cue.effects.len(), 1);
+
+        let first_effect = &first_cue.effects[0];
+        assert_eq!(first_effect.groups, vec!["front_wash"]);
+
+        // Check that parameters are stored in the Effect struct
+        assert!(first_effect.parameters.contains_key("color"));
+        assert!(first_effect.parameters.contains_key("dimmer"));
+        assert_eq!(
+            first_effect.parameters.get("color"),
+            Some(&"\"blue\"".to_string())
+        );
+        assert_eq!(
+            first_effect.parameters.get("dimmer"),
+            Some(&"60%".to_string())
+        );
+
+        // Check that effect type is properly populated
+        match &first_effect.effect_type {
+            EffectType::Static {
+                parameters: static_params,
+                duration,
+            } => {
+                // Check that parameters were applied to the effect type
+                assert!(static_params.contains_key("red"));
+                assert!(static_params.contains_key("green"));
+                assert!(static_params.contains_key("blue"));
+                assert!(static_params.contains_key("dimmer"));
+
+                // Check specific values
+                assert_eq!(static_params.get("dimmer"), Some(&0.6)); // 60% converted to 0.6
+                assert_eq!(static_params.get("blue"), Some(&1.0)); // Blue color should be 1.0
+                assert_eq!(static_params.get("red"), Some(&0.0)); // Red should be 0.0
+                assert_eq!(static_params.get("green"), Some(&0.0)); // Green should be 0.0
+
+                // Duration should be None for static effects without duration parameter
+                assert_eq!(*duration, None);
+            }
+            _ => panic!("Expected static effect type"),
+        }
+
+        // Test second cue
+        let second_cue = &show.cues[1];
+        let second_effect = &second_cue.effects[0];
+        assert_eq!(second_effect.groups, vec!["back_wash"]);
+        assert_eq!(
+            second_effect.parameters.get("color"),
+            Some(&"\"red\"".to_string())
+        );
+        assert_eq!(
+            second_effect.parameters.get("dimmer"),
+            Some(&"80%".to_string())
+        );
+
+        // Check that red effect was properly applied
+        match &second_effect.effect_type {
+            EffectType::Static {
+                parameters: static_params,
+                ..
+            } => {
+                assert_eq!(static_params.get("dimmer"), Some(&0.8)); // 80% converted to 0.8
+                assert_eq!(static_params.get("red"), Some(&1.0)); // Red should be 1.0
+                assert_eq!(static_params.get("blue"), Some(&0.0)); // Blue should be 0.0
+                assert_eq!(static_params.get("green"), Some(&0.0)); // Green should be 0.0
+            }
+            _ => panic!("Expected static effect type"),
+        }
     }
 
     #[test]

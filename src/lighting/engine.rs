@@ -16,12 +16,10 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use super::effects::*;
-use rand::Rng;
 
 /// The main effects engine that manages and processes lighting effects
 pub struct EffectEngine {
     active_effects: HashMap<String, EffectInstance>,
-    active_chasers: HashMap<String, ChaserInstance>,
     fixture_registry: HashMap<String, FixtureInfo>,
     current_time: Instant,
 }
@@ -30,7 +28,6 @@ impl EffectEngine {
     pub fn new() -> Self {
         Self {
             active_effects: HashMap::new(),
-            active_chasers: HashMap::new(),
             fixture_registry: HashMap::new(),
             current_time: Instant::now(),
         }
@@ -105,28 +102,8 @@ impl EffectEngine {
         // Stop any conflicting effects
         self.stop_conflicting_effects(&effect);
 
-        // Handle chaser effects specially
-        if let EffectType::Chaser { chaser } = &effect.effect_type {
-            // Start the chaser instead of the effect
-            self.start_chaser(chaser.clone())?;
-        } else {
-            // Start the regular effect
-            self.active_effects.insert(effect.id.clone(), effect);
-        }
-        Ok(())
-    }
-
-    /// Start a chaser
-    pub fn start_chaser(&mut self, chaser: Chaser) -> Result<(), EffectError> {
-        let instance = ChaserInstance {
-            chaser: chaser.clone(),
-            current_step: 0,
-            step_start_time: self.current_time,
-            is_running: true,
-            direction: chaser.direction,
-        };
-
-        self.active_chasers.insert(chaser.id.clone(), instance);
+        // Start the regular effect
+        self.active_effects.insert(effect.id.clone(), effect);
         Ok(())
     }
 
@@ -139,34 +116,6 @@ impl EffectEngine {
         for effect in self.active_effects.values() {
             if let Some(commands_for_effect) = self.process_effect(effect)? {
                 commands.extend(commands_for_effect);
-            }
-        }
-
-        // Update active chasers - process them in two passes to avoid borrowing issues
-        let mut chasers_to_advance = Vec::new();
-
-        // First pass: process chasers and identify which need advancement
-        for (chaser_id, chaser_instance) in &self.active_chasers {
-            if let Some(commands_for_chaser) = self.process_chaser(chaser_instance)? {
-                commands.extend(commands_for_chaser);
-            }
-
-            // Check if we need to advance the chaser step
-            let step_duration =
-                chaser_instance.chaser.steps[chaser_instance.current_step].hold_time;
-            let elapsed = self
-                .current_time
-                .duration_since(chaser_instance.step_start_time);
-
-            if elapsed >= step_duration {
-                chasers_to_advance.push(chaser_id.clone());
-            }
-        }
-
-        // Second pass: advance chasers that need it
-        for chaser_id in chasers_to_advance {
-            if let Some(chaser_instance) = self.active_chasers.get_mut(&chaser_id) {
-                Self::advance_chaser_step(chaser_instance, self.current_time);
             }
         }
 
@@ -231,164 +180,7 @@ impl EffectEngine {
                 frequency,
                 ..
             } => self.apply_pulse(effect, *base_level, *pulse_amplitude, *frequency, elapsed),
-            EffectType::Chaser { .. } => {
-                // Chaser effects are handled separately in the chaser processing
-                // This should not be reached for regular effect processing
-                Ok(None)
-            }
         }
-    }
-
-    /// Process a chaser and return DMX commands
-    fn process_chaser(
-        &self,
-        chaser_instance: &ChaserInstance,
-    ) -> Result<Option<Vec<DmxCommand>>, EffectError> {
-        if !chaser_instance.is_running || chaser_instance.chaser.steps.is_empty() {
-            return Ok(None);
-        }
-
-        let current_step = &chaser_instance.chaser.steps[chaser_instance.current_step];
-        let elapsed = self
-            .current_time
-            .duration_since(chaser_instance.step_start_time);
-
-        if elapsed >= current_step.hold_time {
-            // Advance to next step
-            return Ok(None);
-        }
-
-        // Process the current step's effect with transition handling
-        let step_effect = EffectInstance {
-            id: format!("chaser_step_{}", chaser_instance.current_step),
-            effect_type: current_step.effect.effect_type.clone(),
-            target_fixtures: current_step.effect.target_fixtures.clone(),
-            priority: current_step.effect.priority,
-            start_time: Some(chaser_instance.step_start_time),
-            duration: Some(current_step.hold_time),
-            fade_in: Some(current_step.transition_time),
-            fade_out: Some(current_step.transition_time),
-            enabled: true,
-        };
-
-        // Apply transition type specific processing
-        let mut commands = self.process_effect(&step_effect)?;
-
-        if let Some(commands) = commands.as_mut() {
-            self.apply_transition_type(
-                commands,
-                &current_step.transition_type,
-                elapsed,
-                current_step.transition_time,
-            );
-        }
-
-        Ok(commands)
-    }
-
-    /// Apply transition type specific processing to DMX commands
-    fn apply_transition_type(
-        &self,
-        commands: &mut [DmxCommand],
-        transition_type: &TransitionType,
-        elapsed: Duration,
-        transition_time: Duration,
-    ) {
-        match transition_type {
-            TransitionType::Snap => {
-                // No modification needed - instant change
-            }
-            TransitionType::Fade => {
-                // Apply fade-in based on elapsed time
-                let fade_progress =
-                    (elapsed.as_secs_f64() / transition_time.as_secs_f64()).min(1.0);
-                for command in commands.iter_mut() {
-                    command.value = (command.value as f64 * fade_progress) as u8;
-                }
-            }
-            TransitionType::Crossfade => {
-                // Apply crossfade - blend with previous step
-                let crossfade_progress =
-                    (elapsed.as_secs_f64() / transition_time.as_secs_f64()).min(1.0);
-                for command in commands.iter_mut() {
-                    // Simple crossfade - could be enhanced with previous step values
-                    command.value = (command.value as f64 * crossfade_progress) as u8;
-                }
-            }
-            TransitionType::Wipe => {
-                // Apply wipe effect - sequential activation
-                let wipe_progress =
-                    (elapsed.as_secs_f64() / transition_time.as_secs_f64()).min(1.0);
-                let total_commands = commands.len();
-                let active_commands = (total_commands as f64 * wipe_progress) as usize;
-
-                for (i, command) in commands.iter_mut().enumerate() {
-                    if i < active_commands {
-                        // Keep full value
-                    } else {
-                        // Set to zero for inactive commands
-                        command.value = 0;
-                    }
-                }
-            }
-        }
-    }
-
-    /// Advance to the next step in a chaser
-    fn advance_chaser_step(chaser_instance: &mut ChaserInstance, current_time: Instant) {
-        match chaser_instance.direction {
-            ChaserDirection::Forward => {
-                chaser_instance.current_step += 1;
-                if chaser_instance.current_step >= chaser_instance.chaser.steps.len() {
-                    match chaser_instance.chaser.loop_mode {
-                        LoopMode::Once => {
-                            chaser_instance.is_running = false;
-                            return;
-                        }
-                        LoopMode::Loop => {
-                            chaser_instance.current_step = 0;
-                        }
-                        LoopMode::PingPong => {
-                            chaser_instance.direction = ChaserDirection::Backward;
-                            chaser_instance.current_step -= 1;
-                        }
-                        LoopMode::Random => {
-                            chaser_instance.current_step =
-                                rand::thread_rng().gen_range(0..chaser_instance.chaser.steps.len());
-                        }
-                    }
-                }
-            }
-            ChaserDirection::Backward => {
-                if chaser_instance.current_step > 0 {
-                    chaser_instance.current_step -= 1;
-                } else {
-                    match chaser_instance.chaser.loop_mode {
-                        LoopMode::Once => {
-                            chaser_instance.is_running = false;
-                            return;
-                        }
-                        LoopMode::Loop => {
-                            chaser_instance.current_step = chaser_instance.chaser.steps.len() - 1;
-                        }
-                        LoopMode::PingPong => {
-                            chaser_instance.direction = ChaserDirection::Forward;
-                            chaser_instance.current_step += 1;
-                        }
-                        LoopMode::Random => {
-                            chaser_instance.current_step =
-                                rand::thread_rng().gen_range(0..chaser_instance.chaser.steps.len());
-                        }
-                    }
-                }
-            }
-            ChaserDirection::Random => {
-                chaser_instance.current_step =
-                    rand::thread_rng().gen_range(0..chaser_instance.chaser.steps.len());
-            }
-        }
-
-        chaser_instance.step_start_time = current_time;
     }
 
     /// Apply a static effect
@@ -797,17 +589,6 @@ impl EffectEngine {
                             )));
                         }
                     }
-                    EffectType::Chaser { chaser } => {
-                        // Validate chaser steps against fixture capabilities
-                        for step in &chaser.steps {
-                            if let Err(e) = self.validate_effect_compatibility(&step.effect) {
-                                return Err(EffectError::Parameter(format!(
-                                    "Chaser step not compatible with fixture '{}': {}",
-                                    fixture_name, e
-                                )));
-                            }
-                        }
-                    }
                     _ => {} // Other effects are generally compatible
                 }
             }
@@ -867,7 +648,6 @@ mod tests {
     fn test_effect_engine_creation() {
         let engine = EffectEngine::new();
         assert!(engine.active_effects.is_empty());
-        assert!(engine.active_chasers.is_empty());
     }
 
     #[test]
@@ -1210,41 +990,6 @@ mod tests {
         // Update again - should still have commands since we didn't stop the effect
         let commands = engine.update(Duration::from_millis(16)).unwrap();
         assert_eq!(commands.len(), 1);
-    }
-
-    #[test]
-    fn test_chaser_creation() {
-        let chaser = Chaser::new("test_chaser".to_string()).with_loop_mode(LoopMode::Once);
-
-        assert_eq!(chaser.id, "test_chaser");
-        assert!(matches!(chaser.loop_mode, LoopMode::Once));
-    }
-
-    #[test]
-    fn test_chaser_with_steps() {
-        let mut parameters = HashMap::new();
-        parameters.insert("dimmer".to_string(), 1.0);
-
-        let effect = EffectInstance::new(
-            "step_effect".to_string(),
-            EffectType::Static {
-                parameters,
-                duration: None,
-            },
-            vec!["test_fixture".to_string()],
-        );
-
-        let step = ChaserStep {
-            effect,
-            hold_time: Duration::from_secs(1),
-            transition_time: Duration::from_millis(100),
-            transition_type: TransitionType::Fade,
-        };
-
-        let chaser = Chaser::new("test_chaser".to_string()).add_step(step);
-
-        assert_eq!(chaser.steps.len(), 1);
-        assert_eq!(chaser.steps[0].hold_time, Duration::from_secs(1));
     }
 
     #[test]
