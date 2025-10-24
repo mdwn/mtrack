@@ -123,8 +123,8 @@ impl LightingTimeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lighting::effects::EffectType;
     use crate::lighting::parser::Effect;
-    use crate::lighting::EffectType;
     use std::collections::HashMap;
 
     #[test]
@@ -162,7 +162,6 @@ mod tests {
                 parameters: HashMap::new(),
                 duration: None,
             },
-            parameters,
         };
 
         let cues = vec![Cue {
@@ -193,7 +192,6 @@ mod tests {
                 parameters: HashMap::new(),
                 duration: None,
             },
-            parameters,
         };
 
         let cues = vec![
@@ -241,7 +239,6 @@ mod tests {
                 parameters: HashMap::new(),
                 duration: None,
             },
-            parameters,
         };
 
         let cues = vec![

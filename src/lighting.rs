@@ -21,5 +21,5 @@ pub mod types;
 
 // Re-export the main types for convenience
 // These are exported for external use of the lighting module
-pub use effects::{EffectInstance, EffectType};
+pub use effects::EffectInstance;
 pub use engine::EffectEngine;

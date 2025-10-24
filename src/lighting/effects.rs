@@ -79,10 +79,12 @@ pub struct Color {
 }
 
 impl Color {
+    #[cfg(test)]
     pub fn new(r: u8, g: u8, b: u8) -> Self {
         Self { r, g, b, w: None }
     }
 
+    #[cfg(test)]
     pub fn from_hex(hex: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let hex = hex.trim_start_matches('#');
         if hex.len() != 6 {
@@ -96,6 +98,7 @@ impl Color {
         Ok(Color { r, g, b, w: None })
     }
 
+    #[cfg(test)]
     pub fn from_name(name: &str) -> Result<Self, Box<dyn std::error::Error>> {
         match name.to_lowercase().as_str() {
             "red" => Ok(Color {
@@ -225,7 +228,6 @@ pub enum DimmerCurve {
     Logarithmic,
     Sine,
     Cosine,
-    Custom(Vec<f64>), // Custom curve points
 }
 
 /// An instance of an effect with timing and targeting information
@@ -237,8 +239,6 @@ pub struct EffectInstance {
     pub priority: u8,                 // Higher priority overrides lower
     pub start_time: Option<Instant>,
     pub duration: Option<Duration>,
-    pub fade_in: Option<Duration>,
-    pub fade_out: Option<Duration>,
     pub enabled: bool,
 }
 
@@ -259,26 +259,20 @@ impl EffectInstance {
             priority: 0,
             start_time: None,
             duration,
-            fade_in: None,
-            fade_out: None,
             enabled: true,
         }
     }
 
+    #[cfg(test)]
     pub fn with_priority(mut self, priority: u8) -> Self {
         self.priority = priority;
         self
     }
 
+    #[cfg(test)]
     pub fn with_timing(mut self, start_time: Option<Instant>, duration: Option<Duration>) -> Self {
         self.start_time = start_time;
         self.duration = duration;
-        self
-    }
-
-    pub fn with_fades(mut self, fade_in: Option<Duration>, fade_out: Option<Duration>) -> Self {
-        self.fade_in = fade_in;
-        self.fade_out = fade_out;
         self
     }
 }

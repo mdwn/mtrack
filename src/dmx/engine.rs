@@ -706,6 +706,7 @@ mod test {
 
     use super::{config, DMXConnection, Engine};
     use crate::dmx::ola_client::OlaClientFactory;
+    use crate::lighting::effects::EffectType;
 
     fn create_engine() -> Result<(Arc<Engine>, CancelHandle), Box<dyn Error>> {
         let listener = TcpListener::bind(SocketAddr::new(
@@ -803,7 +804,7 @@ mod test {
 
         let effect = crate::lighting::EffectInstance::new(
             "test_effect".to_string(),
-            crate::lighting::EffectType::Static {
+            EffectType::Static {
                 parameters: parameters.clone(),
                 duration: None,
             },
@@ -928,7 +929,7 @@ mod test {
 
         let effect = crate::lighting::EffectInstance::new(
             "test_effect".to_string(),
-            crate::lighting::EffectType::Static {
+            EffectType::Static {
                 parameters,
                 duration: None,
             },
@@ -1008,7 +1009,7 @@ mod test {
         // Test effect with builder methods - simplified to avoid timing issues
         let effect = crate::lighting::EffectInstance::new(
             "test_effect".to_string(),
-            crate::lighting::EffectType::Static {
+            EffectType::Static {
                 parameters: std::collections::HashMap::new(),
                 duration: None,
             },
@@ -1070,7 +1071,7 @@ mod test {
 
     #[test]
     fn test_group_resolution_in_dmx_engine() -> Result<(), Box<dyn std::error::Error>> {
-        use crate::lighting::{EffectInstance, EffectType};
+        use crate::lighting::{effects::EffectType, EffectInstance};
         use std::collections::HashMap;
 
         // Create DMX engine with lighting system
@@ -1109,7 +1110,7 @@ mod test {
 
     #[test]
     fn test_group_resolution_graceful_fallback() -> Result<(), Box<dyn std::error::Error>> {
-        use crate::lighting::{EffectInstance, EffectType};
+        use crate::lighting::{effects::EffectType, EffectInstance};
         use std::collections::HashMap;
 
         // Create DMX engine without lighting system
@@ -1179,7 +1180,7 @@ mod test {
     #[test]
     fn test_dsl_to_dmx_command_flow() -> Result<(), Box<dyn std::error::Error>> {
         use crate::dmx::ola_client::{MockOlaClient, OlaClient};
-        use crate::lighting::{EffectInstance, EffectType};
+        use crate::lighting::{effects::EffectType, EffectInstance};
         use std::collections::HashMap;
         use std::sync::Mutex;
 

@@ -336,18 +336,6 @@ impl EffectEngine {
             DimmerCurve::Logarithmic => (progress * 10.0).ln() / 10.0_f64.ln(),
             DimmerCurve::Sine => (progress * std::f64::consts::PI / 2.0).sin(),
             DimmerCurve::Cosine => 1.0 - (progress * std::f64::consts::PI / 2.0).cos(),
-            DimmerCurve::Custom(points) => {
-                // Linear interpolation between custom curve points
-                let scaled_progress = progress * (points.len() - 1) as f64;
-                let index = scaled_progress as usize;
-                let fraction = scaled_progress - index as f64;
-
-                if index >= points.len() - 1 {
-                    points[points.len() - 1]
-                } else {
-                    points[index] + fraction * (points[index + 1] - points[index])
-                }
-            }
         };
 
         let current_level = start_level + (end_level - start_level) * curve_value;
