@@ -80,7 +80,7 @@ impl Engine {
 
         let ola_client_for_thread = ola_client.clone();
         let client_handle = thread::spawn(move || {
-            Self::ola_thread_with_client(ola_client_for_thread, receiver);
+            Self::ola_thread(ola_client_for_thread, receiver);
         });
         let cancel_handle = CancelHandle::new();
         let universes: HashMap<String, Universe> = config
@@ -624,7 +624,7 @@ impl Engine {
     }
 
     /// Sends messages to OLA using the injected client.
-    fn ola_thread_with_client(
+    fn ola_thread(
         client: Arc<Mutex<Box<dyn OlaClient>>>,
         receiver: Receiver<DmxMessage>,
     ) {
