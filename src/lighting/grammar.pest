@@ -19,9 +19,9 @@ light_show = { "show" ~ show_name ~ show_content }
 
 show_name = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 
-show_content = { "{" ~ (cue | comment | WHITESPACE)* ~ "}" }
+show_content = { "{" ~ (cue | comment)* ~ "}" }
 
-cue = { time_string ~ (effect | comment | WHITESPACE)* }
+cue = { time_string ~ (effect | comment)* }
 
 time_string = { "@" ~ (time_mm_ss_mmm | time_ss_mmm) }
 

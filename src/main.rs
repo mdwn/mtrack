@@ -337,7 +337,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     audio_config,
                     midi_config,
                     dmx_config,
-                    None, // lighting configuration
                     converted_mappings,
                     &repository_path,
                 ),

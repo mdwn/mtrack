@@ -40,7 +40,6 @@ pub struct Dmx {
     universes: Vec<Universe>,
 
     /// The lighting configuration.
-    #[allow(dead_code)]
     lighting: Option<Lighting>,
 }
 
@@ -87,7 +86,6 @@ impl Dmx {
     }
 
     /// Gets the lighting configuration.
-    #[allow(dead_code)]
     pub fn lighting(&self) -> Option<&Lighting> {
         self.lighting.as_ref()
     }

@@ -61,7 +61,6 @@ pub trait SampleSource: Send + Sync {
     fn channel_count(&self) -> u16;
 
     /// Get the sample rate of this source
-    #[allow(dead_code)]
     fn sample_rate(&self) -> u32;
 
     /// Get the bits per sample of this source
@@ -512,7 +511,6 @@ pub struct MemorySampleSource {
     samples: Vec<f32>,
     current_index: usize,
     channel_count: u16,
-    #[allow(dead_code)]
     sample_rate: u32,
 }
 
@@ -2855,15 +2853,6 @@ impl BufferedThreadedSampleSource {
                 buffer.lock().unwrap().extend(chunk);
             }
         });
-    }
-
-    /// Gets buffer statistics for performance monitoring
-    #[allow(dead_code)]
-    pub fn get_stats(&self) -> (usize, usize, usize) {
-        let hits = self.buffer_hits.load(Ordering::Relaxed);
-        let misses = self.buffer_misses.load(Ordering::Relaxed);
-        let buffer_len = self.buffer.lock().unwrap().len();
-        (hits, misses, buffer_len)
     }
 }
 
