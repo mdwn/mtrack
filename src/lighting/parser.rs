@@ -19,7 +19,8 @@ use std::error::Error;
 use std::time::Duration;
 
 use super::effects::{
-    ChaseDirection, ChasePattern, Color, CycleDirection, DimmerCurve, EffectType,
+    BlendMode, ChaseDirection, ChasePattern, Color, CycleDirection, DimmerCurve, EffectLayer,
+    EffectType,
 };
 use super::types::{Fixture, FixtureType, Group, Venue};
 
@@ -30,8 +31,22 @@ pub struct LightingParser;
 pub fn parse_fixture_types(content: &str) -> Result<HashMap<String, FixtureType>, Box<dyn Error>> {
     let mut fixture_types = HashMap::new();
 
-    let pairs = LightingParser::parse(Rule::file, content)
-        .map_err(|e| format!("Failed to parse fixture types DSL: {}", e))?;
+    let pairs = match LightingParser::parse(Rule::file, content) {
+        Ok(pairs) => pairs,
+        Err(e) => {
+            let (line, col) = match e.line_col {
+                pest::error::LineColLocation::Pos((line, col)) => (line, col),
+                pest::error::LineColLocation::Span((line, col), _) => (line, col),
+            };
+            return Err(format!(
+                "Fixture types DSL parsing error at line {}, column {}: {}\n\nContent around error:\n{}",
+                line,
+                col,
+                e.variant.message(),
+                get_error_context(content, line, col)
+            ).into());
+        }
+    };
 
     for pair in pairs {
         for inner_pair in pair.into_inner() {
@@ -54,8 +69,23 @@ pub fn parse_fixture_types(content: &str) -> Result<HashMap<String, FixtureType>
 pub fn parse_venues(content: &str) -> Result<HashMap<String, Venue>, Box<dyn Error>> {
     let mut venues = HashMap::new();
 
-    let pairs = LightingParser::parse(Rule::file, content)
-        .map_err(|e| format!("Failed to parse venues DSL: {}", e))?;
+    let pairs = match LightingParser::parse(Rule::file, content) {
+        Ok(pairs) => pairs,
+        Err(e) => {
+            let (line, col) = match e.line_col {
+                pest::error::LineColLocation::Pos((line, col)) => (line, col),
+                pest::error::LineColLocation::Span((line, col), _) => (line, col),
+            };
+            return Err(format!(
+                "Venues DSL parsing error at line {}, column {}: {}\n\nContent around error:\n{}",
+                line,
+                col,
+                e.variant.message(),
+                get_error_context(content, line, col)
+            )
+            .into());
+        }
+    };
 
     for pair in pairs {
         for inner_pair in pair.into_inner() {
@@ -95,13 +125,32 @@ pub struct Cue {
 pub struct Effect {
     pub groups: Vec<String>,
     pub effect_type: EffectType,
+    pub layer: Option<EffectLayer>,
+    pub blend_mode: Option<BlendMode>,
 }
 
 // EffectType is imported from super::effects
 
 /// Parses light shows from DSL content.
 pub fn parse_light_shows(content: &str) -> Result<HashMap<String, LightShow>, Box<dyn Error>> {
-    let pairs = LightingParser::parse(Rule::file, content)?;
+    let pairs = match LightingParser::parse(Rule::file, content) {
+        Ok(pairs) => pairs,
+        Err(e) => {
+            let (line, col) = match e.line_col {
+                pest::error::LineColLocation::Pos((line, col)) => (line, col),
+                pest::error::LineColLocation::Span((line, col), _) => (line, col),
+            };
+            return Err(format!(
+                "DSL parsing error at line {}, column {}: {}\n\nContent around error:\n{}",
+                line,
+                col,
+                e.variant.message(),
+                get_error_context(content, line, col)
+            )
+            .into());
+        }
+    };
+
     let mut shows = HashMap::new();
 
     for pair in pairs {
@@ -113,12 +162,122 @@ pub fn parse_light_shows(content: &str) -> Result<HashMap<String, LightShow>, Bo
         }
     }
 
-    // If we have content that looks like a show but no shows were parsed, it's likely invalid syntax
+    // If we have content that looks like a show but no shows were parsed, provide detailed analysis
     if shows.is_empty() && content.contains("show") {
-        return Err("Failed to parse any shows - likely invalid syntax".into());
+        return Err(analyze_parsing_failure(content).into());
     }
 
     Ok(shows)
+}
+
+/// Get context around an error location for better error reporting
+fn get_error_context(content: &str, line: usize, col: usize) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+
+    if line == 0 || line > lines.len() {
+        return "Unable to determine error context".to_string();
+    }
+
+    let error_line = line - 1; // Convert to 0-based index
+    let start_line = error_line.saturating_sub(2);
+    let end_line = if error_line + 2 < lines.len() {
+        error_line + 2
+    } else {
+        lines.len() - 1
+    };
+
+    let mut context = String::new();
+
+    for (i, line_content) in lines.iter().enumerate().take(end_line + 1).skip(start_line) {
+        let line_num = i + 1;
+
+        if i == error_line {
+            // Highlight the error line
+            context.push_str(&format!("{:4} | {}\n", line_num, line_content));
+            context.push_str(&format!("     | {}^", " ".repeat(col.saturating_sub(1))));
+        } else {
+            context.push_str(&format!("{:4} | {}\n", line_num, line_content));
+        }
+    }
+
+    context
+}
+
+/// Analyze why parsing failed and provide helpful suggestions
+fn analyze_parsing_failure(content: &str) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut suggestions = Vec::new();
+
+    // Check for common issues
+    for (i, line) in lines.iter().enumerate() {
+        let line_num = i + 1;
+        let trimmed = line.trim();
+
+        // Check for show declaration issues
+        if trimmed.starts_with("show") && !trimmed.contains('"') {
+            suggestions.push(format!(
+                "Line {}: Show declaration missing quotes around name. Expected: show \"Name\" {{",
+                line_num
+            ));
+        }
+
+        // Check for timing issues
+        if trimmed.starts_with("@") && !trimmed.matches('@').count() == 1 {
+            suggestions.push(format!(
+                "Line {}: Invalid timing format. Expected: @MM:SS.mmm or @SS.mmm",
+                line_num
+            ));
+        }
+
+        // Check for effect syntax issues
+        if trimmed.contains(':') && !trimmed.starts_with("//") && !trimmed.starts_with("#") {
+            let parts: Vec<&str> = trimmed.split(':').collect();
+            if parts.len() < 2 {
+                suggestions.push(format!("Line {}: Effect declaration missing colon. Expected: group: effect_type parameters", line_num));
+            } else if parts[1].trim().is_empty() {
+                suggestions.push(format!(
+                    "Line {}: Effect declaration missing effect type after colon",
+                    line_num
+                ));
+            }
+        }
+
+        // Check for unmatched braces (simplified check)
+        let open_braces = trimmed.matches('{').count();
+        let close_braces = trimmed.matches('}').count();
+        if open_braces > close_braces {
+            suggestions.push(format!(
+                "Line {}: More opening braces than closing braces",
+                line_num
+            ));
+        } else if close_braces > open_braces {
+            suggestions.push(format!(
+                "Line {}: More closing braces than opening braces",
+                line_num
+            ));
+        }
+    }
+
+    let mut error_msg = "Failed to parse any shows. Possible issues:\n".to_string();
+
+    if suggestions.is_empty() {
+        error_msg
+            .push_str("• Check that show declarations use proper syntax: show \"Name\" { ... }\n");
+        error_msg.push_str("• Verify timing format: @MM:SS.mmm or @SS.mmm\n");
+        error_msg.push_str("• Ensure effect syntax: group: effect_type parameters\n");
+        error_msg.push_str("• Check for unmatched braces or quotes\n");
+    } else {
+        for suggestion in suggestions {
+            error_msg.push_str(&format!("• {}\n", suggestion));
+        }
+    }
+
+    error_msg.push_str("\nContent:\n");
+    for (i, line) in lines.iter().enumerate() {
+        error_msg.push_str(&format!("{:4} | {}\n", i + 1, line));
+    }
+
+    error_msg
 }
 
 fn parse_light_show_definition(
@@ -165,7 +324,7 @@ fn parse_cue_definition(pair: pest::iterators::Pair<Rule>) -> Result<Cue, Box<dy
                 // Skip comments
             }
             _ => {
-                println!("Unexpected rule in cue: {:?}", inner_pair.as_rule());
+                // Skip unexpected rules
             }
         }
     }
@@ -181,6 +340,8 @@ fn parse_effect_definition(pair: pest::iterators::Pair<Rule>) -> Result<Effect, 
     };
     let mut parameters = HashMap::new();
     let mut color_parameters = Vec::new();
+    let mut layer = None;
+    let mut blend_mode = None;
 
     for inner_pair in pair.into_inner() {
         match inner_pair.as_rule() {
@@ -236,10 +397,33 @@ fn parse_effect_definition(pair: pest::iterators::Pair<Rule>) -> Result<Effect, 
                 for param_pair in inner_pair.into_inner() {
                     if param_pair.as_rule() == Rule::parameter {
                         let (key, value) = parse_parameter(param_pair)?;
-                        if key == "color" && matches!(effect_type, EffectType::ColorCycle { .. }) {
-                            color_parameters.push(value);
-                        } else {
-                            parameters.insert(key, value);
+                        match key.as_str() {
+                            "color" if matches!(effect_type, EffectType::ColorCycle { .. }) => {
+                                color_parameters.push(value);
+                            }
+                            "layer" => {
+                                layer = Some(match value.as_str() {
+                                    "background" => EffectLayer::Background,
+                                    "midground" => EffectLayer::Midground,
+                                    "foreground" => EffectLayer::Foreground,
+                                    _ => return Err(format!("Invalid layer: '{}' (expected: background, midground, foreground)", value).into()),
+                                });
+                            }
+                            "blend_mode" => {
+                                blend_mode = Some(match value.as_str() {
+                                    "replace" => BlendMode::Replace,
+                                    "multiply" => BlendMode::Multiply,
+                                    "add" => BlendMode::Add,
+                                    "overlay" => BlendMode::Overlay,
+                                    "screen" => BlendMode::Screen,
+                                    _ => {
+                                        return Err(format!("Invalid blend mode: {}", value).into())
+                                    }
+                                });
+                            }
+                            _ => {
+                                parameters.insert(key, value);
+                            }
                         }
                     }
                 }
@@ -255,6 +439,8 @@ fn parse_effect_definition(pair: pest::iterators::Pair<Rule>) -> Result<Effect, 
     Ok(Effect {
         groups,
         effect_type: final_effect_type,
+        layer,
+        blend_mode,
     })
 }
 
@@ -434,12 +620,12 @@ fn apply_parameters_to_effect_type(
         } => {
             for (key, value) in parameters {
                 match key.as_str() {
-                    "start" => {
+                    "start" | "start_level" => {
                         if let Ok(val) = parse_percentage_to_f64(value) {
                             *start_level = val;
                         }
                     }
-                    "end" => {
+                    "end" | "end_level" => {
                         if let Ok(val) = parse_percentage_to_f64(value) {
                             *end_level = val;
                         }
@@ -692,6 +878,8 @@ fn parse_parameter(pair: pest::iterators::Pair<Rule>) -> Result<(String, String)
             | Rule::loop_parameter
             | Rule::step_parameter
             | Rule::transition_parameter
+            | Rule::layer_parameter
+            | Rule::blend_mode_parameter
             | Rule::string_value
             | Rule::number_value
             | Rule::simple_value => {
@@ -737,6 +925,7 @@ fn parse_fixture_type_definition(
     let mut name = String::new();
     let mut channels = HashMap::new();
     let mut special_cases = Vec::new();
+    let mut max_strobe_frequency = None;
 
     for pair in pair.into_inner() {
         match pair.as_rule() {
@@ -744,24 +933,35 @@ fn parse_fixture_type_definition(
                 name = extract_string(pair);
             }
             Rule::fixture_type_content => {
-                parse_fixture_content(pair, &mut channels, &mut special_cases);
+                parse_fixture_content(
+                    pair,
+                    &mut channels,
+                    &mut special_cases,
+                    &mut max_strobe_frequency,
+                );
             }
             _ => {}
         }
     }
 
-    Ok(FixtureType::new(name, channels, special_cases))
+    let mut fixture_type = FixtureType::new(name, channels, special_cases);
+    fixture_type.max_strobe_frequency = max_strobe_frequency;
+    Ok(fixture_type)
 }
 
 fn parse_fixture_content(
     pair: pest::iterators::Pair<Rule>,
     channels: &mut HashMap<String, u16>,
     special_cases: &mut Vec<String>,
+    max_strobe_frequency: &mut Option<f64>,
 ) {
     for content_pair in pair.into_inner() {
         match content_pair.as_rule() {
             Rule::channel_map => {
                 *channels = parse_channel_mappings(content_pair);
+            }
+            Rule::max_strobe_frequency => {
+                *max_strobe_frequency = Some(content_pair.as_str().trim().parse().unwrap_or(0.0));
             }
             Rule::special_cases => {
                 *special_cases = parse_special_case_list(content_pair);
@@ -1261,7 +1461,7 @@ show "Show 2" {
     #[test]
     fn test_fixture_universe_address_parsing() {
         // Test that fixture parsing correctly extracts universe and address
-        let fixture_content = r#"fixture "Block1" Astera-PixelBlock @ 1:1"#;
+        let fixture_content = r#"fixture "Block1" Astera-PixelBrick @ 1:1"#;
 
         // First test if the grammar can parse the fixture rule
         match LightingParser::parse(Rule::fixture, fixture_content) {
@@ -1284,8 +1484,8 @@ show "Show 2" {
     #[test]
     fn test_venue_with_fixtures() {
         let content = r#"venue "test" {
-    fixture "Block1" Astera-PixelBlock @ 1:1
-    fixture "Block2" Astera-PixelBlock @ 1:5
+    fixture "Block1" Astera-PixelBrick @ 1:1
+    fixture "Block2" Astera-PixelBrick @ 1:5
 }"#;
 
         let venues = parse_venues(content).expect("Failed to parse venue with fixtures");
@@ -1308,14 +1508,14 @@ show "Show 2" {
         // Test venue with a comment at the beginning
         let content = r#"# The built-in venue represents the lights that come with our IEM rig.
 venue "built-in" {
-    fixture "Block1" Astera-PixelBlock @ 1:1 tags ["wash", "side"]  
-    fixture "Block2" Astera-PixelBlock @ 1:5 tags ["wash", "side"]  
-    fixture "Block3" Astera-PixelBlock @ 1:9 tags ["wash", "front"]  
-    fixture "Block4" Astera-PixelBlock @ 1:13 tags ["wash", "front"]  
-    fixture "Block5" Astera-PixelBlock @ 1:17 tags ["wash", "front"]  
-    fixture "Block6" Astera-PixelBlock @ 1:21 tags ["wash", "front"]  
-    fixture "Block7" Astera-PixelBlock @ 1:25 tags ["wash", "side"]  
-    fixture "Block8" Astera-PixelBlock @ 1:29 tags ["wash", "side"]  
+    fixture "Block1" Astera-PixelBrick @ 1:1 tags ["wash", "side"]  
+    fixture "Block2" Astera-PixelBrick @ 1:5 tags ["wash", "side"]  
+    fixture "Block3" Astera-PixelBrick @ 1:9 tags ["wash", "front"]  
+    fixture "Block4" Astera-PixelBrick @ 1:13 tags ["wash", "front"]  
+    fixture "Block5" Astera-PixelBrick @ 1:17 tags ["wash", "front"]  
+    fixture "Block6" Astera-PixelBrick @ 1:21 tags ["wash", "front"]  
+    fixture "Block7" Astera-PixelBrick @ 1:25 tags ["wash", "side"]  
+    fixture "Block8" Astera-PixelBrick @ 1:29 tags ["wash", "side"]  
 }"#;
 
         let venues = parse_venues(content).expect("Failed to parse venues with comments");

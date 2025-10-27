@@ -21,4 +21,5 @@ fixture_type "MovingHead" {
     "strobe": 15,
     "control": 16
   }
+  max_strobe_frequency: 20.0
 }

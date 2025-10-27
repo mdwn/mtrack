@@ -230,6 +230,29 @@ pub enum DimmerCurve {
     Cosine,
 }
 
+/// Effect layer for layering system
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum EffectLayer {
+    Background = 0, // Base layer (e.g., static colors)
+    Midground = 1,  // Middle layer (e.g., dimmer effects)
+    Foreground = 2, // Top layer (e.g., strobe effects)
+}
+
+/// Blend mode for combining effects
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BlendMode {
+    /// Replace - higher layer completely replaces lower layer
+    Replace,
+    /// Multiply - multiply values together (good for dimming)
+    Multiply,
+    /// Add - add values together (good for color mixing)
+    Add,
+    /// Overlay - overlay effect (good for strobes)
+    Overlay,
+    /// Screen - screen blend mode
+    Screen,
+}
+
 /// An instance of an effect with timing and targeting information
 #[derive(Debug, Clone)]
 pub struct EffectInstance {
@@ -237,6 +260,8 @@ pub struct EffectInstance {
     pub effect_type: EffectType,
     pub target_fixtures: Vec<String>, // Fixture names or group names
     pub priority: u8,                 // Higher priority overrides lower
+    pub layer: EffectLayer,           // Layer for layering system
+    pub blend_mode: BlendMode,        // How to blend with other effects
     pub start_time: Option<Instant>,
     pub duration: Option<Duration>,
     pub enabled: bool,
@@ -257,6 +282,8 @@ impl EffectInstance {
             effect_type,
             target_fixtures,
             priority: 0,
+            layer: EffectLayer::Background,
+            blend_mode: BlendMode::Replace,
             start_time: None,
             duration,
             enabled: true,
@@ -275,6 +302,21 @@ impl EffectInstance {
         self.duration = duration;
         self
     }
+
+    /// Create a new effect instance with layer and blend mode
+    #[cfg(test)]
+    pub fn with_layering(
+        id: String,
+        effect_type: EffectType,
+        target_fixtures: Vec<String>,
+        layer: EffectLayer,
+        blend_mode: BlendMode,
+    ) -> Self {
+        let mut instance = Self::new(id, effect_type, target_fixtures);
+        instance.layer = layer;
+        instance.blend_mode = blend_mode;
+        instance
+    }
 }
 
 /// DMX command for sending to fixtures
@@ -283,6 +325,188 @@ pub struct DmxCommand {
     pub universe: u16,
     pub channel: u16,
     pub value: u8,
+}
+
+/// Represents the current state of a fixture channel
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ChannelState {
+    pub value: f64, // 0.0 to 1.0
+    pub layer: EffectLayer,
+    pub blend_mode: BlendMode,
+}
+
+impl ChannelState {
+    pub fn new(value: f64, layer: EffectLayer, blend_mode: BlendMode) -> Self {
+        Self {
+            value: value.clamp(0.0, 1.0),
+            layer,
+            blend_mode,
+        }
+    }
+
+    /// Blend this channel state with another
+    pub fn blend_with(&self, other: ChannelState) -> ChannelState {
+        let blended_value = match other.blend_mode {
+            BlendMode::Replace => other.value,
+            BlendMode::Multiply => self.value * other.value,
+            BlendMode::Add => (self.value + other.value).min(1.0),
+            BlendMode::Overlay => {
+                if self.value < 0.5 {
+                    2.0 * self.value * other.value
+                } else {
+                    1.0 - 2.0 * (1.0 - self.value) * (1.0 - other.value)
+                }
+            }
+            BlendMode::Screen => 1.0 - (1.0 - self.value) * (1.0 - other.value),
+        };
+
+        // Use the higher layer's blend mode for the result
+        let result_layer = self.layer.max(other.layer);
+        let result_blend_mode = if other.layer >= self.layer {
+            other.blend_mode
+        } else {
+            self.blend_mode
+        };
+
+        ChannelState {
+            value: blended_value.clamp(0.0, 1.0),
+            layer: result_layer,
+            blend_mode: result_blend_mode,
+        }
+    }
+}
+
+/// Represents the current state of a fixture
+#[derive(Debug, Clone)]
+pub struct FixtureState {
+    pub fixture_name: String,
+    pub channels: HashMap<String, ChannelState>,
+}
+
+impl FixtureState {
+    pub fn new(fixture_name: String) -> Self {
+        Self {
+            fixture_name,
+            channels: HashMap::new(),
+        }
+    }
+
+    /// Set a channel value
+    pub fn set_channel(&mut self, channel_name: String, state: ChannelState) {
+        self.channels.insert(channel_name, state);
+    }
+
+    /// Get a channel value, returning default if not set
+    #[cfg(test)]
+    pub fn get_channel(&self, channel_name: &str) -> Option<&ChannelState> {
+        self.channels.get(channel_name)
+    }
+
+    /// Blend this fixture state with another
+    pub fn blend_with(&mut self, other: &FixtureState) {
+        // Check if the other state has a dimmer multiplier
+        if let Some(dimmer_multiplier) = other.channels.get("_dimmer_multiplier") {
+            // Apply the dimmer multiplier to all existing RGB channels
+            for channel_name in &["red", "green", "blue"] {
+                if let Some(self_state) = self.channels.get(*channel_name) {
+                    let dimmed_value = self_state.value * dimmer_multiplier.value;
+
+                    // Apply the dimmer multiplier to this channel
+                    let dimmed_state =
+                        ChannelState::new(dimmed_value, self_state.layer, self_state.blend_mode);
+                    self.channels.insert(channel_name.to_string(), dimmed_state);
+                }
+            }
+        }
+
+        // Check if the other state has a pulse multiplier
+        if let Some(pulse_multiplier) = other.channels.get("_pulse_multiplier") {
+            // Apply the pulse multiplier to all existing RGB channels
+            for channel_name in &["red", "green", "blue"] {
+                if let Some(self_state) = self.channels.get(*channel_name) {
+                    let pulsed_value = self_state.value * pulse_multiplier.value;
+
+                    // Apply the pulse multiplier to this channel
+                    let pulsed_state =
+                        ChannelState::new(pulsed_value, self_state.layer, self_state.blend_mode);
+                    self.channels.insert(channel_name.to_string(), pulsed_state);
+                }
+            }
+        }
+
+        // Blend other channels normally
+        for (channel_name, other_state) in &other.channels {
+            if channel_name == "_dimmer_multiplier" || channel_name == "_pulse_multiplier" {
+                // Skip the multiplier channels - we already handled them above
+                continue;
+            }
+
+            if let Some(self_state) = self.channels.get(channel_name) {
+                // Blend existing channel
+                let original_value = self_state.value;
+                let blended_state = self_state.blend_with(*other_state);
+                let blended_value = blended_state.value;
+
+                self.channels.insert(channel_name.clone(), blended_state);
+
+                tracing::debug!(
+                    fixture_name = %self.fixture_name,
+                    channel = channel_name,
+                    original_value = original_value,
+                    other_value = other_state.value,
+                    blended_value = blended_value,
+                    original_dmx = (original_value * 255.0) as u8,
+                    other_dmx = (other_state.value * 255.0) as u8,
+                    blended_dmx = (blended_value * 255.0) as u8,
+                    "Blended existing channel"
+                );
+            } else {
+                // Add new channel
+                self.channels.insert(channel_name.clone(), *other_state);
+
+                tracing::debug!(
+                    fixture_name = %self.fixture_name,
+                    channel = channel_name,
+                    value = other_state.value,
+                    dmx_value = (other_state.value * 255.0) as u8,
+                    "Added new channel"
+                );
+            }
+        }
+
+        // Debug: Print final state
+        tracing::debug!(
+            fixture_name = %self.fixture_name,
+            final_channels = ?self.channels.iter().map(|(k, v)| (k, v.value)).collect::<Vec<_>>(),
+            "Final fixture state after blending"
+        );
+    }
+
+    /// Convert to DMX commands
+    pub fn to_dmx_commands(&self, fixture_info: &FixtureInfo) -> Vec<DmxCommand> {
+        let mut commands = Vec::new();
+
+        // Converting fixture state to DMX commands
+
+        for (channel_name, state) in &self.channels {
+            if let Some(&channel_offset) = fixture_info.channels.get(channel_name) {
+                let dmx_channel = fixture_info.address + channel_offset - 1;
+                let dmx_value = (state.value * 255.0) as u8;
+
+                commands.push(DmxCommand {
+                    universe: fixture_info.universe,
+                    channel: dmx_channel,
+                    value: dmx_value,
+                });
+
+                // DMX channel calculation: fixture_addr + channel_offset - 1
+            }
+        }
+
+        // Generated DMX commands for fixture
+
+        commands
+    }
 }
 
 /// Error types for the effects system
@@ -358,6 +582,7 @@ pub struct FixtureInfo {
     pub address: u16,
     pub fixture_type: String,
     pub channels: HashMap<String, u16>,
+    pub max_strobe_frequency: Option<f64>, // Maximum strobe frequency in Hz
 }
 
 impl FixtureInfo {
@@ -473,6 +698,7 @@ mod tests {
             address: 1,
             fixture_type: "RGB_Par".to_string(),
             channels: rgb_channels,
+            max_strobe_frequency: None, // RGB_Par doesn't have strobe
         };
 
         assert!(rgb_fixture.has_capability(FixtureCapabilities::RGB_COLOR));
@@ -490,6 +716,7 @@ mod tests {
             address: 5,
             fixture_type: "Strobe".to_string(),
             channels: strobe_channels,
+            max_strobe_frequency: Some(20.0), // Test strobe fixture max frequency
         };
 
         assert!(strobe_fixture.has_capability(FixtureCapabilities::STROBING));
@@ -532,6 +759,7 @@ mod tests {
             address: 1,
             fixture_type: "Moving_Head".to_string(),
             channels,
+            max_strobe_frequency: Some(15.0), // Moving head max strobe frequency
         };
 
         let capabilities = fixture.capabilities();

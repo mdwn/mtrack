@@ -7,4 +7,5 @@ fixture_type "Strobe" {
     "dimmer": 1,
     "strobe_rate": 2
   }
+  max_strobe_frequency: 25.0
 }

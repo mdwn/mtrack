@@ -1357,14 +1357,6 @@ mod tests {
         // Generate impulse signal (single sample at maximum amplitude)
         let mut input_samples = vec![0.0; 100];
         input_samples[50] = 1.0; // Impulse at sample 50
-        println!(
-            "Debug: input_samples.len() = {}, max_input = {}",
-            input_samples.len(),
-            input_samples
-                .iter()
-                .map(|&x: &f32| x.abs())
-                .fold(0.0, f32::max)
-        );
 
         let source = MemorySampleSource::new(input_samples, 1, 44100);
         let mut converter =
@@ -1384,21 +1376,6 @@ mod tests {
 
         // The impulse should be preserved (some amplitude should remain)
         let max_amplitude = output_samples.iter().map(|&x| x.abs()).fold(0.0, f32::max);
-        println!("Debug: output_samples.len() = {}", output_samples.len());
-        println!("Debug: max_amplitude = {}", max_amplitude);
-        println!(
-            "Debug: first 10 samples: {:?}",
-            &output_samples[0..10.min(output_samples.len())]
-        );
-        println!("Debug: samples around max: {:?}", {
-            let max_idx = output_samples
-                .iter()
-                .position(|&x| x.abs() == max_amplitude)
-                .unwrap_or(0);
-            let start = max_idx.saturating_sub(5);
-            let end = (max_idx + 5).min(output_samples.len());
-            &output_samples[start..end]
-        });
         assert!(
             max_amplitude > 0.1,
             "Impulse signal should have reasonable amplitude after resampling, got {}",
@@ -2539,11 +2516,6 @@ mod tests {
 
         // The RMS should be similar across all bit depths (within 5% tolerance)
         let expected_rms = 0.5 / (2.0_f32.sqrt()); // RMS of sine wave with amplitude 0.5
-
-        println!(
-            "16-bit RMS: {:.6}, 24-bit RMS: {:.6}, 32-bit RMS: {:.6}, Expected: {:.6}",
-            rms_16, rms_24, rms_32, expected_rms
-        );
 
         // All should be close to the expected RMS
         assert!(

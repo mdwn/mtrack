@@ -67,6 +67,8 @@ impl LightingTimeline {
     /// Stops the timeline
     pub fn stop(&mut self) {
         self.is_playing = false;
+        self.current_time = Duration::ZERO;
+        self.next_cue_index = 0;
     }
 
     /// Updates the timeline with the current song time
@@ -101,7 +103,7 @@ impl LightingTimeline {
     /// Creates an EffectInstance from a DSL Effect
     fn create_effect_instance(effect: &Effect) -> Option<EffectInstance> {
         // Create base effect instance using the DSL EffectType directly
-        let effect_instance = EffectInstance::new(
+        let mut effect_instance = EffectInstance::new(
             format!(
                 "song_effect_{}",
                 std::time::SystemTime::now()
@@ -113,8 +115,14 @@ impl LightingTimeline {
             effect.groups.clone(),
         );
 
-        // Apply builder methods based on parameters if needed
-        // (DSL effects already have their parameters applied to the EffectType)
+        // Apply layering information if specified in DSL
+        if let Some(layer) = effect.layer {
+            effect_instance.layer = layer;
+        }
+        if let Some(blend_mode) = effect.blend_mode {
+            effect_instance.blend_mode = blend_mode;
+        }
+
         Some(effect_instance)
     }
 }
@@ -161,6 +169,8 @@ mod tests {
                 parameters: HashMap::new(),
                 duration: None,
             },
+            layer: None,
+            blend_mode: None,
         };
 
         let cues = vec![Cue {
@@ -191,6 +201,8 @@ mod tests {
                 parameters: HashMap::new(),
                 duration: None,
             },
+            layer: None,
+            blend_mode: None,
         };
 
         let cues = vec![
@@ -238,6 +250,8 @@ mod tests {
                 parameters: HashMap::new(),
                 duration: None,
             },
+            layer: None,
+            blend_mode: None,
         };
 
         let cues = vec![
@@ -257,5 +271,61 @@ mod tests {
         // Both cues should trigger at the same time
         let effects = timeline.update(Duration::from_millis(5000));
         assert_eq!(effects.len(), 2);
+    }
+
+    #[test]
+    fn test_timeline_stop_reset() {
+        let mut parameters = HashMap::new();
+        parameters.insert("color".to_string(), "red".to_string());
+
+        let effect1 = Effect {
+            groups: vec!["fixture1".to_string()],
+            effect_type: EffectType::Static {
+                parameters: HashMap::new(),
+                duration: None,
+            },
+            layer: None,
+            blend_mode: None,
+        };
+
+        let effect2 = Effect {
+            groups: vec!["fixture2".to_string()],
+            effect_type: EffectType::Static {
+                parameters: HashMap::new(),
+                duration: None,
+            },
+            layer: None,
+            blend_mode: None,
+        };
+
+        let cues = vec![
+            Cue {
+                time: Duration::from_secs(0),
+                effects: vec![effect1],
+            },
+            Cue {
+                time: Duration::from_secs(2),
+                effects: vec![effect2],
+            },
+        ];
+
+        let mut timeline = LightingTimeline::new(cues);
+
+        // Start the timeline and process some cues
+        timeline.start();
+        let _effects_at_0s = timeline.update(Duration::from_secs(0));
+        let _effects_at_2s = timeline.update(Duration::from_secs(2));
+
+        // Stop the timeline - this should reset the cue index
+        timeline.stop();
+
+        // Start again - should trigger the first cue again
+        timeline.start();
+        let effects_at_0s_restart = timeline.update(Duration::from_secs(0));
+        assert_eq!(effects_at_0s_restart.len(), 1);
+
+        // Should also trigger the second cue again
+        let effects_at_2s_restart = timeline.update(Duration::from_secs(2));
+        assert_eq!(effects_at_2s_restart.len(), 1);
     }
 }

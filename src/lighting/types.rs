@@ -22,6 +22,9 @@ pub struct FixtureType {
 
     /// Channel mappings.
     channels: HashMap<String, u16>,
+
+    /// Maximum strobe frequency in Hz (if supported).
+    pub max_strobe_frequency: Option<f64>,
 }
 
 impl FixtureType {
@@ -31,7 +34,11 @@ impl FixtureType {
         channels: HashMap<String, u16>,
         _special_cases: Vec<String>,
     ) -> FixtureType {
-        FixtureType { name, channels }
+        FixtureType {
+            name,
+            channels,
+            max_strobe_frequency: None, // Default to no strobe support
+        }
     }
 
     /// Gets the name.
@@ -42,6 +49,11 @@ impl FixtureType {
     /// Gets the channels.
     pub fn channels(&self) -> &HashMap<String, u16> {
         &self.channels
+    }
+
+    /// Gets the maximum strobe frequency.
+    pub fn max_strobe_frequency(&self) -> Option<f64> {
+        self.max_strobe_frequency
     }
 }
 

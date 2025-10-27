@@ -33,7 +33,7 @@ effect = { group_list ~ ":" ~ effect_type ~ WHITESPACE? ~ parameters }
 
 group_list = { group_name ~ ("," ~ group_name)* }
 
-group_name = { (!":" ~ !"," ~ !" " ~ ANY)+ }
+group_name = { (!":" ~ !"," ~ !" " ~ !"\n" ~ !"\r" ~ !"#" ~ !"/" ~ ANY)+ }
 
 effect_type = { "static" | "cycle" | "strobe" | "pulse" | "chase" | "dimmer" | "rainbow" }
 
@@ -55,8 +55,10 @@ parameter_value = {
     loop_parameter |
     step_parameter |
     transition_parameter |
-    string_value |
+    layer_parameter |
+    blend_mode_parameter |
     number_value |
+    string_value |
     simple_value
 }
 
@@ -102,6 +104,10 @@ step_param = { parameter_name ~ ":" ~ parameter_value }
 
 transition_parameter = { "snap" | "fade" | "crossfade" | "wipe" }
 
+layer_parameter = { "background" | "midground" | "foreground" }
+
+blend_mode_parameter = { "replace" | "multiply" | "add" | "overlay" | "screen" }
+
 percentage = { ASCII_DIGIT+ ~ "%" }
 
 time_value = { ASCII_DIGIT+ }
@@ -127,10 +133,12 @@ fixture_type = { "fixture_type" ~ fixture_type_name ~ "{" ~ fixture_type_content
 fixture_type_name = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 
 fixture_type_content = { 
-    (channels | channel_map | special_cases | comment | WHITESPACE)* 
+    (channels | channel_map | max_strobe_frequency | special_cases | comment | WHITESPACE)* 
 }
 
 channels = { "channels" ~ ":" ~ number_value }
+
+max_strobe_frequency = { "max_strobe_frequency" ~ ":" ~ number_value }
 
 channel_map = { "channel_map" ~ ":" ~ "{" ~ channel_mapping_list ~ "}" }
 

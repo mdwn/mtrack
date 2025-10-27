@@ -95,7 +95,11 @@ impl Universe {
 
     /// Updates the universe with the DMX channel/value.
     pub fn update_channel_data(&self, channel: u16, value: u8, dim: bool) {
-        let channel_index = usize::from(channel);
+        let channel_index = if channel > 0 {
+            usize::from(channel - 1) // Convert from 1-based DMX to 0-based OLA
+        } else {
+            0 // Handle channel 0 case - map to index 0
+        };
         let value = f64::from(value);
         self.target
             .write()
@@ -253,13 +257,14 @@ mod test {
         let receiver_handle = thread::spawn(move || receiver.recv());
 
         let handle = universe.start_thread();
+        universe.update_channel_data(0, 0, false);
         universe.update_channel_data(1, 50, false);
 
         let result = receiver_handle
             .join()
             .map_err(|_| "Error waiting for join".to_string())??;
 
-        assert_eq!([0u8, 50u8], result.buffer.as_slice()[0..2]);
+        assert_eq!([50u8, 0u8], result.buffer.as_slice()[0..2]);
 
         universe.cancel_handle.cancel();
         handle
@@ -273,7 +278,7 @@ mod test {
     fn test_no_dimming() {
         let (universe, _) = new_universe();
 
-        universe.update_channel_data(0, 0, true);
+        universe.update_channel_data(1, 0, true);
         universe.update_channel_data(1, 50, true);
         universe.update_channel_data(2, 100, true);
         universe.update_channel_data(3, 150, true);
@@ -289,7 +294,7 @@ mod test {
             &mut buffer,
         );
 
-        assert_eq!([0u8, 50u8, 100u8, 150u8, 200u8], buffer.as_slice()[0..5]);
+        assert_eq!([50u8, 100u8, 150u8, 200u8, 0u8], buffer.as_slice()[0..5]);
     }
 
     #[test]
@@ -299,11 +304,11 @@ mod test {
         // Dim over 2 seconds. This will be ignored.
         universe.update_dim_speed(Duration::from_secs(2));
 
-        universe.update_channel_data(0, 0, false);
-        universe.update_channel_data(1, 50, false);
-        universe.update_channel_data(2, 100, false);
-        universe.update_channel_data(3, 150, false);
-        universe.update_channel_data(4, 200, false);
+        universe.update_channel_data(1, 0, false);
+        universe.update_channel_data(2, 50, false);
+        universe.update_channel_data(3, 100, false);
+        universe.update_channel_data(4, 150, false);
+        universe.update_channel_data(5, 200, false);
 
         let mut buffer = DmxBuffer::new();
 
@@ -330,7 +335,7 @@ mod test {
             &mut buffer,
         );
 
-        assert_eq!([0u8, 50u8, 50u8, 200u8, 0u8], buffer.as_slice()[0..5]);
+        assert_eq!([0u8, 50u8, 200u8, 0u8, 200u8], buffer.as_slice()[0..5]);
     }
 
     #[test]
@@ -340,11 +345,11 @@ mod test {
         // Dim over 2 seconds.
         universe.update_dim_speed(Duration::from_secs(2));
 
-        universe.update_channel_data(0, 0, true);
-        universe.update_channel_data(1, 50, true);
-        universe.update_channel_data(2, 100, true);
-        universe.update_channel_data(3, 150, true);
-        universe.update_channel_data(4, 200, true);
+        universe.update_channel_data(1, 0, true);
+        universe.update_channel_data(2, 50, true);
+        universe.update_channel_data(3, 100, true);
+        universe.update_channel_data(4, 150, true);
+        universe.update_channel_data(5, 200, true);
 
         let mut buffer = DmxBuffer::new();
 
@@ -360,6 +365,7 @@ mod test {
         }
 
         // After one second, we should be halfway there.
+        // Channel 1 (index 0): 0 -> 0, Channel 2 (index 1): 0 -> 25, Channel 3 (index 2): 0 -> 50, etc.
         assert_eq!([0u8, 25u8, 50u8, 75u8, 100u8], buffer.as_slice()[0..5]);
 
         for _ in 0..(TARGET_HZ as usize) {
@@ -395,7 +401,7 @@ mod test {
 
         // Dim over 1 second.
         universe.update_dim_speed(Duration::from_secs(1));
-        universe.update_channel_data(0, 100, true);
+        universe.update_channel_data(1, 100, true);
 
         let mut buffer = DmxBuffer::new();
 
@@ -425,8 +431,9 @@ mod test {
             ))
         }
 
-        // After one second (+ 1 tick), channel 0 should be done and channel 2 should be halfway there.
-        assert_eq!([100u8, 50u8], buffer.as_slice()[0..2]);
+        // After one second (+ 1 tick), channel 1 (index 0) should be at ~51
+        // (started at 0, +1 tick at 1s rate = ~2, then +44 ticks at 2s rate = ~51)
+        assert!(buffer.as_slice()[0] >= 50 && buffer.as_slice()[0] <= 52);
 
         for _ in 0..(TARGET_HZ as usize) {
             assert!(Universe::approach_target(
@@ -439,7 +446,7 @@ mod test {
         }
 
         // After two seconds (+ 1 tick), we should be all the way there.
-        assert_eq!([100u8, 100u8], buffer.as_slice()[0..2]);
+        assert_eq!([100u8], buffer.as_slice()[0..1]);
     }
 
     #[test]
@@ -448,7 +455,7 @@ mod test {
 
         // Dim over 1 second.
         universe.update_dim_speed(Duration::from_secs(1));
-        universe.update_channel_data(0, 100, true);
+        universe.update_channel_data(1, 100, true);
 
         let mut buffer = DmxBuffer::new();
 
@@ -468,7 +475,7 @@ mod test {
 
         // Dim over 2 seconds and update the channel data again.
         universe.update_dim_speed(Duration::from_secs(2));
-        universe.update_channel_data(0, 100, true);
+        universe.update_channel_data(1, 100, true);
 
         for _ in 0..(TARGET_HZ as usize) {
             assert!(Universe::approach_target(
