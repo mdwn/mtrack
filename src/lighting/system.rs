@@ -16,13 +16,14 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::path::Path;
 
+use tracing::info;
+
 use super::parser::{parse_fixture_types, parse_venues};
 use super::types::{Fixture, FixtureType, Group, Venue};
 use crate::config::lighting::{GroupConstraint, LogicalGroup};
 use crate::config::Lighting;
 
 /// The lighting system configuration.
-#[allow(dead_code)]
 pub struct LightingSystem {
     /// Global fixture types.
     fixture_types: HashMap<String, FixtureType>,
@@ -37,7 +38,6 @@ pub struct LightingSystem {
     inline_fixtures: HashMap<String, String>,
 
     /// Inline groups.
-    inline_groups: HashMap<String, Vec<String>>,
 
     /// Logical groups with role-based constraints.
     logical_groups: HashMap<String, LogicalGroup>,
@@ -46,7 +46,6 @@ pub struct LightingSystem {
     group_cache: HashMap<String, HashMap<String, Vec<String>>>,
 }
 
-#[allow(dead_code)]
 impl LightingSystem {
     /// Creates a new lighting system.
     pub fn new() -> LightingSystem {
@@ -55,7 +54,6 @@ impl LightingSystem {
             venues: HashMap::new(),
             current_venue: None,
             inline_fixtures: HashMap::new(),
-            inline_groups: HashMap::new(),
             logical_groups: HashMap::new(),
             group_cache: HashMap::new(),
         }
@@ -63,6 +61,11 @@ impl LightingSystem {
 
     /// Loads the lighting configuration.
     pub fn load(&mut self, config: &Lighting, base_path: &Path) -> Result<(), Box<dyn Error>> {
+        info!(
+            "Loading lighting system from base path: {}",
+            base_path.display()
+        );
+
         // Set current venue
         if let Some(venue) = config.current_venue() {
             self.current_venue = Some(venue.to_string());
@@ -134,10 +137,11 @@ impl LightingSystem {
     fn load_fixture_types_file(&mut self, path: &Path) -> Result<(), Box<dyn Error>> {
         let content = std::fs::read_to_string(path)?;
 
-        // TODO: Implement fixture type parsing
-        match self.parse_fixture_types(&content) {
+        // Parse fixture types from DSL content
+        match parse_fixture_types(&content) {
             Ok(types) => {
                 for (name, fixture_type) in types {
+                    info!(fixture_type = name, "Loading fixture type");
                     self.fixture_types.insert(name, fixture_type);
                 }
             }
@@ -158,9 +162,10 @@ impl LightingSystem {
     fn load_venue_file(&mut self, path: &Path) -> Result<(), Box<dyn Error>> {
         let content = std::fs::read_to_string(path)?;
 
-        match self.parse_venues(&content) {
+        match parse_venues(&content) {
             Ok(venues) => {
                 for (name, venue) in venues {
+                    info!(fixture_type = name, "Loading venue");
                     self.venues.insert(name, venue);
                 }
             }
@@ -177,27 +182,9 @@ impl LightingSystem {
         Ok(())
     }
 
-    /// Parses fixture types from DSL content.
-    pub fn parse_fixture_types(
-        &self,
-        content: &str,
-    ) -> Result<HashMap<String, FixtureType>, Box<dyn Error>> {
-        parse_fixture_types(content)
-    }
-
-    /// Parses venues from DSL content.
-    pub fn parse_venues(&self, content: &str) -> Result<HashMap<String, Venue>, Box<dyn Error>> {
-        parse_venues(content)
-    }
-
     /// Gets the current venue.
     pub fn current_venue(&self) -> Option<&str> {
         self.current_venue.as_deref()
-    }
-
-    /// Gets a venue by name.
-    pub fn get_venue(&self, name: &str) -> Option<&Venue> {
-        self.venues.get(name)
     }
 
     /// Gets a group by name from the current venue.
@@ -259,6 +246,34 @@ impl LightingSystem {
         match self.resolve_logical_group(group_name) {
             Ok(fixtures) => fixtures,
             Err(_) => {
+                // Check if the group has a FallbackTo constraint
+                let fallback_group =
+                    if let Some(logical_group) = self.logical_groups.get(group_name) {
+                        logical_group.constraints().iter().find_map(|constraint| {
+                            if let GroupConstraint::FallbackTo(fallback_group) = constraint {
+                                Some(fallback_group.clone())
+                            } else {
+                                None
+                            }
+                        })
+                    } else {
+                        None
+                    };
+
+                if let Some(fallback_group) = fallback_group {
+                    eprintln!(
+                        "Warning: Group '{}' not available, trying fallback group '{}'",
+                        group_name, fallback_group
+                    );
+                    return self.resolve_logical_group_graceful(&fallback_group);
+                }
+
+                // Try legacy group system as final fallback
+                if let Ok(legacy_group) = self.get_group(group_name) {
+                    eprintln!("Warning: Using legacy group '{}' as fallback", group_name);
+                    return legacy_group.fixtures().clone();
+                }
+
                 // Log the issue but don't fail the song
                 eprintln!(
                     "Warning: Group '{}' not available at current venue, skipping",
@@ -267,22 +282,6 @@ impl LightingSystem {
                 Vec::new()
             }
         }
-    }
-
-    /// Resolves multiple logical groups with graceful fallback.
-    /// Returns a map of group names to fixture lists, with empty lists for unavailable groups.
-    pub fn resolve_multiple_groups_graceful(
-        &mut self,
-        group_names: &[String],
-    ) -> HashMap<String, Vec<String>> {
-        let mut result = HashMap::new();
-
-        for group_name in group_names {
-            let fixtures = self.resolve_logical_group_graceful(group_name);
-            result.insert(group_name.clone(), fixtures);
-        }
-
-        result
     }
 
     /// Gets all fixtures from the current venue for effects engine registration
@@ -313,45 +312,6 @@ impl LightingSystem {
             };
 
             fixture_infos.push(fixture_info);
-        }
-
-        Ok(fixture_infos)
-    }
-
-    /// Gets fixtures for a specific logical group
-    pub fn get_group_fixtures(
-        &mut self,
-        group_name: &str,
-    ) -> Result<Vec<crate::lighting::effects::FixtureInfo>, Box<dyn Error>> {
-        let fixture_names = self.resolve_logical_group_graceful(group_name);
-        let venue_name = self.current_venue().ok_or("No current venue selected")?;
-        let venue = self
-            .venues
-            .get(venue_name)
-            .ok_or_else(|| format!("Venue '{}' not found", venue_name))?;
-
-        let mut fixture_infos = Vec::new();
-
-        for name in fixture_names {
-            if let Some(fixture) = venue.fixtures().get(&name) {
-                // Get the fixture type to determine channel mapping
-                let fixture_type =
-                    self.fixture_types
-                        .get(fixture.fixture_type())
-                        .ok_or_else(|| {
-                            format!("Fixture type '{}' not found", fixture.fixture_type())
-                        })?;
-
-                let fixture_info = crate::lighting::effects::FixtureInfo {
-                    name: name.clone(),
-                    universe: fixture.universe() as u16,
-                    address: fixture.start_channel(),
-                    fixture_type: fixture.fixture_type().to_string(),
-                    channels: fixture_type.channels().clone(),
-                };
-
-                fixture_infos.push(fixture_info);
-            }
         }
 
         Ok(fixture_infos)
@@ -413,7 +373,6 @@ impl LightingSystem {
         // Apply count constraints
         if candidates.len() < min_count {
             if allow_empty {
-                // Return empty list if allowed
                 return Ok(Vec::new());
             } else {
                 return Err(format!(
@@ -1092,15 +1051,11 @@ mod tests {
             .insert("movers".to_string(), movers_group);
 
         // Test multiple group resolution
-        let group_names = vec!["front_wash".to_string(), "movers".to_string()];
-        let results = system.resolve_multiple_groups_graceful(&group_names);
+        let _group_names = vec!["front_wash".to_string(), "movers".to_string()];
+        let results = system.resolve_logical_group_graceful("front_wash");
 
-        // front_wash should have fixtures, movers should be empty
-        assert_eq!(results.get("front_wash").unwrap().len(), 1);
-        assert_eq!(results.get("movers").unwrap().len(), 0);
-        assert!(results
-            .get("front_wash")
-            .unwrap()
-            .contains(&"Wash1".to_string()));
+        // front_wash should have fixtures
+        assert_eq!(results.len(), 1);
+        assert!(results.contains(&"Wash1".to_string()));
     }
 }

@@ -16,31 +16,22 @@ use std::collections::HashMap;
 
 /// A fixture type definition.
 #[derive(Clone)]
-#[allow(dead_code)]
 pub struct FixtureType {
     /// The name of the fixture type.
     name: String,
 
     /// Channel mappings.
     channels: HashMap<String, u16>,
-
-    /// Special case handling.
-    special_cases: Vec<String>,
 }
 
-#[allow(dead_code)]
 impl FixtureType {
     /// Creates a new fixture type.
     pub fn new(
         name: String,
         channels: HashMap<String, u16>,
-        special_cases: Vec<String>,
+        _special_cases: Vec<String>,
     ) -> FixtureType {
-        FixtureType {
-            name,
-            channels,
-            special_cases,
-        }
+        FixtureType { name, channels }
     }
 
     /// Gets the name.
@@ -52,16 +43,10 @@ impl FixtureType {
     pub fn channels(&self) -> &HashMap<String, u16> {
         &self.channels
     }
-
-    /// Gets the special cases.
-    pub fn special_cases(&self) -> &Vec<String> {
-        &self.special_cases
-    }
 }
 
 /// A fixture definition.
 #[derive(Clone)]
-#[allow(dead_code)]
 pub struct Fixture {
     /// The name of the fixture.
     name: String,
@@ -79,7 +64,6 @@ pub struct Fixture {
     tags: Vec<String>,
 }
 
-#[allow(dead_code)]
 impl Fixture {
     /// Creates a new fixture.
     pub fn new(
@@ -126,7 +110,6 @@ impl Fixture {
 
 /// A group definition.
 #[derive(Clone)]
-#[allow(dead_code)]
 pub struct Group {
     /// The name of the group.
     name: String,
@@ -135,7 +118,6 @@ pub struct Group {
     fixtures: Vec<String>,
 }
 
-#[allow(dead_code)]
 impl Group {
     /// Creates a new group.
     pub fn new(name: String, fixtures: Vec<String>) -> Group {
@@ -155,7 +137,6 @@ impl Group {
 
 /// A venue definition.
 #[derive(Clone)]
-#[allow(dead_code)]
 pub struct Venue {
     /// The name of the venue.
     name: String,
@@ -167,7 +148,6 @@ pub struct Venue {
     groups: HashMap<String, Group>,
 }
 
-#[allow(dead_code)]
 impl Venue {
     /// Creates a new venue.
     pub fn new(

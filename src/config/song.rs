@@ -11,15 +11,11 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-use std::collections::HashMap;
-use std::fs;
-use std::time::Duration;
 use std::{error::Error, io::Write, path::Path};
 
 use config::{Config, File};
 use midly::live::LiveEvent;
 use serde::{Deserialize, Serialize};
-use serde_yml::Value;
 use tracing::info;
 
 use super::{
@@ -211,7 +207,6 @@ impl LightShow {
 
 /// A lighting show that references a DSL file.
 #[derive(Deserialize, Clone, Serialize)]
-#[allow(dead_code)]
 pub struct LightingShow {
     /// The name of the lighting show.
     name: String,
@@ -221,282 +216,20 @@ pub struct LightingShow {
 
 impl LightingShow {
     /// Creates a new DSL lighting show.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn new(name: String, file: String) -> Self {
         Self { name, file }
     }
 
     /// Gets the name of the lighting show.
-    #[allow(dead_code)]
     pub fn name(&self) -> &str {
         &self.name
     }
 
     /// Gets the DSL file path.
-    #[allow(dead_code)]
     pub fn file(&self) -> &str {
         &self.file
     }
-}
-
-/// A YAML representation of lighting configuration for a song.
-#[derive(Deserialize, Clone, Serialize)]
-#[allow(dead_code)]
-pub struct LightingConfiguration {
-    /// The lighting cues for this song.
-    cues: Vec<LightingCue>,
-}
-
-impl LightingConfiguration {
-    /// Creates a new lighting configuration.
-    #[allow(dead_code)]
-    pub fn new(cues: Vec<LightingCue>) -> Self {
-        Self { cues }
-    }
-
-    /// Gets the lighting cues.
-    #[allow(dead_code)]
-    pub fn cues(&self) -> &Vec<LightingCue> {
-        &self.cues
-    }
-}
-
-/// A lighting cue with timing and effects.
-#[derive(Deserialize, Clone, Serialize)]
-#[allow(dead_code)]
-pub struct LightingCue {
-    /// The time when this cue should trigger (MM:SS.mmm format).
-    time: String,
-    /// Optional description of this cue.
-    description: Option<String>,
-    /// The lighting effects to apply at this cue.
-    effects: Vec<LightingEffect>,
-}
-
-impl LightingCue {
-    /// Creates a new lighting cue.
-    #[allow(dead_code)]
-    pub fn new(time: String, description: Option<String>, effects: Vec<LightingEffect>) -> Self {
-        Self {
-            time,
-            description,
-            effects,
-        }
-    }
-
-    /// Gets the time of this cue.
-    #[allow(dead_code)]
-    pub fn time(&self) -> &str {
-        &self.time
-    }
-
-    /// Gets the description of this cue.
-    #[allow(dead_code)]
-    pub fn description(&self) -> Option<&str> {
-        self.description.as_deref()
-    }
-
-    /// Gets the effects for this cue.
-    #[allow(dead_code)]
-    pub fn effects(&self) -> &Vec<LightingEffect> {
-        &self.effects
-    }
-}
-
-/// A lighting effect with groups and parameters.
-#[derive(Deserialize, Clone, Serialize)]
-#[allow(dead_code)]
-pub struct LightingEffect {
-    /// The type of effect (static, cycle, strobe, etc.).
-    effect_type: String,
-    /// The groups this effect applies to.
-    groups: Vec<String>,
-    /// The parameters for this effect.
-    parameters: HashMap<String, Value>,
-}
-
-impl LightingEffect {
-    /// Creates a new lighting effect.
-    #[allow(dead_code)]
-    pub fn new(
-        effect_type: String,
-        groups: Vec<String>,
-        parameters: HashMap<String, Value>,
-    ) -> Self {
-        Self {
-            effect_type,
-            groups,
-            parameters,
-        }
-    }
-
-    /// Gets the effect type.
-    #[allow(dead_code)]
-    pub fn effect_type(&self) -> &str {
-        &self.effect_type
-    }
-
-    /// Gets the groups this effect applies to.
-    #[allow(dead_code)]
-    pub fn groups(&self) -> &Vec<String> {
-        &self.groups
-    }
-
-    /// Gets the parameters for this effect.
-    #[allow(dead_code)]
-    pub fn parameters(&self) -> &HashMap<String, Value> {
-        &self.parameters
-    }
-}
-
-/// Converts DSL light shows to YAML lighting configuration.
-#[allow(dead_code)]
-pub fn convert_dsl_to_lighting_configuration(
-    dsl_shows: HashMap<String, crate::lighting::parser::LightShow>,
-) -> Result<LightingConfiguration, Box<dyn Error>> {
-    let mut all_cues = Vec::new();
-
-    for (show_name, light_show) in dsl_shows {
-        for cue in light_show.cues {
-            let mut effects = Vec::new();
-
-            for effect in cue.effects {
-                let mut parameters = HashMap::new();
-
-                // Convert effect parameters to YAML values
-                for (key, value) in effect.parameters {
-                    parameters.insert(key, Value::String(value));
-                }
-
-                let lighting_effect = LightingEffect::new(
-                    match effect.effect_type {
-                        crate::lighting::parser::EffectType::Static => "static".to_string(),
-                        crate::lighting::parser::EffectType::Cycle => "cycle".to_string(),
-                        crate::lighting::parser::EffectType::Strobe => "strobe".to_string(),
-                        crate::lighting::parser::EffectType::Pulse => "pulse".to_string(),
-                        crate::lighting::parser::EffectType::Chase => "chase".to_string(),
-                        crate::lighting::parser::EffectType::Dimmer => "dimmer".to_string(),
-                        crate::lighting::parser::EffectType::Rainbow => "rainbow".to_string(),
-                    },
-                    effect.groups,
-                    parameters,
-                );
-
-                effects.push(lighting_effect);
-            }
-
-            // Convert Duration to MM:SS.mmm format
-            let time_str = format_duration_as_time_string(cue.time);
-
-            let lighting_cue =
-                LightingCue::new(time_str, Some(format!("Cue from {}", show_name)), effects);
-
-            all_cues.push(lighting_cue);
-        }
-    }
-
-    // Sort cues by time
-    all_cues.sort_by(|a, b| {
-        let time_a = parse_time_string_to_duration(a.time()).unwrap_or(Duration::ZERO);
-        let time_b = parse_time_string_to_duration(b.time()).unwrap_or(Duration::ZERO);
-        time_a.cmp(&time_b)
-    });
-
-    Ok(LightingConfiguration::new(all_cues))
-}
-
-/// Formats a Duration as MM:SS.mmm time string.
-#[allow(dead_code)]
-fn format_duration_as_time_string(duration: Duration) -> String {
-    let total_ms = duration.as_millis() as u64;
-    let minutes = total_ms / (60 * 1000);
-    let seconds = (total_ms % (60 * 1000)) / 1000;
-    let milliseconds = total_ms % 1000;
-
-    format!("{:02}:{:02}.{:03}", minutes, seconds, milliseconds)
-}
-
-/// Parses a time string (MM:SS.mmm) to Duration.
-#[allow(dead_code)]
-fn parse_time_string_to_duration(time_str: &str) -> Result<Duration, Box<dyn Error>> {
-    let parts: Vec<&str> = time_str.split(':').collect();
-
-    if parts.len() == 2 {
-        // MM:SS.mmm format
-        let minutes: u64 = parts[0].parse()?;
-        let seconds_part = parts[1];
-        let seconds_parts: Vec<&str> = seconds_part.split('.').collect();
-
-        let seconds: u64 = seconds_parts[0].parse()?;
-        let milliseconds: u64 = if seconds_parts.len() > 1 {
-            let ms_str = seconds_parts[1];
-            let ms_str = if ms_str.len() > 3 {
-                &ms_str[..3]
-            } else {
-                ms_str
-            };
-            ms_str.parse::<u64>()? * 10_u64.pow(3 - ms_str.len() as u32)
-        } else {
-            0
-        };
-
-        Ok(Duration::from_millis(
-            minutes * 60 * 1000 + seconds * 1000 + milliseconds,
-        ))
-    } else {
-        // SS.mmm format
-        let seconds_parts: Vec<&str> = time_str.split('.').collect();
-        let seconds: u64 = seconds_parts[0].parse()?;
-        let milliseconds: u64 = if seconds_parts.len() > 1 {
-            let ms_str = seconds_parts[1];
-            let ms_str = if ms_str.len() > 3 {
-                &ms_str[..3]
-            } else {
-                ms_str
-            };
-            ms_str.parse::<u64>()? * 10_u64.pow(3 - ms_str.len() as u32)
-        } else {
-            0
-        };
-
-        Ok(Duration::from_millis(seconds * 1000 + milliseconds))
-    }
-}
-
-/// Loads and parses DSL lighting files for a song.
-#[allow(dead_code)]
-pub fn load_dsl_lighting_files(
-    song_path: &Path,
-    dsl_file_paths: &[String],
-) -> Result<LightingConfiguration, Box<dyn Error>> {
-    let mut all_dsl_shows = HashMap::new();
-
-    for dsl_file_path in dsl_file_paths {
-        // Resolve relative paths relative to the song file
-        let full_path = if dsl_file_path.starts_with('/') {
-            Path::new(dsl_file_path).to_path_buf()
-        } else {
-            song_path
-                .parent()
-                .unwrap_or(Path::new(""))
-                .join(dsl_file_path)
-        };
-
-        // Read and parse the DSL file
-        let content = fs::read_to_string(&full_path)
-            .map_err(|e| format!("Failed to read DSL file {}: {}", full_path.display(), e))?;
-
-        let dsl_shows = crate::lighting::parser::parse_light_shows(&content)
-            .map_err(|e| format!("Failed to parse DSL file {}: {}", full_path.display(), e))?;
-
-        // Merge into the main collection
-        for (name, show) in dsl_shows {
-            all_dsl_shows.insert(name, show);
-        }
-    }
-
-    // Convert to lighting configuration
-    convert_dsl_to_lighting_configuration(all_dsl_shows)
 }
 
 #[cfg(test)]
@@ -504,141 +237,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_convert_dsl_to_lighting_configuration() {
-        use crate::lighting::parser::{Cue, Effect, EffectType, LightShow};
-        use std::collections::HashMap;
-        use std::time::Duration;
-
-        let mut dsl_shows = HashMap::new();
-
-        let mut effects = Vec::new();
-        let mut parameters = HashMap::new();
-        parameters.insert("color".to_string(), "blue".to_string());
-        parameters.insert("dimmer".to_string(), "60%".to_string());
-
-        effects.push(Effect {
-            groups: vec!["front_wash".to_string()],
-            effect_type: EffectType::Static,
-            parameters,
-        });
-
-        let cues = vec![Cue {
-            time: Duration::from_millis(0),
-            effects,
-        }];
-
-        let light_show = LightShow {
-            name: "Test Show".to_string(),
-            cues,
-        };
-
-        dsl_shows.insert("Test Show".to_string(), light_show);
-
-        let result = convert_dsl_to_lighting_configuration(dsl_shows);
-        assert!(result.is_ok());
-
-        let config = result.unwrap();
-        assert_eq!(config.cues().len(), 1);
-
-        let cue = &config.cues()[0];
-        assert_eq!(cue.time(), "00:00.000");
-        assert_eq!(cue.effects().len(), 1);
-
-        let effect = &cue.effects()[0];
-        assert_eq!(effect.effect_type(), "static");
-        assert_eq!(effect.groups(), &vec!["front_wash".to_string()]);
-    }
-
-    #[test]
-    fn test_format_duration_as_time_string() {
-        let duration = Duration::from_millis(90500);
-        let result = format_duration_as_time_string(duration);
-        assert_eq!(result, "01:30.500");
-
-        let duration2 = Duration::from_millis(30500);
-        let result2 = format_duration_as_time_string(duration2);
-        assert_eq!(result2, "00:30.500");
-
-        let duration3 = Duration::from_millis(0);
-        let result3 = format_duration_as_time_string(duration3);
-        assert_eq!(result3, "00:00.000");
-    }
-
-    #[test]
-    fn test_parse_time_string_to_duration() {
-        let result = parse_time_string_to_duration("01:30.500");
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap().as_millis(), 90500);
-
-        let result2 = parse_time_string_to_duration("30.500");
-        assert!(result2.is_ok());
-        assert_eq!(result2.unwrap().as_millis(), 30500);
-
-        let result3 = parse_time_string_to_duration("00:00.000");
-        assert!(result3.is_ok());
-        assert_eq!(result3.unwrap().as_millis(), 0);
-
-        // Test invalid format
-        let result4 = parse_time_string_to_duration("invalid");
-        assert!(result4.is_err());
-    }
-
-    #[test]
     fn test_lighting_show_creation() {
         let show = LightingShow::new("Test Show".to_string(), "test.light".to_string());
         assert_eq!(show.name(), "Test Show");
         assert_eq!(show.file(), "test.light");
-    }
-
-    #[test]
-    fn test_lighting_cue_creation() {
-        let mut parameters = HashMap::new();
-        parameters.insert(
-            "color".to_string(),
-            serde_yml::Value::String("blue".to_string()),
-        );
-        parameters.insert(
-            "dimmer".to_string(),
-            serde_yml::Value::String("60%".to_string()),
-        );
-
-        let effect = LightingEffect::new(
-            "static".to_string(),
-            vec!["front_wash".to_string()],
-            parameters,
-        );
-
-        let cue = LightingCue::new(
-            "00:00.000".to_string(),
-            Some("Test cue".to_string()),
-            vec![effect],
-        );
-
-        assert_eq!(cue.time(), "00:00.000");
-        assert_eq!(cue.description(), Some("Test cue"));
-        assert_eq!(cue.effects().len(), 1);
-    }
-
-    #[test]
-    fn test_lighting_effect_creation() {
-        let mut parameters = HashMap::new();
-        parameters.insert(
-            "color".to_string(),
-            serde_yml::Value::String("blue".to_string()),
-        );
-        parameters.insert(
-            "dimmer".to_string(),
-            serde_yml::Value::String("60%".to_string()),
-        );
-
-        let effect = LightingEffect::new(
-            "static".to_string(),
-            vec!["front_wash".to_string()],
-            parameters,
-        );
-
-        assert_eq!(effect.effect_type(), "static");
-        assert_eq!(effect.groups(), &vec!["front_wash".to_string()]);
-        assert_eq!(effect.parameters().len(), 2);
     }
 }

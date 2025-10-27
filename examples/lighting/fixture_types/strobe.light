@@ -7,5 +7,4 @@ fixture_type "Strobe" {
     "dimmer": 1,
     "strobe_rate": 2
   }
-  special_cases: ["Strobe", "Dimmer"]
 }

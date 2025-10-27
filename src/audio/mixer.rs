@@ -230,22 +230,6 @@ impl AudioMixer {
     pub fn get_active_sources(&self) -> Arc<RwLock<Vec<Arc<Mutex<ActiveSource>>>>> {
         self.active_sources.clone()
     }
-
-    /// Gets performance statistics
-    #[allow(dead_code)]
-    pub fn get_performance_stats(&self) -> (usize, f64, usize) {
-        let frame_count = self.frame_count.load(Ordering::Relaxed);
-        let total_time = self.total_frame_time.load(Ordering::Relaxed);
-        let max_time = self.max_frame_time.load(Ordering::Relaxed);
-
-        let avg_time = if frame_count > 0 {
-            total_time as f64 / frame_count as f64
-        } else {
-            0.0
-        };
-
-        (frame_count, avg_time, max_time)
-    }
 }
 
 #[cfg(test)]

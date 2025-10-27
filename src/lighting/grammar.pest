@@ -19,9 +19,9 @@ light_show = { "show" ~ show_name ~ show_content }
 
 show_name = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 
-show_content = { "{" ~ (cue | comment | WHITESPACE)* ~ "}" }
+show_content = { "{" ~ (cue | comment)* ~ "}" }
 
-cue = { time_string ~ (effect | comment | WHITESPACE)* }
+cue = { time_string ~ (effect | comment)* }
 
 time_string = { "@" ~ (time_mm_ss_mmm | time_ss_mmm) }
 
@@ -29,7 +29,7 @@ time_mm_ss_mmm = { ASCII_DIGIT+ ~ ":" ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ }
 
 time_ss_mmm = { ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ }
 
-effect = { group_list ~ ":" ~ effect_type ~ parameters }
+effect = { group_list ~ ":" ~ effect_type ~ WHITESPACE? ~ parameters }
 
 group_list = { group_name ~ ("," ~ group_name)* }
 
@@ -37,17 +37,18 @@ group_name = { (!":" ~ !"," ~ !" " ~ ANY)+ }
 
 effect_type = { "static" | "cycle" | "strobe" | "pulse" | "chase" | "dimmer" | "rainbow" }
 
-parameters = { (parameter ~ ("," ~ parameter)*)? }
+parameters = { (("," ~ WHITESPACE?)? ~ parameter ~ ("," ~ WHITESPACE? ~ parameter)*)? }
 
 parameter = { parameter_name ~ ":" ~ parameter_value }
 
-parameter_name = { (!":" ~ !"," ~ !" " ~ ANY)+ }
+parameter_name = { (!":" ~ !"," ~ !" " ~ !"\"" ~ ANY)+ }
 
 parameter_value = { 
     color_parameter | 
     dimmer_parameter | 
     duration_parameter | 
     fade_parameter | 
+    speed_parameter |
     rate_parameter | 
     duty_parameter | 
     direction_parameter | 
@@ -81,6 +82,8 @@ fade_parameter = { time_value ~ time_unit }
 
 rate_parameter = { ASCII_DIGIT+ }
 
+speed_parameter = { number_value }
+
 duty_parameter = { percentage }
 
 direction_parameter = { "forward" | "backward" | "random" }
@@ -112,11 +115,11 @@ number_value = { ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? }
 // Additional rules for main branch compatibility
 string = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 
-identifier = { (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+identifier = { (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* }
 
 number = { ("+" | "-")? ~ ASCII_DIGIT+ }
 
-comment = { "//" ~ (!"\n" ~ ANY)* | "#" ~ (!"\n" ~ ANY)* }
+comment = ${ ("//" | "#") ~ (!"\n" ~ ANY)* }
 
 // Fixture type rules
 fixture_type = { "fixture_type" ~ fixture_type_name ~ "{" ~ fixture_type_content ~ "}" }
@@ -150,7 +153,10 @@ venue = { "venue" ~ string ~ "{" ~ venue_content ~ "}" }
 
 venue_content = { (fixture | group | comment | WHITESPACE)* }
 
-fixture = { "fixture" ~ string ~ identifier ~ "@" ~ number ~ ":" ~ number ~ tags? }
+fixture = { "fixture" ~ string ~ identifier ~ "@" ~ WHITESPACE? ~ universe_num ~ ":" ~ address_num ~ tags? }
+
+universe_num = { number }
+address_num = { number }
 
 tags = { "tags" ~ tag_list }
 tag_list = { "[" ~ string ~ ("," ~ string)* ~ "]" }
