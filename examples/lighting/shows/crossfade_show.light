@@ -1,0 +1,51 @@
+show "Crossfade Demo" {
+    @00:00.000
+    # Static blue with 2 second fade in
+    front_wash: static color: "blue", dimmer: 100%, layer: background, blend_mode: replace, up_time: 2s
+    
+    @00:05.000
+    # Static red with 1 second fade in, 1 second fade out
+    back_wash: static color: "red", dimmer: 100%, layer: background, blend_mode: replace, up_time: 1s, down_time: 1s, hold_time: 1s
+    
+    @00:08.000
+    # Color cycle with crossfades
+    side_wash: cycle color: "green", color: "yellow", color: "purple", speed: 0.5, direction: forward, layer: midground, blend_mode: add, up_time: 1.5s, down_time: 2s, hold_time: 4.5s
+    
+    @00:12.000
+    # Dimmer effect with smooth crossfades
+    front_wash: dimmer start_level: 1.0, end_level: 0.3, up_time: 0.5s, down_time: 1s, hold_time: 2.5s, layer: foreground, blend_mode: multiply
+    
+    @00:16.000
+    # Strobe with crossfades
+    strobe_lights: strobe frequency: 4, layer: foreground, blend_mode: overlay, up_time: 1s, down_time: 0.5s, hold_time: 1.5s
+    
+    @00:20.000
+    # Chase effect with crossfades
+    moving_heads: chase pattern: linear, speed: 2.0, direction: left_to_right, layer: midground, blend_mode: replace, up_time: 2s, down_time: 1s, hold_time: 3s
+    
+    @00:25.000
+    # Pulse effect with crossfades
+    pulse_lights: pulse base_level: 0.5, pulse_amplitude: 0.5, frequency: 2.0, layer: foreground, blend_mode: multiply, up_time: 1s, down_time: 1s, hold_time: 3s
+    
+    @00:30.000
+    # Rainbow with crossfades
+    rainbow_effect: rainbow speed: 1.0, saturation: 1.0, brightness: 0.8, layer: background, blend_mode: replace, up_time: 3s, down_time: 2s, hold_time: 5s
+    
+    @00:35.000
+    # Complex layering with crossfades
+    front_wash: static color: "white", dimmer: 100%, layer: foreground, blend_mode: add, up_time: 1s, down_time: 1s, hold_time: 3s
+    back_wash: static color: "cyan", dimmer: 80%, layer: midground, blend_mode: add, up_time: 1s, down_time: 1s, hold_time: 3s
+    
+    @00:40.000
+    # Final fade out with crossfades
+    front_wash: dimmer start_level: 1.0, end_level: 0.0, up_time: 0s, down_time: 3s, hold_time: 0s, layer: foreground, blend_mode: multiply
+    back_wash: dimmer start_level: 0.8, end_level: 0.0, up_time: 0s, down_time: 3s, hold_time: 0s, layer: foreground, blend_mode: multiply
+    side_wash: dimmer start_level: 1.0, end_level: 0.0, up_time: 0s, down_time: 3s, hold_time: 0s, layer: foreground, blend_mode: multiply
+    strobe_lights: dimmer start_level: 1.0, end_level: 0.0, up_time: 0s, down_time: 3s, hold_time: 0s, layer: foreground, blend_mode: multiply
+    moving_heads: dimmer start_level: 1.0, end_level: 0.0, up_time: 0s, down_time: 3s, hold_time: 0s, layer: foreground, blend_mode: multiply
+    pulse_lights: dimmer start_level: 1.0, end_level: 0.0, up_time: 0s, down_time: 3s, hold_time: 0s, layer: foreground, blend_mode: multiply
+    rainbow_effect: dimmer start_level: 1.0, end_level: 0.0, up_time: 0s, down_time: 3s, hold_time: 0s, layer: foreground, blend_mode: multiply
+}
+
+
+

@@ -110,7 +110,7 @@ blend_mode_parameter = { "replace" | "multiply" | "add" | "overlay" | "screen" }
 
 percentage = { ASCII_DIGIT+ ~ "%" }
 
-time_value = { ASCII_DIGIT+ }
+time_value = { ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? }
 
 time_unit = { "ms" | "s" }
 

@@ -262,7 +262,9 @@ pub struct EffectInstance {
     pub layer: EffectLayer,           // Layer for layering system
     pub blend_mode: BlendMode,        // How to blend with other effects
     pub start_time: Option<Instant>,
-    pub duration: Option<Duration>,
+    pub up_time: Option<Duration>,   // Fade in duration (0% to 100%)
+    pub hold_time: Option<Duration>, // Time at full intensity (100%)
+    pub down_time: Option<Duration>, // Fade out duration (100% to 0%)
     pub enabled: bool,
 }
 
@@ -271,9 +273,19 @@ impl EffectInstance {
         // Extract duration from effect_type if available
         let duration = match &effect_type {
             EffectType::Static { duration, .. } => *duration,
+            EffectType::Dimmer { duration, .. } => Some(*duration), // Dimmer duration becomes up_time
+            EffectType::ColorCycle { .. } => Some(Duration::from_secs(60)), // Default 60s for cycling effects
             EffectType::Strobe { duration, .. } => *duration,
+            EffectType::Chase { .. } => Some(Duration::from_secs(60)), // Default 60s for chase effects
+            EffectType::Rainbow { .. } => Some(Duration::from_secs(60)), // Default 60s for rainbow effects
             EffectType::Pulse { duration, .. } => *duration,
-            _ => None,
+        };
+
+        // Determine timing based on effect type
+        let (up_time, hold_time) = match &effect_type {
+            EffectType::Dimmer { .. } => (duration, Some(Duration::from_secs(60))), // Dimmer duration becomes up_time, add long hold_time
+            EffectType::Static { duration: None, .. } => (None, Some(Duration::from_secs(60))), // Static effects with no duration get long hold_time
+            _ => (None, duration.or(Some(Duration::from_secs(1)))), // Default to 1 second if no duration
         };
 
         Self {
@@ -284,7 +296,9 @@ impl EffectInstance {
             layer: EffectLayer::Background,
             blend_mode: BlendMode::Replace,
             start_time: None,
-            duration,
+            up_time,
+            hold_time,
+            down_time: None,
             enabled: true,
         }
     }
@@ -296,25 +310,53 @@ impl EffectInstance {
     }
 
     #[cfg(test)]
-    pub fn with_timing(mut self, start_time: Option<Instant>, duration: Option<Duration>) -> Self {
+    pub fn with_timing(mut self, start_time: Option<Instant>, hold_time: Option<Duration>) -> Self {
         self.start_time = start_time;
-        self.duration = duration;
+        self.hold_time = hold_time;
         self
     }
 
-    /// Create a new effect instance with layer and blend mode
-    #[cfg(test)]
-    pub fn with_layering(
-        id: String,
-        effect_type: EffectType,
-        target_fixtures: Vec<String>,
-        layer: EffectLayer,
-        blend_mode: BlendMode,
-    ) -> Self {
-        let mut instance = Self::new(id, effect_type, target_fixtures);
-        instance.layer = layer;
-        instance.blend_mode = blend_mode;
-        instance
+    /// Calculate the crossfade multiplier for this effect at the given elapsed time
+    pub fn calculate_crossfade_multiplier(&self, elapsed: Duration) -> f64 {
+        // elapsed is the time since the effect started
+
+        let up_time = self.up_time.unwrap_or(Duration::from_secs(0));
+        let hold_time = self.hold_time.unwrap_or(Duration::from_secs(0));
+        let down_time = self.down_time.unwrap_or(Duration::from_secs(0));
+
+        let up_end = up_time;
+        let hold_end = up_time + hold_time;
+        let total_end = up_time + hold_time + down_time;
+
+        if elapsed < up_end {
+            // Fade in phase (0% to 100%)
+            if up_time.is_zero() {
+                1.0
+            } else {
+                elapsed.as_secs_f64() / up_time.as_secs_f64()
+            }
+        } else if elapsed < hold_end {
+            // Hold phase (100%)
+            1.0
+        } else if elapsed < total_end {
+            // Fade out phase (100% to 0%)
+            if down_time.is_zero() {
+                0.0
+            } else {
+                let fade_out_elapsed = elapsed - hold_end;
+                1.0 - (fade_out_elapsed.as_secs_f64() / down_time.as_secs_f64())
+            }
+        } else {
+            // Effect has ended
+            0.0
+        }
+    }
+
+    /// Get the total duration of this effect (up_time + hold_time + down_time)
+    pub fn total_duration(&self) -> Duration {
+        self.up_time.unwrap_or(Duration::from_secs(0))
+            + self.hold_time.unwrap_or(Duration::from_secs(0))
+            + self.down_time.unwrap_or(Duration::from_secs(0))
     }
 }
 
