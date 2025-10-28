@@ -9,11 +9,11 @@ show "Effect Layering Demo" {
     
     @00:04.000
     # Foreground layer: Strobe effect on top of the dimmed blue
-    front_wash: strobe frequency: 2, intensity: 1.0, layer: foreground, blend_mode: overlay
+    front_wash: strobe frequency: 2, layer: foreground, blend_mode: overlay
     
     @00:10.000
     # Stop the strobe
-    front_wash: strobe frequency: 0, intensity: 0.0, layer: foreground, blend_mode: replace
+    front_wash: strobe frequency: 0, layer: foreground, blend_mode: replace
     
     @00:12.000
     # Add a color cycle on midground layer

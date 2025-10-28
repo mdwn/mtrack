@@ -213,11 +213,7 @@ impl EffectEngine {
                 speed,
                 direction,
             } => self.apply_color_cycle(effect, colors, *speed, direction, elapsed),
-            EffectType::Strobe {
-                frequency,
-                intensity,
-                ..
-            } => self.apply_strobe(effect, *frequency, *intensity, elapsed),
+            EffectType::Strobe { frequency, .. } => self.apply_strobe(effect, *frequency, elapsed),
             EffectType::Dimmer {
                 start_level,
                 end_level,
@@ -270,21 +266,11 @@ impl EffectEngine {
                     }
                 }
             }
-            EffectType::Strobe {
-                frequency,
-                intensity,
-                ..
-            } => {
+            EffectType::Strobe { frequency, .. } => {
                 if *frequency < 0.0 {
                     return Err(EffectError::Parameter(format!(
                         "Strobe frequency must be non-negative, got {}",
                         frequency
-                    )));
-                }
-                if *intensity < 0.0 || *intensity > 1.0 {
-                    return Err(EffectError::Parameter(format!(
-                        "Strobe intensity must be between 0.0 and 1.0, got {}",
-                        intensity
                     )));
                 }
             }
@@ -327,18 +313,24 @@ impl EffectEngine {
                         }
                     }
                     EffectType::Strobe { .. } => {
-                        if !fixture_info.has_capability(FixtureCapabilities::STROBING) {
+                        // Strobe effects work with any fixture that has strobe, dimmer, or RGB capability
+                        if !fixture_info.has_capability(FixtureCapabilities::STROBING)
+                            && !fixture_info.has_capability(FixtureCapabilities::DIMMING)
+                            && !fixture_info.has_capability(FixtureCapabilities::RGB_COLOR)
+                        {
                             return Err(EffectError::Parameter(format!(
-                                "Strobe effect not compatible with fixture '{}' (no strobe capability)",
+                                "Strobe effect not compatible with fixture '{}' (no strobe, dimmer, or RGB capability)",
                                 fixture_name
                             )));
                         }
                     }
                     EffectType::Chase { .. } => {
-                        // Chase effects work with any fixture that has dimmer control
-                        if !fixture_info.has_capability(FixtureCapabilities::DIMMING) {
+                        // Chase effects work with any fixture that has RGB or dimmer capability
+                        if !fixture_info.has_capability(FixtureCapabilities::RGB_COLOR)
+                            && !fixture_info.has_capability(FixtureCapabilities::DIMMING)
+                        {
                             return Err(EffectError::Parameter(format!(
-                                "Chase effect not compatible with fixture '{}' (no dimmer capability)",
+                                "Chase effect not compatible with fixture '{}' (no RGB or dimmer capability)",
                                 fixture_name
                             )));
                         }
@@ -361,20 +353,17 @@ impl EffectEngine {
 
     /// Stop effects that conflict with the new effect
     fn stop_conflicting_effects(&mut self, new_effect: &EffectInstance) {
-        // Simple implementation - in a full system, this would be more sophisticated
         let mut to_remove = Vec::new();
 
         for (effect_id, effect) in &self.active_effects {
-            if effect.priority < new_effect.priority {
-                // Check if effects target the same fixtures
-                let has_overlap = effect
-                    .target_fixtures
-                    .iter()
-                    .any(|fixture| new_effect.target_fixtures.contains(fixture));
+            // Skip if effect is already disabled
+            if !effect.enabled {
+                continue;
+            }
 
-                if has_overlap {
-                    to_remove.push(effect_id.clone());
-                }
+            // Check if effects should conflict based on sophisticated rules
+            if self.should_effects_conflict(effect, new_effect) {
+                to_remove.push(effect_id.clone());
             }
         }
 
@@ -383,9 +372,139 @@ impl EffectEngine {
         }
     }
 
+    /// Determine if two effects should conflict based on sophisticated rules
+    fn should_effects_conflict(&self, existing: &EffectInstance, new: &EffectInstance) -> bool {
+        // 1. Layer-based conflict resolution
+        // Effects in different layers generally don't conflict unless they have channel conflicts
+        if existing.layer != new.layer {
+            return self.have_channel_conflicts(existing, new);
+        }
+
+        // 2. Priority-based conflict resolution within the same layer
+        if existing.priority < new.priority {
+            return self.have_fixture_overlap(existing, new);
+        }
+
+        // 3. Effect type specific conflict rules
+        self.effects_conflict_by_type(existing, new)
+    }
+
+    /// Check if effects have overlapping target fixtures
+    fn have_fixture_overlap(&self, existing: &EffectInstance, new: &EffectInstance) -> bool {
+        existing
+            .target_fixtures
+            .iter()
+            .any(|fixture| new.target_fixtures.contains(fixture))
+    }
+
+    /// Check if effects have channel-level conflicts
+    fn have_channel_conflicts(&self, _existing: &EffectInstance, _new: &EffectInstance) -> bool {
+        // Effects in different layers should generally not conflict
+        // The layering system is designed to allow effects in different layers
+        // to coexist and blend together
+        false
+    }
+
+    /// Determine conflicts based on effect types and blend modes
+    fn effects_conflict_by_type(&self, existing: &EffectInstance, new: &EffectInstance) -> bool {
+        use EffectType::*;
+
+        // If effects don't overlap fixtures, they don't conflict
+        if !self.have_fixture_overlap(existing, new) {
+            return false;
+        }
+
+        // Check blend mode compatibility
+        if self.blend_modes_are_compatible(existing.blend_mode, new.blend_mode) {
+            return false;
+        }
+
+        // Effect type specific conflict rules
+        match (&existing.effect_type, &new.effect_type) {
+            // Static effects conflict with other static effects
+            (Static { .. }, Static { .. }) => true,
+
+            // Static effects conflict with color cycle effects
+            (Static { .. }, ColorCycle { .. }) => true,
+            (ColorCycle { .. }, Static { .. }) => true,
+
+            // Color cycle effects conflict with other color cycle effects
+            (ColorCycle { .. }, ColorCycle { .. }) => true,
+
+            // Strobe effects conflict with other strobe effects
+            (Strobe { .. }, Strobe { .. }) => true,
+
+            // Chase effects conflict with other chase effects
+            (Chase { .. }, Chase { .. }) => true,
+
+            // Rainbow effects conflict with static and color cycle effects
+            (Rainbow { .. }, Static { .. }) => true,
+            (Static { .. }, Rainbow { .. }) => true,
+            (Rainbow { .. }, ColorCycle { .. }) => true,
+            (ColorCycle { .. }, Rainbow { .. }) => true,
+            (Rainbow { .. }, Rainbow { .. }) => true,
+
+            // Dimmer and pulse effects are generally compatible (they layer)
+            (Dimmer { .. }, _) => false,
+            (_, Dimmer { .. }) => false,
+            (Pulse { .. }, _) => false,
+            (_, Pulse { .. }) => false,
+
+            // Default: effects of different types don't conflict
+            _ => false,
+        }
+    }
+
+    /// Check if two blend modes are compatible (can layer together)
+    fn blend_modes_are_compatible(&self, existing: BlendMode, new: BlendMode) -> bool {
+        match (existing, new) {
+            // Replace mode conflicts with everything
+            (BlendMode::Replace, _) => false,
+            (_, BlendMode::Replace) => false,
+
+            // Multiply, Add, Overlay, and Screen can generally layer together
+            (BlendMode::Multiply, BlendMode::Multiply) => true,
+            (BlendMode::Add, BlendMode::Add) => true,
+            (BlendMode::Overlay, BlendMode::Overlay) => true,
+            (BlendMode::Screen, BlendMode::Screen) => true,
+
+            // Different blend modes can layer if they're not Replace
+            (BlendMode::Multiply, BlendMode::Add) => true,
+            (BlendMode::Multiply, BlendMode::Overlay) => true,
+            (BlendMode::Multiply, BlendMode::Screen) => true,
+            (BlendMode::Add, BlendMode::Multiply) => true,
+            (BlendMode::Add, BlendMode::Overlay) => true,
+            (BlendMode::Add, BlendMode::Screen) => true,
+            (BlendMode::Overlay, BlendMode::Multiply) => true,
+            (BlendMode::Overlay, BlendMode::Add) => true,
+            (BlendMode::Overlay, BlendMode::Screen) => true,
+            (BlendMode::Screen, BlendMode::Multiply) => true,
+            (BlendMode::Screen, BlendMode::Add) => true,
+            (BlendMode::Screen, BlendMode::Overlay) => true,
+        }
+    }
+
     /// Stop all active effects
     pub fn stop_all_effects(&mut self) {
         self.active_effects.clear();
+    }
+
+    /// Get the number of active effects
+    #[cfg(test)]
+    pub fn active_effects_count(&self) -> usize {
+        self.active_effects.len()
+    }
+
+    /// Check if a specific effect is active
+    #[cfg(test)]
+    pub fn has_effect(&self, effect_id: &str) -> bool {
+        self.active_effects.contains_key(effect_id)
+    }
+
+    /// Check if two blend modes are compatible (can layer together) - public for tests
+    #[cfg(test)]
+    pub fn blend_modes_are_compatible_public(&self, existing: BlendMode, new: BlendMode) -> bool {
+        self.blend_modes_are_compatible(existing, new)
     }
 
     // ===== State-based effect processing methods =====
@@ -493,8 +612,7 @@ impl EffectEngine {
         &mut self,
         effect: &EffectInstance,
         frequency: f64,
-        _intensity: f64,
-        _elapsed: Duration,
+        elapsed: Duration,
     ) -> Result<Option<HashMap<String, FixtureState>>, EffectError> {
         self.log_effect_application(&effect.id, "strobe", effect.target_fixtures.len());
 
@@ -502,35 +620,53 @@ impl EffectEngine {
 
         for fixture_name in &effect.target_fixtures {
             if let Some(fixture) = self.fixture_registry.get(fixture_name) {
-                let strobe_value = if frequency == 0.0 {
-                    // Frequency 0 means strobe is disabled
-                    0.0
-                } else {
-                    // For strobe channel, use the frequency as the speed value
-                    // Convert frequency (Hz) to a 0-1 range using fixture's max strobe frequency
-                    let max_freq = fixture.max_strobe_frequency.unwrap_or(20.0); // Default to 20Hz if not specified
-                    (frequency / max_freq).min(1.0)
-                };
                 let mut fixture_state = FixtureState::new(fixture_name.clone());
 
-                // Apply strobe to appropriate channels - prioritize dedicated channels
-                if fixture.has_capability(FixtureCapabilities::STROBING) {
-                    // Use dedicated strobe channel if available
+                if frequency == 0.0 {
+                    // Frequency 0 means strobe is disabled
+                    if fixture.has_capability(FixtureCapabilities::STROBING) {
+                        // Hardware strobe: just disable the strobe channel
+                        fixture_state.set_channel(
+                            "strobe".to_string(),
+                            ChannelState::new(0.0, effect.layer, effect.blend_mode),
+                        );
+                    } else {
+                        // Software strobe: when frequency=0, don't set any channels
+                        // This allows parent layers/effects to take over control
+                        // (No channels are set, so the effect defers to parent layers)
+                    }
+                } else if fixture.has_capability(FixtureCapabilities::STROBING) {
+                    // Hardware-controlled strobe: send speed value to dedicated strobe channel
+                    let max_freq = fixture.max_strobe_frequency.unwrap_or(20.0);
+                    let strobe_speed = (frequency / max_freq).min(1.0);
                     let channel_state =
-                        ChannelState::new(strobe_value, effect.layer, effect.blend_mode);
+                        ChannelState::new(strobe_speed, effect.layer, effect.blend_mode);
                     fixture_state.set_channel("strobe".to_string(), channel_state);
-                } else if fixture.has_capability(FixtureCapabilities::DIMMING) {
-                    // Use dimmer channel if available (prioritize over RGB)
-                    let channel_state =
-                        ChannelState::new(strobe_value, effect.layer, effect.blend_mode);
-                    fixture_state.set_channel("dimmer".to_string(), channel_state);
-                } else if fixture.has_capability(FixtureCapabilities::RGB_COLOR) {
-                    // Fall back to RGB channels only if no dedicated channels
-                    let channel_state =
-                        ChannelState::new(strobe_value, effect.layer, effect.blend_mode);
-                    fixture_state.set_channel("red".to_string(), channel_state);
-                    fixture_state.set_channel("green".to_string(), channel_state);
-                    fixture_state.set_channel("blue".to_string(), channel_state);
+                } else {
+                    // Software-controlled strobe: simulate strobing with time-based on/off
+                    let strobe_period = 1.0 / frequency;
+                    let strobe_phase = (elapsed.as_secs_f64() % strobe_period) / strobe_period;
+                    let is_strobe_on = strobe_phase < 0.5; // 50% duty cycle
+                    let strobe_value = if is_strobe_on { 1.0 } else { 0.0 };
+
+                    // When strobe is OFF (0), use Replace blend mode to override background
+                    // When strobe is ON (1), use the original blend mode for layering
+                    let blend_mode = if strobe_value == 0.0 {
+                        BlendMode::Replace
+                    } else {
+                        effect.blend_mode
+                    };
+
+                    let channel_state = ChannelState::new(strobe_value, effect.layer, blend_mode);
+
+                    // Apply to appropriate channels - prioritize dimmer over RGB
+                    if fixture.has_capability(FixtureCapabilities::DIMMING) {
+                        fixture_state.set_channel("dimmer".to_string(), channel_state);
+                    } else if fixture.has_capability(FixtureCapabilities::RGB_COLOR) {
+                        fixture_state.set_channel("red".to_string(), channel_state);
+                        fixture_state.set_channel("green".to_string(), channel_state);
+                        fixture_state.set_channel("blue".to_string(), channel_state);
+                    }
                 }
 
                 fixture_states.insert(fixture_name.clone(), fixture_state);
@@ -629,36 +765,59 @@ impl EffectEngine {
     fn apply_chase(
         &mut self,
         effect: &EffectInstance,
-        _pattern: &ChasePattern,
+        pattern: &ChasePattern,
         speed: f64,
-        _direction: &ChaseDirection,
+        direction: &ChaseDirection,
         elapsed: Duration,
     ) -> Result<Option<HashMap<String, FixtureState>>, EffectError> {
         self.log_effect_application(&effect.id, "chase", effect.target_fixtures.len());
-        // Simplified chase implementation
+
         let chase_period = 1.0 / speed;
-        let chase_progress = (elapsed.as_secs_f64() % chase_period) / chase_period;
 
         let mut fixture_states = HashMap::new();
         let fixture_count = effect.target_fixtures.len();
+
+        // Calculate fixture order based on pattern and direction
+        let fixture_order = self.calculate_fixture_order(fixture_count, pattern, direction);
+
+        // Calculate the pattern cycle length
+        let pattern_length = fixture_order.len();
+
+        // Use consistent timing for all patterns
+        // Each position in the pattern should last the same time as a linear chase position
+        let position_duration = chase_period / fixture_count as f64;
+        let pattern_cycle_period = position_duration * pattern_length as f64;
+        let pattern_progress =
+            (elapsed.as_secs_f64() % pattern_cycle_period) / pattern_cycle_period;
+        let current_pattern_index = (pattern_progress * pattern_length as f64) as usize;
 
         for (i, fixture_name) in effect.target_fixtures.iter().enumerate() {
             if let Some(fixture) = self.fixture_registry.get(fixture_name) {
                 let mut fixture_state = FixtureState::new(fixture_name.clone());
 
-                // Calculate chase position for this fixture
-                let fixture_position = i as f64 / fixture_count as f64;
-                let chase_value = if (chase_progress - fixture_position).abs() < 0.1 {
-                    1.0
+                // Check if this fixture is active in the current pattern position
+                let is_fixture_active = if current_pattern_index < pattern_length {
+                    fixture_order[current_pattern_index] == i
                 } else {
-                    0.0
+                    false
                 };
 
-                // Apply chase to dimmer channel
+                let chase_value = if is_fixture_active { 1.0 } else { 0.0 };
+
+                // Apply chase effect
                 if fixture.has_capability(FixtureCapabilities::DIMMING) {
+                    // Use dimmer channel if available
                     let channel_state =
                         ChannelState::new(chase_value, effect.layer, effect.blend_mode);
                     fixture_state.set_channel("dimmer".to_string(), channel_state);
+                } else if fixture.has_capability(FixtureCapabilities::RGB_COLOR) {
+                    // Use RGB channels directly if no dimmer available
+                    // Set all RGB channels to the same intensity for a white chase
+                    let channel_state =
+                        ChannelState::new(chase_value, effect.layer, effect.blend_mode);
+                    fixture_state.set_channel("red".to_string(), channel_state);
+                    fixture_state.set_channel("green".to_string(), channel_state);
+                    fixture_state.set_channel("blue".to_string(), channel_state);
                 }
 
                 fixture_states.insert(fixture_name.clone(), fixture_state);
@@ -666,6 +825,83 @@ impl EffectEngine {
         }
 
         Ok(Some(fixture_states))
+    }
+
+    /// Calculate fixture order for chase effects based on pattern and direction
+    fn calculate_fixture_order(
+        &self,
+        fixture_count: usize,
+        pattern: &ChasePattern,
+        direction: &ChaseDirection,
+    ) -> Vec<usize> {
+        let mut order: Vec<usize> = (0..fixture_count).collect();
+
+        match pattern {
+            ChasePattern::Linear => {
+                // Linear pattern - fixtures in order
+                // Direction determines if we reverse the order
+                match direction {
+                    ChaseDirection::LeftToRight
+                    | ChaseDirection::TopToBottom
+                    | ChaseDirection::Clockwise => {
+                        // Forward direction - keep original order
+                        order
+                    }
+                    ChaseDirection::RightToLeft
+                    | ChaseDirection::BottomToTop
+                    | ChaseDirection::CounterClockwise => {
+                        // Reverse direction - reverse the order
+                        order.reverse();
+                        order
+                    }
+                }
+            }
+            ChasePattern::Snake => {
+                // Snake pattern - forward then reverse
+                // Create a snake pattern: 0, 1, 2, 3, 2, 1, 0, 1, 2, 3, ...
+                let mut snake_order = Vec::new();
+
+                // Forward pass: 0, 1, 2, 3
+                for i in 0..fixture_count {
+                    snake_order.push(i);
+                }
+
+                // Reverse pass: 2, 1 (skip the last element to avoid duplication)
+                for i in (1..fixture_count - 1).rev() {
+                    snake_order.push(i);
+                }
+
+                // Apply direction
+                match direction {
+                    ChaseDirection::LeftToRight
+                    | ChaseDirection::TopToBottom
+                    | ChaseDirection::Clockwise => {
+                        // Forward direction - use snake order as is
+                        snake_order
+                    }
+                    ChaseDirection::RightToLeft
+                    | ChaseDirection::BottomToTop
+                    | ChaseDirection::CounterClockwise => {
+                        // Reverse direction - reverse the snake order
+                        snake_order.reverse();
+                        snake_order
+                    }
+                }
+            }
+            ChasePattern::Random => {
+                // Random pattern - shuffle the order
+                // Use a simple deterministic shuffle based on fixture count
+                // This ensures the same random order for the duration of the effect
+                let seed = fixture_count * 7; // Simple seed based on fixture count
+
+                // Simple shuffle algorithm
+                for i in 0..fixture_count {
+                    let j = (seed + i) % fixture_count;
+                    order.swap(i, j);
+                }
+                order
+            }
+        }
     }
 
     /// Apply a rainbow effect and return fixture states
@@ -910,7 +1146,6 @@ mod tests {
             "test_effect".to_string(),
             EffectType::Strobe {
                 frequency: 2.0, // 2 Hz
-                intensity: 1.0,
                 duration: None,
             },
             vec!["test_fixture".to_string()],

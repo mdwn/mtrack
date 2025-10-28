@@ -145,7 +145,6 @@ mod tests {
             "strobe".to_string(),
             EffectType::Strobe {
                 frequency: 1.0, // 1 Hz for easy testing
-                intensity: 1.0,
                 duration: None,
             },
             vec!["test_fixture".to_string()],
@@ -265,7 +264,6 @@ mod tests {
             "strobe".to_string(),
             EffectType::Strobe {
                 frequency: 2.0, // 2 Hz strobe
-                intensity: 1.0,
                 duration: None,
             },
             vec!["rgb_par_1".to_string()],
@@ -645,7 +643,7 @@ mod tests {
     front_wash: dimmer start_level: 1.0, end_level: 0.5, duration: 5s, layer: midground, blend_mode: multiply
     
     @00:04.000
-    front_wash: strobe frequency: 2, intensity: 1.0, layer: foreground, blend_mode: overlay
+    front_wash: strobe frequency: 2, layer: foreground, blend_mode: overlay
 }"#;
 
         let shows = match parse_light_shows(dsl_content) {
@@ -2226,5 +2224,2094 @@ mod tests {
         println!("Successfully parsed layering parameters from DSL:");
         println!("- layer: background, midground, foreground");
         println!("- blend_mode: replace, multiply, overlay");
+    }
+
+    #[test]
+    fn test_sophisticated_conflict_resolution() {
+        let mut engine = EffectEngine::new();
+
+        // Create a test fixture
+        let mut channels = HashMap::new();
+        channels.insert("red".to_string(), 1);
+        channels.insert("green".to_string(), 2);
+        channels.insert("blue".to_string(), 3);
+
+        let fixture = FixtureInfo {
+            name: "test_fixture".to_string(),
+            universe: 1,
+            address: 1,
+            channels,
+            fixture_type: "RGB_Par".to_string(),
+            max_strobe_frequency: Some(20.0),
+        };
+        engine.register_fixture(fixture);
+
+        // Test 1: Effects in different layers should not conflict
+        let static_bg = EffectInstance::with_layering(
+            "static_bg".to_string(),
+            EffectType::Static {
+                parameters: {
+                    let mut params = HashMap::new();
+                    params.insert("red".to_string(), 1.0);
+                    params
+                },
+                duration: None,
+            },
+            vec!["test_fixture".to_string()],
+            EffectLayer::Background,
+            BlendMode::Replace,
+        );
+
+        let dimmer_mg = EffectInstance::with_layering(
+            "dimmer_mg".to_string(),
+            EffectType::Dimmer {
+                start_level: 1.0,
+                end_level: 0.5,
+                duration: Duration::from_secs(1),
+                curve: DimmerCurve::Linear,
+            },
+            vec!["test_fixture".to_string()],
+            EffectLayer::Midground,
+            BlendMode::Multiply,
+        );
+
+        // Both effects should coexist (different layers)
+        engine.start_effect(static_bg).unwrap();
+        engine.start_effect(dimmer_mg).unwrap();
+        assert_eq!(engine.active_effects_count(), 2);
+
+        // Test 2: Static effects in the same layer should conflict
+        let static_fg = EffectInstance::with_layering(
+            "static_fg".to_string(),
+            EffectType::Static {
+                parameters: {
+                    let mut params = HashMap::new();
+                    params.insert("blue".to_string(), 1.0);
+                    params
+                },
+                duration: None,
+            },
+            vec!["test_fixture".to_string()],
+            EffectLayer::Background, // Same layer as static_bg
+            BlendMode::Replace,
+        );
+
+        // This should stop the background static effect (same layer, same type)
+        engine.start_effect(static_fg).unwrap();
+        assert_eq!(engine.active_effects_count(), 2); // dimmer + new static
+        assert!(!engine.has_effect("static_bg"));
+        assert!(engine.has_effect("dimmer_mg"));
+        assert!(engine.has_effect("static_fg"));
+
+        // Test 3: Compatible blend modes should layer
+        let pulse_mg = EffectInstance::with_layering(
+            "pulse_mg".to_string(),
+            EffectType::Pulse {
+                base_level: 0.5,
+                pulse_amplitude: 0.3,
+                frequency: 2.0,
+                duration: None,
+            },
+            vec!["test_fixture".to_string()],
+            EffectLayer::Midground,
+            BlendMode::Multiply,
+        );
+
+        // This should layer with the existing dimmer (same layer, compatible blend modes)
+        engine.start_effect(pulse_mg).unwrap();
+        assert_eq!(engine.active_effects_count(), 3); // dimmer + static + pulse
+        assert!(engine.has_effect("dimmer_mg"));
+        assert!(engine.has_effect("pulse_mg"));
+
+        // Test 4: Replace blend mode should stop conflicting effects
+        let static_replace = EffectInstance::with_layering(
+            "static_replace".to_string(),
+            EffectType::Static {
+                parameters: {
+                    let mut params = HashMap::new();
+                    params.insert("green".to_string(), 1.0);
+                    params
+                },
+                duration: None,
+            },
+            vec!["test_fixture".to_string()],
+            EffectLayer::Background, // Same layer as static_fg
+            BlendMode::Replace,
+        );
+
+        // This should stop the existing static effect (same type, same layer, Replace mode)
+        engine.start_effect(static_replace).unwrap();
+        assert_eq!(engine.active_effects_count(), 3); // dimmer + pulse + new static
+        assert!(!engine.has_effect("static_fg"));
+        assert!(engine.has_effect("static_replace"));
+    }
+
+    #[test]
+    fn test_priority_based_conflict_resolution() {
+        let mut engine = EffectEngine::new();
+
+        // Create test fixtures
+        let mut channels = HashMap::new();
+        channels.insert("red".to_string(), 1);
+        channels.insert("green".to_string(), 2);
+        channels.insert("blue".to_string(), 3);
+
+        let fixture1 = FixtureInfo {
+            name: "fixture1".to_string(),
+            universe: 1,
+            address: 1,
+            channels: channels.clone(),
+            fixture_type: "RGB_Par".to_string(),
+            max_strobe_frequency: Some(20.0),
+        };
+
+        let fixture2 = FixtureInfo {
+            name: "fixture2".to_string(),
+            universe: 1,
+            address: 2,
+            channels: channels.clone(),
+            fixture_type: "RGB_Par".to_string(),
+            max_strobe_frequency: Some(20.0),
+        };
+
+        engine.register_fixture(fixture1);
+        engine.register_fixture(fixture2);
+
+        // Test 1: Higher priority effect stops lower priority effect in same layer
+        let low_priority = EffectInstance::with_layering(
+            "low_priority".to_string(),
+            EffectType::Static {
+                parameters: {
+                    let mut params = HashMap::new();
+                    params.insert("red".to_string(), 1.0);
+                    params
+                },
+                duration: None,
+            },
+            vec!["fixture1".to_string()],
+            EffectLayer::Background,
+            BlendMode::Replace,
+        )
+        .with_priority(1);
+
+        let high_priority = EffectInstance::with_layering(
+            "high_priority".to_string(),
+            EffectType::Static {
+                parameters: {
+                    let mut params = HashMap::new();
+                    params.insert("blue".to_string(), 1.0);
+                    params
+                },
+                duration: None,
+            },
+            vec!["fixture1".to_string()],
+            EffectLayer::Background, // Same layer
+            BlendMode::Replace,
+        )
+        .with_priority(10);
+
+        engine.start_effect(low_priority).unwrap();
+        engine.start_effect(high_priority).unwrap();
+
+        assert_eq!(engine.active_effects_count(), 1);
+        assert!(!engine.has_effect("low_priority"));
+        assert!(engine.has_effect("high_priority"));
+
+        // Test 2: Effects on different fixtures should not conflict
+        let different_fixture_effect = EffectInstance::with_layering(
+            "different_fixture_effect".to_string(),
+            EffectType::Static {
+                parameters: {
+                    let mut params = HashMap::new();
+                    params.insert("green".to_string(), 1.0);
+                    params
+                },
+                duration: None,
+            },
+            vec!["fixture2".to_string()], // Different fixture
+            EffectLayer::Background,      // Same layer
+            BlendMode::Replace,
+        )
+        .with_priority(5);
+
+        engine.start_effect(different_fixture_effect).unwrap();
+
+        // Should not conflict because different fixtures
+        assert_eq!(engine.active_effects_count(), 2); // high_priority + different_fixture_effect
+        assert!(engine.has_effect("high_priority"));
+        assert!(engine.has_effect("different_fixture_effect"));
+
+        // Test 3: Higher priority effect stops lower priority effect on same fixture
+        let low_priority_same_fixture = EffectInstance::with_layering(
+            "low_priority_same_fixture".to_string(),
+            EffectType::Static {
+                parameters: {
+                    let mut params = HashMap::new();
+                    params.insert("yellow".to_string(), 1.0);
+                    params
+                },
+                duration: None,
+            },
+            vec!["fixture2".to_string()], // Same fixture as different_fixture_effect
+            EffectLayer::Background,
+            BlendMode::Replace,
+        )
+        .with_priority(1);
+
+        let high_priority_same_fixture = EffectInstance::with_layering(
+            "high_priority_same_fixture".to_string(),
+            EffectType::Static {
+                parameters: {
+                    let mut params = HashMap::new();
+                    params.insert("purple".to_string(), 1.0);
+                    params
+                },
+                duration: None,
+            },
+            vec!["fixture2".to_string()], // Same fixture as low_priority_same_fixture
+            EffectLayer::Background,      // Same layer
+            BlendMode::Replace,
+        )
+        .with_priority(15); // Higher priority than different_fixture_effect
+
+        engine.start_effect(low_priority_same_fixture).unwrap();
+        engine.start_effect(high_priority_same_fixture).unwrap();
+
+        // High priority should stop both lower priority effects on same fixture
+        assert_eq!(engine.active_effects_count(), 2); // high_priority + high_priority_same_fixture
+        assert!(engine.has_effect("high_priority"));
+        assert!(!engine.has_effect("different_fixture_effect"));
+        assert!(!engine.has_effect("low_priority_same_fixture"));
+        assert!(engine.has_effect("high_priority_same_fixture"));
+    }
+
+    #[test]
+    fn test_blend_mode_compatibility_matrix() {
+        let mut engine = EffectEngine::new();
+
+        // Create test fixture
+        let mut channels = HashMap::new();
+        channels.insert("red".to_string(), 1);
+        channels.insert("green".to_string(), 2);
+        channels.insert("blue".to_string(), 3);
+
+        let fixture = FixtureInfo {
+            name: "test_fixture".to_string(),
+            universe: 1,
+            address: 1,
+            channels,
+            fixture_type: "RGB_Par".to_string(),
+            max_strobe_frequency: Some(20.0),
+        };
+        engine.register_fixture(fixture);
+
+        // Test Replace mode conflicts with everything
+        let replace_effect = EffectInstance::with_layering(
+            "replace_effect".to_string(),
+            EffectType::Static {
+                parameters: {
+                    let mut params = HashMap::new();
+                    params.insert("red".to_string(), 1.0);
+                    params
+                },
+                duration: None,
+            },
+            vec!["test_fixture".to_string()],
+            EffectLayer::Background,
+            BlendMode::Replace,
+        );
+
+        let multiply_effect = EffectInstance::with_layering(
+            "multiply_effect".to_string(),
+            EffectType::Static {
+                parameters: {
+                    let mut params = HashMap::new();
+                    params.insert("blue".to_string(), 1.0);
+                    params
+                },
+                duration: None,
+            },
+            vec!["test_fixture".to_string()],
+            EffectLayer::Background, // Same layer
+            BlendMode::Multiply,
+        );
+
+        engine.start_effect(replace_effect).unwrap();
+        engine.start_effect(multiply_effect).unwrap();
+
+        // Replace should conflict with Multiply (same layer, same type)
+        assert_eq!(engine.active_effects_count(), 1);
+        assert!(!engine.has_effect("replace_effect"));
+        assert!(engine.has_effect("multiply_effect"));
+
+        // Test compatible blend modes can layer
+        let add_effect = EffectInstance::with_layering(
+            "add_effect".to_string(),
+            EffectType::Dimmer {
+                start_level: 1.0,
+                end_level: 0.5,
+                duration: Duration::from_secs(1),
+                curve: DimmerCurve::Linear,
+            },
+            vec!["test_fixture".to_string()],
+            EffectLayer::Background,
+            BlendMode::Add,
+        );
+
+        let overlay_effect = EffectInstance::with_layering(
+            "overlay_effect".to_string(),
+            EffectType::Pulse {
+                base_level: 0.5,
+                pulse_amplitude: 0.3,
+                frequency: 2.0,
+                duration: None,
+            },
+            vec!["test_fixture".to_string()],
+            EffectLayer::Background, // Same layer
+            BlendMode::Overlay,
+        );
+
+        engine.start_effect(add_effect).unwrap();
+        engine.start_effect(overlay_effect).unwrap();
+
+        // Add and Overlay should be compatible (different types, compatible blend modes)
+        assert_eq!(engine.active_effects_count(), 3); // multiply + add + overlay
+        assert!(engine.has_effect("add_effect"));
+        assert!(engine.has_effect("overlay_effect"));
+
+        // Test all blend mode combinations
+        let blend_modes = vec![
+            BlendMode::Replace,
+            BlendMode::Multiply,
+            BlendMode::Add,
+            BlendMode::Overlay,
+            BlendMode::Screen,
+        ];
+
+        for (i, mode1) in blend_modes.iter().enumerate() {
+            for (j, mode2) in blend_modes.iter().enumerate() {
+                let effect1 = EffectInstance::with_layering(
+                    format!("test_mode1_{}_{}", i, j),
+                    EffectType::Static {
+                        parameters: {
+                            let mut params = HashMap::new();
+                            params.insert("red".to_string(), 1.0);
+                            params
+                        },
+                        duration: None,
+                    },
+                    vec!["test_fixture".to_string()],
+                    EffectLayer::Background,
+                    *mode1,
+                );
+
+                let effect2 = EffectInstance::with_layering(
+                    format!("test_mode2_{}_{}", i, j),
+                    EffectType::Static {
+                        parameters: {
+                            let mut params = HashMap::new();
+                            params.insert("blue".to_string(), 1.0);
+                            params
+                        },
+                        duration: None,
+                    },
+                    vec!["test_fixture".to_string()],
+                    EffectLayer::Background, // Same layer
+                    *mode2,
+                );
+
+                // Clear engine for each test
+                engine.stop_all_effects();
+
+                engine.start_effect(effect1).unwrap();
+                let count_before = engine.active_effects_count();
+                engine.start_effect(effect2).unwrap();
+                let count_after = engine.active_effects_count();
+
+                // Verify expected behavior based on blend mode compatibility
+                let should_conflict = !engine.blend_modes_are_compatible_public(*mode1, *mode2);
+                if should_conflict {
+                    assert_eq!(
+                        count_after, count_before,
+                        "Blend modes {:?} and {:?} should conflict",
+                        mode1, mode2
+                    );
+                } else {
+                    assert_eq!(
+                        count_after,
+                        count_before + 1,
+                        "Blend modes {:?} and {:?} should be compatible",
+                        mode1,
+                        mode2
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_effect_type_conflict_combinations() {
+        let mut engine = EffectEngine::new();
+
+        // Create test fixture
+        let mut channels = HashMap::new();
+        channels.insert("red".to_string(), 1);
+        channels.insert("green".to_string(), 2);
+        channels.insert("blue".to_string(), 3);
+        channels.insert("strobe".to_string(), 4);
+        // No dimmer channel - Chase should work with RGB channels
+
+        let fixture = FixtureInfo {
+            name: "test_fixture".to_string(),
+            universe: 1,
+            address: 1,
+            channels,
+            fixture_type: "RGB_Par".to_string(),
+            max_strobe_frequency: Some(20.0),
+        };
+        engine.register_fixture(fixture);
+
+        // Test Static vs ColorCycle conflict
+        let static_effect = EffectInstance::with_layering(
+            "static_effect".to_string(),
+            EffectType::Static {
+                parameters: {
+                    let mut params = HashMap::new();
+                    params.insert("red".to_string(), 1.0);
+                    params
+                },
+                duration: None,
+            },
+            vec!["test_fixture".to_string()],
+            EffectLayer::Background,
+            BlendMode::Replace,
+        );
+
+        let color_cycle_effect = EffectInstance::with_layering(
+            "color_cycle_effect".to_string(),
+            EffectType::ColorCycle {
+                colors: vec![
+                    Color {
+                        r: 255,
+                        g: 0,
+                        b: 0,
+                        w: None,
+                    },
+                    Color {
+                        r: 0,
+                        g: 255,
+                        b: 0,
+                        w: None,
+                    },
+                ],
+                speed: 1.0,
+                direction: CycleDirection::Forward,
+            },
+            vec!["test_fixture".to_string()],
+            EffectLayer::Background, // Same layer
+            BlendMode::Replace,
+        );
+
+        engine.start_effect(static_effect).unwrap();
+        engine.start_effect(color_cycle_effect).unwrap();
+
+        // Static and ColorCycle should conflict
+        assert_eq!(engine.active_effects_count(), 1);
+        assert!(!engine.has_effect("static_effect"));
+        assert!(engine.has_effect("color_cycle_effect"));
+
+        // Test Rainbow vs Static conflict
+        let rainbow_effect = EffectInstance::with_layering(
+            "rainbow_effect".to_string(),
+            EffectType::Rainbow {
+                speed: 1.0,
+                saturation: 1.0,
+                brightness: 1.0,
+            },
+            vec!["test_fixture".to_string()],
+            EffectLayer::Background,
+            BlendMode::Replace,
+        );
+
+        let static_effect2 = EffectInstance::with_layering(
+            "static_effect2".to_string(),
+            EffectType::Static {
+                parameters: {
+                    let mut params = HashMap::new();
+                    params.insert("blue".to_string(), 1.0);
+                    params
+                },
+                duration: None,
+            },
+            vec!["test_fixture".to_string()],
+            EffectLayer::Background, // Same layer
+            BlendMode::Replace,
+        );
+
+        engine.start_effect(rainbow_effect).unwrap();
+        engine.start_effect(static_effect2).unwrap();
+
+        // Rainbow and Static should conflict - static should win (last one wins)
+        assert_eq!(engine.active_effects_count(), 1); // static_effect2
+        assert!(!engine.has_effect("rainbow_effect"));
+        assert!(engine.has_effect("static_effect2"));
+
+        // Test Strobe vs Strobe conflict
+        let strobe1 = EffectInstance::with_layering(
+            "strobe1".to_string(),
+            EffectType::Strobe {
+                frequency: 2.0,
+                duration: None,
+            },
+            vec!["test_fixture".to_string()],
+            EffectLayer::Background,
+            BlendMode::Replace,
+        );
+
+        let strobe2 = EffectInstance::with_layering(
+            "strobe2".to_string(),
+            EffectType::Strobe {
+                frequency: 4.0,
+                duration: None,
+            },
+            vec!["test_fixture".to_string()],
+            EffectLayer::Background, // Same layer
+            BlendMode::Replace,
+        );
+
+        engine.start_effect(strobe1).unwrap();
+        engine.start_effect(strobe2).unwrap();
+
+        // Strobe and Strobe should conflict
+        assert_eq!(engine.active_effects_count(), 2); // static_effect2 + strobe2
+        assert!(!engine.has_effect("strobe1"));
+        assert!(engine.has_effect("strobe2"));
+
+        // Test Chase vs Chase conflict
+        let chase1 = EffectInstance::with_layering(
+            "chase1".to_string(),
+            EffectType::Chase {
+                pattern: ChasePattern::Linear,
+                speed: 1.0,
+                direction: ChaseDirection::LeftToRight,
+            },
+            vec!["test_fixture".to_string()],
+            EffectLayer::Background,
+            BlendMode::Replace,
+        );
+
+        let chase2 = EffectInstance::with_layering(
+            "chase2".to_string(),
+            EffectType::Chase {
+                pattern: ChasePattern::Snake,
+                speed: 2.0,
+                direction: ChaseDirection::RightToLeft,
+            },
+            vec!["test_fixture".to_string()],
+            EffectLayer::Background, // Same layer
+            BlendMode::Replace,
+        );
+
+        engine.start_effect(chase1).unwrap();
+        engine.start_effect(chase2).unwrap();
+
+        // Chase and Chase should conflict
+        assert_eq!(engine.active_effects_count(), 3); // static_effect2 + strobe2 + chase2
+        assert!(!engine.has_effect("chase1"));
+        assert!(engine.has_effect("chase2"));
+
+        // Test Dimmer and Pulse compatibility (should layer)
+        let dimmer_effect = EffectInstance::with_layering(
+            "dimmer_effect".to_string(),
+            EffectType::Dimmer {
+                start_level: 1.0,
+                end_level: 0.5,
+                duration: Duration::from_secs(1),
+                curve: DimmerCurve::Linear,
+            },
+            vec!["test_fixture".to_string()],
+            EffectLayer::Background,
+            BlendMode::Multiply,
+        );
+
+        let pulse_effect = EffectInstance::with_layering(
+            "pulse_effect".to_string(),
+            EffectType::Pulse {
+                base_level: 0.5,
+                pulse_amplitude: 0.3,
+                frequency: 2.0,
+                duration: None,
+            },
+            vec!["test_fixture".to_string()],
+            EffectLayer::Background, // Same layer
+            BlendMode::Multiply,
+        );
+
+        engine.start_effect(dimmer_effect).unwrap();
+        engine.start_effect(pulse_effect).unwrap();
+
+        // Dimmer and Pulse should be compatible (they layer)
+        assert_eq!(engine.active_effects_count(), 5); // static_effect2 + strobe2 + chase2 + dimmer + pulse
+        assert!(engine.has_effect("dimmer_effect"));
+        assert!(engine.has_effect("pulse_effect"));
+    }
+
+    #[test]
+    fn test_chase_effect_without_dimmer_channel() {
+        let mut engine = EffectEngine::new();
+
+        // Create RGB-only fixture (no dimmer)
+        let mut channels = HashMap::new();
+        channels.insert("red".to_string(), 1);
+        channels.insert("green".to_string(), 2);
+        channels.insert("blue".to_string(), 3);
+
+        let fixture = FixtureInfo {
+            name: "rgb_fixture".to_string(),
+            universe: 1,
+            address: 1,
+            channels,
+            fixture_type: "RGB_Par".to_string(),
+            max_strobe_frequency: Some(20.0),
+        };
+        engine.register_fixture(fixture);
+
+        // Create Chase effect - should work with RGB-only fixture
+        let chase_effect = EffectInstance::with_layering(
+            "chase_effect".to_string(),
+            EffectType::Chase {
+                pattern: ChasePattern::Linear,
+                speed: 1.0,
+                direction: ChaseDirection::LeftToRight,
+            },
+            vec!["rgb_fixture".to_string()],
+            EffectLayer::Background,
+            BlendMode::Replace,
+        );
+
+        // Should start successfully without dimmer channel
+        let result = engine.start_effect(chase_effect);
+        assert!(
+            result.is_ok(),
+            "Chase effect should work with RGB-only fixture"
+        );
+
+        // Update engine to generate commands
+        let commands = engine.update(Duration::from_millis(100)).unwrap();
+
+        // Should have RGB commands (not dimmer commands)
+        let red_cmd = commands.iter().find(|cmd| cmd.channel == 1);
+        let green_cmd = commands.iter().find(|cmd| cmd.channel == 2);
+        let blue_cmd = commands.iter().find(|cmd| cmd.channel == 3);
+
+        assert!(red_cmd.is_some(), "Should have red channel command");
+        assert!(green_cmd.is_some(), "Should have green channel command");
+        assert!(blue_cmd.is_some(), "Should have blue channel command");
+
+        // All RGB channels should have the same value (white chase)
+        if let (Some(red), Some(green), Some(blue)) = (red_cmd, green_cmd, blue_cmd) {
+            assert_eq!(red.value, green.value);
+            assert_eq!(green.value, blue.value);
+        }
+    }
+
+    #[test]
+    fn test_chase_effect_with_dimmer_channel() {
+        let mut engine = EffectEngine::new();
+
+        // Create fixture with both RGB and dimmer
+        let mut channels = HashMap::new();
+        channels.insert("red".to_string(), 1);
+        channels.insert("green".to_string(), 2);
+        channels.insert("blue".to_string(), 3);
+        channels.insert("dimmer".to_string(), 4);
+
+        let fixture = FixtureInfo {
+            name: "rgb_dimmer_fixture".to_string(),
+            universe: 1,
+            address: 1,
+            channels,
+            fixture_type: "RGB_Par".to_string(),
+            max_strobe_frequency: Some(20.0),
+        };
+        engine.register_fixture(fixture);
+
+        // Create Chase effect - should use dimmer channel
+        let chase_effect = EffectInstance::with_layering(
+            "chase_effect".to_string(),
+            EffectType::Chase {
+                pattern: ChasePattern::Linear,
+                speed: 1.0,
+                direction: ChaseDirection::LeftToRight,
+            },
+            vec!["rgb_dimmer_fixture".to_string()],
+            EffectLayer::Background,
+            BlendMode::Replace,
+        );
+
+        // Should start successfully
+        let result = engine.start_effect(chase_effect);
+        assert!(
+            result.is_ok(),
+            "Chase effect should work with dimmer fixture"
+        );
+
+        // Update engine to generate commands
+        let commands = engine.update(Duration::from_millis(100)).unwrap();
+
+        // Should have dimmer command (not RGB commands)
+        let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 4);
+        assert!(dimmer_cmd.is_some(), "Should have dimmer channel command");
+
+        // Should not have RGB commands when dimmer is available
+        let red_cmd = commands.iter().find(|cmd| cmd.channel == 1);
+        let green_cmd = commands.iter().find(|cmd| cmd.channel == 2);
+        let blue_cmd = commands.iter().find(|cmd| cmd.channel == 3);
+
+        assert!(
+            red_cmd.is_none(),
+            "Should not have red channel command when dimmer is available"
+        );
+        assert!(
+            green_cmd.is_none(),
+            "Should not have green channel command when dimmer is available"
+        );
+        assert!(
+            blue_cmd.is_none(),
+            "Should not have blue channel command when dimmer is available"
+        );
+    }
+
+    #[test]
+    fn test_software_strobing_rgb_only_fixture() {
+        let mut engine = EffectEngine::new();
+
+        // Create RGB-only fixture (no strobe or dimmer channels)
+        let mut channels = HashMap::new();
+        channels.insert("red".to_string(), 1);
+        channels.insert("green".to_string(), 2);
+        channels.insert("blue".to_string(), 3);
+        // No strobe or dimmer channels!
+
+        let fixture = FixtureInfo {
+            name: "rgb_only_fixture".to_string(),
+            universe: 1,
+            address: 1,
+            channels,
+            fixture_type: "RGB_Par".to_string(),
+            max_strobe_frequency: None, // No strobe capability
+        };
+        engine.register_fixture(fixture);
+
+        // Create strobe effect - should use software strobing
+        let strobe_effect = EffectInstance::with_layering(
+            "strobe_effect".to_string(),
+            EffectType::Strobe {
+                frequency: 2.0, // 2 Hz for easy testing
+                duration: None,
+            },
+            vec!["rgb_only_fixture".to_string()],
+            EffectLayer::Foreground,
+            BlendMode::Overlay,
+        );
+
+        // Start the strobe effect
+        engine.start_effect(strobe_effect).unwrap();
+
+        // Test at different time points to verify strobing behavior
+        // At t=0ms (start of cycle) - should be ON
+        let commands = engine.update(Duration::from_millis(0)).unwrap();
+        let red_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
+        let green_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
+        let blue_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
+
+        assert_eq!(red_cmd.value, 255); // Should be ON (1.0 * 255)
+        assert_eq!(green_cmd.value, 255);
+        assert_eq!(blue_cmd.value, 255);
+
+        // At t=125ms (1/4 cycle) - should still be ON
+        let commands = engine.update(Duration::from_millis(125)).unwrap();
+        let red_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
+        assert_eq!(red_cmd.value, 255); // Should still be ON
+
+        // At t=250ms (1/2 cycle) - should be OFF
+        let commands = engine.update(Duration::from_millis(125)).unwrap(); // 125ms more = 250ms total
+        let red_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
+        let green_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
+        let blue_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
+
+        assert_eq!(red_cmd.value, 0); // Should be OFF (0.0 * 255)
+        assert_eq!(green_cmd.value, 0);
+        assert_eq!(blue_cmd.value, 0);
+
+        // At t=375ms (3/4 cycle) - should still be OFF
+        let commands = engine.update(Duration::from_millis(125)).unwrap(); // 125ms more = 375ms total
+        let red_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
+        assert_eq!(red_cmd.value, 0); // Should still be OFF
+
+        // At t=500ms (full cycle) - should be ON again
+        let commands = engine.update(Duration::from_millis(125)).unwrap(); // 125ms more = 500ms total
+        let red_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
+        assert_eq!(red_cmd.value, 255); // Should be ON again
+    }
+
+    #[test]
+    fn test_software_strobing_dimmer_only_fixture() {
+        let mut engine = EffectEngine::new();
+
+        // Create dimmer-only fixture (no strobe or RGB channels)
+        let mut channels = HashMap::new();
+        channels.insert("dimmer".to_string(), 1);
+        // No strobe or RGB channels!
+
+        let fixture = FixtureInfo {
+            name: "dimmer_only_fixture".to_string(),
+            universe: 1,
+            address: 1,
+            channels,
+            fixture_type: "Dimmer".to_string(),
+            max_strobe_frequency: None, // No strobe capability
+        };
+        engine.register_fixture(fixture);
+
+        // Create strobe effect - should use software strobing on dimmer
+        let strobe_effect = EffectInstance::with_layering(
+            "strobe_effect".to_string(),
+            EffectType::Strobe {
+                frequency: 4.0, // 4 Hz for easy testing
+                duration: None,
+            },
+            vec!["dimmer_only_fixture".to_string()],
+            EffectLayer::Foreground,
+            BlendMode::Overlay,
+        );
+
+        // Start the strobe effect
+        engine.start_effect(strobe_effect).unwrap();
+
+        // Test at different time points to verify strobing behavior
+        // At t=0ms (start of cycle) - should be ON
+        let commands = engine.update(Duration::from_millis(0)).unwrap();
+        let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
+        assert_eq!(dimmer_cmd.value, 255); // Should be ON (1.0 * 255)
+
+        // At t=62ms (1/4 cycle) - should still be ON
+        let commands = engine.update(Duration::from_millis(62)).unwrap();
+        let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
+        assert_eq!(dimmer_cmd.value, 255); // Should still be ON
+
+        // At t=125ms (1/2 cycle) - should be OFF
+        let commands = engine.update(Duration::from_millis(63)).unwrap(); // 62ms more = 125ms total
+        let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
+        assert_eq!(dimmer_cmd.value, 0); // Should be OFF (0.0 * 255)
+
+        // At t=187ms (3/4 cycle) - should still be OFF
+        let commands = engine.update(Duration::from_millis(62)).unwrap(); // 62ms more = 187ms total
+        let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
+        assert_eq!(dimmer_cmd.value, 0); // Should still be OFF
+
+        // At t=250ms (full cycle) - should be ON again
+        let commands = engine.update(Duration::from_millis(63)).unwrap(); // 63ms more = 250ms total
+        let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
+        assert_eq!(dimmer_cmd.value, 255); // Should be ON again
+    }
+
+    #[test]
+    fn test_software_strobing_with_layering() {
+        let mut engine = EffectEngine::new();
+
+        // Create RGB-only fixture
+        let mut channels = HashMap::new();
+        channels.insert("red".to_string(), 1);
+        channels.insert("green".to_string(), 2);
+        channels.insert("blue".to_string(), 3);
+
+        let fixture = FixtureInfo {
+            name: "rgb_fixture".to_string(),
+            universe: 1,
+            address: 1,
+            channels,
+            fixture_type: "RGB_Par".to_string(),
+            max_strobe_frequency: None, // No strobe capability
+        };
+        engine.register_fixture(fixture);
+
+        // Create static blue effect (background layer)
+        let blue_effect = EffectInstance::with_layering(
+            "static_blue".to_string(),
+            EffectType::Static {
+                parameters: {
+                    let mut params = HashMap::new();
+                    params.insert("red".to_string(), 0.0);
+                    params.insert("green".to_string(), 0.0);
+                    params.insert("blue".to_string(), 1.0);
+                    params
+                },
+                duration: None,
+            },
+            vec!["rgb_fixture".to_string()],
+            EffectLayer::Background,
+            BlendMode::Replace,
+        );
+
+        // Create strobe effect (foreground layer)
+        let strobe_effect = EffectInstance::with_layering(
+            "strobe_effect".to_string(),
+            EffectType::Strobe {
+                frequency: 2.0, // 2 Hz
+                duration: None,
+            },
+            vec!["rgb_fixture".to_string()],
+            EffectLayer::Foreground,
+            BlendMode::Overlay,
+        );
+
+        // Start both effects
+        engine.start_effect(blue_effect).unwrap();
+        engine.start_effect(strobe_effect).unwrap();
+
+        // Test that layering works with software strobing
+        // At t=0ms (strobe ON) - should see blue light
+        let commands = engine.update(Duration::from_millis(0)).unwrap();
+        let red_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
+        let green_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
+        let blue_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
+
+        assert_eq!(red_cmd.value, 0); // Red should be 0 (static effect)
+        assert_eq!(green_cmd.value, 0); // Green should be 0 (static effect)
+        assert_eq!(blue_cmd.value, 255); // Blue should be 255 (static + strobe overlay)
+
+        // At t=250ms (strobe OFF) - should see no light
+        let commands = engine.update(Duration::from_millis(250)).unwrap();
+        let red_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
+        let green_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
+        let blue_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
+
+        assert_eq!(red_cmd.value, 0); // Red should be 0
+        assert_eq!(green_cmd.value, 0); // Green should be 0
+        assert_eq!(blue_cmd.value, 0); // Blue should be 0 (strobe OFF overrides static)
+    }
+
+    #[test]
+    fn test_software_strobing_simple() {
+        let mut engine = EffectEngine::new();
+
+        // Create RGB-only fixture
+        let mut channels = HashMap::new();
+        channels.insert("red".to_string(), 1);
+        channels.insert("green".to_string(), 2);
+        channels.insert("blue".to_string(), 3);
+
+        let fixture = FixtureInfo {
+            name: "rgb_fixture".to_string(),
+            universe: 1,
+            address: 1,
+            channels,
+            fixture_type: "RGB_Par".to_string(),
+            max_strobe_frequency: None, // No strobe capability
+        };
+        engine.register_fixture(fixture);
+
+        // Create strobe effect only (no other effects)
+        let strobe_effect = EffectInstance::with_layering(
+            "strobe_effect".to_string(),
+            EffectType::Strobe {
+                frequency: 2.0, // 2 Hz
+                duration: None,
+            },
+            vec!["rgb_fixture".to_string()],
+            EffectLayer::Foreground,
+            BlendMode::Overlay,
+        );
+
+        // Start strobe effect
+        engine.start_effect(strobe_effect).unwrap();
+
+        // Test basic strobe functionality
+        // At t=0ms (strobe ON) - should see white light
+        let commands = engine.update(Duration::from_millis(0)).unwrap();
+        let red_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
+        let green_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
+        let blue_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
+
+        assert_eq!(red_cmd.value, 255); // Should be ON (1.0 * 255)
+        assert_eq!(green_cmd.value, 255);
+        assert_eq!(blue_cmd.value, 255);
+
+        // At t=250ms (strobe OFF) - should see no light
+        let commands = engine.update(Duration::from_millis(250)).unwrap();
+        let red_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
+        let green_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
+        let blue_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
+
+        assert_eq!(red_cmd.value, 0); // Should be OFF (0.0 * 255)
+        assert_eq!(green_cmd.value, 0);
+        assert_eq!(blue_cmd.value, 0);
+    }
+
+    #[test]
+    fn test_software_strobing_frequency_zero() {
+        let mut engine = EffectEngine::new();
+
+        // Create RGB-only fixture
+        let mut channels = HashMap::new();
+        channels.insert("red".to_string(), 1);
+        channels.insert("green".to_string(), 2);
+        channels.insert("blue".to_string(), 3);
+
+        let fixture = FixtureInfo {
+            name: "rgb_fixture".to_string(),
+            universe: 1,
+            address: 1,
+            channels,
+            fixture_type: "RGB_Par".to_string(),
+            max_strobe_frequency: None,
+        };
+        engine.register_fixture(fixture);
+
+        // Create static blue effect
+        let blue_effect = EffectInstance::with_layering(
+            "static_blue".to_string(),
+            EffectType::Static {
+                parameters: {
+                    let mut params = HashMap::new();
+                    params.insert("red".to_string(), 0.0);
+                    params.insert("green".to_string(), 0.0);
+                    params.insert("blue".to_string(), 1.0);
+                    params
+                },
+                duration: None,
+            },
+            vec!["rgb_fixture".to_string()],
+            EffectLayer::Background,
+            BlendMode::Replace,
+        );
+
+        // Create strobe effect with frequency 0 (off)
+        let strobe_effect = EffectInstance::with_layering(
+            "strobe_off".to_string(),
+            EffectType::Strobe {
+                frequency: 0.0, // Off
+                duration: None,
+            },
+            vec!["rgb_fixture".to_string()],
+            EffectLayer::Foreground,
+            BlendMode::Overlay,
+        );
+
+        // Start both effects
+        engine.start_effect(blue_effect).unwrap();
+        engine.start_effect(strobe_effect).unwrap();
+
+        // Test that strobe off defers to parent layers
+        let commands = engine.update(Duration::from_millis(0)).unwrap();
+        let red_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
+        let green_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
+        let blue_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
+
+        // Should see blue light (static effect) - strobe should not interfere
+        assert_eq!(red_cmd.value, 0); // Red should be 0 (static effect)
+        assert_eq!(green_cmd.value, 0); // Green should be 0 (static effect)
+        assert_eq!(blue_cmd.value, 255); // Blue should be 255 (static effect only)
+    }
+
+    #[test]
+    fn test_chase_pattern_linear_left_to_right() {
+        let mut engine = EffectEngine::new();
+
+        // Create 4 fixtures for testing
+        for i in 1..=4 {
+            let mut channels = HashMap::new();
+            channels.insert("dimmer".to_string(), 1);
+            channels.insert("red".to_string(), 2);
+            channels.insert("green".to_string(), 3);
+            channels.insert("blue".to_string(), 4);
+
+            let fixture = FixtureInfo {
+                name: format!("fixture_{}", i),
+                universe: 1,
+                address: (i - 1) * 4 + 1,
+                channels,
+                fixture_type: "RGB_Par".to_string(),
+                max_strobe_frequency: Some(20.0),
+            };
+            engine.register_fixture(fixture);
+        }
+
+        let chase_effect = EffectInstance::with_layering(
+            "chase_linear_ltr".to_string(),
+            EffectType::Chase {
+                pattern: ChasePattern::Linear,
+                speed: 2.0, // 2 Hz for easy testing
+                direction: ChaseDirection::LeftToRight,
+            },
+            vec![
+                "fixture_1".to_string(),
+                "fixture_2".to_string(),
+                "fixture_3".to_string(),
+                "fixture_4".to_string(),
+            ],
+            EffectLayer::Background,
+            BlendMode::Replace,
+        );
+
+        engine.start_effect(chase_effect).unwrap();
+
+        // Test chase sequence: fixture_1 -> fixture_2 -> fixture_3 -> fixture_4
+        // At t=0ms (start) - fixture_1 should be ON
+        let commands = engine.update(Duration::from_millis(0)).unwrap();
+        let fixture1_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
+        assert_eq!(fixture1_cmd.value, 255); // Should be ON
+
+        // At t=125ms (1/4 cycle) - fixture_2 should be ON
+        let commands = engine.update(Duration::from_millis(125)).unwrap();
+        let fixture2_cmd = commands.iter().find(|cmd| cmd.channel == 5).unwrap(); // fixture_2 dimmer
+        assert_eq!(fixture2_cmd.value, 255); // Should be ON
+
+        // At t=250ms (1/2 cycle) - fixture_3 should be ON
+        let commands = engine.update(Duration::from_millis(125)).unwrap(); // 125ms more = 250ms total
+        let fixture3_cmd = commands.iter().find(|cmd| cmd.channel == 9).unwrap(); // fixture_3 dimmer
+        assert_eq!(fixture3_cmd.value, 255); // Should be ON
+
+        // At t=375ms (3/4 cycle) - fixture_4 should be ON
+        let commands = engine.update(Duration::from_millis(125)).unwrap(); // 125ms more = 375ms total
+        let fixture4_cmd = commands.iter().find(|cmd| cmd.channel == 13).unwrap(); // fixture_4 dimmer
+        assert_eq!(fixture4_cmd.value, 255); // Should be ON
+
+        // At t=500ms (full cycle) - fixture_1 should be ON again
+        let commands = engine.update(Duration::from_millis(125)).unwrap(); // 125ms more = 500ms total
+        let fixture1_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
+        assert_eq!(fixture1_cmd.value, 255); // Should be ON again
+    }
+
+    #[test]
+    fn test_chase_pattern_linear_right_to_left() {
+        let mut engine = EffectEngine::new();
+
+        // Create 4 fixtures for testing
+        for i in 1..=4 {
+            let mut channels = HashMap::new();
+            channels.insert("dimmer".to_string(), 1);
+            channels.insert("red".to_string(), 2);
+            channels.insert("green".to_string(), 3);
+            channels.insert("blue".to_string(), 4);
+
+            let fixture = FixtureInfo {
+                name: format!("fixture_{}", i),
+                universe: 1,
+                address: (i - 1) * 4 + 1,
+                channels,
+                fixture_type: "RGB_Par".to_string(),
+                max_strobe_frequency: Some(20.0),
+            };
+            engine.register_fixture(fixture);
+        }
+
+        let chase_effect = EffectInstance::with_layering(
+            "chase_linear_rtl".to_string(),
+            EffectType::Chase {
+                pattern: ChasePattern::Linear,
+                speed: 2.0, // 2 Hz for easy testing
+                direction: ChaseDirection::RightToLeft,
+            },
+            vec![
+                "fixture_1".to_string(),
+                "fixture_2".to_string(),
+                "fixture_3".to_string(),
+                "fixture_4".to_string(),
+            ],
+            EffectLayer::Background,
+            BlendMode::Replace,
+        );
+
+        engine.start_effect(chase_effect).unwrap();
+
+        // Test chase sequence: fixture_4 -> fixture_3 -> fixture_2 -> fixture_1
+        // At t=0ms (start) - fixture_4 should be ON
+        let commands = engine.update(Duration::from_millis(0)).unwrap();
+        let fixture4_cmd = commands.iter().find(|cmd| cmd.channel == 13).unwrap(); // fixture_4 dimmer
+        assert_eq!(fixture4_cmd.value, 255); // Should be ON
+
+        // At t=125ms (1/4 cycle) - fixture_3 should be ON
+        let commands = engine.update(Duration::from_millis(125)).unwrap();
+        let fixture3_cmd = commands.iter().find(|cmd| cmd.channel == 9).unwrap(); // fixture_3 dimmer
+        assert_eq!(fixture3_cmd.value, 255); // Should be ON
+
+        // At t=250ms (1/2 cycle) - fixture_2 should be ON
+        let commands = engine.update(Duration::from_millis(125)).unwrap(); // 125ms more = 250ms total
+        let fixture2_cmd = commands.iter().find(|cmd| cmd.channel == 5).unwrap(); // fixture_2 dimmer
+        assert_eq!(fixture2_cmd.value, 255); // Should be ON
+
+        // At t=375ms (3/4 cycle) - fixture_1 should be ON
+        let commands = engine.update(Duration::from_millis(125)).unwrap(); // 125ms more = 375ms total
+        let fixture1_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
+        assert_eq!(fixture1_cmd.value, 255); // Should be ON
+    }
+
+    #[test]
+    fn test_chase_pattern_snake() {
+        let mut engine = EffectEngine::new();
+
+        // Create 4 fixtures for testing
+        for i in 1..=4 {
+            let mut channels = HashMap::new();
+            channels.insert("dimmer".to_string(), 1);
+            channels.insert("red".to_string(), 2);
+            channels.insert("green".to_string(), 3);
+            channels.insert("blue".to_string(), 4);
+
+            let fixture = FixtureInfo {
+                name: format!("fixture_{}", i),
+                universe: 1,
+                address: (i - 1) * 4 + 1,
+                channels,
+                fixture_type: "RGB_Par".to_string(),
+                max_strobe_frequency: Some(20.0),
+            };
+            engine.register_fixture(fixture);
+        }
+
+        let chase_effect = EffectInstance::with_layering(
+            "chase_snake".to_string(),
+            EffectType::Chase {
+                pattern: ChasePattern::Snake,
+                speed: 2.0, // 2 Hz for easy testing
+                direction: ChaseDirection::LeftToRight,
+            },
+            vec![
+                "fixture_1".to_string(),
+                "fixture_2".to_string(),
+                "fixture_3".to_string(),
+                "fixture_4".to_string(),
+            ],
+            EffectLayer::Background,
+            BlendMode::Replace,
+        );
+
+        engine.start_effect(chase_effect).unwrap();
+
+        // Test snake pattern: fixture_1 -> fixture_2 -> fixture_3 -> fixture_4 -> fixture_3 -> fixture_2 -> fixture_1
+        // Snake pattern has 6 positions: [0,1,2,3,2,1] for 4 fixtures
+        // Each position lasts 500ms/6 = 83.33ms
+
+        // At t=0ms (start) - fixture_1 should be ON
+        let commands = engine.update(Duration::from_millis(0)).unwrap();
+        let fixture1_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
+        assert_eq!(fixture1_cmd.value, 255); // Should be ON
+
+        // At t=125ms (1/6 cycle) - fixture_2 should be ON
+        let commands = engine.update(Duration::from_millis(125)).unwrap();
+        let fixture2_cmd = commands.iter().find(|cmd| cmd.channel == 5).unwrap();
+        assert_eq!(fixture2_cmd.value, 255); // Should be ON
+
+        // At t=250ms (2/6 cycle) - fixture_3 should be ON
+        let commands = engine.update(Duration::from_millis(125)).unwrap(); // 125+125=250ms total
+        let fixture3_cmd = commands.iter().find(|cmd| cmd.channel == 9).unwrap();
+        assert_eq!(fixture3_cmd.value, 255); // Should be ON
+
+        // At t=375ms (3/6 cycle) - fixture_4 should be ON
+        let commands = engine.update(Duration::from_millis(125)).unwrap(); // 250+125=375ms total
+        let fixture4_cmd = commands.iter().find(|cmd| cmd.channel == 13).unwrap();
+        assert_eq!(fixture4_cmd.value, 255); // Should be ON
+
+        // At t=500ms (4/6 cycle) - fixture_3 should be ON (snake back)
+        let commands = engine.update(Duration::from_millis(125)).unwrap(); // 375+125=500ms total
+        let fixture3_cmd = commands.iter().find(|cmd| cmd.channel == 9).unwrap();
+        assert_eq!(fixture3_cmd.value, 255); // Should be ON
+
+        // At t=625ms (5/6 cycle) - fixture_2 should be ON (snake back)
+        let commands = engine.update(Duration::from_millis(125)).unwrap(); // 500+125=625ms total
+        let fixture2_cmd = commands.iter().find(|cmd| cmd.channel == 5).unwrap();
+        assert_eq!(fixture2_cmd.value, 255); // Should be ON
+
+        // At t=750ms (6/6 cycle) - fixture_1 should be ON again
+        let commands = engine.update(Duration::from_millis(125)).unwrap(); // 625+125=750ms total
+        let fixture1_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
+        assert_eq!(fixture1_cmd.value, 255); // Should be ON again
+    }
+
+    #[test]
+    fn test_chase_pattern_random() {
+        let mut engine = EffectEngine::new();
+
+        // Create 4 fixtures for testing
+        for i in 1..=4 {
+            let mut channels = HashMap::new();
+            channels.insert("dimmer".to_string(), 1);
+            channels.insert("red".to_string(), 2);
+            channels.insert("green".to_string(), 3);
+            channels.insert("blue".to_string(), 4);
+
+            let fixture = FixtureInfo {
+                name: format!("fixture_{}", i),
+                universe: 1,
+                address: (i - 1) * 4 + 1,
+                channels,
+                fixture_type: "RGB_Par".to_string(),
+                max_strobe_frequency: Some(20.0),
+            };
+            engine.register_fixture(fixture);
+        }
+
+        let chase_effect = EffectInstance::with_layering(
+            "chase_random".to_string(),
+            EffectType::Chase {
+                pattern: ChasePattern::Random,
+                speed: 2.0,                             // 2 Hz for easy testing
+                direction: ChaseDirection::LeftToRight, // Direction doesn't matter for random
+            },
+            vec![
+                "fixture_1".to_string(),
+                "fixture_2".to_string(),
+                "fixture_3".to_string(),
+                "fixture_4".to_string(),
+            ],
+            EffectLayer::Background,
+            BlendMode::Replace,
+        );
+
+        engine.start_effect(chase_effect).unwrap();
+
+        // Test random pattern - should have some fixture ON at each time point
+        // At t=0ms - some fixture should be ON
+        let commands = engine.update(Duration::from_millis(0)).unwrap();
+        let on_fixtures: Vec<_> = commands.iter().filter(|cmd| cmd.value == 255).collect();
+        assert_eq!(on_fixtures.len(), 1); // Exactly one fixture should be ON
+
+        // At t=125ms - some fixture should be ON
+        let commands = engine.update(Duration::from_millis(125)).unwrap();
+        let on_fixtures: Vec<_> = commands.iter().filter(|cmd| cmd.value == 255).collect();
+        assert_eq!(on_fixtures.len(), 1); // Exactly one fixture should be ON
+
+        // At t=250ms - some fixture should be ON
+        let commands = engine.update(Duration::from_millis(125)).unwrap(); // 125ms more = 250ms total
+        let on_fixtures: Vec<_> = commands.iter().filter(|cmd| cmd.value == 255).collect();
+        assert_eq!(on_fixtures.len(), 1); // Exactly one fixture should be ON
+    }
+
+    #[test]
+    fn test_chase_direction_vertical() {
+        let mut engine = EffectEngine::new();
+
+        // Create 4 fixtures for testing
+        for i in 1..=4 {
+            let mut channels = HashMap::new();
+            channels.insert("dimmer".to_string(), 1);
+            channels.insert("red".to_string(), 2);
+            channels.insert("green".to_string(), 3);
+            channels.insert("blue".to_string(), 4);
+
+            let fixture = FixtureInfo {
+                name: format!("fixture_{}", i),
+                universe: 1,
+                address: (i - 1) * 4 + 1,
+                channels,
+                fixture_type: "RGB_Par".to_string(),
+                max_strobe_frequency: Some(20.0),
+            };
+            engine.register_fixture(fixture);
+        }
+
+        // Test TopToBottom
+        let chase_effect = EffectInstance::with_layering(
+            "chase_ttb".to_string(),
+            EffectType::Chase {
+                pattern: ChasePattern::Linear,
+                speed: 2.0,
+                direction: ChaseDirection::TopToBottom,
+            },
+            vec![
+                "fixture_1".to_string(),
+                "fixture_2".to_string(),
+                "fixture_3".to_string(),
+                "fixture_4".to_string(),
+            ],
+            EffectLayer::Background,
+            BlendMode::Replace,
+        );
+
+        engine.start_effect(chase_effect).unwrap();
+
+        // TopToBottom should behave like LeftToRight (fixture_1 -> fixture_2 -> fixture_3 -> fixture_4)
+        let commands = engine.update(Duration::from_millis(0)).unwrap();
+        let fixture1_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
+        assert_eq!(fixture1_cmd.value, 255); // Should be ON
+    }
+
+    #[test]
+    fn test_chase_direction_circular() {
+        let mut engine = EffectEngine::new();
+
+        // Create 4 fixtures for testing
+        for i in 1..=4 {
+            let mut channels = HashMap::new();
+            channels.insert("dimmer".to_string(), 1);
+            channels.insert("red".to_string(), 2);
+            channels.insert("green".to_string(), 3);
+            channels.insert("blue".to_string(), 4);
+
+            let fixture = FixtureInfo {
+                name: format!("fixture_{}", i),
+                universe: 1,
+                address: (i - 1) * 4 + 1,
+                channels,
+                fixture_type: "RGB_Par".to_string(),
+                max_strobe_frequency: Some(20.0),
+            };
+            engine.register_fixture(fixture);
+        }
+
+        // Test Clockwise
+        let chase_effect = EffectInstance::with_layering(
+            "chase_cw".to_string(),
+            EffectType::Chase {
+                pattern: ChasePattern::Linear,
+                speed: 2.0,
+                direction: ChaseDirection::Clockwise,
+            },
+            vec![
+                "fixture_1".to_string(),
+                "fixture_2".to_string(),
+                "fixture_3".to_string(),
+                "fixture_4".to_string(),
+            ],
+            EffectLayer::Background,
+            BlendMode::Replace,
+        );
+
+        engine.start_effect(chase_effect).unwrap();
+
+        // Clockwise should behave like LeftToRight (fixture_1 -> fixture_2 -> fixture_3 -> fixture_4)
+        let commands = engine.update(Duration::from_millis(0)).unwrap();
+        let fixture1_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
+        assert_eq!(fixture1_cmd.value, 255); // Should be ON
+    }
+
+    #[test]
+    fn test_chase_speed_variations() {
+        let mut engine = EffectEngine::new();
+
+        // Create 3 fixtures for testing
+        for i in 1..=3 {
+            let mut channels = HashMap::new();
+            channels.insert("dimmer".to_string(), 1);
+            channels.insert("red".to_string(), 2);
+            channels.insert("green".to_string(), 3);
+            channels.insert("blue".to_string(), 4);
+
+            let fixture = FixtureInfo {
+                name: format!("fixture_{}", i),
+                universe: 1,
+                address: (i - 1) * 4 + 1,
+                channels,
+                fixture_type: "RGB_Par".to_string(),
+                max_strobe_frequency: Some(20.0),
+            };
+            engine.register_fixture(fixture);
+        }
+
+        // Test slow speed (0.5 Hz)
+        let slow_chase = EffectInstance::with_layering(
+            "chase_slow".to_string(),
+            EffectType::Chase {
+                pattern: ChasePattern::Linear,
+                speed: 0.5, // 0.5 Hz - 2 second cycle
+                direction: ChaseDirection::LeftToRight,
+            },
+            vec![
+                "fixture_1".to_string(),
+                "fixture_2".to_string(),
+                "fixture_3".to_string(),
+            ],
+            EffectLayer::Background,
+            BlendMode::Replace,
+        );
+
+        engine.start_effect(slow_chase).unwrap();
+
+        // At t=0ms - fixture_1 should be ON
+        let commands = engine.update(Duration::from_millis(0)).unwrap();
+        let fixture1_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
+        assert_eq!(fixture1_cmd.value, 255); // Should be ON
+
+        // At t=600ms (1/3 cycle) - fixture_1 should still be ON
+        let commands = engine.update(Duration::from_millis(600)).unwrap();
+        let fixture1_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
+        assert_eq!(fixture1_cmd.value, 255); // Should still be ON
+
+        // At t=1200ms (2/3 cycle) - fixture_2 should be ON
+        let commands = engine.update(Duration::from_millis(600)).unwrap(); // 600ms more = 1200ms total
+        let fixture2_cmd = commands.iter().find(|cmd| cmd.channel == 5).unwrap();
+        assert_eq!(fixture2_cmd.value, 255); // Should be ON
+    }
+
+    #[test]
+    fn test_chase_single_fixture() {
+        let mut engine = EffectEngine::new();
+
+        // Create single fixture
+        let mut channels = HashMap::new();
+        channels.insert("dimmer".to_string(), 1);
+        channels.insert("red".to_string(), 2);
+        channels.insert("green".to_string(), 3);
+        channels.insert("blue".to_string(), 4);
+
+        let fixture = FixtureInfo {
+            name: "single_fixture".to_string(),
+            universe: 1,
+            address: 1,
+            channels,
+            fixture_type: "RGB_Par".to_string(),
+            max_strobe_frequency: Some(20.0),
+        };
+        engine.register_fixture(fixture);
+
+        let chase_effect = EffectInstance::with_layering(
+            "chase_single".to_string(),
+            EffectType::Chase {
+                pattern: ChasePattern::Linear,
+                speed: 2.0,
+                direction: ChaseDirection::LeftToRight,
+            },
+            vec!["single_fixture".to_string()],
+            EffectLayer::Background,
+            BlendMode::Replace,
+        );
+
+        engine.start_effect(chase_effect).unwrap();
+
+        // With single fixture, it should always be ON
+        let commands = engine.update(Duration::from_millis(0)).unwrap();
+        let fixture_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
+        assert_eq!(fixture_cmd.value, 255); // Should be ON
+
+        // At any time, single fixture should be ON
+        let commands = engine.update(Duration::from_millis(500)).unwrap();
+        let fixture_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
+        assert_eq!(fixture_cmd.value, 255); // Should be ON
+    }
+
+    #[test]
+    fn test_chase_rgb_only_fixtures() {
+        let mut engine = EffectEngine::new();
+
+        // Create RGB-only fixtures
+        for i in 1..=3 {
+            let mut channels = HashMap::new();
+            channels.insert("red".to_string(), 1);
+            channels.insert("green".to_string(), 2);
+            channels.insert("blue".to_string(), 3);
+            // No dimmer channel!
+
+            let fixture = FixtureInfo {
+                name: format!("rgb_fixture_{}", i),
+                universe: 1,
+                address: (i - 1) * 3 + 1,
+                channels,
+                fixture_type: "RGB_Par".to_string(),
+                max_strobe_frequency: None,
+            };
+            engine.register_fixture(fixture);
+        }
+
+        let chase_effect = EffectInstance::with_layering(
+            "chase_rgb".to_string(),
+            EffectType::Chase {
+                pattern: ChasePattern::Linear,
+                speed: 2.0,
+                direction: ChaseDirection::LeftToRight,
+            },
+            vec![
+                "rgb_fixture_1".to_string(),
+                "rgb_fixture_2".to_string(),
+                "rgb_fixture_3".to_string(),
+            ],
+            EffectLayer::Background,
+            BlendMode::Replace,
+        );
+
+        engine.start_effect(chase_effect).unwrap();
+
+        // Test that RGB channels are used for chase (white chase)
+        let commands = engine.update(Duration::from_millis(0)).unwrap();
+
+        // fixture_1 should have all RGB channels ON
+        let red_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
+        let green_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
+        let blue_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
+        assert_eq!(red_cmd.value, 255);
+        assert_eq!(green_cmd.value, 255);
+        assert_eq!(blue_cmd.value, 255);
+
+        // At t=167ms (1/3 cycle) - fixture_2 should be ON
+        let commands = engine.update(Duration::from_millis(167)).unwrap();
+        let red_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap(); // fixture_2 red
+        let green_cmd = commands.iter().find(|cmd| cmd.channel == 5).unwrap(); // fixture_2 green
+        let blue_cmd = commands.iter().find(|cmd| cmd.channel == 6).unwrap(); // fixture_2 blue
+        assert_eq!(red_cmd.value, 255);
+        assert_eq!(green_cmd.value, 255);
+        assert_eq!(blue_cmd.value, 255);
+    }
+
+    #[test]
+    fn test_disabled_effects_not_participating_in_conflicts() {
+        let mut engine = EffectEngine::new();
+
+        // Create test fixture
+        let mut channels = HashMap::new();
+        channels.insert("red".to_string(), 1);
+        channels.insert("green".to_string(), 2);
+        channels.insert("blue".to_string(), 3);
+
+        let fixture = FixtureInfo {
+            name: "test_fixture".to_string(),
+            universe: 1,
+            address: 1,
+            channels,
+            fixture_type: "RGB_Par".to_string(),
+            max_strobe_frequency: Some(20.0),
+        };
+        engine.register_fixture(fixture);
+
+        // Create a disabled effect
+        let mut disabled_effect = EffectInstance::with_layering(
+            "disabled_effect".to_string(),
+            EffectType::Static {
+                parameters: {
+                    let mut params = HashMap::new();
+                    params.insert("red".to_string(), 1.0);
+                    params
+                },
+                duration: None,
+            },
+            vec!["test_fixture".to_string()],
+            EffectLayer::Background,
+            BlendMode::Replace,
+        );
+        disabled_effect.enabled = false; // Disable the effect
+
+        // Create a conflicting effect
+        let conflicting_effect = EffectInstance::with_layering(
+            "conflicting_effect".to_string(),
+            EffectType::Static {
+                parameters: {
+                    let mut params = HashMap::new();
+                    params.insert("blue".to_string(), 1.0);
+                    params
+                },
+                duration: None,
+            },
+            vec!["test_fixture".to_string()],
+            EffectLayer::Background, // Same layer, same type
+            BlendMode::Replace,
+        );
+
+        // Start the disabled effect first
+        engine.start_effect(disabled_effect).unwrap();
+        assert_eq!(engine.active_effects_count(), 1);
+        assert!(engine.has_effect("disabled_effect"));
+
+        // Start the conflicting effect
+        engine.start_effect(conflicting_effect).unwrap();
+
+        // The disabled effect should not be stopped because it's disabled
+        // The conflicting effect should still be added
+        assert_eq!(engine.active_effects_count(), 2);
+        assert!(engine.has_effect("disabled_effect"));
+        assert!(engine.has_effect("conflicting_effect"));
+
+        // Test that disabled effects don't stop other effects
+        let another_effect = EffectInstance::with_layering(
+            "another_effect".to_string(),
+            EffectType::Static {
+                parameters: {
+                    let mut params = HashMap::new();
+                    params.insert("green".to_string(), 1.0);
+                    params
+                },
+                duration: None,
+            },
+            vec!["test_fixture".to_string()],
+            EffectLayer::Background, // Same layer, same type
+            BlendMode::Replace,
+        );
+
+        engine.start_effect(another_effect).unwrap();
+
+        // The disabled effect should still be there, but the conflicting effect should be stopped
+        assert_eq!(engine.active_effects_count(), 2); // disabled + another
+        assert!(engine.has_effect("disabled_effect"));
+        assert!(!engine.has_effect("conflicting_effect"));
+        assert!(engine.has_effect("another_effect"));
+    }
+
+    #[test]
+    fn test_fixture_overlap_without_conflicts() {
+        let mut engine = EffectEngine::new();
+
+        // Create test fixtures
+        let mut channels = HashMap::new();
+        channels.insert("red".to_string(), 1);
+        channels.insert("green".to_string(), 2);
+        channels.insert("blue".to_string(), 3);
+
+        let fixture1 = FixtureInfo {
+            name: "fixture1".to_string(),
+            universe: 1,
+            address: 1,
+            channels: channels.clone(),
+            fixture_type: "RGB_Par".to_string(),
+            max_strobe_frequency: Some(20.0),
+        };
+
+        let fixture2 = FixtureInfo {
+            name: "fixture2".to_string(),
+            universe: 1,
+            address: 2,
+            channels: channels.clone(),
+            fixture_type: "RGB_Par".to_string(),
+            max_strobe_frequency: Some(20.0),
+        };
+
+        engine.register_fixture(fixture1);
+        engine.register_fixture(fixture2);
+
+        // Test effects targeting different fixtures (no overlap)
+        let effect1 = EffectInstance::with_layering(
+            "effect1".to_string(),
+            EffectType::Static {
+                parameters: {
+                    let mut params = HashMap::new();
+                    params.insert("red".to_string(), 1.0);
+                    params
+                },
+                duration: None,
+            },
+            vec!["fixture1".to_string()],
+            EffectLayer::Background,
+            BlendMode::Replace,
+        );
+
+        let effect2 = EffectInstance::with_layering(
+            "effect2".to_string(),
+            EffectType::Static {
+                parameters: {
+                    let mut params = HashMap::new();
+                    params.insert("blue".to_string(), 1.0);
+                    params
+                },
+                duration: None,
+            },
+            vec!["fixture2".to_string()], // Different fixture
+            EffectLayer::Background,      // Same layer, same type
+            BlendMode::Replace,
+        );
+
+        engine.start_effect(effect1).unwrap();
+        engine.start_effect(effect2).unwrap();
+
+        // No overlap, so no conflict
+        assert_eq!(engine.active_effects_count(), 2);
+        assert!(engine.has_effect("effect1"));
+        assert!(engine.has_effect("effect2"));
+
+        // Test effects with partial overlap
+        let effect3 = EffectInstance::with_layering(
+            "effect3".to_string(),
+            EffectType::Static {
+                parameters: {
+                    let mut params = HashMap::new();
+                    params.insert("green".to_string(), 1.0);
+                    params
+                },
+                duration: None,
+            },
+            vec!["fixture1".to_string(), "fixture2".to_string()], // Both fixtures
+            EffectLayer::Background,
+            BlendMode::Replace,
+        );
+
+        let effect4 = EffectInstance::with_layering(
+            "effect4".to_string(),
+            EffectType::Dimmer {
+                start_level: 1.0,
+                end_level: 0.5,
+                duration: Duration::from_secs(1),
+                curve: DimmerCurve::Linear,
+            },
+            vec!["fixture1".to_string()], // Only fixture1
+            EffectLayer::Background,      // Same layer
+            BlendMode::Multiply,
+        );
+
+        engine.start_effect(effect3).unwrap();
+        engine.start_effect(effect4).unwrap();
+
+        // Overlap on fixture1, but different types (Static vs Dimmer)
+        // Dimmer is generally compatible, so should layer
+        // effect3 should stop effect1 and effect2 because they're all static effects
+        assert_eq!(engine.active_effects_count(), 2); // effect3 + effect4
+        assert!(!engine.has_effect("effect1"));
+        assert!(!engine.has_effect("effect2"));
+        assert!(engine.has_effect("effect3"));
+        assert!(engine.has_effect("effect4"));
+    }
+
+    #[test]
+    fn test_complex_multi_layer_multi_effect_scenarios() {
+        let mut engine = EffectEngine::new();
+
+        // Create test fixtures
+        let mut channels = HashMap::new();
+        channels.insert("red".to_string(), 1);
+        channels.insert("green".to_string(), 2);
+        channels.insert("blue".to_string(), 3);
+        channels.insert("strobe".to_string(), 4);
+
+        let fixture1 = FixtureInfo {
+            name: "fixture1".to_string(),
+            universe: 1,
+            address: 1,
+            channels: channels.clone(),
+            fixture_type: "RGB_Par".to_string(),
+            max_strobe_frequency: Some(20.0),
+        };
+
+        let fixture2 = FixtureInfo {
+            name: "fixture2".to_string(),
+            universe: 1,
+            address: 2,
+            channels: channels.clone(),
+            fixture_type: "RGB_Par".to_string(),
+            max_strobe_frequency: Some(20.0),
+        };
+
+        engine.register_fixture(fixture1);
+        engine.register_fixture(fixture2);
+
+        // Complex scenario: Multiple effects across different layers and fixtures
+        let background_static = EffectInstance::with_layering(
+            "background_static".to_string(),
+            EffectType::Static {
+                parameters: {
+                    let mut params = HashMap::new();
+                    params.insert("red".to_string(), 1.0);
+                    params
+                },
+                duration: None,
+            },
+            vec!["fixture1".to_string(), "fixture2".to_string()],
+            EffectLayer::Background,
+            BlendMode::Replace,
+        );
+
+        let midground_dimmer = EffectInstance::with_layering(
+            "midground_dimmer".to_string(),
+            EffectType::Dimmer {
+                start_level: 1.0,
+                end_level: 0.5,
+                duration: Duration::from_secs(1),
+                curve: DimmerCurve::Linear,
+            },
+            vec!["fixture1".to_string()],
+            EffectLayer::Midground,
+            BlendMode::Multiply,
+        );
+
+        let midground_pulse = EffectInstance::with_layering(
+            "midground_pulse".to_string(),
+            EffectType::Pulse {
+                base_level: 0.5,
+                pulse_amplitude: 0.3,
+                frequency: 2.0,
+                duration: None,
+            },
+            vec!["fixture1".to_string()],
+            EffectLayer::Midground,
+            BlendMode::Multiply,
+        );
+
+        let foreground_strobe = EffectInstance::with_layering(
+            "foreground_strobe".to_string(),
+            EffectType::Strobe {
+                frequency: 2.0,
+                duration: None,
+            },
+            vec!["fixture2".to_string()],
+            EffectLayer::Foreground,
+            BlendMode::Overlay,
+        );
+
+        // Start all effects
+        engine.start_effect(background_static).unwrap();
+        engine.start_effect(midground_dimmer).unwrap();
+        engine.start_effect(midground_pulse).unwrap();
+        engine.start_effect(foreground_strobe).unwrap();
+
+        // All should coexist (different layers, compatible types)
+        assert_eq!(engine.active_effects_count(), 4);
+        assert!(engine.has_effect("background_static"));
+        assert!(engine.has_effect("midground_dimmer"));
+        assert!(engine.has_effect("midground_pulse"));
+        assert!(engine.has_effect("foreground_strobe"));
+
+        // Add conflicting effects
+        let conflicting_static = EffectInstance::with_layering(
+            "conflicting_static".to_string(),
+            EffectType::Static {
+                parameters: {
+                    let mut params = HashMap::new();
+                    params.insert("blue".to_string(), 1.0);
+                    params
+                },
+                duration: None,
+            },
+            vec!["fixture1".to_string()],
+            EffectLayer::Background, // Same layer as background_static
+            BlendMode::Replace,
+        );
+
+        let conflicting_strobe = EffectInstance::with_layering(
+            "conflicting_strobe".to_string(),
+            EffectType::Strobe {
+                frequency: 4.0,
+                duration: None,
+            },
+            vec!["fixture2".to_string()],
+            EffectLayer::Foreground, // Same layer as foreground_strobe
+            BlendMode::Replace,
+        );
+
+        engine.start_effect(conflicting_static).unwrap();
+        engine.start_effect(conflicting_strobe).unwrap();
+
+        // Conflicting effects should stop their counterparts
+        assert_eq!(engine.active_effects_count(), 4); // midground_dimmer + midground_pulse + conflicting_static + conflicting_strobe
+        assert!(!engine.has_effect("background_static"));
+        assert!(engine.has_effect("midground_dimmer"));
+        assert!(engine.has_effect("midground_pulse"));
+        assert!(!engine.has_effect("foreground_strobe"));
+        assert!(engine.has_effect("conflicting_static"));
+        assert!(engine.has_effect("conflicting_strobe"));
+
+        // Add a high-priority effect that should stop others
+        let high_priority_effect = EffectInstance::with_layering(
+            "high_priority_effect".to_string(),
+            EffectType::Static {
+                parameters: {
+                    let mut params = HashMap::new();
+                    params.insert("green".to_string(), 1.0);
+                    params
+                },
+                duration: None,
+            },
+            vec!["fixture1".to_string()],
+            EffectLayer::Background, // Same layer as conflicting_static
+            BlendMode::Replace,
+        )
+        .with_priority(100); // Very high priority
+
+        engine.start_effect(high_priority_effect).unwrap();
+
+        // High priority should stop the conflicting static
+        assert_eq!(engine.active_effects_count(), 4); // midground_dimmer + midground_pulse + high_priority + conflicting_strobe
+        assert!(!engine.has_effect("conflicting_static"));
+        assert!(engine.has_effect("high_priority_effect"));
+        assert!(engine.has_effect("conflicting_strobe"));
+    }
+
+    #[test]
+    fn test_channel_conflict_detection_behavior() {
+        let mut engine = EffectEngine::new();
+
+        // Create test fixtures
+        let mut channels = HashMap::new();
+        channels.insert("red".to_string(), 1);
+        channels.insert("green".to_string(), 2);
+        channels.insert("blue".to_string(), 3);
+
+        let fixture1 = FixtureInfo {
+            name: "fixture1".to_string(),
+            universe: 1,
+            address: 1,
+            channels: channels.clone(),
+            fixture_type: "RGB_Par".to_string(),
+            max_strobe_frequency: Some(20.0),
+        };
+
+        let fixture2 = FixtureInfo {
+            name: "fixture2".to_string(),
+            universe: 1,
+            address: 2,
+            channels: channels.clone(),
+            fixture_type: "RGB_Par".to_string(),
+            max_strobe_frequency: Some(20.0),
+        };
+
+        engine.register_fixture(fixture1);
+        engine.register_fixture(fixture2);
+
+        // Test that channel conflicts currently always return false
+        let effect1 = EffectInstance::with_layering(
+            "effect1".to_string(),
+            EffectType::Static {
+                parameters: {
+                    let mut params = HashMap::new();
+                    params.insert("red".to_string(), 1.0);
+                    params
+                },
+                duration: None,
+            },
+            vec!["fixture1".to_string()],
+            EffectLayer::Background,
+            BlendMode::Replace,
+        );
+
+        let effect2 = EffectInstance::with_layering(
+            "effect2".to_string(),
+            EffectType::Static {
+                parameters: {
+                    let mut params = HashMap::new();
+                    params.insert("blue".to_string(), 1.0);
+                    params
+                },
+                duration: None,
+            },
+            vec!["fixture2".to_string()],
+            EffectLayer::Foreground, // Different layer
+            BlendMode::Replace,
+        );
+
+        engine.start_effect(effect1).unwrap();
+        engine.start_effect(effect2).unwrap();
+
+        // Since channel conflicts always return false, effects in different layers should coexist
+        assert_eq!(engine.active_effects_count(), 2);
+        assert!(engine.has_effect("effect1"));
+        assert!(engine.has_effect("effect2"));
+
+        // Test with same layer but different fixtures
+        let effect3 = EffectInstance::with_layering(
+            "effect3".to_string(),
+            EffectType::Static {
+                parameters: {
+                    let mut params = HashMap::new();
+                    params.insert("green".to_string(), 1.0);
+                    params
+                },
+                duration: None,
+            },
+            vec!["fixture1".to_string()],
+            EffectLayer::Background, // Same layer as effect1
+            BlendMode::Replace,
+        );
+
+        engine.start_effect(effect3).unwrap();
+
+        // Same layer, same type, same fixture - should conflict
+        assert_eq!(engine.active_effects_count(), 2); // effect2 + effect3
+        assert!(!engine.has_effect("effect1"));
+        assert!(engine.has_effect("effect2"));
+        assert!(engine.has_effect("effect3"));
     }
 }
