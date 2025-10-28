@@ -365,7 +365,6 @@ fn parse_effect_definition(pair: pest::iterators::Pair<Rule>) -> Result<Effect, 
                     },
                     "strobe" => EffectType::Strobe {
                         frequency: 8.0,
-                        intensity: 0.8,
                         duration: None,
                     },
                     "pulse" => EffectType::Pulse {
@@ -521,7 +520,6 @@ fn apply_parameters_to_effect_type(
         }
         EffectType::Strobe {
             frequency,
-            intensity,
             duration,
         } => {
             for (key, value) in parameters {
@@ -529,11 +527,6 @@ fn apply_parameters_to_effect_type(
                     "frequency" | "rate" => {
                         if let Ok(val) = value.parse::<f64>() {
                             *frequency = val;
-                        }
-                    }
-                    "intensity" => {
-                        if let Ok(val) = parse_percentage_to_f64(value) {
-                            *intensity = val;
                         }
                     }
                     "duration" => {

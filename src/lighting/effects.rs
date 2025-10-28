@@ -34,7 +34,6 @@ pub enum EffectType {
     /// Strobe effect
     Strobe {
         frequency: f64, // Hz
-        intensity: f64, // 0.0 to 1.0
         duration: Option<Duration>,
     },
 
@@ -202,7 +201,7 @@ pub enum CycleDirection {
 }
 
 /// Chase pattern for spatial effects
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ChasePattern {
     Linear,
     Snake,
