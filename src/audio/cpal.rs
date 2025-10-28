@@ -222,7 +222,6 @@ impl OutputManager {
                         )
                     }
                     32 => {
-                        println!("Creating i32 CPAL stream (32-bit integer format)");
                         let mut callback = create_single_thread_callback::<i32>(
                             mixer.clone(),
                             source_rx.clone(),

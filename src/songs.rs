@@ -39,8 +39,6 @@ const AUDIO_EXTENSIONS: &[&str] = &["wav", "mid"];
 /// A resolved DSL lighting show with absolute file path
 #[derive(Debug, Clone)]
 pub struct DslLightingShow {
-    /// The name of the lighting show
-    name: String,
     /// The absolute path to the DSL file
     file_path: PathBuf,
 }
@@ -54,15 +52,7 @@ impl DslLightingShow {
             start_path.join(config.file())
         };
 
-        Ok(DslLightingShow {
-            name: config.name().to_string(),
-            file_path,
-        })
-    }
-
-    /// Gets the name of the lighting show
-    pub fn name(&self) -> &str {
-        &self.name
+        Ok(DslLightingShow { file_path })
     }
 
     /// Gets the absolute file path

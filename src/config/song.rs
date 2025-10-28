@@ -208,8 +208,6 @@ impl LightShow {
 /// A lighting show that references a DSL file.
 #[derive(Deserialize, Clone, Serialize)]
 pub struct LightingShow {
-    /// The name of the lighting show.
-    name: String,
     /// The path to the DSL file.
     file: String,
 }
@@ -217,13 +215,8 @@ pub struct LightingShow {
 impl LightingShow {
     /// Creates a new DSL lighting show.
     #[cfg(test)]
-    pub fn new(name: String, file: String) -> Self {
-        Self { name, file }
-    }
-
-    /// Gets the name of the lighting show.
-    pub fn name(&self) -> &str {
-        &self.name
+    pub fn new(file: String) -> Self {
+        Self { file }
     }
 
     /// Gets the DSL file path.
@@ -238,8 +231,7 @@ mod tests {
 
     #[test]
     fn test_lighting_show_creation() {
-        let show = LightingShow::new("Test Show".to_string(), "test.light".to_string());
-        assert_eq!(show.name(), "Test Show");
+        let show = LightingShow::new("test.light".to_string());
         assert_eq!(show.file(), "test.light");
     }
 }

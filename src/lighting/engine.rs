@@ -15,6 +15,8 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use tracing::info;
+
 use super::effects::*;
 
 /// The main effects engine that manages and processes lighting effects
@@ -22,6 +24,7 @@ pub struct EffectEngine {
     active_effects: HashMap<String, EffectInstance>,
     fixture_registry: HashMap<String, FixtureInfo>,
     current_time: Instant,
+    logged_effects: std::collections::HashSet<String>,
 }
 
 impl EffectEngine {
@@ -30,6 +33,18 @@ impl EffectEngine {
             active_effects: HashMap::new(),
             fixture_registry: HashMap::new(),
             current_time: Instant::now(),
+            logged_effects: std::collections::HashSet::new(),
+        }
+    }
+
+    /// Log effect application only on first occurrence
+    fn log_effect_application(&mut self, effect_id: &str, effect_type: &str, fixture_count: usize) {
+        if !self.logged_effects.contains(effect_id) {
+            info!(
+                "Applying {} effect '{}' to {} fixtures",
+                effect_type, effect_id, fixture_count
+            );
+            self.logged_effects.insert(effect_id.to_string());
         }
     }
 
@@ -104,8 +119,6 @@ impl EffectEngine {
 
         // Set the start time to the current engine time
         effect.start_time = Some(self.current_time);
-
-        // Start the regular effect
         self.active_effects.insert(effect.id.clone(), effect);
         Ok(())
     }
@@ -113,41 +126,85 @@ impl EffectEngine {
     /// Update the engine and return DMX commands
     pub fn update(&mut self, dt: Duration) -> Result<Vec<DmxCommand>, EffectError> {
         self.current_time += dt;
-        let mut commands = Vec::new();
 
-        // Update active effects
-        for effect in self.active_effects.values() {
-            if let Some(commands_for_effect) = self.process_effect(effect)? {
-                commands.extend(commands_for_effect);
+        // Process effects with layering
+        self.update_with_layering()
+    }
+
+    /// Update the engine with layering support
+    fn update_with_layering(&mut self) -> Result<Vec<DmxCommand>, EffectError> {
+        // Group effects by layer - collect effect IDs first to avoid borrowing conflicts
+        let mut effects_by_layer: std::collections::BTreeMap<EffectLayer, Vec<String>> =
+            std::collections::BTreeMap::new();
+
+        for (effect_id, effect) in &self.active_effects {
+            if effect.enabled {
+                effects_by_layer
+                    .entry(effect.layer)
+                    .or_default()
+                    .push(effect_id.clone());
+            }
+        }
+
+        // Process each layer in order
+        let mut fixture_states: std::collections::HashMap<String, FixtureState> =
+            std::collections::HashMap::new();
+
+        for (_layer, effect_ids) in effects_by_layer {
+            for effect_id in effect_ids {
+                // Clone the effect to avoid borrowing conflicts
+                let effect = self.active_effects.get(&effect_id).unwrap().clone();
+
+                // Check if effect has expired
+                if let Some(duration) = effect.duration {
+                    if let Some(start_time) = effect.start_time {
+                        if self.current_time.duration_since(start_time) >= duration {
+                            continue;
+                        }
+                    }
+                }
+
+                // Calculate effect parameters based on current time
+                let elapsed = effect
+                    .start_time
+                    .map(|start| self.current_time.duration_since(start))
+                    .unwrap_or(Duration::ZERO);
+
+                // Process the effect and get fixture states
+                if let Some(effect_states) = self.process_effect(&effect, elapsed)? {
+                    // Blend the effect states into the overall fixture states
+                    for (fixture_name, effect_state) in effect_states {
+                        if self.fixture_registry.contains_key(&fixture_name) {
+                            fixture_states
+                                .entry(fixture_name.clone())
+                                .or_insert_with(|| FixtureState::new(fixture_name))
+                                .blend_with(&effect_state);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Convert fixture states to DMX commands
+        let mut commands = Vec::new();
+        for (fixture_name, fixture_state) in fixture_states {
+            if let Some(fixture_info) = self.fixture_registry.get(&fixture_name) {
+                commands.extend(fixture_state.to_dmx_commands(fixture_info));
             }
         }
 
         Ok(commands)
     }
 
-    /// Process a single effect and return DMX commands
+    /// Process a single effect and return fixture states
     fn process_effect(
-        &self,
+        &mut self,
         effect: &EffectInstance,
-    ) -> Result<Option<Vec<DmxCommand>>, EffectError> {
+        elapsed: Duration,
+    ) -> Result<Option<HashMap<String, FixtureState>>, EffectError> {
         if !effect.enabled {
             return Ok(None);
         }
-
-        // Check if effect has expired
-        if let Some(duration) = effect.duration {
-            if let Some(start_time) = effect.start_time {
-                if self.current_time.duration_since(start_time) >= duration {
-                    return Ok(None);
-                }
-            }
-        }
-
-        // Calculate effect parameters based on current time
-        let elapsed = effect
-            .start_time
-            .map(|start| self.current_time.duration_since(start))
-            .unwrap_or(Duration::ZERO);
 
         match &effect.effect_type {
             EffectType::Static { parameters, .. } => self.apply_static_effect(effect, parameters),
@@ -186,380 +243,6 @@ impl EffectEngine {
         }
     }
 
-    /// Apply a static effect
-    fn apply_static_effect(
-        &self,
-        effect: &EffectInstance,
-        parameters: &HashMap<String, f64>,
-    ) -> Result<Option<Vec<DmxCommand>>, EffectError> {
-        let mut commands = Vec::new();
-
-        for fixture_name in &effect.target_fixtures {
-            if let Some(fixture) = self.fixture_registry.get(fixture_name) {
-                for (param_name, value) in parameters {
-                    if let Some(&channel) = fixture.channels.get(param_name) {
-                        let dmx_command = DmxCommand {
-                            universe: fixture.universe,
-                            channel: fixture.address + channel - 1,
-                            value: (*value * 255.0) as u8,
-                        };
-                        commands.push(dmx_command);
-                    }
-                }
-            }
-        }
-
-        Ok(Some(commands))
-    }
-
-    /// Apply a color cycle effect
-    fn apply_color_cycle(
-        &self,
-        effect: &EffectInstance,
-        colors: &[Color],
-        speed: f64,
-        direction: &CycleDirection,
-        elapsed: Duration,
-    ) -> Result<Option<Vec<DmxCommand>>, EffectError> {
-        if colors.is_empty() {
-            return Ok(None);
-        }
-
-        let cycle_time = 1.0 / speed;
-        let cycle_progress = (elapsed.as_secs_f64() % cycle_time) / cycle_time;
-
-        let color_index = match direction {
-            CycleDirection::Forward => (cycle_progress * colors.len() as f64).floor() as usize,
-            CycleDirection::Backward => {
-                colors.len() - 1 - ((cycle_progress * colors.len() as f64).floor() as usize)
-            }
-            CycleDirection::PingPong => {
-                let ping_pong_progress = if cycle_progress < 0.5 {
-                    cycle_progress * 2.0
-                } else {
-                    2.0 - cycle_progress * 2.0
-                };
-                (ping_pong_progress * colors.len() as f64).floor() as usize
-            }
-        };
-
-        let color = colors[color_index % colors.len()];
-        let mut commands = Vec::new();
-
-        for fixture_name in &effect.target_fixtures {
-            if let Some(fixture) = self.fixture_registry.get(fixture_name) {
-                // Apply RGB channels
-                if let Some(&red_channel) = fixture.channels.get("red") {
-                    commands.push(DmxCommand {
-                        universe: fixture.universe,
-                        channel: fixture.address + red_channel - 1,
-                        value: color.r,
-                    });
-                }
-                if let Some(&green_channel) = fixture.channels.get("green") {
-                    commands.push(DmxCommand {
-                        universe: fixture.universe,
-                        channel: fixture.address + green_channel - 1,
-                        value: color.g,
-                    });
-                }
-                if let Some(&blue_channel) = fixture.channels.get("blue") {
-                    commands.push(DmxCommand {
-                        universe: fixture.universe,
-                        channel: fixture.address + blue_channel - 1,
-                        value: color.b,
-                    });
-                }
-                if let Some(&white_channel) = fixture.channels.get("white") {
-                    if let Some(w) = color.w {
-                        commands.push(DmxCommand {
-                            universe: fixture.universe,
-                            channel: fixture.address + white_channel - 1,
-                            value: w,
-                        });
-                    }
-                }
-            }
-        }
-
-        Ok(Some(commands))
-    }
-
-    /// Apply a strobe effect
-    fn apply_strobe(
-        &self,
-        effect: &EffectInstance,
-        frequency: f64,
-        intensity: f64,
-        elapsed: Duration,
-    ) -> Result<Option<Vec<DmxCommand>>, EffectError> {
-        let strobe_period = 1.0 / frequency;
-        let strobe_phase = (elapsed.as_secs_f64() % strobe_period) / strobe_period;
-
-        let strobe_value = if strobe_phase < 0.5 {
-            (intensity * 255.0) as u8
-        } else {
-            0
-        };
-
-        let mut commands = Vec::new();
-
-        for fixture_name in &effect.target_fixtures {
-            if let Some(fixture) = self.fixture_registry.get(fixture_name) {
-                // Check if fixture has RGB capability
-                let has_rgb = fixture.has_capability(FixtureCapabilities::RGB_COLOR);
-
-                if has_rgb {
-                    // For RGB fixtures, strobe by setting RGB values
-                    if let Some(&red_channel) = fixture.channels.get("red") {
-                        commands.push(DmxCommand {
-                            universe: fixture.universe,
-                            channel: fixture.address + red_channel - 1,
-                            value: strobe_value,
-                        });
-                    }
-                    if let Some(&green_channel) = fixture.channels.get("green") {
-                        commands.push(DmxCommand {
-                            universe: fixture.universe,
-                            channel: fixture.address + green_channel - 1,
-                            value: strobe_value,
-                        });
-                    }
-                    if let Some(&blue_channel) = fixture.channels.get("blue") {
-                        commands.push(DmxCommand {
-                            universe: fixture.universe,
-                            channel: fixture.address + blue_channel - 1,
-                            value: strobe_value,
-                        });
-                    }
-                } else if let Some(&dimmer_channel) = fixture.channels.get("dimmer") {
-                    // For non-RGB fixtures, use dimmer channel
-                    commands.push(DmxCommand {
-                        universe: fixture.universe,
-                        channel: fixture.address + dimmer_channel - 1,
-                        value: strobe_value,
-                    });
-                }
-            }
-        }
-
-        Ok(Some(commands))
-    }
-
-    /// Apply a dimmer effect
-    fn apply_dimmer(
-        &self,
-        effect: &EffectInstance,
-        start_level: f64,
-        end_level: f64,
-        duration: Duration,
-        curve: &DimmerCurve,
-        elapsed: Duration,
-    ) -> Result<Option<Vec<DmxCommand>>, EffectError> {
-        if elapsed >= duration {
-            return Ok(None);
-        }
-
-        let progress = elapsed.as_secs_f64() / duration.as_secs_f64();
-        let curve_value = match curve {
-            DimmerCurve::Linear => progress,
-            DimmerCurve::Exponential => progress * progress,
-            DimmerCurve::Logarithmic => (progress * 10.0).ln() / 10.0_f64.ln(),
-            DimmerCurve::Sine => (progress * std::f64::consts::PI / 2.0).sin(),
-            DimmerCurve::Cosine => 1.0 - (progress * std::f64::consts::PI / 2.0).cos(),
-        };
-
-        let current_level = start_level + (end_level - start_level) * curve_value;
-        let dimmer_value = (current_level * 255.0) as u8;
-
-        let mut commands = Vec::new();
-
-        for fixture_name in &effect.target_fixtures {
-            if let Some(fixture) = self.fixture_registry.get(fixture_name) {
-                // Check if fixture has RGB capability
-                let has_rgb = fixture.has_capability(FixtureCapabilities::RGB_COLOR);
-
-                if has_rgb {
-                    // For RGB fixtures, dim by setting RGB values
-                    if let Some(&red_channel) = fixture.channels.get("red") {
-                        commands.push(DmxCommand {
-                            universe: fixture.universe,
-                            channel: fixture.address + red_channel - 1,
-                            value: dimmer_value,
-                        });
-                    }
-                    if let Some(&green_channel) = fixture.channels.get("green") {
-                        commands.push(DmxCommand {
-                            universe: fixture.universe,
-                            channel: fixture.address + green_channel - 1,
-                            value: dimmer_value,
-                        });
-                    }
-                    if let Some(&blue_channel) = fixture.channels.get("blue") {
-                        commands.push(DmxCommand {
-                            universe: fixture.universe,
-                            channel: fixture.address + blue_channel - 1,
-                            value: dimmer_value,
-                        });
-                    }
-                } else if let Some(&dimmer_channel) = fixture.channels.get("dimmer") {
-                    // For non-RGB fixtures, use dimmer channel
-                    commands.push(DmxCommand {
-                        universe: fixture.universe,
-                        channel: fixture.address + dimmer_channel - 1,
-                        value: dimmer_value,
-                    });
-                }
-            }
-        }
-
-        Ok(Some(commands))
-    }
-
-    /// Apply a chase effect
-    fn apply_chase(
-        &self,
-        effect: &EffectInstance,
-        _pattern: &ChasePattern,
-        speed: f64,
-        _direction: &ChaseDirection,
-        elapsed: Duration,
-    ) -> Result<Option<Vec<DmxCommand>>, EffectError> {
-        // This is a simplified chase implementation
-        // In a full implementation, this would handle complex spatial patterns
-        let chase_time = 1.0 / speed;
-        let chase_progress = (elapsed.as_secs_f64() % chase_time) / chase_time;
-
-        let mut commands = Vec::new();
-
-        for (i, fixture_name) in effect.target_fixtures.iter().enumerate() {
-            if let Some(fixture) = self.fixture_registry.get(fixture_name) {
-                let fixture_progress = (i as f64) / (effect.target_fixtures.len() as f64);
-                let is_active = (chase_progress - fixture_progress).abs() < 0.1; // 10% overlap
-
-                let dimmer_value = if is_active { 255 } else { 0 };
-
-                if let Some(&dimmer_channel) = fixture.channels.get("dimmer") {
-                    commands.push(DmxCommand {
-                        universe: fixture.universe,
-                        channel: fixture.address + dimmer_channel - 1,
-                        value: dimmer_value,
-                    });
-                }
-            }
-        }
-
-        Ok(Some(commands))
-    }
-
-    /// Apply a rainbow effect
-    fn apply_rainbow(
-        &self,
-        effect: &EffectInstance,
-        speed: f64,
-        saturation: f64,
-        brightness: f64,
-        elapsed: Duration,
-    ) -> Result<Option<Vec<DmxCommand>>, EffectError> {
-        let cycle_time = 1.0 / speed;
-        let cycle_progress = (elapsed.as_secs_f64() % cycle_time) / cycle_time;
-
-        // Calculate hue based on cycle progress and fixture position
-        let mut commands = Vec::new();
-
-        for (i, fixture_name) in effect.target_fixtures.iter().enumerate() {
-            if let Some(fixture) = self.fixture_registry.get(fixture_name) {
-                let hue = (cycle_progress * 360.0
-                    + (i as f64 * 360.0 / effect.target_fixtures.len() as f64))
-                    % 360.0;
-                let color = Color::from_hsv(hue, saturation, brightness);
-
-                // Apply RGB channels
-                if let Some(&red_channel) = fixture.channels.get("red") {
-                    commands.push(DmxCommand {
-                        universe: fixture.universe,
-                        channel: fixture.address + red_channel - 1,
-                        value: color.r,
-                    });
-                }
-                if let Some(&green_channel) = fixture.channels.get("green") {
-                    commands.push(DmxCommand {
-                        universe: fixture.universe,
-                        channel: fixture.address + green_channel - 1,
-                        value: color.g,
-                    });
-                }
-                if let Some(&blue_channel) = fixture.channels.get("blue") {
-                    commands.push(DmxCommand {
-                        universe: fixture.universe,
-                        channel: fixture.address + blue_channel - 1,
-                        value: color.b,
-                    });
-                }
-            }
-        }
-
-        Ok(Some(commands))
-    }
-
-    /// Apply a pulse effect
-    fn apply_pulse(
-        &self,
-        effect: &EffectInstance,
-        base_level: f64,
-        pulse_amplitude: f64,
-        frequency: f64,
-        elapsed: Duration,
-    ) -> Result<Option<Vec<DmxCommand>>, EffectError> {
-        let pulse_phase = (elapsed.as_secs_f64() * frequency * 2.0 * std::f64::consts::PI)
-            % (2.0 * std::f64::consts::PI);
-        let pulse_value = base_level + pulse_amplitude * (pulse_phase.sin() + 1.0) / 2.0;
-        let dimmer_value = (pulse_value * 255.0) as u8;
-
-        let mut commands = Vec::new();
-
-        for fixture_name in &effect.target_fixtures {
-            if let Some(fixture) = self.fixture_registry.get(fixture_name) {
-                // Check if fixture has RGB capability
-                let has_rgb = fixture.has_capability(FixtureCapabilities::RGB_COLOR);
-
-                if has_rgb {
-                    // For RGB fixtures, pulse by setting RGB values
-                    if let Some(&red_channel) = fixture.channels.get("red") {
-                        commands.push(DmxCommand {
-                            universe: fixture.universe,
-                            channel: fixture.address + red_channel - 1,
-                            value: dimmer_value,
-                        });
-                    }
-                    if let Some(&green_channel) = fixture.channels.get("green") {
-                        commands.push(DmxCommand {
-                            universe: fixture.universe,
-                            channel: fixture.address + green_channel - 1,
-                            value: dimmer_value,
-                        });
-                    }
-                    if let Some(&blue_channel) = fixture.channels.get("blue") {
-                        commands.push(DmxCommand {
-                            universe: fixture.universe,
-                            channel: fixture.address + blue_channel - 1,
-                            value: dimmer_value,
-                        });
-                    }
-                } else if let Some(&dimmer_channel) = fixture.channels.get("dimmer") {
-                    // For non-RGB fixtures, use dimmer channel
-                    commands.push(DmxCommand {
-                        universe: fixture.universe,
-                        channel: fixture.address + dimmer_channel - 1,
-                        value: dimmer_value,
-                    });
-                }
-            }
-        }
-
-        Ok(Some(commands))
-    }
-
     /// Validate an effect before starting it
     fn validate_effect(&self, effect: &EffectInstance) -> Result<(), EffectError> {
         // Validate fixtures
@@ -592,9 +275,9 @@ impl EffectEngine {
                 intensity,
                 ..
             } => {
-                if *frequency <= 0.0 {
+                if *frequency < 0.0 {
                     return Err(EffectError::Parameter(format!(
-                        "Strobe frequency must be positive, got {}",
+                        "Strobe frequency must be non-negative, got {}",
                         frequency
                     )));
                 }
@@ -699,6 +382,388 @@ impl EffectEngine {
             self.active_effects.remove(&effect_id);
         }
     }
+
+    /// Stop all active effects
+    pub fn stop_all_effects(&mut self) {
+        self.active_effects.clear();
+    }
+
+    // ===== State-based effect processing methods =====
+
+    /// Apply a static effect and return fixture states
+    fn apply_static_effect(
+        &mut self,
+        effect: &EffectInstance,
+        parameters: &HashMap<String, f64>,
+    ) -> Result<Option<HashMap<String, FixtureState>>, EffectError> {
+        self.log_effect_application(&effect.id, "static", effect.target_fixtures.len());
+        let mut fixture_states = HashMap::new();
+
+        for fixture_name in &effect.target_fixtures {
+            if let Some(fixture) = self.fixture_registry.get(fixture_name) {
+                let mut fixture_state = FixtureState::new(fixture_name.clone());
+
+                for (param_name, value) in parameters {
+                    if fixture.channels.contains_key(param_name) {
+                        let channel_state =
+                            ChannelState::new(*value, effect.layer, effect.blend_mode);
+                        fixture_state.set_channel(param_name.clone(), channel_state);
+                    }
+                }
+
+                fixture_states.insert(fixture_name.clone(), fixture_state);
+            }
+        }
+
+        Ok(Some(fixture_states))
+    }
+
+    /// Apply a color cycle effect and return fixture states
+    fn apply_color_cycle(
+        &mut self,
+        effect: &EffectInstance,
+        colors: &[Color],
+        speed: f64,
+        direction: &CycleDirection,
+        elapsed: Duration,
+    ) -> Result<Option<HashMap<String, FixtureState>>, EffectError> {
+        self.log_effect_application(&effect.id, "color cycle", effect.target_fixtures.len());
+        if colors.is_empty() {
+            return Ok(None);
+        }
+
+        let cycle_time = 1.0 / speed;
+        let cycle_progress = (elapsed.as_secs_f64() % cycle_time) / cycle_time;
+
+        let color_index = match direction {
+            CycleDirection::Forward => (cycle_progress * colors.len() as f64).floor() as usize,
+            CycleDirection::Backward => {
+                colors.len() - 1 - ((cycle_progress * colors.len() as f64).floor() as usize)
+            }
+            CycleDirection::PingPong => {
+                let ping_pong_progress = if cycle_progress < 0.5 {
+                    cycle_progress * 2.0
+                } else {
+                    2.0 - cycle_progress * 2.0
+                };
+                (ping_pong_progress * colors.len() as f64).floor() as usize
+            }
+        };
+
+        let color = colors[color_index % colors.len()];
+        let mut fixture_states = HashMap::new();
+
+        for fixture_name in &effect.target_fixtures {
+            if let Some(fixture) = self.fixture_registry.get(fixture_name) {
+                let mut fixture_state = FixtureState::new(fixture_name.clone());
+
+                // Apply RGB channels
+                if fixture.channels.contains_key("red") {
+                    let channel_state =
+                        ChannelState::new(color.r as f64 / 255.0, effect.layer, effect.blend_mode);
+                    fixture_state.set_channel("red".to_string(), channel_state);
+                }
+                if fixture.channels.contains_key("green") {
+                    let channel_state =
+                        ChannelState::new(color.g as f64 / 255.0, effect.layer, effect.blend_mode);
+                    fixture_state.set_channel("green".to_string(), channel_state);
+                }
+                if fixture.channels.contains_key("blue") {
+                    let channel_state =
+                        ChannelState::new(color.b as f64 / 255.0, effect.layer, effect.blend_mode);
+                    fixture_state.set_channel("blue".to_string(), channel_state);
+                }
+                if fixture.channels.contains_key("white") {
+                    if let Some(w) = color.w {
+                        let channel_state =
+                            ChannelState::new(w as f64 / 255.0, effect.layer, effect.blend_mode);
+                        fixture_state.set_channel("white".to_string(), channel_state);
+                    }
+                }
+
+                fixture_states.insert(fixture_name.clone(), fixture_state);
+            }
+        }
+
+        Ok(Some(fixture_states))
+    }
+
+    /// Apply a strobe effect and return fixture states
+    fn apply_strobe(
+        &mut self,
+        effect: &EffectInstance,
+        frequency: f64,
+        _intensity: f64,
+        _elapsed: Duration,
+    ) -> Result<Option<HashMap<String, FixtureState>>, EffectError> {
+        self.log_effect_application(&effect.id, "strobe", effect.target_fixtures.len());
+
+        let mut fixture_states = HashMap::new();
+
+        for fixture_name in &effect.target_fixtures {
+            if let Some(fixture) = self.fixture_registry.get(fixture_name) {
+                let strobe_value = if frequency == 0.0 {
+                    // Frequency 0 means strobe is disabled
+                    0.0
+                } else {
+                    // For strobe channel, use the frequency as the speed value
+                    // Convert frequency (Hz) to a 0-1 range using fixture's max strobe frequency
+                    let max_freq = fixture.max_strobe_frequency.unwrap_or(20.0); // Default to 20Hz if not specified
+                    (frequency / max_freq).min(1.0)
+                };
+                let mut fixture_state = FixtureState::new(fixture_name.clone());
+
+                // Apply strobe to appropriate channels - prioritize dedicated channels
+                if fixture.has_capability(FixtureCapabilities::STROBING) {
+                    // Use dedicated strobe channel if available
+                    let channel_state =
+                        ChannelState::new(strobe_value, effect.layer, effect.blend_mode);
+                    fixture_state.set_channel("strobe".to_string(), channel_state);
+                } else if fixture.has_capability(FixtureCapabilities::DIMMING) {
+                    // Use dimmer channel if available (prioritize over RGB)
+                    let channel_state =
+                        ChannelState::new(strobe_value, effect.layer, effect.blend_mode);
+                    fixture_state.set_channel("dimmer".to_string(), channel_state);
+                } else if fixture.has_capability(FixtureCapabilities::RGB_COLOR) {
+                    // Fall back to RGB channels only if no dedicated channels
+                    let channel_state =
+                        ChannelState::new(strobe_value, effect.layer, effect.blend_mode);
+                    fixture_state.set_channel("red".to_string(), channel_state);
+                    fixture_state.set_channel("green".to_string(), channel_state);
+                    fixture_state.set_channel("blue".to_string(), channel_state);
+                }
+
+                fixture_states.insert(fixture_name.clone(), fixture_state);
+            }
+        }
+
+        Ok(Some(fixture_states))
+    }
+
+    /// Apply a dimmer effect and return fixture states
+    fn apply_dimmer(
+        &mut self,
+        effect: &EffectInstance,
+        start_level: f64,
+        end_level: f64,
+        duration: Duration,
+        curve: &DimmerCurve,
+        elapsed: Duration,
+    ) -> Result<Option<HashMap<String, FixtureState>>, EffectError> {
+        self.log_effect_application(&effect.id, "dimmer", effect.target_fixtures.len());
+
+        let progress = if duration.is_zero() {
+            1.0
+        } else {
+            (elapsed.as_secs_f64() / duration.as_secs_f64()).min(1.0)
+        };
+
+        let dimmer_value = match curve {
+            DimmerCurve::Linear => start_level + (end_level - start_level) * progress,
+            DimmerCurve::Exponential => {
+                start_level + (end_level - start_level) * (progress * progress)
+            }
+            DimmerCurve::Logarithmic => {
+                start_level + (end_level - start_level) * (1.0 - (1.0 - progress).powi(2))
+            }
+            DimmerCurve::Sine => {
+                start_level
+                    + (end_level - start_level)
+                        * (1.0 - (progress * std::f64::consts::PI / 2.0).cos())
+            }
+            DimmerCurve::Cosine => {
+                start_level
+                    + (end_level - start_level) * (progress * std::f64::consts::PI / 2.0).sin()
+            }
+        };
+
+        let mut fixture_states = HashMap::new();
+
+        for fixture_name in &effect.target_fixtures {
+            if let Some(fixture) = self.fixture_registry.get(fixture_name) {
+                let mut fixture_state = FixtureState::new(fixture_name.clone());
+
+                // Apply dimmer to appropriate channels
+                if fixture.has_capability(FixtureCapabilities::DIMMING)
+                    && effect.blend_mode == BlendMode::Replace
+                {
+                    // Use dedicated dimmer channel only for Replace mode (takes precedence over RGB)
+                    let channel_state =
+                        ChannelState::new(dimmer_value, effect.layer, effect.blend_mode);
+                    fixture_state.set_channel("dimmer".to_string(), channel_state);
+                }
+
+                if fixture.has_capability(FixtureCapabilities::RGB_COLOR) {
+                    // For RGB fixtures, apply dimmer based on blend mode
+                    if effect.blend_mode == BlendMode::Multiply {
+                        // For Multiply mode, we should NOT set any RGB channels here
+                        // The dimmer effect should only affect channels that already exist from other effects
+                        // This prevents the dimmer from creating white light by setting all RGB channels
+                        // The blending system will handle the multiplication when the effects are combined
+                        // We'll store the dimmer value in a special way that can be used during blending
+                        let dimmer_multiplier =
+                            ChannelState::new(dimmer_value, effect.layer, effect.blend_mode);
+
+                        // Store the dimmer multiplier in a special channel that won't be sent to DMX
+                        // This will be used by the blending system to apply the dimmer to existing channels
+                        fixture_state
+                            .set_channel("_dimmer_multiplier".to_string(), dimmer_multiplier);
+                    } else {
+                        // For Replace mode, apply dimmer to all channels equally
+                        let channel_state =
+                            ChannelState::new(dimmer_value, effect.layer, effect.blend_mode);
+                        fixture_state.set_channel("red".to_string(), channel_state);
+                        fixture_state.set_channel("green".to_string(), channel_state);
+                        fixture_state.set_channel("blue".to_string(), channel_state);
+                    }
+                }
+
+                fixture_states.insert(fixture_name.clone(), fixture_state);
+            }
+        }
+
+        Ok(Some(fixture_states))
+    }
+
+    /// Apply a chase effect and return fixture states
+    fn apply_chase(
+        &mut self,
+        effect: &EffectInstance,
+        _pattern: &ChasePattern,
+        speed: f64,
+        _direction: &ChaseDirection,
+        elapsed: Duration,
+    ) -> Result<Option<HashMap<String, FixtureState>>, EffectError> {
+        self.log_effect_application(&effect.id, "chase", effect.target_fixtures.len());
+        // Simplified chase implementation
+        let chase_period = 1.0 / speed;
+        let chase_progress = (elapsed.as_secs_f64() % chase_period) / chase_period;
+
+        let mut fixture_states = HashMap::new();
+        let fixture_count = effect.target_fixtures.len();
+
+        for (i, fixture_name) in effect.target_fixtures.iter().enumerate() {
+            if let Some(fixture) = self.fixture_registry.get(fixture_name) {
+                let mut fixture_state = FixtureState::new(fixture_name.clone());
+
+                // Calculate chase position for this fixture
+                let fixture_position = i as f64 / fixture_count as f64;
+                let chase_value = if (chase_progress - fixture_position).abs() < 0.1 {
+                    1.0
+                } else {
+                    0.0
+                };
+
+                // Apply chase to dimmer channel
+                if fixture.has_capability(FixtureCapabilities::DIMMING) {
+                    let channel_state =
+                        ChannelState::new(chase_value, effect.layer, effect.blend_mode);
+                    fixture_state.set_channel("dimmer".to_string(), channel_state);
+                }
+
+                fixture_states.insert(fixture_name.clone(), fixture_state);
+            }
+        }
+
+        Ok(Some(fixture_states))
+    }
+
+    /// Apply a rainbow effect and return fixture states
+    fn apply_rainbow(
+        &mut self,
+        effect: &EffectInstance,
+        speed: f64,
+        saturation: f64,
+        brightness: f64,
+        elapsed: Duration,
+    ) -> Result<Option<HashMap<String, FixtureState>>, EffectError> {
+        self.log_effect_application(&effect.id, "rainbow", effect.target_fixtures.len());
+        let hue = (elapsed.as_secs_f64() * speed * 360.0) % 360.0;
+        let color = Color::from_hsv(hue, saturation, brightness);
+
+        let mut fixture_states = HashMap::new();
+
+        for fixture_name in &effect.target_fixtures {
+            if let Some(fixture) = self.fixture_registry.get(fixture_name) {
+                let mut fixture_state = FixtureState::new(fixture_name.clone());
+
+                // Apply RGB channels
+                if fixture.channels.contains_key("red") {
+                    let channel_state =
+                        ChannelState::new(color.r as f64 / 255.0, effect.layer, effect.blend_mode);
+                    fixture_state.set_channel("red".to_string(), channel_state);
+                }
+                if fixture.channels.contains_key("green") {
+                    let channel_state =
+                        ChannelState::new(color.g as f64 / 255.0, effect.layer, effect.blend_mode);
+                    fixture_state.set_channel("green".to_string(), channel_state);
+                }
+                if fixture.channels.contains_key("blue") {
+                    let channel_state =
+                        ChannelState::new(color.b as f64 / 255.0, effect.layer, effect.blend_mode);
+                    fixture_state.set_channel("blue".to_string(), channel_state);
+                }
+
+                fixture_states.insert(fixture_name.clone(), fixture_state);
+            }
+        }
+
+        Ok(Some(fixture_states))
+    }
+
+    /// Apply a pulse effect and return fixture states
+    fn apply_pulse(
+        &mut self,
+        effect: &EffectInstance,
+        base_level: f64,
+        pulse_amplitude: f64,
+        frequency: f64,
+        elapsed: Duration,
+    ) -> Result<Option<HashMap<String, FixtureState>>, EffectError> {
+        self.log_effect_application(&effect.id, "pulse", effect.target_fixtures.len());
+        let pulse_phase = elapsed.as_secs_f64() * frequency * 2.0 * std::f64::consts::PI;
+        let pulse_value = base_level + pulse_amplitude * (pulse_phase.sin() * 0.5 + 0.5);
+
+        let mut fixture_states = HashMap::new();
+
+        for fixture_name in &effect.target_fixtures {
+            if let Some(fixture) = self.fixture_registry.get(fixture_name) {
+                let mut fixture_state = FixtureState::new(fixture_name.clone());
+
+                // Apply pulse to appropriate channels
+                if fixture.has_capability(FixtureCapabilities::DIMMING)
+                    && effect.blend_mode == BlendMode::Replace
+                {
+                    // Use dedicated dimmer channel only for Replace mode (takes precedence over RGB)
+                    let channel_state =
+                        ChannelState::new(pulse_value, effect.layer, effect.blend_mode);
+                    fixture_state.set_channel("dimmer".to_string(), channel_state);
+                }
+
+                if fixture.has_capability(FixtureCapabilities::RGB_COLOR) {
+                    // For RGB fixtures, apply pulse based on blend mode
+                    if effect.blend_mode == BlendMode::Multiply {
+                        // For Multiply mode, use a pulse multiplier to modulate existing colors
+                        let pulse_multiplier =
+                            ChannelState::new(pulse_value, effect.layer, effect.blend_mode);
+                        fixture_state
+                            .set_channel("_pulse_multiplier".to_string(), pulse_multiplier);
+                    } else if !fixture.has_capability(FixtureCapabilities::DIMMING) {
+                        // For Replace mode, only apply to RGB if no dedicated dimmer channel
+                        let channel_state =
+                            ChannelState::new(pulse_value, effect.layer, effect.blend_mode);
+                        fixture_state.set_channel("red".to_string(), channel_state);
+                        fixture_state.set_channel("green".to_string(), channel_state);
+                        fixture_state.set_channel("blue".to_string(), channel_state);
+                    }
+                }
+
+                fixture_states.insert(fixture_name.clone(), fixture_state);
+            }
+        }
+
+        Ok(Some(fixture_states))
+    }
 }
 
 #[cfg(test)]
@@ -721,6 +786,7 @@ mod tests {
             address,
             fixture_type: "RGBW_Strobe".to_string(),
             channels,
+            max_strobe_frequency: Some(20.0), // Default test fixture max strobe
         }
     }
 
@@ -741,6 +807,9 @@ mod tests {
 
     #[test]
     fn test_static_effect() {
+        // Initialize tracing for this test
+        let _ = tracing_subscriber::fmt::try_init();
+
         let mut engine = EffectEngine::new();
         let fixture = create_test_fixture("test_fixture", 1, 1);
         engine.register_fixture(fixture);
@@ -852,20 +921,12 @@ mod tests {
         // Update the engine
         let commands = engine.update(Duration::from_millis(16)).unwrap();
 
-        // Should have RGB commands since fixture has RGB capability
-        assert_eq!(commands.len(), 3);
+        // Should have strobe command since fixture has dedicated strobe channel
+        assert_eq!(commands.len(), 1);
 
-        // Check red command
-        let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
-        assert_eq!(red_cmd.value, 255);
-
-        // Check green command
-        let green_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
-        assert_eq!(green_cmd.value, 255);
-
-        // Check blue command
-        let blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
-        assert_eq!(blue_cmd.value, 255);
+        // Check strobe command (frequency 2.0 / max 20.0 = 0.1 = 25 in DMX)
+        let strobe_cmd = commands.iter().find(|cmd| cmd.channel == 6).unwrap();
+        assert_eq!(strobe_cmd.value, 25);
     }
 
     #[test]
@@ -891,19 +952,19 @@ mod tests {
         // Update the engine after 500ms (half duration)
         let commands = engine.update(Duration::from_millis(500)).unwrap();
 
-        // Should have RGB commands at 50% (127) since fixture has RGB capability
-        assert_eq!(commands.len(), 3);
+        // Should have dimmer + RGB commands at 50% (127) since fixture has both dedicated dimmer and RGB channels
+        assert_eq!(commands.len(), 4);
 
-        // Check red command
+        // Check dimmer command
+        let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
+        assert_eq!(dimmer_cmd.value, 127);
+
+        // Check RGB commands
         let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
-        assert_eq!(red_cmd.value, 127);
-
-        // Check green command
         let green_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
-        assert_eq!(green_cmd.value, 127);
-
-        // Check blue command
         let blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
+        assert_eq!(red_cmd.value, 127);
+        assert_eq!(green_cmd.value, 127);
         assert_eq!(blue_cmd.value, 127);
     }
 
@@ -962,13 +1023,11 @@ mod tests {
         // Update the engine
         let commands = engine.update(Duration::from_millis(16)).unwrap();
 
-        // Should have RGB commands since fixture has RGB capability
-        assert_eq!(commands.len(), 3);
+        // Should have dimmer command since fixture has dedicated dimmer channel
+        assert_eq!(commands.len(), 1);
 
-        // Check that RGB commands exist (values are u8, so always in valid range)
-        let _red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
-        let _green_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
-        let _blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
+        // Check that dimmer command exists (values are u8, so always in valid range)
+        let _dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     }
 
     #[test]

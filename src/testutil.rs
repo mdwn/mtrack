@@ -274,14 +274,8 @@ songs: "songs"
             None,
             None,
             Some(vec![
-                crate::config::LightingShow::new(
-                    "Main Show".to_string(),
-                    "lighting/main_show.light".to_string(),
-                ),
-                crate::config::LightingShow::new(
-                    "Outro Show".to_string(),
-                    "lighting/outro.light".to_string(),
-                ),
+                crate::config::LightingShow::new("lighting/main_show.light".to_string()),
+                crate::config::LightingShow::new("lighting/outro.light".to_string()),
             ]),
             vec![],
         );
@@ -291,21 +285,21 @@ songs: "songs"
         let lighting_shows = song_config.lighting().unwrap();
         assert_eq!(lighting_shows.len(), 2);
 
-        // Verify show names
-        let show_names: Vec<&str> = lighting_shows.iter().map(|s| s.name()).collect();
-        assert!(show_names.contains(&"Main Show"));
-        assert!(show_names.contains(&"Outro Show"));
+        // Verify show files
+        let show_files: Vec<&str> = lighting_shows.iter().map(|s| s.file()).collect();
+        assert!(show_files.contains(&"lighting/main_show.light"));
+        assert!(show_files.contains(&"lighting/outro.light"));
 
         // Verify show files
         let main_show = lighting_shows
             .iter()
-            .find(|s| s.name() == "Main Show")
+            .find(|s| s.file() == "lighting/main_show.light")
             .unwrap();
         assert_eq!(main_show.file(), "lighting/main_show.light");
 
         let outro_show = lighting_shows
             .iter()
-            .find(|s| s.name() == "Outro Show")
+            .find(|s| s.file() == "lighting/outro.light")
             .unwrap();
         assert_eq!(outro_show.file(), "lighting/outro.light");
     }
@@ -506,7 +500,6 @@ songs: "songs"
             None,
             None,
             Some(vec![crate::config::LightingShow::new(
-                "Shieldbrother".to_string(),
                 "show.light".to_string(),
             )]),
             vec![],
@@ -517,9 +510,8 @@ songs: "songs"
         let lighting_shows = song_config.lighting().unwrap();
         assert_eq!(lighting_shows.len(), 1);
 
-        // Verify the show name and file
+        // Verify the show file
         let show = &lighting_shows[0];
-        assert_eq!(show.name(), "Shieldbrother");
         assert_eq!(show.file(), "show.light");
 
         // Test that the DSL content can be parsed

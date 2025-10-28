@@ -145,13 +145,8 @@ impl LightingSystem {
                     self.fixture_types.insert(name, fixture_type);
                 }
             }
-            Err(e) => {
-                eprintln!(
-                    "Warning: Failed to parse fixture types from {}: {}",
-                    path.display(),
-                    e
-                );
-                // Continue loading other files
+            Err(_e) => {
+                // Failed to parse fixture types, continue loading other files
             }
         }
 
@@ -169,13 +164,8 @@ impl LightingSystem {
                     self.venues.insert(name, venue);
                 }
             }
-            Err(e) => {
-                eprintln!(
-                    "Warning: Failed to parse venues from {}: {}",
-                    path.display(),
-                    e
-                );
-                // Continue loading other files
+            Err(_e) => {
+                // Failed to parse venues, continue loading other files
             }
         }
 
@@ -261,24 +251,13 @@ impl LightingSystem {
                     };
 
                 if let Some(fallback_group) = fallback_group {
-                    eprintln!(
-                        "Warning: Group '{}' not available, trying fallback group '{}'",
-                        group_name, fallback_group
-                    );
                     return self.resolve_logical_group_graceful(&fallback_group);
                 }
 
                 // Try legacy group system as final fallback
                 if let Ok(legacy_group) = self.get_group(group_name) {
-                    eprintln!("Warning: Using legacy group '{}' as fallback", group_name);
                     return legacy_group.fixtures().clone();
                 }
-
-                // Log the issue but don't fail the song
-                eprintln!(
-                    "Warning: Group '{}' not available at current venue, skipping",
-                    group_name
-                );
                 Vec::new()
             }
         }
@@ -309,6 +288,7 @@ impl LightingSystem {
                 address: fixture.start_channel(),
                 fixture_type: fixture.fixture_type().to_string(),
                 channels: fixture_type.channels().clone(),
+                max_strobe_frequency: fixture_type.max_strobe_frequency(),
             };
 
             fixture_infos.push(fixture_info);

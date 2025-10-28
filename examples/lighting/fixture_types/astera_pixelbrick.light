@@ -1,0 +1,14 @@
+# Astera PixelBrick fixture type definition
+# This defines a reusable fixture type for Astera PixelBrick LED fixtures
+# These fixtures support up to 25Hz strobe frequency
+
+fixture_type "Astera-PixelBrick" {
+  channels: 4
+  channel_map: {
+    "red": 1,
+    "green": 2,
+    "blue": 3,
+    "strobe": 4
+  }
+  max_strobe_frequency: 25.0
+}

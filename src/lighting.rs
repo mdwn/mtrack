@@ -14,6 +14,7 @@
 
 pub mod effects;
 pub mod engine;
+pub mod layering_tests;
 pub mod parser;
 pub mod system;
 pub mod timeline;
