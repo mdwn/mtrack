@@ -24,10 +24,10 @@ use std::{
     time::Duration,
 };
 
-use super::ola_client::{OlaClient, OlaClientFactory};
+use super::ola_client::OlaClient;
 use midly::num::u7;
 use nodi::{Connection, Player};
-use ola::{client::StreamingClientConfig, DmxBuffer};
+use ola::DmxBuffer;
 use tracing::{debug, error, info, span, Level};
 
 use crate::{
@@ -70,7 +70,7 @@ pub(super) struct DmxMessage {
 
 impl Engine {
     /// Creates a new DMX Engine with lighting system using dependency injection.
-    pub fn new_with_client(
+    pub fn new(
         config: &config::Dmx,
         lighting_config: Option<&config::Lighting>,
         base_path: Option<&std::path::Path>,
@@ -136,34 +136,7 @@ impl Engine {
         })
     }
 
-    /// Creates a new DMX Engine with lighting system (tries to connect to OLA).
-    pub fn new(
-        config: &config::Dmx,
-        lighting_config: Option<&config::Lighting>,
-        base_path: Option<&std::path::Path>,
-    ) -> Result<Engine, Box<dyn Error>> {
-        let ola_client_config = StreamingClientConfig {
-            server_port: config.ola_port(),
-            ..Default::default()
-        };
-
-        // Attempt to connect to OLA 10 times.
-        for i in 0..10 {
-            // Don't sleep on the first iteration.
-            if i > 0 {
-                thread::sleep(Duration::from_secs(5));
-            }
-
-            if let Ok(ola_client) = OlaClientFactory::create_real_client(ola_client_config.clone())
-            {
-                return Self::new_with_client(config, lighting_config, base_path, ola_client);
-            };
-
-            debug!("Error connecting to OLA, waiting 5 seconds and trying again.");
-        }
-
-        Err("unable to connect to OLA".into())
-    }
+    // Note: Auto-connect helper removed; callers should construct an OLA client and call `new`.
 
     #[cfg(test)]
     pub(crate) fn get_universe(&self, universe_id: u16) -> Option<&Universe> {
@@ -497,6 +470,8 @@ impl Engine {
                 .push((command.channel, command.value));
         }
 
+        // DMX command summary logging removed
+
         // Apply effect commands to universes
         for (universe_id, commands) in universe_commands {
             // Direct lookup by universe ID - no name mapping needed
@@ -715,16 +690,20 @@ mod test {
             std::net::IpAddr::V4(Ipv4Addr::UNSPECIFIED),
             0,
         ))?;
+        let port = listener.local_addr()?.port();
+        // Use a mock OLA client for tests
+        let ola_client = OlaClientFactory::create_mock_client();
         let engine = Engine::new(
             &config::Dmx::new(
                 None,
                 None,
-                Some(listener.local_addr()?.port()),
+                Some(port),
                 vec![config::Universe::new(5, "universe1".to_string())],
                 None, // lighting configuration
             ),
             None,
             None,
+            ola_client,
         )?;
         let cancel_handle = engine.cancel_handle.clone();
         Ok((Arc::new(engine), cancel_handle))
@@ -806,6 +785,9 @@ mod test {
                 duration: None,
             },
             vec!["test_fixture".to_string()],
+            None,
+            None,
+            None,
         );
 
         // This should not panic
@@ -932,6 +914,9 @@ mod test {
                 duration: None,
             },
             vec!["test_fixture".to_string()],
+            None,
+            None,
+            None,
         );
 
         engine.start_effect(effect)?;
@@ -976,7 +961,7 @@ mod test {
         let config = create_test_config();
         // Use mock OLA client for testing
         let ola_client = OlaClientFactory::create_mock_client();
-        Engine::new_with_client(&config, None, None, ola_client)
+        Engine::new(&config, None, None, ola_client)
     }
 
     #[test]
@@ -1013,6 +998,9 @@ mod test {
                 duration: None,
             },
             vec!["test_fixture".to_string()],
+            None,
+            None,
+            None,
         )
         .with_priority(5);
 
@@ -1073,7 +1061,7 @@ mod test {
             None,
         ));
         let ola_client = OlaClientFactory::create_mock_client();
-        let engine = Engine::new_with_client(&config, lighting_config.as_ref(), None, ola_client)?;
+        let engine = Engine::new(&config, lighting_config.as_ref(), None, ola_client)?;
 
         // Test group resolution with a simple effect
         let mut parameters = HashMap::new();
@@ -1087,6 +1075,9 @@ mod test {
                 duration: None,
             },
             vec!["test_group".to_string()],
+            None,
+            None,
+            None,
         );
 
         // Test that the effect can be started (graceful fallback for missing groups)
@@ -1106,7 +1097,7 @@ mod test {
         // Create DMX engine without lighting system
         let config = create_test_config();
         let ola_client = OlaClientFactory::create_mock_client();
-        let engine = Engine::new_with_client(&config, None, None, ola_client)?;
+        let engine = Engine::new(&config, None, None, ola_client)?;
 
         // Test that effects with unknown groups still work (graceful fallback)
         let mut parameters = HashMap::new();
@@ -1119,6 +1110,9 @@ mod test {
                 duration: None,
             },
             vec!["unknown_group".to_string()],
+            None,
+            None,
+            None,
         );
 
         // Should not fail even with unknown groups
@@ -1149,7 +1143,7 @@ mod test {
         // Create DMX engine
         let config = create_test_config();
         let ola_client = OlaClientFactory::create_mock_client();
-        let engine = Arc::new(Engine::new_with_client(&config, None, None, ola_client)?);
+        let engine = Arc::new(Engine::new(&config, None, None, ola_client)?);
 
         // Test timeline setup
         let song_arc = Arc::new(song);
@@ -1179,7 +1173,7 @@ mod test {
         let mock_client = Arc::new(Mutex::new(MockOlaClient::new()));
         let _mock_client_for_engine = mock_client.clone();
         let ola_client: Box<dyn OlaClient> = Box::new(MockOlaClient::new());
-        let engine = Engine::new_with_client(&config, None, None, ola_client)?;
+        let engine = Engine::new(&config, None, None, ola_client)?;
 
         // Create an effect that should generate DMX commands
         let mut parameters = HashMap::new();
@@ -1193,6 +1187,9 @@ mod test {
                 duration: None,
             },
             vec!["fixture1".to_string()],
+            None,
+            None,
+            None,
         );
 
         // Start the effect (may fail if fixtures aren't registered)
@@ -1223,7 +1220,7 @@ mod test {
         let mock_client = Arc::new(Mutex::new(MockOlaClient::new()));
         let _mock_client_for_engine = mock_client.clone();
         let ola_client: Box<dyn OlaClient> = Box::new(MockOlaClient::new());
-        let engine = Engine::new_with_client(&config, None, None, ola_client)?;
+        let engine = Engine::new(&config, None, None, ola_client)?;
 
         // Register a fixture with specific channel mapping
         let mut channels = HashMap::new();
@@ -1260,6 +1257,9 @@ mod test {
                 duration: None,
             },
             vec!["test_fixture".to_string()],
+            None,
+            None,
+            None,
         );
 
         // Start the effect

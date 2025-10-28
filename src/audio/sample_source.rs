@@ -243,7 +243,7 @@ where
     S: SampleSource,
 {
     /// Creates a new AudioTranscoder with a SampleSource
-    pub fn new_with_source(
+    pub fn new(
         source: S,
         source_format: &TargetFormat,
         target_format: &TargetFormat,
@@ -673,12 +673,8 @@ pub fn create_channel_mapped_sample_source(
     let sample_source: Box<dyn SampleSource> = if needs_transcoding {
         // Create a wrapper that can be used with AudioTranscoder
         let wrapper = SampleSourceWrapper { source };
-        let transcoder = AudioTranscoder::new_with_source(
-            wrapper,
-            &source_format,
-            &target_format,
-            channel_count,
-        )?;
+        let transcoder =
+            AudioTranscoder::new(wrapper, &source_format, &target_format, channel_count)?;
         Box::new(transcoder)
     } else {
         source
@@ -883,6 +879,142 @@ pub fn create_sample_source_from_file<P: AsRef<Path>>(
     }
 }
 
+/// BufferedThreadedSampleSource provides background buffering for sample sources
+/// to eliminate I/O blocking in the audio callback
+pub struct BufferedThreadedSampleSource {
+    /// Inner source to read from
+    inner_source: Arc<Mutex<Box<dyn SampleSource + Send + Sync>>>,
+
+    /// Buffered samples (read ahead)
+    buffer: Arc<Mutex<VecDeque<Vec<f32>>>>,
+
+    /// Worker pool for background reading
+    worker_pool: Arc<rayon::ThreadPool>,
+
+    /// Configuration
+    buffer_size: usize,
+    read_ahead_threshold: usize,
+
+    /// Performance monitoring
+    buffer_hits: Arc<AtomicUsize>,
+    buffer_misses: Arc<AtomicUsize>,
+}
+
+impl BufferedThreadedSampleSource {
+    /// Creates a new buffered threaded sample source
+    pub fn new(
+        source: Box<dyn SampleSource + Send + Sync>,
+        buffer_size: usize,
+        read_ahead_threshold: usize,
+    ) -> Self {
+        let worker_pool = Arc::new(
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(num_cpus::get().min(4)) // Limit to 4 threads max
+                .build()
+                .unwrap(),
+        );
+
+        Self {
+            inner_source: Arc::new(Mutex::new(source)),
+            buffer: Arc::new(Mutex::new(VecDeque::with_capacity(buffer_size))),
+            worker_pool,
+            buffer_size,
+            read_ahead_threshold,
+            buffer_hits: Arc::new(AtomicUsize::new(0)),
+            buffer_misses: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    /// Schedules background reading if buffer is getting low
+    fn schedule_background_read(&self) {
+        let buffer = self.buffer.clone();
+        let source = self.inner_source.clone();
+        let buffer_size = self.buffer_size;
+        let channel_count = self.inner_source.lock().unwrap().channel_count() as usize;
+
+        self.worker_pool.spawn(move || {
+            let mut chunk = Vec::with_capacity(buffer_size);
+
+            // Read chunk of samples in background, grouping by channel count
+            let mut current_frame = Vec::with_capacity(channel_count);
+            for _ in 0..(buffer_size * channel_count) {
+                match source.lock().unwrap().next_sample() {
+                    Ok(Some(sample)) => {
+                        current_frame.push(sample);
+                        if current_frame.len() == channel_count {
+                            chunk.push(current_frame);
+                            current_frame = Vec::with_capacity(channel_count);
+                        }
+                    }
+                    Ok(None) => break, // Source finished
+                    Err(_) => break,   // Error occurred
+                }
+            }
+
+            // Add to buffer
+            if !chunk.is_empty() {
+                buffer.lock().unwrap().extend(chunk);
+            }
+        });
+    }
+}
+
+impl SampleSource for BufferedThreadedSampleSource {
+    fn next_sample(&mut self) -> Result<Option<f32>, TranscodingError> {
+        // Fast path: return from buffer
+        if let Some(frame) = self.buffer.lock().unwrap().pop_front() {
+            self.buffer_hits.fetch_add(1, Ordering::Relaxed);
+
+            // Trigger background read if buffer is getting low
+            let buffer_len = self.buffer.lock().unwrap().len();
+            if buffer_len < self.read_ahead_threshold {
+                self.schedule_background_read();
+            }
+
+            // Return first sample from frame
+            return Ok(frame.first().copied());
+        }
+
+        // Fallback: read directly (should be rare)
+        self.buffer_misses.fetch_add(1, Ordering::Relaxed);
+        self.inner_source.lock().unwrap().next_sample()
+    }
+
+    fn sample_rate(&self) -> u32 {
+        self.inner_source.lock().unwrap().sample_rate()
+    }
+
+    fn channel_count(&self) -> u16 {
+        self.inner_source.lock().unwrap().channel_count()
+    }
+
+    fn bits_per_sample(&self) -> u16 {
+        self.inner_source.lock().unwrap().bits_per_sample()
+    }
+
+    fn sample_format(&self) -> crate::audio::SampleFormat {
+        self.inner_source.lock().unwrap().sample_format()
+    }
+
+    fn duration(&self) -> Option<std::time::Duration> {
+        self.inner_source.lock().unwrap().duration()
+    }
+}
+
+impl Clone for BufferedThreadedSampleSource {
+    fn clone(&self) -> Self {
+        Self {
+            inner_source: self.inner_source.clone(),
+            buffer: self.buffer.clone(),
+            worker_pool: self.worker_pool.clone(),
+            buffer_size: self.buffer_size,
+            read_ahead_threshold: self.read_ahead_threshold,
+            buffer_hits: self.buffer_hits.clone(),
+            buffer_misses: self.buffer_misses.clone(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -943,11 +1075,7 @@ mod tests {
         let actual_duration = source.duration().unwrap();
 
         // Allow for small rounding differences
-        let diff = if actual_duration > expected_duration {
-            actual_duration - expected_duration
-        } else {
-            expected_duration - actual_duration
-        };
+        let diff = actual_duration.abs_diff(expected_duration);
         assert!(
             diff < std::time::Duration::from_micros(1),
             "Duration mismatch: expected {:?}, got {:?}",
@@ -971,11 +1099,7 @@ mod tests {
         let actual_duration = source.duration().unwrap();
 
         // Allow for small rounding differences
-        let diff = if actual_duration > expected_duration {
-            actual_duration - expected_duration
-        } else {
-            expected_duration - actual_duration
-        };
+        let diff = actual_duration.abs_diff(expected_duration);
         assert!(
             diff < std::time::Duration::from_micros(1),
             "Duration mismatch: expected {:?}, got {:?}",
@@ -994,7 +1118,7 @@ mod tests {
 
         // Create a mock source for testing
         let mock_source = MemorySampleSource::new(vec![0.1, 0.2, 0.3, 0.4, 0.5], 1, 44100);
-        match AudioTranscoder::new_with_source(mock_source, &source_format, &target_format, 1) {
+        match AudioTranscoder::new(mock_source, &source_format, &target_format, 1) {
             Ok(mut converter) => {
                 // Test resampling by getting samples from the converter
                 let mut output_samples = Vec::with_capacity(100);
@@ -1055,8 +1179,7 @@ mod tests {
 
             // Create a mock source for testing
             let mock_source = MemorySampleSource::new(vec![0.1, 0.2, 0.3], 1, 44100);
-            let converter =
-                AudioTranscoder::new_with_source(mock_source, &source_format, &target_format, 1);
+            let converter = AudioTranscoder::new(mock_source, &source_format, &target_format, 1);
 
             if source_rate == target_rate {
                 // Should not need resampling
@@ -1089,7 +1212,7 @@ mod tests {
 
         // Create a mock source for testing
         let mock_source = MemorySampleSource::new(vec![1.0, 2.0, 3.0, 4.0, 5.0], 1, 44100);
-        match AudioTranscoder::new_with_source(mock_source, &source_format, &target_format, 1) {
+        match AudioTranscoder::new(mock_source, &source_format, &target_format, 1) {
             Ok(mut converter) => {
                 // Test with a simple input to understand the behavior
                 let mut sample_count = 0;
@@ -1124,8 +1247,7 @@ mod tests {
 
             // Create a mock source for testing
             let mock_source = MemorySampleSource::new(vec![0.1, 0.2, 0.3], 1, 44100);
-            let converter =
-                AudioTranscoder::new_with_source(mock_source, &source_format, &target_format, 1);
+            let converter = AudioTranscoder::new(mock_source, &source_format, &target_format, 1);
 
             match converter {
                 Ok(converter) => {
@@ -1153,8 +1275,7 @@ mod tests {
         // Create a mock source for testing
         let mock_source = MemorySampleSource::new(vec![0.1, 0.2, 0.3, 0.4, 0.5], 1, 44100);
         let mut converter =
-            AudioTranscoder::new_with_source(mock_source, &source_format, &target_format, 1)
-                .unwrap();
+            AudioTranscoder::new(mock_source, &source_format, &target_format, 1).unwrap();
 
         // Should not need resampling
         // Transcoding is now handled internally by WavSampleSource
@@ -1201,7 +1322,7 @@ mod tests {
 
         // Create a mock source with the sine wave
         let mock_source = MemorySampleSource::new(input_samples, 1, 44100);
-        match AudioTranscoder::new_with_source(mock_source, &source_format, &target_format, 1) {
+        match AudioTranscoder::new(mock_source, &source_format, &target_format, 1) {
             Ok(mut converter) => {
                 // Test resampling by getting samples from the converter
                 let mut output_samples = Vec::with_capacity(200);
@@ -1287,8 +1408,7 @@ mod tests {
         // First resampling: 44.1kHz -> 48kHz
         let source_1 = MemorySampleSource::new(original_samples.clone(), 1, 44100);
         let mut converter_1 =
-            AudioTranscoder::new_with_source(source_1, &source_format_1, &target_format_1, 1)
-                .unwrap();
+            AudioTranscoder::new(source_1, &source_format_1, &target_format_1, 1).unwrap();
 
         let mut intermediate_samples = Vec::with_capacity(num_samples);
         loop {
@@ -1303,8 +1423,7 @@ mod tests {
         let intermediate_len = intermediate_samples.len();
         let source_2 = MemorySampleSource::new(intermediate_samples, 1, 44100);
         let mut converter_2 =
-            AudioTranscoder::new_with_source(source_2, &source_format_2, &target_format_2, 1)
-                .unwrap();
+            AudioTranscoder::new(source_2, &source_format_2, &target_format_2, 1).unwrap();
 
         let mut final_samples = Vec::with_capacity(intermediate_len);
         loop {
@@ -1360,7 +1479,7 @@ mod tests {
 
         let source = MemorySampleSource::new(input_samples, 1, 44100);
         let mut converter =
-            AudioTranscoder::new_with_source(source, &source_format, &target_format, 1).unwrap();
+            AudioTranscoder::new(source, &source_format, &target_format, 1).unwrap();
 
         let mut output_samples = Vec::new();
         loop {
@@ -1402,7 +1521,7 @@ mod tests {
 
         let source = MemorySampleSource::new(input_samples.clone(), 1, 44100);
         let mut converter =
-            AudioTranscoder::new_with_source(source, &source_format, &target_format, 1).unwrap();
+            AudioTranscoder::new(source, &source_format, &target_format, 1).unwrap();
 
         let mut output_samples = Vec::new();
         loop {
@@ -1470,8 +1589,7 @@ mod tests {
 
         let source = MemorySampleSource::new(input_samples, 1, 44100);
         let mut converter =
-            AudioTranscoder::new_with_source(source, &source_format, &target_format, channels)
-                .unwrap();
+            AudioTranscoder::new(source, &source_format, &target_format, channels).unwrap();
 
         let mut output_samples = Vec::new();
         loop {
@@ -1528,7 +1646,7 @@ mod tests {
 
         let source = MemorySampleSource::new(vec![], 1, 44100);
         let mut converter =
-            AudioTranscoder::new_with_source(source, &source_format, &target_format, 1).unwrap();
+            AudioTranscoder::new(source, &source_format, &target_format, 1).unwrap();
 
         // Empty input should return None immediately
         assert!(matches!(converter.next_sample(), Ok(None)));
@@ -1544,7 +1662,7 @@ mod tests {
 
         let source = MemorySampleSource::new(vec![0.5], 1, 44100);
         let mut converter =
-            AudioTranscoder::new_with_source(source, &source_format, &target_format, 1).unwrap();
+            AudioTranscoder::new(source, &source_format, &target_format, 1).unwrap();
 
         let mut output_samples = Vec::new();
         loop {
@@ -1590,8 +1708,7 @@ mod tests {
 
             let source = MemorySampleSource::new(input_samples, 1, 44100);
             let mut converter =
-                AudioTranscoder::new_with_source(source, &source_format, &target_format, 1)
-                    .unwrap();
+                AudioTranscoder::new(source, &source_format, &target_format, 1).unwrap();
 
             let mut output_samples = Vec::new();
             let mut sample_count = 0;
@@ -1651,7 +1768,7 @@ mod tests {
 
         let source = MemorySampleSource::new(input_samples, 1, 44100);
         let mut converter =
-            AudioTranscoder::new_with_source(source, &source_format, &target_format, 1).unwrap();
+            AudioTranscoder::new(source, &source_format, &target_format, 1).unwrap();
 
         let mut output_samples = Vec::new();
         let mut sample_count = 0;
@@ -1707,7 +1824,7 @@ mod tests {
 
         let source = MemorySampleSource::new(input_samples, 1, 44100);
         let mut converter =
-            AudioTranscoder::new_with_source(source, &source_format, &target_format, 1).unwrap();
+            AudioTranscoder::new(source, &source_format, &target_format, 1).unwrap();
 
         let mut output_samples = Vec::new();
         loop {
@@ -1750,8 +1867,7 @@ mod tests {
         for values in test_values {
             let source = MemorySampleSource::new(values, 1, 44100);
             let mut converter =
-                AudioTranscoder::new_with_source(source, &source_format, &target_format, 1)
-                    .unwrap();
+                AudioTranscoder::new(source, &source_format, &target_format, 1).unwrap();
 
             let mut output_samples = Vec::new();
             let mut sample_count = 0;
@@ -1802,7 +1918,7 @@ mod tests {
 
         let source = MemorySampleSource::new(input_samples, 1, 44100);
         let mut converter =
-            AudioTranscoder::new_with_source(source, &source_format, &target_format, 1).unwrap();
+            AudioTranscoder::new(source, &source_format, &target_format, 1).unwrap();
 
         let mut output_samples = Vec::new();
         loop {
@@ -1851,7 +1967,7 @@ mod tests {
         // Resample once: 48kHz -> 44.1kHz
         let source = MemorySampleSource::new(original_samples.clone(), 1, 44100);
         let mut converter =
-            AudioTranscoder::new_with_source(source, &source_format, &target_format, 1).unwrap();
+            AudioTranscoder::new(source, &source_format, &target_format, 1).unwrap();
 
         let mut output_samples = Vec::with_capacity(num_samples);
         loop {
@@ -1900,7 +2016,7 @@ mod tests {
         // First resampling: 48kHz -> 44.1kHz
         let source_1 = MemorySampleSource::new(original_samples.clone(), 1, 44100);
         let mut converter_1 =
-            AudioTranscoder::new_with_source(source_1, &source_format, &target_format, 1).unwrap();
+            AudioTranscoder::new(source_1, &source_format, &target_format, 1).unwrap();
 
         let mut intermediate_samples = Vec::with_capacity(num_samples);
         loop {
@@ -1914,7 +2030,7 @@ mod tests {
         // Second resampling: 44.1kHz -> 48kHz (roundtrip)
         let source_2 = MemorySampleSource::new(intermediate_samples, 1, 44100);
         let mut converter_2 =
-            AudioTranscoder::new_with_source(source_2, &target_format, &back_format, 1).unwrap();
+            AudioTranscoder::new(source_2, &target_format, &back_format, 1).unwrap();
 
         let mut final_samples = Vec::with_capacity(original_samples.len());
         loop {
@@ -1972,8 +2088,7 @@ mod tests {
             // Resample
             let source = MemorySampleSource::new(input_samples.clone(), 1, 44100);
             let mut converter =
-                AudioTranscoder::new_with_source(source, &source_format, &target_format, 1)
-                    .unwrap();
+                AudioTranscoder::new(source, &source_format, &target_format, 1).unwrap();
 
             let mut output_samples = Vec::with_capacity(num_samples);
             loop {
@@ -2028,7 +2143,7 @@ mod tests {
         // First resampling: 48kHz -> 44.1kHz
         let source_1 = MemorySampleSource::new(input_samples.clone(), 1, 44100);
         let mut converter_1 =
-            AudioTranscoder::new_with_source(source_1, &source_format, &target_format, 2).unwrap();
+            AudioTranscoder::new(source_1, &source_format, &target_format, 2).unwrap();
 
         let mut intermediate_samples = Vec::with_capacity(input_samples.len());
         loop {
@@ -2043,7 +2158,7 @@ mod tests {
         let back_format = TargetFormat::new(48000, crate::audio::SampleFormat::Float, 32).unwrap();
         let source_2 = MemorySampleSource::new(intermediate_samples, 1, 44100);
         let mut converter_2 =
-            AudioTranscoder::new_with_source(source_2, &target_format, &back_format, 2).unwrap();
+            AudioTranscoder::new(source_2, &target_format, &back_format, 2).unwrap();
 
         let mut output_samples = Vec::with_capacity(input_samples.len());
         loop {
@@ -2131,7 +2246,7 @@ mod tests {
         // Resample complex signal
         let source = MemorySampleSource::new(input_samples.clone(), 1, 44100);
         let mut converter =
-            AudioTranscoder::new_with_source(source, &source_format, &target_format, 1).unwrap();
+            AudioTranscoder::new(source, &source_format, &target_format, 1).unwrap();
 
         let mut output_samples = Vec::with_capacity(num_samples);
         loop {
@@ -2744,142 +2859,6 @@ mod tests {
                 expected,
                 actual
             );
-        }
-    }
-}
-
-/// BufferedThreadedSampleSource provides background buffering for sample sources
-/// to eliminate I/O blocking in the audio callback
-pub struct BufferedThreadedSampleSource {
-    /// Inner source to read from
-    inner_source: Arc<Mutex<Box<dyn SampleSource + Send + Sync>>>,
-
-    /// Buffered samples (read ahead)
-    buffer: Arc<Mutex<VecDeque<Vec<f32>>>>,
-
-    /// Worker pool for background reading
-    worker_pool: Arc<rayon::ThreadPool>,
-
-    /// Configuration
-    buffer_size: usize,
-    read_ahead_threshold: usize,
-
-    /// Performance monitoring
-    buffer_hits: Arc<AtomicUsize>,
-    buffer_misses: Arc<AtomicUsize>,
-}
-
-impl BufferedThreadedSampleSource {
-    /// Creates a new buffered threaded sample source
-    pub fn new(
-        source: Box<dyn SampleSource + Send + Sync>,
-        buffer_size: usize,
-        read_ahead_threshold: usize,
-    ) -> Self {
-        let worker_pool = Arc::new(
-            rayon::ThreadPoolBuilder::new()
-                .num_threads(num_cpus::get().min(4)) // Limit to 4 threads max
-                .build()
-                .unwrap(),
-        );
-
-        Self {
-            inner_source: Arc::new(Mutex::new(source)),
-            buffer: Arc::new(Mutex::new(VecDeque::with_capacity(buffer_size))),
-            worker_pool,
-            buffer_size,
-            read_ahead_threshold,
-            buffer_hits: Arc::new(AtomicUsize::new(0)),
-            buffer_misses: Arc::new(AtomicUsize::new(0)),
-        }
-    }
-
-    /// Schedules background reading if buffer is getting low
-    fn schedule_background_read(&self) {
-        let buffer = self.buffer.clone();
-        let source = self.inner_source.clone();
-        let buffer_size = self.buffer_size;
-        let channel_count = self.inner_source.lock().unwrap().channel_count() as usize;
-
-        self.worker_pool.spawn(move || {
-            let mut chunk = Vec::with_capacity(buffer_size);
-
-            // Read chunk of samples in background, grouping by channel count
-            let mut current_frame = Vec::with_capacity(channel_count);
-            for _ in 0..(buffer_size * channel_count) {
-                match source.lock().unwrap().next_sample() {
-                    Ok(Some(sample)) => {
-                        current_frame.push(sample);
-                        if current_frame.len() == channel_count {
-                            chunk.push(current_frame);
-                            current_frame = Vec::with_capacity(channel_count);
-                        }
-                    }
-                    Ok(None) => break, // Source finished
-                    Err(_) => break,   // Error occurred
-                }
-            }
-
-            // Add to buffer
-            if !chunk.is_empty() {
-                buffer.lock().unwrap().extend(chunk);
-            }
-        });
-    }
-}
-
-impl SampleSource for BufferedThreadedSampleSource {
-    fn next_sample(&mut self) -> Result<Option<f32>, TranscodingError> {
-        // Fast path: return from buffer
-        if let Some(frame) = self.buffer.lock().unwrap().pop_front() {
-            self.buffer_hits.fetch_add(1, Ordering::Relaxed);
-
-            // Trigger background read if buffer is getting low
-            let buffer_len = self.buffer.lock().unwrap().len();
-            if buffer_len < self.read_ahead_threshold {
-                self.schedule_background_read();
-            }
-
-            // Return first sample from frame
-            return Ok(frame.first().copied());
-        }
-
-        // Fallback: read directly (should be rare)
-        self.buffer_misses.fetch_add(1, Ordering::Relaxed);
-        self.inner_source.lock().unwrap().next_sample()
-    }
-
-    fn sample_rate(&self) -> u32 {
-        self.inner_source.lock().unwrap().sample_rate()
-    }
-
-    fn channel_count(&self) -> u16 {
-        self.inner_source.lock().unwrap().channel_count()
-    }
-
-    fn bits_per_sample(&self) -> u16 {
-        self.inner_source.lock().unwrap().bits_per_sample()
-    }
-
-    fn sample_format(&self) -> crate::audio::SampleFormat {
-        self.inner_source.lock().unwrap().sample_format()
-    }
-
-    fn duration(&self) -> Option<std::time::Duration> {
-        self.inner_source.lock().unwrap().duration()
-    }
-}
-
-impl Clone for BufferedThreadedSampleSource {
-    fn clone(&self) -> Self {
-        Self {
-            inner_source: self.inner_source.clone(),
-            buffer: self.buffer.clone(),
-            worker_pool: self.worker_pool.clone(),
-            buffer_size: self.buffer_size,
-            read_ahead_threshold: self.read_ahead_threshold,
-            buffer_hits: self.buffer_hits.clone(),
-            buffer_misses: self.buffer_misses.clone(),
         }
     }
 }

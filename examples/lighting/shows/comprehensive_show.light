@@ -16,8 +16,8 @@ show "Comprehensive Light Show" {
     moving_heads: chase, speed: 2.0, direction: "left_to_right", up_time: 1s, down_time: 1s, hold_time: 6s
     
     @00:20.000
-    # Dimmer effect (no color - applies to existing fixtures) with crossfades
-    dimmer_test: dimmer, intensity: 1.0, up_time: 0.5s, down_time: 0.5s, hold_time: 2s
+    # Dimmer effect (fades to 100% over 0.5s, persists)
+    dimmer_test: dimmer start_level: 0.0, end_level: 1.0, duration: 0.5s, layer: foreground, blend_mode: multiply
     
     @00:25.000
     # Rainbow effect (generates its own colors) with crossfades
@@ -40,6 +40,6 @@ show "Comprehensive Light Show" {
     strobe_variation: strobe, frequency: 12, intensity: 0.9, up_time: 0.5s, down_time: 0.5s, hold_time: 4s
     
     @00:50.000
-    # Fade out (no color - applies to existing fixtures) with crossfades
-    fade_out: dimmer, intensity: 0.0, up_time: 0s, down_time: 5s, hold_time: 0s
+    # Fade out (fades to 0% over 5s, persists)
+    fade_out: dimmer start_level: 1.0, end_level: 0.0, duration: 5s, layer: foreground, blend_mode: multiply
 }

@@ -269,7 +269,34 @@ pub struct EffectInstance {
 }
 
 impl EffectInstance {
-    pub fn new(id: String, effect_type: EffectType, target_fixtures: Vec<String>) -> Self {
+    /// Determine if this effect is permanent (state-changing) or temporary (show effect)
+    pub fn is_permanent(&self) -> bool {
+        match &self.effect_type {
+            EffectType::Static { duration, .. } => {
+                // Static effects are permanent only if they have no duration AND no timing parameters
+                duration.is_none()
+                    && self.up_time.is_none()
+                    && self.hold_time.is_none()
+                    && self.down_time.is_none()
+            }
+            // Dimmer effects are always permanent so their resulting brightness persists
+            EffectType::Dimmer { .. } => true,
+            EffectType::ColorCycle { .. } => false, // Cycles complete and end
+            EffectType::Strobe { .. } => false,     // Strobe completes and end
+            EffectType::Chase { .. } => false,      // Chases complete and end
+            EffectType::Rainbow { .. } => false,    // Rainbow cycles complete and end
+            EffectType::Pulse { .. } => false,      // Pulse cycles complete and end
+        }
+    }
+
+    pub fn new(
+        id: String,
+        effect_type: EffectType,
+        target_fixtures: Vec<String>,
+        up_time: Option<Duration>,
+        hold_time: Option<Duration>,
+        down_time: Option<Duration>,
+    ) -> Self {
         // Extract duration from effect_type if available
         let duration = match &effect_type {
             EffectType::Static { duration, .. } => *duration,
@@ -281,12 +308,28 @@ impl EffectInstance {
             EffectType::Pulse { duration, .. } => *duration,
         };
 
-        // Determine timing based on effect type
-        let (up_time, hold_time) = match &effect_type {
-            EffectType::Dimmer { .. } => (duration, Some(Duration::from_secs(60))), // Dimmer duration becomes up_time, add long hold_time
-            EffectType::Static { duration: None, .. } => (None, Some(Duration::from_secs(60))), // Static effects with no duration get long hold_time
-            _ => (None, duration.or(Some(Duration::from_secs(1)))), // Default to 1 second if no duration
+        // Determine timing based on effect type, but allow override from parameters
+        let (default_up_time, default_hold_time, default_down_time) = match &effect_type {
+            EffectType::Dimmer { .. } => (None, None, None), // Dimmer uses its duration field
+            EffectType::Static { duration: None, .. } => {
+                // If timing parameters are provided, treat as timed effect
+                if up_time.is_some() || hold_time.is_some() || down_time.is_some() {
+                    // Use provided timing parameters for timed static effect
+                    (up_time, hold_time, down_time)
+                } else {
+                    (None, None, None) // Truly indefinite static effect
+                }
+            }
+            EffectType::Static {
+                duration: Some(_), ..
+            } => (None, duration, None), // Static effects with duration just hold for that duration
+            _ => (None, duration.or(Some(Duration::from_secs(1))), None), // Default to 1 second if no duration
         };
+
+        // Use provided timing or fall back to defaults
+        let final_up_time = up_time.or(default_up_time);
+        let final_hold_time = hold_time.or(default_hold_time);
+        let final_down_time = down_time.or(default_down_time);
 
         Self {
             id,
@@ -296,9 +339,9 @@ impl EffectInstance {
             layer: EffectLayer::Background,
             blend_mode: BlendMode::Replace,
             start_time: None,
-            up_time,
-            hold_time,
-            down_time: None,
+            up_time: final_up_time,
+            hold_time: final_hold_time,
+            down_time: final_down_time,
             enabled: true,
         }
     }
@@ -328,23 +371,54 @@ impl EffectInstance {
         let hold_end = up_time + hold_time;
         let total_end = up_time + hold_time + down_time;
 
-        if elapsed < up_end {
-            // Fade in phase (0% to 100%)
-            if up_time.is_zero() {
+        // Small epsilon to make boundary checks inclusive and avoid flapping
+        let eps = Duration::from_micros(1);
+
+        // Check if this is an indefinite effect (no hold_time and no down_time)
+        let is_indefinite = hold_time.is_zero() && down_time.is_zero();
+
+        if up_time.is_zero() {
+            // No fade in phase - go directly to hold or fade out
+            if is_indefinite {
+                // Indefinite effect (like static effects) - always at full intensity
                 1.0
+            } else if elapsed <= hold_end + eps {
+                // Hold phase (100%)
+                1.0
+            } else if elapsed < total_end + eps {
+                // Fade out phase (100% to 0%)
+                if down_time.is_zero() {
+                    0.0
+                } else {
+                    let fade_out_elapsed = elapsed.saturating_sub(hold_end);
+                    let t = if down_time.is_zero() {
+                        1.0
+                    } else {
+                        (fade_out_elapsed.as_secs_f64() / down_time.as_secs_f64()).clamp(0.0, 1.0)
+                    };
+                    1.0 - t
+                }
             } else {
-                elapsed.as_secs_f64() / up_time.as_secs_f64()
+                // Effect has ended
+                0.0
             }
-        } else if elapsed < hold_end {
+        } else if elapsed < up_end + eps {
+            // Fade in phase (0% to 100%)
+            (elapsed.as_secs_f64() / up_time.as_secs_f64()).clamp(0.0, 1.0)
+        } else if is_indefinite {
+            // Indefinite effect after fade-in - always at full intensity
+            1.0
+        } else if elapsed <= hold_end + eps {
             // Hold phase (100%)
             1.0
-        } else if elapsed < total_end {
+        } else if elapsed < total_end + eps {
             // Fade out phase (100% to 0%)
             if down_time.is_zero() {
                 0.0
             } else {
-                let fade_out_elapsed = elapsed - hold_end;
-                1.0 - (fade_out_elapsed.as_secs_f64() / down_time.as_secs_f64())
+                let fade_out_elapsed = elapsed.saturating_sub(hold_end);
+                let t = (fade_out_elapsed.as_secs_f64() / down_time.as_secs_f64()).clamp(0.0, 1.0);
+                1.0 - t
             }
         } else {
             // Effect has ended
@@ -353,10 +427,70 @@ impl EffectInstance {
     }
 
     /// Get the total duration of this effect (up_time + hold_time + down_time)
-    pub fn total_duration(&self) -> Duration {
-        self.up_time.unwrap_or(Duration::from_secs(0))
+    /// Returns None for indefinite effects (like static effects with no duration)
+    pub fn total_duration(&self) -> Option<Duration> {
+        // Static effects with no duration are indefinite only if they also have no timing parameters
+        if matches!(self.effect_type, EffectType::Static { duration: None, .. })
+            && self.up_time.is_none()
+            && self.hold_time.is_none()
+            && self.down_time.is_none()
+        {
+            return None; // Truly indefinite static effect
+        }
+
+        // For dimmers, use duration field (timing params not used)
+        if let EffectType::Dimmer { duration, .. } = &self.effect_type {
+            return Some(*duration);
+        }
+
+        let duration = self.up_time.unwrap_or(Duration::from_secs(0))
             + self.hold_time.unwrap_or(Duration::from_secs(0))
-            + self.down_time.unwrap_or(Duration::from_secs(0))
+            + self.down_time.unwrap_or(Duration::from_secs(0));
+
+        Some(duration)
+    }
+
+    /// Determine if the effect has reached its intended terminal state for the given elapsed time
+    /// This prefers value-based completion when applicable (e.g., dimmer hitting end level).
+    pub fn has_reached_terminal_state(&self, elapsed: Duration) -> bool {
+        let eps = Duration::from_micros(1);
+        let value_eps = 0.0; // require exact target value for termination
+        match &self.effect_type {
+            EffectType::Dimmer { duration, start_level, end_level, .. } => {
+                // Dimmer effect completes when end_level is reached
+                if duration.is_zero() {
+                    return true; // Instant transition
+                }
+
+                // Terminal when we've reached end_level
+                let progress = (elapsed.as_secs_f64() / duration.as_secs_f64()).clamp(0.0, 1.0);
+                let value = start_level + (end_level - start_level) * progress;
+                (value - *end_level).abs() <= value_eps
+            }
+            EffectType::Static { duration, .. } => {
+                if let Some(d) = duration {
+                    return elapsed + eps >= *d;
+                }
+                false
+            }
+            EffectType::Strobe { duration, .. } => duration.map(|d| elapsed + eps >= d).unwrap_or(false)
+            ,
+            EffectType::Pulse { duration, .. } => duration.map(|d| elapsed + eps >= d).unwrap_or(false)
+            ,
+            // Cycle-like effects terminate at configured duration
+            EffectType::ColorCycle { .. } => self
+                .total_duration()
+                .map(|d| elapsed + eps >= d)
+                .unwrap_or(false),
+            EffectType::Chase { .. } => self
+                .total_duration()
+                .map(|d| elapsed + eps >= d)
+                .unwrap_or(false),
+            EffectType::Rainbow { .. } => self
+                .total_duration()
+                .map(|d| elapsed + eps >= d)
+                .unwrap_or(false),
+        }
     }
 }
 
@@ -420,6 +554,7 @@ impl ChannelState {
 /// Represents the current state of a fixture
 #[derive(Debug, Clone)]
 pub struct FixtureState {
+    #[allow(dead_code)]
     pub fixture_name: String,
     pub channels: HashMap<String, ChannelState>,
 }
@@ -445,94 +580,62 @@ impl FixtureState {
 
     /// Blend this fixture state with another
     pub fn blend_with(&mut self, other: &FixtureState) {
-        // Check if the other state has a dimmer multiplier
-        if let Some(dimmer_multiplier) = other.channels.get("_dimmer_multiplier") {
-            // Apply the dimmer multiplier to all existing RGB channels
-            for channel_name in &["red", "green", "blue"] {
-                if let Some(self_state) = self.channels.get(*channel_name) {
-                    let dimmed_value = self_state.value * dimmer_multiplier.value;
-
-                    // Apply the dimmer multiplier to this channel
-                    let dimmed_state =
-                        ChannelState::new(dimmed_value, self_state.layer, self_state.blend_mode);
-                    self.channels.insert(channel_name.to_string(), dimmed_state);
-                }
-            }
-        }
-
-        // Check if the other state has a pulse multiplier
-        if let Some(pulse_multiplier) = other.channels.get("_pulse_multiplier") {
-            // Apply the pulse multiplier to all existing RGB channels
-            for channel_name in &["red", "green", "blue"] {
-                if let Some(self_state) = self.channels.get(*channel_name) {
-                    let pulsed_value = self_state.value * pulse_multiplier.value;
-
-                    // Apply the pulse multiplier to this channel
-                    let pulsed_state =
-                        ChannelState::new(pulsed_value, self_state.layer, self_state.blend_mode);
-                    self.channels.insert(channel_name.to_string(), pulsed_state);
-                }
-            }
-        }
-
         // Blend other channels normally
         for (channel_name, other_state) in &other.channels {
-            if channel_name == "_dimmer_multiplier" || channel_name == "_pulse_multiplier" {
-                // Skip the multiplier channels - we already handled them above
+            // For per-layer multiplier channels, overwrite (last-writer-wins) to avoid compounding across frames
+            if channel_name.starts_with("_dimmer_mult") || channel_name.starts_with("_pulse_mult") {
+                self.channels.insert(channel_name.clone(), *other_state);
                 continue;
             }
 
             if let Some(self_state) = self.channels.get(channel_name) {
                 // Blend existing channel
-                let original_value = self_state.value;
                 let blended_state = self_state.blend_with(*other_state);
-                let blended_value = blended_state.value;
 
                 self.channels.insert(channel_name.clone(), blended_state);
-
-                tracing::debug!(
-                    fixture_name = %self.fixture_name,
-                    channel = channel_name,
-                    original_value = original_value,
-                    other_value = other_state.value,
-                    blended_value = blended_value,
-                    original_dmx = (original_value * 255.0) as u8,
-                    other_dmx = (other_state.value * 255.0) as u8,
-                    blended_dmx = (blended_value * 255.0) as u8,
-                    "Blended existing channel"
-                );
             } else {
                 // Add new channel
                 self.channels.insert(channel_name.clone(), *other_state);
-
-                tracing::debug!(
-                    fixture_name = %self.fixture_name,
-                    channel = channel_name,
-                    value = other_state.value,
-                    dmx_value = (other_state.value * 255.0) as u8,
-                    "Added new channel"
-                );
             }
         }
-
-        // Debug: Print final state
-        tracing::debug!(
-            fixture_name = %self.fixture_name,
-            final_channels = ?self.channels.iter().map(|(k, v)| (k, v.value)).collect::<Vec<_>>(),
-            "Final fixture state after blending"
-        );
     }
 
     /// Convert to DMX commands
     pub fn to_dmx_commands(&self, fixture_info: &FixtureInfo) -> Vec<DmxCommand> {
         let mut commands = Vec::new();
 
-        // Converting fixture state to DMX commands
+        // Apply per-layer multipliers for RGB-only fixtures at emission time
+        // Combine multipliers from all layers
+        let read = |k: &str| self.channels.get(k).map(|c| c.value).unwrap_or(1.0);
+        let dimmer_multiplier =
+            read("_dimmer_mult_bg") * read("_dimmer_mult_mid") * read("_dimmer_mult_fg");
+        let pulse_multiplier =
+            read("_pulse_mult_bg") * read("_pulse_mult_mid") * read("_pulse_mult_fg");
+        let combined_multiplier = (dimmer_multiplier * pulse_multiplier).clamp(0.0, 1.0);
+        let fg_multiplier = (read("_dimmer_mult_fg") * read("_pulse_mult_fg")).clamp(0.0, 1.0);
+        let has_dedicated_dimmer = fixture_info.channels.contains_key("dimmer");
 
         for (channel_name, state) in &self.channels {
             if let Some(&channel_offset) = fixture_info.channels.get(channel_name) {
                 let dmx_channel = fixture_info.address + channel_offset - 1;
-                let dmx_value = (state.value * 255.0) as u8;
+                let mut value = state.value;
+                // If this is an RGB-only fixture, multiply RGB outputs by persisted multipliers
+                // except when this channel is a Replace (e.g., foreground Replace should not be dim-scaled)
+                if !has_dedicated_dimmer
+                    && (channel_name == "red" || channel_name == "green" || channel_name == "blue")
+                {
+                    let effective_multiplier = if state.layer == EffectLayer::Foreground
+                        && state.blend_mode == BlendMode::Replace
+                    {
+                        fg_multiplier
+                    } else {
+                        combined_multiplier
+                    };
+                    if effective_multiplier != 1.0 {
+                        value = (value * effective_multiplier).clamp(0.0, 1.0);
+                    }
+                }
+                let dmx_value = (value * 255.0) as u8;
 
                 commands.push(DmxCommand {
                     universe: fixture_info.universe,
@@ -612,6 +715,455 @@ impl FixtureCapabilities {
     #[inline]
     pub fn with(&self, capability: FixtureCapabilities) -> FixtureCapabilities {
         FixtureCapabilities(self.0 | capability.0)
+    }
+}
+
+/// Strategies for handling brightness control on different fixture types
+///
+/// These strategies ensure that dimming operations preserve color information
+/// and produce visually consistent results across different fixture types.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BrightnessStrategy {
+    /// Use dedicated dimmer channel (RGB+dimmer fixtures)
+    ///
+    /// This strategy is used for fixtures that have a dedicated dimmer channel.
+    /// The dimmer channel controls overall brightness while RGB channels maintain
+    /// their color information, ensuring color is preserved during dimming.
+    DedicatedDimmer,
+    /// Multiply RGB channels to preserve color (RGB-only fixtures)
+    ///
+    /// This strategy is used for RGB-only fixtures without a dedicated dimmer.
+    /// Instead of directly setting RGB values, a multiplier is applied during
+    /// the blending process to preserve the existing color while controlling brightness.
+    RgbMultiplication,
+}
+
+/// Strategies for handling color control
+///
+/// These strategies define how color information is applied to different fixture types,
+/// supporting various color spaces and mixing methods.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ColorStrategy {
+    /// Use RGB channels for color mixing
+    ///
+    /// This is the most common strategy, using red, green, and blue channels
+    /// to create colors through additive mixing.
+    Rgb,
+    /// Use HSV channels for color mixing
+    ///
+    /// This strategy uses hue, saturation, and value channels for more intuitive
+    /// color control, commonly found in advanced fixtures.
+    #[allow(dead_code)]
+    Hsv,
+    /// Use CMY channels for color mixing
+    ///
+    /// This strategy uses cyan, magenta, and yellow channels for subtractive
+    /// color mixing, often found in moving lights and advanced fixtures.
+    #[allow(dead_code)]
+    Cmy,
+}
+
+/// Strategies for handling strobe effects
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum StrobeStrategy {
+    /// Use dedicated strobe channel
+    DedicatedChannel,
+    /// Strobe RGB channels (software strobing)
+    RgbStrobing,
+    /// Strobe brightness control
+    BrightnessStrobing,
+}
+
+/// Strategies for handling pulse effects
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PulseStrategy {
+    /// Use dedicated dimmer channel (RGB+dimmer fixtures)
+    DedicatedDimmer,
+    /// Multiply RGB channels to preserve color (RGB-only fixtures)
+    RgbMultiplication,
+}
+
+/// Strategies for handling chase effects
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ChaseStrategy {
+    /// Use dedicated dimmer channel (RGB+dimmer fixtures)
+    DedicatedDimmer,
+    /// Use RGB channels directly (RGB-only fixtures)
+    RgbChannels,
+    /// Use brightness control (fallback)
+    BrightnessControl,
+}
+
+/// Fixture profile that defines how to achieve common lighting operations
+///
+/// This struct encapsulates the strategies used by different fixture types to perform
+/// common lighting operations like brightness control, color mixing, strobing, etc.
+/// The profile is automatically determined based on the fixture's capabilities,
+/// ensuring that the same lighting show produces visually consistent results
+/// across different fixture types.
+#[derive(Debug, Clone)]
+pub struct FixtureProfile {
+    /// Strategy for controlling brightness/dimming
+    pub brightness_strategy: BrightnessStrategy,
+    /// Strategy for controlling color mixing
+    pub color_strategy: ColorStrategy,
+    /// Strategy for controlling strobing effects
+    pub strobe_strategy: StrobeStrategy,
+    /// Strategy for controlling pulsing effects
+    pub pulse_strategy: PulseStrategy,
+    /// Strategy for controlling chase effects
+    pub chase_strategy: ChaseStrategy,
+}
+
+impl FixtureProfile {
+    /// Create a fixture profile based on fixture capabilities
+    ///
+    /// This method analyzes the fixture's capabilities and selects the most appropriate
+    /// strategies for each type of lighting operation. The selection prioritizes:
+    /// 1. Dedicated channels when available (better performance and control)
+    /// 2. Color-preserving methods for RGB operations
+    /// 3. Fallback strategies for basic functionality
+    pub fn for_fixture(fixture: &FixtureInfo) -> Self {
+        let capabilities = fixture.capabilities();
+
+        // Determine strategies based on fixture capabilities
+        let brightness_strategy = Self::determine_brightness_strategy(&capabilities);
+        let color_strategy = Self::determine_color_strategy(&capabilities);
+        let strobe_strategy = Self::determine_strobe_strategy(&capabilities);
+        let pulse_strategy = Self::determine_pulse_strategy(&capabilities);
+        let chase_strategy = Self::determine_chase_strategy(&capabilities);
+
+        FixtureProfile {
+            brightness_strategy,
+            color_strategy,
+            strobe_strategy,
+            pulse_strategy,
+            chase_strategy,
+        }
+    }
+
+    /// Determine the best brightness strategy for the given capabilities
+    fn determine_brightness_strategy(capabilities: &FixtureCapabilities) -> BrightnessStrategy {
+        if capabilities.contains(FixtureCapabilities::DIMMING) {
+            BrightnessStrategy::DedicatedDimmer
+        } else {
+            // Always use multiplication for RGB-only fixtures to preserve color
+            BrightnessStrategy::RgbMultiplication
+        }
+    }
+
+    /// Determine the best color strategy for the given capabilities
+    fn determine_color_strategy(_capabilities: &FixtureCapabilities) -> ColorStrategy {
+        // Currently only RGB is supported, but this is where HSV/CMY detection would go
+        ColorStrategy::Rgb
+    }
+
+    /// Determine the best strobe strategy for the given capabilities
+    fn determine_strobe_strategy(capabilities: &FixtureCapabilities) -> StrobeStrategy {
+        if capabilities.contains(FixtureCapabilities::STROBING) {
+            StrobeStrategy::DedicatedChannel
+        } else if capabilities.contains(FixtureCapabilities::DIMMING) {
+            // Use dimmer channel for strobing when available
+            StrobeStrategy::BrightnessStrobing
+        } else if capabilities.contains(FixtureCapabilities::RGB_COLOR) {
+            // Use RGB channels for software strobing
+            StrobeStrategy::RgbStrobing
+        } else {
+            // Fallback to brightness strobing
+            StrobeStrategy::BrightnessStrobing
+        }
+    }
+
+    /// Determine the best pulse strategy for the given capabilities
+    fn determine_pulse_strategy(capabilities: &FixtureCapabilities) -> PulseStrategy {
+        if capabilities.contains(FixtureCapabilities::DIMMING) {
+            PulseStrategy::DedicatedDimmer
+        } else {
+            // Always use multiplication for RGB-only fixtures to preserve color
+            PulseStrategy::RgbMultiplication
+        }
+    }
+
+    /// Determine the best chase strategy for the given capabilities
+    fn determine_chase_strategy(capabilities: &FixtureCapabilities) -> ChaseStrategy {
+        if capabilities.contains(FixtureCapabilities::DIMMING) {
+            ChaseStrategy::DedicatedDimmer
+        } else if capabilities.contains(FixtureCapabilities::RGB_COLOR) {
+            ChaseStrategy::RgbChannels
+        } else {
+            ChaseStrategy::BrightnessControl
+        }
+    }
+
+    /// Apply brightness control using the fixture's strategy
+    pub fn apply_brightness(
+        &self,
+        level: f64,
+        layer: EffectLayer,
+        blend_mode: BlendMode,
+    ) -> HashMap<String, ChannelState> {
+        let mut result = HashMap::new();
+
+        // The conceptual dimmer effect should behave identically regardless of fixture type
+        // The fixture type only determines the implementation strategy, not the behavior
+        match self.brightness_strategy {
+            BrightnessStrategy::DedicatedDimmer => {
+                // For fixtures with dedicated dimmer channels, always use the dimmer channel
+                // The blend mode controls how it interacts with other effects
+                result.insert(
+                    "dimmer".to_string(),
+                    ChannelState::new(level, layer, blend_mode),
+                );
+            }
+            BrightnessStrategy::RgbMultiplication => {
+                // For RGB-only fixtures, always use RGB multiplication
+                // This ensures consistent behavior regardless of blend mode
+                let key = match layer {
+                    EffectLayer::Background => "_dimmer_mult_bg",
+                    EffectLayer::Midground => "_dimmer_mult_mid",
+                    EffectLayer::Foreground => "_dimmer_mult_fg",
+                };
+                result.insert(
+                    key.to_string(),
+                    ChannelState::new(level, layer, BlendMode::Multiply),
+                );
+            }
+        }
+
+        result
+    }
+
+    /// Apply color control using the fixture's strategy
+    pub fn apply_color(
+        &self,
+        color: Color,
+        layer: EffectLayer,
+        blend_mode: BlendMode,
+    ) -> HashMap<String, ChannelState> {
+        let mut result = HashMap::new();
+
+        match self.color_strategy {
+            ColorStrategy::Rgb => {
+                result.insert(
+                    "red".to_string(),
+                    ChannelState::new(color.r as f64 / 255.0, layer, blend_mode),
+                );
+                result.insert(
+                    "green".to_string(),
+                    ChannelState::new(color.g as f64 / 255.0, layer, blend_mode),
+                );
+                result.insert(
+                    "blue".to_string(),
+                    ChannelState::new(color.b as f64 / 255.0, layer, blend_mode),
+                );
+
+                // Add white channel if present in color
+                if let Some(w) = color.w {
+                    result.insert(
+                        "white".to_string(),
+                        ChannelState::new(w as f64 / 255.0, layer, blend_mode),
+                    );
+                }
+            }
+            ColorStrategy::Hsv => {
+                // Convert RGB to HSV
+                let (h, s, v) = Self::rgb_to_hsv(color.r, color.g, color.b);
+                result.insert(
+                    "hue".to_string(),
+                    ChannelState::new(h / 360.0, layer, blend_mode),
+                );
+                result.insert(
+                    "saturation".to_string(),
+                    ChannelState::new(s, layer, blend_mode),
+                );
+                result.insert("value".to_string(), ChannelState::new(v, layer, blend_mode));
+            }
+            ColorStrategy::Cmy => {
+                // Convert RGB to CMY
+                let (c, m, y) = Self::rgb_to_cmy(color.r, color.g, color.b);
+                result.insert("cyan".to_string(), ChannelState::new(c, layer, blend_mode));
+                result.insert(
+                    "magenta".to_string(),
+                    ChannelState::new(m, layer, blend_mode),
+                );
+                result.insert(
+                    "yellow".to_string(),
+                    ChannelState::new(y, layer, blend_mode),
+                );
+            }
+        }
+
+        result
+    }
+
+    /// Convert RGB to HSV color space
+    fn rgb_to_hsv(r: u8, g: u8, b: u8) -> (f64, f64, f64) {
+        let r = r as f64 / 255.0;
+        let g = g as f64 / 255.0;
+        let b = b as f64 / 255.0;
+
+        let max = r.max(g).max(b);
+        let min = r.min(g).min(b);
+        let delta = max - min;
+
+        let v = max;
+        let s = if max == 0.0 { 0.0 } else { delta / max };
+
+        let h = if delta == 0.0 {
+            0.0
+        } else if max == r {
+            60.0 * (((g - b) / delta) % 6.0)
+        } else if max == g {
+            60.0 * ((b - r) / delta + 2.0)
+        } else {
+            60.0 * ((r - g) / delta + 4.0)
+        };
+
+        (if h < 0.0 { h + 360.0 } else { h }, s, v)
+    }
+
+    /// Convert RGB to CMY color space
+    fn rgb_to_cmy(r: u8, g: u8, b: u8) -> (f64, f64, f64) {
+        let r = r as f64 / 255.0;
+        let g = g as f64 / 255.0;
+        let b = b as f64 / 255.0;
+
+        let c = 1.0 - r;
+        let m = 1.0 - g;
+        let y = 1.0 - b;
+
+        (c, m, y)
+    }
+
+    /// Apply strobe control using the fixture's strategy
+    pub fn apply_strobe(
+        &self,
+        frequency: f64,
+        layer: EffectLayer,
+        blend_mode: BlendMode,
+        crossfade_multiplier: f64,
+        strobe_value: Option<f64>, // For software strobing
+    ) -> HashMap<String, ChannelState> {
+        let mut result = HashMap::new();
+
+        // Only apply strobe if crossfade multiplier is > 0 (effect is active)
+        if crossfade_multiplier <= 0.0 {
+            return result;
+        }
+
+        match self.strobe_strategy {
+            StrobeStrategy::DedicatedChannel => {
+                // Hardware strobe: send normalized speed value to dedicated strobe channel
+                // Note: frequency normalization should be done by the caller
+                result.insert(
+                    "strobe".to_string(),
+                    ChannelState::new(frequency, layer, blend_mode),
+                );
+            }
+            StrobeStrategy::RgbStrobing => {
+                // Software strobing: use the provided strobe value
+                if let Some(value) = strobe_value {
+                    // When strobe is OFF (0), use Replace blend mode to override background
+                    // When strobe is ON (1), use the original blend mode for layering
+                    let effective_blend_mode = if value == 0.0 {
+                        BlendMode::Replace
+                    } else {
+                        blend_mode
+                    };
+
+                    let channel_state = ChannelState::new(value, layer, effective_blend_mode);
+                    result.insert("red".to_string(), channel_state);
+                    result.insert("green".to_string(), channel_state);
+                    result.insert("blue".to_string(), channel_state);
+                }
+            }
+            StrobeStrategy::BrightnessStrobing => {
+                // Strobe brightness control
+                if let Some(value) = strobe_value {
+                    let effective_blend_mode = if value == 0.0 {
+                        BlendMode::Replace
+                    } else {
+                        blend_mode
+                    };
+
+                    let channel_state = ChannelState::new(value, layer, effective_blend_mode);
+                    result.insert("dimmer".to_string(), channel_state);
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Apply pulse control using the fixture's strategy
+    pub fn apply_pulse(
+        &self,
+        pulse_value: f64,
+        layer: EffectLayer,
+        blend_mode: BlendMode,
+    ) -> HashMap<String, ChannelState> {
+        let mut result = HashMap::new();
+
+        match self.pulse_strategy {
+            PulseStrategy::DedicatedDimmer => {
+                // Use dedicated dimmer channel
+                result.insert(
+                    "dimmer".to_string(),
+                    ChannelState::new(pulse_value, layer, blend_mode),
+                );
+            }
+            PulseStrategy::RgbMultiplication => {
+                // Use RGB multiplication (preserves color)
+                // Store as multiplier for blending system to apply to existing channels
+                let key = match layer {
+                    EffectLayer::Background => "_pulse_mult_bg",
+                    EffectLayer::Midground => "_pulse_mult_mid",
+                    EffectLayer::Foreground => "_pulse_mult_fg",
+                };
+                result.insert(
+                    key.to_string(),
+                    ChannelState::new(pulse_value, layer, BlendMode::Multiply),
+                );
+            }
+        }
+
+        result
+    }
+
+    /// Apply chase control using the fixture's strategy
+    pub fn apply_chase(
+        &self,
+        chase_value: f64,
+        layer: EffectLayer,
+        blend_mode: BlendMode,
+    ) -> HashMap<String, ChannelState> {
+        let mut result = HashMap::new();
+
+        match self.chase_strategy {
+            ChaseStrategy::DedicatedDimmer => {
+                // Use dedicated dimmer channel
+                result.insert(
+                    "dimmer".to_string(),
+                    ChannelState::new(chase_value, layer, blend_mode),
+                );
+            }
+            ChaseStrategy::RgbChannels => {
+                // Use RGB channels directly - set all to same value for white chase
+                let channel_state = ChannelState::new(chase_value, layer, blend_mode);
+                result.insert("red".to_string(), channel_state);
+                result.insert("green".to_string(), channel_state);
+                result.insert("blue".to_string(), channel_state);
+            }
+            ChaseStrategy::BrightnessControl => {
+                // Use brightness control (fallback)
+                result.insert(
+                    "dimmer".to_string(),
+                    ChannelState::new(chase_value, layer, blend_mode),
+                );
+            }
+        }
+
+        result
     }
 }
 
@@ -836,6 +1388,9 @@ mod tests {
                 duration: Some(Duration::from_secs(5)),
             },
             vec!["fixture1".to_string(), "fixture2".to_string()],
+            None,
+            None,
+            None,
         );
 
         assert_eq!(effect.id, "test_effect");

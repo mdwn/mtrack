@@ -69,6 +69,3 @@ strobe_lights: strobe frequency: 4, fade_in: 0.5s, fade_out: 0.5s, duration: 3s
 ```
 
 This creates smooth, professional lighting transitions that are standard in the lighting industry.
-
-
-

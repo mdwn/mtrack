@@ -1,0 +1,48 @@
+show "Dimmer Curves Demo" {
+    # This show demonstrates the different dimmer curve types
+    # Each curve provides a different fade characteristic
+
+    @00:00.000
+    # Start with static blue at full brightness
+    front_wash: static color: "blue", dimmer: 100%, layer: background, blend_mode: replace
+
+    @00:02.000
+    # Linear curve: Constant rate of change (default)
+    front_wash: dimmer start_level: 1.0, end_level: 0.0, duration: 3s, curve: linear, layer: foreground, blend_mode: multiply
+
+    @00:06.000
+    # Reset to full brightness
+    front_wash: dimmer start_level: 0.0, end_level: 1.0, duration: 0.5s, curve: linear, layer: foreground, blend_mode: replace
+
+    @00:08.000
+    # Exponential curve: Slow start, fast end - "ease-out" feel
+    front_wash: dimmer start_level: 1.0, end_level: 0.0, duration: 3s, curve: exponential, layer: foreground, blend_mode: multiply
+
+    @00:12.000
+    # Reset to full brightness
+    front_wash: dimmer start_level: 0.0, end_level: 1.0, duration: 0.5s, curve: linear, layer: foreground, blend_mode: replace
+
+    @00:14.000
+    # Logarithmic curve: Fast start, slow end - "ease-in" feel
+    front_wash: dimmer start_level: 1.0, end_level: 0.0, duration: 3s, curve: logarithmic, layer: foreground, blend_mode: multiply
+
+    @00:18.000
+    # Reset to full brightness
+    front_wash: dimmer start_level: 0.0, end_level: 1.0, duration: 0.5s, curve: linear, layer: foreground, blend_mode: replace
+
+    @00:20.000
+    # Sine curve: Smooth ease-in-out using sine wave
+    front_wash: dimmer start_level: 1.0, end_level: 0.0, duration: 3s, curve: sine, layer: foreground, blend_mode: multiply
+
+    @00:24.000
+    # Reset to full brightness
+    front_wash: dimmer start_level: 0.0, end_level: 1.0, duration: 0.5s, curve: linear, layer: foreground, blend_mode: replace
+
+    @00:26.000
+    # Cosine curve: Smooth ease-in using cosine
+    front_wash: dimmer start_level: 1.0, end_level: 0.0, duration: 3s, curve: cosine, layer: foreground, blend_mode: multiply
+
+    @00:30.000
+    # End in blackout
+}
+

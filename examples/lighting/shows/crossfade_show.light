@@ -12,8 +12,8 @@ show "Crossfade Demo" {
     side_wash: cycle color: "green", color: "yellow", color: "purple", speed: 0.5, direction: forward, layer: midground, blend_mode: add, up_time: 1.5s, down_time: 2s, hold_time: 4.5s
     
     @00:12.000
-    # Dimmer effect with smooth crossfades
-    front_wash: dimmer start_level: 1.0, end_level: 0.3, up_time: 0.5s, down_time: 1s, hold_time: 2.5s, layer: foreground, blend_mode: multiply
+    # Dimmer effect (fades to 30% over 0.5s, persists)
+    front_wash: dimmer start_level: 1.0, end_level: 0.3, duration: 0.5s, layer: foreground, blend_mode: multiply
     
     @00:16.000
     # Strobe with crossfades
@@ -37,15 +37,16 @@ show "Crossfade Demo" {
     back_wash: static color: "cyan", dimmer: 80%, layer: midground, blend_mode: add, up_time: 1s, down_time: 1s, hold_time: 3s
     
     @00:40.000
-    # Final fade out with crossfades
-    front_wash: dimmer start_level: 1.0, end_level: 0.0, up_time: 0s, down_time: 3s, hold_time: 0s, layer: foreground, blend_mode: multiply
-    back_wash: dimmer start_level: 0.8, end_level: 0.0, up_time: 0s, down_time: 3s, hold_time: 0s, layer: foreground, blend_mode: multiply
-    side_wash: dimmer start_level: 1.0, end_level: 0.0, up_time: 0s, down_time: 3s, hold_time: 0s, layer: foreground, blend_mode: multiply
-    strobe_lights: dimmer start_level: 1.0, end_level: 0.0, up_time: 0s, down_time: 3s, hold_time: 0s, layer: foreground, blend_mode: multiply
-    moving_heads: dimmer start_level: 1.0, end_level: 0.0, up_time: 0s, down_time: 3s, hold_time: 0s, layer: foreground, blend_mode: multiply
-    pulse_lights: dimmer start_level: 1.0, end_level: 0.0, up_time: 0s, down_time: 3s, hold_time: 0s, layer: foreground, blend_mode: multiply
-    rainbow_effect: dimmer start_level: 1.0, end_level: 0.0, up_time: 0s, down_time: 3s, hold_time: 0s, layer: foreground, blend_mode: multiply
+    # Final fade out (all fixtures fade to black over 3 seconds)
+    front_wash: dimmer start_level: 1.0, end_level: 0.0, duration: 3s, layer: foreground, blend_mode: multiply
+    back_wash: dimmer start_level: 0.8, end_level: 0.0, duration: 3s, layer: foreground, blend_mode: multiply
+    side_wash: dimmer start_level: 1.0, end_level: 0.0, duration: 3s, layer: foreground, blend_mode: multiply
+    strobe_lights: dimmer start_level: 1.0, end_level: 0.0, duration: 3s, layer: foreground, blend_mode: multiply
+    moving_heads: dimmer start_level: 1.0, end_level: 0.0, duration: 3s, layer: foreground, blend_mode: multiply
+    pulse_lights: dimmer start_level: 1.0, end_level: 0.0, duration: 3s, layer: foreground, blend_mode: multiply
+    rainbow_effect: dimmer start_level: 1.0, end_level: 0.0, duration: 3s, layer: foreground, blend_mode: multiply
 }
+
 
 
 

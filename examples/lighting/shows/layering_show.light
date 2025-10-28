@@ -4,8 +4,8 @@ show "Effect Layering Demo" {
     front_wash: static color: "blue", dimmer: 100%, layer: background, blend_mode: replace, up_time: 2s
     
     @00:02.000
-    # Midground layer: Dimmer effect that slowly dims the blue with crossfades
-    front_wash: dimmer start_level: 1.0, end_level: 0.5, up_time: 1s, down_time: 1s, hold_time: 3s, layer: midground, blend_mode: multiply
+    # Midground layer: Dimmer with exponential curve - slow start, fast end (persists)
+    front_wash: dimmer start_level: 1.0, end_level: 0.5, duration: 1s, curve: exponential, layer: midground, blend_mode: multiply
     
     @00:04.000
     # Foreground layer: Strobe effect on top of the dimmed blue with crossfades
@@ -20,15 +20,15 @@ show "Effect Layering Demo" {
     back_wash: cycle color: "red", color: "green", color: "blue", speed: 1.0, direction: forward, layer: midground, blend_mode: replace, up_time: 1.5s, down_time: 1s, hold_time: 5.5s
     
     @00:15.000
-    # Add a dimmer effect to the color cycle with crossfades
-    back_wash: dimmer start_level: 1.0, end_level: 0.3, up_time: 0.5s, down_time: 0.5s, hold_time: 2s, layer: foreground, blend_mode: multiply
+    # Add a dimmer with logarithmic curve - fast start, slow end (persists)
+    back_wash: dimmer start_level: 1.0, end_level: 0.3, duration: 0.5s, curve: logarithmic, layer: foreground, blend_mode: multiply
     
     @00:18.000
     # Add a pulse effect on top with crossfades
     back_wash: pulse frequency: 4, layer: foreground, blend_mode: overlay, up_time: 1s, down_time: 1s, hold_time: 5s
     
     @00:25.000
-    # Fade out everything with crossfades
-    front_wash: dimmer start_level: 0.5, end_level: 0.0, up_time: 0s, down_time: 2s, hold_time: 0s, layer: foreground, blend_mode: multiply
-    back_wash: dimmer start_level: 0.3, end_level: 0.0, up_time: 0s, down_time: 2s, hold_time: 0s, layer: foreground, blend_mode: multiply
+    # Fade to black with sine curve - smooth ease-in-out (persists)
+    front_wash: dimmer start_level: 1.0, end_level: 0.0, duration: 2s, curve: sine, layer: foreground, blend_mode: replace
+    back_wash: dimmer start_level: 1.0, end_level: 0.0, duration: 2s, curve: sine, layer: foreground, blend_mode: replace
 }

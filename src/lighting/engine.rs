@@ -15,8 +15,6 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use tracing::info;
-
 use super::effects::*;
 
 /// The main effects engine that manages and processes lighting effects
@@ -24,7 +22,12 @@ pub struct EffectEngine {
     active_effects: HashMap<String, EffectInstance>,
     fixture_registry: HashMap<String, FixtureInfo>,
     current_time: Instant,
-    logged_effects: std::collections::HashSet<String>,
+    /// Elapsed simulated time since engine start
+    engine_elapsed: Duration,
+    /// Persistent fixture states - maintains the current state of each fixture
+    fixture_states: HashMap<String, FixtureState>,
+    /// Channel locks - prevents lower-layer effects from affecting locked channels
+    channel_locks: HashMap<String, std::collections::HashSet<String>>,
 }
 
 impl EffectEngine {
@@ -33,19 +36,19 @@ impl EffectEngine {
             active_effects: HashMap::new(),
             fixture_registry: HashMap::new(),
             current_time: Instant::now(),
-            logged_effects: std::collections::HashSet::new(),
+            engine_elapsed: Duration::ZERO,
+            fixture_states: HashMap::new(),
+            channel_locks: HashMap::new(),
         }
     }
 
     /// Log effect application only on first occurrence
-    fn log_effect_application(&mut self, effect_id: &str, effect_type: &str, fixture_count: usize) {
-        if !self.logged_effects.contains(effect_id) {
-            info!(
-                "Applying {} effect '{}' to {} fixtures",
-                effect_type, effect_id, fixture_count
-            );
-            self.logged_effects.insert(effect_id.to_string());
-        }
+    fn log_effect_application(
+        &mut self,
+        _effect_id: &str,
+        _effect_type: &str,
+        _fixture_count: usize,
+    ) {
     }
 
     /// Register a fixture with the engine
@@ -126,13 +129,23 @@ impl EffectEngine {
     /// Update the engine and return DMX commands
     pub fn update(&mut self, dt: Duration) -> Result<Vec<DmxCommand>, EffectError> {
         self.current_time += dt;
+        self.engine_elapsed += dt;
 
-        // Process effects with layering
-        self.update_with_layering()
-    }
+        // Start with only states from permanent effects as the base
+        let mut current_fixture_states = HashMap::new();
 
-    /// Update the engine with layering support
-    fn update_with_layering(&mut self) -> Result<Vec<DmxCommand>, EffectError> {
+        // Always include persisted permanent states as the base
+        for (fixture_name, state) in &self.fixture_states {
+            current_fixture_states.insert(fixture_name.clone(), state.clone());
+        }
+
+        // Track which channels come from permanent effects to preserve them later
+        let mut permanent_channels: HashMap<String, std::collections::HashSet<String>> =
+            current_fixture_states
+                .iter()
+                .map(|(name, state)| (name.clone(), state.channels.keys().cloned().collect()))
+                .collect();
+
         // Group effects by layer - collect effect IDs first to avoid borrowing conflicts
         let mut effects_by_layer: std::collections::BTreeMap<EffectLayer, Vec<String>> =
             std::collections::BTreeMap::new();
@@ -146,23 +159,30 @@ impl EffectEngine {
             }
         }
 
-        // Process each layer in order
-        let mut fixture_states: std::collections::HashMap<String, FixtureState> =
-            std::collections::HashMap::new();
+        // Track effects that have just completed to preserve their final state
+        let mut completed_effects = Vec::new();
 
+        // Process each layer in order
         for (_layer, effect_ids) in effects_by_layer {
             for effect_id in effect_ids {
                 // Clone the effect to avoid borrowing conflicts
                 let effect = self.active_effects.get(&effect_id).unwrap().clone();
 
-                // Check if effect has expired
-                if let Some(start_time) = effect.start_time {
+                // Check if effect has reached terminal state (value-based where applicable)
+                let is_expired = if let Some(start_time) = effect.start_time {
                     let elapsed = self.current_time.duration_since(start_time);
-                    let total_duration = effect.total_duration();
+                    effect.has_reached_terminal_state(elapsed)
+                } else {
+                    false
+                };
 
-                    if elapsed >= total_duration {
-                        continue;
-                    }
+                if is_expired {
+                    // Effect has completed. For temporary effects, do not blend final state.
+                    // For permanent effects, preserve via the completion handler below.
+
+                    // Queue for removal after this frame
+                    completed_effects.push(effect_id.clone());
+                    continue;
                 }
 
                 // Calculate effect parameters based on current time
@@ -173,28 +193,212 @@ impl EffectEngine {
 
                 // Process the effect and get fixture states
                 if let Some(effect_states) = self.process_effect(&effect, elapsed)? {
-                    // Blend the effect states into the overall fixture states
+                    // Blend the effect states into the current fixture states
                     for (fixture_name, effect_state) in effect_states {
                         if self.fixture_registry.contains_key(&fixture_name) {
-                            fixture_states
-                                .entry(fixture_name.clone())
-                                .or_insert_with(|| FixtureState::new(fixture_name))
-                                .blend_with(&effect_state);
+                            // Check if any channels are locked for this fixture
+                            let locked_channels = self.channel_locks.get(&fixture_name);
+
+                            // Filter out locked channels from the effect state
+                            let mut filtered_state = effect_state.clone();
+                            if let Some(locked) = locked_channels {
+                                // Remove locked channels from the effect state, but always allow
+                                // brightness/pulse multipliers to pass through
+                                let _before_count = filtered_state.channels.len();
+                                filtered_state.channels.retain(|channel_name, _| {
+                                    channel_name.starts_with("_dimmer_mult")
+                                        || channel_name.starts_with("_pulse_mult")
+                                        || channel_name == "dimmer"
+                                        || !locked.contains(channel_name)
+                                });
+                                let _after_count = filtered_state.channels.len();
+                            }
+
+                            // Only blend if there are unlocked channels
+                            if !filtered_state.channels.is_empty() {
+                                let fixture_name_clone_for_state = fixture_name.clone();
+                                current_fixture_states
+                                    .entry(fixture_name.clone())
+                                    .or_insert_with(|| {
+                                        FixtureState::new(fixture_name_clone_for_state)
+                                    })
+                                    .blend_with(&filtered_state);
+
+                                // Do not mark permanent channels during active frames; persist only on completion
+                            }
                         }
                     }
                 }
             }
         }
 
+        // Handle completed effects by preserving their final state
+        for effect_id in completed_effects {
+            if let Some(effect) = self.active_effects.remove(&effect_id) {
+                // Calculate the final state of the completed effect
+                if let Some(final_states) = self.process_effect_final_state(&effect)? {
+                    // Only preserve the final state for permanent effects
+                    if effect.is_permanent() {
+                        // Preserve the final state in persistent storage
+                        for (fixture_name, final_state) in final_states {
+                            if self.fixture_registry.contains_key(&fixture_name) {
+                                let fixture_name_clone = fixture_name.clone();
+                                current_fixture_states
+                                    .entry(fixture_name_clone.clone())
+                                    .or_insert_with(|| {
+                                        FixtureState::new(fixture_name_clone.clone())
+                                    })
+                                    .blend_with(&final_state);
+
+                                // Lock channels if this is a foreground Replace effect
+                                if effect.layer == EffectLayer::Foreground
+                                    && effect.blend_mode == BlendMode::Replace
+                                {
+                                    let locked_channels =
+                                        self.channel_locks.entry(fixture_name_clone).or_default();
+
+                                    // Lock all channels that this effect affected
+                                    for channel_name in final_state.channels.keys() {
+                                        locked_channels.insert(channel_name.clone());
+                                    }
+                                }
+
+                                // Ensure channels from this permanent effect are saved
+                                let entry =
+                                    permanent_channels.entry(fixture_name.clone()).or_default();
+                                // Include original final channels
+                                for ch in final_state.channels.keys() {
+                                    entry.insert(ch.clone());
+                                }
+                                // Also include any per-layer multiplier channels materialized by blend_with
+                                if let Some(cur) = current_fixture_states.get(&fixture_name) {
+                                    for ch in cur.channels.keys() {
+                                        if ch.starts_with("_dimmer_mult")
+                                            || ch.starts_with("_pulse_mult")
+                                        {
+                                            entry.insert(ch.clone());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        // Temporary effects complete and end — remove per-layer multipliers for this effect's layer
+                        for (fixture_name, _final_state) in final_states {
+                            if self.fixture_registry.contains_key(&fixture_name) {
+                                // Identify the layer suffix for this effect
+                                let layer_suffix = match effect.layer {
+                                    EffectLayer::Background => "_bg",
+                                    EffectLayer::Midground => "_mid",
+                                    EffectLayer::Foreground => "_fg",
+                                };
+
+                                // Remove per-layer multipliers for this layer from current_fixture_states
+                                if let Some(current_state) =
+                                    current_fixture_states.get_mut(&fixture_name)
+                                {
+                                    // Remove dimmer multiplier for this layer (defaults to 1.0 at emission)
+                                    let dimmer_key = format!("_dimmer_mult{}", layer_suffix);
+                                    current_state.channels.remove(&dimmer_key);
+
+                                    // Remove pulse multiplier for this layer (defaults to 1.0 at emission)
+                                    let pulse_key = format!("_pulse_mult{}", layer_suffix);
+                                    current_state.channels.remove(&pulse_key);
+                                }
+
+                                // Also remove from persisted fixture_states
+                                if let Some(persisted_state) =
+                                    self.fixture_states.get_mut(&fixture_name)
+                                {
+                                    let dimmer_key = format!("_dimmer_mult{}", layer_suffix);
+                                    persisted_state.channels.remove(&dimmer_key);
+                                    let pulse_key = format!("_pulse_mult{}", layer_suffix);
+                                    persisted_state.channels.remove(&pulse_key);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Update persistent fixture states - only save channels from permanent effects
+        self.fixture_states.clear();
+        for (fixture_name, state) in &current_fixture_states {
+            if let Some(perm_channels) = permanent_channels.get(fixture_name) {
+                // Only save channels that were from permanent effects
+                let mut preserved_state = FixtureState::new(fixture_name.clone());
+                for channel_name in perm_channels {
+                    if let Some(channel_state) = state.channels.get(channel_name) {
+                        preserved_state
+                            .channels
+                            .insert(channel_name.clone(), *channel_state);
+                    }
+                }
+                if !preserved_state.channels.is_empty() {
+                    self.fixture_states
+                        .insert(fixture_name.clone(), preserved_state);
+                }
+            }
+        }
+
+        // Merge current frame states with persisted permanent states for emission,
+        // so permanent dimming (e.g., RGB multipliers) persists even when no effect is active.
+        let mut merged_states: HashMap<String, FixtureState> = HashMap::new();
+        for name in self.fixture_registry.keys() {
+            match (
+                current_fixture_states.get(name),
+                self.fixture_states.get(name),
+            ) {
+                (Some(current), Some(persisted)) => {
+                    // Start from persisted, then overlay current so current wins
+                    let mut merged = persisted.clone();
+                    merged.blend_with(current);
+                    merged_states.insert(name.clone(), merged);
+                }
+                (Some(current), None) => {
+                    merged_states.insert(name.clone(), current.clone());
+                }
+                (None, Some(persisted)) => {
+                    merged_states.insert(name.clone(), persisted.clone());
+                }
+                (None, None) => {}
+            }
+        }
+
         // Convert fixture states to DMX commands
         let mut commands = Vec::new();
-        for (fixture_name, fixture_state) in fixture_states {
+        for (fixture_name, fixture_state) in merged_states {
             if let Some(fixture_info) = self.fixture_registry.get(&fixture_name) {
                 commands.extend(fixture_state.to_dmx_commands(fixture_info));
             }
         }
 
         Ok(commands)
+    }
+
+    /// Process the final state of a completed effect
+    fn process_effect_final_state(
+        &mut self,
+        effect: &EffectInstance,
+    ) -> Result<Option<HashMap<String, FixtureState>>, EffectError> {
+        if !effect.enabled {
+            return Ok(None);
+        }
+
+        // Calculate the final state by processing the effect at its end time
+        if effect.start_time.is_some() {
+            if let Some(total_duration) = effect.total_duration() {
+                let final_elapsed = total_duration;
+                self.process_effect(effect, final_elapsed)
+            } else {
+                // Indefinite effect - use current state
+                self.process_effect(effect, Duration::ZERO)
+            }
+        } else {
+            // Effect has no timing, use current state
+            self.process_effect(effect, Duration::ZERO)
+        }
     }
 
     /// Process a single effect and return fixture states
@@ -220,9 +424,9 @@ impl EffectEngine {
             EffectType::Dimmer {
                 start_level,
                 end_level,
-                duration: _,
+                duration,
                 curve,
-            } => self.apply_dimmer(effect, *start_level, *end_level, curve, elapsed),
+            } => self.apply_dimmer(effect, *start_level, *end_level, curve, elapsed, *duration),
             EffectType::Chase {
                 pattern,
                 speed,
@@ -289,12 +493,13 @@ impl EffectEngine {
         }
 
         // Validate timing
-        let total_duration = effect.total_duration();
-        if total_duration.as_secs_f64() < 0.0 {
-            return Err(EffectError::Timing(format!(
-                "Effect total duration must be non-negative, got {}s",
-                total_duration.as_secs_f64()
-            )));
+        if let Some(total_duration) = effect.total_duration() {
+            if total_duration.as_secs_f64() < 0.0 {
+                return Err(EffectError::Timing(format!(
+                    "Effect total duration must be non-negative, got {}s",
+                    total_duration.as_secs_f64()
+                )));
+            }
         }
 
         Ok(())
@@ -510,6 +715,11 @@ impl EffectEngine {
     }
 
     // ===== State-based effect processing methods =====
+    //
+    // These methods apply various lighting effects using the Fixture Profile System.
+    // The fixture profile system ensures that the same lighting show produces
+    // visually consistent results across different fixture types by automatically
+    // selecting the appropriate strategy based on fixture capabilities.
 
     /// Apply a static effect and return fixture states
     fn apply_static_effect(
@@ -529,10 +739,17 @@ impl EffectEngine {
             if let Some(fixture) = self.fixture_registry.get(fixture_name) {
                 let mut fixture_state = FixtureState::new(fixture_name.clone());
 
+                // For static effects, we apply parameters directly
+                // The fixture profile system is more useful for dynamic effects
+
                 for (param_name, value) in parameters {
+                    // Apply crossfade multiplier to the value
+                    let faded_value = *value * crossfade_multiplier;
+
+                    // For static effects, apply parameters directly if the channel exists
+                    // The fixture profile system is more useful for dynamic effects that need
+                    // to adapt their behavior based on fixture capabilities
                     if fixture.channels.contains_key(param_name) {
-                        // Apply crossfade multiplier to the value
-                        let faded_value = *value * crossfade_multiplier;
                         let channel_state =
                             ChannelState::new(faded_value, effect.layer, effect.blend_mode);
                         fixture_state.set_channel(param_name.clone(), channel_state);
@@ -588,32 +805,15 @@ impl EffectEngine {
             if let Some(fixture) = self.fixture_registry.get(fixture_name) {
                 let mut fixture_state = FixtureState::new(fixture_name.clone());
 
-                // Apply RGB channels with crossfade multiplier
-                if fixture.channels.contains_key("red") {
-                    let faded_value = (color.r as f64 / 255.0) * crossfade_multiplier;
-                    let channel_state =
-                        ChannelState::new(faded_value, effect.layer, effect.blend_mode);
-                    fixture_state.set_channel("red".to_string(), channel_state);
-                }
-                if fixture.channels.contains_key("green") {
-                    let faded_value = (color.g as f64 / 255.0) * crossfade_multiplier;
-                    let channel_state =
-                        ChannelState::new(faded_value, effect.layer, effect.blend_mode);
-                    fixture_state.set_channel("green".to_string(), channel_state);
-                }
-                if fixture.channels.contains_key("blue") {
-                    let faded_value = (color.b as f64 / 255.0) * crossfade_multiplier;
-                    let channel_state =
-                        ChannelState::new(faded_value, effect.layer, effect.blend_mode);
-                    fixture_state.set_channel("blue".to_string(), channel_state);
-                }
-                if fixture.channels.contains_key("white") {
-                    if let Some(w) = color.w {
-                        let faded_value = (w as f64 / 255.0) * crossfade_multiplier;
-                        let channel_state =
-                            ChannelState::new(faded_value, effect.layer, effect.blend_mode);
-                        fixture_state.set_channel("white".to_string(), channel_state);
-                    }
+                // Use fixture profile to determine how to apply color
+                let profile = FixtureProfile::for_fixture(fixture);
+                let channel_commands = profile.apply_color(color, effect.layer, effect.blend_mode);
+
+                // Apply the channel commands from the profile with crossfade multiplier
+                for (channel_name, mut channel_state) in channel_commands {
+                    // Apply crossfade multiplier to the color value
+                    channel_state.value *= crossfade_multiplier;
+                    fixture_state.set_channel(channel_name, channel_state);
                 }
 
                 fixture_states.insert(fixture_name.clone(), fixture_state);
@@ -649,49 +849,40 @@ impl EffectEngine {
                             "strobe".to_string(),
                             ChannelState::new(0.0, effect.layer, effect.blend_mode),
                         );
-                    } else {
-                        // Software strobe: when frequency=0, don't set any channels
-                        // This allows parent layers/effects to take over control
-                        // (No channels are set, so the effect defers to parent layers)
                     }
-                } else if fixture.has_capability(FixtureCapabilities::STROBING) {
-                    // Hardware-controlled strobe: send speed value to dedicated strobe channel
-                    // Only apply strobe if crossfade multiplier is > 0 (effect is active)
-                    if crossfade_multiplier > 0.0 {
-                        let max_freq = fixture.max_strobe_frequency.unwrap_or(20.0);
-                        let strobe_speed = (frequency / max_freq).min(1.0);
-                        let channel_state =
-                            ChannelState::new(strobe_speed, effect.layer, effect.blend_mode);
-                        fixture_state.set_channel("strobe".to_string(), channel_state);
-                    }
+                    // Software strobe: when frequency=0, don't set any channels
+                    // This allows parent layers/effects to take over control
                 } else {
-                    // Software-controlled strobe: simulate strobing with time-based on/off
-                    // Only apply strobe if crossfade multiplier is > 0 (effect is active)
-                    if crossfade_multiplier > 0.0 {
+                    // Use fixture profile to determine how to apply strobe control
+                    let profile = FixtureProfile::for_fixture(fixture);
+
+                    // Calculate strobe parameters based on strategy
+                    let (normalized_frequency, strobe_value) = if profile.strobe_strategy
+                        == StrobeStrategy::DedicatedChannel
+                    {
+                        // Hardware strobe: normalize frequency to 0-1 range
+                        let max_freq = fixture.max_strobe_frequency.unwrap_or(20.0);
+                        let normalized = (frequency / max_freq).min(1.0);
+                        (normalized, None)
+                    } else {
+                        // Software strobe: calculate on/off value
                         let strobe_period = 1.0 / frequency;
                         let strobe_phase = (elapsed.as_secs_f64() % strobe_period) / strobe_period;
                         let is_strobe_on = strobe_phase < 0.5; // 50% duty cycle
-                        let strobe_value = if is_strobe_on { 1.0 } else { 0.0 };
+                        (frequency, Some(if is_strobe_on { 1.0 } else { 0.0 }))
+                    };
 
-                        // When strobe is OFF (0), use Replace blend mode to override background
-                        // When strobe is ON (1), use the original blend mode for layering
-                        let blend_mode = if strobe_value == 0.0 {
-                            BlendMode::Replace
-                        } else {
-                            effect.blend_mode
-                        };
+                    let channel_commands = profile.apply_strobe(
+                        normalized_frequency,
+                        effect.layer,
+                        effect.blend_mode,
+                        crossfade_multiplier,
+                        strobe_value,
+                    );
 
-                        let channel_state =
-                            ChannelState::new(strobe_value, effect.layer, blend_mode);
-
-                        // Apply to appropriate channels - prioritize dimmer over RGB
-                        if fixture.has_capability(FixtureCapabilities::DIMMING) {
-                            fixture_state.set_channel("dimmer".to_string(), channel_state);
-                        } else if fixture.has_capability(FixtureCapabilities::RGB_COLOR) {
-                            fixture_state.set_channel("red".to_string(), channel_state);
-                            fixture_state.set_channel("green".to_string(), channel_state);
-                            fixture_state.set_channel("blue".to_string(), channel_state);
-                        }
+                    // Apply the channel commands from the profile
+                    for (channel_name, channel_state) in channel_commands {
+                        fixture_state.set_channel(channel_name, channel_state);
                     }
                 }
 
@@ -710,32 +901,40 @@ impl EffectEngine {
         end_level: f64,
         curve: &DimmerCurve,
         elapsed: Duration,
+        duration: Duration,
     ) -> Result<Option<HashMap<String, FixtureState>>, EffectError> {
         self.log_effect_application(&effect.id, "dimmer", effect.target_fixtures.len());
 
-        // Calculate crossfade multiplier
-        let crossfade_multiplier = effect.calculate_crossfade_multiplier(elapsed);
+        // Calculate dimmer value based on elapsed time and duration with curve applied
+        let dimmer_value = if duration.is_zero() {
+            end_level // Instant transition
+        } else {
+            let linear_progress = (elapsed.as_secs_f64() / duration.as_secs_f64()).clamp(0.0, 1.0);
 
-        // Use the crossfade multiplier as the progress for the dimmer curve
-        let progress = crossfade_multiplier;
+            // Apply curve to the progress value
+            let curved_progress = match curve {
+                DimmerCurve::Linear => linear_progress,
+                DimmerCurve::Exponential => linear_progress * linear_progress,
+                DimmerCurve::Logarithmic => {
+                    if linear_progress <= 0.0 {
+                        0.0
+                    } else {
+                        // Map [0,1] to [0,1] using log curve
+                        // log(1 + 9*x) / log(10) gives nice log curve from 0 to 1
+                        (1.0 + 9.0 * linear_progress).log10()
+                    }
+                }
+                DimmerCurve::Sine => {
+                    // Smooth ease-in-out using sine
+                    (1.0 - ((linear_progress * std::f64::consts::PI).cos())) / 2.0
+                }
+                DimmerCurve::Cosine => {
+                    // Smooth ease-in using cosine
+                    1.0 - (1.0 - linear_progress).powi(2)
+                }
+            };
 
-        let dimmer_value = match curve {
-            DimmerCurve::Linear => start_level + (end_level - start_level) * progress,
-            DimmerCurve::Exponential => {
-                start_level + (end_level - start_level) * (progress * progress)
-            }
-            DimmerCurve::Logarithmic => {
-                start_level + (end_level - start_level) * (1.0 - (1.0 - progress).powi(2))
-            }
-            DimmerCurve::Sine => {
-                start_level
-                    + (end_level - start_level)
-                        * (1.0 - (progress * std::f64::consts::PI / 2.0).cos())
-            }
-            DimmerCurve::Cosine => {
-                start_level
-                    + (end_level - start_level) * (progress * std::f64::consts::PI / 2.0).sin()
-            }
+            start_level + (end_level - start_level) * curved_progress
         };
 
         let mut fixture_states = HashMap::new();
@@ -744,39 +943,14 @@ impl EffectEngine {
             if let Some(fixture) = self.fixture_registry.get(fixture_name) {
                 let mut fixture_state = FixtureState::new(fixture_name.clone());
 
-                // Apply dimmer to appropriate channels
-                if fixture.has_capability(FixtureCapabilities::DIMMING)
-                    && effect.blend_mode == BlendMode::Replace
-                {
-                    // Use dedicated dimmer channel only for Replace mode (takes precedence over RGB)
-                    let channel_state =
-                        ChannelState::new(dimmer_value, effect.layer, effect.blend_mode);
-                    fixture_state.set_channel("dimmer".to_string(), channel_state);
-                }
+                // Use fixture profile to determine how to apply brightness control
+                let profile = FixtureProfile::for_fixture(fixture);
+                let channel_commands =
+                    profile.apply_brightness(dimmer_value, effect.layer, effect.blend_mode);
 
-                if fixture.has_capability(FixtureCapabilities::RGB_COLOR) {
-                    // For RGB fixtures, apply dimmer based on blend mode
-                    if effect.blend_mode == BlendMode::Multiply {
-                        // For Multiply mode, we should NOT set any RGB channels here
-                        // The dimmer effect should only affect channels that already exist from other effects
-                        // This prevents the dimmer from creating white light by setting all RGB channels
-                        // The blending system will handle the multiplication when the effects are combined
-                        // We'll store the dimmer value in a special way that can be used during blending
-                        let dimmer_multiplier =
-                            ChannelState::new(dimmer_value, effect.layer, effect.blend_mode);
-
-                        // Store the dimmer multiplier in a special channel that won't be sent to DMX
-                        // This will be used by the blending system to apply the dimmer to existing channels
-                        fixture_state
-                            .set_channel("_dimmer_multiplier".to_string(), dimmer_multiplier);
-                    } else {
-                        // For Replace mode, apply dimmer to all channels equally
-                        let channel_state =
-                            ChannelState::new(dimmer_value, effect.layer, effect.blend_mode);
-                        fixture_state.set_channel("red".to_string(), channel_state);
-                        fixture_state.set_channel("green".to_string(), channel_state);
-                        fixture_state.set_channel("blue".to_string(), channel_state);
-                    }
+                // Apply the channel commands from the profile
+                for (channel_name, channel_state) in channel_commands {
+                    fixture_state.set_channel(channel_name, channel_state);
                 }
 
                 fixture_states.insert(fixture_name.clone(), fixture_state);
@@ -833,20 +1007,14 @@ impl EffectEngine {
                 let chase_value =
                     (if is_fixture_active { 1.0 } else { 0.0 }) * crossfade_multiplier;
 
-                // Apply chase effect
-                if fixture.has_capability(FixtureCapabilities::DIMMING) {
-                    // Use dimmer channel if available
-                    let channel_state =
-                        ChannelState::new(chase_value, effect.layer, effect.blend_mode);
-                    fixture_state.set_channel("dimmer".to_string(), channel_state);
-                } else if fixture.has_capability(FixtureCapabilities::RGB_COLOR) {
-                    // Use RGB channels directly if no dimmer available
-                    // Set all RGB channels to the same intensity for a white chase
-                    let channel_state =
-                        ChannelState::new(chase_value, effect.layer, effect.blend_mode);
-                    fixture_state.set_channel("red".to_string(), channel_state);
-                    fixture_state.set_channel("green".to_string(), channel_state);
-                    fixture_state.set_channel("blue".to_string(), channel_state);
+                // Use fixture profile to determine how to apply chase control
+                let profile = FixtureProfile::for_fixture(fixture);
+                let channel_commands =
+                    profile.apply_chase(chase_value, effect.layer, effect.blend_mode);
+
+                // Apply the channel commands from the profile
+                for (channel_name, channel_state) in channel_commands {
+                    fixture_state.set_channel(channel_name, channel_state);
                 }
 
                 fixture_states.insert(fixture_name.clone(), fixture_state);
@@ -956,24 +1124,15 @@ impl EffectEngine {
             if let Some(fixture) = self.fixture_registry.get(fixture_name) {
                 let mut fixture_state = FixtureState::new(fixture_name.clone());
 
-                // Apply RGB channels with crossfade multiplier
-                if fixture.channels.contains_key("red") {
-                    let faded_value = (color.r as f64 / 255.0) * crossfade_multiplier;
-                    let channel_state =
-                        ChannelState::new(faded_value, effect.layer, effect.blend_mode);
-                    fixture_state.set_channel("red".to_string(), channel_state);
-                }
-                if fixture.channels.contains_key("green") {
-                    let faded_value = (color.g as f64 / 255.0) * crossfade_multiplier;
-                    let channel_state =
-                        ChannelState::new(faded_value, effect.layer, effect.blend_mode);
-                    fixture_state.set_channel("green".to_string(), channel_state);
-                }
-                if fixture.channels.contains_key("blue") {
-                    let faded_value = (color.b as f64 / 255.0) * crossfade_multiplier;
-                    let channel_state =
-                        ChannelState::new(faded_value, effect.layer, effect.blend_mode);
-                    fixture_state.set_channel("blue".to_string(), channel_state);
+                // Use fixture profile to determine how to apply color
+                let profile = FixtureProfile::for_fixture(fixture);
+                let channel_commands = profile.apply_color(color, effect.layer, effect.blend_mode);
+
+                // Apply the channel commands from the profile with crossfade multiplier
+                for (channel_name, mut channel_state) in channel_commands {
+                    // Apply crossfade multiplier to the color value
+                    channel_state.value *= crossfade_multiplier;
+                    fixture_state.set_channel(channel_name, channel_state);
                 }
 
                 fixture_states.insert(fixture_name.clone(), fixture_state);
@@ -1007,32 +1166,14 @@ impl EffectEngine {
             if let Some(fixture) = self.fixture_registry.get(fixture_name) {
                 let mut fixture_state = FixtureState::new(fixture_name.clone());
 
-                // Apply pulse to appropriate channels
-                if fixture.has_capability(FixtureCapabilities::DIMMING)
-                    && effect.blend_mode == BlendMode::Replace
-                {
-                    // Use dedicated dimmer channel only for Replace mode (takes precedence over RGB)
-                    let channel_state =
-                        ChannelState::new(pulse_value, effect.layer, effect.blend_mode);
-                    fixture_state.set_channel("dimmer".to_string(), channel_state);
-                }
+                // Use fixture profile to determine how to apply pulse control
+                let profile = FixtureProfile::for_fixture(fixture);
+                let channel_commands =
+                    profile.apply_pulse(pulse_value, effect.layer, effect.blend_mode);
 
-                if fixture.has_capability(FixtureCapabilities::RGB_COLOR) {
-                    // For RGB fixtures, apply pulse based on blend mode
-                    if effect.blend_mode == BlendMode::Multiply {
-                        // For Multiply mode, use a pulse multiplier to modulate existing colors
-                        let pulse_multiplier =
-                            ChannelState::new(pulse_value, effect.layer, effect.blend_mode);
-                        fixture_state
-                            .set_channel("_pulse_multiplier".to_string(), pulse_multiplier);
-                    } else if !fixture.has_capability(FixtureCapabilities::DIMMING) {
-                        // For Replace mode, only apply to RGB if no dedicated dimmer channel
-                        let channel_state =
-                            ChannelState::new(pulse_value, effect.layer, effect.blend_mode);
-                        fixture_state.set_channel("red".to_string(), channel_state);
-                        fixture_state.set_channel("green".to_string(), channel_state);
-                        fixture_state.set_channel("blue".to_string(), channel_state);
-                    }
+                // Apply the channel commands from the profile
+                for (channel_name, channel_state) in channel_commands {
+                    fixture_state.set_channel(channel_name, channel_state);
                 }
 
                 fixture_states.insert(fixture_name.clone(), fixture_state);
@@ -1084,9 +1225,6 @@ mod tests {
 
     #[test]
     fn test_static_effect() {
-        // Initialize tracing for this test
-        let _ = tracing_subscriber::fmt::try_init();
-
         let mut engine = EffectEngine::new();
         let fixture = create_test_fixture("test_fixture", 1, 1);
         engine.register_fixture(fixture);
@@ -1102,6 +1240,9 @@ mod tests {
                 duration: None,
             },
             vec!["test_fixture".to_string()],
+            None,
+            None,
+            None,
         );
 
         engine.start_effect(effect).unwrap();
@@ -1141,6 +1282,9 @@ mod tests {
                 direction: CycleDirection::Forward,
             },
             vec!["test_fixture".to_string()],
+            None,
+            None,
+            None,
         );
 
         engine.start_effect(effect).unwrap();
@@ -1190,6 +1334,9 @@ mod tests {
                 duration: None,
             },
             vec!["test_fixture".to_string()],
+            None,
+            None,
+            None,
         );
 
         engine.start_effect(effect).unwrap();
@@ -1220,6 +1367,9 @@ mod tests {
                 curve: DimmerCurve::Linear,
             },
             vec!["test_fixture".to_string()],
+            None,
+            None,
+            None,
         )
         .with_timing(Some(Instant::now()), Some(Duration::from_secs(1)));
 
@@ -1228,20 +1378,13 @@ mod tests {
         // Update the engine after 500ms (half duration)
         let commands = engine.update(Duration::from_millis(500)).unwrap();
 
-        // Should have dimmer + RGB commands at 50% (127) since fixture has both dedicated dimmer and RGB channels
-        assert_eq!(commands.len(), 4);
+        // Should have only dimmer command since fixture has dedicated dimmer channel
+        // The fixture profile system uses DedicatedDimmer strategy for RGB+dimmer fixtures
+        assert_eq!(commands.len(), 1);
 
         // Check dimmer command
         let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
         assert_eq!(dimmer_cmd.value, 127);
-
-        // Check RGB commands
-        let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
-        let green_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
-        let blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
-        assert_eq!(red_cmd.value, 127);
-        assert_eq!(green_cmd.value, 127);
-        assert_eq!(blue_cmd.value, 127);
     }
 
     #[test]
@@ -1258,6 +1401,9 @@ mod tests {
                 brightness: 1.0,
             },
             vec!["test_fixture".to_string()],
+            None,
+            None,
+            None,
         );
 
         engine.start_effect(effect).unwrap();
@@ -1292,6 +1438,9 @@ mod tests {
                 duration: None,
             },
             vec!["test_fixture".to_string()],
+            None,
+            None,
+            None,
         );
 
         engine.start_effect(effect).unwrap();
@@ -1329,6 +1478,9 @@ mod tests {
                 "fixture2".to_string(),
                 "fixture3".to_string(),
             ],
+            None,
+            None,
+            None,
         );
 
         engine.start_effect(effect).unwrap();
@@ -1381,6 +1533,9 @@ mod tests {
                 duration: None,
             },
             vec!["test_fixture".to_string()],
+            None,
+            None,
+            None,
         )
         .with_priority(1);
 
@@ -1395,6 +1550,9 @@ mod tests {
                 duration: None,
             },
             vec!["test_fixture".to_string()],
+            None,
+            None,
+            None,
         )
         .with_priority(10);
 
@@ -1426,11 +1584,14 @@ mod tests {
                 duration: None,
             },
             vec!["test_fixture".to_string()],
+            None,
+            None,
+            None,
         );
 
         engine.start_effect(effect).unwrap();
 
-        // Update the engine - should have commands
+        // Update the engine - should have command
         let commands = engine.update(Duration::from_millis(16)).unwrap();
         assert_eq!(commands.len(), 1);
 
@@ -1455,6 +1616,9 @@ mod tests {
                 duration: None,
             },
             vec!["nonexistent_fixture".to_string()],
+            None,
+            None,
+            None,
         );
 
         let result = engine.start_effect(effect);
@@ -1480,9 +1644,12 @@ mod tests {
             "test_effect".to_string(),
             EffectType::Static {
                 parameters,
-                duration: None,
+                duration: Some(Duration::from_millis(100)), // Set duration for expiry test
             },
             vec!["test_fixture".to_string()],
+            None,                             // up_time
+            Some(Duration::from_millis(100)), // hold_time
+            None,                             // down_time
         )
         .with_timing(Some(Instant::now()), Some(Duration::from_millis(100)));
 
@@ -1492,8 +1659,9 @@ mod tests {
         let commands = engine.update(Duration::from_millis(50)).unwrap();
         assert_eq!(commands.len(), 1);
 
-        // Update after expiry - should have no commands
+        // Update after expiry - timed static effects end and don't preserve their state
         let commands = engine.update(Duration::from_millis(100)).unwrap();
+        // Timed static effects end and don't generate commands after expiry
         assert_eq!(commands.len(), 0);
     }
 }

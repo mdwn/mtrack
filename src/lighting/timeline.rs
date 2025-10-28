@@ -102,7 +102,7 @@ impl LightingTimeline {
 
     /// Creates an EffectInstance from a DSL Effect
     pub fn create_effect_instance(effect: &Effect) -> Option<EffectInstance> {
-        // Create base effect instance using the DSL EffectType directly
+        // Create base effect instance using the DSL EffectType directly with timing
         let mut effect_instance = EffectInstance::new(
             format!(
                 "song_effect_{}",
@@ -113,6 +113,9 @@ impl LightingTimeline {
             ),
             effect.effect_type.clone(),
             effect.groups.clone(),
+            effect.up_time,
+            effect.hold_time,
+            effect.down_time,
         );
 
         // Apply layering information if specified in DSL
@@ -121,17 +124,6 @@ impl LightingTimeline {
         }
         if let Some(blend_mode) = effect.blend_mode {
             effect_instance.blend_mode = blend_mode;
-        }
-
-        // Apply timing information if specified in DSL
-        if let Some(up_time) = effect.up_time {
-            effect_instance.up_time = Some(up_time);
-        }
-        if let Some(hold_time) = effect.hold_time {
-            effect_instance.hold_time = Some(hold_time);
-        }
-        if let Some(down_time) = effect.down_time {
-            effect_instance.down_time = Some(down_time);
         }
 
         Some(effect_instance)
