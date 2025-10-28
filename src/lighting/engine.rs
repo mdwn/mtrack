@@ -156,11 +156,12 @@ impl EffectEngine {
                 let effect = self.active_effects.get(&effect_id).unwrap().clone();
 
                 // Check if effect has expired
-                if let Some(duration) = effect.duration {
-                    if let Some(start_time) = effect.start_time {
-                        if self.current_time.duration_since(start_time) >= duration {
-                            continue;
-                        }
+                if let Some(start_time) = effect.start_time {
+                    let elapsed = self.current_time.duration_since(start_time);
+                    let total_duration = effect.total_duration();
+
+                    if elapsed >= total_duration {
+                        continue;
                     }
                 }
 
@@ -207,7 +208,9 @@ impl EffectEngine {
         }
 
         match &effect.effect_type {
-            EffectType::Static { parameters, .. } => self.apply_static_effect(effect, parameters),
+            EffectType::Static { parameters, .. } => {
+                self.apply_static_effect(effect, parameters, elapsed)
+            }
             EffectType::ColorCycle {
                 colors,
                 speed,
@@ -217,9 +220,9 @@ impl EffectEngine {
             EffectType::Dimmer {
                 start_level,
                 end_level,
-                duration,
+                duration: _,
                 curve,
-            } => self.apply_dimmer(effect, *start_level, *end_level, *duration, curve, elapsed),
+            } => self.apply_dimmer(effect, *start_level, *end_level, curve, elapsed),
             EffectType::Chase {
                 pattern,
                 speed,
@@ -286,13 +289,12 @@ impl EffectEngine {
         }
 
         // Validate timing
-        if let Some(duration) = effect.duration {
-            if duration.as_secs_f64() < 0.0 {
-                return Err(EffectError::Timing(format!(
-                    "Effect duration must be non-negative, got {}s",
-                    duration.as_secs_f64()
-                )));
-            }
+        let total_duration = effect.total_duration();
+        if total_duration.as_secs_f64() < 0.0 {
+            return Err(EffectError::Timing(format!(
+                "Effect total duration must be non-negative, got {}s",
+                total_duration.as_secs_f64()
+            )));
         }
 
         Ok(())
@@ -514,8 +516,13 @@ impl EffectEngine {
         &mut self,
         effect: &EffectInstance,
         parameters: &HashMap<String, f64>,
+        elapsed: Duration,
     ) -> Result<Option<HashMap<String, FixtureState>>, EffectError> {
         self.log_effect_application(&effect.id, "static", effect.target_fixtures.len());
+
+        // Calculate crossfade multiplier
+        let crossfade_multiplier = effect.calculate_crossfade_multiplier(elapsed);
+
         let mut fixture_states = HashMap::new();
 
         for fixture_name in &effect.target_fixtures {
@@ -524,8 +531,10 @@ impl EffectEngine {
 
                 for (param_name, value) in parameters {
                     if fixture.channels.contains_key(param_name) {
+                        // Apply crossfade multiplier to the value
+                        let faded_value = *value * crossfade_multiplier;
                         let channel_state =
-                            ChannelState::new(*value, effect.layer, effect.blend_mode);
+                            ChannelState::new(faded_value, effect.layer, effect.blend_mode);
                         fixture_state.set_channel(param_name.clone(), channel_state);
                     }
                 }
@@ -550,6 +559,9 @@ impl EffectEngine {
         if colors.is_empty() {
             return Ok(None);
         }
+
+        // Calculate crossfade multiplier
+        let crossfade_multiplier = effect.calculate_crossfade_multiplier(elapsed);
 
         let cycle_time = 1.0 / speed;
         let cycle_progress = (elapsed.as_secs_f64() % cycle_time) / cycle_time;
@@ -576,26 +588,30 @@ impl EffectEngine {
             if let Some(fixture) = self.fixture_registry.get(fixture_name) {
                 let mut fixture_state = FixtureState::new(fixture_name.clone());
 
-                // Apply RGB channels
+                // Apply RGB channels with crossfade multiplier
                 if fixture.channels.contains_key("red") {
+                    let faded_value = (color.r as f64 / 255.0) * crossfade_multiplier;
                     let channel_state =
-                        ChannelState::new(color.r as f64 / 255.0, effect.layer, effect.blend_mode);
+                        ChannelState::new(faded_value, effect.layer, effect.blend_mode);
                     fixture_state.set_channel("red".to_string(), channel_state);
                 }
                 if fixture.channels.contains_key("green") {
+                    let faded_value = (color.g as f64 / 255.0) * crossfade_multiplier;
                     let channel_state =
-                        ChannelState::new(color.g as f64 / 255.0, effect.layer, effect.blend_mode);
+                        ChannelState::new(faded_value, effect.layer, effect.blend_mode);
                     fixture_state.set_channel("green".to_string(), channel_state);
                 }
                 if fixture.channels.contains_key("blue") {
+                    let faded_value = (color.b as f64 / 255.0) * crossfade_multiplier;
                     let channel_state =
-                        ChannelState::new(color.b as f64 / 255.0, effect.layer, effect.blend_mode);
+                        ChannelState::new(faded_value, effect.layer, effect.blend_mode);
                     fixture_state.set_channel("blue".to_string(), channel_state);
                 }
                 if fixture.channels.contains_key("white") {
                     if let Some(w) = color.w {
+                        let faded_value = (w as f64 / 255.0) * crossfade_multiplier;
                         let channel_state =
-                            ChannelState::new(w as f64 / 255.0, effect.layer, effect.blend_mode);
+                            ChannelState::new(faded_value, effect.layer, effect.blend_mode);
                         fixture_state.set_channel("white".to_string(), channel_state);
                     }
                 }
@@ -615,6 +631,9 @@ impl EffectEngine {
         elapsed: Duration,
     ) -> Result<Option<HashMap<String, FixtureState>>, EffectError> {
         self.log_effect_application(&effect.id, "strobe", effect.target_fixtures.len());
+
+        // Calculate crossfade multiplier
+        let crossfade_multiplier = effect.calculate_crossfade_multiplier(elapsed);
 
         let mut fixture_states = HashMap::new();
 
@@ -637,35 +656,42 @@ impl EffectEngine {
                     }
                 } else if fixture.has_capability(FixtureCapabilities::STROBING) {
                     // Hardware-controlled strobe: send speed value to dedicated strobe channel
-                    let max_freq = fixture.max_strobe_frequency.unwrap_or(20.0);
-                    let strobe_speed = (frequency / max_freq).min(1.0);
-                    let channel_state =
-                        ChannelState::new(strobe_speed, effect.layer, effect.blend_mode);
-                    fixture_state.set_channel("strobe".to_string(), channel_state);
+                    // Only apply strobe if crossfade multiplier is > 0 (effect is active)
+                    if crossfade_multiplier > 0.0 {
+                        let max_freq = fixture.max_strobe_frequency.unwrap_or(20.0);
+                        let strobe_speed = (frequency / max_freq).min(1.0);
+                        let channel_state =
+                            ChannelState::new(strobe_speed, effect.layer, effect.blend_mode);
+                        fixture_state.set_channel("strobe".to_string(), channel_state);
+                    }
                 } else {
                     // Software-controlled strobe: simulate strobing with time-based on/off
-                    let strobe_period = 1.0 / frequency;
-                    let strobe_phase = (elapsed.as_secs_f64() % strobe_period) / strobe_period;
-                    let is_strobe_on = strobe_phase < 0.5; // 50% duty cycle
-                    let strobe_value = if is_strobe_on { 1.0 } else { 0.0 };
+                    // Only apply strobe if crossfade multiplier is > 0 (effect is active)
+                    if crossfade_multiplier > 0.0 {
+                        let strobe_period = 1.0 / frequency;
+                        let strobe_phase = (elapsed.as_secs_f64() % strobe_period) / strobe_period;
+                        let is_strobe_on = strobe_phase < 0.5; // 50% duty cycle
+                        let strobe_value = if is_strobe_on { 1.0 } else { 0.0 };
 
-                    // When strobe is OFF (0), use Replace blend mode to override background
-                    // When strobe is ON (1), use the original blend mode for layering
-                    let blend_mode = if strobe_value == 0.0 {
-                        BlendMode::Replace
-                    } else {
-                        effect.blend_mode
-                    };
+                        // When strobe is OFF (0), use Replace blend mode to override background
+                        // When strobe is ON (1), use the original blend mode for layering
+                        let blend_mode = if strobe_value == 0.0 {
+                            BlendMode::Replace
+                        } else {
+                            effect.blend_mode
+                        };
 
-                    let channel_state = ChannelState::new(strobe_value, effect.layer, blend_mode);
+                        let channel_state =
+                            ChannelState::new(strobe_value, effect.layer, blend_mode);
 
-                    // Apply to appropriate channels - prioritize dimmer over RGB
-                    if fixture.has_capability(FixtureCapabilities::DIMMING) {
-                        fixture_state.set_channel("dimmer".to_string(), channel_state);
-                    } else if fixture.has_capability(FixtureCapabilities::RGB_COLOR) {
-                        fixture_state.set_channel("red".to_string(), channel_state);
-                        fixture_state.set_channel("green".to_string(), channel_state);
-                        fixture_state.set_channel("blue".to_string(), channel_state);
+                        // Apply to appropriate channels - prioritize dimmer over RGB
+                        if fixture.has_capability(FixtureCapabilities::DIMMING) {
+                            fixture_state.set_channel("dimmer".to_string(), channel_state);
+                        } else if fixture.has_capability(FixtureCapabilities::RGB_COLOR) {
+                            fixture_state.set_channel("red".to_string(), channel_state);
+                            fixture_state.set_channel("green".to_string(), channel_state);
+                            fixture_state.set_channel("blue".to_string(), channel_state);
+                        }
                     }
                 }
 
@@ -682,17 +708,16 @@ impl EffectEngine {
         effect: &EffectInstance,
         start_level: f64,
         end_level: f64,
-        duration: Duration,
         curve: &DimmerCurve,
         elapsed: Duration,
     ) -> Result<Option<HashMap<String, FixtureState>>, EffectError> {
         self.log_effect_application(&effect.id, "dimmer", effect.target_fixtures.len());
 
-        let progress = if duration.is_zero() {
-            1.0
-        } else {
-            (elapsed.as_secs_f64() / duration.as_secs_f64()).min(1.0)
-        };
+        // Calculate crossfade multiplier
+        let crossfade_multiplier = effect.calculate_crossfade_multiplier(elapsed);
+
+        // Use the crossfade multiplier as the progress for the dimmer curve
+        let progress = crossfade_multiplier;
 
         let dimmer_value = match curve {
             DimmerCurve::Linear => start_level + (end_level - start_level) * progress,
@@ -772,6 +797,9 @@ impl EffectEngine {
     ) -> Result<Option<HashMap<String, FixtureState>>, EffectError> {
         self.log_effect_application(&effect.id, "chase", effect.target_fixtures.len());
 
+        // Calculate crossfade multiplier
+        let crossfade_multiplier = effect.calculate_crossfade_multiplier(elapsed);
+
         let chase_period = 1.0 / speed;
 
         let mut fixture_states = HashMap::new();
@@ -802,7 +830,8 @@ impl EffectEngine {
                     false
                 };
 
-                let chase_value = if is_fixture_active { 1.0 } else { 0.0 };
+                let chase_value =
+                    (if is_fixture_active { 1.0 } else { 0.0 }) * crossfade_multiplier;
 
                 // Apply chase effect
                 if fixture.has_capability(FixtureCapabilities::DIMMING) {
@@ -914,6 +943,10 @@ impl EffectEngine {
         elapsed: Duration,
     ) -> Result<Option<HashMap<String, FixtureState>>, EffectError> {
         self.log_effect_application(&effect.id, "rainbow", effect.target_fixtures.len());
+
+        // Calculate crossfade multiplier
+        let crossfade_multiplier = effect.calculate_crossfade_multiplier(elapsed);
+
         let hue = (elapsed.as_secs_f64() * speed * 360.0) % 360.0;
         let color = Color::from_hsv(hue, saturation, brightness);
 
@@ -923,20 +956,23 @@ impl EffectEngine {
             if let Some(fixture) = self.fixture_registry.get(fixture_name) {
                 let mut fixture_state = FixtureState::new(fixture_name.clone());
 
-                // Apply RGB channels
+                // Apply RGB channels with crossfade multiplier
                 if fixture.channels.contains_key("red") {
+                    let faded_value = (color.r as f64 / 255.0) * crossfade_multiplier;
                     let channel_state =
-                        ChannelState::new(color.r as f64 / 255.0, effect.layer, effect.blend_mode);
+                        ChannelState::new(faded_value, effect.layer, effect.blend_mode);
                     fixture_state.set_channel("red".to_string(), channel_state);
                 }
                 if fixture.channels.contains_key("green") {
+                    let faded_value = (color.g as f64 / 255.0) * crossfade_multiplier;
                     let channel_state =
-                        ChannelState::new(color.g as f64 / 255.0, effect.layer, effect.blend_mode);
+                        ChannelState::new(faded_value, effect.layer, effect.blend_mode);
                     fixture_state.set_channel("green".to_string(), channel_state);
                 }
                 if fixture.channels.contains_key("blue") {
+                    let faded_value = (color.b as f64 / 255.0) * crossfade_multiplier;
                     let channel_state =
-                        ChannelState::new(color.b as f64 / 255.0, effect.layer, effect.blend_mode);
+                        ChannelState::new(faded_value, effect.layer, effect.blend_mode);
                     fixture_state.set_channel("blue".to_string(), channel_state);
                 }
 
@@ -957,8 +993,13 @@ impl EffectEngine {
         elapsed: Duration,
     ) -> Result<Option<HashMap<String, FixtureState>>, EffectError> {
         self.log_effect_application(&effect.id, "pulse", effect.target_fixtures.len());
+
+        // Calculate crossfade multiplier
+        let crossfade_multiplier = effect.calculate_crossfade_multiplier(elapsed);
+
         let pulse_phase = elapsed.as_secs_f64() * frequency * 2.0 * std::f64::consts::PI;
-        let pulse_value = base_level + pulse_amplitude * (pulse_phase.sin() * 0.5 + 0.5);
+        let pulse_value =
+            (base_level + pulse_amplitude * (pulse_phase.sin() * 0.5 + 0.5)) * crossfade_multiplier;
 
         let mut fixture_states = HashMap::new();
 
@@ -1180,7 +1221,7 @@ mod tests {
             },
             vec!["test_fixture".to_string()],
         )
-        .with_timing(Some(Instant::now()), None);
+        .with_timing(Some(Instant::now()), Some(Duration::from_secs(1)));
 
         engine.start_effect(effect).unwrap();
 

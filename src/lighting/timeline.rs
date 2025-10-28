@@ -101,7 +101,7 @@ impl LightingTimeline {
     }
 
     /// Creates an EffectInstance from a DSL Effect
-    fn create_effect_instance(effect: &Effect) -> Option<EffectInstance> {
+    pub fn create_effect_instance(effect: &Effect) -> Option<EffectInstance> {
         // Create base effect instance using the DSL EffectType directly
         let mut effect_instance = EffectInstance::new(
             format!(
@@ -121,6 +121,17 @@ impl LightingTimeline {
         }
         if let Some(blend_mode) = effect.blend_mode {
             effect_instance.blend_mode = blend_mode;
+        }
+
+        // Apply timing information if specified in DSL
+        if let Some(up_time) = effect.up_time {
+            effect_instance.up_time = Some(up_time);
+        }
+        if let Some(hold_time) = effect.hold_time {
+            effect_instance.hold_time = Some(hold_time);
+        }
+        if let Some(down_time) = effect.down_time {
+            effect_instance.down_time = Some(down_time);
         }
 
         Some(effect_instance)
@@ -171,6 +182,9 @@ mod tests {
             },
             layer: None,
             blend_mode: None,
+            up_time: None,
+            hold_time: None,
+            down_time: None,
         };
 
         let cues = vec![Cue {
@@ -203,6 +217,9 @@ mod tests {
             },
             layer: None,
             blend_mode: None,
+            up_time: None,
+            hold_time: None,
+            down_time: None,
         };
 
         let cues = vec![
@@ -252,6 +269,9 @@ mod tests {
             },
             layer: None,
             blend_mode: None,
+            up_time: None,
+            hold_time: None,
+            down_time: None,
         };
 
         let cues = vec![
@@ -286,6 +306,9 @@ mod tests {
             },
             layer: None,
             blend_mode: None,
+            up_time: None,
+            hold_time: None,
+            down_time: None,
         };
 
         let effect2 = Effect {
@@ -296,6 +319,9 @@ mod tests {
             },
             layer: None,
             blend_mode: None,
+            up_time: None,
+            hold_time: None,
+            down_time: None,
         };
 
         let cues = vec![

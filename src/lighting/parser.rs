@@ -127,6 +127,9 @@ pub struct Effect {
     pub effect_type: EffectType,
     pub layer: Option<EffectLayer>,
     pub blend_mode: Option<BlendMode>,
+    pub up_time: Option<Duration>,
+    pub hold_time: Option<Duration>,
+    pub down_time: Option<Duration>,
 }
 
 // EffectType is imported from super::effects
@@ -342,6 +345,9 @@ fn parse_effect_definition(pair: pest::iterators::Pair<Rule>) -> Result<Effect, 
     let mut color_parameters = Vec::new();
     let mut layer = None;
     let mut blend_mode = None;
+    let mut up_time = None;
+    let mut hold_time = None;
+    let mut down_time = None;
 
     for inner_pair in pair.into_inner() {
         match inner_pair.as_rule() {
@@ -420,6 +426,21 @@ fn parse_effect_definition(pair: pest::iterators::Pair<Rule>) -> Result<Effect, 
                                     }
                                 });
                             }
+                            "up_time" => {
+                                if let Ok(duration) = parse_duration_string(&value) {
+                                    up_time = Some(duration);
+                                }
+                            }
+                            "hold_time" => {
+                                if let Ok(duration) = parse_duration_string(&value) {
+                                    hold_time = Some(duration);
+                                }
+                            }
+                            "down_time" => {
+                                if let Ok(duration) = parse_duration_string(&value) {
+                                    down_time = Some(duration);
+                                }
+                            }
                             _ => {
                                 parameters.insert(key, value);
                             }
@@ -440,6 +461,9 @@ fn parse_effect_definition(pair: pest::iterators::Pair<Rule>) -> Result<Effect, 
         effect_type: final_effect_type,
         layer,
         blend_mode,
+        up_time,
+        hold_time,
+        down_time,
     })
 }
 
@@ -1306,6 +1330,286 @@ show "Show 2" {
     }
 
     #[test]
+    fn test_parse_crossfade_example() {
+        let content = r#"show "Crossfade Test" {
+    @00:00.000
+    front_wash: static color: "blue", up_time: 2s, down_time: 1s
+}"#;
+
+        let result = parse_light_shows(content);
+        if let Err(e) = &result {
+            println!("Parser error: {}", e);
+        }
+        assert!(result.is_ok());
+
+        let shows = result.unwrap();
+        assert_eq!(shows.len(), 1);
+
+        let show = shows.get("Crossfade Test").unwrap();
+        assert_eq!(show.name, "Crossfade Test");
+        assert_eq!(show.cues.len(), 1);
+
+        let cue = &show.cues[0];
+        assert_eq!(cue.time, Duration::from_millis(0));
+        assert_eq!(cue.effects.len(), 1);
+
+        let effect = &cue.effects[0];
+        assert_eq!(effect.groups, vec!["front_wash"]);
+        assert_eq!(effect.up_time, Some(Duration::from_secs(2)));
+        assert_eq!(effect.down_time, Some(Duration::from_secs(1)));
+        println!(
+            "Timing parsing works! up_time: {:?}, down_time: {:?}",
+            effect.up_time, effect.down_time
+        );
+    }
+
+    #[test]
+    fn test_parse_zero_fade() {
+        let content = r#"show "Zero Fade Test" {
+    @00:00.000
+    front_wash: static color: "blue", up_time: 0s, down_time: 0s
+}"#;
+
+        let result = parse_light_shows(content);
+        if let Err(e) = &result {
+            println!("Parser error: {}", e);
+        }
+        assert!(result.is_ok());
+
+        let shows = result.unwrap();
+        let show = shows.get("Zero Fade Test").unwrap();
+        let effect = &show.cues[0].effects[0];
+
+        assert_eq!(effect.up_time, Some(Duration::from_secs(0)));
+        assert_eq!(effect.down_time, Some(Duration::from_secs(0)));
+        println!(
+            "Zero timing parsing works! up_time: {:?}, down_time: {:?}",
+            effect.up_time, effect.down_time
+        );
+    }
+
+    #[test]
+    fn test_parse_layering_partial() {
+        let content = r#"show "Effect Layering Demo" {
+    @00:00.000
+    # Background layer: Static blue color with 2 second fade in
+    front_wash: static color: "blue", dimmer: 100%, layer: background, blend_mode: replace, up_time: 2s
+}"#;
+
+        let result = parse_light_shows(content);
+        if let Err(e) = &result {
+            println!("Parser error: {}", e);
+        }
+        assert!(result.is_ok());
+
+        let shows = result.unwrap();
+        let show = shows.get("Effect Layering Demo").unwrap();
+        let effect = &show.cues[0].effects[0];
+
+        assert_eq!(effect.up_time, Some(Duration::from_secs(2)));
+        println!(
+            "Layering partial parsing works! up_time: {:?}",
+            effect.up_time
+        );
+    }
+
+    #[test]
+    fn test_parse_layering_2lines() {
+        let content = r#"show "Effect Layering Demo" {
+    @00:00.000
+    # Background layer: Static blue color with 2 second fade in
+    front_wash: static color: "blue", dimmer: 100%, layer: background, blend_mode: replace, up_time: 2s
+    
+    @00:02.000
+    # Midground layer: Dimmer effect that slowly dims the blue with crossfades
+    front_wash: dimmer start_level: 1.0, end_level: 0.5, duration: 5s, layer: midground, blend_mode: multiply, up_time: 1s, down_time: 1s
+}"#;
+
+        let result = parse_light_shows(content);
+        if let Err(e) = &result {
+            println!("Parser error: {}", e);
+        }
+        assert!(result.is_ok());
+
+        let shows = result.unwrap();
+        let show = shows.get("Effect Layering Demo").unwrap();
+        assert_eq!(show.cues.len(), 2);
+        println!("Layering 2 lines parsing works!");
+    }
+
+    #[test]
+    fn test_parse_layering_3lines() {
+        let content = r#"show "Effect Layering Demo" {
+    @00:00.000
+    # Background layer: Static blue color with 2 second fade in
+    front_wash: static color: "blue", dimmer: 100%, layer: background, blend_mode: replace, up_time: 2s
+    
+    @00:02.000
+    # Midground layer: Dimmer effect that slowly dims the blue with crossfades
+    front_wash: dimmer start_level: 1.0, end_level: 0.5, duration: 5s, layer: midground, blend_mode: multiply, up_time: 1s, down_time: 1s
+    
+    @00:04.000
+    # Foreground layer: Strobe effect on top of the dimmed blue with crossfades
+    front_wash: strobe frequency: 2, layer: foreground, blend_mode: overlay, up_time: 0.5s, down_time: 0.5s, duration: 6s
+}"#;
+
+        let result = parse_light_shows(content);
+        if let Err(e) = &result {
+            println!("Parser error: {}", e);
+        }
+        assert!(result.is_ok());
+
+        let shows = result.unwrap();
+        let show = shows.get("Effect Layering Demo").unwrap();
+        assert_eq!(show.cues.len(), 3);
+        println!("Layering 3 lines parsing works!");
+    }
+
+    #[test]
+    fn test_parse_strobe_simple() {
+        let content = r#"show "Test" {
+    @00:00.000
+    front_wash: strobe frequency: 2, up_time: 0.5s, down_time: 0.5s
+}"#;
+
+        let result = parse_light_shows(content);
+        if let Err(e) = &result {
+            println!("Parser error: {}", e);
+        }
+        assert!(result.is_ok());
+
+        let shows = result.unwrap();
+        let show = shows.get("Test").unwrap();
+        let effect = &show.cues[0].effects[0];
+
+        assert_eq!(effect.up_time, Some(Duration::from_millis(500)));
+        assert_eq!(effect.down_time, Some(Duration::from_millis(500)));
+        println!(
+            "Strobe simple parsing works! up_time: {:?}, down_time: {:?}",
+            effect.up_time, effect.down_time
+        );
+    }
+
+    #[test]
+    fn test_parse_strobe_no_crossfade() {
+        let content = r#"show "Test" {
+    @00:00.000
+    front_wash: strobe frequency: 2
+}"#;
+
+        let result = parse_light_shows(content);
+        if let Err(e) = &result {
+            println!("Parser error: {}", e);
+        }
+        assert!(result.is_ok());
+
+        let shows = result.unwrap();
+        let show = shows.get("Test").unwrap();
+        let effect = &show.cues[0].effects[0];
+
+        assert_eq!(effect.up_time, None);
+        assert_eq!(effect.down_time, None);
+        println!("Strobe no crossfade parsing works!");
+    }
+
+    #[test]
+    fn test_parse_strobe_crossfade_minimal() {
+        let content = r#"show "Test" {
+    @00:00.000
+    front_wash: strobe frequency: 2, up_time: 0.5s
+}"#;
+
+        let result = parse_light_shows(content);
+        if let Err(e) = &result {
+            println!("Parser error: {}", e);
+        }
+        assert!(result.is_ok());
+
+        let shows = result.unwrap();
+        let show = shows.get("Test").unwrap();
+        let effect = &show.cues[0].effects[0];
+
+        assert_eq!(effect.up_time, Some(Duration::from_millis(500)));
+        assert_eq!(effect.down_time, None);
+        println!(
+            "Strobe timing minimal parsing works! up_time: {:?}",
+            effect.up_time
+        );
+    }
+
+    #[test]
+    fn test_parse_static_crossfade() {
+        let content = r#"show "Test" {
+    @00:00.000
+    front_wash: static color: "blue", up_time: 0.5s, down_time: 0.5s
+}"#;
+
+        let result = parse_light_shows(content);
+        if let Err(e) = &result {
+            println!("Parser error: {}", e);
+        }
+        assert!(result.is_ok());
+
+        let shows = result.unwrap();
+        let show = shows.get("Test").unwrap();
+        let effect = &show.cues[0].effects[0];
+
+        assert_eq!(effect.up_time, Some(Duration::from_millis(500)));
+        assert_eq!(effect.down_time, Some(Duration::from_millis(500)));
+        println!(
+            "Static timing parsing works! up_time: {:?}, down_time: {:?}",
+            effect.up_time, effect.down_time
+        );
+    }
+
+    #[test]
+    fn test_parse_fade_in_only() {
+        let content = r#"show "Test" {
+    @00:00.000
+    front_wash: static color: "blue", up_time: 0.5s
+}"#;
+
+        let result = parse_light_shows(content);
+        if let Err(e) = &result {
+            println!("Parser error: {}", e);
+        }
+        assert!(result.is_ok());
+
+        let shows = result.unwrap();
+        let show = shows.get("Test").unwrap();
+        let effect = &show.cues[0].effects[0];
+
+        assert_eq!(effect.up_time, Some(Duration::from_millis(500)));
+        assert_eq!(effect.down_time, None);
+        println!("Up time only parsing works! up_time: {:?}", effect.up_time);
+    }
+
+    #[test]
+    fn test_parse_fade_in_simple() {
+        let content = r#"show "Test" {
+    @00:00.000
+    front_wash: static color: "blue", up_time: 2s
+}"#;
+
+        let result = parse_light_shows(content);
+        if let Err(e) = &result {
+            println!("Parser error: {}", e);
+        }
+        assert!(result.is_ok());
+
+        let shows = result.unwrap();
+        let show = shows.get("Test").unwrap();
+        let effect = &show.cues[0].effects[0];
+
+        assert_eq!(effect.up_time, Some(Duration::from_secs(2)));
+        assert_eq!(effect.down_time, None);
+        println!(
+            "Up time simple parsing works! up_time: {:?}",
+            effect.up_time
+        );
+    }
+
+    #[test]
     fn test_parse_advanced_example() {
         let content = r#"show "Advanced Show" {
     @00:00.000
@@ -1843,7 +2147,7 @@ dimmer:
     strobe_variation: static color: "black", dimmer: 0%
     
     @00:50.000
-    fade_out: static color: "white", dimmer: 100%
+    down_time: static color: "white", dimmer: 100%
 }"#;
 
         let result = parse_light_shows(comprehensive_dsl);
