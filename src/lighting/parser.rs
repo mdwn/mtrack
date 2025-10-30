@@ -2035,8 +2035,7 @@ front_wash: static color: "blue", dimmer: 60%
         "#;
         let result = parse_light_shows(excessive_whitespace);
         // This might fail due to the grammar not handling excessive whitespace well
-        if result.is_ok() {
-            let shows = result.unwrap();
+        if let Ok(shows) = result {
             assert_eq!(shows.len(), 1);
             let show = shows.get("Test Show").unwrap();
             assert_eq!(show.cues.len(), 1);

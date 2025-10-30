@@ -392,14 +392,13 @@ songs: "songs"
                 .expect("DSL light show song not found");
 
             // Verify song has lighting shows
-            assert!(dsl_song.dsl_lighting_shows().len() > 0);
+            assert!(!dsl_song.dsl_lighting_shows().is_empty());
             let lighting_shows = dsl_song.dsl_lighting_shows();
 
             // Parse each lighting show
             for lighting_show in lighting_shows {
                 let show_path = lighting_show.file_path();
-                let content =
-                    std::fs::read_to_string(&show_path).expect("Failed to read show file");
+                let content = std::fs::read_to_string(show_path).expect("Failed to read show file");
                 let shows = crate::lighting::parser::parse_light_shows(&content)
                     .expect("Failed to parse show");
                 assert!(!shows.is_empty());
@@ -460,7 +459,7 @@ songs: "songs"
         // Verify DSL light show song has lighting (if it exists)
         if song_names.contains(&"DSL Light Show Song".to_string()) {
             let dsl_song = songs.get(&"DSL Light Show Song".to_string()).unwrap();
-            assert!(dsl_song.dsl_lighting_shows().len() > 0);
+            assert!(!dsl_song.dsl_lighting_shows().is_empty());
         }
 
         // Verify other songs load without errors

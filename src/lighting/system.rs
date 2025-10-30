@@ -1031,7 +1031,7 @@ mod tests {
             .insert("movers".to_string(), movers_group);
 
         // Test multiple group resolution
-        let _group_names = vec!["front_wash".to_string(), "movers".to_string()];
+        let _group_names = ["front_wash".to_string(), "movers".to_string()];
         let results = system.resolve_logical_group_graceful("front_wash");
 
         // front_wash should have fixtures
