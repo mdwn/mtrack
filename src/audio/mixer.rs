@@ -14,8 +14,11 @@
 // Core audio mixing logic that can be used by both CPAL and test implementations
 use crate::audio::sample_source::ChannelMappedSampleSource;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
+#[cfg(test)]
 use std::time::Instant;
 
 /// Core audio mixing logic that's independent of any audio backend
@@ -27,10 +30,13 @@ pub struct AudioMixer {
     num_channels: u16,
     /// Sample rate
     sample_rate: u32,
-    /// Performance monitoring
+    /// Performance monitoring (only used in tests)
+    #[cfg(test)]
     frame_count: Arc<AtomicUsize>,
+    #[cfg(test)]
     total_frame_time: Arc<AtomicUsize>, // in microseconds
-    max_frame_time: Arc<AtomicUsize>,   // in microseconds
+    #[cfg(test)]
+    max_frame_time: Arc<AtomicUsize>, // in microseconds
 }
 
 /// Represents an active audio source in the mixer
@@ -57,8 +63,11 @@ impl AudioMixer {
             active_sources: Arc::new(RwLock::new(Vec::new())),
             num_channels,
             sample_rate,
+            #[cfg(test)]
             frame_count: Arc::new(AtomicUsize::new(0)),
+            #[cfg(test)]
             total_frame_time: Arc::new(AtomicUsize::new(0)),
+            #[cfg(test)]
             max_frame_time: Arc::new(AtomicUsize::new(0)),
         }
     }
@@ -114,9 +123,10 @@ impl AudioMixer {
         });
     }
 
-    /// Processes one frame of audio mixing with performance monitoring
+    /// Processes one frame of audio mixing (tests only)
     /// This is the core mixing logic extracted from the CPAL callback
     /// Minimizes lock duration by cloning Arc references and processing without holding the lock
+    #[cfg(test)]
     pub fn process_frame(&self) -> Vec<f32> {
         let start_time = Instant::now();
         let mut frame = vec![0.0f32; self.num_channels as usize];
@@ -179,32 +189,36 @@ impl AudioMixer {
             });
         }
 
-        // Update performance statistics
-        let frame_time = start_time.elapsed();
-        let frame_time_us = frame_time.as_micros() as usize;
+        // Update performance statistics (tests only)
+        #[cfg(test)]
+        {
+            let frame_time = start_time.elapsed();
+            let frame_time_us = frame_time.as_micros() as usize;
 
-        self.frame_count.fetch_add(1, Ordering::Relaxed);
-        self.total_frame_time
-            .fetch_add(frame_time_us, Ordering::Relaxed);
+            self.frame_count.fetch_add(1, Ordering::Relaxed);
+            self.total_frame_time
+                .fetch_add(frame_time_us, Ordering::Relaxed);
 
-        // Update max frame time (using compare_and_swap for thread safety)
-        let mut current_max = self.max_frame_time.load(Ordering::Relaxed);
-        while frame_time_us > current_max {
-            match self.max_frame_time.compare_exchange_weak(
-                current_max,
-                frame_time_us,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => break,
-                Err(x) => current_max = x,
+            // Update max frame time
+            let mut current_max = self.max_frame_time.load(Ordering::Relaxed);
+            while frame_time_us > current_max {
+                match self.max_frame_time.compare_exchange_weak(
+                    current_max,
+                    frame_time_us,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => break,
+                    Err(x) => current_max = x,
+                }
             }
         }
 
         frame
     }
 
-    /// Processes multiple frames of audio mixing
+    /// Processes multiple frames of audio mixing (tests only)
+    #[cfg(test)]
     pub fn process_frames(&self, num_frames: usize) -> Vec<f32> {
         let mut frames = Vec::with_capacity(num_frames * self.num_channels as usize);
 
@@ -214,6 +228,78 @@ impl AudioMixer {
         }
 
         frames
+    }
+
+    /// Processes multiple frames directly into the provided output buffer.
+    /// The buffer must be sized to num_frames * num_channels.
+    /// This avoids intermediate allocations and extra copying in the audio callback.
+    pub fn process_into_output(&self, output: &mut [f32], num_frames: usize) {
+        let channels = self.num_channels as usize;
+        debug_assert_eq!(output.len(), num_frames * channels);
+
+        // Clear the buffer once.
+        // Safety: caller provides the correct size; use fill for fast memset.
+        for sample in output.iter_mut() {
+            *sample = 0.0;
+        }
+
+        // Snapshot sources to minimize lock duration per audio block
+        let sources_to_process = {
+            let sources = self.active_sources.read().unwrap();
+            sources.clone()
+        };
+
+        let mut finished_source_ids = Vec::new();
+
+        // Process each active source across all frames
+        for active_source_arc in sources_to_process {
+            let mut active_source = active_source_arc.lock().unwrap();
+
+            if active_source.is_finished.load(Ordering::Relaxed)
+                || active_source.cancel_handle.is_cancelled()
+            {
+                finished_source_ids.push(active_source.id);
+                continue;
+            }
+
+            for frame_index in 0..num_frames {
+                match active_source.source.next_frame() {
+                    Ok(Some(source_frame)) => {
+                        // Mix using precomputed mappings
+                        for (source_channel, &sample) in source_frame.iter().enumerate() {
+                            if let Some(output_channels) =
+                                active_source.channel_mappings.get(source_channel)
+                            {
+                                let base = frame_index * channels;
+                                for &output_index in output_channels {
+                                    if output_index < channels {
+                                        output[base + output_index] += sample;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        active_source.is_finished.store(true, Ordering::Relaxed);
+                        finished_source_ids.push(active_source.id);
+                        break;
+                    }
+                    Err(_) => {
+                        active_source.is_finished.store(true, Ordering::Relaxed);
+                        finished_source_ids.push(active_source.id);
+                        break;
+                    }
+                }
+            }
+        }
+
+        if !finished_source_ids.is_empty() {
+            let mut sources = self.active_sources.write().unwrap();
+            sources.retain(|source| {
+                let source_guard = source.lock().unwrap();
+                !finished_source_ids.contains(&source_guard.id)
+            });
+        }
     }
 
     /// Gets the number of output channels
@@ -393,6 +479,125 @@ mod tests {
         }
         for frame in frames.iter().take(64).skip(34) {
             assert_eq!(*frame, 0.0);
+        }
+    }
+
+    #[test]
+    fn test_process_into_output_equivalence_single_source() {
+        // Build first mixer and render via process_frames
+        let mixer_a = AudioMixer::new(2, 44100);
+        let samples = vec![0.25, 0.75, -0.5, 0.1]; // 4 frames of 1 channel
+        let source_a = create_test_source(samples.clone(), 1, vec![vec!["m".to_string()]]);
+        let active_source_a = ActiveSource {
+            id: 1,
+            source: source_a,
+            track_mappings: {
+                let mut map = HashMap::new();
+                map.insert("m".to_string(), vec![1]);
+                map
+            },
+            channel_mappings: Vec::new(),
+            is_finished: Arc::new(AtomicBool::new(false)),
+            cancel_handle: CancelHandle::new(),
+        };
+        mixer_a.add_source(active_source_a);
+        let frames_vec = mixer_a.process_frames(4);
+
+        // Build a fresh mixer and render via process_into_output
+        let mixer_b = AudioMixer::new(2, 44100);
+        let source_b = create_test_source(samples, 1, vec![vec!["m".to_string()]]);
+        let active_source_b = ActiveSource {
+            id: 1,
+            source: source_b,
+            track_mappings: {
+                let mut map = HashMap::new();
+                map.insert("m".to_string(), vec![1]);
+                map
+            },
+            channel_mappings: Vec::new(),
+            is_finished: Arc::new(AtomicBool::new(false)),
+            cancel_handle: CancelHandle::new(),
+        };
+        mixer_b.add_source(active_source_b);
+        let mut into_out = vec![1.0f32; 8]; // 4 frames * 2 channels
+        mixer_b.process_into_output(&mut into_out, 4);
+
+        assert_eq!(frames_vec, into_out);
+    }
+
+    #[test]
+    fn test_process_into_output_no_sources_produces_zeros() {
+        let mixer = AudioMixer::new(4, 48000);
+        let mut buf = vec![1.0f32; 16];
+        mixer.process_into_output(&mut buf, 4);
+
+        // All zero when no sources present
+        for v in &buf {
+            assert_eq!(*v, 0.0);
+        }
+    }
+
+    #[test]
+    fn test_process_into_output_multiple_sources_mix() {
+        let mixer = AudioMixer::new(2, 44100);
+
+        // Two stereo sources mapped 1:1 to L/R
+        let src1 = create_test_source(
+            vec![0.2, 0.3, 0.2, 0.3],
+            2,
+            vec![vec!["L".to_string()], vec!["R".to_string()]],
+        );
+        let src2 = create_test_source(
+            vec![0.1, 0.4, 0.1, 0.4],
+            2,
+            vec![vec!["L".to_string()], vec!["R".to_string()]],
+        );
+
+        let active_source1 = ActiveSource {
+            id: 1,
+            source: src1,
+            track_mappings: {
+                let mut map = HashMap::new();
+                map.insert("L".to_string(), vec![1]);
+                map.insert("R".to_string(), vec![2]);
+                map
+            },
+            channel_mappings: Vec::new(),
+            is_finished: Arc::new(AtomicBool::new(false)),
+            cancel_handle: CancelHandle::new(),
+        };
+
+        let active_source2 = ActiveSource {
+            id: 2,
+            source: src2,
+            track_mappings: {
+                let mut map = HashMap::new();
+                map.insert("L".to_string(), vec![1]);
+                map.insert("R".to_string(), vec![2]);
+                map
+            },
+            channel_mappings: Vec::new(),
+            is_finished: Arc::new(AtomicBool::new(false)),
+            cancel_handle: CancelHandle::new(),
+        };
+
+        mixer.add_source(active_source1);
+        mixer.add_source(active_source2);
+
+        let mut out = vec![0.0f32; 4];
+        mixer.process_into_output(&mut out, 2);
+
+        // Expect per-channel sums: L: 0.2+0.1=0.3, R: 0.3+0.4=0.7 for each frame
+        let expected = [0.3f32, 0.7f32, 0.3f32, 0.7f32];
+        let eps = 1e-6;
+        for (i, v) in out.iter().enumerate() {
+            assert!(
+                (v - expected[i]).abs() < eps,
+                "index {}: got {}, expected {}",
+                i,
+                v,
+                expected[i]
+            );
         }
     }
 }

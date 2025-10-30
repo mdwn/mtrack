@@ -24,6 +24,7 @@ use std::{
 };
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use crossbeam_queue::ArrayQueue;
 use tracing::{error, info, span, Level};
 
 use crate::audio::mixer::{ActiveSource as MixerActiveSource, AudioMixer};
@@ -68,6 +69,8 @@ struct OutputManager {
     source_rx: crossbeam_channel::Receiver<MixerActiveSource>,
     /// Handle to the output thread (keeps it alive).
     output_thread: Option<thread::JoinHandle<()>>,
+    /// Handle to the producer thread
+    producer_thread: Option<thread::JoinHandle<()>>,
 }
 
 impl fmt::Display for Device {
@@ -82,35 +85,48 @@ impl fmt::Display for Device {
     }
 }
 
-/// Single-thread callback function that handles mixing directly
+/// f32-specialized callback: mix directly into the output buffer
+fn create_f32_callback(
+    ring: Arc<ArrayQueue<f32>>,
+) -> impl FnMut(&mut [f32], &cpal::OutputCallbackInfo) + Send + 'static {
+    move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+        for sample in data.iter_mut() {
+            if let Some(x) = ring.pop() {
+                *sample = x;
+            } else {
+                *sample = 0.0;
+            }
+        }
+    }
+}
+
+/// Generic integer callback: render once to f32, then convert in a single pass
 fn create_single_thread_callback<T: cpal::Sample + cpal::FromSample<f32> + std::fmt::Debug>(
-    mixer: AudioMixer,
-    source_rx: crossbeam_channel::Receiver<MixerActiveSource>,
-    num_channels: u16,
+    ring: Arc<ArrayQueue<f32>>,
 ) -> impl FnMut(&mut [T], &cpal::OutputCallbackInfo) + Send + 'static
 where
     f32: cpal::FromSample<T>,
 {
+    let mut scratch: Vec<f32> = Vec::new();
+
     move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
-        // Clear the output buffer
-        for sample in data.iter_mut() {
-            *sample = T::from_sample(0.0f32);
+        let needed = data.len();
+        if scratch.len() != needed {
+            scratch.resize(needed, 0.0);
         }
 
-        // Process new sources from the channel
-        while let Ok(new_source) = source_rx.try_recv() {
-            mixer.add_source(new_source);
-        }
-
-        // Use the core mixing logic
-        let frames = data.len() / num_channels as usize;
-        let mixed_frames = mixer.process_frames(frames);
-
-        // Copy the mixed frames to the CPAL buffer
-        for (i, &sample) in mixed_frames.iter().enumerate() {
-            if i < data.len() {
-                data[i] = T::from_sample(sample);
+        // Pop from ring into scratch, zero-fill shortfall
+        for s in scratch.iter_mut() {
+            if let Some(x) = ring.pop() {
+                *s = x;
+            } else {
+                *s = 0.0;
             }
+        }
+
+        // Single pass conversion into output buffer
+        for (dst, &src) in data.iter_mut().zip(scratch.iter()) {
+            *dst = T::from_sample(src);
         }
     }
 }
@@ -153,6 +169,7 @@ impl OutputManager {
             source_tx,
             source_rx,
             output_thread: None,
+            producer_thread: None,
         };
 
         Ok(manager)
@@ -175,6 +192,34 @@ impl OutputManager {
         let num_channels = mixer.num_channels();
         let sample_rate = mixer.sample_rate();
 
+        // Shared lock-free ring buffer (~100ms of audio)
+        let capacity_samples = (sample_rate as usize * num_channels as usize) / 10;
+        let ring = Arc::new(ArrayQueue::<f32>::new(capacity_samples.max(1024)));
+
+        // Producer thread to keep ring filled
+        let mixer_for_producer = mixer.clone();
+        let source_rx_for_producer = source_rx.clone();
+        let ring_for_producer = ring.clone();
+        let producer_thread = thread::spawn(move || {
+            let block_frames = (sample_rate / 200).max(1); // ~5ms
+            let mut scratch: Vec<f32> = vec![0.0; (block_frames as usize) * num_channels as usize];
+            loop {
+                while let Ok(new_source) = source_rx_for_producer.try_recv() {
+                    mixer_for_producer.add_source(new_source);
+                }
+
+                let space = ring_for_producer.capacity() - ring_for_producer.len();
+                if space >= scratch.len() {
+                    mixer_for_producer.process_into_output(&mut scratch, block_frames as usize);
+                    for &s in &scratch {
+                        let _ = ring_for_producer.push(s);
+                    }
+                } else {
+                    thread::sleep(Duration::from_micros(500));
+                }
+            }
+        });
+
         // Start the output thread - create the stream inside the thread
         let output_thread = thread::spawn(move || {
             // Create the CPAL stream
@@ -190,11 +235,7 @@ impl OutputManager {
 
             let stream_result = if target_format.sample_format == crate::audio::SampleFormat::Float
             {
-                let mut callback = create_single_thread_callback::<f32>(
-                    mixer.clone(),
-                    source_rx.clone(),
-                    num_channels,
-                );
+                let mut callback = create_f32_callback(ring.clone());
                 device.build_output_stream(
                     &config,
                     move |data: &mut [f32], info: &cpal::OutputCallbackInfo| {
@@ -207,11 +248,7 @@ impl OutputManager {
                 // For integer formats, we need to convert from f32 to the target integer type
                 match target_format.bits_per_sample {
                     16 => {
-                        let mut callback = create_single_thread_callback::<i16>(
-                            mixer.clone(),
-                            source_rx.clone(),
-                            num_channels,
-                        );
+                        let mut callback = create_single_thread_callback::<i16>(ring.clone());
                         device.build_output_stream(
                             &config,
                             move |data: &mut [i16], info: &cpal::OutputCallbackInfo| {
@@ -222,11 +259,7 @@ impl OutputManager {
                         )
                     }
                     32 => {
-                        let mut callback = create_single_thread_callback::<i32>(
-                            mixer.clone(),
-                            source_rx.clone(),
-                            num_channels,
-                        );
+                        let mut callback = create_single_thread_callback::<i32>(ring.clone());
                         device.build_output_stream(
                             &config,
                             move |data: &mut [i32], info: &cpal::OutputCallbackInfo| {
@@ -252,7 +285,7 @@ impl OutputManager {
                     }
                     info!("CPAL output stream started successfully");
 
-                    // Keep the stream alive by waiting
+                    // Keep the stream alive
                     loop {
                         thread::sleep(Duration::from_millis(100));
                     }
@@ -264,6 +297,7 @@ impl OutputManager {
         });
 
         self.output_thread = Some(output_thread);
+        self.producer_thread = Some(producer_thread);
         Ok(())
     }
 }
