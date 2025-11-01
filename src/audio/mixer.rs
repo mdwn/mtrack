@@ -13,9 +13,12 @@
 //
 // Core audio mixing logic that can be used by both CPAL and test implementations
 use crate::audio::sample_source::ChannelMappedSampleSource;
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::collections::{HashMap, HashSet};
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
+#[cfg(test)]
 use std::time::Instant;
 
 /// Core audio mixing logic that's independent of any audio backend
@@ -27,10 +30,13 @@ pub struct AudioMixer {
     num_channels: u16,
     /// Sample rate
     sample_rate: u32,
-    /// Performance monitoring
+    /// Performance monitoring (test only)
+    #[cfg(test)]
     frame_count: Arc<AtomicUsize>,
+    #[cfg(test)]
     total_frame_time: Arc<AtomicUsize>, // in microseconds
-    max_frame_time: Arc<AtomicUsize>,   // in microseconds
+    #[cfg(test)]
+    max_frame_time: Arc<AtomicUsize>, // in microseconds
 }
 
 /// Represents an active audio source in the mixer
@@ -44,6 +50,8 @@ pub struct ActiveSource {
     /// Precomputed channel mappings: source_channel_index -> Vec<output_channel_index>
     /// This eliminates HashMap lookups during mixing for better performance
     pub channel_mappings: Vec<Vec<usize>>,
+    /// Cached source channel count (avoids repeated trait calls)
+    pub cached_source_channel_count: u16,
     /// Whether this source has finished playing
     pub is_finished: Arc<AtomicBool>,
     /// Cancel handle for this source
@@ -57,8 +65,11 @@ impl AudioMixer {
             active_sources: Arc::new(RwLock::new(Vec::new())),
             num_channels,
             sample_rate,
+            #[cfg(test)]
             frame_count: Arc::new(AtomicUsize::new(0)),
+            #[cfg(test)]
             total_frame_time: Arc::new(AtomicUsize::new(0)),
+            #[cfg(test)]
             max_frame_time: Arc::new(AtomicUsize::new(0)),
         }
     }
@@ -96,6 +107,10 @@ impl AudioMixer {
 
     /// Adds a new audio source to the mixer
     pub fn add_source(&self, mut source: ActiveSource) {
+        // Cache source channel count (avoids repeated trait calls)
+        if source.cached_source_channel_count == 0 {
+            source.cached_source_channel_count = source.source.source_channel_count();
+        }
         // Precompute channel mappings for optimal performance
         let channel_mappings =
             Self::precompute_channel_mappings(source.source.as_ref(), &source.track_mappings);
@@ -107,17 +122,20 @@ impl AudioMixer {
 
     /// Removes sources by ID
     pub fn remove_sources(&self, source_ids: Vec<u64>) {
+        let source_ids_set: HashSet<u64> = source_ids.into_iter().collect();
         let mut sources = self.active_sources.write().unwrap();
         sources.retain(|source| {
             let source_guard = source.lock().unwrap();
-            !source_ids.contains(&source_guard.id)
+            !source_ids_set.contains(&source_guard.id)
         });
     }
 
-    /// Processes one frame of audio mixing with performance monitoring
+    /// Processes one frame of audio mixing with performance monitoring (test only)
     /// This is the core mixing logic extracted from the CPAL callback
     /// Minimizes lock duration by cloning Arc references and processing without holding the lock
+    #[cfg(test)]
     pub fn process_frame(&self) -> Vec<f32> {
+        #[cfg(test)]
         let start_time = Instant::now();
         let mut frame = vec![0.0f32; self.num_channels as usize];
 
@@ -127,7 +145,9 @@ impl AudioMixer {
             sources.clone()
         };
 
-        let mut finished_source_ids = Vec::new();
+        let mut finished_source_ids = HashSet::new();
+        // Reusable scratch buffer for source frames (max 64 channels should cover most cases)
+        let mut source_frame_buffer = vec![0.0f32; 64];
 
         // Process each source without holding the lock
         for active_source_arc in sources_to_process {
@@ -136,15 +156,27 @@ impl AudioMixer {
             if active_source.is_finished.load(Ordering::Relaxed)
                 || active_source.cancel_handle.is_cancelled()
             {
-                finished_source_ids.push(active_source.id);
+                finished_source_ids.insert(active_source.id);
                 continue;
             }
 
             // Get next frame from this source
-            match active_source.source.next_frame() {
-                Ok(Some(source_frame)) => {
+            let source_channel_count = active_source.cached_source_channel_count as usize;
+            // Resize buffer if needed (should be rare)
+            if source_frame_buffer.len() < source_channel_count {
+                source_frame_buffer.resize(source_channel_count, 0.0);
+            }
+
+            match active_source
+                .source
+                .next_frame(&mut source_frame_buffer[..source_channel_count])
+            {
+                Ok(Some(_count)) => {
                     // Process each channel in the source frame using precomputed mappings
-                    for (source_channel, &sample) in source_frame.iter().enumerate() {
+                    for (source_channel, &sample) in source_frame_buffer[..source_channel_count]
+                        .iter()
+                        .enumerate()
+                    {
                         // Use precomputed channel mappings for optimal performance
                         if let Some(output_channels) =
                             active_source.channel_mappings.get(source_channel)
@@ -161,11 +193,11 @@ impl AudioMixer {
                 }
                 Ok(None) => {
                     active_source.is_finished.store(true, Ordering::Relaxed);
-                    finished_source_ids.push(active_source.id);
+                    finished_source_ids.insert(active_source.id);
                 }
                 Err(_) => {
                     active_source.is_finished.store(true, Ordering::Relaxed);
-                    finished_source_ids.push(active_source.id);
+                    finished_source_ids.insert(active_source.id);
                 }
             }
         }
@@ -179,32 +211,36 @@ impl AudioMixer {
             });
         }
 
-        // Update performance statistics
-        let frame_time = start_time.elapsed();
-        let frame_time_us = frame_time.as_micros() as usize;
+        // Update performance statistics (test only)
+        #[cfg(test)]
+        {
+            let frame_time = start_time.elapsed();
+            let frame_time_us = frame_time.as_micros() as usize;
 
-        self.frame_count.fetch_add(1, Ordering::Relaxed);
-        self.total_frame_time
-            .fetch_add(frame_time_us, Ordering::Relaxed);
+            self.frame_count.fetch_add(1, Ordering::Relaxed);
+            self.total_frame_time
+                .fetch_add(frame_time_us, Ordering::Relaxed);
 
-        // Update max frame time (using compare_and_swap for thread safety)
-        let mut current_max = self.max_frame_time.load(Ordering::Relaxed);
-        while frame_time_us > current_max {
-            match self.max_frame_time.compare_exchange_weak(
-                current_max,
-                frame_time_us,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => break,
-                Err(x) => current_max = x,
+            // Update max frame time (using compare_and_swap for thread safety)
+            let mut current_max = self.max_frame_time.load(Ordering::Relaxed);
+            while frame_time_us > current_max {
+                match self.max_frame_time.compare_exchange_weak(
+                    current_max,
+                    frame_time_us,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => break,
+                    Err(x) => current_max = x,
+                }
             }
         }
 
         frame
     }
 
-    /// Processes multiple frames of audio mixing
+    /// Processes multiple frames of audio mixing (test only)
+    #[cfg(test)]
     pub fn process_frames(&self, num_frames: usize) -> Vec<f32> {
         let mut frames = Vec::with_capacity(num_frames * self.num_channels as usize);
 
@@ -214,6 +250,89 @@ impl AudioMixer {
         }
 
         frames
+    }
+
+    /// Processes multiple frames directly into the provided output buffer (zero-allocation)
+    /// The buffer must be sized to num_frames * num_channels.
+    pub fn process_into_output(&self, output: &mut [f32], num_frames: usize) {
+        let channels = self.num_channels as usize;
+        debug_assert_eq!(output.len(), num_frames * channels);
+
+        // Clear the buffer once
+        output.fill(0.0);
+
+        // Get a snapshot of source references to process (minimize lock duration)
+        let sources_to_process = {
+            let sources = self.active_sources.read().unwrap();
+            sources.clone()
+        };
+
+        let mut finished_source_ids = HashSet::new();
+        // Reusable scratch buffer for source frames (max 64 channels should cover most cases)
+        let mut source_frame_buffer = vec![0.0f32; 64];
+
+        // Process each active source across all frames
+        for active_source_arc in sources_to_process {
+            let mut active_source = active_source_arc.lock().unwrap();
+
+            if active_source.is_finished.load(Ordering::Relaxed)
+                || active_source.cancel_handle.is_cancelled()
+            {
+                finished_source_ids.insert(active_source.id);
+                continue;
+            }
+
+            let source_channel_count = active_source.cached_source_channel_count as usize;
+            // Resize buffer if needed (should be rare)
+            if source_frame_buffer.len() < source_channel_count {
+                source_frame_buffer.resize(source_channel_count, 0.0);
+            }
+
+            for frame_index in 0..num_frames {
+                match active_source
+                    .source
+                    .next_frame(&mut source_frame_buffer[..source_channel_count])
+                {
+                    Ok(Some(_count)) => {
+                        // Mix using precomputed mappings
+                        for (source_channel, &sample) in source_frame_buffer[..source_channel_count]
+                            .iter()
+                            .enumerate()
+                        {
+                            if let Some(output_channels) =
+                                active_source.channel_mappings.get(source_channel)
+                            {
+                                let base = frame_index * channels;
+                                for &output_index in output_channels {
+                                    if output_index < channels {
+                                        output[base + output_index] += sample;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        active_source.is_finished.store(true, Ordering::Relaxed);
+                        finished_source_ids.insert(active_source.id);
+                        break;
+                    }
+                    Err(_) => {
+                        active_source.is_finished.store(true, Ordering::Relaxed);
+                        finished_source_ids.insert(active_source.id);
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Remove finished sources in a separate, quick write lock
+        if !finished_source_ids.is_empty() {
+            let mut sources = self.active_sources.write().unwrap();
+            sources.retain(|source| {
+                let source_guard = source.lock().unwrap();
+                !finished_source_ids.contains(&source_guard.id)
+            });
+        }
     }
 
     /// Gets the number of output channels
@@ -272,6 +391,7 @@ mod tests {
                 map
             },
             channel_mappings: Vec::new(), // Will be precomputed in add_source
+            cached_source_channel_count: 1,
             is_finished: Arc::new(AtomicBool::new(false)),
             cancel_handle: CancelHandle::new(),
         };
@@ -316,6 +436,7 @@ mod tests {
                 map
             },
             channel_mappings: Vec::new(), // Will be precomputed in add_source
+            cached_source_channel_count: 2,
             is_finished: Arc::new(AtomicBool::new(false)),
             cancel_handle: CancelHandle::new(),
         };
@@ -330,6 +451,7 @@ mod tests {
                 map
             },
             channel_mappings: Vec::new(), // Will be precomputed in add_source
+            cached_source_channel_count: 2,
             is_finished: Arc::new(AtomicBool::new(false)),
             cancel_handle: CancelHandle::new(),
         };
@@ -372,6 +494,7 @@ mod tests {
                 map
             },
             channel_mappings: Vec::new(), // Will be precomputed in add_source
+            cached_source_channel_count: 32,
             is_finished: Arc::new(AtomicBool::new(false)),
             cancel_handle: CancelHandle::new(),
         };
