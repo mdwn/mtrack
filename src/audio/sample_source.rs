@@ -84,18 +84,26 @@ pub trait ChannelMappedSampleSource: Send + Sync {
     fn next_sample(&mut self) -> Result<Option<f32>, TranscodingError>;
 
     /// Get the next frame of samples (all channels for one time step)
-    /// Returns Ok(Some(frame)) where frame is a Vec<f32> with one sample per channel
+    /// Writes samples directly into the provided output slice
+    /// Returns Ok(Some(count)) where count is the number of samples written
     /// Returns Ok(None) if the source is finished
     /// Returns Err(error) if an error occurred
-    fn next_frame(&mut self) -> Result<Option<Vec<f32>>, TranscodingError> {
-        let mut frame = Vec::new();
-        for _ in 0..self.source_channel_count() {
+    /// The output slice must have capacity for at least source_channel_count() samples
+    fn next_frame(&mut self, output: &mut [f32]) -> Result<Option<usize>, TranscodingError> {
+        let channel_count = self.source_channel_count() as usize;
+        if output.len() < channel_count {
+            return Err(TranscodingError::SampleConversionFailed(format!(
+                "Output buffer too small: need {} samples",
+                channel_count
+            )));
+        }
+        for i in 0..channel_count {
             match self.next_sample()? {
-                Some(sample) => frame.push(sample),
+                Some(sample) => output[i] = sample,
                 None => return Ok(None),
             }
         }
-        Ok(Some(frame))
+        Ok(Some(channel_count))
     }
 
     /// Get the channel mappings for this source
@@ -599,15 +607,21 @@ impl ChannelMappedSampleSource for ChannelMappedSource {
         self.source.next_sample()
     }
 
-    fn next_frame(&mut self) -> Result<Option<Vec<f32>>, TranscodingError> {
-        let mut frame = Vec::new();
-        for _ in 0..self.source_channel_count {
+    fn next_frame(&mut self, output: &mut [f32]) -> Result<Option<usize>, TranscodingError> {
+        let channel_count = self.source_channel_count as usize;
+        if output.len() < channel_count {
+            return Err(TranscodingError::SampleConversionFailed(format!(
+                "Output buffer too small: need {} samples",
+                channel_count
+            )));
+        }
+        for i in 0..channel_count {
             match self.source.next_sample()? {
-                Some(sample) => frame.push(sample),
+                Some(sample) => output[i] = sample,
                 None => return Ok(None),
             }
         }
-        Ok(Some(frame))
+        Ok(Some(channel_count))
     }
 
     fn channel_mappings(&self) -> &Vec<Vec<String>> {
@@ -962,11 +976,13 @@ impl BufferedThreadedSampleSource {
 impl SampleSource for BufferedThreadedSampleSource {
     fn next_sample(&mut self) -> Result<Option<f32>, TranscodingError> {
         // Fast path: return from buffer
-        if let Some(frame) = self.buffer.lock().unwrap().pop_front() {
+        let mut buffer = self.buffer.lock().unwrap();
+        if let Some(frame) = buffer.pop_front() {
             self.buffer_hits.fetch_add(1, Ordering::Relaxed);
 
-            // Trigger background read if buffer is getting low
-            let buffer_len = self.buffer.lock().unwrap().len();
+            // Trigger background read if buffer is getting low (check while lock is held)
+            let buffer_len = buffer.len();
+            drop(buffer); // Release lock before scheduling
             if buffer_len < self.read_ahead_threshold {
                 self.schedule_background_read();
             }
@@ -974,6 +990,7 @@ impl SampleSource for BufferedThreadedSampleSource {
             // Return first sample from frame
             return Ok(frame.first().copied());
         }
+        drop(buffer); // Release lock before fallback
 
         // Fallback: read directly (should be rare)
         self.buffer_misses.fetch_add(1, Ordering::Relaxed);
