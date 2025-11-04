@@ -11,20 +11,21 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-// Main file rule - can contain any combination of fixture types, venues, and light shows
-// Comments are handled by WHITESPACE so they're allowed anywhere
-file = { SOI ~ (fixture_type | venue | light_show)* ~ EOI }
+// Main file rule - can contain any combination of fixture types, venues, light shows, and tempo
+file = { SOI ~ (fixture_type | venue | light_show | tempo)* ~ EOI }
 
 // Light show rules
 light_show = { "show" ~ show_name ~ show_content }
 
 show_name = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 
-show_content = { "{" ~ cue* ~ "}" }
+show_content = { "{" ~ (tempo | cue)* ~ "}" }
 
-cue = { time_string ~ effect* }
+cue = { (time_string | measure_time) ~ effect* }
 
 time_string = @{ "@" ~ (time_mm_ss_mmm | time_ss_mmm) }
+
+measure_time = @{ "@" ~ ASCII_DIGIT+ ~ "/" ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? }
 
 time_mm_ss_mmm = @{ ASCII_DIGIT+ ~ ":" ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ }
 
@@ -35,7 +36,6 @@ effect = { group_list ~ ":" ~ effect_type ~ (","? ~ parameters)? }
 
 group_list = { group_name ~ ("," ~ group_name)* }
 
-// Group names are identifiers (alphanumeric, underscore, hyphen)
 group_name = { (ASCII_ALPHANUMERIC | "_" | "-")+ }
 
 effect_type = { "static" | "cycle" | "strobe" | "pulse" | "chase" | "dimmer" | "rainbow" }
@@ -85,6 +85,7 @@ quoted_hex_color = @{ "\"" ~ "#" ~ ASCII_HEX_DIGIT{6} ~ "\"" }
 quoted_rgb_color = @{ "\"" ~ "rgb(" ~ ASCII_DIGIT+ ~ "," ~ " "? ~ ASCII_DIGIT+ ~ "," ~ " "? ~ ASCII_DIGIT+ ~ ")" ~ "\"" }
 
 // Time-based parameters (duration, fade, etc.) all use the same format
+// Supports absolute time (ms, s) and musical time (beats, measures)
 time_parameter = @{ time_value ~ time_unit }
 
 direction_parameter = { "forward" | "backward" | "random" | "pingpong" }
@@ -114,14 +115,51 @@ number_value = { ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? }
 
 time_value = { number_value }
 
-time_unit = { "ms" | "s" }
+time_unit = @{ "measures" | "beats" | "ms" | "s" }
 
 string = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 
-// Identifiers
 identifier = { (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* }
 
-// Comments are folded into WHITESPACE so they can appear anywhere
+// Tempo section rules
+tempo = { "tempo" ~ "{" ~ tempo_content ~ "}" }
+
+tempo_content = { (tempo_start | tempo_bpm | tempo_time_signature | tempo_changes)* }
+
+tempo_start = { "start" ~ ":" ~ time_parameter }
+
+tempo_bpm = { "bpm" ~ ":" ~ number_value }
+
+tempo_time_signature = { "time_signature" ~ ":" ~ time_sig_value }
+
+time_sig_value = @{ ASCII_DIGIT+ ~ "/" ~ ASCII_DIGIT+ }
+
+tempo_changes = { "changes" ~ ":" ~ "[" ~ tempo_change_list? ~ "]" }
+
+tempo_change_list = { tempo_change ~ ("," ~ tempo_change)* }
+
+tempo_change = { (time_string | measure_time) ~ "{" ~ tempo_change_content ~ "}" }
+
+tempo_change_content = { tempo_change_param ~ ("," ~ tempo_change_param)* }
+
+tempo_change_param = { 
+    tempo_change_bpm | tempo_change_time_signature | tempo_change_transition
+}
+
+tempo_change_bpm = { "bpm" ~ ":" ~ number_value }
+
+tempo_change_time_signature = { "time_signature" ~ ":" ~ time_sig_value }
+
+tempo_change_transition = { "transition" ~ ":" ~ tempo_transition_duration }
+
+tempo_transition_duration = { tempo_transition_measures | tempo_transition_beats | tempo_transition_snap }
+
+tempo_transition_measures = @{ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? ~ "m" }
+
+tempo_transition_beats = { number_value }
+
+tempo_transition_snap = { "snap" }
+
 COMMENT = _{ ("//" | "#") ~ (!"\n" ~ ANY)* }
 
 // Fixture type rules
@@ -170,5 +208,4 @@ group = { "group" ~ string ~ "=" ~ identifier_list }
 
 identifier_list = { identifier ~ ("," ~ identifier)* }
 
-// Whitespace includes comments everywhere
 WHITESPACE = _{ " " | "\t" | "\r" | "\n" | COMMENT }

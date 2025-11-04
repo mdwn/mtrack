@@ -18,6 +18,7 @@ pub mod engine;
 pub mod layering_tests;
 pub mod parser;
 pub mod system;
+pub mod tempo;
 pub mod timeline;
 pub mod types;
 pub mod visual_consistency_tests;

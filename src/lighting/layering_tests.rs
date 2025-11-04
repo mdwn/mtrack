@@ -1137,7 +1137,7 @@ mod tests {
 
     #[test]
     fn test_fixture_state_blending() {
-        let mut fixture1 = FixtureState::new("test".to_string());
+        let mut fixture1 = FixtureState::new();
         fixture1.set_channel(
             "red".to_string(),
             ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
@@ -1147,7 +1147,7 @@ mod tests {
             ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace),
         );
 
-        let mut fixture2 = FixtureState::new("test".to_string());
+        let mut fixture2 = FixtureState::new();
         fixture2.set_channel(
             "green".to_string(),
             ChannelState::new(0.8, EffectLayer::Foreground, BlendMode::Multiply),
@@ -1160,15 +1160,15 @@ mod tests {
         fixture1.blend_with(&fixture2);
 
         // Green should be blended: 0.5 * 0.8 = 0.4
-        let green_state = fixture1.get_channel("green").unwrap();
+        let green_state = fixture1.channels.get("green").unwrap();
         assert!((green_state.value - 0.4).abs() < 0.01);
 
         // Blue should be added (new channel)
-        let blue_state = fixture1.get_channel("blue").unwrap();
+        let blue_state = fixture1.channels.get("blue").unwrap();
         assert!((blue_state.value - 0.3).abs() < 0.01);
 
         // Red should be unchanged
-        let red_state = fixture1.get_channel("red").unwrap();
+        let red_state = fixture1.channels.get("red").unwrap();
         assert!((red_state.value - 1.0).abs() < 0.01);
     }
 

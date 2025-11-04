@@ -204,9 +204,7 @@ fn create_f32_callback(
     move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
         let read = ring.read(data);
         // Zero-fill any shortfall
-        for i in read..data.len() {
-            data[i] = 0.0;
-        }
+        data[read..].fill(0.0);
     }
 }
 
@@ -223,9 +221,7 @@ where
         let read = ring.read(&mut temp);
 
         // Zero-fill any shortfall
-        for i in read..len {
-            temp[i] = 0.0;
-        }
+        temp[read..].fill(0.0);
 
         // Convert to output format
         for (dst, &src) in data.iter_mut().zip(temp.iter()) {

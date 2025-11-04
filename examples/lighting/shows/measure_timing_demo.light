@@ -1,0 +1,104 @@
+# Measure-Based Timing Demo
+# This show demonstrates the tempo section and measure-based timing
+
+tempo {
+    start: 0.0s
+    bpm: 120
+    time_signature: 4/4
+    changes: [
+        # Instant tempo change at measure 8
+        @8/1 { bpm: 140 },
+        
+        # Gradual tempo change over 4 beats at measure 16
+        @16/1 { bpm: 160, transition: 4 },
+        
+        # Gradual tempo change over 2 measures at measure 24
+        @24/1 { bpm: 180, transition: 2m },
+        
+        # Time signature change at measure 32
+        @32/1 { time_signature: 3/4 },
+        
+        # Slow down over 4 measures
+        @40/1 { bpm: 100, transition: 4m },
+        
+        # Back to original tempo with snap (default)
+        @48/1 { bpm: 120, transition: snap }
+    ]
+}
+
+show "Measure Timing Demo" {
+    # Intro - measures 1-4
+    @1/1
+    front_wash: static color: "blue", dimmer: 0%, layer: background, blend_mode: replace
+    front_wash: dimmer start_level: 0.0, end_level: 1.0, duration: 2s, curve: linear, layer: foreground, blend_mode: replace
+    
+    # On each beat of measure 2
+    @2/1
+    front_wash: pulse color: "blue", duration: 500ms, layer: foreground, blend_mode: multiply
+    
+    @2/2
+    front_wash: pulse color: "blue", duration: 500ms, layer: foreground, blend_mode: multiply
+    
+    @2/3
+    front_wash: pulse color: "blue", duration: 500ms, layer: foreground, blend_mode: multiply
+    
+    @2/4
+    front_wash: pulse color: "blue", duration: 500ms, layer: foreground, blend_mode: multiply
+    
+    # Subdivision example - halfway through beat 3
+    @3/2.5
+    back_lights: static color: "red", dimmer: 50%, layer: midground, blend_mode: add
+    
+    # Section 2 - tempo change to 140 BPM at measure 8
+    @8/1
+    front_wash: static color: "green", dimmer: 100%, layer: background, blend_mode: replace
+    back_lights: static color: "yellow", dimmer: 75%, layer: midground, blend_mode: add
+    
+    @10/1
+    front_wash: cycle color: "green", color: "cyan", duration: 2s, loop: loop, layer: background
+    
+    # Section 3 - gradual tempo increase to 160 BPM (over 4 beats starting at measure 16)
+    @16/1
+    front_wash: static color: "purple", dimmer: 100%, layer: background, blend_mode: replace
+    
+    @18/1
+    front_wash: chase color: "purple", color: "magenta", color: "blue", duration: 1s, direction: forward, loop: loop
+    
+    # Section 4 - gradual tempo increase to 180 BPM (over 2 measures starting at measure 24)
+    @24/1
+    front_wash, back_lights: strobe color: "white", frequency: 5, duty_cycle: 50%, layer: foreground, blend_mode: add
+    
+    @28/1
+    front_wash, back_lights: static color: "white", dimmer: 0%, layer: foreground, blend_mode: replace
+    
+    # Section 5 - time signature change to 3/4 at measure 32
+    @32/1
+    front_wash: static color: "orange", dimmer: 100%, layer: background, blend_mode: replace
+    
+    # In 3/4 time - only 3 beats per measure
+    @33/1
+    front_wash: pulse color: "orange", duration: 400ms, layer: foreground, blend_mode: multiply
+    
+    @33/2
+    front_wash: pulse color: "orange", duration: 400ms, layer: foreground, blend_mode: multiply
+    
+    @33/3
+    front_wash: pulse color: "orange", duration: 400ms, layer: foreground, blend_mode: multiply
+    
+    # Section 6 - gradual slowdown to 100 BPM (over 4 measures starting at measure 40)
+    @40/1
+    front_wash: static color: "blue", dimmer: 100%, layer: background, blend_mode: replace
+    front_wash: dimmer start_level: 1.0, end_level: 0.5, duration: 4s, curve: sine, layer: foreground, blend_mode: multiply
+    
+    # Section 7 - snap back to 120 BPM at measure 48
+    @48/1
+    front_wash, back_lights: static color: "white", dimmer: 100%, layer: background, blend_mode: replace
+    
+    @50/1
+    front_wash, back_lights: rainbow duration: 3s, loop: loop, layer: background
+    
+    # End - measure 56
+    @56/1
+    front_wash, back_lights: dimmer start_level: 1.0, end_level: 0.0, duration: 2s, curve: linear, layer: foreground, blend_mode: multiply
+}
+

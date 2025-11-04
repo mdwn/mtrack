@@ -97,9 +97,9 @@ pub trait ChannelMappedSampleSource: Send + Sync {
                 channel_count
             )));
         }
-        for i in 0..channel_count {
+        for out in output.iter_mut().take(channel_count) {
             match self.next_sample()? {
-                Some(sample) => output[i] = sample,
+                Some(sample) => *out = sample,
                 None => return Ok(None),
             }
         }
@@ -615,9 +615,9 @@ impl ChannelMappedSampleSource for ChannelMappedSource {
                 channel_count
             )));
         }
-        for i in 0..channel_count {
+        for out in output.iter_mut().take(channel_count) {
             match self.source.next_sample()? {
-                Some(sample) => output[i] = sample,
+                Some(sample) => *out = sample,
                 None => return Ok(None),
             }
         }

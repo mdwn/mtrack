@@ -68,6 +68,23 @@ pub enum EffectType {
     },
 }
 
+impl EffectType {
+    /// Get the duration field from the effect type if it exists
+    /// Used in tests to verify duration parsing
+    #[cfg(test)]
+    pub fn get_duration(&self) -> Option<Duration> {
+        match self {
+            EffectType::Static { duration, .. } => *duration,
+            EffectType::Strobe { duration, .. } => *duration,
+            EffectType::Pulse { duration, .. } => *duration,
+            EffectType::Dimmer { duration, .. } => Some(*duration),
+            EffectType::ColorCycle { .. } => None,
+            EffectType::Chase { .. } => None,
+            EffectType::Rainbow { .. } => None,
+        }
+    }
+}
+
 /// Color representation
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Color {
@@ -554,15 +571,12 @@ impl ChannelState {
 /// Represents the current state of a fixture
 #[derive(Debug, Clone)]
 pub struct FixtureState {
-    #[allow(dead_code)]
-    pub fixture_name: String,
     pub channels: HashMap<String, ChannelState>,
 }
 
 impl FixtureState {
-    pub fn new(fixture_name: String) -> Self {
+    pub fn new() -> Self {
         Self {
-            fixture_name,
             channels: HashMap::new(),
         }
     }
@@ -570,12 +584,6 @@ impl FixtureState {
     /// Set a channel value
     pub fn set_channel(&mut self, channel_name: String, state: ChannelState) {
         self.channels.insert(channel_name, state);
-    }
-
-    /// Get a channel value, returning default if not set
-    #[cfg(test)]
-    pub fn get_channel(&self, channel_name: &str) -> Option<&ChannelState> {
-        self.channels.get(channel_name)
     }
 
     /// Blend this fixture state with another
@@ -749,18 +757,6 @@ pub enum ColorStrategy {
     /// This is the most common strategy, using red, green, and blue channels
     /// to create colors through additive mixing.
     Rgb,
-    /// Use HSV channels for color mixing
-    ///
-    /// This strategy uses hue, saturation, and value channels for more intuitive
-    /// color control, commonly found in advanced fixtures.
-    #[allow(dead_code)]
-    Hsv,
-    /// Use CMY channels for color mixing
-    ///
-    /// This strategy uses cyan, magenta, and yellow channels for subtractive
-    /// color mixing, often found in moving lights and advanced fixtures.
-    #[allow(dead_code)]
-    Cmy,
 }
 
 /// Strategies for handling strobe effects
@@ -965,74 +961,9 @@ impl FixtureProfile {
                     );
                 }
             }
-            ColorStrategy::Hsv => {
-                // Convert RGB to HSV
-                let (h, s, v) = Self::rgb_to_hsv(color.r, color.g, color.b);
-                result.insert(
-                    "hue".to_string(),
-                    ChannelState::new(h / 360.0, layer, blend_mode),
-                );
-                result.insert(
-                    "saturation".to_string(),
-                    ChannelState::new(s, layer, blend_mode),
-                );
-                result.insert("value".to_string(), ChannelState::new(v, layer, blend_mode));
-            }
-            ColorStrategy::Cmy => {
-                // Convert RGB to CMY
-                let (c, m, y) = Self::rgb_to_cmy(color.r, color.g, color.b);
-                result.insert("cyan".to_string(), ChannelState::new(c, layer, blend_mode));
-                result.insert(
-                    "magenta".to_string(),
-                    ChannelState::new(m, layer, blend_mode),
-                );
-                result.insert(
-                    "yellow".to_string(),
-                    ChannelState::new(y, layer, blend_mode),
-                );
-            }
         }
 
         result
-    }
-
-    /// Convert RGB to HSV color space
-    fn rgb_to_hsv(r: u8, g: u8, b: u8) -> (f64, f64, f64) {
-        let r = r as f64 / 255.0;
-        let g = g as f64 / 255.0;
-        let b = b as f64 / 255.0;
-
-        let max = r.max(g).max(b);
-        let min = r.min(g).min(b);
-        let delta = max - min;
-
-        let v = max;
-        let s = if max == 0.0 { 0.0 } else { delta / max };
-
-        let h = if delta == 0.0 {
-            0.0
-        } else if max == r {
-            60.0 * (((g - b) / delta) % 6.0)
-        } else if max == g {
-            60.0 * ((b - r) / delta + 2.0)
-        } else {
-            60.0 * ((r - g) / delta + 4.0)
-        };
-
-        (if h < 0.0 { h + 360.0 } else { h }, s, v)
-    }
-
-    /// Convert RGB to CMY color space
-    fn rgb_to_cmy(r: u8, g: u8, b: u8) -> (f64, f64, f64) {
-        let r = r as f64 / 255.0;
-        let g = g as f64 / 255.0;
-        let b = b as f64 / 255.0;
-
-        let c = 1.0 - r;
-        let m = 1.0 - g;
-        let y = 1.0 - b;
-
-        (c, m, y)
     }
 
     /// Apply strobe control using the fixture's strategy
