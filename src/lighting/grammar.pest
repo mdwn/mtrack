@@ -12,83 +12,82 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 // Main file rule - can contain any combination of fixture types, venues, and light shows
-file = { (comment | fixture_type | venue | light_show)* }
+// Comments are handled by WHITESPACE so they're allowed anywhere
+file = { SOI ~ (fixture_type | venue | light_show)* ~ EOI }
 
 // Light show rules
 light_show = { "show" ~ show_name ~ show_content }
 
 show_name = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 
-show_content = { "{" ~ (cue | comment)* ~ "}" }
+show_content = { "{" ~ cue* ~ "}" }
 
-cue = { time_string ~ (effect | comment)* }
+cue = { time_string ~ effect* }
 
-time_string = { "@" ~ (time_mm_ss_mmm | time_ss_mmm) }
+time_string = @{ "@" ~ (time_mm_ss_mmm | time_ss_mmm) }
 
-time_mm_ss_mmm = { ASCII_DIGIT+ ~ ":" ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ }
+time_mm_ss_mmm = @{ ASCII_DIGIT+ ~ ":" ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ }
 
-time_ss_mmm = { ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ }
+time_ss_mmm = @{ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ }
 
-effect = { group_list ~ ":" ~ effect_type ~ WHITESPACE? ~ parameters }
+// Parameters are optional; support both `effect_type param: v` and `effect_type, param: v`
+effect = { group_list ~ ":" ~ effect_type ~ (","? ~ parameters)? }
 
 group_list = { group_name ~ ("," ~ group_name)* }
 
-group_name = { (!":" ~ !"," ~ !" " ~ !"\n" ~ !"\r" ~ !"#" ~ !"/" ~ ANY)+ }
+// Group names are identifiers (alphanumeric, underscore, hyphen)
+group_name = { (ASCII_ALPHANUMERIC | "_" | "-")+ }
 
 effect_type = { "static" | "cycle" | "strobe" | "pulse" | "chase" | "dimmer" | "rainbow" }
 
-parameters = { (("," ~ WHITESPACE?)? ~ parameter ~ ("," ~ WHITESPACE? ~ parameter)*)? }
+parameters = { parameter ~ ("," ~ parameter)* }
 
 parameter = { parameter_name ~ ":" ~ parameter_value }
 
-parameter_name = { (!":" ~ !"," ~ !" " ~ !"\"" ~ ANY)+ }
+// Prefer identifiers for names; allow quoted names when needed
+parameter_name = { identifier | string }
 
 parameter_value = { 
-    color_parameter | 
-    dimmer_parameter | 
-    duration_parameter | 
-    fade_parameter | 
-    speed_parameter |
-    rate_parameter | 
-    duty_parameter | 
-    direction_parameter | 
+    percentage |
+    time_parameter |
+    direction_parameter |
     loop_parameter |
     step_parameter |
     transition_parameter |
     layer_parameter |
     blend_mode_parameter |
+    color_parameter |
     number_value |
-    string_value |
-    simple_value
+    string |
+    bare_identifier
 }
 
-simple_value = { (!"," ~ !" " ~ !"}" ~ ANY)+ }
+// Restrictive bare identifier to avoid swallowing typos
+bare_identifier = { (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* }
 
 color_parameter = { 
+    quoted_hex_color |
+    quoted_rgb_color |
     hex_color | 
     rgb_color | 
-    named_color 
+    named_color
 }
 
-hex_color = { "#" ~ ASCII_HEX_DIGIT{6} }
+hex_color = @{ "#" ~ ASCII_HEX_DIGIT{6} }
 
-rgb_color = { "rgb(" ~ ASCII_DIGIT+ ~ "," ~ ASCII_DIGIT+ ~ "," ~ ASCII_DIGIT+ ~ ")" }
+// RGB color with optional spaces after commas - make atomic to control whitespace
+rgb_color = @{ "rgb(" ~ ASCII_DIGIT+ ~ "," ~ " "? ~ ASCII_DIGIT+ ~ "," ~ " "? ~ ASCII_DIGIT+ ~ ")" }
 
 named_color = { "\"" ~ ("red" | "green" | "blue" | "white" | "black" | "yellow" | "cyan" | "magenta" | "orange" | "purple") ~ "\"" }
 
-dimmer_parameter = { percentage }
+quoted_hex_color = @{ "\"" ~ "#" ~ ASCII_HEX_DIGIT{6} ~ "\"" }
 
-duration_parameter = { time_value ~ time_unit }
+quoted_rgb_color = @{ "\"" ~ "rgb(" ~ ASCII_DIGIT+ ~ "," ~ " "? ~ ASCII_DIGIT+ ~ "," ~ " "? ~ ASCII_DIGIT+ ~ ")" ~ "\"" }
 
-fade_parameter = { time_value ~ time_unit }
+// Time-based parameters (duration, fade, etc.) all use the same format
+time_parameter = @{ time_value ~ time_unit }
 
-rate_parameter = { ASCII_DIGIT+ }
-
-speed_parameter = { number_value }
-
-duty_parameter = { percentage }
-
-direction_parameter = { "forward" | "backward" | "random" }
+direction_parameter = { "forward" | "backward" | "random" | "pingpong" }
 
 loop_parameter = { "once" | "loop" | "pingpong" | "random" }
 
@@ -108,24 +107,22 @@ layer_parameter = { "background" | "midground" | "foreground" }
 
 blend_mode_parameter = { "replace" | "multiply" | "add" | "overlay" | "screen" }
 
-percentage = { ASCII_DIGIT+ ~ "%" }
+percentage = @{ ASCII_DIGIT+ ~ "%" }
 
-time_value = { ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? }
+// Canonical number form reused across numeric parameters
+number_value = { ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? }
+
+time_value = { number_value }
 
 time_unit = { "ms" | "s" }
 
-string_value = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
-
-number_value = { ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? }
-
-// Additional rules for main branch compatibility
 string = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 
+// Identifiers
 identifier = { (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* }
 
-number = { ("+" | "-")? ~ ASCII_DIGIT+ }
-
-comment = ${ ("//" | "#") ~ (!"\n" ~ ANY)* }
+// Comments are folded into WHITESPACE so they can appear anywhere
+COMMENT = _{ ("//" | "#") ~ (!"\n" ~ ANY)* }
 
 // Fixture type rules
 fixture_type = { "fixture_type" ~ fixture_type_name ~ "{" ~ fixture_type_content ~ "}" }
@@ -133,7 +130,7 @@ fixture_type = { "fixture_type" ~ fixture_type_name ~ "{" ~ fixture_type_content
 fixture_type_name = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 
 fixture_type_content = { 
-    (channels | channel_map | max_strobe_frequency | special_cases | comment | WHITESPACE)* 
+    (channels | channel_map | max_strobe_frequency | special_cases)* 
 }
 
 channels = { "channels" ~ ":" ~ number_value }
@@ -159,12 +156,12 @@ special_case = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 // Venue rules - support both simple and complex formats
 venue = { "venue" ~ string ~ "{" ~ venue_content ~ "}" }
 
-venue_content = { (fixture | group | comment | WHITESPACE)* }
+venue_content = { (fixture | group)* }
 
-fixture = { "fixture" ~ string ~ identifier ~ "@" ~ WHITESPACE? ~ universe_num ~ ":" ~ address_num ~ tags? }
+fixture = { "fixture" ~ string ~ identifier ~ "@" ~ universe_num ~ ":" ~ address_num ~ tags? }
 
-universe_num = { number }
-address_num = { number }
+universe_num = { ASCII_DIGIT+ }
+address_num = { ASCII_DIGIT+ }
 
 tags = { "tags" ~ tag_list }
 tag_list = { "[" ~ string ~ ("," ~ string)* ~ "]" }
@@ -173,33 +170,5 @@ group = { "group" ~ string ~ "=" ~ identifier_list }
 
 identifier_list = { identifier ~ ("," ~ identifier)* }
 
-// Additional rules for complex format support
-venue_name = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
-
-fixtures = { "fixtures" ~ ":" ~ "[" ~ fixture_list ~ "]" }
-
-fixture_list = { fixture ~ ("," ~ fixture)* }
-
-fixture_name = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
-
-fixture_content = { 
-    (fixture_type_name | universe | address | tags | comment | WHITESPACE)* 
-}
-
-universe = { "universe" ~ ":" ~ number_value }
-
-address = { "address" ~ ":" ~ number_value }
-
-groups = { "groups" ~ ":" ~ "[" ~ venue_group_list ~ "]" }
-
-venue_group_list = { venue_group ~ ("," ~ venue_group)* }
-
-venue_group = { "group" ~ venue_group_name ~ "{" ~ venue_group_content ~ "}" }
-
-venue_group_name = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
-
-venue_group_content = { 
-    (fixture_list | comment | WHITESPACE)* 
-}
-
-WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+// Whitespace includes comments everywhere
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" | COMMENT }

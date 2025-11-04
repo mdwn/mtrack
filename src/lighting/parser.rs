@@ -95,9 +95,6 @@ pub fn parse_venues(content: &str) -> Result<HashMap<String, Venue>, Box<dyn Err
                         .map_err(|e| format!("Failed to parse venue definition: {}", e))?;
                     venues.insert(venue.name().to_string(), venue);
                 }
-                Rule::comment => {
-                    // Ignore comments
-                }
                 _ => {
                     // Ignore other rules
                 }
@@ -157,10 +154,18 @@ pub fn parse_light_shows(content: &str) -> Result<HashMap<String, LightShow>, Bo
     let mut shows = HashMap::new();
 
     for pair in pairs {
-        for inner_pair in pair.into_inner() {
-            if inner_pair.as_rule() == Rule::light_show {
-                let show = parse_light_show_definition(inner_pair)?;
+        match pair.as_rule() {
+            Rule::light_show => {
+                let show = parse_light_show_definition(pair)?;
                 shows.insert(show.name.clone(), show);
+            }
+            _ => {
+                for inner_pair in pair.into_inner() {
+                    if inner_pair.as_rule() == Rule::light_show {
+                        let show = parse_light_show_definition(inner_pair)?;
+                        shows.insert(show.name.clone(), show);
+                    }
+                }
             }
         }
     }
@@ -322,9 +327,6 @@ fn parse_cue_definition(pair: pest::iterators::Pair<Rule>) -> Result<Cue, Box<dy
             Rule::effect => {
                 let effect = parse_effect_definition(inner_pair)?;
                 effects.push(effect);
-            }
-            Rule::comment => {
-                // Skip comments
             }
             _ => {
                 // Skip unexpected rules
@@ -886,20 +888,17 @@ fn parse_parameter(pair: pest::iterators::Pair<Rule>) -> Result<(String, String)
             Rule::color_parameter => {
                 value = parse_color_parameter(inner_pair)?;
             }
-            Rule::dimmer_parameter
-            | Rule::duration_parameter
-            | Rule::fade_parameter
-            | Rule::rate_parameter
-            | Rule::duty_parameter
+            Rule::percentage
+            | Rule::time_parameter
             | Rule::direction_parameter
             | Rule::loop_parameter
             | Rule::step_parameter
             | Rule::transition_parameter
             | Rule::layer_parameter
             | Rule::blend_mode_parameter
-            | Rule::string_value
+            | Rule::string
             | Rule::number_value
-            | Rule::simple_value => {
+            | Rule::bare_identifier => {
                 value = parse_generic_parameter(inner_pair)?;
             }
             _ => {
@@ -915,6 +914,16 @@ fn parse_color_parameter(pair: pest::iterators::Pair<Rule>) -> Result<String, Bo
     // Handle different color types based on the inner rule
     for inner_pair in pair.clone().into_inner() {
         match inner_pair.as_rule() {
+            Rule::quoted_hex_color => {
+                // Strip quotes from quoted hex color
+                let s = inner_pair.as_str();
+                return Ok(s.to_string());
+            }
+            Rule::quoted_rgb_color => {
+                // Strip quotes from quoted rgb color
+                let s = inner_pair.as_str();
+                return Ok(s.to_string());
+            }
             Rule::hex_color => {
                 return Ok(inner_pair.as_str().to_string());
             }
