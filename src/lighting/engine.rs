@@ -216,12 +216,9 @@ impl EffectEngine {
 
                             // Only blend if there are unlocked channels
                             if !filtered_state.channels.is_empty() {
-                                let fixture_name_clone_for_state = fixture_name.clone();
                                 current_fixture_states
                                     .entry(fixture_name.clone())
-                                    .or_insert_with(|| {
-                                        FixtureState::new(fixture_name_clone_for_state)
-                                    })
+                                    .or_insert_with(FixtureState::new)
                                     .blend_with(&filtered_state);
 
                                 // Do not mark permanent channels during active frames; persist only on completion
@@ -245,9 +242,7 @@ impl EffectEngine {
                                 let fixture_name_clone = fixture_name.clone();
                                 current_fixture_states
                                     .entry(fixture_name_clone.clone())
-                                    .or_insert_with(|| {
-                                        FixtureState::new(fixture_name_clone.clone())
-                                    })
+                                    .or_insert_with(FixtureState::new)
                                     .blend_with(&final_state);
 
                                 // Lock channels if this is a foreground Replace effect
@@ -327,7 +322,7 @@ impl EffectEngine {
         for (fixture_name, state) in &current_fixture_states {
             if let Some(perm_channels) = permanent_channels.get(fixture_name) {
                 // Only save channels that were from permanent effects
-                let mut preserved_state = FixtureState::new(fixture_name.clone());
+                let mut preserved_state = FixtureState::new();
                 for channel_name in perm_channels {
                     if let Some(channel_state) = state.channels.get(channel_name) {
                         preserved_state
@@ -737,7 +732,7 @@ impl EffectEngine {
 
         for fixture_name in &effect.target_fixtures {
             if let Some(fixture) = self.fixture_registry.get(fixture_name) {
-                let mut fixture_state = FixtureState::new(fixture_name.clone());
+                let mut fixture_state = FixtureState::new();
 
                 // For static effects, we apply parameters directly
                 // The fixture profile system is more useful for dynamic effects
@@ -803,7 +798,7 @@ impl EffectEngine {
 
         for fixture_name in &effect.target_fixtures {
             if let Some(fixture) = self.fixture_registry.get(fixture_name) {
-                let mut fixture_state = FixtureState::new(fixture_name.clone());
+                let mut fixture_state = FixtureState::new();
 
                 // Use fixture profile to determine how to apply color
                 let profile = FixtureProfile::for_fixture(fixture);
@@ -839,7 +834,7 @@ impl EffectEngine {
 
         for fixture_name in &effect.target_fixtures {
             if let Some(fixture) = self.fixture_registry.get(fixture_name) {
-                let mut fixture_state = FixtureState::new(fixture_name.clone());
+                let mut fixture_state = FixtureState::new();
 
                 if frequency == 0.0 {
                     // Frequency 0 means strobe is disabled
@@ -941,7 +936,7 @@ impl EffectEngine {
 
         for fixture_name in &effect.target_fixtures {
             if let Some(fixture) = self.fixture_registry.get(fixture_name) {
-                let mut fixture_state = FixtureState::new(fixture_name.clone());
+                let mut fixture_state = FixtureState::new();
 
                 // Use fixture profile to determine how to apply brightness control
                 let profile = FixtureProfile::for_fixture(fixture);
@@ -995,7 +990,7 @@ impl EffectEngine {
 
         for (i, fixture_name) in effect.target_fixtures.iter().enumerate() {
             if let Some(fixture) = self.fixture_registry.get(fixture_name) {
-                let mut fixture_state = FixtureState::new(fixture_name.clone());
+                let mut fixture_state = FixtureState::new();
 
                 // Check if this fixture is active in the current pattern position
                 let is_fixture_active = if current_pattern_index < pattern_length {
@@ -1122,7 +1117,7 @@ impl EffectEngine {
 
         for fixture_name in &effect.target_fixtures {
             if let Some(fixture) = self.fixture_registry.get(fixture_name) {
-                let mut fixture_state = FixtureState::new(fixture_name.clone());
+                let mut fixture_state = FixtureState::new();
 
                 // Use fixture profile to determine how to apply color
                 let profile = FixtureProfile::for_fixture(fixture);
@@ -1164,7 +1159,7 @@ impl EffectEngine {
 
         for fixture_name in &effect.target_fixtures {
             if let Some(fixture) = self.fixture_registry.get(fixture_name) {
-                let mut fixture_state = FixtureState::new(fixture_name.clone());
+                let mut fixture_state = FixtureState::new();
 
                 // Use fixture profile to determine how to apply pulse control
                 let profile = FixtureProfile::for_fixture(fixture);
