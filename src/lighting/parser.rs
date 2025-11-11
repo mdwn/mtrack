@@ -446,22 +446,22 @@ fn parse_effect_definition(
                     },
                     "cycle" => EffectType::ColorCycle {
                         colors: Vec::new(),
-                        speed: 1.0,
+                        speed: super::effects::TempoAwareSpeed::Fixed(1.0),
                         direction: CycleDirection::Forward,
                     },
                     "strobe" => EffectType::Strobe {
-                        frequency: 8.0,
+                        frequency: super::effects::TempoAwareFrequency::Fixed(8.0),
                         duration: None,
                     },
                     "pulse" => EffectType::Pulse {
                         base_level: 0.5,
                         pulse_amplitude: 0.5,
-                        frequency: 1.0,
+                        frequency: super::effects::TempoAwareFrequency::Fixed(1.0),
                         duration: None,
                     },
                     "chase" => EffectType::Chase {
                         pattern: ChasePattern::Linear,
-                        speed: 1.0,
+                        speed: super::effects::TempoAwareSpeed::Fixed(1.0),
                         direction: ChaseDirection::LeftToRight,
                     },
                     "dimmer" => EffectType::Dimmer {
@@ -471,7 +471,7 @@ fn parse_effect_definition(
                         curve: DimmerCurve::Linear,
                     },
                     "rainbow" => EffectType::Rainbow {
-                        speed: 1.0,
+                        speed: super::effects::TempoAwareSpeed::Fixed(1.0),
                         saturation: 1.0,
                         brightness: 1.0,
                     },
@@ -507,18 +507,27 @@ fn parse_effect_definition(
                                 });
                             }
                             "up_time" => {
-                                let duration =
-                                    parse_duration_string(&value, tempo_map, Some(cue_time))?;
+                                let duration = parse_duration_string(
+                                    value.as_str(),
+                                    tempo_map,
+                                    Some(cue_time),
+                                )?;
                                 up_time = Some(duration);
                             }
                             "hold_time" => {
-                                let duration =
-                                    parse_duration_string(&value, tempo_map, Some(cue_time))?;
+                                let duration = parse_duration_string(
+                                    value.as_str(),
+                                    tempo_map,
+                                    Some(cue_time),
+                                )?;
                                 hold_time = Some(duration);
                             }
                             "down_time" => {
-                                let duration =
-                                    parse_duration_string(&value, tempo_map, Some(cue_time))?;
+                                let duration = parse_duration_string(
+                                    value.as_str(),
+                                    tempo_map,
+                                    Some(cue_time),
+                                )?;
                                 down_time = Some(duration);
                             }
                             _ => {
@@ -611,11 +620,12 @@ fn apply_parameters_to_effect_type(
             // Handle other parameters
             for (key, value) in parameters {
                 match key.as_str() {
-                    "speed" => {
-                        if let Ok(val) = value.parse::<f64>() {
-                            *speed = val;
+                    "speed" => match parse_speed_string(value, tempo_map) {
+                        Ok(val) => *speed = val,
+                        Err(e) => {
+                            return Err(format!("Invalid speed value '{}': {}", value, e).into());
                         }
-                    }
+                    },
                     "direction" => {
                         *direction = match value.as_str() {
                             "forward" => CycleDirection::Forward,
@@ -634,11 +644,14 @@ fn apply_parameters_to_effect_type(
         } => {
             for (key, value) in parameters {
                 match key.as_str() {
-                    "frequency" | "rate" => {
-                        if let Ok(val) = value.parse::<f64>() {
-                            *frequency = val;
+                    "frequency" | "rate" => match parse_frequency_string(value, tempo_map) {
+                        Ok(val) => *frequency = val,
+                        Err(e) => {
+                            return Err(
+                                format!("Invalid frequency value '{}': {}", value, e).into()
+                            );
                         }
-                    }
+                    },
                     "duration" => {
                         let dur = parse_duration_string(value, tempo_map, Some(cue_time))?;
                         *duration = Some(dur);
@@ -665,11 +678,14 @@ fn apply_parameters_to_effect_type(
                             *pulse_amplitude = val;
                         }
                     }
-                    "frequency" => {
-                        if let Ok(val) = value.parse::<f64>() {
-                            *frequency = val;
+                    "frequency" => match parse_frequency_string(value, tempo_map) {
+                        Ok(val) => *frequency = val,
+                        Err(e) => {
+                            return Err(
+                                format!("Invalid frequency value '{}': {}", value, e).into()
+                            );
                         }
-                    }
+                    },
                     "duration" => {
                         let dur = parse_duration_string(value, tempo_map, Some(cue_time))?;
                         *duration = Some(dur);
@@ -693,11 +709,12 @@ fn apply_parameters_to_effect_type(
                             _ => ChasePattern::Linear,
                         };
                     }
-                    "speed" => {
-                        if let Ok(val) = value.parse::<f64>() {
-                            *speed = val;
+                    "speed" => match parse_speed_string(value, tempo_map) {
+                        Ok(val) => *speed = val,
+                        Err(e) => {
+                            return Err(format!("Invalid speed value '{}': {}", value, e).into());
                         }
-                    }
+                    },
                     "direction" => {
                         *direction = match value.as_str() {
                             "left_to_right" => ChaseDirection::LeftToRight,
@@ -756,11 +773,12 @@ fn apply_parameters_to_effect_type(
         } => {
             for (key, value) in parameters {
                 match key.as_str() {
-                    "speed" => {
-                        if let Ok(val) = value.parse::<f64>() {
-                            *speed = val;
+                    "speed" => match parse_speed_string(value, tempo_map) {
+                        Ok(val) => *speed = val,
+                        Err(e) => {
+                            return Err(format!("Invalid speed value '{}': {}", value, e).into());
                         }
-                    }
+                    },
                     "saturation" => {
                         if let Ok(val) = parse_percentage_to_f64(value) {
                             *saturation = val;
@@ -788,6 +806,108 @@ fn parse_percentage_to_f64(value: &str) -> Result<f64, Box<dyn Error>> {
         Ok(num / 100.0)
     } else {
         Ok(value.parse::<f64>()?)
+    }
+}
+
+/// Parses a frequency value to TempoAwareFrequency
+/// Supports:
+/// - Numeric values (e.g., "4.0") -> Fixed Hz
+/// - Time-based values (e.g., "1measure", "2beats", "0.5s") -> TempoAwareFrequency
+///
+/// For beats/measures, requires tempo_map to be available.
+fn parse_frequency_string(
+    value: &str,
+    tempo_map: &Option<TempoMap>,
+) -> Result<super::effects::TempoAwareFrequency, Box<dyn Error>> {
+    use super::effects::TempoAwareFrequency;
+
+    let value = value.trim();
+
+    // Try parsing as a simple number first (Hz) - fixed frequency
+    if let Ok(val) = value.parse::<f64>() {
+        return Ok(TempoAwareFrequency::Fixed(val));
+    }
+
+    // Try parsing as a time-based value
+    if value.ends_with("ms") {
+        let num_str = value.trim_end_matches("ms");
+        let num = num_str.parse::<f64>()?;
+        let duration_secs = num / 1000.0;
+        Ok(TempoAwareFrequency::Seconds(duration_secs))
+    } else if value.ends_with("measures") {
+        let num_str = value.trim_end_matches("measures");
+        let num = num_str.parse::<f64>()?;
+        if tempo_map.is_some() {
+            Ok(TempoAwareFrequency::Measures(num))
+        } else {
+            Err("Measure-based frequencies require a tempo section".into())
+        }
+    } else if value.ends_with("beats") {
+        let num_str = value.trim_end_matches("beats");
+        let num = num_str.parse::<f64>()?;
+        if tempo_map.is_some() {
+            Ok(TempoAwareFrequency::Beats(num))
+        } else {
+            Err("Beat-based frequencies require a tempo section".into())
+        }
+    } else if value.ends_with('s') {
+        let num_str = value.trim_end_matches('s');
+        let num = num_str.parse::<f64>()?;
+        Ok(TempoAwareFrequency::Seconds(num))
+    } else {
+        // Fallback: try parsing as a number
+        Ok(TempoAwareFrequency::Fixed(value.parse::<f64>()?))
+    }
+}
+
+/// Parses a speed value to TempoAwareSpeed
+/// Supports:
+/// - Numeric values (e.g., "1.5") -> Fixed cycles per second
+/// - Time-based values (e.g., "1measure", "2beats", "0.5s") -> TempoAwareSpeed
+///
+/// For beats/measures, requires tempo_map to be available.
+fn parse_speed_string(
+    value: &str,
+    tempo_map: &Option<TempoMap>,
+) -> Result<super::effects::TempoAwareSpeed, Box<dyn Error>> {
+    use super::effects::TempoAwareSpeed;
+
+    let value = value.trim();
+
+    // Try parsing as a simple number first (cycles per second) - fixed speed
+    if let Ok(val) = value.parse::<f64>() {
+        return Ok(TempoAwareSpeed::Fixed(val));
+    }
+
+    // Try parsing as a time-based value
+    if value.ends_with("ms") {
+        let num_str = value.trim_end_matches("ms");
+        let num = num_str.parse::<f64>()?;
+        let duration_secs = num / 1000.0;
+        Ok(TempoAwareSpeed::Seconds(duration_secs))
+    } else if value.ends_with("measures") {
+        let num_str = value.trim_end_matches("measures");
+        let num = num_str.parse::<f64>()?;
+        if tempo_map.is_some() {
+            Ok(TempoAwareSpeed::Measures(num))
+        } else {
+            Err("Measure-based speeds require a tempo section".into())
+        }
+    } else if value.ends_with("beats") {
+        let num_str = value.trim_end_matches("beats");
+        let num = num_str.parse::<f64>()?;
+        if tempo_map.is_some() {
+            Ok(TempoAwareSpeed::Beats(num))
+        } else {
+            Err("Beat-based speeds require a tempo section".into())
+        }
+    } else if value.ends_with('s') {
+        let num_str = value.trim_end_matches('s');
+        let num = num_str.parse::<f64>()?;
+        Ok(TempoAwareSpeed::Seconds(num))
+    } else {
+        // Fallback: try parsing as a number
+        Ok(TempoAwareSpeed::Fixed(value.parse::<f64>()?))
     }
 }
 
@@ -2627,7 +2747,8 @@ all_wash: cycle, color: "red", color: "green", color: "blue", speed: 1.5, direct
         } = &second_cue.effects[0].effect_type
         {
             assert_eq!(colors.len(), 3, "Cycle effect should have 3 colors");
-            assert_eq!(*speed, 1.5, "Speed should be 1.5");
+            use crate::lighting::effects::TempoAwareSpeed;
+            assert_eq!(*speed, TempoAwareSpeed::Fixed(1.5), "Speed should be 1.5");
             assert_eq!(
                 *direction,
                 CycleDirection::Forward,

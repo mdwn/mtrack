@@ -28,28 +28,47 @@ pub struct LightingTimeline {
     next_cue_index: usize,
     /// Whether the timeline is currently playing
     is_playing: bool,
+    /// Tempo map for tempo-aware effects (from the first show that has one)
+    tempo_map: Option<crate::lighting::tempo::TempoMap>,
 }
 
 impl LightingTimeline {
-    /// Creates a new lighting timeline from DSL cues
-    pub fn new(cues: Vec<Cue>) -> Self {
+    /// Creates a new lighting timeline from DSL light shows
+    pub fn new(shows: Vec<LightShow>) -> Self {
+        let mut all_cues = Vec::new();
+        let mut tempo_map: Option<crate::lighting::tempo::TempoMap> = None;
+
+        // Extract cues and tempo map from shows
+        // Use the first show's tempo map if available
+        for show in shows {
+            all_cues.extend(show.cues);
+            // Use the first show's tempo map
+            if tempo_map.is_none() {
+                tempo_map = show.tempo_map;
+            }
+        }
+
+        let mut timeline = Self::new_with_cues(all_cues);
+        timeline.tempo_map = tempo_map;
+        timeline
+    }
+
+    /// Creates a new lighting timeline from DSL cues (for testing)
+    pub(crate) fn new_with_cues(cues: Vec<Cue>) -> Self {
         let mut timeline = Self {
             cues,
             current_time: Duration::ZERO,
             next_cue_index: 0,
             is_playing: false,
+            tempo_map: None,
         };
         timeline.sort_cues();
         timeline
     }
 
-    /// Creates a new lighting timeline from DSL light shows
-    pub fn new_from_shows(shows: Vec<LightShow>) -> Self {
-        let mut all_cues = Vec::new();
-        for show in shows {
-            all_cues.extend(show.cues);
-        }
-        Self::new(all_cues)
+    /// Get the tempo map for this timeline
+    pub fn tempo_map(&self) -> Option<&crate::lighting::tempo::TempoMap> {
+        self.tempo_map.as_ref()
     }
 
     /// Sorts cues by time
@@ -140,7 +159,7 @@ mod tests {
     #[test]
     fn test_timeline_creation() {
         let cues = vec![];
-        let timeline = LightingTimeline::new(cues);
+        let timeline = LightingTimeline::new_with_cues(cues);
         assert_eq!(timeline.cues.len(), 0);
         assert!(!timeline.is_playing);
     }
@@ -148,7 +167,7 @@ mod tests {
     #[test]
     fn test_timeline_start_stop() {
         let cues = vec![];
-        let mut timeline = LightingTimeline::new(cues);
+        let mut timeline = LightingTimeline::new_with_cues(cues);
 
         assert!(!timeline.is_playing);
         timeline.start();
@@ -184,7 +203,7 @@ mod tests {
             effects: vec![effect],
         }];
 
-        let mut timeline = LightingTimeline::new(cues);
+        let mut timeline = LightingTimeline::new_with_cues(cues);
         timeline.start();
 
         // Test that the first cue triggers at the right time
@@ -229,7 +248,7 @@ mod tests {
             },
         ];
 
-        let mut timeline = LightingTimeline::new(cues);
+        let mut timeline = LightingTimeline::new_with_cues(cues);
         timeline.start();
 
         // Verify cues are processed in chronological order
@@ -246,7 +265,7 @@ mod tests {
     #[test]
     fn test_timeline_edge_cases() {
         // Test with empty timeline
-        let timeline = LightingTimeline::new(vec![]);
+        let timeline = LightingTimeline::new_with_cues(vec![]);
         assert_eq!(timeline.cues.len(), 0);
 
         // Test with cues at the same time
@@ -277,7 +296,7 @@ mod tests {
             },
         ];
 
-        let mut timeline = LightingTimeline::new(cues);
+        let mut timeline = LightingTimeline::new_with_cues(cues);
         timeline.start();
 
         // Both cues should trigger at the same time
@@ -327,7 +346,7 @@ mod tests {
             },
         ];
 
-        let mut timeline = LightingTimeline::new(cues);
+        let mut timeline = LightingTimeline::new_with_cues(cues);
 
         // Start the timeline and process some cues
         timeline.start();

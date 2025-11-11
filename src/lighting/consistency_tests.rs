@@ -17,6 +17,7 @@
 #[cfg(test)]
 mod tests {
     use crate::lighting::effects::*;
+    use crate::lighting::effects::{TempoAwareFrequency, TempoAwareSpeed};
     use crate::lighting::engine::EffectEngine;
     use std::collections::HashMap;
     use std::time::Duration;
@@ -313,7 +314,7 @@ mod tests {
             "cc_rgb".to_string(),
             EffectType::ColorCycle {
                 colors: colors.clone(),
-                speed: 1.0,
+                speed: TempoAwareSpeed::Fixed(1.0),
                 direction: CycleDirection::Forward,
             },
             vec!["fx_rgb".to_string()],
@@ -329,7 +330,7 @@ mod tests {
             "cc_dim".to_string(),
             EffectType::ColorCycle {
                 colors,
-                speed: 1.0,
+                speed: TempoAwareSpeed::Fixed(1.0),
                 direction: CycleDirection::Forward,
             },
             vec!["fx_dim".to_string()],
@@ -384,7 +385,7 @@ mod tests {
         let mut s1 = EffectInstance::new(
             "strobe_rgb".to_string(),
             EffectType::Strobe {
-                frequency: 10.0,
+                frequency: TempoAwareFrequency::Fixed(10.0),
                 duration: Some(Duration::from_secs(2)),
             },
             vec!["fx_rgb".to_string()],
@@ -399,7 +400,7 @@ mod tests {
         let mut s2 = EffectInstance::new(
             "strobe_dim".to_string(),
             EffectType::Strobe {
-                frequency: 10.0,
+                frequency: TempoAwareFrequency::Fixed(10.0),
                 duration: Some(Duration::from_secs(2)),
             },
             vec!["fx_dim".to_string()],
@@ -456,7 +457,7 @@ mod tests {
             EffectType::Pulse {
                 base_level: 0.2,
                 pulse_amplitude: 0.8,
-                frequency: 1.0,
+                frequency: TempoAwareFrequency::Fixed(1.0),
                 duration: Some(Duration::from_secs(2)),
             },
             vec!["fx_rgb".to_string()],
@@ -473,7 +474,7 @@ mod tests {
             EffectType::Pulse {
                 base_level: 0.2,
                 pulse_amplitude: 0.8,
-                frequency: 1.0,
+                frequency: TempoAwareFrequency::Fixed(1.0),
                 duration: Some(Duration::from_secs(2)),
             },
             vec!["fx_dim".to_string()],
@@ -529,7 +530,7 @@ mod tests {
             "chase_rgb".to_string(),
             EffectType::Chase {
                 pattern: pattern.clone(),
-                speed: 2.0,
+                speed: TempoAwareSpeed::Fixed(2.0),
                 direction: ChaseDirection::LeftToRight,
             },
             vec!["fx_rgb".to_string()],
@@ -545,7 +546,7 @@ mod tests {
             "chase_dim".to_string(),
             EffectType::Chase {
                 pattern,
-                speed: 2.0,
+                speed: TempoAwareSpeed::Fixed(2.0),
                 direction: ChaseDirection::LeftToRight,
             },
             vec!["fx_dim".to_string()],
@@ -583,7 +584,7 @@ mod tests {
         let mut r1 = EffectInstance::new(
             "rainbow_rgb".to_string(),
             EffectType::Rainbow {
-                speed: 1.0,
+                speed: TempoAwareSpeed::Fixed(1.0),
                 saturation: 1.0,
                 brightness: 1.0,
             },
@@ -599,7 +600,7 @@ mod tests {
         let mut r2 = EffectInstance::new(
             "rainbow_dim".to_string(),
             EffectType::Rainbow {
-                speed: 1.0,
+                speed: TempoAwareSpeed::Fixed(1.0),
                 saturation: 1.0,
                 brightness: 1.0,
             },
@@ -654,7 +655,7 @@ mod tests {
                         "cc_rgb_param".to_string(),
                         EffectType::ColorCycle {
                             colors: colors.clone(),
-                            speed,
+                            speed: TempoAwareSpeed::Fixed(speed),
                             direction,
                         },
                         vec!["fx_rgb".to_string()],
@@ -670,7 +671,7 @@ mod tests {
                         "cc_dim_param".to_string(),
                         EffectType::ColorCycle {
                             colors: colors.clone(),
-                            speed,
+                            speed: TempoAwareSpeed::Fixed(speed),
                             direction,
                         },
                         vec!["fx_dim".to_string()],
@@ -729,7 +730,7 @@ mod tests {
             let mut s1 = EffectInstance::new(
                 "strobe_rgb_param".to_string(),
                 EffectType::Strobe {
-                    frequency: f,
+                    frequency: TempoAwareFrequency::Fixed(f),
                     duration: Some(Duration::from_secs(1)),
                 },
                 vec!["fx_rgb".to_string()],
@@ -743,7 +744,7 @@ mod tests {
             let mut s2 = EffectInstance::new(
                 "strobe_dim_param".to_string(),
                 EffectType::Strobe {
-                    frequency: f,
+                    frequency: TempoAwareFrequency::Fixed(f),
                     duration: Some(Duration::from_secs(1)),
                 },
                 vec!["fx_dim".to_string()],
@@ -804,7 +805,7 @@ mod tests {
                         EffectType::Pulse {
                             base_level: base,
                             pulse_amplitude: pulse,
-                            frequency: freq,
+                            frequency: TempoAwareFrequency::Fixed(freq),
                             duration: Some(Duration::from_secs(1)),
                         },
                         vec!["fx_rgb".to_string()],
@@ -820,7 +821,7 @@ mod tests {
                         EffectType::Pulse {
                             base_level: base,
                             pulse_amplitude: pulse,
-                            frequency: freq,
+                            frequency: TempoAwareFrequency::Fixed(freq),
                             duration: Some(Duration::from_secs(1)),
                         },
                         vec!["fx_dim".to_string()],
@@ -886,7 +887,7 @@ mod tests {
                         "chase_rgb_param".to_string(),
                         EffectType::Chase {
                             pattern: pat.clone(),
-                            speed,
+                            speed: TempoAwareSpeed::Fixed(speed),
                             direction: dir,
                         },
                         vec!["fx_rgb".to_string()],
@@ -901,7 +902,7 @@ mod tests {
                         "chase_dim_param".to_string(),
                         EffectType::Chase {
                             pattern: pat.clone(),
-                            speed,
+                            speed: TempoAwareSpeed::Fixed(speed),
                             direction: dir,
                         },
                         vec!["fx_dim".to_string()],
@@ -946,7 +947,7 @@ mod tests {
                     let mut r1 = EffectInstance::new(
                         "rainbow_rgb_param".to_string(),
                         EffectType::Rainbow {
-                            speed,
+                            speed: TempoAwareSpeed::Fixed(speed),
                             saturation: sat,
                             brightness: bri,
                         },
@@ -961,7 +962,7 @@ mod tests {
                     let mut r2 = EffectInstance::new(
                         "rainbow_dim_param".to_string(),
                         EffectType::Rainbow {
-                            speed,
+                            speed: TempoAwareSpeed::Fixed(speed),
                             saturation: sat,
                             brightness: bri,
                         },
@@ -1097,7 +1098,7 @@ mod tests {
         let mut r_low = EffectInstance::new(
             "r_low".to_string(),
             EffectType::Rainbow {
-                speed: 0.1,
+                speed: TempoAwareSpeed::Fixed(0.1),
                 saturation: 1.0,
                 brightness: 1.0,
             },
@@ -1116,7 +1117,7 @@ mod tests {
         let mut r_high = EffectInstance::new(
             "r_high".to_string(),
             EffectType::Rainbow {
-                speed: 10.0,
+                speed: TempoAwareSpeed::Fixed(10.0),
                 saturation: 1.0,
                 brightness: 1.0,
             },

@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod layering_behavior_tests {
     use super::super::effects::*;
+    use super::super::effects::{TempoAwareFrequency, TempoAwareSpeed};
     use super::super::engine::EffectEngine;
     use std::collections::HashMap;
     use std::time::Duration;
@@ -554,6 +555,7 @@ mod layering_behavior_tests {
 #[cfg(test)]
 mod layering_show_regression {
     use super::super::effects::*;
+    use super::super::effects::{TempoAwareFrequency, TempoAwareSpeed};
     use super::super::engine::EffectEngine;
     use std::collections::HashMap;
     use std::time::Duration;
@@ -724,6 +726,7 @@ mod layering_show_regression {
 #[cfg(test)]
 mod tests {
     use super::super::effects::*;
+    use super::super::effects::{TempoAwareFrequency, TempoAwareSpeed};
     use super::super::engine::EffectEngine;
     use super::super::parser::parse_light_shows;
     use super::super::timeline::LightingTimeline;
@@ -1094,7 +1097,7 @@ mod tests {
         let strobe_effect = create_effect_with_layering(
             "strobe".to_string(),
             EffectType::Strobe {
-                frequency: 1.0, // 1 Hz for easy testing
+                frequency: TempoAwareFrequency::Fixed(1.0), // 1 Hz for easy testing
                 duration: None,
             },
             vec!["test_fixture".to_string()],
@@ -1213,7 +1216,7 @@ mod tests {
         let strobe_effect = create_effect_with_layering(
             "strobe".to_string(),
             EffectType::Strobe {
-                frequency: 2.0, // 2 Hz strobe
+                frequency: TempoAwareFrequency::Fixed(2.0), // 2 Hz strobe
                 duration: None,
             },
             vec!["rgb_par_1".to_string()],
@@ -1275,6 +1278,7 @@ mod tests {
     #[test]
     fn test_dimmer_without_dedicated_channel() {
         use super::super::effects::*;
+        use super::super::effects::{TempoAwareFrequency, TempoAwareSpeed};
         use super::super::engine::EffectEngine;
 
         // Create a fixture without a dedicated dimmer channel
@@ -1384,6 +1388,7 @@ mod tests {
     #[test]
     fn test_dimmer_precedence_and_selective_dimming() {
         use super::super::effects::*;
+        use super::super::effects::{TempoAwareFrequency, TempoAwareSpeed};
         use super::super::engine::EffectEngine;
 
         // Create a fixture with RGB channels only (no dedicated dimmer)
@@ -1652,6 +1657,7 @@ mod tests {
     #[test]
     fn test_blend_mode_loss_debug() {
         use super::super::effects::*;
+        use super::super::effects::{TempoAwareFrequency, TempoAwareSpeed};
         use super::super::engine::EffectEngine;
         use super::super::parser::parse_light_shows;
         use std::collections::HashMap;
@@ -1769,6 +1775,7 @@ mod tests {
     #[test]
     fn test_timeline_blend_mode_loss() {
         use super::super::effects::*;
+        use super::super::effects::{TempoAwareFrequency, TempoAwareSpeed};
         use super::super::engine::EffectEngine;
         use super::super::parser::parse_light_shows;
         use super::super::timeline::LightingTimeline;
@@ -1806,7 +1813,7 @@ mod tests {
         );
 
         // Create timeline from the show
-        let mut timeline = LightingTimeline::new(show.cues.clone());
+        let mut timeline = LightingTimeline::new_with_cues(show.cues.clone());
         println!("✅ Created timeline with {} cues", show.cues.len());
 
         // Create effect engine and register fixtures
@@ -1938,6 +1945,7 @@ mod tests {
     #[test]
     fn test_multiple_effects_simultaneous() {
         use super::super::effects::*;
+        use super::super::effects::{TempoAwareFrequency, TempoAwareSpeed};
         use super::super::engine::EffectEngine;
 
         // Initialize tracing
@@ -2126,6 +2134,7 @@ mod tests {
     #[test]
     fn test_astera_pixelblock_real_behavior() {
         use super::super::effects::*;
+        use super::super::effects::{TempoAwareFrequency, TempoAwareSpeed};
         use super::super::engine::EffectEngine;
 
         // Initialize tracing
@@ -2268,6 +2277,7 @@ mod tests {
     #[test]
     fn test_static_replace_blend_mode() {
         use super::super::effects::*;
+        use super::super::effects::{TempoAwareFrequency, TempoAwareSpeed};
         use super::super::engine::EffectEngine;
 
         // Initialize tracing
@@ -2355,6 +2365,7 @@ mod tests {
     #[test]
     fn test_static_with_dimmer_parameter() {
         use super::super::effects::*;
+        use super::super::effects::{TempoAwareFrequency, TempoAwareSpeed};
         use super::super::engine::EffectEngine;
 
         // Initialize tracing
@@ -3296,6 +3307,7 @@ mod tests {
     #[test]
     fn test_real_layering_show_file() {
         use super::super::effects::*;
+        use super::super::effects::{TempoAwareFrequency, TempoAwareSpeed};
         use super::super::engine::EffectEngine;
         use super::super::parser::parse_light_shows;
 
@@ -3417,6 +3429,7 @@ mod tests {
     #[test]
     fn test_layering_show_effect_execution() {
         use super::super::effects::*;
+        use super::super::effects::{TempoAwareFrequency, TempoAwareSpeed};
         use super::super::engine::EffectEngine;
         use super::super::parser::parse_light_shows;
 
@@ -3831,6 +3844,7 @@ mod tests {
     #[test]
     fn test_custom_rgb_dimming() {
         use super::super::effects::*;
+        use super::super::effects::{TempoAwareFrequency, TempoAwareSpeed};
         use super::super::engine::EffectEngine;
 
         // Create a fixture with RGB channels only (no dedicated dimmer)
@@ -4128,7 +4142,7 @@ mod tests {
             EffectType::Pulse {
                 base_level: 0.5,
                 pulse_amplitude: 0.3,
-                frequency: 2.0,
+                frequency: TempoAwareFrequency::Fixed(2.0),
                 duration: None,
             },
             vec!["test_fixture".to_string()],
@@ -4382,7 +4396,7 @@ mod tests {
             EffectType::Pulse {
                 base_level: 0.5,
                 pulse_amplitude: 0.3,
-                frequency: 2.0,
+                frequency: TempoAwareFrequency::Fixed(2.0),
                 duration: None,
             },
             vec!["test_fixture".to_string()],
@@ -4523,7 +4537,7 @@ mod tests {
                         w: None,
                     },
                 ],
-                speed: 1.0,
+                speed: TempoAwareSpeed::Fixed(1.0),
                 direction: CycleDirection::Forward,
             },
             vec!["test_fixture".to_string()],
@@ -4543,7 +4557,7 @@ mod tests {
         let rainbow_effect = create_effect_with_layering(
             "rainbow_effect".to_string(),
             EffectType::Rainbow {
-                speed: 1.0,
+                speed: TempoAwareSpeed::Fixed(1.0),
                 saturation: 1.0,
                 brightness: 1.0,
             },
@@ -4579,7 +4593,7 @@ mod tests {
         let strobe1 = create_effect_with_layering(
             "strobe1".to_string(),
             EffectType::Strobe {
-                frequency: 2.0,
+                frequency: TempoAwareFrequency::Fixed(2.0),
                 duration: None,
             },
             vec!["test_fixture".to_string()],
@@ -4590,7 +4604,7 @@ mod tests {
         let strobe2 = create_effect_with_layering(
             "strobe2".to_string(),
             EffectType::Strobe {
-                frequency: 4.0,
+                frequency: TempoAwareFrequency::Fixed(4.0),
                 duration: None,
             },
             vec!["test_fixture".to_string()],
@@ -4611,7 +4625,7 @@ mod tests {
             "chase1".to_string(),
             EffectType::Chase {
                 pattern: ChasePattern::Linear,
-                speed: 1.0,
+                speed: TempoAwareSpeed::Fixed(1.0),
                 direction: ChaseDirection::LeftToRight,
             },
             vec!["test_fixture".to_string()],
@@ -4623,7 +4637,7 @@ mod tests {
             "chase2".to_string(),
             EffectType::Chase {
                 pattern: ChasePattern::Snake,
-                speed: 2.0,
+                speed: TempoAwareSpeed::Fixed(2.0),
                 direction: ChaseDirection::RightToLeft,
             },
             vec!["test_fixture".to_string()],
@@ -4658,7 +4672,7 @@ mod tests {
             EffectType::Pulse {
                 base_level: 0.5,
                 pulse_amplitude: 0.3,
-                frequency: 2.0,
+                frequency: TempoAwareFrequency::Fixed(2.0),
                 duration: None,
             },
             vec!["test_fixture".to_string()],
@@ -4700,7 +4714,7 @@ mod tests {
             "chase_effect".to_string(),
             EffectType::Chase {
                 pattern: ChasePattern::Linear,
-                speed: 1.0,
+                speed: TempoAwareSpeed::Fixed(1.0),
                 direction: ChaseDirection::LeftToRight,
             },
             vec!["rgb_fixture".to_string()],
@@ -4760,7 +4774,7 @@ mod tests {
             "chase_effect".to_string(),
             EffectType::Chase {
                 pattern: ChasePattern::Linear,
-                speed: 1.0,
+                speed: TempoAwareSpeed::Fixed(1.0),
                 direction: ChaseDirection::LeftToRight,
             },
             vec!["rgb_dimmer_fixture".to_string()],
@@ -4826,7 +4840,7 @@ mod tests {
         let strobe_effect = create_effect_with_layering(
             "strobe_effect".to_string(),
             EffectType::Strobe {
-                frequency: 2.0, // 2 Hz for easy testing
+                frequency: TempoAwareFrequency::Fixed(2.0), // 2 Hz for easy testing
                 duration: None,
             },
             vec!["rgb_only_fixture".to_string()],
@@ -4897,7 +4911,7 @@ mod tests {
         let strobe_effect = create_effect_with_layering(
             "strobe_effect".to_string(),
             EffectType::Strobe {
-                frequency: 4.0, // 4 Hz for easy testing
+                frequency: TempoAwareFrequency::Fixed(4.0), // 4 Hz for easy testing
                 duration: None,
             },
             vec!["dimmer_only_fixture".to_string()],
@@ -4977,7 +4991,7 @@ mod tests {
         let strobe_effect = create_effect_with_layering(
             "strobe_effect".to_string(),
             EffectType::Strobe {
-                frequency: 2.0, // 2 Hz
+                frequency: TempoAwareFrequency::Fixed(2.0), // 2 Hz
                 duration: None,
             },
             vec!["rgb_fixture".to_string()],
@@ -5035,7 +5049,7 @@ mod tests {
         let strobe_effect = create_effect_with_layering(
             "strobe_effect".to_string(),
             EffectType::Strobe {
-                frequency: 2.0, // 2 Hz
+                frequency: TempoAwareFrequency::Fixed(2.0), // 2 Hz
                 duration: None,
             },
             vec!["rgb_fixture".to_string()],
@@ -5110,7 +5124,7 @@ mod tests {
         let strobe_effect = create_effect_with_layering(
             "strobe_off".to_string(),
             EffectType::Strobe {
-                frequency: 0.0, // Off
+                frequency: TempoAwareFrequency::Fixed(0.0), // Off
                 duration: None,
             },
             vec!["rgb_fixture".to_string()],
@@ -5161,7 +5175,7 @@ mod tests {
             "chase_linear_ltr".to_string(),
             EffectType::Chase {
                 pattern: ChasePattern::Linear,
-                speed: 2.0, // 2 Hz for easy testing
+                speed: TempoAwareSpeed::Fixed(2.0), // 2 Hz for easy testing
                 direction: ChaseDirection::LeftToRight,
             },
             vec![
@@ -5230,7 +5244,7 @@ mod tests {
             "chase_linear_rtl".to_string(),
             EffectType::Chase {
                 pattern: ChasePattern::Linear,
-                speed: 2.0, // 2 Hz for easy testing
+                speed: TempoAwareSpeed::Fixed(2.0), // 2 Hz for easy testing
                 direction: ChaseDirection::RightToLeft,
             },
             vec![
@@ -5294,7 +5308,7 @@ mod tests {
             "chase_snake".to_string(),
             EffectType::Chase {
                 pattern: ChasePattern::Snake,
-                speed: 2.0, // 2 Hz for easy testing
+                speed: TempoAwareSpeed::Fixed(2.0), // 2 Hz for easy testing
                 direction: ChaseDirection::LeftToRight,
             },
             vec![
@@ -5376,7 +5390,7 @@ mod tests {
             "chase_random".to_string(),
             EffectType::Chase {
                 pattern: ChasePattern::Random,
-                speed: 2.0,                             // 2 Hz for easy testing
+                speed: TempoAwareSpeed::Fixed(2.0), // 2 Hz for easy testing
                 direction: ChaseDirection::LeftToRight, // Direction doesn't matter for random
             },
             vec![
@@ -5436,7 +5450,7 @@ mod tests {
             "chase_ttb".to_string(),
             EffectType::Chase {
                 pattern: ChasePattern::Linear,
-                speed: 2.0,
+                speed: TempoAwareSpeed::Fixed(2.0),
                 direction: ChaseDirection::TopToBottom,
             },
             vec![
@@ -5485,7 +5499,7 @@ mod tests {
             "chase_cw".to_string(),
             EffectType::Chase {
                 pattern: ChasePattern::Linear,
-                speed: 2.0,
+                speed: TempoAwareSpeed::Fixed(2.0),
                 direction: ChaseDirection::Clockwise,
             },
             vec![
@@ -5534,7 +5548,7 @@ mod tests {
             "chase_slow".to_string(),
             EffectType::Chase {
                 pattern: ChasePattern::Linear,
-                speed: 0.5, // 0.5 Hz - 2 second cycle
+                speed: TempoAwareSpeed::Fixed(0.5), // 0.5 Hz - 2 second cycle
                 direction: ChaseDirection::LeftToRight,
             },
             vec![
@@ -5589,7 +5603,7 @@ mod tests {
             "chase_single".to_string(),
             EffectType::Chase {
                 pattern: ChasePattern::Linear,
-                speed: 2.0,
+                speed: TempoAwareSpeed::Fixed(2.0),
                 direction: ChaseDirection::LeftToRight,
             },
             vec!["single_fixture".to_string()],
@@ -5637,7 +5651,7 @@ mod tests {
             "chase_rgb".to_string(),
             EffectType::Chase {
                 pattern: ChasePattern::Linear,
-                speed: 2.0,
+                speed: TempoAwareSpeed::Fixed(2.0),
                 direction: ChaseDirection::LeftToRight,
             },
             vec![
@@ -5938,7 +5952,7 @@ mod tests {
                         w: None,
                     },
                 ],
-                speed: 1.0,
+                speed: TempoAwareSpeed::Fixed(1.0),
                 direction: CycleDirection::Forward,
             },
             vec!["back_wash".to_string()],
@@ -5968,7 +5982,7 @@ mod tests {
             EffectType::Pulse {
                 base_level: 0.5,
                 pulse_amplitude: 0.5,
-                frequency: 4.0,
+                frequency: TempoAwareFrequency::Fixed(4.0),
                 duration: Some(Duration::from_secs(7)), // 1s up + 5s hold + 1s down
             },
             vec!["back_wash".to_string()],
@@ -6488,7 +6502,7 @@ mod tests {
                         w: None,
                     }, // Blue
                 ],
-                speed: 1.0, // 1 cycle per second
+                speed: TempoAwareSpeed::Fixed(1.0), // 1 cycle per second
                 direction: CycleDirection::Forward,
             },
             vec!["test_fixture".to_string()],
@@ -6541,7 +6555,7 @@ mod tests {
         let mut strobe_effect = create_effect_with_timing(
             "strobe_test".to_string(),
             EffectType::Strobe {
-                frequency: 16.0, // 16 Hz (should give value > 200)
+                frequency: TempoAwareFrequency::Fixed(16.0), // 16 Hz (should give value > 200)
                 duration: Some(Duration::from_secs(5)),
             },
             vec!["test_fixture".to_string()],
@@ -6598,7 +6612,7 @@ mod tests {
             "chase_test".to_string(),
             EffectType::Chase {
                 pattern: ChasePattern::Linear,
-                speed: 1.0, // 1 cycle per second
+                speed: TempoAwareSpeed::Fixed(1.0), // 1 cycle per second
                 direction: ChaseDirection::LeftToRight,
             },
             vec![
@@ -6670,7 +6684,7 @@ mod tests {
             EffectType::Pulse {
                 base_level: 0.5,
                 pulse_amplitude: 0.5,
-                frequency: 2.0, // 2 Hz
+                frequency: TempoAwareFrequency::Fixed(2.0), // 2 Hz
                 duration: Some(Duration::from_secs(5)),
             },
             vec!["test_fixture".to_string()],
@@ -6729,7 +6743,7 @@ mod tests {
         let mut rainbow_effect = create_effect_with_timing(
             "rainbow_test".to_string(),
             EffectType::Rainbow {
-                speed: 1.0, // 1 cycle per second
+                speed: TempoAwareSpeed::Fixed(1.0), // 1 cycle per second
                 saturation: 1.0,
                 brightness: 1.0,
             },
@@ -7184,7 +7198,7 @@ mod tests {
             EffectType::Pulse {
                 base_level: 0.5,
                 pulse_amplitude: 0.3,
-                frequency: 2.0,
+                frequency: TempoAwareFrequency::Fixed(2.0),
                 duration: None,
             },
             vec!["fixture1".to_string()],
@@ -7195,7 +7209,7 @@ mod tests {
         let foreground_strobe = create_effect_with_layering(
             "foreground_strobe".to_string(),
             EffectType::Strobe {
-                frequency: 2.0,
+                frequency: TempoAwareFrequency::Fixed(2.0),
                 duration: None,
             },
             vec!["fixture2".to_string()],
@@ -7235,7 +7249,7 @@ mod tests {
         let conflicting_strobe = create_effect_with_layering(
             "conflicting_strobe".to_string(),
             EffectType::Strobe {
-                frequency: 4.0,
+                frequency: TempoAwareFrequency::Fixed(4.0),
                 duration: None,
             },
             vec!["fixture2".to_string()],

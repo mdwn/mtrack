@@ -20,6 +20,7 @@ mod tests {
     use std::time::Duration;
 
     use super::super::effects::*;
+    use super::super::effects::{TempoAwareFrequency, TempoAwareSpeed};
     use super::super::engine::EffectEngine;
 
     /// Create an RGB-only fixture (no dedicated dimmer)
@@ -156,7 +157,7 @@ mod tests {
             EffectType::Pulse {
                 base_level: 0.5,
                 pulse_amplitude: 0.5,
-                frequency: 1.0, // 1 Hz
+                frequency: TempoAwareFrequency::Fixed(1.0), // 1 Hz
                 duration: None,
             },
             vec![
@@ -217,7 +218,7 @@ mod tests {
         let strobe_effect = EffectInstance::new(
             "strobe_test".to_string(),
             EffectType::Strobe {
-                frequency: 2.0, // 2 Hz
+                frequency: TempoAwareFrequency::Fixed(2.0), // 2 Hz
                 duration: None,
             },
             vec![
@@ -280,7 +281,7 @@ mod tests {
             "chase_test".to_string(),
             EffectType::Chase {
                 pattern: ChasePattern::Linear,
-                speed: 1.0,
+                speed: TempoAwareSpeed::Fixed(1.0),
                 direction: ChaseDirection::LeftToRight,
             },
             vec![
