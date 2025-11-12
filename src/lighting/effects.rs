@@ -15,6 +15,102 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+/// Tempo-aware speed specification that can adapt to tempo changes
+#[derive(Debug, Clone, PartialEq)]
+pub enum TempoAwareSpeed {
+    /// Fixed speed in cycles per second (not tempo-aware)
+    Fixed(f64),
+    /// Speed specified in measures (tempo-aware)
+    Measures(f64),
+    /// Speed specified in beats (tempo-aware)
+    Beats(f64),
+    /// Speed specified in seconds (fixed, not tempo-aware)
+    Seconds(f64),
+}
+
+impl TempoAwareSpeed {
+    /// Get the current speed in cycles per second, using tempo map if available
+    pub fn to_cycles_per_second(
+        &self,
+        tempo_map: Option<&crate::lighting::tempo::TempoMap>,
+        at_time: Duration,
+    ) -> f64 {
+        match self {
+            TempoAwareSpeed::Fixed(speed) => *speed,
+            TempoAwareSpeed::Seconds(duration) => 1.0 / duration,
+            TempoAwareSpeed::Measures(measures) => {
+                if let Some(tm) = tempo_map {
+                    let duration = tm.measures_to_duration(*measures, at_time);
+                    1.0 / duration.as_secs_f64()
+                } else {
+                    // Fallback: assume 120 BPM, 4/4 time
+                    let beats = measures * 4.0;
+                    let duration_secs = beats * 60.0 / 120.0;
+                    1.0 / duration_secs
+                }
+            }
+            TempoAwareSpeed::Beats(beats) => {
+                if let Some(tm) = tempo_map {
+                    let duration = tm.beats_to_duration(*beats, at_time);
+                    1.0 / duration.as_secs_f64()
+                } else {
+                    // Fallback: assume 120 BPM
+                    let duration_secs = beats * 60.0 / 120.0;
+                    1.0 / duration_secs
+                }
+            }
+        }
+    }
+}
+
+/// Tempo-aware frequency specification that can adapt to tempo changes
+#[derive(Debug, Clone, PartialEq)]
+pub enum TempoAwareFrequency {
+    /// Fixed frequency in Hz (not tempo-aware)
+    Fixed(f64),
+    /// Frequency specified in measures (tempo-aware)
+    Measures(f64),
+    /// Frequency specified in beats (tempo-aware)
+    Beats(f64),
+    /// Frequency specified in seconds (fixed, not tempo-aware)
+    Seconds(f64),
+}
+
+impl TempoAwareFrequency {
+    /// Get the current frequency in Hz, using tempo map if available
+    pub fn to_hz(
+        &self,
+        tempo_map: Option<&crate::lighting::tempo::TempoMap>,
+        at_time: Duration,
+    ) -> f64 {
+        match self {
+            TempoAwareFrequency::Fixed(freq) => *freq,
+            TempoAwareFrequency::Seconds(duration) => 1.0 / duration,
+            TempoAwareFrequency::Measures(measures) => {
+                if let Some(tm) = tempo_map {
+                    let duration = tm.measures_to_duration(*measures, at_time);
+                    1.0 / duration.as_secs_f64()
+                } else {
+                    // Fallback: assume 120 BPM, 4/4 time
+                    let beats = measures * 4.0;
+                    let duration_secs = beats * 60.0 / 120.0;
+                    1.0 / duration_secs
+                }
+            }
+            TempoAwareFrequency::Beats(beats) => {
+                if let Some(tm) = tempo_map {
+                    let duration = tm.beats_to_duration(*beats, at_time);
+                    1.0 / duration.as_secs_f64()
+                } else {
+                    // Fallback: assume 120 BPM
+                    let duration_secs = beats * 60.0 / 120.0;
+                    1.0 / duration_secs
+                }
+            }
+        }
+    }
+}
+
 /// Core effect types for lighting
 #[derive(Debug, Clone)]
 pub enum EffectType {
@@ -27,13 +123,13 @@ pub enum EffectType {
     /// Color cycle effect
     ColorCycle {
         colors: Vec<Color>,
-        speed: f64, // cycles per second
+        speed: TempoAwareSpeed, // cycles per second (can be tempo-aware)
         direction: CycleDirection,
     },
 
     /// Strobe effect
     Strobe {
-        frequency: f64, // Hz
+        frequency: TempoAwareFrequency, // Hz (can be tempo-aware)
         duration: Option<Duration>,
     },
 
@@ -48,13 +144,13 @@ pub enum EffectType {
     /// Chase effect that moves across fixtures
     Chase {
         pattern: ChasePattern,
-        speed: f64,
+        speed: TempoAwareSpeed, // cycles per second (can be tempo-aware)
         direction: ChaseDirection,
     },
 
     /// Rainbow effect
     Rainbow {
-        speed: f64,
+        speed: TempoAwareSpeed, // cycles per second (can be tempo-aware)
         saturation: f64,
         brightness: f64,
     },
@@ -63,7 +159,7 @@ pub enum EffectType {
     Pulse {
         base_level: f64,
         pulse_amplitude: f64,
-        frequency: f64,
+        frequency: TempoAwareFrequency, // Hz (can be tempo-aware)
         duration: Option<Duration>,
     },
 }

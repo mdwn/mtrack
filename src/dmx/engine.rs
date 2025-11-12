@@ -201,7 +201,12 @@ impl Engine {
             }
 
             if !all_shows.is_empty() {
-                let timeline = LightingTimeline::new_from_shows(all_shows);
+                let timeline = LightingTimeline::new(all_shows);
+                // Set the tempo map on the effect engine if the timeline has one
+                if let Some(tempo_map) = timeline.tempo_map() {
+                    let mut effect_engine = dmx_engine.effect_engine.lock().unwrap();
+                    effect_engine.set_tempo_map(Some(tempo_map.clone()));
+                }
                 {
                     let mut current_timeline = dmx_engine.current_song_timeline.lock().unwrap();
                     *current_timeline = Some(timeline);

@@ -57,6 +57,19 @@ show "Measure Timing Demo" {
     @10/1
     front_wash: cycle color: "green", color: "cyan", duration: 2s, loop: loop, layer: background
     
+    # Example: Red-green-blue pattern repeating every measure using measure-based speed
+    # With 3 colors and speed: 1measure, each color will last 1/3 of a measure
+    @12/1
+    front_wash: cycle color: "red", color: "green", color: "blue", speed: 1measure, loop: loop, layer: background
+    
+    # Example: Pattern repeating every 2 beats (faster)
+    @14/1
+    back_lights: cycle color: "yellow", color: "orange", speed: 2beats, loop: loop, layer: midground
+    
+    # Example: Strobe flashing once per beat using measure-based frequency
+    @15/1
+    back_lights: strobe frequency: 1beat, duration: 4measures, layer: foreground, blend_mode: add
+    
     # Section 3 - gradual tempo increase to 160 BPM (over 4 beats starting at measure 16)
     @16/1
     front_wash: static color: "purple", dimmer: 100%, layer: background, blend_mode: replace
