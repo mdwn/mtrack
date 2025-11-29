@@ -28,6 +28,8 @@ mod util;
 
 use crate::playlist::Playlist;
 use clap::{crate_version, Parser, Subcommand};
+use lighting::parser::parse_light_shows;
+use lighting::validation::validate_groups;
 use player::Player;
 use proto::player::v1::player_service_client::PlayerServiceClient;
 use proto::player::v1::{
@@ -167,12 +169,131 @@ enum Commands {
     },
     /// Prints a systemd service definition to stdout.
     Systemd {},
+    /// Verifies the syntax of a light show file.
+    VerifyLightShow {
+        /// The path to the light show file to verify.
+        show_path: String,
+        /// Optional path to mtrack.yaml config file to validate group/fixture names.
+        #[arg(short, long)]
+        config: Option<String>,
+    },
+}
+
+/// Verifies a light show file, optionally validating against a config file.
+fn verify_light_show(show_path: &str, config_path: Option<&str>) -> Result<(), Box<dyn Error>> {
+    let path = Path::new(show_path);
+
+    if !path.exists() {
+        return Err(format!("Light show file not found: {}", show_path).into());
+    }
+
+    // Read and parse the light show
+    let content = std::fs::read_to_string(path)?;
+    let shows = match parse_light_shows(&content) {
+        Ok(shows) => shows,
+        Err(e) => {
+            eprintln!("❌ Syntax error in light show:");
+            eprintln!("{}", e);
+            return Err(e);
+        }
+    };
+
+    if shows.is_empty() {
+        eprintln!("⚠️  Warning: No shows found in file");
+        return Ok(());
+    }
+
+    println!("✅ Light show syntax is valid");
+    println!("   Found {} show(s):", shows.len());
+    for (name, show) in &shows {
+        println!("   - \"{}\" ({} cues)", name, show.cues.len());
+    }
+
+    // Get lighting config if provided
+    let (lighting_config, valid_groups_count, valid_fixtures_count) = if let Some(config_path) =
+        config_path
+    {
+        let config_file = Path::new(config_path);
+        if !config_file.exists() {
+            eprintln!("⚠️  Warning: Config file not found: {}", config_path);
+            (None, 0, 0)
+        } else {
+            match config::Player::deserialize(config_file) {
+                Ok(player_config) => {
+                    if let Some(dmx) = player_config.dmx() {
+                        if let Some(lighting) = dmx.lighting() {
+                            let groups_count = lighting.groups().len();
+                            let fixtures_count = lighting.fixtures().len();
+                            // Clone the lighting config to own it
+                            (Some(lighting.clone()), groups_count, fixtures_count)
+                        } else {
+                            eprintln!("⚠️  Warning: No lighting configuration found in DMX config");
+                            (None, 0, 0)
+                        }
+                    } else {
+                        eprintln!("⚠️  Warning: No DMX configuration found in config file");
+                        (None, 0, 0)
+                    }
+                }
+                Err(e) => {
+                    eprintln!("⚠️  Warning: Failed to parse config file: {}", e);
+                    (None, 0, 0)
+                }
+            }
+        }
+    } else {
+        (None, 0, 0)
+    };
+
+    // Use validation module to check groups
+    let validation_result = validate_groups(&shows, lighting_config.as_ref());
+
+    if validation_result.groups.is_empty() {
+        println!("⚠️  Warning: No fixture groups found in show");
+    } else {
+        println!("\n   Groups used in show:");
+        let mut sorted_groups: Vec<String> = validation_result.groups.iter().cloned().collect();
+        sorted_groups.sort();
+        for group in &sorted_groups {
+            println!("   - {}", group);
+        }
+    }
+
+    // Report validation results
+    if lighting_config.is_some() {
+        if !validation_result.is_valid() {
+            eprintln!("\n❌ Invalid groups/fixtures referenced in show:");
+            for group in &validation_result.invalid_groups {
+                eprintln!("   - {} (not found in config)", group);
+            }
+            return Err(format!(
+                "Show references {} invalid group(s)",
+                validation_result.invalid_groups.len()
+            )
+            .into());
+        } else {
+            println!("\n✅ All groups/fixtures are valid in config");
+            println!(
+                "   Validated against {} group(s) and {} fixture(s) in config",
+                valid_groups_count, valid_fixtures_count
+            );
+        }
+    }
+
+    Ok(())
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() {
     tracing_subscriber::fmt::init();
 
+    if let Err(e) = run().await {
+        eprintln!("Error: {}", e);
+        std::process::exit(1);
+    }
+}
+
+async fn run() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
 
     match cli.command {
@@ -458,6 +579,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         .expect("unable to convert current executable path to string")
                 )
             )
+        }
+        Commands::VerifyLightShow { show_path, config } => {
+            verify_light_show(&show_path, config.as_deref())?;
         }
     }
 

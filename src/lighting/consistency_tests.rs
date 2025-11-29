@@ -17,7 +17,7 @@
 #[cfg(test)]
 mod tests {
     use crate::lighting::effects::*;
-    use crate::lighting::effects::{TempoAwareFrequency, TempoAwareSpeed};
+    use crate::lighting::effects::{CycleTransition, TempoAwareFrequency, TempoAwareSpeed};
     use crate::lighting::engine::EffectEngine;
     use std::collections::HashMap;
     use std::time::Duration;
@@ -316,6 +316,7 @@ mod tests {
                 colors: colors.clone(),
                 speed: TempoAwareSpeed::Fixed(1.0),
                 direction: CycleDirection::Forward,
+                transition: CycleTransition::Snap,
             },
             vec!["fx_rgb".to_string()],
             None,
@@ -332,6 +333,7 @@ mod tests {
                 colors,
                 speed: TempoAwareSpeed::Fixed(1.0),
                 direction: CycleDirection::Forward,
+                transition: CycleTransition::Snap,
             },
             vec!["fx_dim".to_string()],
             None,
@@ -638,8 +640,13 @@ mod tests {
             ],
         ];
         let speeds = [0.5, 1.0, 2.0];
-        let dirs = [CycleDirection::Forward, CycleDirection::Backward];
-        let sample_ms = [0u64, 333, 666, 1000];
+        let dirs = [
+            CycleDirection::Forward,
+            CycleDirection::Backward,
+            CycleDirection::PingPong,
+        ];
+        // Include 500ms to catch PingPong peak edge case (cycle_progress = 0.5)
+        let sample_ms = [0u64, 250, 333, 500, 666, 750, 1000];
 
         for colors in color_sets {
             for speed in speeds {
@@ -657,6 +664,7 @@ mod tests {
                             colors: colors.clone(),
                             speed: TempoAwareSpeed::Fixed(speed),
                             direction,
+                            transition: CycleTransition::Snap,
                         },
                         vec!["fx_rgb".to_string()],
                         None,
@@ -673,6 +681,7 @@ mod tests {
                             colors: colors.clone(),
                             speed: TempoAwareSpeed::Fixed(speed),
                             direction,
+                            transition: CycleTransition::Snap,
                         },
                         vec!["fx_dim".to_string()],
                         None,

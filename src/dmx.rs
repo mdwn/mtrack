@@ -67,10 +67,10 @@ pub fn create_engine(
         }
     };
 
-    Ok(Some(Arc::new(Engine::new(
-        config,
-        lighting_config,
-        base_path,
-        ola_client,
-    )?)))
+    let engine = Arc::new(Engine::new(config, lighting_config, base_path, ola_client)?);
+
+    // Start the persistent effects loop
+    Engine::start_persistent_effects_loop(engine.clone());
+
+    Ok(Some(engine))
 }

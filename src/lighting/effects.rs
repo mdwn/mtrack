@@ -37,26 +37,56 @@ impl TempoAwareSpeed {
     ) -> f64 {
         match self {
             TempoAwareSpeed::Fixed(speed) => *speed,
-            TempoAwareSpeed::Seconds(duration) => 1.0 / duration,
+            TempoAwareSpeed::Seconds(duration) => {
+                if *duration <= 0.0 {
+                    0.0 // Zero/negative duration means stopped
+                } else {
+                    1.0 / duration
+                }
+            }
             TempoAwareSpeed::Measures(measures) => {
+                if *measures <= 0.0 {
+                    return 0.0; // Zero/negative measures means stopped
+                }
                 if let Some(tm) = tempo_map {
                     let duration = tm.measures_to_duration(*measures, at_time);
-                    1.0 / duration.as_secs_f64()
+                    let secs = duration.as_secs_f64();
+                    if secs <= 0.0 {
+                        0.0
+                    } else {
+                        1.0 / secs
+                    }
                 } else {
                     // Fallback: assume 120 BPM, 4/4 time
                     let beats = measures * 4.0;
                     let duration_secs = beats * 60.0 / 120.0;
-                    1.0 / duration_secs
+                    if duration_secs <= 0.0 {
+                        0.0
+                    } else {
+                        1.0 / duration_secs
+                    }
                 }
             }
             TempoAwareSpeed::Beats(beats) => {
+                if *beats <= 0.0 {
+                    return 0.0; // Zero/negative beats means stopped
+                }
                 if let Some(tm) = tempo_map {
                     let duration = tm.beats_to_duration(*beats, at_time);
-                    1.0 / duration.as_secs_f64()
+                    let secs = duration.as_secs_f64();
+                    if secs <= 0.0 {
+                        0.0
+                    } else {
+                        1.0 / secs
+                    }
                 } else {
                     // Fallback: assume 120 BPM
                     let duration_secs = beats * 60.0 / 120.0;
-                    1.0 / duration_secs
+                    if duration_secs <= 0.0 {
+                        0.0
+                    } else {
+                        1.0 / duration_secs
+                    }
                 }
             }
         }
@@ -85,26 +115,56 @@ impl TempoAwareFrequency {
     ) -> f64 {
         match self {
             TempoAwareFrequency::Fixed(freq) => *freq,
-            TempoAwareFrequency::Seconds(duration) => 1.0 / duration,
+            TempoAwareFrequency::Seconds(duration) => {
+                if *duration <= 0.0 {
+                    0.0 // Zero/negative duration means no frequency (stopped)
+                } else {
+                    1.0 / duration
+                }
+            }
             TempoAwareFrequency::Measures(measures) => {
+                if *measures <= 0.0 {
+                    return 0.0; // Zero/negative measures means stopped
+                }
                 if let Some(tm) = tempo_map {
                     let duration = tm.measures_to_duration(*measures, at_time);
-                    1.0 / duration.as_secs_f64()
+                    let secs = duration.as_secs_f64();
+                    if secs <= 0.0 {
+                        0.0
+                    } else {
+                        1.0 / secs
+                    }
                 } else {
                     // Fallback: assume 120 BPM, 4/4 time
                     let beats = measures * 4.0;
                     let duration_secs = beats * 60.0 / 120.0;
-                    1.0 / duration_secs
+                    if duration_secs <= 0.0 {
+                        0.0
+                    } else {
+                        1.0 / duration_secs
+                    }
                 }
             }
             TempoAwareFrequency::Beats(beats) => {
+                if *beats <= 0.0 {
+                    return 0.0; // Zero/negative beats means stopped
+                }
                 if let Some(tm) = tempo_map {
                     let duration = tm.beats_to_duration(*beats, at_time);
-                    1.0 / duration.as_secs_f64()
+                    let secs = duration.as_secs_f64();
+                    if secs <= 0.0 {
+                        0.0
+                    } else {
+                        1.0 / secs
+                    }
                 } else {
                     // Fallback: assume 120 BPM
                     let duration_secs = beats * 60.0 / 120.0;
-                    1.0 / duration_secs
+                    if duration_secs <= 0.0 {
+                        0.0
+                    } else {
+                        1.0 / duration_secs
+                    }
                 }
             }
         }
@@ -125,6 +185,7 @@ pub enum EffectType {
         colors: Vec<Color>,
         speed: TempoAwareSpeed, // cycles per second (can be tempo-aware)
         direction: CycleDirection,
+        transition: CycleTransition, // how to transition between colors
     },
 
     /// Strobe effect
@@ -303,6 +364,25 @@ impl Color {
             w: None,
         }
     }
+
+    /// Linearly interpolate between two colors.
+    /// `t` should be between 0.0 (returns `self`) and 1.0 (returns `other`).
+    pub fn lerp(&self, other: &Color, t: f64) -> Self {
+        let t = t.clamp(0.0, 1.0);
+        let t_inv = 1.0 - t;
+
+        Self {
+            r: ((self.r as f64 * t_inv + other.r as f64 * t) as u8),
+            g: ((self.g as f64 * t_inv + other.g as f64 * t) as u8),
+            b: ((self.b as f64 * t_inv + other.b as f64 * t) as u8),
+            w: match (self.w, other.w) {
+                (Some(w1), Some(w2)) => Some((w1 as f64 * t_inv + w2 as f64 * t) as u8),
+                (Some(w1), None) => Some((w1 as f64 * t_inv) as u8),
+                (None, Some(w2)) => Some((w2 as f64 * t) as u8),
+                (None, None) => None,
+            },
+        }
+    }
 }
 
 /// Cycle direction for color cycling effects
@@ -311,6 +391,15 @@ pub enum CycleDirection {
     Forward,
     Backward,
     PingPong,
+}
+
+/// Transition type for color cycling effects
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CycleTransition {
+    /// Snap instantly between colors
+    Snap,
+    /// Fade smoothly between colors
+    Fade,
 }
 
 /// Chase pattern for spatial effects
@@ -1423,5 +1512,72 @@ mod tests {
         assert_eq!(effect.id, "test_effect");
         assert_eq!(effect.target_fixtures.len(), 2);
         assert!(effect.enabled);
+    }
+
+    #[test]
+    fn test_tempo_aware_speed_zero_values() {
+        // Test that zero/negative values don't cause divide-by-zero
+        use std::time::Duration;
+
+        // Zero seconds should return 0.0 (stopped), not infinity
+        let speed = TempoAwareSpeed::Seconds(0.0);
+        let result = speed.to_cycles_per_second(None, Duration::ZERO);
+        assert_eq!(result, 0.0, "Zero seconds should return 0.0");
+        assert!(!result.is_infinite(), "Should not be infinite");
+
+        // Negative seconds should also return 0.0
+        let speed = TempoAwareSpeed::Seconds(-1.0);
+        let result = speed.to_cycles_per_second(None, Duration::ZERO);
+        assert_eq!(result, 0.0, "Negative seconds should return 0.0");
+
+        // Zero measures should return 0.0
+        let speed = TempoAwareSpeed::Measures(0.0);
+        let result = speed.to_cycles_per_second(None, Duration::ZERO);
+        assert_eq!(result, 0.0, "Zero measures should return 0.0");
+
+        // Zero beats should return 0.0
+        let speed = TempoAwareSpeed::Beats(0.0);
+        let result = speed.to_cycles_per_second(None, Duration::ZERO);
+        assert_eq!(result, 0.0, "Zero beats should return 0.0");
+
+        // Positive values should still work normally
+        let speed = TempoAwareSpeed::Seconds(2.0);
+        let result = speed.to_cycles_per_second(None, Duration::ZERO);
+        assert!(
+            (result - 0.5).abs() < 0.001,
+            "2 seconds should give 0.5 cycles/sec"
+        );
+    }
+
+    #[test]
+    fn test_tempo_aware_frequency_zero_values() {
+        // Test that zero/negative values don't cause divide-by-zero
+        use std::time::Duration;
+
+        // Zero seconds should return 0.0 (stopped), not infinity
+        let freq = TempoAwareFrequency::Seconds(0.0);
+        let result = freq.to_hz(None, Duration::ZERO);
+        assert_eq!(result, 0.0, "Zero seconds should return 0.0");
+        assert!(!result.is_infinite(), "Should not be infinite");
+
+        // Negative seconds should also return 0.0
+        let freq = TempoAwareFrequency::Seconds(-1.0);
+        let result = freq.to_hz(None, Duration::ZERO);
+        assert_eq!(result, 0.0, "Negative seconds should return 0.0");
+
+        // Zero measures should return 0.0
+        let freq = TempoAwareFrequency::Measures(0.0);
+        let result = freq.to_hz(None, Duration::ZERO);
+        assert_eq!(result, 0.0, "Zero measures should return 0.0");
+
+        // Zero beats should return 0.0
+        let freq = TempoAwareFrequency::Beats(0.0);
+        let result = freq.to_hz(None, Duration::ZERO);
+        assert_eq!(result, 0.0, "Zero beats should return 0.0");
+
+        // Positive values should still work normally
+        let freq = TempoAwareFrequency::Seconds(0.5);
+        let result = freq.to_hz(None, Duration::ZERO);
+        assert!((result - 2.0).abs() < 0.001, "0.5 seconds should give 2 Hz");
     }
 }

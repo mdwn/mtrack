@@ -90,6 +90,11 @@ impl LightingTimeline {
         self.next_cue_index = 0;
     }
 
+    /// Returns true if all cues have been processed (including empty timelines)
+    pub fn is_finished(&self) -> bool {
+        self.next_cue_index >= self.cues.len()
+    }
+
     /// Updates the timeline with the current song time
     pub fn update(&mut self, song_time: Duration) -> Vec<EffectInstance> {
         if !self.is_playing {
@@ -174,6 +179,49 @@ mod tests {
         assert!(timeline.is_playing);
         timeline.stop();
         assert!(!timeline.is_playing);
+    }
+
+    #[test]
+    fn test_timeline_is_finished() {
+        use crate::lighting::parser::Cue;
+
+        // Empty timeline should be considered finished (prevents blocking forever)
+        let empty_timeline = LightingTimeline::new_with_cues(vec![]);
+        assert!(
+            empty_timeline.is_finished(),
+            "Empty timeline should be finished"
+        );
+
+        // Timeline with cues should not be finished initially
+        let effect = Effect {
+            groups: vec!["test_group".to_string()],
+            effect_type: EffectType::Static {
+                parameters: HashMap::new(),
+                duration: None,
+            },
+            layer: None,
+            blend_mode: None,
+            up_time: None,
+            hold_time: None,
+            down_time: None,
+        };
+        let cues = vec![Cue {
+            time: Duration::from_millis(0),
+            effects: vec![effect],
+        }];
+        let mut timeline = LightingTimeline::new_with_cues(cues);
+        assert!(
+            !timeline.is_finished(),
+            "Timeline with unprocessed cues should not be finished"
+        );
+
+        // After processing all cues, should be finished
+        timeline.start();
+        let _ = timeline.update(Duration::from_secs(1));
+        assert!(
+            timeline.is_finished(),
+            "Timeline should be finished after all cues processed"
+        );
     }
 
     #[test]

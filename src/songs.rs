@@ -44,13 +44,40 @@ pub struct DslLightingShow {
 }
 
 impl DslLightingShow {
-    /// Creates a new DSL lighting show
+    /// Creates a new DSL lighting show, validating that the file exists and can be parsed.
     pub fn new(start_path: &Path, config: &config::LightingShow) -> Result<Self, Box<dyn Error>> {
         let file_path = if config.file().starts_with('/') {
             PathBuf::from(config.file())
         } else {
             start_path.join(config.file())
         };
+
+        // Validate file exists
+        if !file_path.exists() {
+            return Err(format!(
+                "DSL lighting show file does not exist: {}",
+                file_path.display()
+            )
+            .into());
+        }
+
+        // Validate file can be read and parsed
+        let content = std::fs::read_to_string(&file_path).map_err(|e| {
+            format!(
+                "Failed to read DSL lighting show {}: {}",
+                file_path.display(),
+                e
+            )
+        })?;
+
+        crate::lighting::parser::parse_light_shows(&content).map_err(|e| {
+            // Prepend the file path to the error, preserving newlines in the original error
+            format!(
+                "Failed to parse DSL lighting show {}:\n{}",
+                file_path.display(),
+                e
+            )
+        })?;
 
         Ok(DslLightingShow { file_path })
     }

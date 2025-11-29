@@ -1,7 +1,6 @@
 #[cfg(test)]
 mod layering_behavior_tests {
     use super::super::effects::*;
-    use super::super::effects::{TempoAwareFrequency, TempoAwareSpeed};
     use super::super::engine::EffectEngine;
     use std::collections::HashMap;
     use std::time::Duration;
@@ -555,7 +554,6 @@ mod layering_behavior_tests {
 #[cfg(test)]
 mod layering_show_regression {
     use super::super::effects::*;
-    use super::super::effects::{TempoAwareFrequency, TempoAwareSpeed};
     use super::super::engine::EffectEngine;
     use std::collections::HashMap;
     use std::time::Duration;
@@ -726,7 +724,6 @@ mod layering_show_regression {
 #[cfg(test)]
 mod tests {
     use super::super::effects::*;
-    use super::super::effects::{TempoAwareFrequency, TempoAwareSpeed};
     use super::super::engine::EffectEngine;
     use super::super::parser::parse_light_shows;
     use super::super::timeline::LightingTimeline;
@@ -1278,7 +1275,6 @@ mod tests {
     #[test]
     fn test_dimmer_without_dedicated_channel() {
         use super::super::effects::*;
-        use super::super::effects::{TempoAwareFrequency, TempoAwareSpeed};
         use super::super::engine::EffectEngine;
 
         // Create a fixture without a dedicated dimmer channel
@@ -1388,7 +1384,6 @@ mod tests {
     #[test]
     fn test_dimmer_precedence_and_selective_dimming() {
         use super::super::effects::*;
-        use super::super::effects::{TempoAwareFrequency, TempoAwareSpeed};
         use super::super::engine::EffectEngine;
 
         // Create a fixture with RGB channels only (no dedicated dimmer)
@@ -1657,7 +1652,6 @@ mod tests {
     #[test]
     fn test_blend_mode_loss_debug() {
         use super::super::effects::*;
-        use super::super::effects::{TempoAwareFrequency, TempoAwareSpeed};
         use super::super::engine::EffectEngine;
         use super::super::parser::parse_light_shows;
         use std::collections::HashMap;
@@ -1775,7 +1769,6 @@ mod tests {
     #[test]
     fn test_timeline_blend_mode_loss() {
         use super::super::effects::*;
-        use super::super::effects::{TempoAwareFrequency, TempoAwareSpeed};
         use super::super::engine::EffectEngine;
         use super::super::parser::parse_light_shows;
         use super::super::timeline::LightingTimeline;
@@ -1945,7 +1938,6 @@ mod tests {
     #[test]
     fn test_multiple_effects_simultaneous() {
         use super::super::effects::*;
-        use super::super::effects::{TempoAwareFrequency, TempoAwareSpeed};
         use super::super::engine::EffectEngine;
 
         // Initialize tracing
@@ -2134,7 +2126,6 @@ mod tests {
     #[test]
     fn test_astera_pixelblock_real_behavior() {
         use super::super::effects::*;
-        use super::super::effects::{TempoAwareFrequency, TempoAwareSpeed};
         use super::super::engine::EffectEngine;
 
         // Initialize tracing
@@ -2277,7 +2268,6 @@ mod tests {
     #[test]
     fn test_static_replace_blend_mode() {
         use super::super::effects::*;
-        use super::super::effects::{TempoAwareFrequency, TempoAwareSpeed};
         use super::super::engine::EffectEngine;
 
         // Initialize tracing
@@ -2365,7 +2355,6 @@ mod tests {
     #[test]
     fn test_static_with_dimmer_parameter() {
         use super::super::effects::*;
-        use super::super::effects::{TempoAwareFrequency, TempoAwareSpeed};
         use super::super::engine::EffectEngine;
 
         // Initialize tracing
@@ -3307,7 +3296,6 @@ mod tests {
     #[test]
     fn test_real_layering_show_file() {
         use super::super::effects::*;
-        use super::super::effects::{TempoAwareFrequency, TempoAwareSpeed};
         use super::super::engine::EffectEngine;
         use super::super::parser::parse_light_shows;
 
@@ -3429,7 +3417,6 @@ mod tests {
     #[test]
     fn test_layering_show_effect_execution() {
         use super::super::effects::*;
-        use super::super::effects::{TempoAwareFrequency, TempoAwareSpeed};
         use super::super::engine::EffectEngine;
         use super::super::parser::parse_light_shows;
 
@@ -3844,7 +3831,6 @@ mod tests {
     #[test]
     fn test_custom_rgb_dimming() {
         use super::super::effects::*;
-        use super::super::effects::{TempoAwareFrequency, TempoAwareSpeed};
         use super::super::engine::EffectEngine;
 
         // Create a fixture with RGB channels only (no dedicated dimmer)
@@ -4539,6 +4525,7 @@ mod tests {
                 ],
                 speed: TempoAwareSpeed::Fixed(1.0),
                 direction: CycleDirection::Forward,
+                transition: CycleTransition::Snap,
             },
             vec!["test_fixture".to_string()],
             EffectLayer::Background, // Same layer
@@ -5954,6 +5941,7 @@ mod tests {
                 ],
                 speed: TempoAwareSpeed::Fixed(1.0),
                 direction: CycleDirection::Forward,
+                transition: CycleTransition::Snap,
             },
             vec!["back_wash".to_string()],
             EffectLayer::Midground,
@@ -6504,6 +6492,7 @@ mod tests {
                 ],
                 speed: TempoAwareSpeed::Fixed(1.0), // 1 cycle per second
                 direction: CycleDirection::Forward,
+                transition: CycleTransition::Snap,
             },
             vec!["test_fixture".to_string()],
             EffectLayer::Background,

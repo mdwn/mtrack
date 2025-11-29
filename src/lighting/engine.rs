@@ -419,9 +419,17 @@ impl EffectEngine {
                 colors,
                 speed,
                 direction,
+                transition,
             } => {
                 let current_speed = speed.to_cycles_per_second(tempo_map, absolute_time);
-                self.apply_color_cycle(effect, colors, current_speed, direction, elapsed)
+                self.apply_color_cycle(
+                    effect,
+                    colors,
+                    current_speed,
+                    direction,
+                    *transition,
+                    elapsed,
+                )
             }
             EffectType::Strobe { frequency, .. } => {
                 let current_frequency = frequency.to_hz(tempo_map, absolute_time);
@@ -801,6 +809,7 @@ impl EffectEngine {
         colors: &[Color],
         speed: f64,
         direction: &CycleDirection,
+        transition: CycleTransition,
         elapsed: Duration,
     ) -> Result<Option<HashMap<String, FixtureState>>, EffectError> {
         if colors.is_empty() {
@@ -810,25 +819,98 @@ impl EffectEngine {
         // Calculate crossfade multiplier
         let crossfade_multiplier = effect.calculate_crossfade_multiplier(elapsed);
 
+        // Guard against zero/negative speed - treat as "stopped" at first color
+        if speed <= 0.0 {
+            let color = colors[0];
+            let mut fixture_states = HashMap::new();
+            for fixture_name in &effect.target_fixtures {
+                if let Some(fixture) = self.fixture_registry.get(fixture_name) {
+                    let mut fixture_state = FixtureState::new();
+                    let profile = FixtureProfile::for_fixture(fixture);
+                    let channel_commands =
+                        profile.apply_color(color, effect.layer, effect.blend_mode);
+                    for (channel_name, mut channel_state) in channel_commands {
+                        channel_state.value *= crossfade_multiplier;
+                        fixture_state.set_channel(channel_name, channel_state);
+                    }
+                    fixture_states.insert(fixture_name.clone(), fixture_state);
+                }
+            }
+            return Ok(Some(fixture_states));
+        }
+
         let cycle_time = 1.0 / speed;
         let cycle_progress = (elapsed.as_secs_f64() % cycle_time) / cycle_time;
 
-        let color_index = match direction {
-            CycleDirection::Forward => (cycle_progress * colors.len() as f64).floor() as usize,
+        // Calculate color indices and interpolation factor for smooth transitions
+        let (color_index, next_index, segment_progress) = match direction {
+            CycleDirection::Forward => {
+                let color_index_f = cycle_progress * colors.len() as f64;
+                let color_index = color_index_f.floor() as usize;
+                let next_index = (color_index + 1) % colors.len();
+                let segment_progress = color_index_f - color_index as f64;
+                (color_index, next_index, segment_progress)
+            }
             CycleDirection::Backward => {
-                colors.len() - 1 - ((cycle_progress * colors.len() as f64).floor() as usize)
+                let reversed_progress = 1.0 - cycle_progress;
+                let color_index_f = reversed_progress * colors.len() as f64;
+                let color_index = color_index_f.floor() as usize;
+
+                // Handle boundary case: when reversed_progress = 1.0 (cycle start),
+                // color_index_f = colors.len(), which is out of bounds.
+                // At this point we should show the last color with no interpolation.
+                if color_index >= colors.len() {
+                    (colors.len() - 1, colors.len() - 1, 0.0)
+                } else {
+                    let next_index = if color_index == 0 {
+                        colors.len() - 1
+                    } else {
+                        color_index - 1
+                    };
+                    let segment_progress = color_index_f - color_index as f64;
+                    (color_index, next_index, segment_progress)
+                }
             }
             CycleDirection::PingPong => {
+                // PingPong: go forward then backward through colors
+                // ping_pong_progress goes 0 → 1 → 0 over one cycle
                 let ping_pong_progress = if cycle_progress < 0.5 {
                     cycle_progress * 2.0
                 } else {
                     2.0 - cycle_progress * 2.0
                 };
-                (ping_pong_progress * colors.len() as f64).floor() as usize
+
+                // Map ping_pong_progress (0 to 1) to color indices (0 to len-1)
+                // At progress=0, color_index=0; at progress=1, color_index=len-1
+                let max_index = (colors.len() - 1) as f64;
+                let color_progress = ping_pong_progress * max_index;
+
+                // Calculate current and next color indices for interpolation
+                let color_index = color_progress.floor() as usize;
+                let seg_progress = color_progress - color_index as f64;
+
+                // Handle edge case when at exactly the last color (ping_pong_progress = 1.0)
+                if color_index >= colors.len() - 1 {
+                    (colors.len() - 1, colors.len() - 1, 0.0)
+                } else {
+                    (color_index, color_index + 1, seg_progress)
+                }
             }
         };
 
-        let color = colors[color_index % colors.len()];
+        // Apply transition based on transition type
+        let color = match transition {
+            CycleTransition::Fade => {
+                // Interpolate between current and next color for smooth transitions
+                let current_color = colors[color_index % colors.len()];
+                let next_color = colors[next_index % colors.len()];
+                current_color.lerp(&next_color, segment_progress)
+            }
+            CycleTransition::Snap => {
+                // Snap to current color (original behavior)
+                colors[color_index % colors.len()]
+            }
+        };
         let mut fixture_states = HashMap::new();
 
         for fixture_name in &effect.target_fixtures {
@@ -998,10 +1080,34 @@ impl EffectEngine {
         // Calculate crossfade multiplier
         let crossfade_multiplier = effect.calculate_crossfade_multiplier(elapsed);
 
+        // Guard against zero/negative speed - treat as "stopped" with first fixture active
+        if speed <= 0.0 {
+            let mut fixture_states = HashMap::new();
+            for (i, fixture_name) in effect.target_fixtures.iter().enumerate() {
+                if let Some(fixture) = self.fixture_registry.get(fixture_name) {
+                    let mut fixture_state = FixtureState::new();
+                    let chase_value = if i == 0 { crossfade_multiplier } else { 0.0 };
+                    let profile = FixtureProfile::for_fixture(fixture);
+                    let channel_commands =
+                        profile.apply_chase(chase_value, effect.layer, effect.blend_mode);
+                    for (channel_name, channel_state) in channel_commands {
+                        fixture_state.set_channel(channel_name, channel_state);
+                    }
+                    fixture_states.insert(fixture_name.clone(), fixture_state);
+                }
+            }
+            return Ok(Some(fixture_states));
+        }
+
         let chase_period = 1.0 / speed;
 
         let mut fixture_states = HashMap::new();
         let fixture_count = effect.target_fixtures.len();
+
+        // Guard against empty fixture list - nothing to chase
+        if fixture_count == 0 {
+            return Ok(Some(fixture_states));
+        }
 
         // Calculate fixture order based on pattern and direction
         let fixture_order = self.calculate_fixture_order(fixture_count, pattern, direction);
@@ -1300,6 +1406,7 @@ mod tests {
                 colors,
                 speed: TempoAwareSpeed::Fixed(1.0), // 1 cycle per second
                 direction: CycleDirection::Forward,
+                transition: CycleTransition::Snap,
             },
             vec!["test_fixture".to_string()],
             None,
@@ -1339,6 +1446,895 @@ mod tests {
         assert_eq!(red_cmd.value, 0);
         assert_eq!(green_cmd.value, 0);
         assert_eq!(blue_cmd.value, 255);
+    }
+
+    #[test]
+    fn test_color_cycle_pingpong_peak() {
+        // Regression test: PingPong should show the last color at cycle peak (cycle_progress = 0.5)
+        // Previously, a bug caused it to incorrectly show the first color at the peak.
+        let mut engine = EffectEngine::new();
+        let fixture = create_test_fixture("test_fixture", 1, 1);
+        engine.register_fixture(fixture);
+
+        let colors = vec![
+            Color::new(255, 0, 0), // Red (index 0)
+            Color::new(0, 255, 0), // Green (index 1)
+            Color::new(0, 0, 255), // Blue (index 2) - should be shown at peak
+        ];
+
+        let effect = EffectInstance::new(
+            "test_effect".to_string(),
+            EffectType::ColorCycle {
+                colors,
+                speed: TempoAwareSpeed::Fixed(1.0), // 1 cycle per second
+                direction: CycleDirection::PingPong,
+                transition: CycleTransition::Snap,
+            },
+            vec!["test_fixture".to_string()],
+            None,
+            None,
+            None,
+        );
+
+        engine.start_effect(effect).unwrap();
+
+        // At t=0ms: should be red (index 0) - start of cycle
+        let commands = engine.update(Duration::from_millis(0)).unwrap();
+        let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
+        let green_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
+        let blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
+        assert_eq!(
+            (red_cmd.value, green_cmd.value, blue_cmd.value),
+            (255, 0, 0),
+            "At t=0ms should be red"
+        );
+
+        // At t=500ms: cycle_progress = 0.5, ping_pong_progress = 1.0 (peak)
+        // Should show the LAST color (blue, index 2), not the first color (red)
+        let commands = engine.update(Duration::from_millis(500)).unwrap();
+        let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
+        let green_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
+        let blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
+        assert_eq!(
+            (red_cmd.value, green_cmd.value, blue_cmd.value),
+            (0, 0, 255),
+            "At t=500ms (peak) should be blue (last color), not red"
+        );
+
+        // At t=1000ms: cycle_progress = 0.0, back to start
+        // Should be red again (index 0)
+        let commands = engine.update(Duration::from_millis(500)).unwrap();
+        let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
+        let green_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
+        let blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
+        assert_eq!(
+            (red_cmd.value, green_cmd.value, blue_cmd.value),
+            (255, 0, 0),
+            "At t=1000ms should be red again"
+        );
+    }
+
+    #[test]
+    fn test_color_cycle_backward_boundary() {
+        // Regression test: Backward direction should show the LAST color at cycle start (cycle_progress = 0.0)
+        // Previously, a bug caused it to incorrectly show the first color due to:
+        // reversed_progress = 1.0 → color_index_f = colors.len() → floor = colors.len() → modulo wraps to 0
+        let mut engine = EffectEngine::new();
+        let fixture = create_test_fixture("test_fixture", 1, 1);
+        engine.register_fixture(fixture);
+
+        let colors = vec![
+            Color::new(255, 0, 0), // Red (index 0) - should be shown at END of backward cycle
+            Color::new(0, 255, 0), // Green (index 1)
+            Color::new(0, 0, 255), // Blue (index 2) - should be shown at START of backward cycle
+        ];
+
+        let effect = EffectInstance::new(
+            "test_effect".to_string(),
+            EffectType::ColorCycle {
+                colors,
+                speed: TempoAwareSpeed::Fixed(1.0), // 1 cycle per second
+                direction: CycleDirection::Backward,
+                transition: CycleTransition::Snap,
+            },
+            vec!["test_fixture".to_string()],
+            None,
+            None,
+            None,
+        );
+
+        engine.start_effect(effect).unwrap();
+
+        // Note: engine.update() takes DELTA time, not absolute time!
+        // Each call adds to the elapsed time.
+
+        // At t=0ms: cycle_progress = 0.0, reversed_progress = 1.0
+        // Should be BLUE (last color, index 2), NOT red (first color)
+        let commands = engine.update(Duration::from_millis(0)).unwrap();
+        let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
+        let green_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
+        let blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
+        assert_eq!(
+            (red_cmd.value, green_cmd.value, blue_cmd.value),
+            (0, 0, 255),
+            "At t=0ms (cycle start) backward should show LAST color (blue), not first (red)"
+        );
+
+        // At t=500ms (dt=500): cycle_progress = 0.5, reversed_progress = 0.5
+        // color_index_f = 1.5, color_index = 1 → green
+        let commands = engine.update(Duration::from_millis(500)).unwrap();
+        let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
+        let green_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
+        let blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
+        assert_eq!(
+            (red_cmd.value, green_cmd.value, blue_cmd.value),
+            (0, 255, 0),
+            "At t=500ms should be green"
+        );
+
+        // At t=834ms (dt=334, total=834): cycle_progress ≈ 0.834, reversed_progress ≈ 0.166
+        // color_index_f ≈ 0.5, color_index = 0 → red
+        let commands = engine.update(Duration::from_millis(334)).unwrap();
+        let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
+        let green_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
+        let blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
+        assert_eq!(
+            (red_cmd.value, green_cmd.value, blue_cmd.value),
+            (255, 0, 0),
+            "At t=834ms should be red"
+        );
+    }
+
+    #[test]
+    fn test_color_cycle_backward_fade_boundary() {
+        // Regression test: Backward + Fade at cycle start (cycle_progress = 0) should show
+        // the LAST color, not interpolate toward the previous color.
+        // Previously, segment_progress was 1.0 at cycle start due to clamping, causing
+        // lerp to return next_color instead of current_color.
+        let mut engine = EffectEngine::new();
+        let fixture = create_test_fixture("test_fixture", 1, 1);
+        engine.register_fixture(fixture);
+
+        let colors = vec![
+            Color::new(255, 0, 0), // Red (index 0)
+            Color::new(0, 255, 0), // Green (index 1)
+            Color::new(0, 0, 255), // Blue (index 2) - should be shown at START
+        ];
+
+        let effect = EffectInstance::new(
+            "test_effect".to_string(),
+            EffectType::ColorCycle {
+                colors,
+                speed: TempoAwareSpeed::Fixed(1.0),
+                direction: CycleDirection::Backward,
+                transition: CycleTransition::Fade, // Key difference from Snap test
+            },
+            vec!["test_fixture".to_string()],
+            None,
+            None,
+            None,
+        );
+
+        engine.start_effect(effect).unwrap();
+
+        // At t=0ms: cycle_progress = 0, should be PURE BLUE (last color)
+        // With the bug, segment_progress was 1.0, causing lerp to return Green instead
+        let commands = engine.update(Duration::from_millis(0)).unwrap();
+        let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
+        let green_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
+        let blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
+        assert_eq!(
+            (red_cmd.value, green_cmd.value, blue_cmd.value),
+            (0, 0, 255),
+            "At t=0ms Backward+Fade should show PURE BLUE (last color), not interpolated"
+        );
+
+        // At t=166ms: ~50% through Blue->Green segment, should be teal-ish
+        let commands = engine.update(Duration::from_millis(166)).unwrap();
+        let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
+        let green_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
+        let blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
+        // Should be interpolating between Blue and Green
+        assert!(
+            green_cmd.value > 100 && blue_cmd.value > 100,
+            "At t=166ms should be fading from Blue toward Green, got ({}, {}, {})",
+            red_cmd.value,
+            green_cmd.value,
+            blue_cmd.value
+        );
+    }
+
+    #[test]
+    fn test_color_cycle_fade_interpolation() {
+        // Regression test: CycleTransition::Fade should smoothly interpolate between colors.
+        // Previously, a bug divided segment_progress by segment_size (1/colors.len()),
+        // effectively multiplying by colors.len(). This caused segment_progress to exceed 1.0
+        // early in each segment, and since lerp clamps to 0-1, colors would snap at ~33%
+        // through each segment instead of smoothly fading over the full segment duration.
+        let mut engine = EffectEngine::new();
+        let fixture = create_test_fixture("test_fixture", 1, 1);
+        engine.register_fixture(fixture);
+
+        let colors = vec![
+            Color::new(255, 0, 0), // Red (index 0)
+            Color::new(0, 0, 255), // Blue (index 1)
+        ];
+
+        let effect = EffectInstance::new(
+            "test_effect".to_string(),
+            EffectType::ColorCycle {
+                colors,
+                speed: TempoAwareSpeed::Fixed(1.0), // 1 cycle per second
+                direction: CycleDirection::Forward,
+                transition: CycleTransition::Fade,
+            },
+            vec!["test_fixture".to_string()],
+            None,
+            None,
+            None,
+        );
+
+        engine.start_effect(effect).unwrap();
+
+        // At t=0ms: should be pure red (start of first segment)
+        let commands = engine.update(Duration::from_millis(0)).unwrap();
+        let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
+        let green_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
+        let blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
+        assert_eq!(
+            (red_cmd.value, green_cmd.value, blue_cmd.value),
+            (255, 0, 0),
+            "At t=0ms should be pure red"
+        );
+
+        // At t=250ms: 50% through red→blue segment, should be purple (127, 0, 127)
+        // With the bug, segment_progress would be 1.0 (clamped from 0.5 * 2 = 1.0),
+        // resulting in pure blue instead of purple.
+        let commands = engine.update(Duration::from_millis(250)).unwrap();
+        let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
+        let green_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
+        let blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
+        // Allow ±1 tolerance for floating point rounding
+        assert!(
+            (126..=128).contains(&red_cmd.value)
+                && green_cmd.value == 0
+                && (126..=128).contains(&blue_cmd.value),
+            "At t=250ms (50% through segment) should be ~purple (127, 0, 127), got ({}, {}, {})",
+            red_cmd.value,
+            green_cmd.value,
+            blue_cmd.value
+        );
+
+        // At t=500ms: start of blue→red segment, should be pure blue
+        let commands = engine.update(Duration::from_millis(250)).unwrap();
+        let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
+        let green_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
+        let blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
+        assert_eq!(
+            (red_cmd.value, green_cmd.value, blue_cmd.value),
+            (0, 0, 255),
+            "At t=500ms should be pure blue"
+        );
+
+        // At t=750ms: 50% through blue→red segment, should be purple again
+        let commands = engine.update(Duration::from_millis(250)).unwrap();
+        let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
+        let green_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
+        let blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
+        assert!(
+            (126..=128).contains(&red_cmd.value)
+                && green_cmd.value == 0
+                && (126..=128).contains(&blue_cmd.value),
+            "At t=750ms (50% through segment) should be ~purple (127, 0, 127), got ({}, {}, {})",
+            red_cmd.value,
+            green_cmd.value,
+            blue_cmd.value
+        );
+    }
+
+    #[test]
+    fn test_color_cycle_forward_wraparound() {
+        // Test that Forward direction wraps correctly from last color back to first
+        // Note: engine.update() takes DELTA time. Each call advances elapsed.
+        let mut engine = EffectEngine::new();
+        let fixture = create_test_fixture("test_fixture", 1, 1);
+        engine.register_fixture(fixture);
+
+        let colors = vec![
+            Color::new(255, 0, 0), // Red (index 0)
+            Color::new(0, 255, 0), // Green (index 1)
+            Color::new(0, 0, 255), // Blue (index 2)
+        ];
+
+        let effect = EffectInstance::new(
+            "test_effect".to_string(),
+            EffectType::ColorCycle {
+                colors,
+                speed: TempoAwareSpeed::Fixed(1.0), // 1 cycle per second
+                direction: CycleDirection::Forward,
+                transition: CycleTransition::Snap,
+            },
+            vec!["test_fixture".to_string()],
+            None,
+            None,
+            None,
+        );
+
+        engine.start_effect(effect).unwrap();
+
+        // With 3 colors at 1 cycle/second: each color is ~333.33ms
+        // Color 0 (red): 0ms - 333.32ms
+        // Color 1 (green): 333.33ms - 666.65ms
+        // Color 2 (blue): 666.66ms - 999.99ms
+
+        // At t=0ms: should be red (start of cycle)
+        let commands = engine.update(Duration::from_millis(0)).unwrap();
+        let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
+        assert_eq!(red_cmd.value, 255, "At t=0ms should be red");
+
+        // At t=350ms: should be green (past 333.33ms threshold)
+        let commands = engine.update(Duration::from_millis(350)).unwrap();
+        let green_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
+        assert_eq!(green_cmd.value, 255, "At t=350ms should be green");
+
+        // At t=700ms: should be blue (past 666.66ms threshold)
+        let commands = engine.update(Duration::from_millis(350)).unwrap();
+        let blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
+        assert_eq!(blue_cmd.value, 255, "At t=700ms should be blue");
+
+        // At t=1050ms: should wrap back to red (past 1000ms)
+        let commands = engine.update(Duration::from_millis(350)).unwrap();
+        let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
+        assert_eq!(red_cmd.value, 255, "At t=1050ms should wrap back to red");
+    }
+
+    #[test]
+    fn test_color_cycle_two_colors_all_directions() {
+        // Test all directions with just 2 colors to catch edge cases with minimal color sets
+        let colors = vec![
+            Color::new(255, 0, 0), // Red
+            Color::new(0, 0, 255), // Blue
+        ];
+
+        for direction in [
+            CycleDirection::Forward,
+            CycleDirection::Backward,
+            CycleDirection::PingPong,
+        ] {
+            let mut engine = EffectEngine::new();
+            let fixture = create_test_fixture("test_fixture", 1, 1);
+            engine.register_fixture(fixture);
+
+            let effect = EffectInstance::new(
+                "test_effect".to_string(),
+                EffectType::ColorCycle {
+                    colors: colors.clone(),
+                    speed: TempoAwareSpeed::Fixed(1.0),
+                    direction,
+                    transition: CycleTransition::Snap,
+                },
+                vec!["test_fixture".to_string()],
+                None,
+                None,
+                None,
+            );
+
+            engine.start_effect(effect).unwrap();
+
+            // At t=0: should have a valid color (not crash, not garbage values)
+            let commands = engine.update(Duration::from_millis(0)).unwrap();
+            let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
+            let blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
+
+            // Should be either pure red or pure blue
+            let is_valid_color = (red_cmd.value == 255 && blue_cmd.value == 0)
+                || (red_cmd.value == 0 && blue_cmd.value == 255);
+            assert!(
+                is_valid_color,
+                "{:?} at t=0 should be pure red or blue, got r={} b={}",
+                direction, red_cmd.value, blue_cmd.value
+            );
+
+            // At t=500ms (half cycle): should still be valid
+            let commands = engine.update(Duration::from_millis(500)).unwrap();
+            let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
+            let blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
+
+            let is_valid_color = (red_cmd.value == 255 && blue_cmd.value == 0)
+                || (red_cmd.value == 0 && blue_cmd.value == 255);
+            assert!(
+                is_valid_color,
+                "{:?} at t=500ms should be pure red or blue, got r={} b={}",
+                direction, red_cmd.value, blue_cmd.value
+            );
+        }
+    }
+
+    #[test]
+    fn test_strobe_boundary_at_duty_cycle_transition() {
+        // Test strobe behavior at exactly the 50% duty cycle boundary
+        // strobe_phase < 0.5 means ON, >= 0.5 means OFF
+        let mut engine = EffectEngine::new();
+
+        // Create a fixture WITHOUT hardware strobe capability to test software strobe
+        let mut channels = HashMap::new();
+        channels.insert("dimmer".to_string(), 1);
+        channels.insert("red".to_string(), 2);
+        channels.insert("green".to_string(), 3);
+        channels.insert("blue".to_string(), 4);
+
+        let fixture = FixtureInfo {
+            name: "test_fixture".to_string(),
+            universe: 1,
+            address: 1,
+            fixture_type: "RGB".to_string(),
+            channels,
+            max_strobe_frequency: None, // No hardware strobe
+        };
+        engine.register_fixture(fixture);
+
+        // 2 Hz strobe = 500ms period, so 50% duty cycle transition at 250ms
+        let effect = EffectInstance::new(
+            "test_effect".to_string(),
+            EffectType::Strobe {
+                frequency: TempoAwareFrequency::Fixed(2.0),
+                duration: None,
+            },
+            vec!["test_fixture".to_string()],
+            None,
+            None,
+            None,
+        );
+
+        engine.start_effect(effect).unwrap();
+
+        // At t=0ms: strobe_phase=0, which is < 0.5, so ON (dimmer=255)
+        let commands = engine.update(Duration::from_millis(0)).unwrap();
+        let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
+        assert_eq!(dimmer_cmd.value, 255, "At t=0ms strobe should be ON");
+
+        // At t=249ms: still in first half of period, should be ON
+        let commands = engine.update(Duration::from_millis(249)).unwrap();
+        let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
+        assert_eq!(
+            dimmer_cmd.value, 255,
+            "At t=249ms strobe should still be ON"
+        );
+
+        // At t=251ms: just past 50% of period, should be OFF
+        let commands = engine.update(Duration::from_millis(2)).unwrap();
+        let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
+        assert_eq!(dimmer_cmd.value, 0, "At t=251ms strobe should be OFF");
+
+        // At t=500ms: start of new period, should be ON again
+        let commands = engine.update(Duration::from_millis(249)).unwrap();
+        let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
+        assert_eq!(
+            dimmer_cmd.value, 255,
+            "At t=500ms strobe should be ON again"
+        );
+    }
+
+    #[test]
+    fn test_chase_fixture_boundaries() {
+        // Test chase effect transitions between fixtures correctly
+        // Note: Chase applies dimmer to active fixture, 0 to others
+        let mut engine = EffectEngine::new();
+
+        // Create 3 fixtures for chase, each at different addresses
+        let fixture_0 = create_test_fixture("fixture_0", 1, 1);
+        let fixture_1 = create_test_fixture("fixture_1", 1, 11);
+        let fixture_2 = create_test_fixture("fixture_2", 1, 21);
+        engine.register_fixture(fixture_0);
+        engine.register_fixture(fixture_1);
+        engine.register_fixture(fixture_2);
+
+        // 1 Hz chase with 3 fixtures = each fixture active for 333.33ms
+        let effect = EffectInstance::new(
+            "test_effect".to_string(),
+            EffectType::Chase {
+                pattern: ChasePattern::Linear,
+                speed: TempoAwareSpeed::Fixed(1.0),
+                direction: ChaseDirection::LeftToRight,
+            },
+            vec![
+                "fixture_0".to_string(),
+                "fixture_1".to_string(),
+                "fixture_2".to_string(),
+            ],
+            None,
+            None,
+            None,
+        );
+
+        engine.start_effect(effect).unwrap();
+
+        // Helper to count active fixtures (dimmer channel = address, value = 255)
+        let count_active = |commands: &[DmxCommand]| -> usize {
+            // Each fixture has dimmer at relative channel 1
+            // fixture_0: channel 1, fixture_1: channel 11, fixture_2: channel 21
+            let dimmer_channels = [1, 11, 21];
+            commands
+                .iter()
+                .filter(|cmd| dimmer_channels.contains(&cmd.channel) && cmd.value == 255)
+                .count()
+        };
+
+        // At t=0ms: first fixture should be active (pattern_index = 0)
+        let commands = engine.update(Duration::from_millis(0)).unwrap();
+        assert_eq!(
+            count_active(&commands),
+            1,
+            "At t=0ms exactly one fixture should be active"
+        );
+
+        // At t=350ms: second fixture should be active (past 333.33ms)
+        let commands = engine.update(Duration::from_millis(350)).unwrap();
+        assert_eq!(
+            count_active(&commands),
+            1,
+            "At t=350ms exactly one fixture should be active"
+        );
+
+        // At t=700ms: third fixture should be active (past 666.66ms)
+        let commands = engine.update(Duration::from_millis(350)).unwrap();
+        assert_eq!(
+            count_active(&commands),
+            1,
+            "At t=700ms exactly one fixture should be active"
+        );
+
+        // At t=1050ms: should wrap back (past 1000ms)
+        let commands = engine.update(Duration::from_millis(350)).unwrap();
+        assert_eq!(
+            count_active(&commands),
+            1,
+            "At t=1050ms exactly one fixture should be active (wrapped)"
+        );
+    }
+
+    #[test]
+    fn test_rainbow_hue_wraparound() {
+        // Test that rainbow effect wraps hue correctly at 360 degrees
+        let mut engine = EffectEngine::new();
+        let fixture = create_test_fixture("test_fixture", 1, 1);
+        engine.register_fixture(fixture);
+
+        // Speed of 1.0 = 1 full hue rotation per second (360 degrees/sec)
+        let effect = EffectInstance::new(
+            "test_effect".to_string(),
+            EffectType::Rainbow {
+                speed: TempoAwareSpeed::Fixed(1.0),
+                saturation: 1.0,
+                brightness: 1.0,
+            },
+            vec!["test_fixture".to_string()],
+            None,
+            None,
+            None,
+        );
+
+        engine.start_effect(effect).unwrap();
+
+        // At t=0ms: hue=0 (red)
+        let commands_start = engine.update(Duration::from_millis(0)).unwrap();
+        let red_start = commands_start
+            .iter()
+            .find(|cmd| cmd.channel == 2)
+            .unwrap()
+            .value;
+        let green_start = commands_start
+            .iter()
+            .find(|cmd| cmd.channel == 3)
+            .unwrap()
+            .value;
+        let blue_start = commands_start
+            .iter()
+            .find(|cmd| cmd.channel == 4)
+            .unwrap()
+            .value;
+
+        // At hue=0 (red), should be approximately (255, 0, 0)
+        assert!(
+            red_start > 200 && green_start < 50 && blue_start < 50,
+            "At t=0ms should be red-ish, got ({}, {}, {})",
+            red_start,
+            green_start,
+            blue_start
+        );
+
+        // At t=1000ms: hue should wrap back to 0 (red again)
+        let commands_end = engine.update(Duration::from_millis(1000)).unwrap();
+        let red_end = commands_end
+            .iter()
+            .find(|cmd| cmd.channel == 2)
+            .unwrap()
+            .value;
+        let green_end = commands_end
+            .iter()
+            .find(|cmd| cmd.channel == 3)
+            .unwrap()
+            .value;
+        let blue_end = commands_end
+            .iter()
+            .find(|cmd| cmd.channel == 4)
+            .unwrap()
+            .value;
+
+        // Should be back to approximately red
+        assert!(
+            red_end > 200 && green_end < 50 && blue_end < 50,
+            "At t=1000ms should wrap back to red-ish, got ({}, {}, {})",
+            red_end,
+            green_end,
+            blue_end
+        );
+
+        // Colors at start and end should be very similar (wrapped)
+        assert!(
+            (red_start as i16 - red_end as i16).abs() < 10,
+            "Red should be similar after full cycle"
+        );
+    }
+
+    #[test]
+    fn test_pulse_at_peaks_and_troughs() {
+        // Test pulse effect at its mathematical peaks and troughs
+        // pulse_value = (base_level + pulse_amplitude * (sin(phase) * 0.5 + 0.5))
+        // At phase=0: sin(0)=0, so multiplier=0.5
+        // At phase=π/2: sin=1, so multiplier=1.0 (peak)
+        // At phase=3π/2: sin=-1, so multiplier=0.0 (trough)
+
+        let mut engine = EffectEngine::new();
+        let fixture = create_test_fixture("test_fixture", 1, 1);
+        engine.register_fixture(fixture);
+
+        // 1 Hz pulse, base_level=0.0, amplitude=1.0 for easy calculation
+        let effect = EffectInstance::new(
+            "test_effect".to_string(),
+            EffectType::Pulse {
+                base_level: 0.0,
+                pulse_amplitude: 1.0,
+                frequency: TempoAwareFrequency::Fixed(1.0),
+                duration: None,
+            },
+            vec!["test_fixture".to_string()],
+            None,
+            None,
+            None,
+        );
+
+        engine.start_effect(effect).unwrap();
+
+        // At t=0ms: phase=0, sin(0)=0, pulse_value = 0 + 1.0 * (0 * 0.5 + 0.5) = 0.5
+        let commands = engine.update(Duration::from_millis(0)).unwrap();
+        let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
+        // 0.5 * 255 ≈ 127
+        assert!(
+            (120..=135).contains(&dimmer_cmd.value),
+            "At t=0ms pulse should be ~127 (mid), got {}",
+            dimmer_cmd.value
+        );
+
+        // At t=250ms: phase=π/2, sin(π/2)=1, pulse_value = 0 + 1.0 * (1 * 0.5 + 0.5) = 1.0 (peak)
+        let commands = engine.update(Duration::from_millis(250)).unwrap();
+        let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
+        assert!(
+            dimmer_cmd.value >= 250,
+            "At t=250ms pulse should be at peak (~255), got {}",
+            dimmer_cmd.value
+        );
+
+        // At t=750ms: phase=3π/2, sin(3π/2)=-1, pulse_value = 0 + 1.0 * (-1 * 0.5 + 0.5) = 0.0 (trough)
+        let commands = engine.update(Duration::from_millis(500)).unwrap();
+        let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
+        assert!(
+            dimmer_cmd.value <= 5,
+            "At t=750ms pulse should be at trough (~0), got {}",
+            dimmer_cmd.value
+        );
+
+        // At t=1000ms: should be back to mid-point
+        let commands = engine.update(Duration::from_millis(250)).unwrap();
+        let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
+        assert!(
+            (120..=135).contains(&dimmer_cmd.value),
+            "At t=1000ms pulse should be back to ~127 (mid), got {}",
+            dimmer_cmd.value
+        );
+    }
+
+    #[test]
+    fn test_color_cycle_zero_speed() {
+        // Edge case: speed=0 should not cause divide-by-zero, should show first color
+        let mut engine = EffectEngine::new();
+        let fixture = create_test_fixture("test_fixture", 1, 1);
+        engine.register_fixture(fixture);
+
+        let colors = vec![
+            Color::new(255, 0, 0), // Red (first)
+            Color::new(0, 255, 0), // Green
+            Color::new(0, 0, 255), // Blue
+        ];
+
+        let effect = EffectInstance::new(
+            "test_effect".to_string(),
+            EffectType::ColorCycle {
+                colors,
+                speed: TempoAwareSpeed::Fixed(0.0), // Zero speed!
+                direction: CycleDirection::Forward,
+                transition: CycleTransition::Snap,
+            },
+            vec!["test_fixture".to_string()],
+            None,
+            None,
+            None,
+        );
+
+        engine.start_effect(effect).unwrap();
+
+        // Should not panic, and should show first color
+        let commands = engine.update(Duration::from_millis(0)).unwrap();
+        let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
+        let green_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
+        let blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
+        assert_eq!(
+            (red_cmd.value, green_cmd.value, blue_cmd.value),
+            (255, 0, 0),
+            "Zero speed should show first color (red)"
+        );
+
+        // Even after time passes, should still show first color (frozen)
+        let commands = engine.update(Duration::from_millis(5000)).unwrap();
+        let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
+        let green_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
+        let blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
+        assert_eq!(
+            (red_cmd.value, green_cmd.value, blue_cmd.value),
+            (255, 0, 0),
+            "Zero speed should remain frozen on first color"
+        );
+    }
+
+    #[test]
+    fn test_chase_zero_speed() {
+        // Edge case: speed=0 should not cause divide-by-zero, should keep first fixture active
+        let mut engine = EffectEngine::new();
+        let fixture_0 = create_test_fixture("fixture_0", 1, 1);
+        let fixture_1 = create_test_fixture("fixture_1", 1, 11);
+        let fixture_2 = create_test_fixture("fixture_2", 1, 21);
+        engine.register_fixture(fixture_0);
+        engine.register_fixture(fixture_1);
+        engine.register_fixture(fixture_2);
+
+        let effect = EffectInstance::new(
+            "test_effect".to_string(),
+            EffectType::Chase {
+                pattern: ChasePattern::Linear,
+                speed: TempoAwareSpeed::Fixed(0.0), // Zero speed!
+                direction: ChaseDirection::LeftToRight,
+            },
+            vec![
+                "fixture_0".to_string(),
+                "fixture_1".to_string(),
+                "fixture_2".to_string(),
+            ],
+            None,
+            None,
+            None,
+        );
+
+        engine.start_effect(effect).unwrap();
+
+        // Should not panic, first fixture should be active
+        let commands = engine.update(Duration::from_millis(0)).unwrap();
+        let dimmer_channels = [1, 11, 21];
+        let active_count = commands
+            .iter()
+            .filter(|cmd| dimmer_channels.contains(&cmd.channel) && cmd.value == 255)
+            .count();
+        assert_eq!(
+            active_count, 1,
+            "Zero speed should have exactly one fixture active"
+        );
+
+        // First fixture (channel 1) should be the active one
+        let first_dimmer = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
+        assert_eq!(first_dimmer.value, 255, "First fixture should be active");
+
+        // Even after time passes, should still be frozen on first fixture
+        let commands = engine.update(Duration::from_millis(5000)).unwrap();
+        let first_dimmer = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
+        assert_eq!(
+            first_dimmer.value, 255,
+            "Zero speed should remain frozen on first fixture"
+        );
+    }
+
+    #[test]
+    fn test_chase_empty_fixtures() {
+        // Edge case: chase with no fixtures should not panic (empty fixture list)
+        let mut engine = EffectEngine::new();
+        // Don't register any fixtures
+
+        let effect = EffectInstance::new(
+            "test_effect".to_string(),
+            EffectType::Chase {
+                pattern: ChasePattern::Linear,
+                speed: TempoAwareSpeed::Fixed(1.0),
+                direction: ChaseDirection::LeftToRight,
+            },
+            vec![], // Empty fixture list!
+            None,
+            None,
+            None,
+        );
+
+        engine.start_effect(effect).unwrap();
+
+        // Should not panic, should return empty commands
+        let commands = engine.update(Duration::from_millis(0)).unwrap();
+        assert!(
+            commands.is_empty(),
+            "Empty fixture chase should produce no commands"
+        );
+
+        // Should still work after time passes
+        let commands = engine.update(Duration::from_millis(1000)).unwrap();
+        assert!(
+            commands.is_empty(),
+            "Empty fixture chase should still produce no commands"
+        );
+    }
+
+    #[test]
+    fn test_single_color_cycle() {
+        // Edge case: color cycle with only 1 color should always show that color
+        let mut engine = EffectEngine::new();
+        let fixture = create_test_fixture("test_fixture", 1, 1);
+        engine.register_fixture(fixture);
+
+        let colors = vec![Color::new(255, 128, 64)]; // Single color
+
+        for direction in [
+            CycleDirection::Forward,
+            CycleDirection::Backward,
+            CycleDirection::PingPong,
+        ] {
+            let effect = EffectInstance::new(
+                "test_effect".to_string(),
+                EffectType::ColorCycle {
+                    colors: colors.clone(),
+                    speed: TempoAwareSpeed::Fixed(1.0),
+                    direction,
+                    transition: CycleTransition::Snap,
+                },
+                vec!["test_fixture".to_string()],
+                None,
+                None,
+                None,
+            );
+
+            let mut test_engine = EffectEngine::new();
+            let fixture = create_test_fixture("test_fixture", 1, 1);
+            test_engine.register_fixture(fixture);
+            test_engine.start_effect(effect).unwrap();
+
+            // Should always be the same color at any time
+            for ms in [0, 250, 500, 750, 1000] {
+                let commands = test_engine.update(Duration::from_millis(ms)).unwrap();
+                let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
+                let green_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
+                let blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
+                assert_eq!(
+                    (red_cmd.value, green_cmd.value, blue_cmd.value),
+                    (255, 128, 64),
+                    "{:?} with single color at t={}ms should always show that color",
+                    direction,
+                    ms
+                );
+            }
+        }
     }
 
     #[test]
@@ -1723,6 +2719,7 @@ mod tests {
                 colors,
                 speed: TempoAwareSpeed::Measures(1.0), // 1 cycle per measure
                 direction: CycleDirection::Forward,
+                transition: CycleTransition::Snap,
             },
             vec!["test_fixture".to_string()],
             None,
