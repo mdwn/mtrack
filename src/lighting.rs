@@ -21,6 +21,7 @@ pub mod system;
 pub mod tempo;
 pub mod timeline;
 pub mod types;
+pub mod validation;
 pub mod visual_consistency_tests;
 
 // Re-export the main types for convenience

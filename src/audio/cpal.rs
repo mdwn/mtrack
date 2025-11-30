@@ -578,7 +578,7 @@ impl AudioDevice for Device {
         // Create unique IDs for each source and track them
         let mut source_ids = Vec::new();
 
-        for source in channel_mapped_sources {
+        for source in channel_mapped_sources.into_iter() {
             let current_source_id = SOURCE_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
             let source_channel_count = source.source_channel_count();
             let active_source = MixerActiveSource {
@@ -604,6 +604,7 @@ impl AudioDevice for Device {
         // Start a background thread to monitor if all sources have finished
         let finished_monitor = finished.clone();
         let mixer = self.output_manager.mixer.clone();
+        let cancel_handle_for_notify = cancel_handle.clone();
         thread::spawn(move || {
             // Poll the mixer to see if all sources for this play operation have finished
             loop {
@@ -613,10 +614,12 @@ impl AudioDevice for Device {
                     let source_guard = source.lock().unwrap();
                     source_ids.contains(&source_guard.id)
                 });
+                drop(sources);
 
                 if !has_active_sources {
                     // All sources for this play operation have finished
                     finished_monitor.store(true, Ordering::Relaxed);
+                    cancel_handle_for_notify.notify(); // Wake up the waiting thread!
                     break;
                 }
 

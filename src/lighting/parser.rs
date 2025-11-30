@@ -19,8 +19,8 @@ use std::error::Error;
 use std::time::Duration;
 
 use super::effects::{
-    BlendMode, ChaseDirection, ChasePattern, Color, CycleDirection, DimmerCurve, EffectLayer,
-    EffectType,
+    BlendMode, ChaseDirection, ChasePattern, Color, CycleDirection, CycleTransition, DimmerCurve,
+    EffectLayer, EffectType,
 };
 use super::tempo::{
     TempoChange, TempoChangePosition, TempoMap, TempoTransition, TimeSignature, TransitionCurve,
@@ -448,6 +448,7 @@ fn parse_effect_definition(
                         colors: Vec::new(),
                         speed: super::effects::TempoAwareSpeed::Fixed(1.0),
                         direction: CycleDirection::Forward,
+                        transition: super::effects::CycleTransition::Snap,
                     },
                     "strobe" => EffectType::Strobe {
                         frequency: super::effects::TempoAwareFrequency::Fixed(8.0),
@@ -609,6 +610,7 @@ fn apply_parameters_to_effect_type(
             colors,
             speed,
             direction,
+            transition,
         } => {
             // Add all color parameters
             for color_str in color_parameters {
@@ -632,6 +634,13 @@ fn apply_parameters_to_effect_type(
                             "backward" => CycleDirection::Backward,
                             "pingpong" => CycleDirection::PingPong,
                             _ => CycleDirection::Forward,
+                        };
+                    }
+                    "transition" => {
+                        *transition = match value.as_str() {
+                            "snap" => CycleTransition::Snap,
+                            "fade" => CycleTransition::Fade,
+                            _ => CycleTransition::Snap,
                         };
                     }
                     _ => {}
@@ -2744,6 +2753,7 @@ all_wash: cycle, color: "red", color: "green", color: "blue", speed: 1.5, direct
             colors,
             speed,
             direction,
+            transition: _,
         } = &second_cue.effects[0].effect_type
         {
             assert_eq!(colors.len(), 3, "Cycle effect should have 3 colors");

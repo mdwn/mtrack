@@ -16,7 +16,7 @@ use std::{
     collections::{HashMap, HashSet},
     error::Error,
     sync::{
-        atomic::AtomicBool,
+        atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver},
         Arc, Barrier, Mutex,
     },
@@ -32,7 +32,10 @@ use tracing::{debug, error, info, span, Level};
 
 use crate::{
     config,
-    lighting::{system::LightingSystem, timeline::LightingTimeline, EffectEngine},
+    lighting::{
+        system::LightingSystem, timeline::LightingTimeline, validation::validate_light_shows,
+        EffectEngine,
+    },
     midi,
     playsync::CancelHandle,
     songs::{MidiSheet, Song},
@@ -55,10 +58,16 @@ pub struct Engine {
     effect_engine: Arc<Mutex<EffectEngine>>,
     /// Lighting system for fixture and group management
     lighting_system: Option<Arc<Mutex<LightingSystem>>>,
+    /// Lighting configuration for validation
+    lighting_config: Option<config::Lighting>,
     /// Current song timeline (thread-safe access for effects loop)
     current_song_timeline: Arc<Mutex<Option<LightingTimeline>>>,
     /// Current song time (thread-safe access for effects loop)
     current_song_time: Arc<Mutex<Duration>>,
+    /// Flag indicating the current song's timeline has finished (all cues processed)
+    timeline_finished: Arc<AtomicBool>,
+    /// Cancel handle for notifying when timeline finishes
+    timeline_cancel_handle: Arc<Mutex<Option<CancelHandle>>>,
 }
 
 /// DmxMessage is a message that can be passed around between senders and receivers.
@@ -121,6 +130,13 @@ impl Engine {
                 None
             };
 
+        let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
+        let current_song_timeline: Arc<Mutex<Option<LightingTimeline>>> =
+            Arc::new(Mutex::new(None));
+        let current_song_time = Arc::new(Mutex::new(Duration::ZERO));
+        let timeline_finished = Arc::new(AtomicBool::new(false));
+        let timeline_cancel_handle: Arc<Mutex<Option<CancelHandle>>> = Arc::new(Mutex::new(None));
+
         Ok(Engine {
             dimming_speed_modifier: config.dimming_speed_modifier(),
             playback_delay: config.playback_delay()?,
@@ -129,14 +145,83 @@ impl Engine {
             cancel_handle,
             client_handle: Some(client_handle),
             join_handles,
-            effect_engine: Arc::new(Mutex::new(EffectEngine::new())),
+            effect_engine,
             lighting_system,
-            current_song_timeline: Arc::new(Mutex::new(None)),
-            current_song_time: Arc::new(Mutex::new(Duration::ZERO)),
+            lighting_config: lighting_config.cloned(),
+            current_song_timeline,
+            current_song_time,
+            timeline_finished,
+            timeline_cancel_handle,
         })
     }
 
     // Note: Auto-connect helper removed; callers should construct an OLA client and call `new`.
+
+    /// Starts the persistent effects loop. Must be called after wrapping Engine in Arc.
+    /// The effects loop runs continuously until the engine is dropped.
+    pub fn start_persistent_effects_loop(engine: Arc<Engine>) {
+        // Use a weak reference to avoid preventing Engine from being dropped.
+        // The thread will exit when the weak reference can no longer be upgraded.
+        let weak_engine = Arc::downgrade(&engine);
+
+        let handle = thread::spawn(move || {
+            let mut last_update = std::time::Instant::now();
+            let target_frame_time = Duration::from_secs_f64(1.0 / 44.0); // 44Hz
+
+            // This loop runs continuously at 44Hz to process effects.
+            // It exits when the Engine is dropped (weak upgrade fails).
+            loop {
+                // Try to upgrade the weak reference - if it fails, the Engine was dropped
+                let Some(engine) = weak_engine.upgrade() else {
+                    break;
+                };
+
+                let now = std::time::Instant::now();
+                let dt = now.duration_since(last_update);
+
+                if dt >= target_frame_time {
+                    // Update effects engine and apply to universes
+                    if let Err(e) = engine.update_effects() {
+                        error!("Error updating effects: {}", e);
+                    }
+
+                    // Update song lighting timeline with actual song time
+                    let song_time = engine.get_song_time();
+                    if let Err(e) = engine.update_song_lighting(song_time) {
+                        error!("Error updating song lighting: {}", e);
+                    }
+
+                    // Check if timeline has finished (all cues processed)
+                    // and notify the waiting thread if so
+                    if !engine.timeline_finished.load(Ordering::Relaxed) {
+                        let timeline = engine.current_song_timeline.lock().unwrap();
+                        if let Some(ref tl) = *timeline {
+                            if tl.is_finished() {
+                                engine.timeline_finished.store(true, Ordering::Relaxed);
+                                // Notify the cancel handle so wait() returns
+                                if let Some(ref cancel_handle) =
+                                    *engine.timeline_cancel_handle.lock().unwrap()
+                                {
+                                    cancel_handle.notify();
+                                }
+                            }
+                        }
+                    }
+
+                    last_update = now;
+                }
+
+                // Drop the Arc before sleeping to minimize time we hold the strong reference
+                drop(engine);
+
+                thread::sleep(Duration::from_millis(1));
+            }
+        });
+
+        // The handle is forgotten so the thread runs detached.
+        // It will stop when the Engine is dropped (weak upgrade fails).
+        std::mem::forget(handle);
+    }
 
     #[cfg(test)]
     pub(crate) fn get_universe(&self, universe_id: u16) -> Option<&Universe> {
@@ -184,18 +269,59 @@ impl Engine {
             let mut all_shows = Vec::new();
             for dsl_show in dsl_lighting_shows {
                 match std::fs::read_to_string(dsl_show.file_path()) {
-                    Ok(content) => match crate::lighting::parser::parse_light_shows(&content) {
-                        Ok(shows) => {
-                            for (_, show) in shows {
-                                all_shows.push(show);
+                    Ok(content) => {
+                        match crate::lighting::parser::parse_light_shows(&content) {
+                            Ok(shows) => {
+                                // Validate shows if lighting config is available
+                                if let Some(ref lighting_config) = dmx_engine.lighting_config {
+                                    if let Err(e) =
+                                        validate_light_shows(&shows, Some(lighting_config))
+                                    {
+                                        error!(
+                                            "Light show validation failed for {}: {}",
+                                            dsl_show.file_path().display(),
+                                            e
+                                        );
+                                        return Err(format!(
+                                            "Light show validation failed for {}: {}",
+                                            dsl_show.file_path().display(),
+                                            e
+                                        )
+                                        .into());
+                                    }
+                                }
+
+                                for (_, show) in shows {
+                                    all_shows.push(show);
+                                }
+                            }
+                            Err(e) => {
+                                error!(
+                                    "Failed to parse DSL show {}: {}",
+                                    dsl_show.file_path().display(),
+                                    e
+                                );
+                                return Err(format!(
+                                    "Failed to parse DSL show {}: {}",
+                                    dsl_show.file_path().display(),
+                                    e
+                                )
+                                .into());
                             }
                         }
-                        Err(_e) => {
-                            // Failed to parse DSL show, skip it
-                        }
-                    },
-                    Err(_e) => {
-                        // Failed to read DSL show, skip it
+                    }
+                    Err(e) => {
+                        error!(
+                            "Failed to read DSL show {}: {}",
+                            dsl_show.file_path().display(),
+                            e
+                        );
+                        return Err(format!(
+                            "Failed to read DSL show {}: {}",
+                            dsl_show.file_path().display(),
+                            e
+                        )
+                        .into());
                     }
                 }
             }
@@ -217,12 +343,17 @@ impl Engine {
         // Start the lighting timeline
         dmx_engine.start_lighting_timeline();
 
-        // Start the effects processing loop
-        let effects_handle = Self::start_effects_loop(dmx_engine.clone(), cancel_handle.clone())?;
+        // Reset song time to zero for new song
+        dmx_engine.update_song_time(Duration::ZERO);
 
-        // Start song time tracking
+        // Reset timeline finished flag for new song
+        dmx_engine.timeline_finished.store(false, Ordering::Relaxed);
+
+        // Start song time tracking (per-song, tracks elapsed time)
         let song_time_tracker =
             Self::start_song_time_tracker(dmx_engine.clone(), cancel_handle.clone());
+
+        // Note: Effects loop is now persistent and started in Engine::new()
 
         let (universe_ids, playback_delay): (HashSet<u16>, Duration) = (
             dmx_engine.universes.keys().cloned().collect(),
@@ -296,12 +427,20 @@ impl Engine {
         if !has_dmx_sheets && has_lighting {
             let play_barrier = play_barrier.clone();
             let cancel_handle = cancel_handle.clone();
+            let timeline_finished = dmx_engine.timeline_finished.clone();
+
+            // Store the cancel handle so the effects loop can notify when timeline finishes
+            {
+                let mut handle = dmx_engine.timeline_cancel_handle.lock().unwrap();
+                *handle = Some(cancel_handle.clone());
+            }
+
             join_handles.push(thread::spawn(move || {
                 play_barrier.wait();
-                // Just wait for cancellation when we only have lighting shows
-                while !cancel_handle.is_cancelled() {
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                }
+
+                // Wait for either cancellation or timeline completion
+                // The effects loop will set timeline_finished and call notify() when all cues are processed
+                cancel_handle.wait(timeline_finished);
             }));
         }
 
@@ -338,58 +477,21 @@ impl Engine {
             result?;
         }
 
-        // Wait for effects loop to finish
-        if let Err(e) = effects_handle.join() {
-            error!("Error waiting for effects loop to stop: {:?}", e);
-        }
+        // Song playback finished - signal the song time tracker to stop
+        // We use timeline_finished flag (not cancel) so we don't cancel audio/MIDI
+        dmx_engine.timeline_finished.store(true, Ordering::Relaxed);
 
-        // Wait for song time tracker to finish
+        // Wait for song time tracker to finish (will exit now that timeline_finished is set)
         if let Err(e) = song_time_tracker.join() {
             error!("Error waiting for song time tracker to stop: {:?}", e);
         }
 
-        // Stop the lighting timeline
+        // Stop the lighting timeline for this song, but effects continue processing
         dmx_engine.stop_lighting_timeline();
 
         info!("DMX playback stopped.");
 
         Ok(())
-    }
-
-    /// Starts the effects processing loop for continuous effect updates
-    pub fn start_effects_loop(
-        dmx_engine: Arc<Engine>,
-        cancel_handle: CancelHandle,
-    ) -> Result<JoinHandle<()>, Box<dyn Error>> {
-        let effects_handle = thread::spawn(move || {
-            let mut last_update = std::time::Instant::now();
-            let target_frame_time = Duration::from_secs_f64(1.0 / 44.0); // 44Hz to match Universe TARGET_HZ
-
-            while !cancel_handle.is_cancelled() {
-                let now = std::time::Instant::now();
-                let elapsed = now.duration_since(last_update);
-
-                if elapsed >= target_frame_time {
-                    // Update effects engine
-                    if let Err(e) = dmx_engine.update_effects() {
-                        error!("Error updating effects: {}", e);
-                    }
-
-                    // Update song lighting timeline with actual song time
-                    let song_time = dmx_engine.get_song_time();
-                    if let Err(e) = dmx_engine.update_song_lighting(song_time) {
-                        error!("Error updating song lighting: {}", e);
-                    }
-
-                    last_update = now;
-                }
-
-                // Sleep for a short time to prevent busy waiting
-                thread::sleep(Duration::from_millis(1));
-            }
-        });
-
-        Ok(effects_handle)
     }
 
     /// Handles an incoming MIDI event.
@@ -560,6 +662,12 @@ impl Engine {
 
     /// Starts the lighting timeline
     pub fn start_lighting_timeline(&self) {
+        // Clear effects from previous song before starting new timeline
+        {
+            let mut effect_engine = self.effect_engine.lock().unwrap();
+            effect_engine.stop_all_effects();
+        }
+
         let mut current_timeline = self.current_song_timeline.lock().unwrap();
         if let Some(timeline) = current_timeline.as_mut() {
             timeline.start();
@@ -573,9 +681,9 @@ impl Engine {
             timeline.stop();
         }
 
-        // Clear all active effects when stopping the timeline
-        let mut effect_engine = self.effect_engine.lock().unwrap();
-        effect_engine.stop_all_effects();
+        // Note: We do NOT stop effects here - they should continue running
+        // until they naturally complete or until the next song starts.
+        // Effects are only cleared when a new song starts or playback is cancelled.
     }
 
     /// Updates the current song time
@@ -595,10 +703,12 @@ impl Engine {
         dmx_engine: Arc<Engine>,
         cancel_handle: CancelHandle,
     ) -> JoinHandle<()> {
+        let timeline_finished = dmx_engine.timeline_finished.clone();
         thread::spawn(move || {
             let start_time = std::time::Instant::now();
 
-            while !cancel_handle.is_cancelled() {
+            // Run until cancelled OR timeline finished
+            while !cancel_handle.is_cancelled() && !timeline_finished.load(Ordering::Relaxed) {
                 let elapsed = start_time.elapsed();
                 dmx_engine.update_song_time(elapsed);
 
@@ -626,6 +736,9 @@ impl Engine {
 
 impl Drop for Engine {
     fn drop(&mut self) {
+        // The persistent effects loop uses a Weak<Engine> and will exit automatically
+        // when this Engine is dropped (the weak upgrade will fail).
+        // We still cancel the handle for any other consumers.
         self.cancel_handle.cancel();
 
         self.join_handles.drain(..).for_each(|join_handle| {
