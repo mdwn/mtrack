@@ -21,7 +21,20 @@ show_name = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 
 show_content = { "{" ~ (tempo | cue)* ~ "}" }
 
-cue = { (time_string | measure_time) ~ effect* }
+cue = { (time_string | measure_time) ~ (effect | layer_command)* }
+
+// Layer control commands (grandMA-inspired)
+layer_command = { layer_command_type ~ "(" ~ layer_command_params? ~ ")" }
+
+layer_command_type = { "release" | "clear" | "freeze" | "unfreeze" | "master" }
+
+layer_command_params = { layer_command_param ~ ("," ~ layer_command_param)* }
+
+layer_command_param = { layer_command_param_name ~ ":" ~ layer_command_param_value }
+
+layer_command_param_name = { "layer" | "time" | "intensity" | "speed" }
+
+layer_command_param_value = { layer_parameter | time_parameter | percentage | number_value }
 
 time_string = @{ "@" ~ (time_mm_ss_mmm | time_ss_mmm) }
 
