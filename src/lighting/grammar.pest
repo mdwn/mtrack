@@ -11,8 +11,8 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-// Main file rule - can contain any combination of fixture types, venues, light shows, and tempo
-file = { SOI ~ (fixture_type | venue | light_show | tempo)* ~ EOI }
+// Main file rule - can contain any combination of fixture types, venues, light shows, sequences, and tempo
+file = { SOI ~ (fixture_type | venue | light_show | sequence | tempo)* ~ EOI }
 
 // Light show rules
 light_show = { "show" ~ show_name ~ show_content }
@@ -21,7 +21,30 @@ show_name = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 
 show_content = { "{" ~ (tempo | cue)* ~ "}" }
 
-cue = { (time_string | measure_time) ~ (effect | layer_command)* }
+cue = { (time_string | measure_time) ~ (effect | layer_command | sequence_reference | stop_sequence_command)* }
+
+// Sequence definition rules
+sequence = { "sequence" ~ sequence_name ~ sequence_content }
+
+sequence_name = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+
+sequence_content = { "{" ~ (tempo | sequence_cue)* ~ "}" }
+
+sequence_cue = { (time_string | measure_time) ~ (effect | layer_command | sequence_reference | stop_sequence_command)* }
+
+// Sequence reference in a cue
+sequence_reference = { "sequence" ~ sequence_name ~ (","? ~ sequence_params)? }
+
+sequence_params = { sequence_param ~ ("," ~ sequence_param)* }
+
+sequence_param = { sequence_param_name ~ ":" ~ sequence_param_value }
+
+sequence_param_name = { "loop" }
+
+sequence_param_value = { loop_parameter | number_value }
+
+// Stop sequence command
+stop_sequence_command = { "stop" ~ "sequence" ~ sequence_name }
 
 // Layer control commands (grandMA-inspired)
 layer_command = { layer_command_type ~ "(" ~ layer_command_params? ~ ")" }

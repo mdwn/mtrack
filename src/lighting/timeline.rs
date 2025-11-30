@@ -25,6 +25,8 @@ pub struct TimelineUpdate {
     pub effects: Vec<EffectInstance>,
     /// Layer commands to be executed
     pub layer_commands: Vec<LayerCommand>,
+    /// Names of sequences to stop
+    pub stop_sequences: Vec<String>,
 }
 
 /// Timeline processor for lighting cues during song playback
@@ -126,6 +128,8 @@ impl LightingTimeline {
                 }
                 // Process layer commands
                 result.layer_commands.extend(cue.layer_commands.clone());
+                // Process stop sequence commands
+                result.stop_sequences.extend(cue.stop_sequences.clone());
 
                 self.next_cue_index += 1;
             } else {
@@ -140,14 +144,28 @@ impl LightingTimeline {
     /// Creates an EffectInstance from a DSL Effect
     pub fn create_effect_instance(effect: &Effect) -> Option<EffectInstance> {
         // Create base effect instance using the DSL EffectType directly with timing
-        let mut effect_instance = EffectInstance::new(
+        // Include sequence name in ID if this effect came from a sequence
+        let effect_id = if let Some(ref seq_name) = effect.sequence_name {
+            format!(
+                "seq_{}_effect_{}",
+                seq_name,
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            )
+        } else {
             format!(
                 "song_effect_{}",
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_nanos()
-            ),
+            )
+        };
+
+        let mut effect_instance = EffectInstance::new(
+            effect_id,
             effect.effect_type.clone(),
             effect.groups.clone(),
             effect.up_time,
@@ -207,6 +225,7 @@ mod tests {
 
         // Timeline with cues should not be finished initially
         let effect = Effect {
+            sequence_name: None,
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
@@ -219,6 +238,7 @@ mod tests {
             down_time: None,
         };
         let cues = vec![Cue {
+            stop_sequences: vec![],
             time: Duration::from_millis(0),
             effects: vec![effect],
             layer_commands: vec![],
@@ -248,6 +268,7 @@ mod tests {
         parameters.insert("dimmer".to_string(), "60%".to_string());
 
         let effect = Effect {
+            sequence_name: None,
             groups: vec!["front_wash".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
@@ -261,6 +282,7 @@ mod tests {
         };
 
         let cues = vec![Cue {
+            stop_sequences: vec![],
             time: Duration::from_millis(0),
             effects: vec![effect],
             layer_commands: vec![],
@@ -284,6 +306,7 @@ mod tests {
         parameters.insert("color".to_string(), "blue".to_string());
 
         let effect = Effect {
+            sequence_name: None,
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
@@ -301,16 +324,19 @@ mod tests {
                 time: Duration::from_millis(10000),
                 effects: vec![effect.clone()],
                 layer_commands: vec![],
+                stop_sequences: vec![],
             },
             Cue {
                 time: Duration::from_millis(5000),
                 effects: vec![effect.clone()],
                 layer_commands: vec![],
+                stop_sequences: vec![],
             },
             Cue {
                 time: Duration::from_millis(0),
                 effects: vec![effect],
                 layer_commands: vec![],
+                stop_sequences: vec![],
             },
         ];
 
@@ -339,6 +365,7 @@ mod tests {
         parameters.insert("color".to_string(), "blue".to_string());
 
         let effect = Effect {
+            sequence_name: None,
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
@@ -356,11 +383,13 @@ mod tests {
                 time: Duration::from_millis(5000),
                 effects: vec![effect.clone()],
                 layer_commands: vec![],
+                stop_sequences: vec![],
             },
             Cue {
                 time: Duration::from_millis(5000),
                 effects: vec![effect],
                 layer_commands: vec![],
+                stop_sequences: vec![],
             },
         ];
 
@@ -378,6 +407,7 @@ mod tests {
         parameters.insert("color".to_string(), "red".to_string());
 
         let effect1 = Effect {
+            sequence_name: None,
             groups: vec!["fixture1".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
@@ -391,6 +421,7 @@ mod tests {
         };
 
         let effect2 = Effect {
+            sequence_name: None,
             groups: vec!["fixture2".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
@@ -408,11 +439,13 @@ mod tests {
                 time: Duration::from_secs(0),
                 effects: vec![effect1],
                 layer_commands: vec![],
+                stop_sequences: vec![],
             },
             Cue {
                 time: Duration::from_secs(2),
                 effects: vec![effect2],
                 layer_commands: vec![],
+                stop_sequences: vec![],
             },
         ];
 
@@ -453,6 +486,7 @@ mod tests {
                     intensity: None,
                     speed: None,
                 }],
+                stop_sequences: vec![],
             },
             Cue {
                 time: Duration::from_secs(1),
@@ -464,6 +498,7 @@ mod tests {
                     intensity: None,
                     speed: None,
                 }],
+                stop_sequences: vec![],
             },
             Cue {
                 time: Duration::from_secs(2),
@@ -475,6 +510,7 @@ mod tests {
                     intensity: Some(0.5),
                     speed: Some(2.0),
                 }],
+                stop_sequences: vec![],
             },
         ];
 
@@ -521,6 +557,7 @@ mod tests {
 
         // Create cue with both an effect and a layer command
         let effect = Effect {
+            sequence_name: None,
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
@@ -534,6 +571,7 @@ mod tests {
         };
 
         let cues = vec![Cue {
+            stop_sequences: vec![],
             time: Duration::from_secs(0),
             effects: vec![effect],
             layer_commands: vec![LayerCommand {

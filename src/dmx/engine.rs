@@ -663,6 +663,14 @@ impl Engine {
             }
         }
 
+        // Process stop sequence commands
+        if !timeline_update.stop_sequences.is_empty() {
+            let mut effects_engine = self.effect_engine.lock().unwrap();
+            for sequence_name in &timeline_update.stop_sequences {
+                effects_engine.stop_sequence(sequence_name);
+            }
+        }
+
         // Start the effects in the effects engine, resolving groups to fixtures
         if !timeline_update.effects.is_empty() {
             for effect in timeline_update.effects {

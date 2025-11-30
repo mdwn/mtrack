@@ -632,12 +632,15 @@ impl EffectInstance {
     /// Get the total duration of this effect (up_time + hold_time + down_time)
     /// Returns None for indefinite/perpetual effects (effects without explicit duration or timing)
     pub fn total_duration(&self) -> Option<Duration> {
-        // Check if this is a perpetual effect (no timing parameters)
-        let has_no_timing =
-            self.up_time.is_none() && self.hold_time.is_none() && self.down_time.is_none();
+        // Check if this is an indefinite effect (no hold_time and no down_time)
+        // This matches the semantics in calculate_crossfade_multiplier()
+        // An effect with only up_time (fade-in) but no hold/down time runs indefinitely
+        let hold = self.hold_time.unwrap_or(Duration::from_secs(0));
+        let down = self.down_time.unwrap_or(Duration::from_secs(0));
+        let is_indefinite = hold.is_zero() && down.is_zero();
 
-        // Effects are perpetual if they have no timing parameters AND no explicit duration
-        if has_no_timing {
+        // Effects are perpetual if they are indefinite AND have no explicit duration
+        if is_indefinite {
             match &self.effect_type {
                 // Static effects with no duration are perpetual
                 EffectType::Static { duration: None, .. } => return None,
@@ -1920,6 +1923,50 @@ mod tests {
         assert!(
             (mult_at_100 - 1.0).abs() < 0.001,
             "Should stay at full intensity long after fade-in"
+        );
+    }
+
+    #[test]
+    fn test_perpetual_effect_with_up_time_never_reaches_terminal_state() {
+        // This test ensures consistency between total_duration() and has_reached_terminal_state()
+        // for effects with only up_time set (no hold_time or down_time).
+        // Such effects should be treated as perpetual after the fade-in completes.
+
+        let chase = EffectInstance::new(
+            "chase".to_string(),
+            EffectType::Chase {
+                pattern: ChasePattern::Linear,
+                speed: TempoAwareSpeed::Fixed(1.0),
+                direction: ChaseDirection::LeftToRight,
+            },
+            vec!["fixture".to_string()],
+            Some(Duration::from_secs(2)), // up_time only - fade in over 2 seconds
+            None,                         // no hold_time
+            None,                         // no down_time
+        );
+
+        // total_duration() should return None (perpetual)
+        assert!(
+            chase.total_duration().is_none(),
+            "Effect with only up_time should have total_duration() = None (perpetual)"
+        );
+
+        // Should never reach terminal state, even after fade-in completes
+        assert!(
+            !chase.has_reached_terminal_state(Duration::from_secs(0)),
+            "Should not be terminal at t=0"
+        );
+        assert!(
+            !chase.has_reached_terminal_state(Duration::from_secs(2)),
+            "Should not be terminal at t=2s (fade-in complete)"
+        );
+        assert!(
+            !chase.has_reached_terminal_state(Duration::from_secs(10)),
+            "Should not be terminal at t=10s (well after fade-in)"
+        );
+        assert!(
+            !chase.has_reached_terminal_state(Duration::from_secs(3600)),
+            "Should not be terminal at t=1hr"
         );
     }
 }

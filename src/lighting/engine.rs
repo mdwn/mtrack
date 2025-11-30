@@ -807,6 +807,26 @@ impl EffectEngine {
         self.releasing_effects.clear();
     }
 
+    /// Stop all effects from a specific sequence
+    /// Effects from sequences have IDs starting with "seq_{sequence_name}_"
+    pub fn stop_sequence(&mut self, sequence_name: &str) {
+        let prefix = format!("seq_{}_", sequence_name);
+        let mut to_remove = Vec::new();
+
+        // Collect effect IDs that match this sequence
+        for effect_id in self.active_effects.keys() {
+            if effect_id.starts_with(&prefix) {
+                to_remove.push(effect_id.clone());
+            }
+        }
+
+        // Remove the effects
+        for effect_id in to_remove {
+            self.active_effects.remove(&effect_id);
+            self.releasing_effects.remove(&effect_id);
+        }
+    }
+
     // ===== Layer Control Methods (grandMA-inspired) =====
 
     /// Clear a layer - immediately stops all effects on the specified layer
@@ -853,8 +873,9 @@ impl EffectEngine {
                     .insert(effect_id.clone(), (release_time, now));
             }
         }
-        // Unfreeze the layer if it was frozen
-        self.frozen_layers.remove(&layer);
+        // Unfreeze the layer if it was frozen (properly adjusts effect start times
+        // to maintain smooth animation continuity during the fade-out)
+        self.unfreeze_layer(layer);
     }
 
     /// Freeze a layer - pauses all effects on the layer at their current state
@@ -3407,6 +3428,131 @@ mod tests {
             vals_after1, vals_after2,
             "After unfreezing, effect should animate: {:?} vs {:?}",
             vals_after1, vals_after2
+        );
+    }
+
+    #[test]
+    fn test_release_frozen_layer_maintains_animation_continuity() {
+        // Regression test: releasing a frozen layer should not cause animation discontinuity.
+        // Before the fix, release_layer_with_time would call frozen_layers.remove() directly
+        // instead of unfreeze_layer(), causing effects to jump forward in their animation.
+        let mut engine = EffectEngine::new();
+
+        // Create RGB fixture for rainbow test
+        let mut channels = HashMap::new();
+        channels.insert("red".to_string(), 1);
+        channels.insert("green".to_string(), 2);
+        channels.insert("blue".to_string(), 3);
+        let fixture = FixtureInfo {
+            name: "rgb_fixture".to_string(),
+            universe: 1,
+            address: 1,
+            fixture_type: "RGB".to_string(),
+            channels,
+            max_strobe_frequency: None,
+        };
+        engine.register_fixture(fixture);
+
+        // Start a rainbow effect - it cycles through colors over time
+        let effect = EffectInstance::new(
+            "rainbow".to_string(),
+            EffectType::Rainbow {
+                speed: TempoAwareSpeed::Fixed(1.0), // 1 cycle per second
+                saturation: 1.0,
+                brightness: 1.0,
+            },
+            vec!["rgb_fixture".to_string()],
+            None,
+            None,
+            None,
+        );
+        engine.start_effect(effect).unwrap();
+
+        // Run effect to get to an interesting state (250ms into the cycle)
+        engine.update(Duration::from_millis(250)).unwrap();
+
+        // Capture the current state (before freeze)
+        let _commands_before_freeze = engine.update(Duration::from_millis(10)).unwrap();
+
+        // Freeze the layer
+        engine.freeze_layer(EffectLayer::Background);
+
+        // Let significant time pass while frozen (1 second = full cycle if not frozen)
+        engine.update(Duration::from_millis(500)).unwrap();
+        engine.update(Duration::from_millis(500)).unwrap();
+
+        // Capture the frozen state (should be same as before freeze)
+        let commands_frozen = engine.update(Duration::from_millis(10)).unwrap();
+        // Sort by channel for consistent comparison (DMX commands may be returned in any order)
+        let mut frozen_sorted: Vec<_> = commands_frozen
+            .iter()
+            .map(|c| (c.channel, c.value))
+            .collect();
+        frozen_sorted.sort_by_key(|(ch, _)| *ch);
+        let vals_frozen: Vec<u8> = frozen_sorted.iter().map(|(_, v)| *v).collect();
+
+        // Now release the frozen layer with a fade time
+        engine.release_layer_with_time(EffectLayer::Background, Some(Duration::from_secs(2)));
+
+        // Immediately after release, the effect should continue from where it was frozen,
+        // NOT jump forward by the 1 second that passed while frozen.
+        let commands_after_release = engine.update(Duration::from_millis(10)).unwrap();
+        // Sort by channel for consistent comparison
+        let mut after_release_sorted: Vec<_> = commands_after_release
+            .iter()
+            .map(|c| (c.channel, c.value))
+            .collect();
+        after_release_sorted.sort_by_key(|(ch, _)| *ch);
+        let vals_after_release: Vec<u8> = after_release_sorted.iter().map(|(_, v)| *v).collect();
+
+        // The values right after release should be very close to the frozen values
+        // (only 10ms of animation has passed, not 1+ second)
+        // We allow small differences due to the 10ms update and fade starting
+        let max_diff: i16 = vals_frozen
+            .iter()
+            .zip(vals_after_release.iter())
+            .map(|(a, b)| (*a as i16 - *b as i16).abs())
+            .max()
+            .unwrap_or(0);
+
+        // If the bug exists (no start time adjustment), the rainbow would have jumped
+        // forward by ~1 second in its cycle, causing a large color difference.
+        // At 1 cycle/second, that's a 360 degree hue shift (back to same color)
+        // but even 500ms would be 180 degrees (opposite color = huge difference).
+        // With the fix, we should see only tiny differences from the 10ms elapsed.
+        assert!(
+            max_diff < 30,
+            "Release of frozen layer caused animation discontinuity! \
+             Frozen: {:?}, After release: {:?}, Max diff: {}. \
+             Effect should continue from frozen state, not jump forward.",
+            vals_frozen,
+            vals_after_release,
+            max_diff
+        );
+
+        // Also verify the effect is actually fading out over time
+        engine.update(Duration::from_millis(1000)).unwrap();
+        let commands_mid_fade = engine.update(Duration::from_millis(10)).unwrap();
+        // Sort by channel for consistent comparison
+        let mut mid_fade_sorted: Vec<_> = commands_mid_fade
+            .iter()
+            .map(|c| (c.channel, c.value))
+            .collect();
+        mid_fade_sorted.sort_by_key(|(ch, _)| *ch);
+        let vals_mid_fade: Vec<u8> = mid_fade_sorted.iter().map(|(_, v)| *v).collect();
+
+        // At 1 second into a 2 second fade, values should be roughly half
+        let avg_mid: f64 =
+            vals_mid_fade.iter().map(|v| *v as f64).sum::<f64>() / vals_mid_fade.len() as f64;
+        let avg_frozen: f64 =
+            vals_frozen.iter().map(|v| *v as f64).sum::<f64>() / vals_frozen.len() as f64;
+
+        // Mid-fade average should be notably lower than frozen average
+        assert!(
+            avg_mid < avg_frozen * 0.8,
+            "Effect should be fading: frozen avg={:.1}, mid-fade avg={:.1}",
+            avg_frozen,
+            avg_mid
         );
     }
 
