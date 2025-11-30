@@ -1835,18 +1835,18 @@ mod tests {
         println!("✅ Started timeline");
 
         // Update timeline to get effects at different times
-        let effects_at_0s = timeline.update(Duration::from_secs(0));
-        println!("✅ Timeline at 0s: {} effects", effects_at_0s.len());
-        for effect in &effects_at_0s {
+        let result_at_0s = timeline.update(Duration::from_secs(0));
+        println!("✅ Timeline at 0s: {} effects", result_at_0s.effects.len());
+        for effect in &result_at_0s.effects {
             println!(
                 "  Effect: {} blend_mode = {:?}",
                 effect.id, effect.blend_mode
             );
         }
 
-        let effects_at_2s = timeline.update(Duration::from_secs(2));
-        println!("✅ Timeline at 2s: {} effects", effects_at_2s.len());
-        for effect in &effects_at_2s {
+        let result_at_2s = timeline.update(Duration::from_secs(2));
+        println!("✅ Timeline at 2s: {} effects", result_at_2s.effects.len());
+        for effect in &result_at_2s.effects {
             println!(
                 "  Effect: {} blend_mode = {:?}",
                 effect.id, effect.blend_mode
@@ -1854,7 +1854,7 @@ mod tests {
         }
 
         // Start the effects from timeline
-        for effect in effects_at_0s {
+        for effect in result_at_0s.effects {
             engine.start_effect(effect).unwrap();
         }
 
@@ -1863,7 +1863,7 @@ mod tests {
         println!("✅ Applied static effect from timeline");
 
         // Start the dimmer effect from timeline
-        for effect in effects_at_2s {
+        for effect in result_at_2s.effects {
             engine.start_effect(effect).unwrap();
         }
 
@@ -7388,6 +7388,7 @@ mod tests {
             "examples/lighting/shows/crossfade_show.light",
             "examples/lighting/shows/layering_show.light",
             "examples/lighting/shows/comprehensive_show.light",
+            "examples/lighting/shows/layer_control_demo.light",
         ];
 
         for file_path in example_files {

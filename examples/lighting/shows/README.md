@@ -195,3 +195,138 @@ back_lights: chase colors: ["red", "green"]
 ```
 
 However, tempo changes can only be specified at measure/beat positions.
+
+## Layer Control Commands
+
+The lighting system includes grandMA-inspired layer control commands for managing effects at the layer level. These commands provide professional-grade control over effect playback.
+
+### Layers
+
+Effects are organized into three layers, processed from bottom to top:
+
+| Layer | Priority | Typical Use |
+|-------|----------|-------------|
+| `background` | Lowest | Base colors, ambient lighting |
+| `midground` | Middle | Dimmer effects, color cycles |
+| `foreground` | Highest | Strobes, flashes, highlights |
+
+### Commands
+
+#### `clear` - Immediate Stop
+Immediately stops all effects on a layer (like a panic button).
+
+```light
+clear(layer: foreground)
+```
+
+#### `release` - Graceful Fade Out
+Gracefully fades out all effects on a layer. Uses each effect's `fade_out` time, or a custom time.
+
+```light
+# Use effects' own fade_out times (or 1s default)
+release(layer: foreground)
+
+# Custom fade time
+release(layer: foreground, time: 2s)
+release(layer: background, time: 500ms)
+```
+
+#### `freeze` - Pause Effects
+Pauses all effects on a layer at their current state. Effects maintain their current output but don't progress in time.
+
+```light
+freeze(layer: background)
+```
+
+#### `unfreeze` - Resume Effects
+Resumes paused effects from where they left off.
+
+```light
+unfreeze(layer: background)
+```
+
+#### `master` - Layer Masters
+Sets intensity and/or speed masters for a layer. These multiply with effect values.
+
+```light
+# Set intensity to 50%
+master(layer: background, intensity: 50%)
+
+# Set speed to 200% (double speed)
+master(layer: midground, speed: 200%)
+
+# Set both
+master(layer: foreground, intensity: 75%, speed: 50%)
+```
+
+**Master values:**
+- `intensity`: 0% to 100% (multiplies with effect output)
+- `speed`: 0% to any value (multiplies with effect timing; 0% = frozen, 100% = normal, 200% = double speed)
+
+### Complete Example
+
+```light
+show "Layer Control Demo" {
+    # Start with background color
+    @00:00.000
+        front_wash: static color: "blue", layer: background
+        back_wash: rainbow speed: 0.5, layer: midground
+
+    # Dim the background to 50%
+    @00:05.000
+        master(layer: background, intensity: 50%)
+
+    # Add a foreground strobe
+    @00:10.000
+        strobes: strobe frequency: 8, layer: foreground
+
+    # Freeze the rainbow effect
+    @00:15.000
+        freeze(layer: midground)
+
+    # Release foreground with 2 second fade
+    @00:20.000
+        release(layer: foreground, time: 2s)
+
+    # Resume the rainbow
+    @00:25.000
+        unfreeze(layer: midground)
+
+    # Speed up the midground effects
+    @00:30.000
+        master(layer: midground, speed: 200%)
+
+    # Clear everything on foreground instantly
+    @00:35.000
+        clear(layer: foreground)
+
+    # Restore background to full intensity
+    @00:40.000
+        master(layer: background, intensity: 100%)
+}
+```
+
+### Use Cases
+
+| Scenario | Command |
+|----------|---------|
+| Panic/blackout on a layer | `clear(layer: foreground)` |
+| Smooth transition to next song section | `release(layer: midground, time: 4s)` |
+| Dramatic pause | `freeze(layer: background)` |
+| Build intensity gradually | `master(layer: background, intensity: 25%)` then increase |
+| Sync effects to tempo change | `master(layer: midground, speed: 150%)` |
+| Resume after pause | `unfreeze(layer: background)` |
+
+### Combining with Effects
+
+Layer commands can be in the same cue as effects:
+
+```light
+@00:10.000
+    # Clear old effects and start new ones in one cue
+    clear(layer: foreground)
+    front_wash: strobe frequency: 10, layer: foreground
+    master(layer: background, intensity: 50%)
+```
+
+The layer commands are processed before effects in each cue, so clearing a layer and adding new effects in the same cue works as expected.

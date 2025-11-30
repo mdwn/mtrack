@@ -432,7 +432,7 @@ pub enum DimmerCurve {
 }
 
 /// Effect layer for layering system
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum EffectLayer {
     Background = 0, // Base layer (e.g., static colors)
     Midground = 1,  // Middle layer (e.g., dimmer effects)
@@ -500,13 +500,14 @@ impl EffectInstance {
         down_time: Option<Duration>,
     ) -> Self {
         // Extract duration from effect_type if available
+        // Effects without an explicit duration are perpetual until replaced
         let duration = match &effect_type {
             EffectType::Static { duration, .. } => *duration,
             EffectType::Dimmer { duration, .. } => Some(*duration), // Dimmer duration becomes up_time
-            EffectType::ColorCycle { .. } => Some(Duration::from_secs(60)), // Default 60s for cycling effects
+            EffectType::ColorCycle { .. } => None,                  // Perpetual until replaced
             EffectType::Strobe { duration, .. } => *duration,
-            EffectType::Chase { .. } => Some(Duration::from_secs(60)), // Default 60s for chase effects
-            EffectType::Rainbow { .. } => Some(Duration::from_secs(60)), // Default 60s for rainbow effects
+            EffectType::Chase { .. } => None, // Perpetual until replaced
+            EffectType::Rainbow { .. } => None, // Perpetual until replaced
             EffectType::Pulse { duration, .. } => *duration,
         };
 
@@ -525,7 +526,7 @@ impl EffectInstance {
             EffectType::Static {
                 duration: Some(_), ..
             } => (None, duration, None), // Static effects with duration just hold for that duration
-            _ => (None, duration.or(Some(Duration::from_secs(1))), None), // Default to 1 second if no duration
+            _ => (None, duration, None), // Effects without duration are perpetual until replaced
         };
 
         // Use provided timing or fall back to defaults
@@ -629,15 +630,26 @@ impl EffectInstance {
     }
 
     /// Get the total duration of this effect (up_time + hold_time + down_time)
-    /// Returns None for indefinite effects (like static effects with no duration)
+    /// Returns None for indefinite/perpetual effects (effects without explicit duration or timing)
     pub fn total_duration(&self) -> Option<Duration> {
-        // Static effects with no duration are indefinite only if they also have no timing parameters
-        if matches!(self.effect_type, EffectType::Static { duration: None, .. })
-            && self.up_time.is_none()
-            && self.hold_time.is_none()
-            && self.down_time.is_none()
-        {
-            return None; // Truly indefinite static effect
+        // Check if this is a perpetual effect (no timing parameters)
+        let has_no_timing =
+            self.up_time.is_none() && self.hold_time.is_none() && self.down_time.is_none();
+
+        // Effects are perpetual if they have no timing parameters AND no explicit duration
+        if has_no_timing {
+            match &self.effect_type {
+                // Static effects with no duration are perpetual
+                EffectType::Static { duration: None, .. } => return None,
+                // ColorCycle, Chase, Rainbow have no duration field - perpetual by design
+                EffectType::ColorCycle { .. } => return None,
+                EffectType::Chase { .. } => return None,
+                EffectType::Rainbow { .. } => return None,
+                // Strobe and Pulse with no duration are perpetual
+                EffectType::Strobe { duration: None, .. } => return None,
+                EffectType::Pulse { duration: None, .. } => return None,
+                _ => {} // Fall through to calculate duration
+            }
         }
 
         // For dimmers, use duration field (timing params not used)
@@ -1579,5 +1591,335 @@ mod tests {
         let freq = TempoAwareFrequency::Seconds(0.5);
         let result = freq.to_hz(None, Duration::ZERO);
         assert!((result - 2.0).abs() < 0.001, "0.5 seconds should give 2 Hz");
+    }
+
+    #[test]
+    fn test_perpetual_effects_total_duration_is_none() {
+        // Test that effects without explicit duration have total_duration() = None
+
+        // ColorCycle without timing params is perpetual
+        let color_cycle = EffectInstance::new(
+            "color_cycle".to_string(),
+            EffectType::ColorCycle {
+                colors: vec![Color::new(255, 0, 0), Color::new(0, 0, 255)],
+                speed: TempoAwareSpeed::Fixed(1.0),
+                direction: CycleDirection::Forward,
+                transition: CycleTransition::Fade,
+            },
+            vec!["fixture".to_string()],
+            None,
+            None,
+            None,
+        );
+        assert!(
+            color_cycle.total_duration().is_none(),
+            "ColorCycle without timing should be perpetual"
+        );
+
+        // Chase without timing params is perpetual
+        let chase = EffectInstance::new(
+            "chase".to_string(),
+            EffectType::Chase {
+                pattern: ChasePattern::Linear,
+                speed: TempoAwareSpeed::Fixed(1.0),
+                direction: ChaseDirection::LeftToRight,
+            },
+            vec!["fixture".to_string()],
+            None,
+            None,
+            None,
+        );
+        assert!(
+            chase.total_duration().is_none(),
+            "Chase without timing should be perpetual"
+        );
+
+        // Rainbow without timing params is perpetual
+        let rainbow = EffectInstance::new(
+            "rainbow".to_string(),
+            EffectType::Rainbow {
+                speed: TempoAwareSpeed::Fixed(1.0),
+                saturation: 1.0,
+                brightness: 1.0,
+            },
+            vec!["fixture".to_string()],
+            None,
+            None,
+            None,
+        );
+        assert!(
+            rainbow.total_duration().is_none(),
+            "Rainbow without timing should be perpetual"
+        );
+
+        // Strobe without duration is perpetual
+        let strobe = EffectInstance::new(
+            "strobe".to_string(),
+            EffectType::Strobe {
+                frequency: TempoAwareFrequency::Fixed(10.0),
+                duration: None,
+            },
+            vec!["fixture".to_string()],
+            None,
+            None,
+            None,
+        );
+        assert!(
+            strobe.total_duration().is_none(),
+            "Strobe without duration should be perpetual"
+        );
+
+        // Pulse without duration is perpetual
+        let pulse = EffectInstance::new(
+            "pulse".to_string(),
+            EffectType::Pulse {
+                base_level: 0.2,
+                pulse_amplitude: 0.8,
+                frequency: TempoAwareFrequency::Fixed(2.0),
+                duration: None,
+            },
+            vec!["fixture".to_string()],
+            None,
+            None,
+            None,
+        );
+        assert!(
+            pulse.total_duration().is_none(),
+            "Pulse without duration should be perpetual"
+        );
+
+        // Static without duration is perpetual
+        let static_effect = EffectInstance::new(
+            "static".to_string(),
+            EffectType::Static {
+                parameters: HashMap::new(),
+                duration: None,
+            },
+            vec!["fixture".to_string()],
+            None,
+            None,
+            None,
+        );
+        assert!(
+            static_effect.total_duration().is_none(),
+            "Static without duration should be perpetual"
+        );
+    }
+
+    #[test]
+    fn test_effects_with_duration_are_not_perpetual() {
+        // Test that effects with explicit duration have a total_duration
+
+        // Strobe with duration
+        let strobe = EffectInstance::new(
+            "strobe".to_string(),
+            EffectType::Strobe {
+                frequency: TempoAwareFrequency::Fixed(10.0),
+                duration: Some(Duration::from_secs(5)),
+            },
+            vec!["fixture".to_string()],
+            None,
+            None,
+            None,
+        );
+        assert_eq!(
+            strobe.total_duration(),
+            Some(Duration::from_secs(5)),
+            "Strobe with duration should not be perpetual"
+        );
+
+        // Pulse with duration
+        let pulse = EffectInstance::new(
+            "pulse".to_string(),
+            EffectType::Pulse {
+                base_level: 0.2,
+                pulse_amplitude: 0.8,
+                frequency: TempoAwareFrequency::Fixed(2.0),
+                duration: Some(Duration::from_secs(10)),
+            },
+            vec!["fixture".to_string()],
+            None,
+            None,
+            None,
+        );
+        assert_eq!(
+            pulse.total_duration(),
+            Some(Duration::from_secs(10)),
+            "Pulse with duration should not be perpetual"
+        );
+
+        // Static with duration
+        let static_effect = EffectInstance::new(
+            "static".to_string(),
+            EffectType::Static {
+                parameters: HashMap::new(),
+                duration: Some(Duration::from_secs(3)),
+            },
+            vec!["fixture".to_string()],
+            None,
+            None,
+            None,
+        );
+        assert_eq!(
+            static_effect.total_duration(),
+            Some(Duration::from_secs(3)),
+            "Static with duration should not be perpetual"
+        );
+    }
+
+    #[test]
+    fn test_effects_with_timing_params_are_not_perpetual() {
+        // Test that effects with timing parameters (up_time, hold_time, down_time)
+        // are not perpetual even without explicit duration
+
+        // ColorCycle with hold_time
+        let color_cycle = EffectInstance::new(
+            "color_cycle".to_string(),
+            EffectType::ColorCycle {
+                colors: vec![Color::new(255, 0, 0), Color::new(0, 0, 255)],
+                speed: TempoAwareSpeed::Fixed(1.0),
+                direction: CycleDirection::Forward,
+                transition: CycleTransition::Fade,
+            },
+            vec!["fixture".to_string()],
+            None,
+            Some(Duration::from_secs(30)), // hold_time
+            None,
+        );
+        assert_eq!(
+            color_cycle.total_duration(),
+            Some(Duration::from_secs(30)),
+            "ColorCycle with hold_time should not be perpetual"
+        );
+
+        // Rainbow with up_time and down_time
+        let rainbow = EffectInstance::new(
+            "rainbow".to_string(),
+            EffectType::Rainbow {
+                speed: TempoAwareSpeed::Fixed(1.0),
+                saturation: 1.0,
+                brightness: 1.0,
+            },
+            vec!["fixture".to_string()],
+            Some(Duration::from_secs(2)), // up_time
+            None,
+            Some(Duration::from_secs(2)), // down_time
+        );
+        assert_eq!(
+            rainbow.total_duration(),
+            Some(Duration::from_secs(4)), // up + hold(0) + down
+            "Rainbow with timing params should not be perpetual"
+        );
+    }
+
+    #[test]
+    fn test_perpetual_effects_never_reach_terminal_state() {
+        // Perpetual effects should never reach terminal state
+
+        let color_cycle = EffectInstance::new(
+            "color_cycle".to_string(),
+            EffectType::ColorCycle {
+                colors: vec![Color::new(255, 0, 0), Color::new(0, 0, 255)],
+                speed: TempoAwareSpeed::Fixed(1.0),
+                direction: CycleDirection::Forward,
+                transition: CycleTransition::Fade,
+            },
+            vec!["fixture".to_string()],
+            None,
+            None,
+            None,
+        );
+
+        // Test at various time points - should never be terminal
+        assert!(
+            !color_cycle.has_reached_terminal_state(Duration::from_secs(0)),
+            "Perpetual effect should not be terminal at t=0"
+        );
+        assert!(
+            !color_cycle.has_reached_terminal_state(Duration::from_secs(60)),
+            "Perpetual effect should not be terminal at t=60s"
+        );
+        assert!(
+            !color_cycle.has_reached_terminal_state(Duration::from_secs(3600)),
+            "Perpetual effect should not be terminal at t=1hr"
+        );
+        assert!(
+            !color_cycle.has_reached_terminal_state(Duration::from_secs(86400)),
+            "Perpetual effect should not be terminal at t=1day"
+        );
+    }
+
+    #[test]
+    fn test_perpetual_effects_crossfade_multiplier() {
+        // Perpetual effects should have crossfade multiplier of 1.0 indefinitely
+
+        let rainbow = EffectInstance::new(
+            "rainbow".to_string(),
+            EffectType::Rainbow {
+                speed: TempoAwareSpeed::Fixed(1.0),
+                saturation: 1.0,
+                brightness: 1.0,
+            },
+            vec!["fixture".to_string()],
+            None,
+            None,
+            None,
+        );
+
+        // Should always be at full intensity
+        assert!(
+            (rainbow.calculate_crossfade_multiplier(Duration::from_secs(0)) - 1.0).abs() < 0.001,
+            "Perpetual effect should be at full intensity at t=0"
+        );
+        assert!(
+            (rainbow.calculate_crossfade_multiplier(Duration::from_secs(60)) - 1.0).abs() < 0.001,
+            "Perpetual effect should be at full intensity at t=60s"
+        );
+        assert!(
+            (rainbow.calculate_crossfade_multiplier(Duration::from_secs(3600)) - 1.0).abs() < 0.001,
+            "Perpetual effect should be at full intensity at t=1hr"
+        );
+    }
+
+    #[test]
+    fn test_perpetual_effect_with_up_time_fades_in_then_stays() {
+        // A perpetual effect with only up_time should fade in and stay at full intensity
+
+        let chase = EffectInstance::new(
+            "chase".to_string(),
+            EffectType::Chase {
+                pattern: ChasePattern::Linear,
+                speed: TempoAwareSpeed::Fixed(1.0),
+                direction: ChaseDirection::LeftToRight,
+            },
+            vec!["fixture".to_string()],
+            Some(Duration::from_secs(2)), // up_time only
+            None,
+            None,
+        );
+
+        // During fade-in (0 to 2 seconds)
+        let mult_at_0 = chase.calculate_crossfade_multiplier(Duration::from_secs(0));
+        let mult_at_1 = chase.calculate_crossfade_multiplier(Duration::from_secs(1));
+        let mult_at_2 = chase.calculate_crossfade_multiplier(Duration::from_secs(2));
+
+        assert!(mult_at_0 < 0.1, "Should start near 0");
+        assert!(
+            (mult_at_1 - 0.5).abs() < 0.1,
+            "Should be around 50% at midpoint"
+        );
+        assert!((mult_at_2 - 1.0).abs() < 0.1, "Should reach full intensity");
+
+        // After fade-in, should stay at full intensity indefinitely
+        let mult_at_10 = chase.calculate_crossfade_multiplier(Duration::from_secs(10));
+        let mult_at_100 = chase.calculate_crossfade_multiplier(Duration::from_secs(100));
+        assert!(
+            (mult_at_10 - 1.0).abs() < 0.001,
+            "Should stay at full intensity after fade-in"
+        );
+        assert!(
+            (mult_at_100 - 1.0).abs() < 0.001,
+            "Should stay at full intensity long after fade-in"
+        );
     }
 }

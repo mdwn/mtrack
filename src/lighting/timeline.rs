@@ -13,10 +13,19 @@
 //
 
 use crate::lighting::{
-    parser::{Cue, Effect, LightShow},
+    parser::{Cue, Effect, LayerCommand, LightShow},
     EffectInstance,
 };
 use std::time::Duration;
+
+/// Result of processing timeline cues
+#[derive(Debug, Clone, Default)]
+pub struct TimelineUpdate {
+    /// Effects to be triggered
+    pub effects: Vec<EffectInstance>,
+    /// Layer commands to be executed
+    pub layer_commands: Vec<LayerCommand>,
+}
 
 /// Timeline processor for lighting cues during song playback
 pub struct LightingTimeline {
@@ -96,24 +105,28 @@ impl LightingTimeline {
     }
 
     /// Updates the timeline with the current song time
-    pub fn update(&mut self, song_time: Duration) -> Vec<EffectInstance> {
+    /// Returns both effects and layer commands to be processed
+    pub fn update(&mut self, song_time: Duration) -> TimelineUpdate {
         if !self.is_playing {
-            return Vec::new();
+            return TimelineUpdate::default();
         }
         self.current_time = song_time;
-        let mut triggered_effects = Vec::new();
+        let mut result = TimelineUpdate::default();
 
         // Process all cues that should trigger at or before the current time
         while self.next_cue_index < self.cues.len() {
             let cue = &self.cues[self.next_cue_index];
 
             if cue.time <= song_time {
-                // This cue should trigger
+                // This cue should trigger - process effects
                 for effect in &cue.effects {
                     if let Some(effect_instance) = Self::create_effect_instance(effect) {
-                        triggered_effects.push(effect_instance);
+                        result.effects.push(effect_instance);
                     }
                 }
+                // Process layer commands
+                result.layer_commands.extend(cue.layer_commands.clone());
+
                 self.next_cue_index += 1;
             } else {
                 // No more cues to process at this time
@@ -121,7 +134,7 @@ impl LightingTimeline {
             }
         }
 
-        triggered_effects
+        result
     }
 
     /// Creates an EffectInstance from a DSL Effect
@@ -208,6 +221,7 @@ mod tests {
         let cues = vec![Cue {
             time: Duration::from_millis(0),
             effects: vec![effect],
+            layer_commands: vec![],
         }];
         let mut timeline = LightingTimeline::new_with_cues(cues);
         assert!(
@@ -249,15 +263,16 @@ mod tests {
         let cues = vec![Cue {
             time: Duration::from_millis(0),
             effects: vec![effect],
+            layer_commands: vec![],
         }];
 
         let mut timeline = LightingTimeline::new_with_cues(cues);
         timeline.start();
 
         // Test that the first cue triggers at the right time
-        let effects = timeline.update(Duration::from_millis(0));
-        assert_eq!(effects.len(), 1);
-        assert_eq!(effects[0].target_fixtures, vec!["front_wash"]);
+        let result = timeline.update(Duration::from_millis(0));
+        assert_eq!(result.effects.len(), 1);
+        assert_eq!(result.effects[0].target_fixtures, vec!["front_wash"]);
     }
 
     #[test]
@@ -285,14 +300,17 @@ mod tests {
             Cue {
                 time: Duration::from_millis(10000),
                 effects: vec![effect.clone()],
+                layer_commands: vec![],
             },
             Cue {
                 time: Duration::from_millis(5000),
                 effects: vec![effect.clone()],
+                layer_commands: vec![],
             },
             Cue {
                 time: Duration::from_millis(0),
                 effects: vec![effect],
+                layer_commands: vec![],
             },
         ];
 
@@ -300,14 +318,14 @@ mod tests {
         timeline.start();
 
         // Verify cues are processed in chronological order
-        let effects = timeline.update(Duration::from_millis(0));
-        assert_eq!(effects.len(), 1);
+        let result = timeline.update(Duration::from_millis(0));
+        assert_eq!(result.effects.len(), 1);
 
-        let effects = timeline.update(Duration::from_millis(5000));
-        assert_eq!(effects.len(), 1);
+        let result = timeline.update(Duration::from_millis(5000));
+        assert_eq!(result.effects.len(), 1);
 
-        let effects = timeline.update(Duration::from_millis(10000));
-        assert_eq!(effects.len(), 1);
+        let result = timeline.update(Duration::from_millis(10000));
+        assert_eq!(result.effects.len(), 1);
     }
 
     #[test]
@@ -337,10 +355,12 @@ mod tests {
             Cue {
                 time: Duration::from_millis(5000),
                 effects: vec![effect.clone()],
+                layer_commands: vec![],
             },
             Cue {
                 time: Duration::from_millis(5000),
                 effects: vec![effect],
+                layer_commands: vec![],
             },
         ];
 
@@ -348,8 +368,8 @@ mod tests {
         timeline.start();
 
         // Both cues should trigger at the same time
-        let effects = timeline.update(Duration::from_millis(5000));
-        assert_eq!(effects.len(), 2);
+        let result = timeline.update(Duration::from_millis(5000));
+        assert_eq!(result.effects.len(), 2);
     }
 
     #[test]
@@ -387,10 +407,12 @@ mod tests {
             Cue {
                 time: Duration::from_secs(0),
                 effects: vec![effect1],
+                layer_commands: vec![],
             },
             Cue {
                 time: Duration::from_secs(2),
                 effects: vec![effect2],
+                layer_commands: vec![],
             },
         ];
 
@@ -406,11 +428,134 @@ mod tests {
 
         // Start again - should trigger the first cue again
         timeline.start();
-        let effects_at_0s_restart = timeline.update(Duration::from_secs(0));
-        assert_eq!(effects_at_0s_restart.len(), 1);
+        let result_at_0s_restart = timeline.update(Duration::from_secs(0));
+        assert_eq!(result_at_0s_restart.effects.len(), 1);
 
         // Should also trigger the second cue again
-        let effects_at_2s_restart = timeline.update(Duration::from_secs(2));
-        assert_eq!(effects_at_2s_restart.len(), 1);
+        let result_at_2s_restart = timeline.update(Duration::from_secs(2));
+        assert_eq!(result_at_2s_restart.effects.len(), 1);
+    }
+
+    #[test]
+    fn test_timeline_layer_commands() {
+        use crate::lighting::effects::EffectLayer;
+        use crate::lighting::parser::{Cue, LayerCommand, LayerCommandType};
+
+        // Create cue with a layer command
+        let cues = vec![
+            Cue {
+                time: Duration::from_secs(0),
+                effects: vec![],
+                layer_commands: vec![LayerCommand {
+                    command_type: LayerCommandType::Clear,
+                    layer: EffectLayer::Foreground,
+                    fade_time: None,
+                    intensity: None,
+                    speed: None,
+                }],
+            },
+            Cue {
+                time: Duration::from_secs(1),
+                effects: vec![],
+                layer_commands: vec![LayerCommand {
+                    command_type: LayerCommandType::Release,
+                    layer: EffectLayer::Background,
+                    fade_time: Some(Duration::from_secs(2)),
+                    intensity: None,
+                    speed: None,
+                }],
+            },
+            Cue {
+                time: Duration::from_secs(2),
+                effects: vec![],
+                layer_commands: vec![LayerCommand {
+                    command_type: LayerCommandType::Master,
+                    layer: EffectLayer::Midground,
+                    fade_time: None,
+                    intensity: Some(0.5),
+                    speed: Some(2.0),
+                }],
+            },
+        ];
+
+        let mut timeline = LightingTimeline::new_with_cues(cues);
+        timeline.start();
+
+        // First cue: clear command
+        let result0 = timeline.update(Duration::from_secs(0));
+        assert_eq!(result0.effects.len(), 0);
+        assert_eq!(result0.layer_commands.len(), 1);
+        assert_eq!(
+            result0.layer_commands[0].command_type,
+            LayerCommandType::Clear
+        );
+        assert_eq!(result0.layer_commands[0].layer, EffectLayer::Foreground);
+
+        // Second cue: release command with fade time
+        let result1 = timeline.update(Duration::from_secs(1));
+        assert_eq!(result1.layer_commands.len(), 1);
+        assert_eq!(
+            result1.layer_commands[0].command_type,
+            LayerCommandType::Release
+        );
+        assert_eq!(
+            result1.layer_commands[0].fade_time,
+            Some(Duration::from_secs(2))
+        );
+
+        // Third cue: master command with intensity and speed
+        let result2 = timeline.update(Duration::from_secs(2));
+        assert_eq!(result2.layer_commands.len(), 1);
+        assert_eq!(
+            result2.layer_commands[0].command_type,
+            LayerCommandType::Master
+        );
+        assert!((result2.layer_commands[0].intensity.unwrap() - 0.5).abs() < 0.01);
+        assert!((result2.layer_commands[0].speed.unwrap() - 2.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_timeline_mixed_effects_and_layer_commands() {
+        use crate::lighting::effects::EffectLayer;
+        use crate::lighting::parser::{Cue, LayerCommand, LayerCommandType};
+
+        // Create cue with both an effect and a layer command
+        let effect = Effect {
+            groups: vec!["test_group".to_string()],
+            effect_type: EffectType::Static {
+                parameters: HashMap::new(),
+                duration: None,
+            },
+            layer: None,
+            blend_mode: None,
+            up_time: None,
+            hold_time: None,
+            down_time: None,
+        };
+
+        let cues = vec![Cue {
+            time: Duration::from_secs(0),
+            effects: vec![effect],
+            layer_commands: vec![LayerCommand {
+                command_type: LayerCommandType::Master,
+                layer: EffectLayer::Background,
+                fade_time: None,
+                intensity: Some(0.75),
+                speed: None,
+            }],
+        }];
+
+        let mut timeline = LightingTimeline::new_with_cues(cues);
+        timeline.start();
+
+        let result = timeline.update(Duration::from_secs(0));
+
+        // Should have both an effect and a layer command
+        assert_eq!(result.effects.len(), 1);
+        assert_eq!(result.layer_commands.len(), 1);
+        assert_eq!(
+            result.layer_commands[0].command_type,
+            LayerCommandType::Master
+        );
     }
 }

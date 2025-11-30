@@ -120,6 +120,7 @@ pub struct LightShow {
 pub struct Cue {
     pub time: Duration,
     pub effects: Vec<Effect>,
+    pub layer_commands: Vec<LayerCommand>,
 }
 
 #[derive(Debug, Clone)]
@@ -131,6 +132,31 @@ pub struct Effect {
     pub up_time: Option<Duration>,
     pub hold_time: Option<Duration>,
     pub down_time: Option<Duration>,
+}
+
+/// Layer control command types (grandMA-inspired)
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LayerCommandType {
+    /// Clear - immediately stop all effects on the layer
+    Clear,
+    /// Release - gracefully fade out all effects on the layer
+    Release,
+    /// Freeze - pause all effects on the layer at their current state
+    Freeze,
+    /// Unfreeze - resume paused effects on the layer
+    Unfreeze,
+    /// Master - set layer intensity and/or speed master
+    Master,
+}
+
+/// A layer control command
+#[derive(Debug, Clone)]
+pub struct LayerCommand {
+    pub command_type: LayerCommandType,
+    pub layer: EffectLayer,
+    pub fade_time: Option<Duration>,
+    pub intensity: Option<f64>,
+    pub speed: Option<f64>,
 }
 
 // EffectType is imported from super::effects
@@ -375,9 +401,11 @@ fn parse_cue_definition(
 ) -> Result<Cue, Box<dyn Error>> {
     let mut time = Duration::ZERO;
     let mut effects = Vec::new();
+    let mut layer_commands = Vec::new();
     let mut effect_pairs = Vec::new();
+    let mut layer_command_pairs = Vec::new();
 
-    // First pass: parse time and collect effect pairs
+    // First pass: parse time and collect effect/layer_command pairs
     for inner_pair in pair.into_inner() {
         match inner_pair.as_rule() {
             Rule::time_string => {
@@ -396,6 +424,9 @@ fn parse_cue_definition(
             Rule::effect => {
                 effect_pairs.push(inner_pair);
             }
+            Rule::layer_command => {
+                layer_command_pairs.push(inner_pair);
+            }
             _ => {
                 // Skip unexpected rules
             }
@@ -408,7 +439,116 @@ fn parse_cue_definition(
         effects.push(effect);
     }
 
-    Ok(Cue { time, effects })
+    // Parse layer commands
+    for layer_command_pair in layer_command_pairs {
+        let layer_command = parse_layer_command(layer_command_pair, tempo_map, time)?;
+        layer_commands.push(layer_command);
+    }
+
+    Ok(Cue {
+        time,
+        effects,
+        layer_commands,
+    })
+}
+
+fn parse_layer_command(
+    pair: pest::iterators::Pair<Rule>,
+    tempo_map: &Option<TempoMap>,
+    cue_time: Duration,
+) -> Result<LayerCommand, Box<dyn Error>> {
+    let mut command_type = LayerCommandType::Clear;
+    let mut layer = EffectLayer::Background;
+    let mut fade_time = None;
+    let mut intensity = None;
+    let mut speed = None;
+
+    for inner_pair in pair.into_inner() {
+        match inner_pair.as_rule() {
+            Rule::layer_command_type => {
+                command_type = match inner_pair.as_str() {
+                    "clear" => LayerCommandType::Clear,
+                    "release" => LayerCommandType::Release,
+                    "freeze" => LayerCommandType::Freeze,
+                    "unfreeze" => LayerCommandType::Unfreeze,
+                    "master" => LayerCommandType::Master,
+                    other => return Err(format!("Unknown layer command type: {}", other).into()),
+                };
+            }
+            Rule::layer_command_params => {
+                for param_pair in inner_pair.into_inner() {
+                    if param_pair.as_rule() == Rule::layer_command_param {
+                        let mut param_name = String::new();
+                        let mut param_value = String::new();
+
+                        for param_inner in param_pair.into_inner() {
+                            match param_inner.as_rule() {
+                                Rule::layer_command_param_name => {
+                                    param_name = param_inner.as_str().to_string();
+                                }
+                                Rule::layer_command_param_value => {
+                                    param_value = param_inner.as_str().to_string();
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        match param_name.as_str() {
+                            "layer" => {
+                                layer = match param_value.as_str() {
+                                    "background" => EffectLayer::Background,
+                                    "midground" => EffectLayer::Midground,
+                                    "foreground" => EffectLayer::Foreground,
+                                    other => return Err(format!("Invalid layer: {}", other).into()),
+                                };
+                            }
+                            "time" => {
+                                fade_time = Some(parse_duration_string(
+                                    &param_value,
+                                    tempo_map,
+                                    Some(cue_time),
+                                )?);
+                            }
+                            "intensity" => {
+                                // Parse percentage (e.g., "50%") or number (e.g., "0.5")
+                                let value = if param_value.ends_with('%') {
+                                    let percent_str = param_value.trim_end_matches('%');
+                                    percent_str.parse::<f64>()? / 100.0
+                                } else {
+                                    param_value.parse::<f64>()?
+                                };
+                                intensity = Some(value.clamp(0.0, 1.0));
+                            }
+                            "speed" => {
+                                // Parse percentage (e.g., "50%") or number (e.g., "0.5")
+                                let value = if param_value.ends_with('%') {
+                                    let percent_str = param_value.trim_end_matches('%');
+                                    percent_str.parse::<f64>()? / 100.0
+                                } else {
+                                    param_value.parse::<f64>()?
+                                };
+                                speed = Some(value.max(0.0));
+                            }
+                            other => {
+                                return Err(
+                                    format!("Unknown layer command parameter: {}", other).into()
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(LayerCommand {
+        command_type,
+        layer,
+        fade_time,
+        intensity,
+        speed,
+    })
 }
 
 fn parse_effect_definition(
@@ -2146,6 +2286,79 @@ venue "built-in" {
         let block6 = venue.fixtures().get("Block6").expect("Block6 not found");
         assert_eq!(block6.universe(), 1, "Block6 should be on universe 1");
         assert_eq!(block6.start_channel(), 21, "Block6 should be at address 21");
+    }
+
+    #[test]
+    fn test_layer_command_parsing() {
+        // Test parsing layer commands in a show
+        let content = r#"show "Layer Control Test" {
+    @00:00.000
+        front_wash: static color: "blue", layer: foreground
+
+    @00:05.000
+        release(layer: foreground, time: 2s)
+
+    @00:10.000
+        clear(layer: foreground)
+
+    @00:15.000
+        freeze(layer: background)
+
+    @00:20.000
+        unfreeze(layer: background)
+
+    @00:25.000
+        master(layer: midground, intensity: 50%, speed: 200%)
+}"#;
+        let result = parse_light_shows(content);
+        assert!(
+            result.is_ok(),
+            "Layer command parsing should succeed: {:?}",
+            result.err()
+        );
+
+        let shows = result.unwrap();
+        let show = shows.get("Layer Control Test").expect("Show should exist");
+
+        // Check that cues were parsed
+        assert_eq!(show.cues.len(), 6, "Should have 6 cues");
+
+        // First cue has an effect, no layer commands
+        assert_eq!(show.cues[0].effects.len(), 1);
+        assert_eq!(show.cues[0].layer_commands.len(), 0);
+
+        // Second cue: release command
+        assert_eq!(show.cues[1].effects.len(), 0);
+        assert_eq!(show.cues[1].layer_commands.len(), 1);
+        let release_cmd = &show.cues[1].layer_commands[0];
+        assert_eq!(release_cmd.command_type, LayerCommandType::Release);
+        assert_eq!(release_cmd.layer, EffectLayer::Foreground);
+        assert_eq!(
+            release_cmd.fade_time,
+            Some(std::time::Duration::from_secs(2))
+        );
+
+        // Third cue: clear command
+        let clear_cmd = &show.cues[2].layer_commands[0];
+        assert_eq!(clear_cmd.command_type, LayerCommandType::Clear);
+        assert_eq!(clear_cmd.layer, EffectLayer::Foreground);
+
+        // Fourth cue: freeze command
+        let freeze_cmd = &show.cues[3].layer_commands[0];
+        assert_eq!(freeze_cmd.command_type, LayerCommandType::Freeze);
+        assert_eq!(freeze_cmd.layer, EffectLayer::Background);
+
+        // Fifth cue: unfreeze command
+        let unfreeze_cmd = &show.cues[4].layer_commands[0];
+        assert_eq!(unfreeze_cmd.command_type, LayerCommandType::Unfreeze);
+        assert_eq!(unfreeze_cmd.layer, EffectLayer::Background);
+
+        // Sixth cue: master command
+        let master_cmd = &show.cues[5].layer_commands[0];
+        assert_eq!(master_cmd.command_type, LayerCommandType::Master);
+        assert_eq!(master_cmd.layer, EffectLayer::Midground);
+        assert!((master_cmd.intensity.unwrap() - 0.5).abs() < 0.01);
+        assert!((master_cmd.speed.unwrap() - 2.0).abs() < 0.01);
     }
 
     #[test]

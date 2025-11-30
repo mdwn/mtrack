@@ -32,6 +32,15 @@ pub struct EffectEngine {
     channel_locks: HashMap<String, std::collections::HashSet<String>>,
     /// Optional tempo map for tempo-aware effects (measure/beat-based timing)
     tempo_map: Option<TempoMap>,
+    /// Layer intensity masters (0.0 to 1.0) - multiplies effect output per layer
+    layer_intensity_masters: HashMap<EffectLayer, f64>,
+    /// Layer speed masters (0.0+) - multiplies effect speed per layer (1.0 = normal)
+    layer_speed_masters: HashMap<EffectLayer, f64>,
+    /// Frozen layers - maps layer to the Instant when it was frozen
+    /// Effects on frozen layers use this time instead of current_time for elapsed calculation
+    frozen_layers: HashMap<EffectLayer, Instant>,
+    /// Effects being released - tracks (release_fade_time, release_start_time) per effect
+    releasing_effects: HashMap<String, (Duration, Instant)>,
 }
 
 impl EffectEngine {
@@ -44,6 +53,10 @@ impl EffectEngine {
             fixture_states: HashMap::new(),
             channel_locks: HashMap::new(),
             tempo_map: None,
+            layer_intensity_masters: HashMap::new(),
+            layer_speed_masters: HashMap::new(),
+            frozen_layers: HashMap::new(),
+            releasing_effects: HashMap::new(),
         }
     }
 
@@ -164,20 +177,52 @@ impl EffectEngine {
         let mut completed_effects = Vec::new();
 
         // Process each layer in order
-        for (_layer, effect_ids) in effects_by_layer {
+        for (layer, effect_ids) in effects_by_layer {
+            // Get layer masters
+            let layer_intensity = self.get_layer_intensity_master(layer);
+            let layer_speed = self.get_layer_speed_master(layer);
+            let frozen_at = self.frozen_layers.get(&layer).cloned();
+
             for effect_id in effect_ids {
                 // Clone the effect to avoid borrowing conflicts
                 let effect = self.active_effects.get(&effect_id).unwrap().clone();
 
+                // Check if this effect is being released
+                let release_info = self.releasing_effects.get(&effect_id).cloned();
+
+                // Calculate base elapsed time
+                // If layer is frozen, use the frozen time instead of current time
+                let reference_time = frozen_at.unwrap_or(self.current_time);
+                let base_elapsed = effect
+                    .start_time
+                    .map(|start| reference_time.duration_since(start))
+                    .unwrap_or(Duration::ZERO);
+
+                // Apply speed master to elapsed time
+                // Speed 0.0 triggers freeze_layer, and frozen_at provides the frozen reference time.
+                // We use base_elapsed directly for both 0.0 and 1.0 (no multiplication needed).
+                let elapsed = if layer_speed == 0.0 || layer_speed == 1.0 {
+                    base_elapsed
+                } else {
+                    Duration::from_secs_f64(base_elapsed.as_secs_f64() * layer_speed)
+                };
+
                 // Check if effect has reached terminal state (value-based where applicable)
-                let is_expired = if let Some(start_time) = effect.start_time {
-                    let elapsed = self.current_time.duration_since(start_time);
+                let is_expired = if effect.start_time.is_some() {
                     effect.has_reached_terminal_state(elapsed)
                 } else {
                     false
                 };
 
-                if is_expired {
+                // Check if a releasing effect has completed its fade
+                let release_completed = if let Some((fade_time, release_start)) = &release_info {
+                    let release_elapsed = self.current_time.duration_since(*release_start);
+                    release_elapsed >= *fade_time
+                } else {
+                    false
+                };
+
+                if is_expired || release_completed {
                     // Effect has completed. For temporary effects, do not blend final state.
                     // For permanent effects, preserve via the completion handler below.
 
@@ -186,14 +231,35 @@ impl EffectEngine {
                     continue;
                 }
 
-                // Calculate effect parameters based on current time
-                let elapsed = effect
-                    .start_time
-                    .map(|start| self.current_time.duration_since(start))
-                    .unwrap_or(Duration::ZERO);
-
                 // Process the effect and get fixture states
-                if let Some(effect_states) = self.process_effect(&effect, elapsed)? {
+                if let Some(mut effect_states) = self.process_effect(&effect, elapsed)? {
+                    // Calculate release fade multiplier if this effect is being released
+                    let release_multiplier = if let Some((fade_time, release_start)) = release_info
+                    {
+                        let release_elapsed = self.current_time.duration_since(release_start);
+                        let progress = if fade_time.is_zero() {
+                            1.0
+                        } else {
+                            (release_elapsed.as_secs_f64() / fade_time.as_secs_f64())
+                                .clamp(0.0, 1.0)
+                        };
+                        1.0 - progress // Fade from 1.0 to 0.0
+                    } else {
+                        1.0
+                    };
+
+                    // Combined intensity multiplier (layer master * release fade)
+                    let intensity_multiplier = layer_intensity * release_multiplier;
+
+                    // Apply intensity multiplier to effect states if not 1.0
+                    if (intensity_multiplier - 1.0).abs() > f64::EPSILON {
+                        for fixture_state in effect_states.values_mut() {
+                            for channel_state in fixture_state.channels.values_mut() {
+                                channel_state.value *= intensity_multiplier;
+                            }
+                        }
+                    }
+
                     // Blend the effect states into the current fixture states
                     for (fixture_name, effect_state) in effect_states {
                         if self.fixture_registry.contains_key(&fixture_name) {
@@ -232,6 +298,9 @@ impl EffectEngine {
 
         // Handle completed effects by preserving their final state
         for effect_id in completed_effects {
+            // Clean up releasing effects tracking
+            self.releasing_effects.remove(&effect_id);
+
             if let Some(effect) = self.active_effects.remove(&effect_id) {
                 // Calculate the final state of the completed effect
                 if let Some(final_states) = self.process_effect_final_state(&effect)? {
@@ -735,6 +804,142 @@ impl EffectEngine {
     /// Stop all active effects
     pub fn stop_all_effects(&mut self) {
         self.active_effects.clear();
+        self.releasing_effects.clear();
+    }
+
+    // ===== Layer Control Methods (grandMA-inspired) =====
+
+    /// Clear a layer - immediately stops all effects on the specified layer
+    /// This is equivalent to a "kill" or panic button for a layer
+    pub fn clear_layer(&mut self, layer: EffectLayer) {
+        // Collect effect IDs on this layer BEFORE removing them
+        let effects_on_layer: Vec<String> = self
+            .active_effects
+            .iter()
+            .filter(|(_, effect)| effect.layer == layer)
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        // Remove all effects on this layer
+        self.active_effects
+            .retain(|_, effect| effect.layer != layer);
+
+        // Also remove any releasing effects that were on this layer
+        for id in effects_on_layer {
+            self.releasing_effects.remove(&id);
+        }
+
+        // Unfreeze the layer if it was frozen
+        self.frozen_layers.remove(&layer);
+    }
+
+    /// Release a layer - gracefully fades out all effects on the specified layer
+    /// Uses each effect's down_time, or a default of 1 second if not specified
+    pub fn release_layer(&mut self, layer: EffectLayer) {
+        self.release_layer_with_time(layer, None);
+    }
+
+    /// Release a layer with a custom fade time
+    /// If fade_time is None, uses each effect's down_time (or 1 second default)
+    pub fn release_layer_with_time(&mut self, layer: EffectLayer, fade_time: Option<Duration>) {
+        let now = self.current_time;
+        let default_fade = Duration::from_secs(1);
+
+        for (effect_id, effect) in &self.active_effects {
+            if effect.layer == layer && !self.releasing_effects.contains_key(effect_id) {
+                let release_time =
+                    fade_time.unwrap_or_else(|| effect.down_time.unwrap_or(default_fade));
+                self.releasing_effects
+                    .insert(effect_id.clone(), (release_time, now));
+            }
+        }
+        // Unfreeze the layer if it was frozen
+        self.frozen_layers.remove(&layer);
+    }
+
+    /// Freeze a layer - pauses all effects on the layer at their current state
+    /// Effects maintain their current output values but don't advance in time
+    pub fn freeze_layer(&mut self, layer: EffectLayer) {
+        // Record the time when the layer was frozen
+        // Don't overwrite if already frozen
+        if !self.frozen_layers.contains_key(&layer) {
+            self.frozen_layers.insert(layer, self.current_time);
+        }
+    }
+
+    /// Unfreeze a layer - resumes effects on the layer from where they left off
+    pub fn unfreeze_layer(&mut self, layer: EffectLayer) {
+        // When unfreezing, we need to adjust effect start times to account for frozen duration
+        if let Some(frozen_at) = self.frozen_layers.remove(&layer) {
+            let frozen_duration = self.current_time.duration_since(frozen_at);
+
+            // Adjust start times for all effects on this layer
+            for effect in self.active_effects.values_mut() {
+                if effect.layer == layer {
+                    if let Some(start_time) = effect.start_time {
+                        // Push the start time forward by the frozen duration
+                        // This makes it appear as if no time passed while frozen
+                        effect.start_time = Some(start_time + frozen_duration);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Check if a layer is frozen
+    #[cfg(test)]
+    pub fn is_layer_frozen(&self, layer: EffectLayer) -> bool {
+        self.frozen_layers.contains_key(&layer)
+    }
+
+    // ===== Layer Master Methods =====
+
+    /// Set the intensity master for a layer (0.0 to 1.0)
+    /// This multiplies with all effect outputs on the layer
+    pub fn set_layer_intensity_master(&mut self, layer: EffectLayer, intensity: f64) {
+        let clamped = intensity.clamp(0.0, 1.0);
+        if (clamped - 1.0).abs() < f64::EPSILON {
+            // 1.0 is the default, remove from map to save memory
+            self.layer_intensity_masters.remove(&layer);
+        } else {
+            self.layer_intensity_masters.insert(layer, clamped);
+        }
+    }
+
+    /// Get the intensity master for a layer (defaults to 1.0)
+    pub fn get_layer_intensity_master(&self, layer: EffectLayer) -> f64 {
+        *self.layer_intensity_masters.get(&layer).unwrap_or(&1.0)
+    }
+
+    /// Set the speed master for a layer (0.0+ where 1.0 = normal speed)
+    /// This multiplies with effect speeds on the layer
+    /// 0.5 = half speed, 2.0 = double speed, 0.0 = frozen at current state
+    pub fn set_layer_speed_master(&mut self, layer: EffectLayer, speed: f64) {
+        let clamped = speed.max(0.0); // Speed can be > 1.0 but not negative
+
+        // Speed 0.0 means freeze - use the freeze_layer mechanism
+        if clamped == 0.0 {
+            self.freeze_layer(layer);
+        } else {
+            // Non-zero speed means unfreeze (if was frozen by speed=0)
+            // Note: this only unfreezes if we're changing FROM 0.0
+            let was_frozen_by_speed = self.layer_speed_masters.get(&layer) == Some(&0.0);
+            if was_frozen_by_speed {
+                self.unfreeze_layer(layer);
+            }
+        }
+
+        if (clamped - 1.0).abs() < f64::EPSILON {
+            // 1.0 is the default, remove from map to save memory
+            self.layer_speed_masters.remove(&layer);
+        } else {
+            self.layer_speed_masters.insert(layer, clamped);
+        }
+    }
+
+    /// Get the speed master for a layer (defaults to 1.0)
+    pub fn get_layer_speed_master(&self, layer: EffectLayer) -> f64 {
+        *self.layer_speed_masters.get(&layer).unwrap_or(&1.0)
     }
 
     /// Get the number of active effects
@@ -3052,5 +3257,477 @@ mod tests {
             !commands_later.is_empty(),
             "Pulse should continue running after tempo change"
         );
+    }
+
+    #[test]
+    fn test_clear_layer() {
+        let mut engine = EffectEngine::new();
+        let fixture = create_test_fixture("test_fixture", 1, 1);
+        engine.register_fixture(fixture);
+
+        // Start effects on different layers
+        let bg_effect = EffectInstance::new(
+            "bg_effect".to_string(),
+            EffectType::Static {
+                parameters: {
+                    let mut p = HashMap::new();
+                    p.insert("dimmer".to_string(), 0.5);
+                    p
+                },
+                duration: None,
+            },
+            vec!["test_fixture".to_string()],
+            None,
+            None,
+            None,
+        );
+
+        let mut fg_effect = EffectInstance::new(
+            "fg_effect".to_string(),
+            EffectType::Static {
+                parameters: {
+                    let mut p = HashMap::new();
+                    p.insert("dimmer".to_string(), 1.0);
+                    p
+                },
+                duration: None,
+            },
+            vec!["test_fixture".to_string()],
+            None,
+            None,
+            None,
+        );
+        fg_effect.layer = EffectLayer::Foreground;
+
+        engine.start_effect(bg_effect).unwrap();
+        engine.start_effect(fg_effect).unwrap();
+        assert_eq!(engine.active_effects_count(), 2);
+
+        // Clear foreground layer
+        engine.clear_layer(EffectLayer::Foreground);
+        assert_eq!(engine.active_effects_count(), 1);
+        assert!(engine.has_effect("bg_effect"));
+        assert!(!engine.has_effect("fg_effect"));
+    }
+
+    #[test]
+    fn test_freeze_unfreeze_layer() {
+        let mut engine = EffectEngine::new();
+
+        // Create RGB fixture for rainbow test
+        let mut channels = HashMap::new();
+        channels.insert("red".to_string(), 1);
+        channels.insert("green".to_string(), 2);
+        channels.insert("blue".to_string(), 3);
+        let fixture = FixtureInfo {
+            name: "rgb_fixture".to_string(),
+            universe: 1,
+            address: 1,
+            fixture_type: "RGB".to_string(),
+            channels,
+            max_strobe_frequency: None,
+        };
+        engine.register_fixture(fixture);
+
+        // Start a rainbow effect - it cycles through colors over time
+        let effect = EffectInstance::new(
+            "bg_effect".to_string(),
+            EffectType::Rainbow {
+                speed: TempoAwareSpeed::Fixed(1.0), // 1 cycle per second
+                saturation: 1.0,
+                brightness: 1.0,
+            },
+            vec!["rgb_fixture".to_string()],
+            None,
+            None,
+            None,
+        );
+        engine.start_effect(effect).unwrap();
+
+        // Let the effect run for a bit to get to an interesting state
+        let _commands1 = engine.update(Duration::from_millis(250)).unwrap();
+
+        // Capture the state at this point
+        let commands_before_freeze = engine.update(Duration::from_millis(10)).unwrap();
+        assert!(!commands_before_freeze.is_empty());
+
+        // Freeze the background layer
+        engine.freeze_layer(EffectLayer::Background);
+        assert!(engine.is_layer_frozen(EffectLayer::Background));
+
+        // Update multiple times - the values should stay the same while frozen
+        let commands_frozen1 = engine.update(Duration::from_millis(100)).unwrap();
+        let commands_frozen2 = engine.update(Duration::from_millis(100)).unwrap();
+        let commands_frozen3 = engine.update(Duration::from_millis(500)).unwrap();
+
+        assert!(!commands_frozen1.is_empty());
+        assert!(!commands_frozen2.is_empty());
+        assert!(!commands_frozen3.is_empty());
+
+        // All frozen commands should have the same values
+        // Sort by channel to ensure consistent comparison
+        let mut vals1: Vec<u8> = commands_frozen1.iter().map(|c| c.value).collect();
+        let mut vals2: Vec<u8> = commands_frozen2.iter().map(|c| c.value).collect();
+        let mut vals3: Vec<u8> = commands_frozen3.iter().map(|c| c.value).collect();
+        vals1.sort();
+        vals2.sort();
+        vals3.sort();
+
+        assert_eq!(
+            vals1, vals2,
+            "Frozen layer should produce same values: {:?} vs {:?}",
+            vals1, vals2
+        );
+        assert_eq!(
+            vals2, vals3,
+            "Frozen layer should produce same values: {:?} vs {:?}",
+            vals2, vals3
+        );
+
+        // Unfreeze the layer
+        engine.unfreeze_layer(EffectLayer::Background);
+        assert!(!engine.is_layer_frozen(EffectLayer::Background));
+
+        // After unfreezing, the effect should resume and values should change
+        let commands_after1 = engine.update(Duration::from_millis(100)).unwrap();
+        let commands_after2 = engine.update(Duration::from_millis(200)).unwrap();
+
+        assert!(!commands_after1.is_empty());
+        assert!(!commands_after2.is_empty());
+
+        // Values should be different after unfreezing and time passing
+        let mut vals_after1: Vec<u8> = commands_after1.iter().map(|c| c.value).collect();
+        let mut vals_after2: Vec<u8> = commands_after2.iter().map(|c| c.value).collect();
+        vals_after1.sort();
+        vals_after2.sort();
+
+        // The effect should be animating, so values should differ
+        // (with a 200ms gap at 1 cycle/sec, hue shifts about 72 degrees)
+        assert_ne!(
+            vals_after1, vals_after2,
+            "After unfreezing, effect should animate: {:?} vs {:?}",
+            vals_after1, vals_after2
+        );
+    }
+
+    #[test]
+    fn test_layer_intensity_master() {
+        let mut engine = EffectEngine::new();
+        let fixture = create_test_fixture("test_fixture", 1, 1);
+        engine.register_fixture(fixture);
+
+        // Start a static effect at 100% dimmer
+        let effect = EffectInstance::new(
+            "test_effect".to_string(),
+            EffectType::Static {
+                parameters: {
+                    let mut p = HashMap::new();
+                    p.insert("dimmer".to_string(), 1.0);
+                    p
+                },
+                duration: None,
+            },
+            vec!["test_fixture".to_string()],
+            None,
+            None,
+            None,
+        );
+        engine.start_effect(effect).unwrap();
+
+        // Get commands at full intensity
+        let commands_full = engine.update(Duration::from_millis(16)).unwrap();
+        assert_eq!(commands_full.len(), 1);
+        let full_value = commands_full[0].value;
+        assert_eq!(full_value, 255); // Full intensity
+
+        // Set layer intensity master to 50%
+        engine.set_layer_intensity_master(EffectLayer::Background, 0.5);
+        assert!((engine.get_layer_intensity_master(EffectLayer::Background) - 0.5).abs() < 0.01);
+
+        // Get commands at 50% master
+        let commands_half = engine.update(Duration::from_millis(16)).unwrap();
+        assert_eq!(commands_half.len(), 1);
+        let half_value = commands_half[0].value;
+        assert_eq!(half_value, 127); // 50% of 255
+    }
+
+    #[test]
+    fn test_layer_speed_master() {
+        let mut engine = EffectEngine::new();
+        let fixture = create_test_fixture("test_fixture", 1, 1);
+        engine.register_fixture(fixture);
+
+        // Test that speed master affects effect timing
+        engine.set_layer_speed_master(EffectLayer::Background, 2.0);
+        assert!((engine.get_layer_speed_master(EffectLayer::Background) - 2.0).abs() < 0.01);
+
+        engine.set_layer_speed_master(EffectLayer::Background, 0.5);
+        assert!((engine.get_layer_speed_master(EffectLayer::Background) - 0.5).abs() < 0.01);
+
+        // Reset to default
+        engine.set_layer_speed_master(EffectLayer::Background, 1.0);
+        assert!((engine.get_layer_speed_master(EffectLayer::Background) - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_release_layer_fade_behavior() {
+        let mut engine = EffectEngine::new();
+        let fixture = create_test_fixture("test_fixture", 1, 1);
+        engine.register_fixture(fixture);
+
+        // Start an effect on background layer
+        let effect = EffectInstance::new(
+            "bg_effect".to_string(),
+            EffectType::Static {
+                parameters: {
+                    let mut p = HashMap::new();
+                    p.insert("dimmer".to_string(), 1.0);
+                    p
+                },
+                duration: None,
+            },
+            vec!["test_fixture".to_string()],
+            None,
+            None,
+            None,
+        );
+        engine.start_effect(effect).unwrap();
+
+        // Get initial commands at full brightness
+        let commands_before = engine.update(Duration::from_millis(16)).unwrap();
+        assert_eq!(commands_before.len(), 1);
+        assert_eq!(commands_before[0].value, 255);
+
+        // Release the layer with a 1 second fade
+        engine.release_layer_with_time(EffectLayer::Background, Some(Duration::from_secs(1)));
+
+        // Immediately after release, should still be near full
+        let commands_start = engine.update(Duration::from_millis(16)).unwrap();
+        assert!(!commands_start.is_empty());
+
+        // Halfway through fade (500ms), should be around half brightness
+        let commands_mid = engine.update(Duration::from_millis(500)).unwrap();
+        if !commands_mid.is_empty() {
+            // Value should be less than full
+            assert!(
+                commands_mid[0].value < 200,
+                "Should be fading: {}",
+                commands_mid[0].value
+            );
+        }
+
+        // After fade completes (another 600ms), effect should be gone
+        let _commands_end = engine.update(Duration::from_millis(600)).unwrap();
+        // Effect should have completed and been removed
+        assert_eq!(engine.active_effects_count(), 0);
+    }
+
+    #[test]
+    fn test_layer_commands_edge_cases() {
+        let mut engine = EffectEngine::new();
+        let fixture = create_test_fixture("test_fixture", 1, 1);
+        engine.register_fixture(fixture);
+
+        // Clear an empty layer - should not panic
+        engine.clear_layer(EffectLayer::Foreground);
+        assert_eq!(engine.active_effects_count(), 0);
+
+        // Release an empty layer - should not panic
+        engine.release_layer(EffectLayer::Midground);
+
+        // Double freeze - should not panic
+        engine.freeze_layer(EffectLayer::Background);
+        engine.freeze_layer(EffectLayer::Background);
+        assert!(engine.is_layer_frozen(EffectLayer::Background));
+
+        // Unfreeze non-frozen layer - should not panic
+        engine.unfreeze_layer(EffectLayer::Foreground);
+
+        // Set intensity master multiple times
+        engine.set_layer_intensity_master(EffectLayer::Background, 0.5);
+        engine.set_layer_intensity_master(EffectLayer::Background, 0.75);
+        assert!((engine.get_layer_intensity_master(EffectLayer::Background) - 0.75).abs() < 0.01);
+
+        // Intensity clamping
+        engine.set_layer_intensity_master(EffectLayer::Background, 1.5); // Should clamp to 1.0
+        assert!((engine.get_layer_intensity_master(EffectLayer::Background) - 1.0).abs() < 0.01);
+
+        engine.set_layer_intensity_master(EffectLayer::Background, -0.5); // Should clamp to 0.0
+        assert!((engine.get_layer_intensity_master(EffectLayer::Background) - 0.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_speed_master_affects_effect_progression() {
+        let mut engine = EffectEngine::new();
+        let fixture = create_test_fixture("test_fixture", 1, 1);
+        engine.register_fixture(fixture);
+
+        // Start a pulse effect - easier to verify timing changes
+        let effect = EffectInstance::new(
+            "pulse".to_string(),
+            EffectType::Pulse {
+                base_level: 0.5,
+                pulse_amplitude: 0.5,
+                frequency: TempoAwareFrequency::Fixed(1.0), // 1 cycle per second
+                duration: None,
+            },
+            vec!["test_fixture".to_string()],
+            None,
+            None,
+            None,
+        );
+        engine.start_effect(effect).unwrap();
+
+        // Get initial value
+        let cmd1 = engine.update(Duration::from_millis(100)).unwrap();
+        assert!(!cmd1.is_empty());
+        let _initial_value = cmd1[0].value;
+
+        // Now set speed master to 0 (effectively frozen via speed = 0)
+        engine.set_layer_speed_master(EffectLayer::Background, 0.0);
+
+        // With speed = 0, elapsed time stays at same effective position
+        // So values should stay similar
+        let cmd2 = engine.update(Duration::from_millis(500)).unwrap();
+        let cmd3 = engine.update(Duration::from_millis(500)).unwrap();
+
+        assert!(!cmd2.is_empty());
+        assert!(!cmd3.is_empty());
+
+        // With speed = 0, effect time doesn't progress, so values should be consistent
+        // (allowing for small floating point differences)
+        let val2 = cmd2[0].value;
+        let val3 = cmd3[0].value;
+
+        // Values should be the same when speed is 0
+        assert_eq!(
+            val2, val3,
+            "Speed=0 should produce consistent values: {} vs {}",
+            val2, val3
+        );
+    }
+
+    #[test]
+    fn test_speed_master_resume_from_zero() {
+        let mut engine = EffectEngine::new();
+        let fixture = create_test_fixture("test_fixture", 1, 1);
+        engine.register_fixture(fixture);
+
+        // Start a pulse effect
+        let effect = EffectInstance::new(
+            "pulse".to_string(),
+            EffectType::Pulse {
+                base_level: 0.5,
+                pulse_amplitude: 0.5,
+                frequency: TempoAwareFrequency::Fixed(1.0),
+                duration: None,
+            },
+            vec!["test_fixture".to_string()],
+            None,
+            None,
+            None,
+        );
+        engine.start_effect(effect).unwrap();
+
+        // Run for a bit to get to a known state
+        engine.update(Duration::from_millis(250)).unwrap();
+
+        // Freeze with speed=0
+        engine.set_layer_speed_master(EffectLayer::Background, 0.0);
+
+        // Record frozen value
+        let frozen_cmd = engine.update(Duration::from_millis(100)).unwrap();
+        let frozen_val = frozen_cmd[0].value;
+
+        // Wait a bit while frozen
+        engine.update(Duration::from_millis(500)).unwrap();
+
+        // Resume with speed=1
+        engine.set_layer_speed_master(EffectLayer::Background, 1.0);
+
+        // The effect should now progress from where it was frozen
+        let resume_cmd1 = engine.update(Duration::from_millis(100)).unwrap();
+        let resume_cmd2 = engine.update(Duration::from_millis(100)).unwrap();
+
+        // After resuming, values should change (effect is running again)
+        // We can't predict exact values due to sinusoidal pulse, but they should differ
+        // over enough time
+        let val1 = resume_cmd1[0].value;
+        let val2 = resume_cmd2[0].value;
+
+        // At least verify we got values (effect is running)
+        assert!(!resume_cmd1.is_empty());
+        assert!(!resume_cmd2.is_empty());
+
+        // The frozen value should be different from at least one of the resumed values
+        // (since we're now progressing through the pulse cycle)
+        let changed = frozen_val != val1 || frozen_val != val2 || val1 != val2;
+        assert!(
+            changed,
+            "Effect should progress after resume: frozen={}, val1={}, val2={}",
+            frozen_val, val1, val2
+        );
+    }
+
+    #[test]
+    fn test_multiple_layers_independent() {
+        let mut engine = EffectEngine::new();
+        let fixture = create_test_fixture("test_fixture", 1, 1);
+        engine.register_fixture(fixture);
+
+        // Start effects on different layers
+        let mut bg_effect = EffectInstance::new(
+            "bg".to_string(),
+            EffectType::Static {
+                parameters: {
+                    let mut p = HashMap::new();
+                    p.insert("dimmer".to_string(), 1.0);
+                    p
+                },
+                duration: None,
+            },
+            vec!["test_fixture".to_string()],
+            None,
+            None,
+            None,
+        );
+        bg_effect.layer = EffectLayer::Background;
+
+        let mut mid_effect = EffectInstance::new(
+            "mid".to_string(),
+            EffectType::Static {
+                parameters: {
+                    let mut p = HashMap::new();
+                    p.insert("dimmer".to_string(), 0.8);
+                    p
+                },
+                duration: None,
+            },
+            vec!["test_fixture".to_string()],
+            None,
+            None,
+            None,
+        );
+        mid_effect.layer = EffectLayer::Midground;
+
+        engine.start_effect(bg_effect).unwrap();
+        engine.start_effect(mid_effect).unwrap();
+
+        // Set different masters for each layer
+        engine.set_layer_intensity_master(EffectLayer::Background, 0.5);
+        engine.set_layer_intensity_master(EffectLayer::Midground, 1.0);
+
+        // Freeze only background
+        engine.freeze_layer(EffectLayer::Background);
+
+        assert!(engine.is_layer_frozen(EffectLayer::Background));
+        assert!(!engine.is_layer_frozen(EffectLayer::Midground));
+
+        // Clear only midground
+        engine.clear_layer(EffectLayer::Midground);
+
+        assert_eq!(engine.active_effects_count(), 1);
+        assert!(engine.has_effect("bg"));
+        assert!(!engine.has_effect("mid"));
     }
 }

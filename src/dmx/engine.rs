@@ -619,18 +619,53 @@ impl Engine {
         &self,
         song_time: std::time::Duration,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let effects = {
+        use crate::lighting::parser::LayerCommandType;
+
+        let timeline_update = {
             let mut current_timeline = self.current_song_timeline.lock().unwrap();
             if let Some(timeline) = current_timeline.as_mut() {
                 timeline.update(song_time)
             } else {
-                Vec::new()
+                crate::lighting::timeline::TimelineUpdate::default()
             }
         };
 
+        // Process layer commands first (they affect subsequent effects)
+        if !timeline_update.layer_commands.is_empty() {
+            let mut effects_engine = self.effect_engine.lock().unwrap();
+            for cmd in &timeline_update.layer_commands {
+                match cmd.command_type {
+                    LayerCommandType::Clear => {
+                        effects_engine.clear_layer(cmd.layer);
+                    }
+                    LayerCommandType::Release => {
+                        if let Some(fade_time) = cmd.fade_time {
+                            effects_engine.release_layer_with_time(cmd.layer, Some(fade_time));
+                        } else {
+                            effects_engine.release_layer(cmd.layer);
+                        }
+                    }
+                    LayerCommandType::Freeze => {
+                        effects_engine.freeze_layer(cmd.layer);
+                    }
+                    LayerCommandType::Unfreeze => {
+                        effects_engine.unfreeze_layer(cmd.layer);
+                    }
+                    LayerCommandType::Master => {
+                        if let Some(intensity) = cmd.intensity {
+                            effects_engine.set_layer_intensity_master(cmd.layer, intensity);
+                        }
+                        if let Some(speed) = cmd.speed {
+                            effects_engine.set_layer_speed_master(cmd.layer, speed);
+                        }
+                    }
+                }
+            }
+        }
+
         // Start the effects in the effects engine, resolving groups to fixtures
-        if !effects.is_empty() {
-            for effect in effects {
+        if !timeline_update.effects.is_empty() {
+            for effect in timeline_update.effects {
                 // Resolve groups to fixtures if lighting system is available
                 if let Some(lighting_system) = &self.lighting_system {
                     let mut lighting_system = lighting_system.lock().unwrap();
