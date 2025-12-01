@@ -116,11 +116,91 @@ pub struct LightShow {
     pub tempo_map: Option<crate::lighting::tempo::TempoMap>,
 }
 
+/// A reusable sequence of cues that can be referenced in shows
+#[derive(Debug, Clone)]
+pub struct Sequence {
+    pub cues: Vec<Cue>,
+}
+
+impl Sequence {
+    /// Calculate the duration of this sequence based on when all effects complete
+    /// Returns None if the sequence contains perpetual effects (never finishes)
+    /// Otherwise returns the time from sequence start (0) to when the last effect completes
+    pub fn duration(&self) -> Option<Duration> {
+        if self.cues.is_empty() {
+            return Some(Duration::ZERO);
+        }
+
+        let mut max_completion_time = Duration::ZERO;
+        let mut has_any_duration = false;
+
+        for cue in &self.cues {
+            for effect in &cue.effects {
+                if let Some(effect_duration) = effect.total_duration() {
+                    // Effect completes at: cue_time + effect_duration
+                    let completion_time = cue.time + effect_duration;
+                    if completion_time > max_completion_time {
+                        max_completion_time = completion_time;
+                    }
+                    has_any_duration = true;
+                }
+                // Perpetual effects are ignored for duration calculation
+            }
+        }
+
+        if has_any_duration {
+            Some(max_completion_time)
+        } else {
+            // All effects are perpetual - sequence never finishes
+            None
+        }
+    }
+}
+
+/// Loop mode for sequence references
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum SequenceLoop {
+    Once,
+    Loop, // Infinite loop
+    PingPong,
+    Random,
+    Count(usize), // Loop N times
+}
+
+/// Unexpanded sequence cue information for two-pass parsing
+#[derive(Debug, Clone)]
+struct UnexpandedSequenceCue {
+    time: Duration,
+    effects: Vec<Effect>,
+    layer_commands: Vec<LayerCommand>,
+    stop_sequences: Vec<String>,
+    sequence_references: Vec<(String, Option<SequenceLoop>)>, // (sequence_name, loop_param)
+}
+
+fn parse_sequence_loop_param(value: &str) -> Result<SequenceLoop, Box<dyn Error>> {
+    match value.trim() {
+        "once" => Ok(SequenceLoop::Once),
+        "loop" => Ok(SequenceLoop::Loop),
+        "pingpong" => Ok(SequenceLoop::PingPong),
+        "random" => Ok(SequenceLoop::Random),
+        numeric => {
+            // Try to parse as a number
+            let count: usize = numeric.parse()
+                .map_err(|_| format!("Invalid loop count: '{}'. Expected 'once', 'loop', 'pingpong', 'random', or a number", numeric))?;
+            if count == 0 {
+                return Err("Loop count must be at least 1".into());
+            }
+            Ok(SequenceLoop::Count(count))
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Cue {
     pub time: Duration,
     pub effects: Vec<Effect>,
     pub layer_commands: Vec<LayerCommand>,
+    pub stop_sequences: Vec<String>, // Names of sequences to stop at this cue time
 }
 
 #[derive(Debug, Clone)]
@@ -132,6 +212,45 @@ pub struct Effect {
     pub up_time: Option<Duration>,
     pub hold_time: Option<Duration>,
     pub down_time: Option<Duration>,
+    pub sequence_name: Option<String>, // Track which sequence this effect came from (for stopping)
+}
+
+impl Effect {
+    /// Calculate the total duration of this effect
+    /// Returns None for perpetual/indefinite effects
+    pub fn total_duration(&self) -> Option<Duration> {
+        // Check if this is an indefinite effect (no hold_time and no down_time)
+        let hold = self.hold_time.unwrap_or(Duration::from_secs(0));
+        let down = self.down_time.unwrap_or(Duration::from_secs(0));
+        let is_indefinite = hold.is_zero() && down.is_zero();
+
+        // Effects are perpetual if they are indefinite AND have no explicit duration
+        if is_indefinite {
+            match &self.effect_type {
+                // Static effects with no duration are perpetual
+                EffectType::Static { duration: None, .. } => return None,
+                // ColorCycle, Chase, Rainbow have no duration field - perpetual by design
+                EffectType::ColorCycle { .. } => return None,
+                EffectType::Chase { .. } => return None,
+                EffectType::Rainbow { .. } => return None,
+                // Strobe and Pulse with no duration are perpetual
+                EffectType::Strobe { duration: None, .. } => return None,
+                EffectType::Pulse { duration: None, .. } => return None,
+                _ => {} // Fall through to calculate duration
+            }
+        }
+
+        // For dimmers, use duration field (timing params not used)
+        if let EffectType::Dimmer { duration, .. } = &self.effect_type {
+            return Some(*duration);
+        }
+
+        let duration = self.up_time.unwrap_or(Duration::from_secs(0))
+            + self.hold_time.unwrap_or(Duration::from_secs(0))
+            + self.down_time.unwrap_or(Duration::from_secs(0));
+
+        Some(duration)
+    }
 }
 
 /// Layer control command types (grandMA-inspired)
@@ -182,15 +301,20 @@ pub fn parse_light_shows(content: &str) -> Result<HashMap<String, LightShow>, Bo
     };
 
     let mut shows = HashMap::new();
+    let mut sequences = HashMap::new();
     let mut global_tempo: Option<TempoMap> = None;
     let mut show_pairs = Vec::new();
+    let mut sequence_pairs = Vec::new();
 
-    // First pass: collect tempo sections and show pairs
+    // First pass: collect tempo sections, sequences, and show pairs
     for pair in pairs {
         match pair.as_rule() {
             Rule::tempo => {
                 // Parse tempo at file level (applies to all shows if no show-specific tempo)
                 global_tempo = Some(parse_tempo_definition(pair)?);
+            }
+            Rule::sequence => {
+                sequence_pairs.push(pair);
             }
             Rule::light_show => {
                 show_pairs.push(pair);
@@ -200,6 +324,9 @@ pub fn parse_light_shows(content: &str) -> Result<HashMap<String, LightShow>, Bo
                     match inner_pair.as_rule() {
                         Rule::tempo => {
                             global_tempo = Some(parse_tempo_definition(inner_pair)?);
+                        }
+                        Rule::sequence => {
+                            sequence_pairs.push(inner_pair);
                         }
                         Rule::light_show => {
                             show_pairs.push(inner_pair);
@@ -211,9 +338,118 @@ pub fn parse_light_shows(content: &str) -> Result<HashMap<String, LightShow>, Bo
         }
     }
 
-    // Second pass: parse shows with tempo available
+    // Parse sequences in two passes to support forward references
+    // First pass: Parse all sequence definitions and extract unexpanded cue data
+    let mut unexpanded_sequences: Vec<(String, Option<TempoMap>, Vec<UnexpandedSequenceCue>)> =
+        Vec::new();
+
+    for pair in sequence_pairs {
+        let (name, tempo_map, unexpanded_cues) = parse_sequence_structure(pair, &global_tempo)?;
+        unexpanded_sequences.push((name, tempo_map, unexpanded_cues));
+    }
+
+    // Insert all sequences into the map (with empty cues for now)
+    for (name, _tempo_map, _) in &unexpanded_sequences {
+        let sequence = Sequence { cues: Vec::new() };
+        sequences.insert(name.clone(), sequence);
+    }
+
+    // Second pass: Expand nested references in all sequences recursively
+    // Build a map of unexpanded data for recursive expansion
+    let mut unexpanded_data_map = HashMap::new();
+    for (name, tempo_map, unexpanded_cues) in unexpanded_sequences {
+        unexpanded_data_map.insert(name, (tempo_map, unexpanded_cues));
+    }
+
+    // Recursive function to expand a sequence and its dependencies
+    fn expand_sequence_recursive(
+        name: &str,
+        sequences: &mut HashMap<String, Sequence>,
+        unexpanded_data: &HashMap<String, (Option<TempoMap>, Vec<UnexpandedSequenceCue>)>,
+        global_tempo: &Option<TempoMap>,
+        expanded: &mut std::collections::HashSet<String>,
+        recursion_stack: &mut Vec<String>,
+    ) -> Result<(), Box<dyn Error>> {
+        // Check for circular reference
+        if recursion_stack.contains(&name.to_string()) {
+            return Err(format!(
+                "Circular sequence reference detected: {} -> {}",
+                recursion_stack.join(" -> "),
+                name
+            )
+            .into());
+        }
+
+        // If already expanded, skip
+        if expanded.contains(name) {
+            return Ok(());
+        }
+
+        // Get unexpanded data
+        let (tempo_map, unexpanded_cues) = unexpanded_data
+            .get(name)
+            .ok_or_else(|| format!("Sequence '{}' not found in unexpanded data", name))?;
+
+        // Add to recursion stack
+        recursion_stack.push(name.to_string());
+
+        let effective_tempo = tempo_map.as_ref().or(global_tempo.as_ref());
+        let mut expanded_cues = Vec::new();
+
+        // Expand all cues in this sequence
+        for unexpanded_cue in unexpanded_cues {
+            // Check if this cue references other sequences that need expansion first
+            for (ref_seq_name, _) in &unexpanded_cue.sequence_references {
+                // Recursively expand referenced sequences first
+                expand_sequence_recursive(
+                    ref_seq_name,
+                    sequences,
+                    unexpanded_data,
+                    global_tempo,
+                    expanded,
+                    recursion_stack,
+                )?;
+            }
+
+            // Now expand this cue
+            let cues = expand_unexpanded_sequence_cue(
+                unexpanded_cue.clone(),
+                &effective_tempo.cloned(),
+                sequences,
+                recursion_stack,
+            )?;
+            expanded_cues.extend(cues);
+        }
+
+        // Remove from recursion stack
+        recursion_stack.pop();
+
+        // Mark as expanded and update the sequence
+        if let Some(sequence) = sequences.get_mut(name) {
+            sequence.cues = expanded_cues;
+        }
+        expanded.insert(name.to_string());
+
+        Ok(())
+    }
+
+    // Expand all sequences (recursive expansion will handle dependencies)
+    let mut expanded_sequence_names = std::collections::HashSet::new();
+    for name in unexpanded_data_map.keys() {
+        let mut recursion_stack = Vec::new();
+        expand_sequence_recursive(
+            name,
+            &mut sequences,
+            &unexpanded_data_map,
+            &global_tempo,
+            &mut expanded_sequence_names,
+            &mut recursion_stack,
+        )?;
+    }
+
+    // Second pass: parse shows with tempo and sequences available
     for pair in show_pairs {
-        let mut show = parse_light_show_definition(pair, &global_tempo)?;
+        let mut show = parse_light_show_definition(pair, &global_tempo, &sequences)?;
         // If show doesn't have its own tempo, use global tempo
         if show.tempo_map.is_none() {
             show.tempo_map = global_tempo.clone();
@@ -342,6 +578,7 @@ fn analyze_parsing_failure(content: &str) -> String {
 fn parse_light_show_definition(
     pair: pest::iterators::Pair<Rule>,
     global_tempo: &Option<TempoMap>,
+    sequences: &HashMap<String, Sequence>,
 ) -> Result<LightShow, Box<dyn Error>> {
     let mut name = String::new();
     let mut cues = Vec::new();
@@ -378,10 +615,11 @@ fn parse_light_show_definition(
                 // If no show-specific tempo, use global tempo for cue parsing
                 let effective_tempo = tempo_map.as_ref().or(global_tempo.as_ref());
 
-                // Then parse cues (now we have tempo_map)
+                // Then parse cues (now we have tempo_map and sequences)
                 for cue_pair in cue_pairs {
-                    let cue = parse_cue_definition(cue_pair, &effective_tempo.cloned())?;
-                    cues.push(cue);
+                    let parsed_cues =
+                        parse_cue_definition(cue_pair, &effective_tempo.cloned(), sequences)?;
+                    cues.extend(parsed_cues);
                 }
             }
             _ => {}
@@ -395,17 +633,327 @@ fn parse_light_show_definition(
     })
 }
 
-fn parse_cue_definition(
+/// Parse sequence structure without expanding nested references
+/// Returns (name, tempo_map, unexpanded_cues) for later expansion
+type SequenceStructureResult = (String, Option<TempoMap>, Vec<UnexpandedSequenceCue>);
+
+fn parse_sequence_structure(
+    pair: pest::iterators::Pair<Rule>,
+    global_tempo: &Option<TempoMap>,
+) -> Result<SequenceStructureResult, Box<dyn Error>> {
+    let mut name = String::new();
+    let mut tempo_map: Option<TempoMap> = None;
+    let mut unexpanded_cues = Vec::new();
+
+    for inner_pair in pair.into_inner() {
+        match inner_pair.as_rule() {
+            Rule::sequence_name => {
+                name = inner_pair.as_str().trim_matches('"').to_string();
+            }
+            Rule::sequence_content => {
+                // Parse the sequence content which contains cues and potentially tempo
+                let mut tempo_pairs = Vec::new();
+                let mut cue_pairs = Vec::new();
+
+                for content_pair in inner_pair.into_inner() {
+                    match content_pair.as_rule() {
+                        Rule::tempo => {
+                            tempo_pairs.push(content_pair);
+                        }
+                        Rule::sequence_cue => {
+                            cue_pairs.push(content_pair);
+                        }
+                        _ => {}
+                    }
+                }
+
+                // Parse tempo first (if any)
+                for tempo_pair in tempo_pairs {
+                    tempo_map = Some(parse_tempo_definition(tempo_pair)?);
+                }
+
+                // Parse cues but don't expand sequence references yet
+                let effective_tempo = tempo_map.as_ref().or(global_tempo.as_ref());
+                for cue_pair in cue_pairs {
+                    let unexpanded_cue =
+                        parse_sequence_cue_structure(cue_pair, &effective_tempo.cloned())?;
+                    unexpanded_cues.push(unexpanded_cue);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok((name, tempo_map, unexpanded_cues))
+}
+
+/// Parse a sequence cue structure without expanding nested sequence references
+fn parse_sequence_cue_structure(
     pair: pest::iterators::Pair<Rule>,
     tempo_map: &Option<TempoMap>,
-) -> Result<Cue, Box<dyn Error>> {
+) -> Result<UnexpandedSequenceCue, Box<dyn Error>> {
     let mut time = Duration::ZERO;
     let mut effects = Vec::new();
     let mut layer_commands = Vec::new();
+    let mut stop_sequences = Vec::new();
+    let mut sequence_references = Vec::new();
     let mut effect_pairs = Vec::new();
     let mut layer_command_pairs = Vec::new();
+    let mut sequence_ref_pairs = Vec::new();
+    let mut stop_sequence_pairs = Vec::new();
 
-    // First pass: parse time and collect effect/layer_command pairs
+    // First pass: parse time and collect all pairs
+    for inner_pair in pair.into_inner() {
+        match inner_pair.as_rule() {
+            Rule::time_string => {
+                time = parse_time_string(inner_pair.as_str())?;
+            }
+            Rule::measure_time => {
+                let (measure, beat) = parse_measure_time(inner_pair.as_str())?;
+                if let Some(tm) = tempo_map {
+                    // For sequences, measure 1 should be 0.0s relative to the sequence start
+                    // So we subtract the start_offset to make it relative to 0.0s
+                    let absolute_time = tm.measure_to_time(measure, beat).ok_or_else(|| {
+                        format!("Invalid measure/beat position: {}/{}", measure, beat)
+                    })?;
+                    time = absolute_time - tm.start_offset;
+                } else {
+                    return Err("Measure-based timing requires a tempo section".into());
+                }
+            }
+            Rule::effect => {
+                effect_pairs.push(inner_pair);
+            }
+            Rule::layer_command => {
+                layer_command_pairs.push(inner_pair);
+            }
+            Rule::sequence_reference => {
+                sequence_ref_pairs.push(inner_pair);
+            }
+            Rule::stop_sequence_command => {
+                stop_sequence_pairs.push(inner_pair);
+            }
+            _ => {}
+        }
+    }
+
+    // Parse effects and layer commands (these can be parsed immediately)
+    for effect_pair in effect_pairs {
+        let effect = parse_effect_definition(effect_pair, tempo_map, time)?;
+        effects.push(effect);
+    }
+
+    for layer_command_pair in layer_command_pairs {
+        let layer_command = parse_layer_command(layer_command_pair, tempo_map, time)?;
+        layer_commands.push(layer_command);
+    }
+
+    // Parse stop sequence commands
+    for stop_pair in stop_sequence_pairs {
+        let seq_name = stop_pair
+            .into_inner()
+            .find(|p| p.as_rule() == Rule::sequence_name)
+            .ok_or("Stop sequence command missing sequence name")?
+            .as_str()
+            .trim_matches('"')
+            .to_string();
+        stop_sequences.push(seq_name);
+    }
+
+    // Parse sequence references (store as metadata for later expansion)
+    for seq_ref_pair in sequence_ref_pairs {
+        let mut seq_name = String::new();
+        let mut loop_param: Option<SequenceLoop> = None;
+
+        for inner in seq_ref_pair.into_inner() {
+            match inner.as_rule() {
+                Rule::sequence_name => {
+                    seq_name = inner.as_str().trim_matches('"').to_string();
+                }
+                Rule::sequence_params => {
+                    for param_pair in inner.into_inner() {
+                        if param_pair.as_rule() == Rule::sequence_param {
+                            let mut param_name = String::new();
+                            let mut param_value = String::new();
+
+                            for param_inner in param_pair.into_inner() {
+                                match param_inner.as_rule() {
+                                    Rule::sequence_param_name => {
+                                        param_name = param_inner.as_str().to_string();
+                                    }
+                                    Rule::sequence_param_value => {
+                                        param_value = param_inner.as_str().to_string();
+                                    }
+                                    _ => {}
+                                }
+                            }
+
+                            if param_name == "loop" {
+                                loop_param = Some(parse_sequence_loop_param(&param_value)?);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        sequence_references.push((seq_name, loop_param));
+    }
+
+    Ok(UnexpandedSequenceCue {
+        time,
+        effects,
+        layer_commands,
+        stop_sequences,
+        sequence_references,
+    })
+}
+
+/// Expand an unexpanded sequence cue, resolving all nested sequence references
+fn expand_unexpanded_sequence_cue(
+    unexpanded: UnexpandedSequenceCue,
+    _tempo_map: &Option<TempoMap>,
+    sequences: &HashMap<String, Sequence>,
+    recursion_stack: &mut Vec<String>,
+) -> Result<Vec<Cue>, Box<dyn Error>> {
+    // If there are sequence references, expand them
+    if !unexpanded.sequence_references.is_empty() {
+        let mut expanded_cues = Vec::new();
+
+        // Expand each sequence reference
+        for (seq_name, loop_param) in unexpanded.sequence_references {
+            // Check for circular reference
+            if recursion_stack.contains(&seq_name) {
+                return Err(format!(
+                    "Circular sequence reference detected: {} -> {}",
+                    recursion_stack.join(" -> "),
+                    seq_name
+                )
+                .into());
+            }
+
+            let sequence = sequences
+                .get(&seq_name)
+                .ok_or_else(|| format!("Sequence '{}' not found", seq_name))?;
+
+            // If the referenced sequence hasn't been expanded yet (empty cues), we need to expand it first
+            // This handles forward references - when seq_a references seq_b, we expand seq_b first
+            if sequence.cues.is_empty() {
+                // This shouldn't happen in the two-pass approach, but handle it gracefully
+                return Err(format!(
+                    "Sequence '{}' has not been expanded yet (internal error)",
+                    seq_name
+                )
+                .into());
+            }
+
+            // Calculate sequence duration based on effect completion times
+            // If sequence has only perpetual effects, use the last cue time as the end time
+            let sequence_duration = match sequence.duration() {
+                Some(duration) => duration,
+                None => {
+                    // Sequence has only perpetual effects - use last cue time as end time
+                    if sequence.cues.is_empty() {
+                        Duration::ZERO
+                    } else {
+                        sequence.cues.last().unwrap().time
+                    }
+                }
+            };
+
+            // Determine how many times to loop
+            let loop_count = match loop_param {
+                Some(SequenceLoop::Once) => 1,
+                Some(SequenceLoop::Loop) => 10000, // Practical infinity
+                Some(SequenceLoop::PingPong) => {
+                    return Err("PingPong loop mode not yet implemented for sequences".into());
+                }
+                Some(SequenceLoop::Random) => {
+                    return Err("Random loop mode not yet implemented for sequences".into());
+                }
+                Some(SequenceLoop::Count(n)) => n,
+                None => 1, // Default to once if not specified
+            };
+
+            // Add to recursion stack
+            recursion_stack.push(seq_name.clone());
+
+            // Expand the sequence the specified number of times
+            for iteration in 0..loop_count {
+                let iteration_offset = unexpanded.time + (sequence_duration * iteration as u32);
+
+                for seq_cue in &sequence.cues {
+                    let mut expanded_cue = seq_cue.clone();
+                    expanded_cue.time = iteration_offset + seq_cue.time;
+                    // Mark all effects in this cue as belonging to the referenced sequence
+                    for effect in &mut expanded_cue.effects {
+                        if effect.sequence_name.is_none() {
+                            effect.sequence_name = Some(seq_name.clone());
+                        }
+                    }
+                    expanded_cues.push(expanded_cue);
+                }
+            }
+
+            // Remove from recursion stack
+            recursion_stack.pop();
+        }
+
+        // Add effects and layer commands to the first expanded cue
+        if !unexpanded.effects.is_empty() || !unexpanded.layer_commands.is_empty() {
+            if expanded_cues.is_empty() {
+                expanded_cues.push(Cue {
+                    time: unexpanded.time,
+                    effects: unexpanded.effects,
+                    layer_commands: unexpanded.layer_commands,
+                    stop_sequences: unexpanded.stop_sequences,
+                });
+            } else {
+                expanded_cues[0].effects.extend(unexpanded.effects);
+                expanded_cues[0]
+                    .layer_commands
+                    .extend(unexpanded.layer_commands);
+                expanded_cues[0]
+                    .stop_sequences
+                    .extend(unexpanded.stop_sequences);
+            }
+        } else if !unexpanded.stop_sequences.is_empty() && !expanded_cues.is_empty() {
+            expanded_cues[0]
+                .stop_sequences
+                .extend(unexpanded.stop_sequences);
+        }
+
+        return Ok(expanded_cues);
+    }
+
+    // No sequence references - return a single cue
+    Ok(vec![Cue {
+        time: unexpanded.time,
+        effects: unexpanded.effects,
+        layer_commands: unexpanded.layer_commands,
+        stop_sequences: unexpanded.stop_sequences,
+    }])
+}
+
+// Removed unused functions: parse_sequence_definition and parse_sequence_cue_definition_with_recursion
+// These were replaced by the two-pass parsing approach with parse_sequence_structure and expand_unexpanded_sequence_cue
+
+fn parse_cue_definition(
+    pair: pest::iterators::Pair<Rule>,
+    tempo_map: &Option<TempoMap>,
+    sequences: &HashMap<String, Sequence>,
+) -> Result<Vec<Cue>, Box<dyn Error>> {
+    let mut time = Duration::ZERO;
+    let mut effects = Vec::new();
+    let mut layer_commands = Vec::new();
+    let mut stop_sequences = Vec::new();
+    let mut effect_pairs = Vec::new();
+    let mut layer_command_pairs = Vec::new();
+    let mut sequence_references = Vec::new();
+    let mut stop_sequence_pairs = Vec::new();
+
+    // First pass: parse time and collect effect/layer_command/sequence_reference/stop_sequence pairs
     for inner_pair in pair.into_inner() {
         match inner_pair.as_rule() {
             Rule::time_string => {
@@ -427,12 +975,169 @@ fn parse_cue_definition(
             Rule::layer_command => {
                 layer_command_pairs.push(inner_pair);
             }
+            Rule::sequence_reference => {
+                sequence_references.push(inner_pair);
+            }
+            Rule::stop_sequence_command => {
+                stop_sequence_pairs.push(inner_pair);
+            }
             _ => {
                 // Skip unexpected rules
             }
         }
     }
 
+    // Parse stop sequence commands
+    for stop_pair in stop_sequence_pairs {
+        let seq_name = stop_pair
+            .into_inner()
+            .find(|p| p.as_rule() == Rule::sequence_name)
+            .ok_or("Stop sequence command missing sequence name")?
+            .as_str()
+            .trim_matches('"')
+            .to_string();
+        stop_sequences.push(seq_name);
+    }
+
+    // If there are sequence references, expand them into multiple cues
+    if !sequence_references.is_empty() {
+        let mut expanded_cues = Vec::new();
+
+        // Parse effects and layer commands for the base cue
+        for effect_pair in effect_pairs {
+            let effect = parse_effect_definition(effect_pair, tempo_map, time)?;
+            effects.push(effect);
+        }
+
+        for layer_command_pair in layer_command_pairs {
+            let layer_command = parse_layer_command(layer_command_pair, tempo_map, time)?;
+            layer_commands.push(layer_command);
+        }
+
+        // Expand each sequence reference
+        for seq_ref_pair in sequence_references {
+            let mut seq_name = String::new();
+            let mut loop_param: Option<SequenceLoop> = None;
+
+            // Parse sequence name and parameters
+            for inner in seq_ref_pair.into_inner() {
+                match inner.as_rule() {
+                    Rule::sequence_name => {
+                        seq_name = inner.as_str().trim_matches('"').to_string();
+                    }
+                    Rule::sequence_params => {
+                        for param_pair in inner.into_inner() {
+                            if param_pair.as_rule() == Rule::sequence_param {
+                                let mut param_name = String::new();
+                                let mut param_value = String::new();
+
+                                for param_inner in param_pair.into_inner() {
+                                    match param_inner.as_rule() {
+                                        Rule::sequence_param_name => {
+                                            param_name = param_inner.as_str().to_string();
+                                        }
+                                        Rule::sequence_param_value => {
+                                            param_value = param_inner.as_str().to_string();
+                                        }
+                                        _ => {}
+                                    }
+                                }
+
+                                if param_name == "loop" {
+                                    loop_param = Some(parse_sequence_loop_param(&param_value)?);
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            let sequence = sequences
+                .get(&seq_name)
+                .ok_or_else(|| format!("Sequence '{}' not found", seq_name))?;
+
+            // Calculate sequence duration based on effect completion times
+            // If sequence has only perpetual effects, use the last cue time as the end time
+            let sequence_duration = match sequence.duration() {
+                Some(duration) => duration,
+                None => {
+                    // Sequence has only perpetual effects - use last cue time as end time
+                    if sequence.cues.is_empty() {
+                        Duration::ZERO
+                    } else {
+                        sequence.cues.last().unwrap().time
+                    }
+                }
+            };
+
+            // Determine how many times to loop
+            let loop_count = match loop_param {
+                Some(SequenceLoop::Once) => 1,
+                Some(SequenceLoop::Loop) => 10000, // Practical infinity
+                Some(SequenceLoop::PingPong) => {
+                    return Err("PingPong loop mode not yet implemented for sequences".into());
+                }
+                Some(SequenceLoop::Random) => {
+                    return Err("Random loop mode not yet implemented for sequences".into());
+                }
+                Some(SequenceLoop::Count(n)) => n,
+                None => 1, // Default to once if not specified
+            };
+
+            // Expand the sequence the specified number of times
+            for iteration in 0..loop_count {
+                let iteration_offset = time + (sequence_duration * iteration as u32);
+
+                for seq_cue in &sequence.cues {
+                    let mut expanded_cue = seq_cue.clone();
+                    expanded_cue.time = iteration_offset + seq_cue.time;
+                    // Mark all effects in this cue as belonging to this sequence
+                    for effect in &mut expanded_cue.effects {
+                        effect.sequence_name = Some(seq_name.clone());
+                    }
+                    expanded_cues.push(expanded_cue);
+                }
+            }
+        }
+
+        // If there are effects or layer commands, add them to the first expanded cue
+        // or create a base cue if no sequences were expanded
+        if !effects.is_empty() || !layer_commands.is_empty() {
+            if expanded_cues.is_empty() {
+                expanded_cues.push(Cue {
+                    time,
+                    effects,
+                    layer_commands,
+                    stop_sequences: stop_sequences.clone(),
+                });
+            } else {
+                // Add effects and layer commands to the first expanded cue
+                expanded_cues[0].effects.extend(effects);
+                expanded_cues[0].layer_commands.extend(layer_commands);
+                // Add stop sequences to the first expanded cue
+                expanded_cues[0]
+                    .stop_sequences
+                    .extend(stop_sequences.clone());
+            }
+        } else if !stop_sequences.is_empty() {
+            // No sequences expanded but we have stop commands - create a cue for them
+            if expanded_cues.is_empty() {
+                expanded_cues.push(Cue {
+                    time,
+                    effects: Vec::new(),
+                    layer_commands: Vec::new(),
+                    stop_sequences,
+                });
+            } else {
+                expanded_cues[0].stop_sequences.extend(stop_sequences);
+            }
+        }
+
+        return Ok(expanded_cues);
+    }
+
+    // No sequence references - return a single cue
     // Second pass: parse effects now that we know the cue time
     for effect_pair in effect_pairs {
         let effect = parse_effect_definition(effect_pair, tempo_map, time)?;
@@ -445,11 +1150,12 @@ fn parse_cue_definition(
         layer_commands.push(layer_command);
     }
 
-    Ok(Cue {
+    Ok(vec![Cue {
         time,
         effects,
         layer_commands,
-    })
+        stop_sequences,
+    }])
 }
 
 fn parse_layer_command(
@@ -699,6 +1405,7 @@ fn parse_effect_definition(
         up_time,
         hold_time,
         down_time,
+        sequence_name: None, // Will be set when expanding sequences
     })
 }
 
@@ -5412,5 +6119,630 @@ show "Transition Spanning Changes" {
         let after_change2 = change2_time + Duration::from_millis(100);
         let bpm_after2 = tempo_map.bpm_at_time(after_change2);
         assert!((bpm_after2 - 160.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_sequence_definition_and_reference() {
+        let content = r#"
+sequence "color_cycle" {
+    @0.000
+    front_wash: static, color: "red"
+    
+    @2.000
+    front_wash: static, color: "green"
+    
+    @4.000
+    front_wash: static, color: "blue"
+}
+
+show "Test Show" {
+    @0.000
+    sequence "color_cycle"
+    
+    @6.000
+    sequence "color_cycle"
+}
+"#;
+
+        let result = parse_light_shows(content);
+        assert!(
+            result.is_ok(),
+            "Failed to parse shows with sequences: {:?}",
+            result.err()
+        );
+
+        let shows = result.unwrap();
+        assert_eq!(shows.len(), 1);
+
+        let show = shows.get("Test Show").unwrap();
+        // The sequence should be expanded into 6 cues (3 from first reference, 3 from second)
+        assert_eq!(show.cues.len(), 6);
+
+        // First sequence reference: cues at 0.000, 2.000, 4.000
+        assert_eq!(show.cues[0].time, Duration::from_millis(0));
+        assert_eq!(show.cues[1].time, Duration::from_millis(2000));
+        assert_eq!(show.cues[2].time, Duration::from_millis(4000));
+
+        // Second sequence reference: cues at 6.000, 8.000, 10.000
+        assert_eq!(show.cues[3].time, Duration::from_millis(6000));
+        assert_eq!(show.cues[4].time, Duration::from_millis(8000));
+        assert_eq!(show.cues[5].time, Duration::from_millis(10000));
+    }
+
+    #[test]
+    fn test_sequence_with_effects_in_same_cue() {
+        let content = r#"
+sequence "simple_sequence" {
+    @0.000
+    front_wash: static, color: "red"
+    
+    @1.000
+    front_wash: static, color: "blue"
+}
+
+show "Test Show" {
+    @5.000
+    back_wash: static, color: "green"
+    sequence "simple_sequence"
+}
+"#;
+
+        let result = parse_light_shows(content);
+        assert!(result.is_ok(), "Failed to parse shows: {:?}", result.err());
+
+        let shows = result.unwrap();
+        let show = shows.get("Test Show").unwrap();
+
+        // Should have 3 cues: one with the effect, plus 2 from the sequence
+        // The effect should be added to the first expanded cue
+        assert_eq!(show.cues.len(), 2);
+
+        // First cue: at 5.000 with both the effect and the first sequence cue
+        assert_eq!(show.cues[0].time, Duration::from_millis(5000));
+        assert_eq!(show.cues[0].effects.len(), 2); // green effect + red from sequence
+
+        // Second cue: at 6.000 with the second sequence cue
+        assert_eq!(show.cues[1].time, Duration::from_millis(6000));
+        assert_eq!(show.cues[1].effects.len(), 1); // blue from sequence
+    }
+
+    #[test]
+    fn test_sequence_not_found_error() {
+        let content = r#"
+show "Test Show" {
+    @0.000
+    sequence "nonexistent_sequence"
+}
+"#;
+
+        let result = parse_light_shows(content);
+        assert!(result.is_err(), "Should fail when sequence is not found");
+
+        let error = result.unwrap_err();
+        assert!(
+            error.to_string().contains("not found"),
+            "Error should mention sequence not found"
+        );
+    }
+
+    #[test]
+    fn test_sequence_with_measure_based_timing() {
+        let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+}
+
+sequence "measure_based_sequence" {
+    @1/1
+    front_wash: static, color: "red"
+    
+    @1/3
+    front_wash: static, color: "green"
+    
+    @2/1
+    front_wash: static, color: "blue"
+}
+
+show "Test Show" {
+    @0.000
+    sequence "measure_based_sequence"
+}
+"#;
+
+        let result = parse_light_shows(content);
+        assert!(
+            result.is_ok(),
+            "Failed to parse shows with measure-based sequence: {:?}",
+            result.err()
+        );
+
+        let shows = result.unwrap();
+        let show = shows.get("Test Show").unwrap();
+
+        // Sequence should be expanded into 3 cues
+        assert_eq!(show.cues.len(), 3);
+
+        // At 120 BPM, 4/4 time:
+        // Measure 1, beat 1 = 0.0s
+        // Measure 1, beat 3 = 1.0s (2 beats at 120 BPM = 1 second)
+        // Measure 2, beat 1 = 2.0s (4 beats at 120 BPM = 2 seconds)
+        // Since the sequence is referenced at 0.000, the times should be offset by 0
+
+        // First cue: measure 1, beat 1 = 0.0s
+        assert_eq!(show.cues[0].time, Duration::from_secs(0));
+
+        // Second cue: measure 1, beat 3 = 1.0s
+        assert_eq!(show.cues[1].time, Duration::from_secs(1));
+
+        // Third cue: measure 2, beat 1 = 2.0s
+        assert_eq!(show.cues[2].time, Duration::from_secs(2));
+    }
+
+    #[test]
+    fn test_sequence_with_own_tempo_and_measure_timing() {
+        let content = r#"
+sequence "sequence_with_tempo" {
+    tempo {
+        bpm: 60
+        time_signature: 4/4
+    }
+    
+    @1/1
+    front_wash: static, color: "red"
+    
+    @2/1
+    front_wash: static, color: "blue"
+}
+
+show "Test Show" {
+    @0.000
+    sequence "sequence_with_tempo"
+}
+"#;
+
+        let result = parse_light_shows(content);
+        assert!(
+            result.is_ok(),
+            "Failed to parse shows with sequence having own tempo: {:?}",
+            result.err()
+        );
+
+        let shows = result.unwrap();
+        let show = shows.get("Test Show").unwrap();
+
+        // Sequence should be expanded into 2 cues
+        assert_eq!(show.cues.len(), 2);
+
+        // At 60 BPM, 4/4 time:
+        // Measure 1, beat 1 = 0.0s
+        // Measure 2, beat 1 = 4.0s (4 beats at 60 BPM = 4 seconds)
+
+        // First cue: measure 1, beat 1 = 0.0s
+        assert_eq!(show.cues[0].time, Duration::from_secs(0));
+
+        // Second cue: measure 2, beat 1 = 4.0s
+        assert_eq!(show.cues[1].time, Duration::from_secs(4));
+    }
+
+    #[test]
+    fn test_sequence_measure_timing_with_offset() {
+        let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+}
+
+sequence "measure_sequence" {
+    @1/1
+    front_wash: static, color: "red"
+    
+    @1/3
+    front_wash: static, color: "green"
+}
+
+show "Test Show" {
+    @10.000
+    sequence "measure_sequence"
+}
+"#;
+
+        let result = parse_light_shows(content);
+        assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+
+        let shows = result.unwrap();
+        let show = shows.get("Test Show").unwrap();
+
+        // Sequence should be expanded with times offset by 10 seconds
+        assert_eq!(show.cues.len(), 2);
+
+        // At 120 BPM:
+        // Measure 1, beat 1 = 0.0s, offset to 10.0s
+        // Measure 1, beat 3 = 1.0s, offset to 11.0s
+
+        assert_eq!(show.cues[0].time, Duration::from_secs(10));
+        assert_eq!(show.cues[1].time, Duration::from_secs(11));
+    }
+
+    #[test]
+    fn test_sequence_looping_finite() {
+        let content = r#"
+sequence "simple_sequence" {
+    @0.000
+    front_wash: static, color: "red"
+    
+    @1.000
+    front_wash: static, color: "blue"
+}
+
+show "Test Show" {
+    @0.000
+    sequence "simple_sequence", loop: 3
+}
+"#;
+
+        let result = parse_light_shows(content);
+        assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+
+        let shows = result.unwrap();
+        let show = shows.get("Test Show").unwrap();
+
+        // Should have 6 cues (2 cues per iteration × 3 iterations)
+        assert_eq!(show.cues.len(), 6);
+
+        // First iteration: 0s, 1s
+        assert_eq!(show.cues[0].time, Duration::from_secs(0));
+        assert_eq!(show.cues[1].time, Duration::from_secs(1));
+
+        // Second iteration: 1s (last cue time), 2s
+        // Sequence duration is 1s (last cue time since effects are perpetual)
+        assert_eq!(show.cues[2].time, Duration::from_secs(1));
+        assert_eq!(show.cues[3].time, Duration::from_secs(2));
+
+        // Third iteration: 2s, 3s
+        assert_eq!(show.cues[4].time, Duration::from_secs(2));
+        assert_eq!(show.cues[5].time, Duration::from_secs(3));
+
+        // All effects should be marked with sequence name
+        for cue in &show.cues {
+            for effect in &cue.effects {
+                assert_eq!(effect.sequence_name, Some("simple_sequence".to_string()));
+            }
+        }
+    }
+
+    #[test]
+    fn test_sequence_looping_infinite() {
+        let content = r#"
+sequence "infinite_sequence" {
+    @0.000
+    front_wash: static, color: "red"
+    
+    @1.000
+    front_wash: static, color: "blue"
+}
+
+show "Test Show" {
+    @0.000
+    sequence "infinite_sequence", loop: loop
+}
+"#;
+
+        let result = parse_light_shows(content);
+        assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+
+        let shows = result.unwrap();
+        let show = shows.get("Test Show").unwrap();
+
+        // Should have 20000 cues (2 cues per iteration × 10000 iterations)
+        assert_eq!(show.cues.len(), 20000);
+
+        // Check first few iterations
+        // Sequence duration is 1s (last cue time since effects are perpetual)
+        assert_eq!(show.cues[0].time, Duration::from_secs(0));
+        assert_eq!(show.cues[1].time, Duration::from_secs(1));
+        assert_eq!(show.cues[2].time, Duration::from_secs(1)); // Second iteration starts at 1s
+        assert_eq!(show.cues[3].time, Duration::from_secs(2));
+    }
+
+    #[test]
+    fn test_sequence_looping_once() {
+        let content = r#"
+sequence "once_sequence" {
+    @0.000
+    front_wash: static, color: "red"
+    
+    @1.000
+    front_wash: static, color: "blue"
+}
+
+show "Test Show" {
+    @0.000
+    sequence "once_sequence", loop: once
+}
+"#;
+
+        let result = parse_light_shows(content);
+        assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+
+        let shows = result.unwrap();
+        let show = shows.get("Test Show").unwrap();
+
+        // Should have 2 cues (default behavior, same as no loop parameter)
+        assert_eq!(show.cues.len(), 2);
+    }
+
+    #[test]
+    fn test_stop_sequence_command() {
+        let content = r#"
+sequence "looping_sequence" {
+    @0.000
+    front_wash: static, color: "red"
+    
+    @1.000
+    front_wash: static, color: "blue"
+}
+
+show "Test Show" {
+    @0.000
+    sequence "looping_sequence", loop: loop
+    
+    @10.000
+    stop sequence "looping_sequence"
+}
+"#;
+
+        let result = parse_light_shows(content);
+        assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+
+        let shows = result.unwrap();
+        let show = shows.get("Test Show").unwrap();
+
+        // Find the cue at 10 seconds with stop_sequences
+        // Note: The looping sequence may also create a cue at 10 seconds, so we need to find the one with stop_sequences
+        let stop_cue = show
+            .cues
+            .iter()
+            .find(|c| c.time == Duration::from_secs(10) && !c.stop_sequences.is_empty());
+        let cue_times: Vec<_> = show.cues.iter().map(|c| c.time).collect();
+        let cues_at_10: Vec<_> = show
+            .cues
+            .iter()
+            .filter(|c| c.time == Duration::from_secs(10))
+            .map(|c| (c.time, c.stop_sequences.clone(), c.effects.len()))
+            .collect();
+        assert!(stop_cue.is_some(),
+                "Should have a cue at 10 seconds with stop_sequences. Cue times: {:?}, Cues at 10s: {:?}", 
+                cue_times, cues_at_10);
+
+        let stop_cue = stop_cue.unwrap();
+        assert_eq!(
+            stop_cue.stop_sequences,
+            vec!["looping_sequence"],
+            "Stop sequences: {:?}",
+            stop_cue.stop_sequences
+        );
+    }
+
+    #[test]
+    fn test_stop_multiple_sequences() {
+        let content = r#"
+sequence "seq1" {
+    @0.000
+    front_wash: static, color: "red"
+}
+
+sequence "seq2" {
+    @0.000
+    back_wash: static, color: "blue"
+}
+
+show "Test Show" {
+    @0.000
+    sequence "seq1", loop: loop
+    sequence "seq2", loop: loop
+    
+    @5.000
+    stop sequence "seq1"
+    stop sequence "seq2"
+}
+"#;
+
+        let result = parse_light_shows(content);
+        assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+
+        let shows = result.unwrap();
+        let show = shows.get("Test Show").unwrap();
+
+        // Find the cue at 5 seconds with stop_sequences
+        // Note: The looping sequences may also create cues at 5 seconds, so we need to find the one with stop_sequences
+        let stop_cue = show
+            .cues
+            .iter()
+            .find(|c| c.time == Duration::from_secs(5) && !c.stop_sequences.is_empty());
+        let cue_times: Vec<_> = show.cues.iter().map(|c| c.time).collect();
+        let cues_at_5: Vec<_> = show
+            .cues
+            .iter()
+            .filter(|c| c.time == Duration::from_secs(5))
+            .map(|c| (c.time, c.stop_sequences.clone(), c.effects.len()))
+            .collect();
+        assert!(
+            stop_cue.is_some(),
+            "Should have a cue at 5 seconds with stop_sequences. Cue times: {:?}, Cues at 5s: {:?}",
+            cue_times,
+            cues_at_5
+        );
+
+        let stop_cue = stop_cue.unwrap();
+        assert_eq!(stop_cue.stop_sequences.len(), 2);
+        assert!(stop_cue.stop_sequences.contains(&"seq1".to_string()));
+        assert!(stop_cue.stop_sequences.contains(&"seq2".to_string()));
+    }
+
+    #[test]
+    fn test_nested_sequences() {
+        let content = r#"
+sequence "base_pattern" {
+    @0.000
+    front_wash: static, color: "red"
+    
+    @1.000
+    front_wash: static, color: "blue"
+}
+
+sequence "complex_pattern" {
+    @0.000
+    sequence "base_pattern"
+    back_wash: static, color: "green"
+    
+    @3.000
+    sequence "base_pattern"
+}
+
+show "Test Show" {
+    @0.000
+    sequence "complex_pattern"
+}
+"#;
+
+        let result = parse_light_shows(content);
+        assert!(
+            result.is_ok(),
+            "Failed to parse nested sequences: {:?}",
+            result.err()
+        );
+
+        let shows = result.unwrap();
+        let show = shows.get("Test Show").unwrap();
+
+        // complex_pattern expands to:
+        // - base_pattern at 0s (2 cues: 0s, 1s) + green effect at 0s (merged into first cue)
+        // - base_pattern at 3s (2 cues: 3s, 4s)
+        // Total: 4 cues (green effect is merged with first base_pattern cue)
+        assert_eq!(show.cues.len(), 4);
+
+        // First base_pattern iteration (with green effect merged)
+        assert_eq!(show.cues[0].time, Duration::from_secs(0));
+        assert_eq!(show.cues[1].time, Duration::from_secs(1));
+
+        // Second base_pattern iteration
+        assert_eq!(show.cues[2].time, Duration::from_secs(3));
+        assert_eq!(show.cues[3].time, Duration::from_secs(4));
+    }
+
+    #[test]
+    fn test_circular_sequence_reference() {
+        // With two-pass parsing, forward references are now supported
+        // The circular reference will be detected when seq_a tries to expand seq_b,
+        // which then tries to expand seq_a (already in recursion stack)
+        let content = r#"
+sequence "seq_a" {
+    @0.000
+    front_wash: static, color: "red"
+    @1.000
+    sequence "seq_b"
+}
+
+sequence "seq_b" {
+    @0.000
+    sequence "seq_a"
+}
+
+show "Test Show" {
+    @0.000
+    sequence "seq_a"
+}
+"#;
+
+        let result = parse_light_shows(content);
+        assert!(result.is_err(), "Should fail with circular reference");
+
+        let error = result.unwrap_err();
+        assert!(
+            error.to_string().contains("Circular sequence reference"),
+            "Error should mention circular reference: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn test_nested_sequences_measure_timing() {
+        // Test that nested sequences with measure-based timing work correctly
+        // When "verse" is referenced at @17/1, its @1/1 cue should map to @17/1 in the show
+        let content = r#"tempo {
+    start: 3.0s
+    bpm: 160
+    time_signature: 4/4
+}
+
+sequence "verse-start" {
+    @1/1
+    all_wash: static, color: "white"
+}
+
+sequence "verse" {
+    @1/1
+    sequence "verse-start", loop: 1
+    @13/1
+    all_wash: static, color: "red"
+}
+
+show "Test" {
+    @17/1
+    sequence "verse"
+}
+"#;
+
+        let result = parse_light_shows(content);
+        assert!(
+            result.is_ok(),
+            "Failed to parse nested sequences with measure timing: {:?}",
+            result.err()
+        );
+
+        let shows = result.unwrap();
+        let show = shows.get("Test").unwrap();
+
+        // At 160 BPM in 4/4: 1 beat = 0.375s, 1 measure = 1.5s
+        // Measure 17, beat 1 = 3.0s (start offset) + (16 measures * 1.5s) = 3.0s + 24.0s = 27.0s
+        // "verse-start" should start at measure 17 of the show = 27.0s
+        // "verse" @13/1 should be at measure 17 + 12 measures = measure 29 = 3.0s + (28 * 1.5s) = 3.0s + 42.0s = 45.0s
+
+        // Find the first cue (should be verse-start at 27.0s)
+        // verse-start should start at measure 17 = 27.0s
+        let expected_time = Duration::from_secs_f64(27.0);
+        assert!(show.cues.len() >= 1, "Should have at least one cue");
+        let first_cue_time = show.cues[0].time;
+        assert!(
+            (first_cue_time.as_secs_f64() - expected_time.as_secs_f64()).abs() < 0.001,
+            "verse-start should start at measure 17 (27.0s), got {:?}",
+            first_cue_time
+        );
+    }
+
+    #[test]
+    fn test_self_referencing_sequence() {
+        let content = r#"
+sequence "self_ref" {
+    @0.000
+    sequence "self_ref"
+}
+
+show "Test Show" {
+    @0.000
+    sequence "self_ref"
+}
+"#;
+
+        let result = parse_light_shows(content);
+        assert!(result.is_err(), "Should fail with self-reference");
+
+        let error = result.unwrap_err();
+        assert!(
+            error.to_string().contains("Circular sequence reference"),
+            "Error should mention circular reference: {}",
+            error
+        );
     }
 }
