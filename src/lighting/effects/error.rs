@@ -12,19 +12,22 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-mod effect_parse;
-mod error;
-pub(crate) mod fixture_venue; // Make accessible for tests
-mod grammar;
-mod show;
-mod tempo_parse;
-mod types;
-pub(crate) mod utils; // Make utils accessible for tests
+/// Error types for the effects system
+#[derive(Debug)]
+pub enum EffectError {
+    Fixture(String),
+    Parameter(String),
+    Timing(String),
+}
 
-#[cfg(test)]
-mod tests;
+impl std::fmt::Display for EffectError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EffectError::Fixture(msg) => write!(f, "Invalid fixture: {}", msg),
+            EffectError::Parameter(msg) => write!(f, "Invalid parameter: {}", msg),
+            EffectError::Timing(msg) => write!(f, "Invalid timing: {}", msg),
+        }
+    }
+}
 
-// Re-export public items
-pub use fixture_venue::{parse_fixture_types, parse_venues};
-pub use show::parse_light_shows;
-pub use types::{Cue, Effect, LayerCommand, LayerCommandType, LightShow};
+impl std::error::Error for EffectError {}

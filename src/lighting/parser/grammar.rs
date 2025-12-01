@@ -12,19 +12,8 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-mod effect_parse;
-mod error;
-pub(crate) mod fixture_venue; // Make accessible for tests
-mod grammar;
-mod show;
-mod tempo_parse;
-mod types;
-pub(crate) mod utils; // Make utils accessible for tests
+use pest_derive::Parser;
 
-#[cfg(test)]
-mod tests;
-
-// Re-export public items
-pub use fixture_venue::{parse_fixture_types, parse_venues};
-pub use show::parse_light_shows;
-pub use types::{Cue, Effect, LayerCommand, LayerCommandType, LightShow};
+#[derive(Parser)]
+#[grammar = "src/lighting/grammar.pest"]
+pub struct LightingParser;
