@@ -307,6 +307,7 @@ impl LightingSystem {
         let mut min_count = 1;
         let mut max_count = candidates.len();
         let mut allow_empty = false;
+        let mut preferred_tags: Vec<String> = Vec::new();
 
         // Apply constraints
         for constraint in logical_group.constraints() {
@@ -320,19 +321,9 @@ impl LightingSystem {
                     candidates
                         .retain(|fixture| any_tags.iter().any(|tag| fixture.tags().contains(tag)));
                 }
-                GroupConstraint::Prefer(preferred_tags) => {
-                    // Sort by preference (fixtures with more preferred tags first)
-                    candidates.sort_by(|a, b| {
-                        let a_score = preferred_tags
-                            .iter()
-                            .filter(|tag| a.tags().contains(tag))
-                            .count();
-                        let b_score = preferred_tags
-                            .iter()
-                            .filter(|tag| b.tags().contains(tag))
-                            .count();
-                        b_score.cmp(&a_score)
-                    });
+                GroupConstraint::Prefer(tags) => {
+                    // Store preferred tags for later sorting (after count constraints)
+                    preferred_tags = tags.clone();
                 }
                 GroupConstraint::MinCount(count) => {
                     min_count = *count;
@@ -363,6 +354,34 @@ impl LightingSystem {
                 )
                 .into());
             }
+        }
+
+        // Sort fixtures: first by preference (if Prefer constraint exists), then by name
+        // This ensures preferred fixtures are selected first, but within each preference level,
+        // fixtures are sorted lexicographically for consistent chase ordering
+        if !preferred_tags.is_empty() {
+            // Sort by preference score first, then by name
+            candidates.sort_by(|a, b| {
+                let a_score = preferred_tags
+                    .iter()
+                    .filter(|tag| a.tags().contains(tag))
+                    .count();
+                let b_score = preferred_tags
+                    .iter()
+                    .filter(|tag| b.tags().contains(tag))
+                    .count();
+                // First compare by preference score (higher is better)
+                match b_score.cmp(&a_score) {
+                    std::cmp::Ordering::Equal => {
+                        // Tiebreaker: sort by name
+                        a.name().cmp(b.name())
+                    }
+                    other => other,
+                }
+            });
+        } else {
+            // No preference constraint - just sort by name
+            candidates.sort_by(|a, b| a.name().cmp(b.name()));
         }
 
         // Take up to max_count fixtures

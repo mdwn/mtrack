@@ -24,6 +24,7 @@ use std::time::{Duration, Instant};
 
 use super::effects::*;
 use super::tempo::TempoMap;
+use tracing::info;
 
 /// The main effects engine that manages and processes lighting effects
 pub struct EffectEngine {
@@ -89,6 +90,97 @@ impl EffectEngine {
         // Validate effect
         validation::validate_effect(&self.fixture_registry, &effect)?;
 
+        // Log effect parameters once when the effect is started
+        // This captures the configuration that will guide execution.
+        let (effect_kind, effect_params) = match &effect.effect_type {
+            EffectType::Static {
+                parameters,
+                duration,
+            } => (
+                "Static",
+                format!("params={:?}, duration={:?}", parameters, duration),
+            ),
+            EffectType::ColorCycle {
+                colors,
+                speed,
+                direction,
+                transition,
+            } => (
+                "ColorCycle",
+                format!(
+                    "colors={:?}, speed={:?}, direction={:?}, transition={:?}",
+                    colors, speed, direction, transition
+                ),
+            ),
+            EffectType::Strobe {
+                frequency,
+                duration,
+            } => (
+                "Strobe",
+                format!("frequency={:?}, duration={:?}", frequency, duration),
+            ),
+            EffectType::Dimmer {
+                start_level,
+                end_level,
+                duration,
+                curve,
+            } => (
+                "Dimmer",
+                format!(
+                    "start_level={:?}, end_level={:?}, duration={:?}, curve={:?}",
+                    start_level, end_level, duration, curve
+                ),
+            ),
+            EffectType::Chase {
+                pattern,
+                speed,
+                direction,
+            } => (
+                "Chase",
+                format!(
+                    "pattern={:?}, speed={:?}, direction={:?}",
+                    pattern, speed, direction
+                ),
+            ),
+            EffectType::Rainbow {
+                speed,
+                saturation,
+                brightness,
+            } => (
+                "Rainbow",
+                format!(
+                    "speed={:?}, saturation={:?}, brightness={:?}",
+                    speed, saturation, brightness
+                ),
+            ),
+            EffectType::Pulse {
+                base_level,
+                pulse_amplitude,
+                frequency,
+                duration,
+            } => (
+                "Pulse",
+                format!(
+                    "base_level={:?}, pulse_amplitude={:?}, frequency={:?}, duration={:?}",
+                    base_level, pulse_amplitude, frequency, duration
+                ),
+            ),
+        };
+
+        info!(
+            effect_id = %effect.id,
+            effect_kind,
+            effect_params = %effect_params,
+            layer = ?effect.layer,
+            blend_mode = ?effect.blend_mode,
+            priority = effect.priority,
+            up_time = ?effect.up_time,
+            hold_time = ?effect.hold_time,
+            down_time = ?effect.down_time,
+            targets = ?effect.target_fixtures,
+            "Starting lighting effect"
+        );
+
         // Stop any conflicting effects
         layers::stop_conflicting_effects(&mut self.active_effects, &effect, &self.fixture_registry);
 
@@ -119,6 +211,11 @@ impl EffectEngine {
                 .collect();
 
         // Group effects by layer - collect effect IDs first to avoid borrowing conflicts
+        // Within each layer, we will sort effects deterministically so that:
+        // - Higher priority effects are processed after lower priority ones
+        // - For equal priority, later-started effects are processed after earlier ones
+        // This ensures consistent layering behavior between runs and avoids
+        // HashMap iteration order affecting visual output.
         let mut effects_by_layer: std::collections::BTreeMap<EffectLayer, Vec<String>> =
             std::collections::BTreeMap::new();
 
@@ -129,6 +226,29 @@ impl EffectEngine {
                     .or_default()
                     .push(effect_id.clone());
             }
+        }
+
+        // Sort effect IDs within each layer by (priority, start_time, id)
+        for (_layer, effect_ids) in effects_by_layer.iter_mut() {
+            effect_ids.sort_by(|a, b| {
+                let ea = self.active_effects.get(a).unwrap();
+                let eb = self.active_effects.get(b).unwrap();
+
+                ea.priority
+                    .cmp(&eb.priority)
+                    .then_with(|| {
+                        // Effects without a start_time are treated as earliest
+                        let sa = ea.start_time;
+                        let sb = eb.start_time;
+                        match (sa, sb) {
+                            (Some(ta), Some(tb)) => ta.cmp(&tb),
+                            (None, Some(_)) => std::cmp::Ordering::Less,
+                            (Some(_), None) => std::cmp::Ordering::Greater,
+                            (None, None) => std::cmp::Ordering::Equal,
+                        }
+                    })
+                    .then_with(|| a.cmp(b))
+            });
         }
 
         // Track effects that have just completed to preserve their final state

@@ -7583,4 +7583,106 @@ mod tests {
 
         println!("\n✅ All dimmer curves tested successfully");
     }
+
+    #[test]
+    fn test_random_chase_pattern_visibility() {
+        // Test to replicate the issue where random pattern chase doesn't show up
+        let mut engine = EffectEngine::new();
+
+        // Register 8 fixtures like in the user's setup
+        for i in 1..=8 {
+            let mut channels = HashMap::new();
+            channels.insert("red".to_string(), 1);
+            channels.insert("green".to_string(), 2);
+            channels.insert("blue".to_string(), 3);
+            let fixture = FixtureInfo {
+                name: format!("Brick{}", i),
+                universe: 1,
+                address: (i - 1) * 4 + 1,
+                fixture_type: "Astera-PixelBrick".to_string(),
+                channels,
+                max_strobe_frequency: Some(25.0),
+            };
+            engine.register_fixture(fixture);
+        }
+
+        // Create a random pattern chase effect on background layer
+        let mut random_chase = EffectInstance::new(
+            "random_chase".to_string(),
+            EffectType::Chase {
+                pattern: ChasePattern::Random,
+                speed: TempoAwareSpeed::Fixed(3.0), // 3 cycles per second
+                direction: ChaseDirection::LeftToRight,
+            },
+            vec![
+                "Brick1".to_string(),
+                "Brick2".to_string(),
+                "Brick3".to_string(),
+                "Brick4".to_string(),
+                "Brick5".to_string(),
+                "Brick6".to_string(),
+                "Brick7".to_string(),
+                "Brick8".to_string(),
+            ],
+            None,
+            Some(Duration::from_secs(4)), // hold_time: 4 seconds
+            None,
+        );
+        random_chase.layer = EffectLayer::Background;
+        random_chase.blend_mode = BlendMode::Replace;
+
+        engine.start_effect(random_chase).unwrap();
+
+        // Update engine and check that we get DMX commands
+        let mut total_commands = 0;
+        let mut active_fixtures: std::collections::HashSet<usize> =
+            std::collections::HashSet::new();
+
+        // Check over multiple time points to see if pattern is advancing
+        for _step in 0..20 {
+            let cmds = engine.update(Duration::from_millis(50)).unwrap();
+            total_commands += cmds.len();
+
+            // Track which fixtures have non-zero values (active)
+            // For PixelBrick, red channel is at address, green at address+1, blue at address+2
+            for cmd in &cmds {
+                if cmd.value > 0 {
+                    // Find which fixture this command belongs to
+                    for i in 1..=8 {
+                        let expected_address = (i - 1) * 4 + 1;
+                        // Check if this command is for any channel of this fixture
+                        if cmd.universe == 1
+                            && cmd.channel >= expected_address
+                            && cmd.channel < expected_address + 4
+                        {
+                            active_fixtures.insert(i as usize);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Verify that we got some commands
+        assert!(
+            total_commands > 0,
+            "Expected some DMX commands, got {}",
+            total_commands
+        );
+
+        // Verify that multiple fixtures were activated (pattern should advance)
+        assert!(active_fixtures.len() > 1,
+                "Expected multiple fixtures to be active (pattern advancing), but only {} fixture(s) were active: {:?}", 
+                active_fixtures.len(), active_fixtures);
+
+        // Verify that the pattern order is not sequential (should be random)
+        // The shuffle for 8 fixtures produces [6, 7, 0, 1, 2, 3, 4, 5]
+        // So we should see Brick7, Brick8, Brick1, etc. - not just Brick1, Brick2, etc.
+        let fixture_order: Vec<usize> = active_fixtures.iter().copied().collect();
+        let is_sequential = fixture_order.windows(2).all(|w| w[1] == w[0] + 1);
+        assert!(
+            !is_sequential || fixture_order.len() < 3,
+            "Pattern appears to be sequential (not random). Active fixtures: {:?}",
+            fixture_order
+        );
+    }
 }

@@ -21,7 +21,7 @@ show_name = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 
 show_content = { "{" ~ (tempo | cue)* ~ "}" }
 
-cue = { (time_string | measure_time) ~ (effect | layer_command | sequence_reference | stop_sequence_command)* }
+cue = { (time_string | measure_time) ~ (effect | layer_command | sequence_reference | stop_sequence_command | offset_command | reset_measures_command)* }
 
 // Sequence definition rules
 sequence = { "sequence" ~ sequence_name ~ sequence_content }
@@ -30,7 +30,7 @@ sequence_name = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 
 sequence_content = { "{" ~ (tempo | sequence_cue)* ~ "}" }
 
-sequence_cue = { (time_string | measure_time) ~ (effect | layer_command | sequence_reference | stop_sequence_command)* }
+sequence_cue = { (time_string | measure_time) ~ (effect | layer_command | sequence_reference | stop_sequence_command | offset_command | reset_measures_command)* }
 
 // Sequence reference in a cue
 sequence_reference = { "sequence" ~ sequence_name ~ (","? ~ sequence_params)? }
@@ -45,6 +45,10 @@ sequence_param_value = { loop_parameter | number_value }
 
 // Stop sequence command
 stop_sequence_command = { "stop" ~ "sequence" ~ sequence_name }
+
+// Measure offset commands
+offset_command = { "offset" ~ number_value ~ "measures" }
+reset_measures_command = { "reset_measures" }
 
 // Layer control commands (grandMA-inspired)
 layer_command = { layer_command_type ~ "(" ~ layer_command_params? ~ ")" }
