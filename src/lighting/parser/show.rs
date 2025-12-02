@@ -253,11 +253,22 @@ fn parse_light_show_definition(
                 // If no show-specific tempo, use global tempo for cue parsing
                 let effective_tempo = tempo_map.as_ref().or(global_tempo.as_ref());
 
+                // Track measure offset (starts at 0, accumulates as offset commands are encountered)
+                let mut measure_offset: u32 = 0;
+
                 // Then parse cues (now we have tempo_map and sequences)
                 for cue_pair in cue_pairs {
-                    let parsed_cues =
-                        parse_cue_definition(cue_pair, &effective_tempo.cloned(), sequences)?;
+                    let (parsed_cues, offset_change) = parse_cue_definition(
+                        cue_pair,
+                        &effective_tempo.cloned(),
+                        sequences,
+                        measure_offset,
+                    )?;
                     cues.extend(parsed_cues);
+                    // Update offset for subsequent cues
+                    if let Some(change) = offset_change {
+                        measure_offset = change;
+                    }
                 }
             }
             _ => {}
@@ -312,10 +323,21 @@ fn parse_sequence_structure(
 
                 // Parse cues but don't expand sequence references yet
                 let effective_tempo = tempo_map.as_ref().or(global_tempo.as_ref());
+
+                // Track measure offset (starts at 0, accumulates as offset commands are encountered)
+                let mut measure_offset: u32 = 0;
+
                 for cue_pair in cue_pairs {
-                    let unexpanded_cue =
-                        parse_sequence_cue_structure(cue_pair, &effective_tempo.cloned())?;
+                    let (unexpanded_cue, offset_change) = parse_sequence_cue_structure(
+                        cue_pair,
+                        &effective_tempo.cloned(),
+                        measure_offset,
+                    )?;
                     unexpanded_cues.push(unexpanded_cue);
+                    // Update offset for subsequent cues
+                    if let Some(change) = offset_change {
+                        measure_offset = change;
+                    }
                 }
             }
             _ => {}
@@ -326,10 +348,12 @@ fn parse_sequence_structure(
 }
 
 /// Parse a sequence cue structure without expanding nested sequence references
+/// Returns (cue, new_offset) where new_offset is Some(new_value) if offset changed, None otherwise
 fn parse_sequence_cue_structure(
     pair: Pair<Rule>,
     tempo_map: &Option<TempoMap>,
-) -> Result<UnexpandedSequenceCue, Box<dyn Error>> {
+    measure_offset: u32,
+) -> Result<(UnexpandedSequenceCue, Option<u32>), Box<dyn Error>> {
     let mut time = Duration::ZERO;
     let mut effects = Vec::new();
     let mut layer_commands = Vec::new();
@@ -339,6 +363,9 @@ fn parse_sequence_cue_structure(
     let mut layer_command_pairs = Vec::new();
     let mut sequence_ref_pairs = Vec::new();
     let mut stop_sequence_pairs = Vec::new();
+    let mut offset_commands = Vec::new();
+    let mut reset_commands = Vec::new();
+    let mut new_offset: Option<u32> = None;
 
     // First pass: parse time and collect all pairs
     for inner_pair in pair.into_inner() {
@@ -348,16 +375,30 @@ fn parse_sequence_cue_structure(
             }
             Rule::measure_time => {
                 let (measure, beat) = parse_measure_time(inner_pair.as_str())?;
+                // Apply offset to measure number
+                let playback_measure = measure + measure_offset;
                 if let Some(tm) = tempo_map {
                     // For sequences, measure 1 should be 0.0s relative to the sequence start
                     // So we subtract the start_offset to make it relative to 0.0s
-                    let absolute_time = tm.measure_to_time(measure, beat).ok_or_else(|| {
-                        format!("Invalid measure/beat position: {}/{}", measure, beat)
-                    })?;
+                    // Pass measure_offset so tempo changes respect offsets
+                    let absolute_time = tm
+                        .measure_to_time_with_offset(measure, beat, measure_offset)
+                        .ok_or_else(|| {
+                            format!(
+                                "Invalid measure/beat position: {}/{}",
+                                playback_measure, beat
+                            )
+                        })?;
                     time = absolute_time - tm.start_offset;
                 } else {
                     return Err("Measure-based timing requires a tempo section".into());
                 }
+            }
+            Rule::offset_command => {
+                offset_commands.push(inner_pair);
+            }
+            Rule::reset_measures_command => {
+                reset_commands.push(inner_pair);
             }
             Rule::effect => {
                 effect_pairs.push(inner_pair);
@@ -373,6 +414,27 @@ fn parse_sequence_cue_structure(
             }
             _ => {}
         }
+    }
+
+    // Process offset commands
+    // If reset is present, start from 0, then add any offset commands
+    let base_offset = if !reset_commands.is_empty() {
+        0
+    } else {
+        measure_offset
+    };
+
+    if !offset_commands.is_empty() {
+        // Parse the offset value from the last offset command
+        let mut total_offset = base_offset;
+        for offset_pair in offset_commands {
+            let offset_value = parse_offset_command(offset_pair)?;
+            total_offset += offset_value;
+        }
+        new_offset = Some(total_offset);
+    } else if !reset_commands.is_empty() {
+        // Reset without offset - just set to 0
+        new_offset = Some(0);
     }
 
     // Parse effects and layer commands (these can be parsed immediately)
@@ -439,13 +501,16 @@ fn parse_sequence_cue_structure(
         sequence_references.push((seq_name, loop_param));
     }
 
-    Ok(UnexpandedSequenceCue {
-        time,
-        effects,
-        layer_commands,
-        stop_sequences,
-        sequence_references,
-    })
+    Ok((
+        UnexpandedSequenceCue {
+            time,
+            effects,
+            layer_commands,
+            stop_sequences,
+            sequence_references,
+        },
+        new_offset,
+    ))
 }
 
 fn parse_sequence_loop_param(value: &str) -> Result<SequenceLoop, Box<dyn Error>> {
@@ -464,6 +529,30 @@ fn parse_sequence_loop_param(value: &str) -> Result<SequenceLoop, Box<dyn Error>
             Ok(SequenceLoop::Count(count))
         }
     }
+}
+
+/// Parse an offset command to extract the number of measures
+fn parse_offset_command(pair: Pair<Rule>) -> Result<u32, Box<dyn Error>> {
+    // offset_command = { "offset" ~ number_value ~ "measures" }
+    let mut number_str = String::new();
+    let mut found_number = false;
+
+    for inner_pair in pair.into_inner() {
+        if inner_pair.as_rule() == Rule::number_value {
+            number_str = inner_pair.as_str().trim().to_string();
+            found_number = true;
+        }
+    }
+
+    if !found_number {
+        return Err("Offset command missing number value".into());
+    }
+
+    let offset: u32 = number_str
+        .parse()
+        .map_err(|e| format!("Failed to parse offset value '{}': {}", number_str, e))?;
+
+    Ok(offset)
 }
 
 /// Expand an unexpanded sequence cue, resolving all nested sequence references
@@ -596,7 +685,8 @@ fn parse_cue_definition(
     pair: Pair<Rule>,
     tempo_map: &Option<TempoMap>,
     sequences: &HashMap<String, Sequence>,
-) -> Result<Vec<Cue>, Box<dyn Error>> {
+    measure_offset: u32,
+) -> Result<(Vec<Cue>, Option<u32>), Box<dyn Error>> {
     let mut time = Duration::ZERO;
     let mut effects = Vec::new();
     let mut layer_commands = Vec::new();
@@ -605,6 +695,9 @@ fn parse_cue_definition(
     let mut layer_command_pairs = Vec::new();
     let mut sequence_references = Vec::new();
     let mut stop_sequence_pairs = Vec::new();
+    let mut offset_commands = Vec::new();
+    let mut reset_commands = Vec::new();
+    let mut new_offset: Option<u32> = None;
 
     // First pass: parse time and collect effect/layer_command/sequence_reference/stop_sequence pairs
     for inner_pair in pair.into_inner() {
@@ -614,13 +707,27 @@ fn parse_cue_definition(
             }
             Rule::measure_time => {
                 let (measure, beat) = parse_measure_time(inner_pair.as_str())?;
+                // Apply offset to measure number
+                let playback_measure = measure + measure_offset;
                 if let Some(tm) = tempo_map {
-                    time = tm.measure_to_time(measure, beat).ok_or_else(|| {
-                        format!("Invalid measure/beat position: {}/{}", measure, beat)
-                    })?;
+                    // Pass measure_offset so tempo changes respect offsets
+                    time = tm
+                        .measure_to_time_with_offset(measure, beat, measure_offset)
+                        .ok_or_else(|| {
+                            format!(
+                                "Invalid measure/beat position: {}/{}",
+                                playback_measure, beat
+                            )
+                        })?;
                 } else {
                     return Err("Measure-based timing requires a tempo section".into());
                 }
+            }
+            Rule::offset_command => {
+                offset_commands.push(inner_pair);
+            }
+            Rule::reset_measures_command => {
+                reset_commands.push(inner_pair);
             }
             Rule::effect => {
                 effect_pairs.push(inner_pair);
@@ -638,6 +745,27 @@ fn parse_cue_definition(
                 // Skip unexpected rules
             }
         }
+    }
+
+    // Process offset commands
+    // If reset is present, start from 0, then add any offset commands
+    let base_offset = if !reset_commands.is_empty() {
+        0
+    } else {
+        measure_offset
+    };
+
+    if !offset_commands.is_empty() {
+        // Parse the offset value from the last offset command
+        let mut total_offset = base_offset;
+        for offset_pair in offset_commands {
+            let offset_value = parse_offset_command(offset_pair)?;
+            total_offset += offset_value;
+        }
+        new_offset = Some(total_offset);
+    } else if !reset_commands.is_empty() {
+        // Reset without offset - just set to 0
+        new_offset = Some(0);
     }
 
     // Parse stop sequence commands
@@ -787,7 +915,7 @@ fn parse_cue_definition(
             }
         }
 
-        return Ok(expanded_cues);
+        return Ok((expanded_cues, new_offset));
     }
 
     // No sequence references - return a single cue
@@ -803,12 +931,15 @@ fn parse_cue_definition(
         layer_commands.push(layer_command);
     }
 
-    Ok(vec![Cue {
-        time,
-        effects,
-        layer_commands,
-        stop_sequences,
-    }])
+    Ok((
+        vec![Cue {
+            time,
+            effects,
+            layer_commands,
+            stop_sequences,
+        }],
+        new_offset,
+    ))
 }
 
 fn parse_layer_command(

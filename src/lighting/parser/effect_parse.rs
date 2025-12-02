@@ -330,11 +330,13 @@ pub(crate) fn apply_parameters_to_effect_type(
             for (key, value) in parameters {
                 match key.as_str() {
                     "pattern" => {
-                        *pattern = match value.as_str() {
+                        // Strip quotes if present, trim whitespace, and convert to lowercase for case-insensitive matching
+                        let clean_value = value.trim_matches('"').trim().to_lowercase();
+                        *pattern = match clean_value.as_str() {
                             "linear" => ChasePattern::Linear,
                             "snake" => ChasePattern::Snake,
                             "random" => ChasePattern::Random,
-                            _ => ChasePattern::Linear,
+                            _ => ChasePattern::Linear, // Default to Linear if pattern doesn't match
                         };
                     }
                     "speed" => match parse_speed_string(value, tempo_map) {
@@ -344,7 +346,9 @@ pub(crate) fn apply_parameters_to_effect_type(
                         }
                     },
                     "direction" => {
-                        *direction = match value.as_str() {
+                        // Strip quotes if present (e.g., "right_to_left" -> right_to_left)
+                        let clean_value = value.trim_matches('"').trim();
+                        *direction = match clean_value {
                             "left_to_right" => ChaseDirection::LeftToRight,
                             "right_to_left" => ChaseDirection::RightToLeft,
                             "top_to_bottom" => ChaseDirection::TopToBottom,

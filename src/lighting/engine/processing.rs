@@ -467,7 +467,9 @@ fn apply_chase(
     }
 
     // Calculate fixture order based on pattern and direction
-    let fixture_order = calculate_fixture_order(fixture_count, pattern, direction);
+    // For Random pattern, use effect ID to generate a unique seed per effect
+    let fixture_order =
+        calculate_fixture_order(fixture_count, pattern, direction, Some(&effect.id));
 
     // Calculate the pattern cycle length
     let pattern_length = fixture_order.len();
@@ -514,12 +516,40 @@ fn calculate_fixture_order(
     fixture_count: usize,
     pattern: &ChasePattern,
     direction: &ChaseDirection,
+    effect_id: Option<&str>,
 ) -> Vec<usize> {
-    let mut order: Vec<usize> = (0..fixture_count).collect();
-
     match pattern {
+        ChasePattern::Random => {
+            use rand::rngs::StdRng;
+            use rand::{Rng, SeedableRng};
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+
+            let mut order: Vec<usize> = (0..fixture_count).collect();
+
+            // Generate a seed from the effect ID (or use a default if not provided)
+            let seed = if let Some(id) = effect_id {
+                let mut hasher = DefaultHasher::new();
+                id.hash(&mut hasher);
+                hasher.finish()
+            } else {
+                fixture_count as u64 * 7 + 13
+            };
+
+            // Create a seeded RNG for deterministic shuffling
+            let mut rng = StdRng::seed_from_u64(seed);
+
+            // Fisher-Yates shuffle with proper random number generator
+            for i in (1..fixture_count).rev() {
+                let j = rng.gen_range(0..=i);
+                order.swap(i, j);
+            }
+
+            order
+        }
         ChasePattern::Linear => {
             // Linear pattern - fixtures in order
+            let mut order: Vec<usize> = (0..fixture_count).collect();
             // Direction determines if we reverse the order
             match direction {
                 ChaseDirection::LeftToRight
@@ -568,19 +598,6 @@ fn calculate_fixture_order(
                     snake_order
                 }
             }
-        }
-        ChasePattern::Random => {
-            // Random pattern - shuffle the order
-            // Use a simple deterministic shuffle based on fixture count
-            // This ensures the same random order for the duration of the effect
-            let seed = fixture_count * 7; // Simple seed based on fixture count
-
-            // Simple shuffle algorithm
-            for i in 0..fixture_count {
-                let j = (seed + i) % fixture_count;
-                order.swap(i, j);
-            }
-            order
         }
     }
 }

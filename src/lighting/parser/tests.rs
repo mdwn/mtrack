@@ -12,6 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 #[cfg(test)]
+#[allow(clippy::module_inception)]
 mod tests {
     use crate::lighting::effects::{Color, CycleDirection, EffectLayer, EffectType};
     use crate::lighting::parser::fixture_venue::parse_fixture_definition;
@@ -4242,7 +4243,7 @@ show "Test" {
         // Find the first cue (should be verse-start at 27.0s)
         // verse-start should start at measure 17 = 27.0s
         let expected_time = Duration::from_secs_f64(27.0);
-        assert!(show.cues.len() >= 1, "Should have at least one cue");
+        assert!(!show.cues.is_empty(), "Should have at least one cue");
         let first_cue_time = show.cues[0].time;
         assert!(
             (first_cue_time.as_secs_f64() - expected_time.as_secs_f64()).abs() < 0.001,
@@ -4274,5 +4275,639 @@ show "Test Show" {
             "Error should mention circular reference: {}",
             error
         );
+    }
+
+    #[test]
+    fn test_measure_offset() {
+        // Test that offset commands correctly adjust measure numbers
+        // Measures 1-8 repeat once, so measure 9 should be at playback measure 17
+        let content = r#"tempo {
+    start: 0.0s
+    bpm: 120
+    time_signature: 4/4
+}
+
+show "Test" {
+    @1/1
+    all_wash: static, color: "blue"
+    
+    offset 8 measures
+    
+    @1/1
+    all_wash: static, color: "green"
+    
+    @8/1
+    all_wash: static, color: "yellow"
+    
+    @9/1
+    all_wash: static, color: "red"
+}
+"#;
+
+        let result = parse_light_shows(content);
+        assert!(
+            result.is_ok(),
+            "Failed to parse show with offset: {:?}",
+            result.err()
+        );
+
+        let shows = result.unwrap();
+        let show = shows.get("Test").unwrap();
+
+        // At 120 BPM in 4/4: 1 measure = 2.0s
+        // Measure 1, beat 1 = 0.0s + (0 measures * 2.0s) = 0.0s
+        // After offset 8: measure 1 becomes playback measure 9 = 0.0s + (8 measures * 2.0s) = 16.0s
+        // After offset 8: measure 8 becomes playback measure 16 = 0.0s + (15 measures * 2.0s) = 30.0s
+        // After offset 8: measure 9 becomes playback measure 17 = 0.0s + (16 measures * 2.0s) = 32.0s
+
+        assert!(show.cues.len() >= 4, "Should have at least 4 cues");
+
+        // First cue at measure 1 = 0.0s
+        let first_cue_time = show.cues[0].time;
+        let expected_first = Duration::from_secs_f64(0.0);
+        assert!(
+            (first_cue_time.as_secs_f64() - expected_first.as_secs_f64()).abs() < 0.001,
+            "First cue should be at measure 1 (0.0s), got {:?}",
+            first_cue_time
+        );
+
+        // Second cue at measure 1 (with offset) = playback measure 9 = 16.0s
+        let second_cue_time = show.cues[1].time;
+        let expected_second = Duration::from_secs_f64(16.0);
+        assert!(
+            (second_cue_time.as_secs_f64() - expected_second.as_secs_f64()).abs() < 0.001,
+            "Second cue should be at playback measure 9 (16.0s), got {:?}",
+            second_cue_time
+        );
+
+        // Third cue at measure 8 (with offset) = playback measure 16 = 30.0s
+        let third_cue_time = show.cues[2].time;
+        let expected_third = Duration::from_secs_f64(30.0);
+        assert!(
+            (third_cue_time.as_secs_f64() - expected_third.as_secs_f64()).abs() < 0.001,
+            "Third cue should be at playback measure 16 (30.0s), got {:?}",
+            third_cue_time
+        );
+
+        // Fourth cue at measure 9 (with offset) = playback measure 17 = 32.0s
+        let fourth_cue_time = show.cues[3].time;
+        let expected_fourth = Duration::from_secs_f64(32.0);
+        assert!(
+            (fourth_cue_time.as_secs_f64() - expected_fourth.as_secs_f64()).abs() < 0.001,
+            "Fourth cue should be at playback measure 17 (32.0s), got {:?}",
+            fourth_cue_time
+        );
+    }
+
+    #[test]
+    fn test_reset_measures() {
+        // Test that reset_measures resets the offset back to 0
+        let content = r#"tempo {
+    start: 0.0s
+    bpm: 120
+    time_signature: 4/4
+}
+
+show "Test" {
+    @1/1
+    all_wash: static, color: "blue"
+    
+    offset 8 measures
+    
+    @1/1
+    all_wash: static, color: "green"
+    
+    reset_measures
+    
+    @1/1
+    all_wash: static, color: "red"
+}
+"#;
+
+        let result = parse_light_shows(content);
+        assert!(
+            result.is_ok(),
+            "Failed to parse show with reset_measures: {:?}",
+            result.err()
+        );
+
+        let shows = result.unwrap();
+        let show = shows.get("Test").unwrap();
+
+        // At 120 BPM in 4/4: 1 measure = 2.0s
+        // First cue at measure 1 = 0.0s
+        // Second cue at measure 1 (with offset 8) = playback measure 9 = 16.0s
+        // Third cue at measure 1 (after reset) = 0.0s again
+
+        assert!(show.cues.len() >= 3, "Should have at least 3 cues");
+
+        let first_cue_time = show.cues[0].time;
+        let second_cue_time = show.cues[1].time;
+        let third_cue_time = show.cues[2].time;
+
+        assert!(
+            (first_cue_time.as_secs_f64() - 0.0).abs() < 0.001,
+            "First cue should be at 0.0s, got {:?}",
+            first_cue_time
+        );
+
+        assert!(
+            (second_cue_time.as_secs_f64() - 16.0).abs() < 0.001,
+            "Second cue should be at 16.0s (measure 9), got {:?}",
+            second_cue_time
+        );
+
+        assert!(
+            (third_cue_time.as_secs_f64() - 0.0).abs() < 0.001,
+            "Third cue should be at 0.0s (after reset), got {:?}",
+            third_cue_time
+        );
+    }
+
+    #[test]
+    fn test_measure_offset_accumulation() {
+        // Test that multiple offset commands accumulate
+        let content = r#"tempo {
+    start: 0.0s
+    bpm: 120
+    time_signature: 4/4
+}
+
+show "Test" {
+    @1/1
+    all_wash: static, color: "blue"
+    
+    offset 4 measures
+    
+    @1/1
+    all_wash: static, color: "green"
+    
+    offset 4 measures
+    
+    @1/1
+    all_wash: static, color: "red"
+}
+"#;
+
+        let result = parse_light_shows(content);
+        assert!(
+            result.is_ok(),
+            "Failed to parse show with accumulating offsets: {:?}",
+            result.err()
+        );
+
+        let shows = result.unwrap();
+        let show = shows.get("Test").unwrap();
+
+        // At 120 BPM in 4/4: 1 measure = 2.0s
+        // First cue at measure 1 = 0.0s
+        // After offset 4: measure 1 becomes playback measure 5 = 8.0s
+        // After offset 8 (4+4): measure 1 becomes playback measure 9 = 16.0s
+
+        assert!(show.cues.len() >= 3, "Should have at least 3 cues");
+
+        assert!(
+            (show.cues[0].time.as_secs_f64() - 0.0).abs() < 0.001,
+            "First cue should be at 0.0s"
+        );
+
+        assert!(
+            (show.cues[1].time.as_secs_f64() - 8.0).abs() < 0.001,
+            "Second cue should be at 8.0s (measure 5)"
+        );
+
+        assert!(
+            (show.cues[2].time.as_secs_f64() - 16.0).abs() < 0.001,
+            "Third cue should be at 16.0s (measure 9)"
+        );
+    }
+
+    #[test]
+    fn test_measure_offset_in_sequence() {
+        // Test that offset works correctly in sequences
+        let content = r#"tempo {
+    start: 0.0s
+    bpm: 120
+    time_signature: 4/4
+}
+
+sequence "verse" {
+    @1/1
+    all_wash: static, color: "blue"
+    
+    offset 8 measures
+    
+    @1/1
+    all_wash: static, color: "green"
+    
+    @9/1
+    all_wash: static, color: "red"
+}
+
+show "Test" {
+    @1/1
+    sequence "verse"
+}
+"#;
+
+        let result = parse_light_shows(content);
+        assert!(
+            result.is_ok(),
+            "Failed to parse sequence with offset: {:?}",
+            result.err()
+        );
+
+        let shows = result.unwrap();
+        let show = shows.get("Test").unwrap();
+
+        // Sequence is referenced at measure 1, so its @1/1 becomes measure 1
+        // After offset 8 in sequence: @1/1 becomes playback measure 9
+        // After offset 8 in sequence: @9/1 becomes playback measure 17
+        // But these are relative to sequence start (measure 1), so:
+        // First cue: measure 1 = 0.0s
+        // Second cue: measure 9 = 16.0s
+        // Third cue: measure 17 = 32.0s
+
+        assert!(show.cues.len() >= 3, "Should have at least 3 cues");
+
+        assert!(
+            (show.cues[0].time.as_secs_f64() - 0.0).abs() < 0.001,
+            "First cue should be at 0.0s"
+        );
+
+        assert!(
+            (show.cues[1].time.as_secs_f64() - 16.0).abs() < 0.001,
+            "Second cue should be at 16.0s (measure 9)"
+        );
+
+        assert!(
+            (show.cues[2].time.as_secs_f64() - 32.0).abs() < 0.001,
+            "Third cue should be at 32.0s (measure 17)"
+        );
+    }
+
+    #[test]
+    fn test_measure_offset_with_fractional_beats() {
+        // Test that offset works with fractional beats
+        let content = r#"tempo {
+    start: 0.0s
+    bpm: 120
+    time_signature: 4/4
+}
+
+show "Test" {
+    @1/1.5
+    all_wash: static, color: "blue"
+    
+    offset 8 measures
+    
+    @1/2.5
+    all_wash: static, color: "green"
+}
+"#;
+
+        let result = parse_light_shows(content);
+        assert!(
+            result.is_ok(),
+            "Failed to parse show with offset and fractional beats: {:?}",
+            result.err()
+        );
+
+        let shows = result.unwrap();
+        let show = shows.get("Test").unwrap();
+
+        // At 120 BPM in 4/4: 1 beat = 0.5s
+        // First cue: measure 1, beat 1.5 = 0.0s + (0 measures + 0.5 beats) * 0.5s = 0.25s
+        // After offset 8: measure 1, beat 2.5 = (8 measures + 1.5 beats) * 0.5s = 16.0s + 0.75s = 16.75s
+
+        assert!(show.cues.len() >= 2, "Should have at least 2 cues");
+
+        assert!(
+            (show.cues[0].time.as_secs_f64() - 0.25).abs() < 0.001,
+            "First cue should be at 0.25s"
+        );
+
+        assert!(
+            (show.cues[1].time.as_secs_f64() - 16.75).abs() < 0.001,
+            "Second cue should be at 16.75s"
+        );
+    }
+
+    #[test]
+    fn test_measure_offset_with_tempo_changes() {
+        // Test that offset works correctly with tempo changes
+        let content = r#"tempo {
+    start: 0.0s
+    bpm: 120
+    time_signature: 4/4
+    changes: [
+        @8/1 {
+            bpm: 60
+        }
+    ]
+}
+
+show "Test" {
+    @1/1
+    all_wash: static, color: "blue"
+    
+    offset 8 measures
+    
+    @1/1
+    all_wash: static, color: "green"
+}
+"#;
+
+        let result = parse_light_shows(content);
+        assert!(
+            result.is_ok(),
+            "Failed to parse show with offset and tempo change: {:?}",
+            result.err()
+        );
+
+        let shows = result.unwrap();
+        let show = shows.get("Test").unwrap();
+
+        // At 120 BPM in 4/4: 1 measure = 2.0s
+        // With offset 8 applied to tempo changes:
+        // - Tempo change at score measure 8/1 + offset 8 = playback measure 16
+        // - Second cue at score measure 1 + offset 8 = playback measure 9
+        // Since the tempo change is at playback measure 16 (after the cue at measure 9),
+        // the second cue is still at 120 BPM
+        // Measures 1-8 at 120 BPM = 8 * 2.0s = 16.0s
+        // Start of measure 9: 16.0s
+
+        assert!(show.cues.len() >= 2, "Should have at least 2 cues");
+
+        assert!(
+            (show.cues[0].time.as_secs_f64() - 0.0).abs() < 0.001,
+            "First cue should be at 0.0s"
+        );
+
+        assert!(
+            (show.cues[1].time.as_secs_f64() - 16.0).abs() < 0.001,
+            "Second cue should be at 16.0s (measure 9 at 120 BPM, tempo change is at measure 16)"
+        );
+    }
+
+    #[test]
+    fn test_measure_offset_at_start() {
+        // Test that offset can be in the first cue
+        let content = r#"tempo {
+    start: 0.0s
+    bpm: 120
+    time_signature: 4/4
+}
+
+show "Test" {
+    @1/1
+    offset 8 measures
+    
+    @1/1
+    all_wash: static, color: "blue"
+}
+"#;
+
+        let result = parse_light_shows(content);
+        assert!(
+            result.is_ok(),
+            "Failed to parse show with offset in first cue: {:?}",
+            result.err()
+        );
+
+        let shows = result.unwrap();
+        let show = shows.get("Test").unwrap();
+
+        // First cue at @1/1 = 0.0s (parsed before offset command), then offset is set to 8
+        // Second cue at @1/1 with offset 8 = playback measure 9 = 16.0s
+
+        assert!(show.cues.len() >= 2, "Should have at least 2 cues");
+
+        assert!(
+            (show.cues[0].time.as_secs_f64() - 0.0).abs() < 0.001,
+            "First cue should be at 0.0s (before offset takes effect)"
+        );
+
+        assert!(
+            (show.cues[1].time.as_secs_f64() - 16.0).abs() < 0.001,
+            "Second cue should be at 16.0s (measure 9, after offset)"
+        );
+    }
+
+    #[test]
+    fn test_measure_offset_reset_and_reoffset() {
+        // Test reset followed by another offset
+        // Note: offset commands affect subsequent cues, not the current one
+        let content = r#"tempo {
+    start: 0.0s
+    bpm: 120
+    time_signature: 4/4
+}
+
+show "Test" {
+    @1/1
+    all_wash: static, color: "blue"
+    
+    offset 8 measures
+    
+    @1/1
+    all_wash: static, color: "green"
+    
+    @1/1
+    all_wash: static, color: "yellow"
+    reset_measures
+    offset 4 measures
+    
+    @1/1
+    all_wash: static, color: "red"
+}
+"#;
+
+        let result = parse_light_shows(content);
+        assert!(
+            result.is_ok(),
+            "Failed to parse show with reset and reoffset: {:?}",
+            result.err()
+        );
+
+        let shows = result.unwrap();
+        let show = shows.get("Test").unwrap();
+
+        // First cue: measure 1 = 0.0s, then offset becomes 8
+        // Second cue: measure 1 with offset 8 = measure 9 = 16.0s
+        // Third cue: measure 1 with offset 8 (still) = measure 9 = 16.0s, then reset and offset 4
+        // Fourth cue: measure 1 with offset 4 (after reset) = measure 5 = 8.0s
+
+        assert!(show.cues.len() >= 4, "Should have at least 4 cues");
+
+        assert!(
+            (show.cues[0].time.as_secs_f64() - 0.0).abs() < 0.001,
+            "First cue should be at 0.0s"
+        );
+
+        assert!(
+            (show.cues[1].time.as_secs_f64() - 16.0).abs() < 0.001,
+            "Second cue should be at 16.0s (measure 9)"
+        );
+
+        assert!(
+            (show.cues[2].time.as_secs_f64() - 16.0).abs() < 0.001,
+            "Third cue should be at 16.0s (measure 9, before reset takes effect)"
+        );
+
+        let fourth_cue_time = show.cues[3].time.as_secs_f64();
+        assert!(
+            (fourth_cue_time - 8.0).abs() < 0.001,
+            "Fourth cue should be at 8.0s (measure 5 after reset and offset 4), got {}",
+            fourth_cue_time
+        );
+    }
+
+    #[test]
+    fn test_measure_offset_with_alternate_endings_scenario() {
+        // Test the original use case: measures 1-8 repeat twice, measure 9 is alternate ending
+        // This simulates: measures 1-8 play, then 1-8 again, but measure 9 replaces measure 8 on 2nd repeat
+        let content = r#"tempo {
+    start: 0.0s
+    bpm: 120
+    time_signature: 4/4
+}
+
+show "Test" {
+    @1/1
+    all_wash: static, color: "blue"
+    
+    @8/1
+    all_wash: static, color: "yellow"
+    
+    offset 8 measures
+    
+    @1/1
+    all_wash: static, color: "green"
+    
+    @7/1
+    all_wash: static, color: "orange"
+    
+    @9/1
+    all_wash: static, color: "red"
+    
+    @10/1
+    all_wash: static, color: "purple"
+}
+"#;
+
+        let result = parse_light_shows(content);
+        assert!(
+            result.is_ok(),
+            "Failed to parse show with alternate endings scenario: {:?}",
+            result.err()
+        );
+
+        let shows = result.unwrap();
+        let show = shows.get("Test").unwrap();
+
+        // At 120 BPM in 4/4: 1 measure = 2.0s
+        // First playthrough: measures 1-8
+        //   @1/1 = 0.0s (measure 1)
+        //   @8/1 = 14.0s (measure 8)
+        // Second playthrough (after offset 8): measures 1-8 again, but measure 9 replaces 8
+        //   @1/1 = 16.0s (playback measure 9)
+        //   @7/1 = 28.0s (playback measure 15 = 14 measures * 2.0s)
+        //   @9/1 = 32.0s (playback measure 17 = 16 measures * 2.0s) - this is the alternate ending
+        //   @10/1 = 34.0s (playback measure 18 = 17 measures * 2.0s) - continues after repeat
+
+        assert!(show.cues.len() >= 6, "Should have at least 6 cues");
+
+        assert!(
+            (show.cues[0].time.as_secs_f64() - 0.0).abs() < 0.001,
+            "First cue should be at 0.0s"
+        );
+
+        assert!(
+            (show.cues[1].time.as_secs_f64() - 14.0).abs() < 0.001,
+            "Second cue should be at 14.0s (measure 8)"
+        );
+
+        assert!(
+            (show.cues[2].time.as_secs_f64() - 16.0).abs() < 0.001,
+            "Third cue should be at 16.0s (measure 9, second repeat)"
+        );
+
+        assert!(
+            (show.cues[3].time.as_secs_f64() - 28.0).abs() < 0.001,
+            "Fourth cue should be at 28.0s (measure 15)"
+        );
+
+        assert!(
+            (show.cues[4].time.as_secs_f64() - 32.0).abs() < 0.001,
+            "Fifth cue should be at 32.0s (measure 17, alternate ending)"
+        );
+
+        assert!(
+            (show.cues[5].time.as_secs_f64() - 34.0).abs() < 0.001,
+            "Sixth cue should be at 34.0s (measure 18, after repeat)"
+        );
+    }
+}
+
+#[test]
+fn test_parse_chase_random_pattern() {
+    use crate::lighting::effects::{ChasePattern, EffectType};
+    use crate::lighting::parser::parse_light_shows;
+
+    let content = r#"tempo {
+    start: 1.5s
+    bpm: 160
+    time_signature: 4/4
+    changes: [
+        @68/1 {
+            bpm: 180
+        }
+    ]
+}
+
+show "Test" {
+    @70/1
+    all_wash: chase, speed: 1beats, pattern: random, hold_time: 4measures
+}
+"#;
+
+    let result = parse_light_shows(content);
+    assert!(result.is_ok(), "Failed to parse show: {:?}", result.err());
+
+    let shows = result.unwrap();
+    let show = shows.get("Test").unwrap();
+
+    assert_eq!(show.cues.len(), 1);
+    let cue = &show.cues[0];
+    assert_eq!(cue.effects.len(), 1);
+
+    let effect = &cue.effects[0];
+    match &effect.effect_type {
+        EffectType::Chase {
+            pattern,
+            speed: _,
+            direction: _,
+        } => {
+            println!("Parsed pattern: {:?}", pattern);
+            println!("Pattern debug: pattern={:?}", pattern);
+            match pattern {
+                ChasePattern::Random => {
+                    println!("✓ Pattern is correctly set to Random");
+                }
+                ChasePattern::Linear => {
+                    println!("✗ Pattern is Linear, but should be Random!");
+                    panic!("Pattern was parsed as Linear instead of Random");
+                }
+                ChasePattern::Snake => {
+                    println!("✗ Pattern is Snake, but should be Random!");
+                    panic!("Pattern was parsed as Snake instead of Random");
+                }
+            }
+        }
+        other => {
+            println!("Effect type: {:?}", other);
+            panic!("Effect is not a Chase effect! Got: {:?}", other);
+        }
     }
 }
