@@ -252,6 +252,7 @@ fn test_perpetual_effects_total_duration_is_none() {
             pattern: ChasePattern::Linear,
             speed: TempoAwareSpeed::Fixed(1.0),
             direction: ChaseDirection::LeftToRight,
+            transition: CycleTransition::Snap,
         },
         vec!["fixture".to_string()],
         None,
@@ -520,6 +521,7 @@ fn test_perpetual_effect_with_up_time_fades_in_then_stays() {
             pattern: ChasePattern::Linear,
             speed: TempoAwareSpeed::Fixed(1.0),
             direction: ChaseDirection::LeftToRight,
+            transition: CycleTransition::Snap,
         },
         vec!["fixture".to_string()],
         Some(Duration::from_secs(2)), // up_time only
@@ -564,6 +566,7 @@ fn test_perpetual_effect_with_up_time_never_reaches_terminal_state() {
             pattern: ChasePattern::Linear,
             speed: TempoAwareSpeed::Fixed(1.0),
             direction: ChaseDirection::LeftToRight,
+            transition: CycleTransition::Snap,
         },
         vec!["fixture".to_string()],
         Some(Duration::from_secs(2)), // up_time only - fade in over 2 seconds

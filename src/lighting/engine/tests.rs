@@ -655,6 +655,7 @@ mod tests {
                 pattern: ChasePattern::Linear,
                 speed: TempoAwareSpeed::Fixed(1.0),
                 direction: ChaseDirection::LeftToRight,
+                transition: CycleTransition::Snap,
             },
             vec![
                 "fixture_0".to_string(),
@@ -932,6 +933,7 @@ mod tests {
                 pattern: ChasePattern::Linear,
                 speed: TempoAwareSpeed::Fixed(0.0), // Zero speed!
                 direction: ChaseDirection::LeftToRight,
+                transition: CycleTransition::Snap,
             },
             vec![
                 "fixture_0".to_string(),
@@ -982,6 +984,7 @@ mod tests {
                 pattern: ChasePattern::Linear,
                 speed: TempoAwareSpeed::Fixed(1.0),
                 direction: ChaseDirection::LeftToRight,
+                transition: CycleTransition::Snap,
             },
             vec![], // Empty fixture list!
             None,
@@ -1207,6 +1210,7 @@ mod tests {
                 pattern: ChasePattern::Linear,
                 speed: TempoAwareSpeed::Fixed(1.0),
                 direction: ChaseDirection::LeftToRight,
+                transition: CycleTransition::Snap,
             },
             vec![
                 "fixture1".to_string(),
@@ -1596,6 +1600,7 @@ mod tests {
                 pattern: ChasePattern::Linear,
                 speed: TempoAwareSpeed::Measures(1.0), // 1 cycle per measure
                 direction: ChaseDirection::LeftToRight,
+                transition: CycleTransition::Snap,
             },
             vec![
                 "fixture1".to_string(),
@@ -1675,6 +1680,7 @@ mod tests {
                 pattern: ChasePattern::Linear,
                 speed: TempoAwareSpeed::Beats(0.5),
                 direction: ChaseDirection::LeftToRight,
+                transition: CycleTransition::Snap,
             },
             vec![
                 "fixture1".to_string(),
@@ -1767,6 +1773,7 @@ mod tests {
                 pattern: ChasePattern::Random,
                 speed: TempoAwareSpeed::Beats(1.0),
                 direction: ChaseDirection::LeftToRight,
+                transition: CycleTransition::Snap,
             },
             vec![
                 "fixture1".to_string(),
@@ -1786,6 +1793,7 @@ mod tests {
                 pattern: ChasePattern::Linear,
                 speed: TempoAwareSpeed::Beats(0.5),
                 direction: ChaseDirection::RightToLeft,
+                transition: CycleTransition::Snap,
             },
             vec![
                 "fixture1".to_string(),
@@ -1941,6 +1949,7 @@ mod tests {
                 pattern: ChasePattern::Linear,
                 speed: TempoAwareSpeed::Beats(0.5),
                 direction: ChaseDirection::RightToLeft,
+                transition: CycleTransition::Snap,
             },
             vec![
                 "fixture1".to_string(),

@@ -135,6 +135,7 @@ impl EffectEngine {
                 pattern,
                 speed,
                 direction,
+                transition: _,
             } => (
                 "Chase",
                 format!(

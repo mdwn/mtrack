@@ -76,6 +76,7 @@ pub(crate) fn process_effect(
             pattern,
             speed,
             direction,
+            transition,
         } => {
             let current_speed = speed.to_cycles_per_second(tempo_map, absolute_time);
             apply_chase(
@@ -84,6 +85,7 @@ pub(crate) fn process_effect(
                 pattern,
                 current_speed,
                 direction,
+                *transition,
                 elapsed,
             )
         }
@@ -432,6 +434,7 @@ fn apply_chase(
     pattern: &ChasePattern,
     speed: f64,
     direction: &ChaseDirection,
+    transition: CycleTransition,
     elapsed: Duration,
 ) -> Result<Option<HashMap<String, FixtureState>>, EffectError> {
     // Calculate crossfade multiplier
@@ -479,20 +482,77 @@ fn apply_chase(
     let position_duration = chase_period / fixture_count as f64;
     let pattern_cycle_period = position_duration * pattern_length as f64;
     let pattern_progress = (elapsed.as_secs_f64() % pattern_cycle_period) / pattern_cycle_period;
-    let current_pattern_index = (pattern_progress * pattern_length as f64) as usize;
+    let current_pattern_index_f = pattern_progress * pattern_length as f64;
+    let current_pattern_index = current_pattern_index_f.floor() as usize;
+    let position_progress = current_pattern_index_f - current_pattern_index as f64;
 
     for (i, fixture_name) in effect.target_fixtures.iter().enumerate() {
         if let Some(fixture) = fixture_registry.get(fixture_name) {
             let mut fixture_state = FixtureState::new();
 
-            // Check if this fixture is active in the current pattern position
-            let is_fixture_active = if current_pattern_index < pattern_length {
-                fixture_order[current_pattern_index] == i
-            } else {
-                false
-            };
+            let chase_value = match transition {
+                CycleTransition::Snap => {
+                    // Binary on/off: fixture is either fully on or fully off
+                    let is_fixture_active = if current_pattern_index < pattern_length {
+                        fixture_order[current_pattern_index] == i
+                    } else {
+                        false
+                    };
+                    if is_fixture_active {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                }
+                CycleTransition::Fade => {
+                    // Fade in/out: calculate smooth transitions
+                    // Each fixture fades in over the first 50% of its position, stays at 1.0 for the middle,
+                    // and fades out over the last 50% of its position
+                    let fade_ratio = 0.5; // 50% of position_duration for fade in, 50% for fade out
 
-            let chase_value = (if is_fixture_active { 1.0 } else { 0.0 }) * crossfade_multiplier;
+                    // Check if this fixture is the current active fixture
+                    let is_current = if current_pattern_index < pattern_length {
+                        fixture_order[current_pattern_index] == i
+                    } else {
+                        false
+                    };
+
+                    // Check if this fixture is the previous fixture (fading out)
+                    let prev_index = if current_pattern_index > 0 {
+                        current_pattern_index - 1
+                    } else {
+                        pattern_length - 1
+                    };
+                    let is_previous = if prev_index < pattern_length {
+                        fixture_order[prev_index] == i
+                    } else {
+                        false
+                    };
+
+                    if is_current {
+                        // Current fixture: fade in if at start of position, otherwise full on
+                        if position_progress < fade_ratio {
+                            // Fading in: 0.0 to 1.0 over first 50% of position
+                            position_progress / fade_ratio
+                        } else {
+                            // Fully on for the rest of the position
+                            1.0
+                        }
+                    } else if is_previous {
+                        // Previous fixture: fade out if at start of next position
+                        if position_progress < fade_ratio {
+                            // Fading out: 1.0 to 0.0 over first 50% of next position
+                            1.0 - (position_progress / fade_ratio)
+                        } else {
+                            // Fully off
+                            0.0
+                        }
+                    } else {
+                        // Not active
+                        0.0
+                    }
+                }
+            } * crossfade_multiplier;
 
             // Use fixture profile to determine how to apply chase control
             let profile = FixtureProfile::for_fixture(fixture);

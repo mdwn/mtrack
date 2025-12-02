@@ -283,6 +283,7 @@ mod tests {
                 pattern: ChasePattern::Linear,
                 speed: TempoAwareSpeed::Fixed(1.0),
                 direction: ChaseDirection::LeftToRight,
+                transition: CycleTransition::Snap,
             },
             vec![
                 "rgb_fixture".to_string(),

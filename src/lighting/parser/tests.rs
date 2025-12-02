@@ -4888,6 +4888,7 @@ show "Test" {
             pattern,
             speed: _,
             direction: _,
+            transition: _,
         } => {
             println!("Parsed pattern: {:?}", pattern);
             println!("Pattern debug: pattern={:?}", pattern);
