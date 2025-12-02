@@ -54,6 +54,7 @@ pub enum EffectType {
         pattern: ChasePattern,
         speed: TempoAwareSpeed, // cycles per second (can be tempo-aware)
         direction: ChaseDirection,
+        transition: CycleTransition, // how to transition between fixtures (fade in/out)
     },
 
     /// Rainbow effect

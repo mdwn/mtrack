@@ -82,6 +82,7 @@ pub(crate) fn parse_effect_definition(
                         pattern: ChasePattern::Linear,
                         speed: super::super::effects::TempoAwareSpeed::Fixed(1.0),
                         direction: ChaseDirection::LeftToRight,
+                        transition: super::super::effects::CycleTransition::Snap,
                     },
                     "dimmer" => EffectType::Dimmer {
                         start_level: 0.0,
@@ -326,6 +327,7 @@ pub(crate) fn apply_parameters_to_effect_type(
             pattern,
             speed,
             direction,
+            transition,
         } => {
             for (key, value) in parameters {
                 match key.as_str() {
@@ -356,6 +358,13 @@ pub(crate) fn apply_parameters_to_effect_type(
                             "clockwise" => ChaseDirection::Clockwise,
                             "counter_clockwise" => ChaseDirection::CounterClockwise,
                             _ => ChaseDirection::LeftToRight,
+                        };
+                    }
+                    "transition" => {
+                        *transition = match value.as_str() {
+                            "snap" => CycleTransition::Snap,
+                            "fade" => CycleTransition::Fade,
+                            _ => CycleTransition::Snap,
                         };
                     }
                     _ => {}

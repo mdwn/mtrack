@@ -4614,6 +4614,7 @@ mod tests {
                 pattern: ChasePattern::Linear,
                 speed: TempoAwareSpeed::Fixed(1.0),
                 direction: ChaseDirection::LeftToRight,
+                transition: CycleTransition::Snap,
             },
             vec!["test_fixture".to_string()],
             EffectLayer::Background,
@@ -4626,6 +4627,7 @@ mod tests {
                 pattern: ChasePattern::Snake,
                 speed: TempoAwareSpeed::Fixed(2.0),
                 direction: ChaseDirection::RightToLeft,
+                transition: CycleTransition::Snap,
             },
             vec!["test_fixture".to_string()],
             EffectLayer::Background, // Same layer
@@ -4703,6 +4705,7 @@ mod tests {
                 pattern: ChasePattern::Linear,
                 speed: TempoAwareSpeed::Fixed(1.0),
                 direction: ChaseDirection::LeftToRight,
+                transition: CycleTransition::Snap,
             },
             vec!["rgb_fixture".to_string()],
             EffectLayer::Background,
@@ -4763,6 +4766,7 @@ mod tests {
                 pattern: ChasePattern::Linear,
                 speed: TempoAwareSpeed::Fixed(1.0),
                 direction: ChaseDirection::LeftToRight,
+                transition: CycleTransition::Snap,
             },
             vec!["rgb_dimmer_fixture".to_string()],
             EffectLayer::Background,
@@ -5164,6 +5168,7 @@ mod tests {
                 pattern: ChasePattern::Linear,
                 speed: TempoAwareSpeed::Fixed(2.0), // 2 Hz for easy testing
                 direction: ChaseDirection::LeftToRight,
+                transition: CycleTransition::Snap,
             },
             vec![
                 "fixture_1".to_string(),
@@ -5233,6 +5238,7 @@ mod tests {
                 pattern: ChasePattern::Linear,
                 speed: TempoAwareSpeed::Fixed(2.0), // 2 Hz for easy testing
                 direction: ChaseDirection::RightToLeft,
+                transition: CycleTransition::Snap,
             },
             vec![
                 "fixture_1".to_string(),
@@ -5297,6 +5303,7 @@ mod tests {
                 pattern: ChasePattern::Snake,
                 speed: TempoAwareSpeed::Fixed(2.0), // 2 Hz for easy testing
                 direction: ChaseDirection::LeftToRight,
+                transition: CycleTransition::Snap,
             },
             vec![
                 "fixture_1".to_string(),
@@ -5379,6 +5386,7 @@ mod tests {
                 pattern: ChasePattern::Random,
                 speed: TempoAwareSpeed::Fixed(2.0), // 2 Hz for easy testing
                 direction: ChaseDirection::LeftToRight, // Direction doesn't matter for random
+                transition: CycleTransition::Snap,
             },
             vec![
                 "fixture_1".to_string(),
@@ -5439,6 +5447,7 @@ mod tests {
                 pattern: ChasePattern::Linear,
                 speed: TempoAwareSpeed::Fixed(2.0),
                 direction: ChaseDirection::TopToBottom,
+                transition: CycleTransition::Snap,
             },
             vec![
                 "fixture_1".to_string(),
@@ -5488,6 +5497,7 @@ mod tests {
                 pattern: ChasePattern::Linear,
                 speed: TempoAwareSpeed::Fixed(2.0),
                 direction: ChaseDirection::Clockwise,
+                transition: CycleTransition::Snap,
             },
             vec![
                 "fixture_1".to_string(),
@@ -5537,6 +5547,7 @@ mod tests {
                 pattern: ChasePattern::Linear,
                 speed: TempoAwareSpeed::Fixed(0.5), // 0.5 Hz - 2 second cycle
                 direction: ChaseDirection::LeftToRight,
+                transition: CycleTransition::Snap,
             },
             vec![
                 "fixture_1".to_string(),
@@ -5592,6 +5603,7 @@ mod tests {
                 pattern: ChasePattern::Linear,
                 speed: TempoAwareSpeed::Fixed(2.0),
                 direction: ChaseDirection::LeftToRight,
+                transition: CycleTransition::Snap,
             },
             vec!["single_fixture".to_string()],
             EffectLayer::Background,
@@ -5640,6 +5652,7 @@ mod tests {
                 pattern: ChasePattern::Linear,
                 speed: TempoAwareSpeed::Fixed(2.0),
                 direction: ChaseDirection::LeftToRight,
+                transition: CycleTransition::Snap,
             },
             vec![
                 "rgb_fixture_1".to_string(),
@@ -6603,6 +6616,7 @@ mod tests {
                 pattern: ChasePattern::Linear,
                 speed: TempoAwareSpeed::Fixed(1.0), // 1 cycle per second
                 direction: ChaseDirection::LeftToRight,
+                transition: CycleTransition::Snap,
             },
             vec![
                 "fixture_1".to_string(),
@@ -7613,6 +7627,7 @@ mod tests {
                 pattern: ChasePattern::Random,
                 speed: TempoAwareSpeed::Fixed(3.0), // 3 cycles per second
                 direction: ChaseDirection::LeftToRight,
+                transition: CycleTransition::Snap,
             },
             vec![
                 "Brick1".to_string(),
