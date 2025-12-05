@@ -157,6 +157,12 @@ impl Player {
         self.midi_device.clone()
     }
 
+    /// Gets the DMX engine currently in use by the player (for testing).
+    #[cfg(test)]
+    pub fn dmx_engine(&self) -> Option<Arc<dmx::engine::Engine>> {
+        self.dmx_engine.clone()
+    }
+
     /// Reports status as MIDI events.
     async fn report_status(
         span: Span,
@@ -920,12 +926,43 @@ mod test {
             Some(temp_path),
         )?;
 
-        // Try to play the song - it should succeed with valid lighting show
-        let result = player.play().await;
+        // Test validation directly through the DMX engine to avoid starting playback
+        // This tests that validation works without the complexity of actual playback
+        let dmx_engine = player
+            .dmx_engine()
+            .expect("DMX engine should be present for this test");
+        let song = player.get_playlist().current();
+        let validation_result = dmx_engine.validate_song_lighting(&song);
         assert!(
-            matches!(result, Ok(Some(_))),
-            "Player should accept song with valid lighting show"
+            validation_result.is_ok(),
+            "DMX engine should accept song with valid lighting show: {:?}",
+            validation_result.err()
         );
+
+        // Verify that play() would succeed by checking it returns quickly
+        // We use a timeout to detect if play() hangs (which would indicate a problem)
+        let play_result =
+            tokio::time::timeout(std::time::Duration::from_millis(500), player.play()).await;
+
+        match play_result {
+            Ok(Ok(Some(_))) => {
+                // play() succeeded quickly, validation passed
+                // Stop immediately to avoid hanging on cleanup
+                player.stop().await;
+            }
+            Ok(Ok(None)) => {
+                panic!("Unexpected: song already playing");
+            }
+            Ok(Err(e)) => {
+                panic!(
+                    "play() should succeed with valid lighting show, got error: {}",
+                    e
+                );
+            }
+            Err(_) => {
+                panic!("play() timed out after 500ms - this suggests it's hanging during validation or thread spawning");
+            }
+        }
 
         Ok(())
     }
@@ -993,6 +1030,14 @@ mod test {
             matches!(result, Ok(Some(_))),
             "Player should accept song without lighting shows"
         );
+
+        // Stop playback immediately - validation test doesn't need full playback
+        // Don't wait for cleanup - validation is what we're testing, not playback completion
+        player.stop().await;
+
+        // Give a brief moment for stop to take effect, but don't wait for full cleanup
+        // The validation test has already verified that play() succeeded (validation passed)
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         Ok(())
     }

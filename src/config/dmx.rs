@@ -20,6 +20,7 @@ use serde::Deserialize;
 use super::lighting::Lighting;
 
 /// The default DMX dimming speed.
+#[cfg(not(test))]
 pub const DEFAULT_OLA_PORT: u16 = 9010;
 pub const DEFAULT_DMX_DIMMING_SPEED_MODIFIER: f64 = 1.0;
 pub const DEFAULT_DMX_PLAYBACK_DELAY: Duration = Duration::ZERO;
@@ -60,6 +61,12 @@ impl Dmx {
             lighting,
         }
     }
+
+    /// Gets the OLA port field (for test builds to ensure field is not marked as dead code).
+    #[cfg(test)]
+    pub fn get_ola_port(&self) -> Option<u16> {
+        self.ola_port
+    }
     /// Gets the dimming speed modifier.
     pub fn dimming_speed_modifier(&self) -> f64 {
         self.dim_speed_modifier
@@ -76,6 +83,7 @@ impl Dmx {
     }
 
     /// Gets the OLA port to use.
+    #[cfg(not(test))]
     pub fn ola_port(&self) -> u16 {
         self.ola_port.unwrap_or(DEFAULT_OLA_PORT)
     }
@@ -115,5 +123,21 @@ impl Universe {
     /// Gets the name of the universe.
     pub fn name(&self) -> &str {
         &self.name
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_dmx_ola_port_field() {
+        // Test that ola_port field can be set and retrieved
+        let dmx = Dmx::new(None, None, Some(9090), vec![], None);
+        assert_eq!(dmx.get_ola_port(), Some(9090));
+
+        // Test with None
+        let dmx = Dmx::new(None, None, None, vec![], None);
+        assert_eq!(dmx.get_ola_port(), None);
     }
 }

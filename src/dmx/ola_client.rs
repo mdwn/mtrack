@@ -21,16 +21,19 @@ pub trait OlaClient: Send + Sync {
 }
 
 /// Real OLA client implementation
+#[cfg(not(test))]
 pub struct RealOlaClient {
     client: ola::StreamingClient<std::net::TcpStream>,
 }
 
+#[cfg(not(test))]
 impl RealOlaClient {
     pub fn new(client: ola::StreamingClient<std::net::TcpStream>) -> Self {
         Self { client }
     }
 }
 
+#[cfg(not(test))]
 impl OlaClient for RealOlaClient {
     fn send_dmx(&mut self, universe: u32, buffer: &ola::DmxBuffer) -> Result<(), Box<dyn Error>> {
         self.client.send_dmx(universe, buffer)?;
@@ -38,15 +41,15 @@ impl OlaClient for RealOlaClient {
     }
 }
 
-#[cfg(test)]
 /// Mock OLA client for testing
+#[cfg(test)]
 pub struct MockOlaClient {
     pub sent_messages: std::sync::Arc<std::sync::Mutex<Vec<DmxMessage>>>,
     pub should_fail: bool,
 }
 
-#[cfg(test)]
 #[derive(Debug, Clone)]
+#[cfg(test)]
 pub struct DmxMessage {
     pub universe: u32,
     pub buffer: ola::DmxBuffer,
@@ -116,6 +119,7 @@ pub struct OlaClientFactory;
 
 impl OlaClientFactory {
     /// Create a real OLA client (requires OLA to be running)
+    #[cfg(not(test))]
     pub fn create_real_client(
         config: ola::client::StreamingClientConfig,
     ) -> Result<Box<dyn OlaClient>, Box<dyn Error>> {
@@ -123,9 +127,15 @@ impl OlaClientFactory {
         Ok(Box::new(RealOlaClient::new(client)))
     }
 
-    #[cfg(test)]
     /// Create a mock OLA client for testing
+    #[cfg(test)]
     pub fn create_mock_client() -> Box<dyn OlaClient> {
+        Box::new(MockOlaClient::new())
+    }
+
+    /// Create a mock OLA client (available in test builds)
+    #[cfg(test)]
+    pub fn create_mock_client_unconditional() -> Box<dyn OlaClient> {
         Box::new(MockOlaClient::new())
     }
 }
