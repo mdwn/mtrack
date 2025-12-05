@@ -19,8 +19,11 @@ pub mod universe;
 use crate::config;
 use crate::dmx::ola_client::OlaClientFactory;
 use engine::Engine;
+#[cfg(not(test))]
 use ola::client::StreamingClientConfig;
+#[cfg(not(test))]
 use std::thread;
+#[cfg(not(test))]
 use std::time::Duration;
 use std::{error::Error, path::Path, sync::Arc};
 
@@ -38,12 +41,17 @@ pub fn create_engine(
     let lighting_config = config.lighting();
 
     // Build a real OLA client and construct the engine
-    let ola_client_config = StreamingClientConfig {
-        server_port: config.ola_port(),
-        ..Default::default()
-    };
-    // Retry connecting to OLA a few times with backoff
+    // In test mode, use a mock client to avoid hanging on OLA connection
+    #[cfg(test)]
+    let ola_client = OlaClientFactory::create_mock_client_unconditional();
+
+    #[cfg(not(test))]
     let ola_client = {
+        let ola_client_config = StreamingClientConfig {
+            server_port: config.ola_port(),
+            ..Default::default()
+        };
+        // Retry connecting to OLA a few times with backoff
         let mut last_err: Option<Box<dyn Error>> = None;
         let mut found: Option<Box<dyn ola_client::OlaClient>> = None;
         for attempt in 0..10 {

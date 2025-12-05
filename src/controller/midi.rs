@@ -106,7 +106,9 @@ impl super::Driver for Driver {
                 };
 
                 if event == play {
-                    player.play().await;
+                    if let Err(e) = player.play().await {
+                        error!(err = e.as_ref(), "Failed to play song: {}", e);
+                    }
                 } else if event == prev {
                     player.prev().await;
                 } else if event == next {

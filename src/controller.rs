@@ -79,6 +79,7 @@ mod test {
         sync::{Barrier, Mutex},
         task::JoinHandle,
     };
+    use tracing::error;
 
     use crate::{config, player::Player, playlist::Playlist, songs, testutil::eventually};
 
@@ -142,7 +143,9 @@ mod test {
                     match *current_event {
                         TestEvent::Unset => unreachable!("current event should not be unset"),
                         TestEvent::Play => {
-                            player.play().await;
+                            if let Err(e) = player.play().await {
+                                error!(err = e.as_ref(), "Error playing song");
+                            }
                         }
                         TestEvent::Prev => {
                             player.prev().await;

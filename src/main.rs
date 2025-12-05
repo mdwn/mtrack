@@ -44,7 +44,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tonic::transport::Channel;
 use tonic::Request;
-use tracing::info;
+use tracing::{error, info};
 
 const SYSTEMD_SERVICE: &str = r#"
 [Unit]
@@ -464,7 +464,10 @@ async fn run() -> Result<(), Box<dyn Error>> {
                 None,
             )?;
 
-            player.play().await;
+            if let Err(e) = player.play().await {
+                error!(err = e.as_ref(), "Failed to play song: {}", e);
+                return Err(e);
+            }
             while !player.wait_for_current_song().await? {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
