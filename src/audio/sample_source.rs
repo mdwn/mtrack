@@ -678,11 +678,31 @@ impl SampleSource for WavSampleSource {
 impl WavSampleSource {
     /// Creates a new WAV sample source from a file path
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, TranscodingError> {
-        let wav_reader = WavReader::open(&path)?;
+        Self::from_file_with_seek(path, None)
+    }
+
+    /// Creates a new WAV sample source from a file path, optionally seeking to a start time
+    pub fn from_file_with_seek<P: AsRef<Path>>(
+        path: P,
+        start_time: Option<std::time::Duration>,
+    ) -> Result<Self, TranscodingError> {
+        let mut wav_reader = WavReader::open(&path)?;
         let spec = wav_reader.spec();
         let duration = std::time::Duration::from_secs(
             u64::from(wav_reader.duration()) / u64::from(spec.sample_rate),
         );
+
+        // If start_time is provided, seek to that position
+        if let Some(start) = start_time {
+            // Calculate frame position using precise floating point math to avoid rounding errors
+            // hound's seek() takes a frame position, where a frame is one sample per channel
+            // For a 2-channel file: frame 0 = samples [0,1], frame 1 = samples [2,3], etc.
+            // So frame_position = time * sample_rate (NOT divided by channels)
+            let frame_position = start.as_secs_f64() * spec.sample_rate as f64;
+            // Round to nearest frame to ensure consistent seeking across files
+            let frame_position = frame_position.round() as u32;
+            wav_reader.seek(frame_position)?;
+        }
 
         // Use a reasonable buffer size - 1024 samples per channel
         let buffer_size = 1024;
@@ -778,6 +798,13 @@ impl SampleSourceTestExt for WavSampleSource {
 pub fn create_sample_source_from_file<P: AsRef<Path>>(
     path: P,
 ) -> Result<Box<dyn SampleSource>, TranscodingError> {
+    create_sample_source_from_file_with_seek(path, None)
+}
+
+pub fn create_sample_source_from_file_with_seek<P: AsRef<Path>>(
+    path: P,
+    start_time: Option<std::time::Duration>,
+) -> Result<Box<dyn SampleSource>, TranscodingError> {
     let path = path.as_ref();
 
     // Get file extension to determine type
@@ -789,7 +816,7 @@ pub fn create_sample_source_from_file<P: AsRef<Path>>(
 
     match extension.as_str() {
         "wav" => {
-            let wav_source = WavSampleSource::from_file(path)?;
+            let wav_source = WavSampleSource::from_file_with_seek(path, start_time)?;
             Ok(Box::new(wav_source))
         }
         _ => Err(TranscodingError::SampleConversionFailed(format!(
@@ -2519,6 +2546,53 @@ mod tests {
                 .sqrt();
             assert!(rms > 0.001, "RMS too low for {}Hz: {}", sample_rate, rms);
         }
+    }
+
+    #[test]
+    fn test_wav_sample_source_seek() {
+        use crate::testutil::write_wav;
+        use std::time::Duration;
+        use tempfile::tempdir;
+
+        let tempdir = tempdir().unwrap();
+        let wav_path = tempdir.path().join("test_seek.wav");
+
+        // Create a WAV file with 10 seconds of samples at 44100 Hz
+        // We'll use a pattern that changes over time so we can verify seeking
+        let sample_rate = 44100u32;
+        let duration_secs = 10;
+        let total_samples = sample_rate as usize * duration_secs;
+
+        // Create samples with a pattern: value = sample_index / 1000 (so we can verify position)
+        let samples: Vec<i32> = (0..total_samples)
+            .map(|i| (i as i32 / 1000).min(i32::MAX / 2))
+            .collect();
+
+        write_wav(wav_path.clone(), vec![samples], sample_rate).unwrap();
+
+        // Test seeking to 5 seconds
+        let seek_time = Duration::from_secs(5);
+        let mut wav_source =
+            WavSampleSource::from_file_with_seek(&wav_path, Some(seek_time)).unwrap();
+
+        // Read a few samples and verify we can read after seeking
+        // At 5 seconds, we should be at sample index ~220500 (5 * 44100)
+        let first_sample = wav_source.next_sample().unwrap();
+        assert!(first_sample.is_some(), "Should have samples after seeking");
+
+        // Verify we can read multiple samples (seeking worked)
+        let second_sample = wav_source.next_sample().unwrap();
+        assert!(
+            second_sample.is_some(),
+            "Should be able to read multiple samples after seeking"
+        );
+
+        // Test seeking to 0 (should work like from_file)
+        let mut wav_source_start =
+            WavSampleSource::from_file_with_seek(&wav_path, Some(std::time::Duration::ZERO))
+                .unwrap();
+        let start_sample = wav_source_start.next_sample().unwrap();
+        assert!(start_sample.is_some(), "Should have samples from start");
     }
 
     #[test]

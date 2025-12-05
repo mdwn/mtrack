@@ -23,6 +23,9 @@ use std::time::Duration;
 pub struct TimelineUpdate {
     /// Effects to be triggered
     pub effects: Vec<EffectInstance>,
+    /// Effects to be triggered with pre-calculated elapsed time (for seeking)
+    /// Maps effect ID to (effect, elapsed_time)
+    pub effects_with_elapsed: std::collections::HashMap<String, (EffectInstance, Duration)>,
     /// Layer commands to be executed
     pub layer_commands: Vec<LayerCommand>,
     /// Names of sequences to stop
@@ -94,6 +97,73 @@ impl LightingTimeline {
         self.next_cue_index = 0;
     }
 
+    /// Starts the timeline at a specific time (for seeking)
+    /// This processes all cues before start_time to ensure deterministic state
+    pub fn start_at(&mut self, start_time: Duration) -> TimelineUpdate {
+        self.is_playing = true;
+        self.current_time = start_time;
+        self.next_cue_index = self.find_cue_index_at(start_time);
+
+        // Process all cues before start_time to ensure deterministic state
+        // This applies layer commands and starts effects that should still be active
+        let mut result = TimelineUpdate::default();
+
+        for i in 0..self.next_cue_index {
+            let cue = &self.cues[i];
+
+            // Apply all layer commands from historical cues
+            result.layer_commands.extend(cue.layer_commands.clone());
+
+            // Process stop sequence commands
+            result.stop_sequences.extend(cue.stop_sequences.clone());
+
+            // For effects, only include ones that would still be active at start_time
+            for effect in &cue.effects {
+                if let Some(effect_instance) = Self::create_effect_instance(effect) {
+                    // Check if this effect would still be active at start_time
+                    let effect_start_time = cue.time;
+                    let elapsed_at_start = start_time.saturating_sub(effect_start_time);
+
+                    // Get the effect's total duration
+                    let should_include = if let Some(duration) = effect_instance.total_duration() {
+                        // Timed effect - only include if it would still be running
+                        elapsed_at_start < duration
+                    } else {
+                        // Perpetual effect - always include if it was triggered before start_time
+                        true
+                    };
+
+                    if should_include {
+                        // Store the elapsed time in a map so we can start the effect at the correct point
+                        result.effects_with_elapsed.insert(
+                            effect_instance.id.clone(),
+                            (effect_instance, elapsed_at_start),
+                        );
+                    }
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Finds the index of the first cue that should trigger at or after the given time
+    fn find_cue_index_at(&self, time: Duration) -> usize {
+        // Binary search to find the right cue index
+        // We want the first cue that is >= time
+        match self.cues.binary_search_by_key(&time, |cue| cue.time) {
+            Ok(index) => {
+                // Exact match - this cue should trigger
+                index
+            }
+            Err(index) => {
+                // No exact match - index is where we would insert
+                // This is the first cue >= time
+                index
+            }
+        }
+    }
+
     /// Stops the timeline
     pub fn stop(&mut self) {
         self.is_playing = false;
@@ -139,6 +209,15 @@ impl LightingTimeline {
         }
 
         result
+    }
+
+    /// Get all cues with their times and indices
+    pub fn cues(&self) -> Vec<(Duration, usize)> {
+        self.cues
+            .iter()
+            .enumerate()
+            .map(|(index, cue)| (cue.time, index))
+            .collect()
     }
 
     /// Creates an EffectInstance from a DSL Effect
@@ -595,5 +674,170 @@ mod tests {
             result.layer_commands[0].command_type,
             LayerCommandType::Master
         );
+    }
+
+    #[test]
+    fn test_timeline_start_at() {
+        use crate::lighting::parser::Cue;
+
+        let effect = Effect {
+            sequence_name: None,
+            groups: vec!["test_group".to_string()],
+            effect_type: EffectType::Static {
+                parameters: HashMap::new(),
+                duration: None,
+            },
+            layer: None,
+            blend_mode: None,
+            up_time: None,
+            hold_time: None,
+            down_time: None,
+        };
+
+        let cues = vec![
+            Cue {
+                time: Duration::from_secs(0),
+                effects: vec![effect.clone()],
+                layer_commands: vec![],
+                stop_sequences: vec![],
+            },
+            Cue {
+                time: Duration::from_secs(5),
+                effects: vec![effect.clone()],
+                layer_commands: vec![],
+                stop_sequences: vec![],
+            },
+            Cue {
+                time: Duration::from_secs(10),
+                effects: vec![effect],
+                layer_commands: vec![],
+                stop_sequences: vec![],
+            },
+        ];
+
+        let mut timeline = LightingTimeline::new_with_cues(cues);
+
+        // Start at 5 seconds - should skip the first cue
+        let _historical_update = timeline.start_at(Duration::from_secs(5));
+        assert!(timeline.is_playing);
+        assert_eq!(timeline.current_time, Duration::from_secs(5));
+
+        // Update at 5 seconds - should trigger the cue at 5s
+        let result = timeline.update(Duration::from_secs(5));
+        assert_eq!(result.effects.len(), 1);
+
+        // Update at 10 seconds - should trigger the cue at 10s
+        let result = timeline.update(Duration::from_secs(10));
+        assert_eq!(result.effects.len(), 1);
+    }
+
+    #[test]
+    fn test_timeline_find_cue_index_at() {
+        use crate::lighting::parser::Cue;
+
+        let effect = Effect {
+            sequence_name: None,
+            groups: vec!["test_group".to_string()],
+            effect_type: EffectType::Static {
+                parameters: HashMap::new(),
+                duration: None,
+            },
+            layer: None,
+            blend_mode: None,
+            up_time: None,
+            hold_time: None,
+            down_time: None,
+        };
+
+        let cues = vec![
+            Cue {
+                time: Duration::from_secs(0),
+                effects: vec![effect.clone()],
+                layer_commands: vec![],
+                stop_sequences: vec![],
+            },
+            Cue {
+                time: Duration::from_secs(5),
+                effects: vec![effect.clone()],
+                layer_commands: vec![],
+                stop_sequences: vec![],
+            },
+            Cue {
+                time: Duration::from_secs(10),
+                effects: vec![effect],
+                layer_commands: vec![],
+                stop_sequences: vec![],
+            },
+        ];
+
+        let mut timeline = LightingTimeline::new_with_cues(cues);
+
+        // Test finding cue index at different times
+        timeline.start_at(Duration::from_secs(0));
+        assert_eq!(timeline.next_cue_index, 0);
+
+        timeline.start_at(Duration::from_secs(3));
+        // Should point to cue at 5s (first cue >= 3s)
+        assert_eq!(timeline.next_cue_index, 1);
+
+        timeline.start_at(Duration::from_secs(5));
+        assert_eq!(timeline.next_cue_index, 1);
+
+        timeline.start_at(Duration::from_secs(7));
+        // Should point to cue at 10s (first cue >= 7s)
+        assert_eq!(timeline.next_cue_index, 2);
+
+        timeline.start_at(Duration::from_secs(15));
+        // Should point past the end
+        assert_eq!(timeline.next_cue_index, 3);
+    }
+
+    #[test]
+    fn test_timeline_cue_listing() {
+        use crate::lighting::parser::Cue;
+
+        let effect = Effect {
+            sequence_name: None,
+            groups: vec!["test_group".to_string()],
+            effect_type: EffectType::Static {
+                parameters: HashMap::new(),
+                duration: None,
+            },
+            layer: None,
+            blend_mode: None,
+            up_time: None,
+            hold_time: None,
+            down_time: None,
+        };
+
+        let cues = vec![
+            Cue {
+                time: Duration::from_secs(0),
+                effects: vec![effect.clone()],
+                layer_commands: vec![],
+                stop_sequences: vec![],
+            },
+            Cue {
+                time: Duration::from_secs(5),
+                effects: vec![effect.clone()],
+                layer_commands: vec![],
+                stop_sequences: vec![],
+            },
+            Cue {
+                time: Duration::from_secs(10),
+                effects: vec![effect],
+                layer_commands: vec![],
+                stop_sequences: vec![],
+            },
+        ];
+
+        let timeline = LightingTimeline::new_with_cues(cues);
+
+        // Test cue listing
+        let cue_list = timeline.cues();
+        assert_eq!(cue_list.len(), 3);
+        assert_eq!(cue_list[0], (Duration::from_secs(0), 0));
+        assert_eq!(cue_list[1], (Duration::from_secs(5), 1));
+        assert_eq!(cue_list[2], (Duration::from_secs(10), 2));
     }
 }

@@ -12,7 +12,7 @@ use std::any::Any;
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-use std::{error::Error, fmt, sync::Arc};
+use std::{error::Error, fmt, sync::Arc, time::Duration};
 
 use crate::config;
 use crate::playsync::CancelHandle;
@@ -30,13 +30,14 @@ pub mod sample_source;
 pub use format::{SampleFormat, TargetFormat};
 
 pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {
-    /// Plays the given song through the audio interface.
-    fn play(
+    /// Plays the given song through the audio interface, starting from a specific time.
+    fn play_from(
         &self,
         song: Arc<Song>,
         mappings: &HashMap<String, Vec<u16>>,
         cancel_handle: CancelHandle,
         play_barrier: Arc<Barrier>,
+        start_time: Duration,
     ) -> Result<(), Box<dyn Error>>;
 
     #[cfg(test)]

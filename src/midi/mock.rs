@@ -19,6 +19,7 @@ use std::{
         mpsc, Arc, Barrier, Mutex,
     },
     thread,
+    time::Duration,
 };
 
 use midly::live::LiveEvent;
@@ -121,20 +122,23 @@ impl super::Device for Device {
         self.barrier.wait();
     }
 
-    /// Plays the given song through the MIDI interface.
-    fn play(
+    /// Plays the given song through the MIDI interface, starting from a specific time.
+    fn play_from(
         &self,
         song: Arc<Song>,
         cancel_handle: CancelHandle,
         play_barrier: Arc<Barrier>,
+        start_time: Duration,
     ) -> Result<(), Box<dyn Error>> {
         let span = span!(Level::INFO, "play song (mock)");
         let _enter = span.enter();
 
+        let remaining_duration = song.duration().saturating_sub(start_time);
         info!(
             device = self.name,
             song = song.name(),
             duration = song.duration_string(),
+            start_time = ?start_time,
             "Playing song."
         );
 
@@ -148,7 +152,7 @@ impl super::Device for Device {
             thread::spawn(move || {
                 play_barrier.wait();
                 // Wait for a signal or until we hit cancellation.
-                let _ = sleep_rx.recv_timeout(song.duration());
+                let _ = sleep_rx.recv_timeout(remaining_duration);
 
                 // Expire at the end of playback.
                 finished.store(true, Ordering::Relaxed);

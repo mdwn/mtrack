@@ -28,13 +28,13 @@ mod util;
 
 use crate::playlist::Playlist;
 use clap::{crate_version, Parser, Subcommand};
-use lighting::parser::parse_light_shows;
+use lighting::parser::{parse_light_shows, utils::parse_time_string};
 use lighting::validation::validate_groups;
 use player::Player;
 use proto::player::v1::player_service_client::PlayerServiceClient;
 use proto::player::v1::{
-    NextRequest, PlayRequest, PreviousRequest, Song, StatusRequest, StopRequest,
-    SwitchToPlaylistRequest,
+    GetCuesRequest, NextRequest, PlayFromRequest, PlayRequest, PreviousRequest, Song,
+    StatusRequest, StopRequest, SwitchToPlaylistRequest,
 };
 use std::collections::{HashMap, HashSet};
 use std::env;
@@ -134,6 +134,9 @@ enum Commands {
         /// The host and port of the gRPC server.
         #[arg[short, long]]
         host_port: Option<String>,
+        /// Start playback from a specific time (e.g., "1:23.456" or "45.5s").
+        #[arg(long)]
+        from: Option<String>,
     },
     /// Moves to the previous song in the playlist.
     Previous {
@@ -176,6 +179,12 @@ enum Commands {
         /// Optional path to mtrack.yaml config file to validate group/fixture names.
         #[arg(short, long)]
         config: Option<String>,
+    },
+    /// Lists all cues in the current song's lighting timeline.
+    Cues {
+        /// The host and port of the gRPC server.
+        #[arg[short, long]]
+        host_port: Option<String>,
     },
 }
 
@@ -516,11 +525,26 @@ async fn run() -> Result<(), Box<dyn Error>> {
                 .join()
                 .await?;
         }
-        Commands::Play { host_port } => {
+        Commands::Play { host_port, from } => {
             let mut client = connect(host_port).await?;
-            let response = client.play(Request::new(PlayRequest {})).await?;
-            println!("Playing the song:");
-            print_song(response.into_inner().song)?;
+            if let Some(from_str) = from {
+                // Parse the time string
+                let start_time = parse_time_string(&from_str)?;
+                let start_duration = prost_types::Duration::try_from(start_time)
+                    .map_err(|e| format!("Failed to convert duration: {}", e))?;
+
+                let response = client
+                    .play_from(Request::new(PlayFromRequest {
+                        start_time: Some(start_duration),
+                    }))
+                    .await?;
+                println!("Playing the song from {}:", from_str);
+                print_song(response.into_inner().song)?;
+            } else {
+                let response = client.play(Request::new(PlayRequest {})).await?;
+                println!("Playing the song:");
+                print_song(response.into_inner().song)?;
+            }
         }
         Commands::Previous { host_port } => {
             let mut client = connect(host_port).await?;
@@ -563,9 +587,8 @@ async fn run() -> Result<(), Box<dyn Error>> {
                 let song_duration = util::duration_minutes_seconds(Duration::try_from(
                     song.duration.unwrap_or_default(),
                 )?);
-                let elapsed = util::duration_minutes_seconds(Duration::try_from(
-                    response.elapsed.unwrap_or_default(),
-                )?);
+                let elapsed = Duration::try_from(response.elapsed.unwrap_or_default())
+                    .map(util::duration_minutes_seconds)?;
                 println!("Elapsed: {}/{}", elapsed, song_duration);
             }
             println!("Playing: {}", response.playing);
@@ -585,6 +608,27 @@ async fn run() -> Result<(), Box<dyn Error>> {
         }
         Commands::VerifyLightShow { show_path, config } => {
             verify_light_show(&show_path, config.as_deref())?;
+        }
+        Commands::Cues { host_port } => {
+            let mut client = connect(host_port).await?;
+            let response = client
+                .get_cues(Request::new(GetCuesRequest {}))
+                .await?
+                .into_inner();
+
+            if response.cues.is_empty() {
+                println!("No cues found in the current song.");
+            } else {
+                println!("Cues in current song ({} total):", response.cues.len());
+                for cue in response.cues {
+                    let time = cue
+                        .time
+                        .and_then(|d| Duration::try_from(d).ok())
+                        .map(util::duration_minutes_seconds)
+                        .unwrap_or_else(|| "unknown".to_string());
+                    println!("  {}: {} (index {})", cue.index, time, cue.index);
+                }
+            }
         }
     }
 
