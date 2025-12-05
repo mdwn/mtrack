@@ -325,7 +325,9 @@ impl Driver {
         let address = OscAddress::new(msg.addr.clone())?;
         let mut recognized_event = false;
         if osc_events.play.match_address(&address) {
-            player.play().await;
+            if let Err(e) = player.play().await {
+                error!(err = e.as_ref(), "Failed to play song: {}", e);
+            }
             recognized_event = true;
         } else if osc_events.prev.match_address(&address) {
             player.prev().await;

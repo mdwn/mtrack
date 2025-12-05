@@ -90,10 +90,14 @@ struct PlayerServer {
 impl PlayerService for PlayerServer {
     async fn play(&self, _: Request<PlayRequest>) -> Result<Response<PlayResponse>, Status> {
         match self.player.play().await {
-            Some(song) => Ok(Response::new(PlayResponse {
+            Ok(Some(song)) => Ok(Response::new(PlayResponse {
                 song: Some(song.to_proto()?),
             })),
-            None => Err(Status::failed_precondition("song already playing")),
+            Ok(None) => Err(Status::failed_precondition("song already playing")),
+            Err(e) => Err(Status::failed_precondition(format!(
+                "lighting show validation failed: {}",
+                e
+            ))),
         }
     }
 

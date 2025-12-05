@@ -211,12 +211,13 @@ impl Player {
         });
     }
 
-    /// Plays the song at the current position. Returns true if the song was submitted successfully.
-    pub async fn play(&self) -> Option<Arc<Song>> {
+    /// Plays the song at the current position. Returns the song if playback started successfully.
+    /// Returns None if a song is already playing.
+    /// Returns an error if lighting show validation fails.
+    pub async fn play(&self) -> Result<Option<Arc<Song>>, Box<dyn Error>> {
         let _enter = self.span.enter();
 
         let mut join = self.join.lock().await;
-        let play_start_time = self.play_start_time.clone();
 
         let playlist = self.get_playlist().clone();
         let song = playlist.current();
@@ -225,8 +226,22 @@ impl Player {
                 current_song = song.name(),
                 "Player is already playing a song."
             );
-            return None;
+            return Ok(None);
         }
+
+        // Validate lighting shows before starting playback
+        if let Some(ref dmx_engine) = self.dmx_engine {
+            if let Err(e) = dmx_engine.validate_song_lighting(&song) {
+                error!(
+                    song = song.name(),
+                    err = e.as_ref(),
+                    "Lighting show validation failed, preventing song playback"
+                );
+                return Err(e);
+            }
+        }
+
+        let play_start_time = self.play_start_time.clone();
 
         let cancel_handle = CancelHandle::new();
         let (play_tx, play_rx) = oneshot::channel::<()>();
@@ -299,7 +314,7 @@ impl Player {
             });
         }
 
-        Some(song)
+        Ok(Some(song))
     }
 
     fn play_files(
@@ -603,7 +618,7 @@ impl StatusEvents {
 
 #[cfg(test)]
 mod test {
-    use std::{collections::HashMap, error::Error, path::Path};
+    use std::{collections::HashMap, error::Error, fs, path::Path, sync::Arc};
 
     use crate::{config, playlist::Playlist, songs, testutil::eventually};
 
@@ -688,7 +703,7 @@ mod test {
         println!("Playlist -> Song 3");
         assert_eq!(player.get_playlist().current().name(), "Song 3");
 
-        player.play().await;
+        player.play().await?;
 
         // Playlist should have moved to next song.
         eventually(
@@ -714,7 +729,7 @@ mod test {
         midi_device.reset_emitted_event();
 
         // Play a song and cancel it.
-        player.play().await;
+        player.play().await?;
         println!("Play Song 5.");
         eventually(|| device.is_playing(), "Song never started playing");
 
@@ -725,6 +740,349 @@ mod test {
         assert_eq!(player.get_playlist().current().name(), "Song 5");
 
         assert!(midi_device.get_emitted_event().is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_player_rejects_invalid_lighting_shows() -> Result<(), Box<dyn Error>> {
+        // Create a temporary directory for test files
+        let temp_dir = tempfile::tempdir()?;
+        let temp_path = temp_dir.path();
+
+        // Create a valid lighting show file with invalid group reference
+        let lighting_show_content = r#"show "Test Show" {
+    @00:00.000
+    invalid_group: static color: "blue", dimmer: 60%
+}"#;
+        let lighting_file = temp_path.join("invalid_show.light");
+        fs::write(&lighting_file, lighting_show_content)?;
+
+        // Create a song with the invalid lighting show
+        let song_config = config::Song::new(
+            "Test Song",
+            None,
+            None,
+            None,
+            None,
+            Some(vec![config::LightingShow::new(
+                lighting_file
+                    .file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .to_string(),
+            )]),
+            vec![],
+        );
+
+        // Create a lighting config with valid groups (but not "invalid_group")
+        let mut groups = HashMap::new();
+        groups.insert(
+            "front_wash".to_string(),
+            config::lighting::LogicalGroup::new(
+                "front_wash".to_string(),
+                vec![config::lighting::GroupConstraint::AllOf(vec![
+                    "wash".to_string(),
+                    "front".to_string(),
+                ])],
+            ),
+        );
+        let lighting_config =
+            config::Lighting::new(Some("test_venue".to_string()), None, Some(groups), None);
+
+        // Create DMX config with lighting
+        let dmx_config = config::Dmx::new(
+            Some(1.0),
+            Some("0s".to_string()),
+            Some(9090),
+            vec![config::Universe::new(1, "test_universe".to_string())],
+            Some(lighting_config),
+        );
+
+        // Create a simple playlist with one song
+        let playlist_songs = vec!["Test Song".to_string()];
+        let playlist_config = config::Playlist::new(&playlist_songs);
+        let song = songs::Song::new(temp_path, &song_config)?;
+        let songs_map = HashMap::from([("Test Song".to_string(), Arc::new(song))]);
+        let songs = Arc::new(songs::Songs::new(songs_map));
+        let playlist = Playlist::new(&playlist_config, songs.clone())?;
+
+        // Create player with DMX engine that has lighting config
+        let player = Player::new(
+            songs,
+            playlist,
+            &config::Player::new(
+                vec![config::Controller::Keyboard],
+                config::Audio::new("mock-device"),
+                Some(config::Midi::new("mock-midi-device", None)),
+                Some(dmx_config),
+                HashMap::new(),
+                temp_path.to_str().unwrap(),
+            ),
+            Some(temp_path),
+        )?;
+
+        // Try to play the song - it should fail due to invalid lighting show
+        let result = player.play().await;
+        assert!(
+            result.is_err(),
+            "Player should reject song with invalid lighting show"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_player_accepts_valid_lighting_shows() -> Result<(), Box<dyn Error>> {
+        // Create a temporary directory for test files
+        let temp_dir = tempfile::tempdir()?;
+        let temp_path = temp_dir.path();
+
+        // Create a valid lighting show file
+        let lighting_show_content = r#"show "Test Show" {
+    @00:00.000
+    front_wash: static color: "blue", dimmer: 60%
+}"#;
+        let lighting_file = temp_path.join("valid_show.light");
+        fs::write(&lighting_file, lighting_show_content)?;
+
+        // Create a WAV file for the song
+        let wav_file = temp_path.join("track.wav");
+        crate::testutil::write_wav(wav_file.clone(), vec![vec![1_i32, 2_i32, 3_i32]], 44100)?;
+
+        // Create a song with the valid lighting show
+        let song_config = config::Song::new(
+            "Test Song",
+            None,
+            None,
+            None,
+            None,
+            Some(vec![config::LightingShow::new(
+                lighting_file
+                    .file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .to_string(),
+            )]),
+            vec![config::Track::new(
+                "track".to_string(),
+                wav_file.file_name().unwrap().to_str().unwrap(),
+                Some(1),
+            )],
+        );
+
+        // Create a lighting config with the valid group
+        let mut groups = HashMap::new();
+        groups.insert(
+            "front_wash".to_string(),
+            config::lighting::LogicalGroup::new(
+                "front_wash".to_string(),
+                vec![config::lighting::GroupConstraint::AllOf(vec![
+                    "wash".to_string(),
+                    "front".to_string(),
+                ])],
+            ),
+        );
+        let lighting_config =
+            config::Lighting::new(Some("test_venue".to_string()), None, Some(groups), None);
+
+        // Create DMX config with lighting
+        let dmx_config = config::Dmx::new(
+            Some(1.0),
+            Some("0s".to_string()),
+            Some(9090),
+            vec![config::Universe::new(1, "test_universe".to_string())],
+            Some(lighting_config),
+        );
+
+        // Create a simple playlist with one song
+        let playlist_songs = vec!["Test Song".to_string()];
+        let playlist_config = config::Playlist::new(&playlist_songs);
+        let song = songs::Song::new(temp_path, &song_config)?;
+        let songs_map = HashMap::from([("Test Song".to_string(), Arc::new(song))]);
+        let songs = Arc::new(songs::Songs::new(songs_map));
+        let playlist = Playlist::new(&playlist_config, songs.clone())?;
+
+        // Create player with DMX engine that has lighting config
+        let player = Player::new(
+            songs,
+            playlist,
+            &config::Player::new(
+                vec![config::Controller::Keyboard],
+                config::Audio::new("mock-device"),
+                Some(config::Midi::new("mock-midi-device", None)),
+                Some(dmx_config),
+                HashMap::new(),
+                temp_path.to_str().unwrap(),
+            ),
+            Some(temp_path),
+        )?;
+
+        // Try to play the song - it should succeed with valid lighting show
+        let result = player.play().await;
+        assert!(
+            matches!(result, Ok(Some(_))),
+            "Player should accept song with valid lighting show"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_player_accepts_song_without_lighting_shows() -> Result<(), Box<dyn Error>> {
+        // Create a temporary directory for test files
+        let temp_dir = tempfile::tempdir()?;
+        let temp_path = temp_dir.path();
+
+        // Create a WAV file for the song
+        let wav_file = temp_path.join("track.wav");
+        crate::testutil::write_wav(wav_file.clone(), vec![vec![1_i32, 2_i32, 3_i32]], 44100)?;
+
+        // Create a song without lighting shows
+        let song_config = config::Song::new(
+            "Test Song",
+            None,
+            None,
+            None,
+            None,
+            None, // No lighting shows
+            vec![config::Track::new(
+                "track".to_string(),
+                wav_file.file_name().unwrap().to_str().unwrap(),
+                Some(1),
+            )],
+        );
+
+        // Create DMX config without lighting (or with lighting, shouldn't matter)
+        let dmx_config = config::Dmx::new(
+            Some(1.0),
+            Some("0s".to_string()),
+            Some(9090),
+            vec![config::Universe::new(1, "test_universe".to_string())],
+            None, // No lighting config
+        );
+
+        // Create a simple playlist with one song
+        let playlist_songs = vec!["Test Song".to_string()];
+        let playlist_config = config::Playlist::new(&playlist_songs);
+        let song = songs::Song::new(temp_path, &song_config)?;
+        let songs_map = HashMap::from([("Test Song".to_string(), Arc::new(song))]);
+        let songs = Arc::new(songs::Songs::new(songs_map));
+        let playlist = Playlist::new(&playlist_config, songs.clone())?;
+
+        // Create player with DMX engine
+        let player = Player::new(
+            songs,
+            playlist,
+            &config::Player::new(
+                vec![config::Controller::Keyboard],
+                config::Audio::new("mock-device"),
+                Some(config::Midi::new("mock-midi-device", None)),
+                Some(dmx_config),
+                HashMap::new(),
+                temp_path.to_str().unwrap(),
+            ),
+            Some(temp_path),
+        )?;
+
+        // Try to play the song - it should succeed even without lighting shows
+        let result = player.play().await;
+        assert!(
+            matches!(result, Ok(Some(_))),
+            "Player should accept song without lighting shows"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_player_rejects_song_with_multiple_invalid_groups() -> Result<(), Box<dyn Error>> {
+        // Create a temporary directory for test files
+        let temp_dir = tempfile::tempdir()?;
+        let temp_path = temp_dir.path();
+
+        // Create a valid lighting show file with multiple invalid group references
+        let lighting_show_content = r#"show "Test Show" {
+    @00:00.000
+    invalid_group_1: static color: "blue", dimmer: 60%
+    invalid_group_2: static color: "red", dimmer: 80%
+}"#;
+        let lighting_file = temp_path.join("invalid_groups.light");
+        fs::write(&lighting_file, lighting_show_content)?;
+
+        // Create a song with the invalid lighting show
+        let song_config = config::Song::new(
+            "Test Song",
+            None,
+            None,
+            None,
+            None,
+            Some(vec![config::LightingShow::new(
+                lighting_file
+                    .file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .to_string(),
+            )]),
+            vec![],
+        );
+
+        // Create a lighting config with valid groups (but not the invalid ones)
+        let mut groups = HashMap::new();
+        groups.insert(
+            "front_wash".to_string(),
+            config::lighting::LogicalGroup::new(
+                "front_wash".to_string(),
+                vec![config::lighting::GroupConstraint::AllOf(vec![
+                    "wash".to_string(),
+                    "front".to_string(),
+                ])],
+            ),
+        );
+        let lighting_config =
+            config::Lighting::new(Some("test_venue".to_string()), None, Some(groups), None);
+
+        // Create DMX config with lighting
+        let dmx_config = config::Dmx::new(
+            Some(1.0),
+            Some("0s".to_string()),
+            Some(9090),
+            vec![config::Universe::new(1, "test_universe".to_string())],
+            Some(lighting_config),
+        );
+
+        // Create a simple playlist with one song
+        let playlist_songs = vec!["Test Song".to_string()];
+        let playlist_config = config::Playlist::new(&playlist_songs);
+        let song = songs::Song::new(temp_path, &song_config)?;
+        let songs_map = HashMap::from([("Test Song".to_string(), Arc::new(song))]);
+        let songs = Arc::new(songs::Songs::new(songs_map));
+        let playlist = Playlist::new(&playlist_config, songs.clone())?;
+
+        // Create player with DMX engine that has lighting config
+        let player = Player::new(
+            songs,
+            playlist,
+            &config::Player::new(
+                vec![config::Controller::Keyboard],
+                config::Audio::new("mock-device"),
+                Some(config::Midi::new("mock-midi-device", None)),
+                Some(dmx_config),
+                HashMap::new(),
+                temp_path.to_str().unwrap(),
+            ),
+            Some(temp_path),
+        )?;
+
+        // Try to play the song - it should fail due to invalid lighting show groups
+        let result = player.play().await;
+        assert!(
+            result.is_err(),
+            "Player should reject song with invalid lighting show groups"
+        );
 
         Ok(())
     }

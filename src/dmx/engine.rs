@@ -15,6 +15,7 @@
 use std::{
     collections::{HashMap, HashSet},
     error::Error,
+    fs,
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver},
@@ -226,6 +227,48 @@ impl Engine {
     #[cfg(test)]
     pub(crate) fn get_universe(&self, universe_id: u16) -> Option<&Universe> {
         self.universes.get(&universe_id)
+    }
+
+    /// Validates a song's lighting shows before playback starts.
+    /// Returns an error if any lighting show is invalid.
+    pub fn validate_song_lighting(&self, song: &Song) -> Result<(), Box<dyn Error>> {
+        let dsl_lighting_shows = song.dsl_lighting_shows();
+
+        if dsl_lighting_shows.is_empty() {
+            return Ok(());
+        }
+
+        // Validate DSL shows
+        for dsl_show in dsl_lighting_shows {
+            let content = fs::read_to_string(dsl_show.file_path()).map_err(|e| {
+                format!(
+                    "Failed to read DSL show {}: {}",
+                    dsl_show.file_path().display(),
+                    e
+                )
+            })?;
+
+            let shows = crate::lighting::parser::parse_light_shows(&content).map_err(|e| {
+                format!(
+                    "Failed to parse DSL show {}: {}",
+                    dsl_show.file_path().display(),
+                    e
+                )
+            })?;
+
+            // Validate shows if lighting config is available
+            if let Some(ref lighting_config) = self.lighting_config {
+                validate_light_shows(&shows, Some(lighting_config)).map_err(|e| {
+                    format!(
+                        "Light show validation failed for {}: {}",
+                        dsl_show.file_path().display(),
+                        e
+                    )
+                })?;
+            }
+        }
+
+        Ok(())
     }
 
     /// Plays the given song through the DMX interface.
