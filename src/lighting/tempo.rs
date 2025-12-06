@@ -302,7 +302,7 @@ impl TempoMap {
     }
 
     /// Convert a measure/beat position to absolute time with an offset
-    /// The offset is applied to the target position; tempo changes remain in score time
+    /// The offset is applied to both the target position and tempo change positions
     pub fn measure_to_time_with_offset(
         &self,
         measure: u32,
@@ -325,7 +325,7 @@ impl TempoMap {
         // Integrate through tempo segments to reach target position
         // We need to account for time signature changes that affect beats per measure
         let mut current_bpm = self.initial_bpm;
-        let mut accumulated_time = self.start_offset;
+        let mut accumulated_time = self.start_offset + offset_duration;
         let mut accumulated_beats = 0.0;
 
         // Calculate target beats by integrating through measures beat-by-beat
@@ -466,8 +466,8 @@ impl TempoMap {
         // We apply the measure_offset to tempo changes so they respect the offset timeline,
         // ensuring consistent measure numbering with the target measure.
         for change in &self.changes {
-            // Tempo changes are already resolved to absolute time, keep them in score time
-            let change_time = change.position.absolute_time()?;
+            // Tempo changes are resolved to absolute time; apply offset to slide them
+            let change_time = change.position.absolute_time()? + offset_duration;
 
             // Calculate beats to this tempo change
             // If we have original_measure_beat, use it to calculate beats directly (same way as target_beats)
@@ -563,11 +563,11 @@ impl TempoMap {
                     accumulated_beats,
                     remaining_beats,
                     current_bpm,
-                    self.start_offset.as_secs_f64(),
+                    (self.start_offset + offset_duration).as_secs_f64(),
                     accumulated_time.as_secs_f64(),
                     result_time.as_secs_f64()
                 );
-                return Some(result_time + offset_duration);
+                return Some(result_time);
             }
 
             // Process up to this change
@@ -585,7 +585,7 @@ impl TempoMap {
         }
 
         // Target is beyond all changes - use final tempo
-        // accumulated_time already includes start_offset, so we just need to add the remaining time
+        // accumulated_time already includes start_offset and offset_duration, so we just need to add the remaining time
         let remaining_beats = target_beats - accumulated_beats;
         let time_for_remaining = Duration::from_secs_f64(remaining_beats * 60.0 / current_bpm);
         let result_time = accumulated_time + time_for_remaining;
@@ -602,13 +602,13 @@ impl TempoMap {
                 target_beats,
                 accumulated_beats,
                 remaining_beats,
-                self.start_offset.as_secs_f64(),
+                (self.start_offset + offset_duration).as_secs_f64(),
                 accumulated_time.as_secs_f64(),
                 current_bpm,
                 result_time.as_secs_f64()
             );
 
-        Some(result_time + offset_duration)
+        Some(result_time)
     }
 
     /// Get BPM at a given time (accounting for tempo changes)
