@@ -420,23 +420,22 @@ fn parse_sequence_cue_structure(
         let (measure, beat) = parse_measure_time(measure_pair.as_str())?;
         if let Some(tm) = tempo_map {
             score_time = tm
-                .measure_to_time_with_offset(measure, beat, 0, offset_secs)
+                // score-space only; offsets applied after
+                .measure_to_time_with_offset(measure, beat, 0, 0.0)
                 .ok_or_else(|| format!("Invalid measure/beat position: {}/{}", measure, beat))?;
-            // Sequence cues should be relative to the sequence start; remove tempo start offset
-            score_time = score_time.saturating_sub(tm.start_offset);
         } else {
             return Err("Measure-based timing requires a tempo section".into());
         }
     }
 
     // Resolve anchor for offset conversion in SCORE time (not shifted by previous offsets)
+    let applied_offset_secs = offset_secs;
     let score_anchor = if score_time != Duration::ZERO {
         Some(score_time)
     } else {
-        last_abs_time.map(|t| t.saturating_sub(Duration::from_secs_f64(offset_secs)))
+        last_abs_time.map(|t| t.saturating_sub(Duration::from_secs_f64(applied_offset_secs)))
     }
     .unwrap_or(Duration::ZERO);
-    let applied_offset_secs = offset_secs;
 
     // Compute next offset (applies to subsequent cues only)
     if !offset_commands.is_empty() || !reset_commands.is_empty() {
@@ -462,11 +461,7 @@ fn parse_sequence_cue_structure(
     }
 
     // Absolute time uses the currently applied offset (not the newly computed one)
-    let abs_time = if has_measure_time {
-        score_time
-    } else {
-        score_time + Duration::from_secs_f64(applied_offset_secs)
-    };
+    let abs_time = score_time + Duration::from_secs_f64(applied_offset_secs);
     #[cfg(debug_assertions)]
     eprintln!(
         "[cue-debug] abs_time={:.6}s score_time={:.6}s applied_offset_secs={:.6} has_measure_time={} new_offset={:?}",
