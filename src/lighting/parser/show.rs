@@ -425,17 +425,28 @@ fn parse_sequence_cue_structure(
         measure_offset
     };
 
-    // Now parse measure_time using the effective offset (which includes any offset commands in this cue)
+    // Now parse measure_time
+    // IMPORTANT: Only apply offset commands to the measure time if BOTH are in the same cue definition.
+    // If a cue has a measure time but no offset command, use the offset from previous cues (measure_offset).
+    // If a cue has both a measure time AND an offset command, apply the offset to this cue's measure time.
     if let Some(measure_pair) = measure_time_pair {
         let (measure, beat) = parse_measure_time(measure_pair.as_str())?;
-        // Apply effective offset to measure number
-        let playback_measure = measure + effective_offset;
+        // If there's an offset command in this cue definition, apply it to this cue's measure time.
+        // Otherwise, use the offset from previous cues.
+        let offset_for_measure_time = if !offset_commands.is_empty() {
+            // Offset command is in this cue definition - apply it to this cue's measure time
+            effective_offset
+        } else {
+            // No offset in this cue - use offset from previous cues
+            measure_offset
+        };
+        let playback_measure = measure + offset_for_measure_time;
         if let Some(tm) = tempo_map {
             // For sequences, measure 1 should be 0.0s relative to the sequence start
             // So we subtract the start_offset to make it relative to 0.0s
-            // Pass effective_offset so tempo changes respect offsets
+            // Pass offset_for_measure_time so tempo changes respect offsets
             let absolute_time = tm
-                .measure_to_time_with_offset(measure, beat, effective_offset)
+                .measure_to_time_with_offset(measure, beat, offset_for_measure_time)
                 .ok_or_else(|| {
                     format!(
                         "Invalid measure/beat position: {}/{}",
@@ -770,15 +781,26 @@ fn parse_cue_definition(
         measure_offset
     };
 
-    // Now parse measure_time using the effective offset (which includes any offset commands in this cue)
+    // Now parse measure_time
+    // IMPORTANT: Only apply offset commands to the measure time if BOTH are in the same cue definition.
+    // If a cue has a measure time but no offset command, use the offset from previous cues (measure_offset).
+    // If a cue has both a measure time AND an offset command, apply the offset to this cue's measure time.
     if let Some(measure_pair) = measure_time_pair {
         let (measure, beat) = parse_measure_time(measure_pair.as_str())?;
-        // Apply effective offset to measure number
-        let playback_measure = measure + effective_offset;
+        // If there's an offset command in this cue definition, apply it to this cue's measure time.
+        // Otherwise, use the offset from previous cues.
+        let offset_for_measure_time = if !offset_commands.is_empty() {
+            // Offset command is in this cue definition - apply it to this cue's measure time
+            effective_offset
+        } else {
+            // No offset in this cue - use offset from previous cues
+            measure_offset
+        };
+        let playback_measure = measure + offset_for_measure_time;
         if let Some(tm) = tempo_map {
-            // Pass effective_offset so tempo changes respect offsets
+            // Pass offset_for_measure_time so tempo changes respect offsets
             time = tm
-                .measure_to_time_with_offset(measure, beat, effective_offset)
+                .measure_to_time_with_offset(measure, beat, offset_for_measure_time)
                 .ok_or_else(|| {
                     format!(
                         "Invalid measure/beat position: {}/{}",
