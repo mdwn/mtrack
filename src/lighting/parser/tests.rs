@@ -4685,9 +4685,8 @@ show "Test" {
     #[test]
     fn test_measure_offset_in_same_cue() {
         // Test that when a cue has both a measure time and an offset command,
-        // the offset is correctly applied to that cue's measure time calculation.
-        // This tests the fix for the bug where offset commands in the same cue
-        // weren't being applied to the measure time.
+        // the offset does NOT apply to that cue's measure time, but DOES apply to subsequent cues.
+        // This tests the scenario where offset is in the same cue definition as a measure time.
         let content = r#"tempo {
             start: 1.5s
             bpm: 160
@@ -4704,7 +4703,6 @@ show "Test" {
     
     @74/1
     all_wash: static, color: "green"
-    
     offset 5 measures
     
     @70/1
@@ -4729,46 +4727,51 @@ show "Test" {
         assert!(show.cues.len() >= 4, "Should have at least 4 cues");
 
         // First cue at @70/1 (no offset yet)
-        // At 160 BPM in 4/4: 1 measure = 1.5s
-        // Measure 70 = 1.5s (start) + (69 measures * 1.5s) = 1.5s + 103.5s = 105.0s
+        // Tempo changes at @68/1 to 180 BPM
+        // Measures 1-67 at 160 BPM: 67 * 1.5s = 100.5s
+        // Measures 68-70 at 180 BPM: 2 * 1.333s = 2.667s
+        // Total: 100.5 + 2.667 = 103.167s
+        // Plus start_offset 1.5s: 103.167 + 1.5 = 104.667s
         let first_cue_time = show.cues[0].time;
-        let expected_first = Duration::from_secs_f64(105.0);
+        let expected_first = Duration::from_secs_f64(104.666666667);
         assert!(
             (first_cue_time.as_secs_f64() - expected_first.as_secs_f64()).abs() < 0.01,
-            "First cue should be at measure 70 (105.0s), got {:?} ({:.3}s)",
+            "First cue should be at measure 70 (104.667s), got {:?} ({:.3}s)",
             first_cue_time,
             first_cue_time.as_secs_f64()
         );
 
         // Second cue at @74/1 (no offset yet)
-        // Measure 74 = 1.5s + (73 measures * 1.5s) = 1.5s + 109.5s = 111.0s
+        // Measures 1-67 @160 BPM: 100.5s
+        // Measures 68-73 @180 BPM: 6 * 1.333s = 8.0s
+        // Plus start_offset 1.5s => 110.0s
         let second_cue_time = show.cues[1].time;
-        let expected_second = Duration::from_secs_f64(111.0);
+        let expected_second = Duration::from_secs_f64(110.0);
         assert!(
             (second_cue_time.as_secs_f64() - expected_second.as_secs_f64()).abs() < 0.01,
-            "Second cue should be at measure 74 (111.0s), got {:?} ({:.3}s)",
+            "Second cue should be at measure 74 (110.0s), got {:?} ({:.3}s)",
             second_cue_time,
             second_cue_time.as_secs_f64()
         );
 
         // Third cue at @70/1 with offset 5 measures = playback measure 75
-        // Measure 75 = 1.5s + (74 measures * 1.5s) = 1.5s + 111.0s = 112.5s
+        // Base @70/1 time: 104.667s, offset 5 measures at 180 BPM = 6.667s
         let third_cue_time = show.cues[2].time;
-        let expected_third = Duration::from_secs_f64(112.5);
+        let expected_third = Duration::from_secs_f64(111.333333333);
         assert!(
             (third_cue_time.as_secs_f64() - expected_third.as_secs_f64()).abs() < 0.01,
-            "Third cue should be at playback measure 75 (112.5s) after offset 5, got {:?} ({:.3}s)",
+            "Third cue should be at playback measure 75 (~111.33s) after offset 5, got {:?} ({:.3}s)",
             third_cue_time,
             third_cue_time.as_secs_f64()
         );
 
         // Fourth cue at @74/1 with offset 5 measures = playback measure 79
-        // Measure 79 = 1.5s + (78 measures * 1.5s) = 1.5s + 117.0s = 118.5s
+        // Base @74/1 time: 110.0s, offset still 5 measures at 180 BPM = 6.667s => ~116.67s
         let fourth_cue_time = show.cues[3].time;
-        let expected_fourth = Duration::from_secs_f64(118.5);
+        let expected_fourth = Duration::from_secs_f64(116.666666667);
         assert!(
             (fourth_cue_time.as_secs_f64() - expected_fourth.as_secs_f64()).abs() < 0.01,
-            "Fourth cue should be at playback measure 79 (118.5s) after offset 5, got {:?} ({:.3}s)",
+            "Fourth cue should be at playback measure 79 (~116.67s) after offset 5, got {:?} ({:.3}s)",
             fourth_cue_time,
             fourth_cue_time.as_secs_f64()
         );
@@ -4847,6 +4850,88 @@ show "Test" {
             "Third cue should be at playback measure 11 (20.0s) with offset 10, got {:?} ({:.3}s)",
             third_cue_time,
             third_cue_time.as_secs_f64()
+        );
+    }
+
+    #[test]
+    fn test_offset_timing_at_180_bpm_with_tempo_change() {
+        // Test the exact scenario: @70/1, @74/1 with offset 5, @70/1 at 180 BPM
+        // This verifies that the offset is applied correctly and timing is accurate
+        // when there's a tempo change from 160 to 180 BPM at @68/1
+        let content = r#"tempo {
+            start: 1.5s
+            bpm: 160
+            time_signature: 4/4
+            changes: [
+                @68/1 { bpm: 180 },
+                @104/1 { bpm: 160 }
+            ]
+        }
+
+show "Test" {
+    @70/1
+    all_wash: static, color: "blue"
+    
+    @74/1
+    all_wash: static, color: "green"
+    offset 5 measures
+    
+    @70/1
+    all_wash: static, color: "red"
+}
+"#;
+
+        let result = parse_light_shows(content);
+        assert!(
+            result.is_ok(),
+            "Failed to parse show: {:?}",
+            result.err()
+        );
+
+        let shows = result.unwrap();
+        let show = shows.get("Test").unwrap();
+
+        assert!(show.cues.len() >= 3, "Should have at least 3 cues");
+
+        // At 180 BPM in 4/4: 1 measure = 4 beats * (60/180) = 1.333... seconds
+        // Measure 74 to measure 75 = 1 measure = 1.333 seconds
+        
+        let second_cue_time = show.cues[1].time; // @74/1
+        let third_cue_time = show.cues[2].time;  // @70/1 with offset 5 (should be measure 75)
+        
+        println!("Second cue (@74/1) time: {:.3}s", second_cue_time.as_secs_f64());
+        println!("Third cue (@70/1 with offset 5) time: {:.3}s", third_cue_time.as_secs_f64());
+        
+        // Also compute directly from tempo map for visibility
+        let tm = show.tempo_map.as_ref().unwrap();
+        let calc_74 = tm
+            .measure_to_time_with_offset(74, 1.0, 0)
+            .unwrap()
+            .as_secs_f64();
+        let calc_70_off5 = tm
+            .measure_to_time_with_offset(70, 1.0, 5)
+            .unwrap()
+            .as_secs_f64();
+        println!(
+            "Calc tempo map: @74/1 = {:.3}s, @70/1 (offset 5) = {:.3}s, diff = {:.3}s",
+            calc_74,
+            calc_70_off5,
+            calc_70_off5 - calc_74
+        );
+        
+        let time_diff = third_cue_time.as_secs_f64() - second_cue_time.as_secs_f64();
+        let expected_diff = 1.333333333; // 1 measure at 180 BPM
+        
+        // Calculate what measure the third cue is actually at based on the time difference
+        let actual_measures = time_diff / 1.333333333; // measures at 180 BPM
+        println!("Time difference: {:.3}s = {:.3} measures at 180 BPM (expected: 1.0 measure)", time_diff, actual_measures);
+        
+        assert!(
+            (time_diff - expected_diff).abs() < 0.01,
+            "Time difference between @74/1 and second @70/1 (with offset 5) should be ~1.333s (1 measure at 180 BPM), got {:.3}s (difference: {:.3}s, actual: {:.3} measures)",
+            time_diff,
+            time_diff - expected_diff,
+            actual_measures
         );
     }
 

@@ -423,11 +423,11 @@ impl TempoMap {
                 // Find the most recent time signature change that applies at or before the start of this measure
                 // Time signature changes apply at the START of the specified measure/beat
                 // So if a change is at measure 4/1, measure 4 uses the NEW time signature
-                // Note: ts_changes are in score measures, so we need to apply offset when comparing
+                // NOTE: Tempo/time-signature change positions are in score measures and should NOT be offset.
                 let mut ts = self.initial_time_signature;
                 // Iterate through sorted changes (ascending order) to find the most recent one that applies
                 for (change_m, change_b, new_ts) in &ts_changes {
-                    let change_playback_measure = *change_m + measure_offset;
+                    let change_playback_measure = *change_m; // do not apply measure_offset to time signatures
                     // If change is exactly at the start of current measure (beat 1), the measure uses the NEW time sig
                     if change_playback_measure == current_measure && (*change_b - 1.0).abs() < 0.001
                     {
@@ -472,9 +472,8 @@ impl TempoMap {
             // Otherwise, convert time to beats by integrating through tempo changes
             let change_beats = if let Some((change_m, change_b)) = change.original_measure_beat {
                 // Calculate beats by integrating through measures (same logic as target_beats)
-                // Apply offset to tempo change measure (tempo changes are in score measures)
-                // This ensures tempo changes respect the measure offset, aligning with the offset timeline
-                let change_playback_measure = change_m + measure_offset;
+                // Tempo changes are specified in score measures and should NOT be offset.
+                let change_playback_measure = change_m;
 
                 let mut change_target_beats = 0.0;
                 let mut change_current_measure = 1;
@@ -485,11 +484,11 @@ impl TempoMap {
                         && change_current_beat < change_b)
                 {
                     // Determine time signature for current measure
-                    // Note: ts_changes are in score measures, so we need to apply offset when comparing
+                    // Note: time signature changes are in score measures and should NOT be offset.
                     let ts_for_measure = {
                         let mut ts = self.initial_time_signature;
                         for (ts_m, ts_b, new_ts) in &ts_changes {
-                            let ts_playback_measure = *ts_m + measure_offset;
+                            let ts_playback_measure = *ts_m; // no offset applied
                             // Time signature changes apply at or before the current measure.
                             // If the change is exactly at the start of the measure (beat 1),
                             // or in any previous measure, it governs this measure.
@@ -551,6 +550,21 @@ impl TempoMap {
                 let time_for_remaining =
                     Duration::from_secs_f64(remaining_beats * 60.0 / current_bpm);
                 let result_time = accumulated_time + time_for_remaining;
+                #[cfg(test)]
+                eprintln!(
+                    "[tempo-debug] early-return target-before-change measure={} beat={} offset={} target_beats={} change_beats={} accumulated_beats={} remaining_beats={} bpm={:.6} start_offset_secs={:.6} accumulated_time_secs={:.6} result_time_secs={:.6}",
+                    measure,
+                    beat,
+                    measure_offset,
+                    target_beats,
+                    change_beats,
+                    accumulated_beats,
+                    remaining_beats,
+                    current_bpm,
+                    self.start_offset.as_secs_f64(),
+                    accumulated_time.as_secs_f64(),
+                    result_time.as_secs_f64()
+                );
                 return Some(result_time);
             }
 
@@ -573,6 +587,25 @@ impl TempoMap {
         let remaining_beats = target_beats - accumulated_beats;
         let time_for_remaining = Duration::from_secs_f64(remaining_beats * 60.0 / current_bpm);
         let result_time = accumulated_time + time_for_remaining;
+
+        // Emit detailed debug info in tests to diagnose timing issues
+        #[cfg(test)]
+        eprintln!(
+                "[tempo-debug] measure_to_time_with_offset measure={} beat={} offset={} \
+                 target_beats={} change_beats={} remaining_beats={} start_offset_secs={:.6} \
+                 accumulated_time_secs={:.6} current_bpm={:.6} result_time_secs={:.6}",
+                measure,
+                beat,
+                measure_offset,
+                target_beats,
+                accumulated_beats,
+                remaining_beats,
+                self.start_offset.as_secs_f64(),
+                accumulated_time.as_secs_f64(),
+                current_bpm,
+                result_time.as_secs_f64()
+            );
+
         Some(result_time)
     }
 
