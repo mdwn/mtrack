@@ -630,16 +630,23 @@ fn expand_unexpanded_sequence_cue(
                 .into());
             }
 
+            // Get the sequence's base time (first cue time, or ZERO if empty)
+            // Sequence cue times are stored as absolute, but we need them relative to sequence start
+            let sequence_base_time = sequence.cues.first()
+                .map(|cue| cue.time)
+                .unwrap_or(Duration::ZERO);
+
             // Calculate sequence duration based on effect completion times
-            // If sequence has only perpetual effects, use the last cue time as the end time
+            // If sequence has only perpetual effects, use the relative time from first to last cue
             let sequence_duration = match sequence.duration() {
                 Some(duration) => duration,
                 None => {
-                    // Sequence has only perpetual effects - use last cue time as end time
+                    // Sequence has only perpetual effects - use relative time from first to last cue
                     if sequence.cues.is_empty() {
                         Duration::ZERO
                     } else {
-                        sequence.cues.last().unwrap().time
+                        let last_time = sequence.cues.last().unwrap().time;
+                        last_time.saturating_sub(sequence_base_time)
                     }
                 }
             };
@@ -667,7 +674,9 @@ fn expand_unexpanded_sequence_cue(
 
                 for seq_cue in &sequence.cues {
                     let mut expanded_cue = seq_cue.clone();
-                    expanded_cue.time = iteration_offset + seq_cue.time;
+                    // Convert absolute sequence cue time to relative, then add to iteration offset
+                    let relative_time = seq_cue.time.saturating_sub(sequence_base_time);
+                    expanded_cue.time = iteration_offset + relative_time;
                     // Mark all effects in this cue as belonging to the referenced sequence
                     for effect in &mut expanded_cue.effects {
                         if effect.sequence_name.is_none() {
@@ -771,8 +780,6 @@ fn parse_cue_definition(
             }
         }
     }
-
-    let has_measure_time = measure_time_pair.is_some();
 
     // Resolve measure_time to score_time (score-space only; offsets applied after)
     if let Some(measure_pair) = measure_time_pair {
@@ -901,16 +908,23 @@ fn parse_cue_definition(
                 .get(&seq_name)
                 .ok_or_else(|| format!("Sequence '{}' not found", seq_name))?;
 
+            // Get the sequence's base time (first cue time, or ZERO if empty)
+            // Sequence cue times are stored as absolute, but we need them relative to sequence start
+            let sequence_base_time = sequence.cues.first()
+                .map(|cue| cue.time)
+                .unwrap_or(Duration::ZERO);
+
             // Calculate sequence duration based on effect completion times
-            // If sequence has only perpetual effects, use the last cue time as the end time
+            // If sequence has only perpetual effects, use the relative time from first to last cue
             let sequence_duration = match sequence.duration() {
                 Some(duration) => duration,
                 None => {
-                    // Sequence has only perpetual effects - use last cue time as end time
+                    // Sequence has only perpetual effects - use relative time from first to last cue
                     if sequence.cues.is_empty() {
                         Duration::ZERO
                     } else {
-                        sequence.cues.last().unwrap().time
+                        let last_time = sequence.cues.last().unwrap().time;
+                        last_time.saturating_sub(sequence_base_time)
                     }
                 }
             };
@@ -935,7 +949,9 @@ fn parse_cue_definition(
 
                 for seq_cue in &sequence.cues {
                     let mut expanded_cue = seq_cue.clone();
-                    expanded_cue.time = iteration_offset + seq_cue.time;
+                    // Convert absolute sequence cue time to relative, then add to iteration offset
+                    let relative_time = seq_cue.time.saturating_sub(sequence_base_time);
+                    expanded_cue.time = iteration_offset + relative_time;
                     // Mark all effects in this cue as belonging to this sequence
                     for effect in &mut expanded_cue.effects {
                         effect.sequence_name = Some(seq_name.clone());
