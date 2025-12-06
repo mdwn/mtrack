@@ -309,6 +309,7 @@ impl TempoMap {
         measure: u32,
         beat: f64,
         measure_offset: u32,
+        offset_secs: f64,
     ) -> Option<Duration> {
         // Measures are 1-indexed
         if measure < 1 {
@@ -320,10 +321,12 @@ impl TempoMap {
             return None;
         }
 
+        let offset_duration = Duration::from_secs_f64(offset_secs);
+
         // Integrate through tempo segments to reach target position
         // We need to account for time signature changes that affect beats per measure
         let mut current_bpm = self.initial_bpm;
-        let mut accumulated_time = self.start_offset;
+        let mut accumulated_time = self.start_offset + offset_duration;
         let mut accumulated_beats = 0.0;
 
         // Calculate target beats by integrating through measures beat-by-beat
@@ -465,7 +468,7 @@ impl TempoMap {
         // ensuring consistent measure numbering with the target measure.
         for change in &self.changes {
             // Tempo changes are already resolved to absolute time, so use that directly
-            let change_time = change.position.absolute_time()?;
+            let change_time = change.position.absolute_time()? + offset_duration;
 
             // Calculate beats to this tempo change
             // If we have original_measure_beat, use it to calculate beats directly (same way as target_beats)

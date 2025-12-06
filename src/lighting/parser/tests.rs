@@ -4905,11 +4905,11 @@ show "Test" {
         // Also compute directly from tempo map for visibility
         let tm = show.tempo_map.as_ref().unwrap();
         let calc_74 = tm
-            .measure_to_time_with_offset(74, 1.0, 0)
+            .measure_to_time_with_offset(74, 1.0, 0, 0.0)
             .unwrap()
             .as_secs_f64();
         let calc_70_off5 = tm
-            .measure_to_time_with_offset(70, 1.0, 5)
+            .measure_to_time_with_offset(70, 1.0, 5, 0.0)
             .unwrap()
             .as_secs_f64();
         println!(

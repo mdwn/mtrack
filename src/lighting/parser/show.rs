@@ -413,14 +413,17 @@ fn parse_sequence_cue_structure(
         }
     }
 
+    let has_measure_time = measure_time_pair.is_some();
+
     // Resolve measure_time to score-space time
     if let Some(measure_pair) = measure_time_pair {
         let (measure, beat) = parse_measure_time(measure_pair.as_str())?;
         if let Some(tm) = tempo_map {
             score_time = tm
-                .measure_to_time_with_offset(measure, beat, 0)
-                .ok_or_else(|| format!("Invalid measure/beat position: {}/{}", measure, beat))?
-                - tm.start_offset;
+                .measure_to_time_with_offset(measure, beat, 0, offset_secs)
+                .ok_or_else(|| format!("Invalid measure/beat position: {}/{}", measure, beat))?;
+            // Sequence cues should be relative to the sequence start; remove tempo start offset
+            score_time = score_time.saturating_sub(tm.start_offset);
         } else {
             return Err("Measure-based timing requires a tempo section".into());
         }
@@ -459,7 +462,11 @@ fn parse_sequence_cue_structure(
     }
 
     // Absolute time uses the currently applied offset (not the newly computed one)
-    let abs_time = score_time + Duration::from_secs_f64(applied_offset_secs);
+    let abs_time = if has_measure_time {
+        score_time
+    } else {
+        score_time + Duration::from_secs_f64(applied_offset_secs)
+    };
     let last_time = Some(abs_time);
 
     // Parse effects and layer commands
@@ -761,12 +768,14 @@ fn parse_cue_definition(
         }
     }
 
+    let has_measure_time = measure_time_pair.is_some();
+
     // Resolve measure_time to score_time
     if let Some(measure_pair) = measure_time_pair {
         let (measure, beat) = parse_measure_time(measure_pair.as_str())?;
         if let Some(tm) = tempo_map {
             score_time = tm
-                .measure_to_time_with_offset(measure, beat, 0)
+                .measure_to_time_with_offset(measure, beat, 0, offset_secs)
                 .ok_or_else(|| format!("Invalid measure/beat position: {}/{}", measure, beat))?;
         } else {
             return Err("Measure-based timing requires a tempo section".into());
@@ -805,7 +814,11 @@ fn parse_cue_definition(
         new_offset = Some(total_offset);
     }
 
-    let abs_time = score_time + Duration::from_secs_f64(applied_offset_secs);
+    let abs_time = if has_measure_time {
+        score_time
+    } else {
+        score_time + Duration::from_secs_f64(applied_offset_secs)
+    };
     let last_time = Some(abs_time);
 
     // Parse stop sequence commands

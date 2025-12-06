@@ -1760,10 +1760,10 @@ mod tests {
         // Measure offset of 8 means score measure 70 becomes playback measure 78
         let measure_offset = 8;
         let random_chase_time = tempo_map
-            .measure_to_time_with_offset(70, 1.0, measure_offset)
+            .measure_to_time_with_offset(70, 1.0, measure_offset, 0.0)
             .expect("Should be able to calculate time for measure 70/1");
         let linear_chase_time = tempo_map
-            .measure_to_time_with_offset(74, 1.0, measure_offset)
+            .measure_to_time_with_offset(74, 1.0, measure_offset, 0.0)
             .expect("Should be able to calculate time for measure 74/1");
 
         // Create random chase at @70/1 with speed: 1beats
@@ -1915,7 +1915,7 @@ mod tests {
 
         let measure_offset = 8;
         let linear_chase_time = tempo_map
-            .measure_to_time_with_offset(74, 1.0, measure_offset)
+            .measure_to_time_with_offset(74, 1.0, measure_offset, 0.0)
             .expect("Should be able to calculate time for measure 74/1");
 
         // Test speed calculation at multiple time points around the chase start
