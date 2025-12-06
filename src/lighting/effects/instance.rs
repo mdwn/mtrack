@@ -25,7 +25,8 @@ pub struct EffectInstance {
     pub priority: u8,                 // Higher priority overrides lower
     pub layer: EffectLayer,           // Layer for layering system
     pub blend_mode: BlendMode,        // How to blend with other effects
-    pub start_time: Option<Instant>,
+    pub start_time: Option<Instant>, // Real-time instant when effect started
+    pub cue_time: Option<Duration>,  // Song time when effect was supposed to start (for deterministic randomness)
     pub up_time: Option<Duration>,   // Fade in duration (0% to 100%)
     pub hold_time: Option<Duration>, // Time at full intensity (100%)
     pub down_time: Option<Duration>, // Fade out duration (100% to 0%)
@@ -104,6 +105,7 @@ impl EffectInstance {
             layer: EffectLayer::Background,
             blend_mode: BlendMode::Replace,
             start_time: None,
+            cue_time: None,
             up_time: final_up_time,
             hold_time: final_hold_time,
             down_time: final_down_time,

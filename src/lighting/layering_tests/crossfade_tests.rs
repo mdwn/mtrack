@@ -492,7 +492,7 @@ fn test_dsl_crossfade_integration() {
     engine.register_fixture(fixture);
 
     // Create EffectInstance from DSL Effect
-    let effect_instance = LightingTimeline::create_effect_instance(effect);
+    let effect_instance = LightingTimeline::create_effect_instance(effect, show.cues[0].time);
     assert!(
         effect_instance.is_some(),
         "Failed to create EffectInstance from DSL Effect"

@@ -22,10 +22,10 @@ use crate::{
     player::Player,
     proto::player::v1::{
         player_service_server::{PlayerService, PlayerServiceServer},
-        Cue, GetCuesRequest, GetCuesResponse, NextRequest, NextResponse, PlayFromRequest,
-        PlayRequest, PlayResponse, PreviousRequest, PreviousResponse, StatusRequest,
-        StatusResponse, StopRequest, StopResponse, SwitchToPlaylistRequest,
-        SwitchToPlaylistResponse, FILE_DESCRIPTOR_SET,
+        Cue, GetActiveEffectsRequest, GetActiveEffectsResponse, GetCuesRequest, GetCuesResponse,
+        NextRequest, NextResponse, PlayFromRequest, PlayRequest, PlayResponse, PreviousRequest,
+        PreviousResponse, StatusRequest, StatusResponse, StopRequest, StopResponse,
+        SwitchToPlaylistRequest, SwitchToPlaylistResponse, FILE_DESCRIPTOR_SET,
     },
 };
 
@@ -235,6 +235,18 @@ impl PlayerService for PlayerServer {
             .collect();
 
         Ok(Response::new(GetCuesResponse { cues: proto_cues? }))
+    }
+
+    async fn get_active_effects(
+        &self,
+        _: Request<GetActiveEffectsRequest>,
+    ) -> Result<Response<GetActiveEffectsResponse>, Status> {
+        let active_effects = self
+            .player
+            .format_active_effects()
+            .unwrap_or_else(|| "No DMX engine available".to_string());
+
+        Ok(Response::new(GetActiveEffectsResponse { active_effects }))
     }
 }
 

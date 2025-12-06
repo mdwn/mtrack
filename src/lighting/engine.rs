@@ -345,7 +345,8 @@ impl EffectEngine {
             }
         }
 
-        // Sort effect IDs within each layer by (priority, start_time, id)
+        // Sort effect IDs within each layer by (priority, start_time, cue_time, id)
+        // Using cue_time ensures deterministic ordering when multiple effects start at the same time
         for (_layer, effect_ids) in effects_by_layer.iter_mut() {
             effect_ids.sort_by(|a, b| {
                 let ea = self.active_effects.get(a).unwrap();
@@ -359,6 +360,16 @@ impl EffectEngine {
                         let sb = eb.start_time;
                         match (sa, sb) {
                             (Some(ta), Some(tb)) => ta.cmp(&tb),
+                            (None, Some(_)) => std::cmp::Ordering::Less,
+                            (Some(_), None) => std::cmp::Ordering::Greater,
+                            (None, None) => std::cmp::Ordering::Equal,
+                        }
+                    })
+                    .then_with(|| {
+                        // Use cue_time for deterministic ordering when effects have same priority and start_time
+                        // This ensures effects at the same time are always processed in the same order
+                        match (ea.cue_time, eb.cue_time) {
+                            (Some(ca), Some(cb)) => ca.cmp(&cb),
                             (None, Some(_)) => std::cmp::Ordering::Less,
                             (Some(_), None) => std::cmp::Ordering::Greater,
                             (None, None) => std::cmp::Ordering::Equal,
@@ -687,6 +698,10 @@ impl EffectEngine {
     pub fn stop_all_effects(&mut self) {
         self.active_effects.clear();
         self.releasing_effects.clear();
+        // Also clear persisted fixture states and channel locks to ensure clean state
+        // This ensures consistent behavior when starting a new timeline or seeking
+        self.fixture_states.clear();
+        self.channel_locks.clear();
     }
 
     /// Stop all effects from a specific sequence
@@ -720,6 +735,25 @@ impl EffectEngine {
             &mut self.frozen_layers,
             layer,
         );
+        // Also clear persisted fixture states and channel locks for this layer
+        // Note: We can't easily track which layer a persisted state came from,
+        // so we clear all persisted states to ensure clean state
+        // This is a bit aggressive but ensures clear works correctly
+        self.fixture_states.clear();
+        self.channel_locks.clear();
+    }
+
+    /// Clear all layers - immediately stops all effects on all layers
+    /// This is equivalent to a "kill all" or panic button for everything
+    pub fn clear_all_layers(&mut self) {
+        layers::clear_all_layers(
+            &mut self.active_effects,
+            &mut self.releasing_effects,
+            &mut self.frozen_layers,
+        );
+        // Clear all persisted fixture states and channel locks
+        self.fixture_states.clear();
+        self.channel_locks.clear();
     }
 
     /// Release a layer - gracefully fades out all effects on the specified layer
@@ -816,5 +850,89 @@ impl EffectEngine {
     #[cfg(test)]
     pub fn blend_modes_are_compatible_public(&self, existing: BlendMode, new: BlendMode) -> bool {
         layers::blend_modes_are_compatible(existing, new)
+    }
+
+    /// Get a formatted string listing all active effects
+    pub fn format_active_effects(&self) -> String {
+        use std::fmt::Write;
+        let mut output = String::new();
+
+        if self.active_effects.is_empty() {
+            return "No active effects".to_string();
+        }
+
+        writeln!(output, "Active effects ({}):", self.active_effects.len()).unwrap();
+
+        // Group effects by layer for better readability
+        let mut effects_by_layer: std::collections::HashMap<EffectLayer, Vec<&EffectInstance>> =
+            std::collections::HashMap::new();
+
+        for effect in self.active_effects.values() {
+            effects_by_layer
+                .entry(effect.layer)
+                .or_insert_with(Vec::new)
+                .push(effect);
+        }
+
+        // Sort layers for consistent output
+        let mut layers: Vec<_> = effects_by_layer.keys().collect();
+        layers.sort();
+
+        for layer in layers {
+            writeln!(output, "  {}:", format!("{:?}", layer)).unwrap();
+            let effects = &effects_by_layer[layer];
+            for effect in effects {
+                let elapsed = if let Some(start_time) = effect.start_time {
+                    self.current_time.duration_since(start_time)
+                } else {
+                    Duration::ZERO
+                };
+
+                let effect_type_str = match &effect.effect_type {
+                    EffectType::Static { .. } => "Static",
+                    EffectType::ColorCycle { .. } => "ColorCycle",
+                    EffectType::Strobe { .. } => "Strobe",
+                    EffectType::Dimmer { .. } => "Dimmer",
+                    EffectType::Chase { .. } => "Chase",
+                    EffectType::Rainbow { .. } => "Rainbow",
+                    EffectType::Pulse { .. } => "Pulse",
+                };
+
+                let duration_str = if let Some(total) = effect.total_duration() {
+                    format!(" (duration: {:.2}s)", total.as_secs_f64())
+                } else {
+                    " (perpetual)".to_string()
+                };
+
+                writeln!(
+                    output,
+                    "    - {} [{}] - {} fixture(s) - elapsed: {:.2}s{}",
+                    effect.id,
+                    effect_type_str,
+                    effect.target_fixtures.len(),
+                    elapsed.as_secs_f64(),
+                    duration_str
+                )
+                .unwrap();
+            }
+        }
+
+        // Also show releasing effects if any
+        if !self.releasing_effects.is_empty() {
+            writeln!(output, "\nReleasing effects ({}):", self.releasing_effects.len()).unwrap();
+            for (effect_id, (fade_time, release_start)) in &self.releasing_effects {
+                let release_elapsed = self.current_time.duration_since(*release_start);
+                writeln!(
+                    output,
+                    "    - {} - fading out (elapsed: {:.2}s / {:.2}s)",
+                    effect_id,
+                    release_elapsed.as_secs_f64(),
+                    fade_time.as_secs_f64()
+                )
+                .unwrap();
+            }
+        }
+
+        output
     }
 }

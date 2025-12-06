@@ -33,8 +33,8 @@ use lighting::validation::validate_groups;
 use player::Player;
 use proto::player::v1::player_service_client::PlayerServiceClient;
 use proto::player::v1::{
-    GetCuesRequest, NextRequest, PlayFromRequest, PlayRequest, PreviousRequest, Song,
-    StatusRequest, StopRequest, SwitchToPlaylistRequest,
+    GetActiveEffectsRequest, GetCuesRequest, NextRequest, PlayFromRequest, PlayRequest,
+    PreviousRequest, Song, StatusRequest, StopRequest, SwitchToPlaylistRequest,
 };
 use std::collections::{HashMap, HashSet};
 use std::env;
@@ -166,6 +166,12 @@ enum Commands {
     },
     /// Gets the current status of the player from the gRPC server.
     Status {
+        /// The host and port of the gRPC server.
+        #[arg[short, long]]
+        host_port: Option<String>,
+    },
+    /// Prints all active lighting effects from the gRPC server.
+    ActiveEffects {
         /// The host and port of the gRPC server.
         #[arg[short, long]]
         host_port: Option<String>,
@@ -593,6 +599,13 @@ async fn run() -> Result<(), Box<dyn Error>> {
             }
             println!("Playing: {}", response.playing);
             println!("Playlist name: {}", response.playlist_name)
+        }
+        Commands::ActiveEffects { host_port } => {
+            let mut client = connect(host_port).await?;
+            let response = client
+                .get_active_effects(Request::new(GetActiveEffectsRequest {}))
+                .await?;
+            println!("{}", response.into_inner().active_effects);
         }
         Commands::Systemd {} => {
             let current_executable_path = env::current_exe()?;

@@ -184,6 +184,27 @@ pub(crate) fn clear_layer(
     frozen_layers.remove(&layer);
 }
 
+/// Clear all layers - immediately stops all effects on all layers
+pub(crate) fn clear_all_layers(
+    active_effects: &mut HashMap<String, EffectInstance>,
+    releasing_effects: &mut HashMap<String, (Duration, Instant)>,
+    frozen_layers: &mut HashMap<EffectLayer, Instant>,
+) {
+    // Collect all effect IDs BEFORE removing them
+    let all_effect_ids: Vec<String> = active_effects.keys().cloned().collect();
+
+    // Remove all effects
+    active_effects.clear();
+
+    // Remove all releasing effects
+    for id in all_effect_ids {
+        releasing_effects.remove(&id);
+    }
+
+    // Unfreeze all layers
+    frozen_layers.clear();
+}
+
 /// Release a layer with a custom fade time
 pub(crate) fn release_layer_with_time(
     active_effects: &mut HashMap<String, EffectInstance>,

@@ -948,7 +948,7 @@ fn parse_layer_command(
     cue_time: Duration,
 ) -> Result<LayerCommand, Box<dyn Error>> {
     let mut command_type = LayerCommandType::Clear;
-    let mut layer = EffectLayer::Background;
+    let mut layer: Option<EffectLayer> = None;
     let mut fade_time = None;
     let mut intensity = None;
     let mut speed = None;
@@ -985,12 +985,12 @@ fn parse_layer_command(
 
                         match param_name.as_str() {
                             "layer" => {
-                                layer = match param_value.as_str() {
+                                layer = Some(match param_value.as_str() {
                                     "background" => EffectLayer::Background,
                                     "midground" => EffectLayer::Midground,
                                     "foreground" => EffectLayer::Foreground,
                                     other => return Err(format!("Invalid layer: {}", other).into()),
-                                };
+                                });
                             }
                             "time" => {
                                 fade_time = Some(super::utils::parse_duration_string(
@@ -1030,6 +1030,21 @@ fn parse_layer_command(
             }
             _ => {}
         }
+    }
+
+    // Validate: clear can work without layer (clears all), but other commands require a layer
+    if layer.is_none() && command_type != LayerCommandType::Clear {
+        return Err(format!(
+            "Layer command '{}' requires a layer parameter",
+            match command_type {
+                LayerCommandType::Clear => "clear",
+                LayerCommandType::Release => "release",
+                LayerCommandType::Freeze => "freeze",
+                LayerCommandType::Unfreeze => "unfreeze",
+                LayerCommandType::Master => "master",
+            }
+        )
+        .into());
     }
 
     Ok(LayerCommand {
