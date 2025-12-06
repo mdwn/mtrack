@@ -461,12 +461,7 @@ fn parse_sequence_cue_structure(
     }
 
     // Absolute time uses the currently applied offset (not the newly computed one)
-    // For measure-based cues, do not apply the offset to the current cue.
-    let abs_time = if has_measure_time {
-        score_time
-    } else {
-        score_time + Duration::from_secs_f64(applied_offset_secs)
-    };
+    let abs_time = score_time + Duration::from_secs_f64(applied_offset_secs);
     #[cfg(debug_assertions)]
     eprintln!(
         "[cue-debug] abs_time={:.6}s score_time={:.6}s applied_offset_secs={:.6} has_measure_time={} new_offset={:?}",
