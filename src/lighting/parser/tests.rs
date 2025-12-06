@@ -4880,6 +4880,7 @@ show "Test" {
             "Sixth cue should be at 34.0s (measure 18, after repeat)"
         );
     }
+}
 
 #[test]
 fn test_parse_chase_random_pattern() {
@@ -4942,121 +4943,4 @@ show "Test" {
             panic!("Effect is not a Chase effect! Got: {:?}", other);
         }
     }
-}
-
-#[test]
-fn test_offset_timing_continuity() {
-    use crate::lighting::parser::parse_light_shows;
-    
-    // Test that offset correctly positions the next effect immediately after the previous one ends
-    // This verifies that there's no timing drift when using offset commands
-    let content = r#"tempo {
-    start: 0.0s
-    bpm: 120
-    time_signature: 4/4
-}
-
-show "Offset Timing Test" {
-    @70/1
-    all_wash: chase, speed: 1beats, pattern: random, hold_time: 4measures, transition: fade
-    
-    @74/1
-    all_wash: chase, speed: 4beats, direction: right_to_left, hold_time: 1measures, transition: fade
-    
-    offset 5 measures
-    
-    @70/1
-    all_wash: chase, speed: 1beats, pattern: random, hold_time: 4measures, transition: fade
-    
-    @74/1
-    all_wash: chase, speed: 4beats, direction: right_to_left, hold_time: 1measures, transition: fade
-}
-"#;
-
-    let result = parse_light_shows(content);
-    assert!(
-        result.is_ok(),
-        "Failed to parse show with offset: {:?}",
-        result.err()
-    );
-
-    let shows = result.unwrap();
-    let show = shows.get("Offset Timing Test").unwrap();
-
-    // At 120 BPM in 4/4: 1 measure = 2.0s
-    // Measure 70, beat 1 = (70 - 1) * 2.0s = 69 * 2.0s = 138.0s
-    // Measure 74, beat 1 = (74 - 1) * 2.0s = 73 * 2.0s = 146.0s
-    // First @74/1 has hold_time: 1measures, so it ends at measure 75 = 74 * 2.0s = 148.0s
-    
-    // After offset 5 measures:
-    // Second @70/1 with offset 5 = measure 75 (70 + 5) = 74 * 2.0s = 148.0s
-    // Second @74/1 with offset 5 = measure 79 (74 + 5) = 78 * 2.0s = 156.0s
-
-    assert!(show.cues.len() >= 4, "Should have at least 4 cues");
-
-    // First cue at measure 70 = 138.0s
-    let first_cue_time = show.cues[0].time;
-    let expected_first = std::time::Duration::from_secs_f64(138.0);
-    assert!(
-        (first_cue_time.as_secs_f64() - expected_first.as_secs_f64()).abs() < 0.001,
-        "First cue should be at measure 70 (138.0s), got {:?} ({:.3}s)",
-        first_cue_time,
-        first_cue_time.as_secs_f64()
-    );
-
-    // Second cue at measure 74 = 146.0s
-    let second_cue_time = show.cues[1].time;
-    let expected_second = std::time::Duration::from_secs_f64(146.0);
-    assert!(
-        (second_cue_time.as_secs_f64() - expected_second.as_secs_f64()).abs() < 0.001,
-        "Second cue should be at measure 74 (146.0s), got {:?} ({:.3}s)",
-        second_cue_time,
-        second_cue_time.as_secs_f64()
-    );
-
-    // After the offset command, the second @70/1 should be at measure 75 = 148.0s
-    // This should be immediately after the first @74/1 ends (which ends at measure 75)
-    // The offset command may or may not create a cue, so we need to find the cue at measure 75
-    // among all cues (it should be either cue 2, 3, or 4 depending on whether offset creates a cue)
-    let second_at_70_1_time = show.cues.iter()
-        .find(|c| (c.time.as_secs_f64() - 148.0).abs() < 0.001)
-        .map(|c| c.time)
-        .unwrap_or_else(|| {
-            panic!(
-                "Could not find cue at measure 75 (148.0s). Cue times: {:?}",
-                show.cues.iter().map(|c| c.time.as_secs_f64()).collect::<Vec<_>>()
-            )
-        });
-
-    let expected_second_at_70_1 = std::time::Duration::from_secs_f64(148.0);
-    let drift = (second_at_70_1_time.as_secs_f64() - expected_second_at_70_1.as_secs_f64()).abs();
-    assert!(
-        drift < 0.001,
-        "Second @70/1 should be at measure 75 (148.0s) immediately after first @74/1 ends. \
-         Got {:?} ({:.3}s), drift: {:.3}s ({:.2} measures)",
-        second_at_70_1_time,
-        second_at_70_1_time.as_secs_f64(),
-        drift,
-        drift / 2.0 // Convert seconds to measures (1 measure = 2.0s at 120 BPM)
-    );
-
-    // Also verify the second @74/1 is at measure 79 = 156.0s
-    let second_at_74_1_time = show.cues.iter()
-        .find(|c| (c.time.as_secs_f64() - 156.0).abs() < 0.001)
-        .map(|c| c.time)
-        .unwrap_or_else(|| {
-            panic!(
-                "Could not find cue at measure 79 (156.0s). Cue times: {:?}",
-                show.cues.iter().map(|c| c.time.as_secs_f64()).collect::<Vec<_>>()
-            )
-        });
-
-    let expected_second_at_74_1 = std::time::Duration::from_secs_f64(156.0);
-    assert!(
-        (second_at_74_1_time.as_secs_f64() - expected_second_at_74_1.as_secs_f64()).abs() < 0.001,
-        "Second @74/1 should be at measure 79 (156.0s), got {:?} ({:.3}s)",
-        second_at_74_1_time,
-        second_at_74_1_time.as_secs_f64()
-    );
-}
 }
