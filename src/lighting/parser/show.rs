@@ -255,6 +255,8 @@ fn parse_light_show_definition(
 
                 // Track measure offset (starts at 0, accumulates as offset commands are encountered)
                 let mut measure_offset: u32 = 0;
+                // Track the time of the last cue to use for offset commands without explicit time
+                let mut last_cue_time = Duration::ZERO;
 
                 // Then parse cues (now we have tempo_map and sequences)
                 for cue_pair in cue_pairs {
@@ -263,7 +265,12 @@ fn parse_light_show_definition(
                         &effective_tempo.cloned(),
                         sequences,
                         measure_offset,
+                        last_cue_time,
                     )?;
+                    // Update last_cue_time from the parsed cues
+                    if let Some(last_cue) = parsed_cues.last() {
+                        last_cue_time = last_cue.time;
+                    }
                     cues.extend(parsed_cues);
                     // Update offset for subsequent cues
                     if let Some(change) = offset_change {
@@ -326,13 +333,17 @@ fn parse_sequence_structure(
 
                 // Track measure offset (starts at 0, accumulates as offset commands are encountered)
                 let mut measure_offset: u32 = 0;
+                // Track the time of the last cue to use for offset commands without explicit time
+                let mut last_cue_time = Duration::ZERO;
 
                 for cue_pair in cue_pairs {
                     let (unexpanded_cue, offset_change) = parse_sequence_cue_structure(
                         cue_pair,
                         &effective_tempo.cloned(),
                         measure_offset,
+                        last_cue_time,
                     )?;
+                    last_cue_time = unexpanded_cue.time;
                     unexpanded_cues.push(unexpanded_cue);
                     // Update offset for subsequent cues
                     if let Some(change) = offset_change {
@@ -353,8 +364,10 @@ fn parse_sequence_cue_structure(
     pair: Pair<Rule>,
     tempo_map: &Option<TempoMap>,
     measure_offset: u32,
+    previous_cue_time: Duration,
 ) -> Result<(UnexpandedSequenceCue, Option<u32>), Box<dyn Error>> {
     let mut time = Duration::ZERO;
+    let mut has_explicit_time = false;
     let mut effects = Vec::new();
     let mut layer_commands = Vec::new();
     let mut stop_sequences = Vec::new();
@@ -372,6 +385,7 @@ fn parse_sequence_cue_structure(
         match inner_pair.as_rule() {
             Rule::time_string => {
                 time = parse_time_string(inner_pair.as_str())?;
+                has_explicit_time = true;
             }
             Rule::measure_time => {
                 let (measure, beat) = parse_measure_time(inner_pair.as_str())?;
@@ -393,6 +407,7 @@ fn parse_sequence_cue_structure(
                 } else {
                     return Err("Measure-based timing requires a tempo section".into());
                 }
+                has_explicit_time = true;
             }
             Rule::offset_command => {
                 offset_commands.push(inner_pair);
@@ -436,6 +451,12 @@ fn parse_sequence_cue_structure(
         // Reset without offset - just set to 0
         new_offset = Some(0);
     }
+
+    // If there's no explicit time and this cue only has offset/reset commands,
+    // use the previous cue's time (or skip creating the cue if it's empty)
+    // Check this BEFORE we consume the pairs in the loops below
+    let is_offset_only = !has_explicit_time && effect_pairs.is_empty() && layer_command_pairs.is_empty()
+        && sequence_ref_pairs.is_empty() && stop_sequence_pairs.is_empty();
 
     // Parse effects and layer commands (these can be parsed immediately)
     for effect_pair in effect_pairs {
@@ -499,6 +520,15 @@ fn parse_sequence_cue_structure(
         }
 
         sequence_references.push((seq_name, loop_param));
+    }
+
+    // If there's no explicit time and this cue only has offset/reset commands,
+    // use the previous cue's time
+    if !has_explicit_time && effects.is_empty() && layer_commands.is_empty()
+        && sequence_references.is_empty() && stop_sequences.is_empty()
+    {
+        // This is just an offset/reset command - use previous cue time
+        time = previous_cue_time;
     }
 
     Ok((
@@ -686,8 +716,10 @@ fn parse_cue_definition(
     tempo_map: &Option<TempoMap>,
     sequences: &HashMap<String, Sequence>,
     measure_offset: u32,
+    previous_cue_time: Duration,
 ) -> Result<(Vec<Cue>, Option<u32>), Box<dyn Error>> {
     let mut time = Duration::ZERO;
+    let mut has_explicit_time = false;
     let mut effects = Vec::new();
     let mut layer_commands = Vec::new();
     let mut stop_sequences = Vec::new();
@@ -704,6 +736,7 @@ fn parse_cue_definition(
         match inner_pair.as_rule() {
             Rule::time_string => {
                 time = parse_time_string(inner_pair.as_str())?;
+                has_explicit_time = true;
             }
             Rule::measure_time => {
                 let (measure, beat) = parse_measure_time(inner_pair.as_str())?;
@@ -722,6 +755,7 @@ fn parse_cue_definition(
                 } else {
                     return Err("Measure-based timing requires a tempo section".into());
                 }
+                has_explicit_time = true;
             }
             Rule::offset_command => {
                 offset_commands.push(inner_pair);
@@ -767,6 +801,12 @@ fn parse_cue_definition(
         // Reset without offset - just set to 0
         new_offset = Some(0);
     }
+
+    // If there's no explicit time and this cue only has offset/reset commands,
+    // use the previous cue's time (or skip creating the cue if it's empty)
+    // Check this BEFORE we consume the pairs in the loops below
+    let is_offset_only = !has_explicit_time && effect_pairs.is_empty() && layer_command_pairs.is_empty()
+        && sequence_references.is_empty() && stop_sequence_pairs.is_empty();
 
     // Parse stop sequence commands
     for stop_pair in stop_sequence_pairs {
@@ -919,6 +959,13 @@ fn parse_cue_definition(
     }
 
     // No sequence references - return a single cue
+    // If there's no explicit time and this cue only has offset/reset commands,
+    // use the previous cue's time (or skip creating the cue if it's empty)
+    if is_offset_only {
+        // This is just an offset/reset command - use previous cue time
+        time = previous_cue_time;
+    }
+
     // Second pass: parse effects now that we know the cue time
     for effect_pair in effect_pairs {
         let effect = parse_effect_definition(effect_pair, tempo_map, time)?;
@@ -929,6 +976,17 @@ fn parse_cue_definition(
     for layer_command_pair in layer_command_pairs {
         let layer_command = parse_layer_command(layer_command_pair, tempo_map, time)?;
         layer_commands.push(layer_command);
+    }
+
+    // Skip creating a cue if it's empty and only had offset/reset commands
+    // (the offset has already been applied to subsequent cues)
+    if effects.is_empty()
+        && layer_commands.is_empty()
+        && stop_sequences.is_empty()
+        && sequence_references.is_empty()
+        && !has_explicit_time
+    {
+        return Ok((Vec::new(), new_offset));
     }
 
     Ok((
