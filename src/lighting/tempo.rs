@@ -302,8 +302,7 @@ impl TempoMap {
     }
 
     /// Convert a measure/beat position to absolute time with an offset
-    /// The offset is applied to both the target measure and tempo change positions
-    /// This allows tempo changes specified in score measures to respect offsets
+    /// The offset is applied to the target position; tempo changes remain in score time
     pub fn measure_to_time_with_offset(
         &self,
         measure: u32,
@@ -326,7 +325,7 @@ impl TempoMap {
         // Integrate through tempo segments to reach target position
         // We need to account for time signature changes that affect beats per measure
         let mut current_bpm = self.initial_bpm;
-        let mut accumulated_time = self.start_offset + offset_duration;
+        let mut accumulated_time = self.start_offset;
         let mut accumulated_beats = 0.0;
 
         // Calculate target beats by integrating through measures beat-by-beat
@@ -467,8 +466,8 @@ impl TempoMap {
         // We apply the measure_offset to tempo changes so they respect the offset timeline,
         // ensuring consistent measure numbering with the target measure.
         for change in &self.changes {
-            // Tempo changes are already resolved to absolute time, so use that directly
-            let change_time = change.position.absolute_time()? + offset_duration;
+            // Tempo changes are already resolved to absolute time, keep them in score time
+            let change_time = change.position.absolute_time()?;
 
             // Calculate beats to this tempo change
             // If we have original_measure_beat, use it to calculate beats directly (same way as target_beats)
@@ -568,7 +567,7 @@ impl TempoMap {
                     accumulated_time.as_secs_f64(),
                     result_time.as_secs_f64()
                 );
-                return Some(result_time);
+                return Some(result_time + offset_duration);
             }
 
             // Process up to this change
@@ -609,7 +608,7 @@ impl TempoMap {
                 result_time.as_secs_f64()
             );
 
-        Some(result_time)
+        Some(result_time + offset_duration)
     }
 
     /// Get BPM at a given time (accounting for tempo changes)
