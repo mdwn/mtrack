@@ -426,27 +426,20 @@ fn parse_sequence_cue_structure(
     };
 
     // Now parse measure_time
-    // IMPORTANT: Only apply offset commands to the measure time if BOTH are in the same cue definition.
-    // If a cue has a measure time but no offset command, use the offset from previous cues (measure_offset).
-    // If a cue has both a measure time AND an offset command, apply the offset to this cue's measure time.
+    // IMPORTANT: Offset commands should NEVER apply to the current cue's measure time.
+    // They only affect subsequent cues. So we always use measure_offset (from previous cues)
+    // for the current cue's measure time calculation.
     if let Some(measure_pair) = measure_time_pair {
         let (measure, beat) = parse_measure_time(measure_pair.as_str())?;
-        // If there's an offset command in this cue definition, apply it to this cue's measure time.
-        // Otherwise, use the offset from previous cues.
-        let offset_for_measure_time = if !offset_commands.is_empty() {
-            // Offset command is in this cue definition - apply it to this cue's measure time
-            effective_offset
-        } else {
-            // No offset in this cue - use offset from previous cues
-            measure_offset
-        };
-        let playback_measure = measure + offset_for_measure_time;
+        // Always use measure_offset (from previous cues) for this cue's measure time.
+        // The offset command in this cue (if any) will only affect subsequent cues.
+        let playback_measure = measure + measure_offset;
         if let Some(tm) = tempo_map {
             // For sequences, measure 1 should be 0.0s relative to the sequence start
             // So we subtract the start_offset to make it relative to 0.0s
-            // Pass offset_for_measure_time so tempo changes respect offsets
+            // Pass measure_offset so tempo changes respect offsets from previous cues
             let absolute_time = tm
-                .measure_to_time_with_offset(measure, beat, offset_for_measure_time)
+                .measure_to_time_with_offset(measure, beat, measure_offset)
                 .ok_or_else(|| {
                     format!(
                         "Invalid measure/beat position: {}/{}",
@@ -782,25 +775,18 @@ fn parse_cue_definition(
     };
 
     // Now parse measure_time
-    // IMPORTANT: Only apply offset commands to the measure time if BOTH are in the same cue definition.
-    // If a cue has a measure time but no offset command, use the offset from previous cues (measure_offset).
-    // If a cue has both a measure time AND an offset command, apply the offset to this cue's measure time.
+    // IMPORTANT: Offset commands should NEVER apply to the current cue's measure time.
+    // They only affect subsequent cues. So we always use measure_offset (from previous cues)
+    // for the current cue's measure time calculation.
     if let Some(measure_pair) = measure_time_pair {
         let (measure, beat) = parse_measure_time(measure_pair.as_str())?;
-        // If there's an offset command in this cue definition, apply it to this cue's measure time.
-        // Otherwise, use the offset from previous cues.
-        let offset_for_measure_time = if !offset_commands.is_empty() {
-            // Offset command is in this cue definition - apply it to this cue's measure time
-            effective_offset
-        } else {
-            // No offset in this cue - use offset from previous cues
-            measure_offset
-        };
-        let playback_measure = measure + offset_for_measure_time;
+        // Always use measure_offset (from previous cues) for this cue's measure time.
+        // The offset command in this cue (if any) will only affect subsequent cues.
+        let playback_measure = measure + measure_offset;
         if let Some(tm) = tempo_map {
-            // Pass offset_for_measure_time so tempo changes respect offsets
+            // Pass measure_offset so tempo changes respect offsets from previous cues
             time = tm
-                .measure_to_time_with_offset(measure, beat, offset_for_measure_time)
+                .measure_to_time_with_offset(measure, beat, measure_offset)
                 .ok_or_else(|| {
                     format!(
                         "Invalid measure/beat position: {}/{}",

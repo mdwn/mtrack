@@ -4776,10 +4776,9 @@ show "Test" {
 
     #[test]
     fn test_measure_offset_with_measure_time_in_same_cue() {
-        // Test the specific bug fix: when a cue has both a measure time AND an offset command
-        // in the same cue definition, the offset must be applied to that cue's measure time.
-        // This is the core bug that was fixed - previously the offset was only applied to
-        // subsequent cues, not the current one.
+        // Test that when a cue has both a measure time AND an offset command in the same
+        // cue definition, the offset does NOT apply to the current cue's measure time.
+        // The offset should only affect subsequent cues. The effect should still be included.
         let content = r#"tempo {
             start: 0.0s
             bpm: 120
@@ -4823,18 +4822,22 @@ show "Test" {
             first_cue_time,
             first_cue_time.as_secs_f64()
         );
+        // Verify first cue has the effect
+        assert!(!show.cues[0].effects.is_empty(), "First cue should have effects");
 
         // Second cue at @5/1 with offset 10 measures in the SAME cue
-        // This is the key test: the offset should apply to THIS cue's measure time
-        // So @5/1 with offset 10 = playback measure 15 = 14 measures * 2.0s = 28.0s
+        // IMPORTANT: The offset should NOT apply to this cue's measure time.
+        // So @5/1 should be at playback measure 5 = 4 measures * 2.0s = 8.0s
         let second_cue_time = show.cues[1].time;
-        let expected_second = Duration::from_secs_f64(28.0);
+        let expected_second = Duration::from_secs_f64(8.0);
         assert!(
             (second_cue_time.as_secs_f64() - expected_second.as_secs_f64()).abs() < 0.001,
-            "Second cue should be at playback measure 15 (28.0s) because offset 10 applies to @5/1, got {:?} ({:.3}s)",
+            "Second cue should be at playback measure 5 (8.0s), offset should NOT apply to current cue, got {:?} ({:.3}s)",
             second_cue_time,
             second_cue_time.as_secs_f64()
         );
+        // Verify second cue has the effect (this is the key test - effect should not be lost)
+        assert!(!show.cues[1].effects.is_empty(), "Second cue should have effects even though it has an offset command");
 
         // Third cue at @1/1 (with offset 10 from previous cue) = playback measure 11 = 10 measures * 2.0s = 20.0s
         let third_cue_time = show.cues[2].time;
