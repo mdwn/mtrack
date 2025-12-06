@@ -429,14 +429,14 @@ fn parse_sequence_cue_structure(
         }
     }
 
-    // Resolve anchor absolute time for offset conversion (based on currently applied offset)
-    let applied_offset_secs = offset_secs;
-    let anchor_abs = if score_time != Duration::ZERO {
-        Some(score_time + Duration::from_secs_f64(applied_offset_secs))
+    // Resolve anchor for offset conversion in SCORE time (not shifted by previous offsets)
+    let score_anchor = if score_time != Duration::ZERO {
+        Some(score_time)
     } else {
-        last_abs_time
+        last_abs_time.map(|t| t.saturating_sub(Duration::from_secs_f64(offset_secs)))
     }
     .unwrap_or(Duration::ZERO);
+    let applied_offset_secs = offset_secs;
 
     // Compute next offset (applies to subsequent cues only)
     if !offset_commands.is_empty() || !reset_commands.is_empty() {
@@ -448,8 +448,8 @@ fn parse_sequence_cue_structure(
         for offset_pair in &offset_commands {
             let offset_measures = parse_offset_command(offset_pair.clone())?;
             if let Some(tm) = tempo_map {
-                let bpm = tm.bpm_at_time(anchor_abs);
-                let ts = tm.time_signature_at_time(anchor_abs);
+                let bpm = tm.bpm_at_time(score_anchor);
+                let ts = tm.time_signature_at_time(score_anchor);
                 let seconds_per_beat = 60.0 / bpm;
                 let delta =
                     offset_measures as f64 * ts.beats_per_measure() as f64 * seconds_per_beat;
@@ -782,14 +782,15 @@ fn parse_cue_definition(
         }
     }
 
-    // Anchor for offset conversion (based on currently applied offset)
-    let applied_offset_secs = offset_secs;
-    let anchor_abs = if score_time != Duration::ZERO {
-        Some(score_time + Duration::from_secs_f64(applied_offset_secs))
+    // Anchor for offset conversion in SCORE time (not shifted by previous offsets)
+    // If this cue has a score_time, use it; otherwise derive score anchor from last_abs_time minus current offset
+    let score_anchor = if score_time != Duration::ZERO {
+        Some(score_time)
     } else {
-        last_abs_time
+        last_abs_time.map(|t| t.saturating_sub(Duration::from_secs_f64(offset_secs)))
     }
     .unwrap_or(Duration::ZERO);
+    let applied_offset_secs = offset_secs;
 
     // Compute next offset (applies to subsequent cues only)
     if !offset_commands.is_empty() || !reset_commands.is_empty() {
@@ -801,8 +802,8 @@ fn parse_cue_definition(
         for offset_pair in &offset_commands {
             let offset_measures = parse_offset_command(offset_pair.clone())?;
             if let Some(tm) = tempo_map {
-                let bpm = tm.bpm_at_time(anchor_abs);
-                let ts = tm.time_signature_at_time(anchor_abs);
+                let bpm = tm.bpm_at_time(score_anchor);
+                let ts = tm.time_signature_at_time(score_anchor);
                 let seconds_per_beat = 60.0 / bpm;
                 let delta =
                     offset_measures as f64 * ts.beats_per_measure() as f64 * seconds_per_beat;
