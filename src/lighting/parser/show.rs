@@ -639,7 +639,10 @@ fn expand_unexpanded_sequence_cue(
             // Calculate sequence duration based on effect completion times
             // If sequence has only perpetual effects, use the relative time from first to last cue
             let sequence_duration = match sequence.duration() {
-                Some(duration) => duration,
+                Some(completion_time) => {
+                    // duration() returns absolute completion time, convert to relative
+                    completion_time.saturating_sub(sequence_base_time)
+                }
                 None => {
                     // Sequence has only perpetual effects - use relative time from first to last cue
                     if sequence.cues.is_empty() {
@@ -917,7 +920,10 @@ fn parse_cue_definition(
             // Calculate sequence duration based on effect completion times
             // If sequence has only perpetual effects, use the relative time from first to last cue
             let sequence_duration = match sequence.duration() {
-                Some(duration) => duration,
+                Some(completion_time) => {
+                    // duration() returns absolute completion time, convert to relative
+                    completion_time.saturating_sub(sequence_base_time)
+                }
                 None => {
                     // Sequence has only perpetual effects - use relative time from first to last cue
                     if sequence.cues.is_empty() {
