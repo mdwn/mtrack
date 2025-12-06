@@ -774,12 +774,12 @@ fn parse_cue_definition(
 
     let has_measure_time = measure_time_pair.is_some();
 
-    // Resolve measure_time to score_time
+    // Resolve measure_time to score_time (score-space only; offsets applied after)
     if let Some(measure_pair) = measure_time_pair {
         let (measure, beat) = parse_measure_time(measure_pair.as_str())?;
         if let Some(tm) = tempo_map {
             score_time = tm
-                .measure_to_time_with_offset(measure, beat, 0, offset_secs)
+                .measure_to_time_with_offset(measure, beat, 0, 0.0)
                 .ok_or_else(|| format!("Invalid measure/beat position: {}/{}", measure, beat))?;
             #[cfg(debug_assertions)]
             eprintln!(
@@ -797,13 +797,13 @@ fn parse_cue_definition(
 
     // Anchor for offset conversion in SCORE time (not shifted by previous offsets)
     // If this cue has a score_time, use it; otherwise derive score anchor from last_abs_time minus current offset
+    let applied_offset_secs = offset_secs;
     let score_anchor = if score_time != Duration::ZERO {
         Some(score_time)
     } else {
-        last_abs_time.map(|t| t.saturating_sub(Duration::from_secs_f64(offset_secs)))
+        last_abs_time.map(|t| t.saturating_sub(Duration::from_secs_f64(applied_offset_secs)))
     }
     .unwrap_or(Duration::ZERO);
-    let applied_offset_secs = offset_secs;
 
     // Compute next offset (applies to subsequent cues only)
     if !offset_commands.is_empty() || !reset_commands.is_empty() {
@@ -828,11 +828,7 @@ fn parse_cue_definition(
         new_offset = Some(total_offset);
     }
 
-    let abs_time = if has_measure_time {
-        score_time
-    } else {
-        score_time + Duration::from_secs_f64(applied_offset_secs)
-    };
+    let abs_time = score_time + Duration::from_secs_f64(applied_offset_secs);
     let last_time = Some(abs_time);
 
     // Parse stop sequence commands
