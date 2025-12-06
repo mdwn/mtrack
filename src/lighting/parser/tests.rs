@@ -4683,10 +4683,175 @@ show "Test" {
     }
 
     #[test]
+    fn test_measure_offset_in_same_cue() {
+        // Test that when a cue has both a measure time and an offset command,
+        // the offset is correctly applied to that cue's measure time calculation.
+        // This tests the fix for the bug where offset commands in the same cue
+        // weren't being applied to the measure time.
+        let content = r#"tempo {
+            start: 1.5s
+            bpm: 160
+            time_signature: 4/4
+            changes: [
+                @68/1 { bpm: 180 },
+                @104/1 { bpm: 160 }
+            ]
+        }
+
+show "Test" {
+    @70/1
+    all_wash: static, color: "blue"
+    
+    @74/1
+    all_wash: static, color: "green"
+    
+    offset 5 measures
+    
+    @70/1
+    all_wash: static, color: "red"
+    
+    @74/1
+    all_wash: static, color: "yellow"
+}
+"#;
+
+        let result = parse_light_shows(content);
+        assert!(
+            result.is_ok(),
+            "Failed to parse show with offset in same cue: {:?}",
+            result.err()
+        );
+
+        let shows = result.unwrap();
+        let show = shows.get("Test").unwrap();
+
+        // Verify we have 4 cues
+        assert!(show.cues.len() >= 4, "Should have at least 4 cues");
+
+        // First cue at @70/1 (no offset yet)
+        // At 160 BPM in 4/4: 1 measure = 1.5s
+        // Measure 70 = 1.5s (start) + (69 measures * 1.5s) = 1.5s + 103.5s = 105.0s
+        let first_cue_time = show.cues[0].time;
+        let expected_first = Duration::from_secs_f64(105.0);
+        assert!(
+            (first_cue_time.as_secs_f64() - expected_first.as_secs_f64()).abs() < 0.01,
+            "First cue should be at measure 70 (105.0s), got {:?} ({:.3}s)",
+            first_cue_time,
+            first_cue_time.as_secs_f64()
+        );
+
+        // Second cue at @74/1 (no offset yet)
+        // Measure 74 = 1.5s + (73 measures * 1.5s) = 1.5s + 109.5s = 111.0s
+        let second_cue_time = show.cues[1].time;
+        let expected_second = Duration::from_secs_f64(111.0);
+        assert!(
+            (second_cue_time.as_secs_f64() - expected_second.as_secs_f64()).abs() < 0.01,
+            "Second cue should be at measure 74 (111.0s), got {:?} ({:.3}s)",
+            second_cue_time,
+            second_cue_time.as_secs_f64()
+        );
+
+        // Third cue at @70/1 with offset 5 measures = playback measure 75
+        // Measure 75 = 1.5s + (74 measures * 1.5s) = 1.5s + 111.0s = 112.5s
+        let third_cue_time = show.cues[2].time;
+        let expected_third = Duration::from_secs_f64(112.5);
+        assert!(
+            (third_cue_time.as_secs_f64() - expected_third.as_secs_f64()).abs() < 0.01,
+            "Third cue should be at playback measure 75 (112.5s) after offset 5, got {:?} ({:.3}s)",
+            third_cue_time,
+            third_cue_time.as_secs_f64()
+        );
+
+        // Fourth cue at @74/1 with offset 5 measures = playback measure 79
+        // Measure 79 = 1.5s + (78 measures * 1.5s) = 1.5s + 117.0s = 118.5s
+        let fourth_cue_time = show.cues[3].time;
+        let expected_fourth = Duration::from_secs_f64(118.5);
+        assert!(
+            (fourth_cue_time.as_secs_f64() - expected_fourth.as_secs_f64()).abs() < 0.01,
+            "Fourth cue should be at playback measure 79 (118.5s) after offset 5, got {:?} ({:.3}s)",
+            fourth_cue_time,
+            fourth_cue_time.as_secs_f64()
+        );
+    }
+
+    #[test]
+    fn test_measure_offset_with_measure_time_in_same_cue() {
+        // Test the specific bug fix: when a cue has both a measure time AND an offset command
+        // in the same cue definition, the offset must be applied to that cue's measure time.
+        // This is the core bug that was fixed - previously the offset was only applied to
+        // subsequent cues, not the current one.
+        let content = r#"tempo {
+            start: 0.0s
+            bpm: 120
+            time_signature: 4/4
+        }
+
+show "Test" {
+    @1/1
+    all_wash: static, color: "blue"
+    
+    @5/1
+    all_wash: static, color: "green"
+    offset 10 measures
+    
+    @1/1
+    all_wash: static, color: "red"
+}
+"#;
+
+        let result = parse_light_shows(content);
+        assert!(
+            result.is_ok(),
+            "Failed to parse show with offset and measure time in same cue: {:?}",
+            result.err()
+        );
+
+        let shows = result.unwrap();
+        let show = shows.get("Test").unwrap();
+
+        // Verify we have 3 cues
+        assert!(show.cues.len() >= 3, "Should have at least 3 cues");
+
+        // At 120 BPM in 4/4: 1 measure = 2.0s
+        
+        // First cue at @1/1 (no offset) = 0.0s
+        let first_cue_time = show.cues[0].time;
+        let expected_first = Duration::from_secs_f64(0.0);
+        assert!(
+            (first_cue_time.as_secs_f64() - expected_first.as_secs_f64()).abs() < 0.001,
+            "First cue should be at measure 1 (0.0s), got {:?} ({:.3}s)",
+            first_cue_time,
+            first_cue_time.as_secs_f64()
+        );
+
+        // Second cue at @5/1 with offset 10 measures in the SAME cue
+        // This is the key test: the offset should apply to THIS cue's measure time
+        // So @5/1 with offset 10 = playback measure 15 = 14 measures * 2.0s = 28.0s
+        let second_cue_time = show.cues[1].time;
+        let expected_second = Duration::from_secs_f64(28.0);
+        assert!(
+            (second_cue_time.as_secs_f64() - expected_second.as_secs_f64()).abs() < 0.001,
+            "Second cue should be at playback measure 15 (28.0s) because offset 10 applies to @5/1, got {:?} ({:.3}s)",
+            second_cue_time,
+            second_cue_time.as_secs_f64()
+        );
+
+        // Third cue at @1/1 (with offset 10 from previous cue) = playback measure 11 = 10 measures * 2.0s = 20.0s
+        let third_cue_time = show.cues[2].time;
+        let expected_third = Duration::from_secs_f64(20.0);
+        assert!(
+            (third_cue_time.as_secs_f64() - expected_third.as_secs_f64()).abs() < 0.001,
+            "Third cue should be at playback measure 11 (20.0s) with offset 10, got {:?} ({:.3}s)",
+            third_cue_time,
+            third_cue_time.as_secs_f64()
+        );
+    }
+
+    #[test]
     fn test_measure_offset_at_start() {
         // Test that offset can be in the first cue
         let content = r#"tempo {
-    start: 0.0s
+            start: 0.0s
     bpm: 120
     time_signature: 4/4
 }

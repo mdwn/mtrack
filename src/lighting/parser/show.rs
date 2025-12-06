@@ -365,34 +365,18 @@ fn parse_sequence_cue_structure(
     let mut stop_sequence_pairs = Vec::new();
     let mut offset_commands = Vec::new();
     let mut reset_commands = Vec::new();
+    let mut measure_time_pair: Option<Pair<Rule>> = None;
     let mut new_offset: Option<u32> = None;
 
-    // First pass: parse time and collect all pairs
+    // First pass: collect all pairs (don't parse measure_time yet, as we need to process offsets first)
     for inner_pair in pair.into_inner() {
         match inner_pair.as_rule() {
             Rule::time_string => {
                 time = parse_time_string(inner_pair.as_str())?;
             }
             Rule::measure_time => {
-                let (measure, beat) = parse_measure_time(inner_pair.as_str())?;
-                // Apply offset to measure number
-                let playback_measure = measure + measure_offset;
-                if let Some(tm) = tempo_map {
-                    // For sequences, measure 1 should be 0.0s relative to the sequence start
-                    // So we subtract the start_offset to make it relative to 0.0s
-                    // Pass measure_offset so tempo changes respect offsets
-                    let absolute_time = tm
-                        .measure_to_time_with_offset(measure, beat, measure_offset)
-                        .ok_or_else(|| {
-                            format!(
-                                "Invalid measure/beat position: {}/{}",
-                                playback_measure, beat
-                            )
-                        })?;
-                    time = absolute_time - tm.start_offset;
-                } else {
-                    return Err("Measure-based timing requires a tempo section".into());
-                }
+                // Store the measure_time pair to parse after we know the effective offset
+                measure_time_pair = Some(inner_pair);
             }
             Rule::offset_command => {
                 offset_commands.push(inner_pair);
@@ -416,7 +400,7 @@ fn parse_sequence_cue_structure(
         }
     }
 
-    // Process offset commands
+    // Process offset commands to determine effective offset for THIS cue
     // If reset is present, start from 0, then add any offset commands
     let base_offset = if !reset_commands.is_empty() {
         0
@@ -424,17 +408,44 @@ fn parse_sequence_cue_structure(
         measure_offset
     };
 
-    if !offset_commands.is_empty() {
+    let effective_offset = if !offset_commands.is_empty() {
         // Parse the offset value from the last offset command
         let mut total_offset = base_offset;
-        for offset_pair in offset_commands {
-            let offset_value = parse_offset_command(offset_pair)?;
+        for offset_pair in &offset_commands {
+            let offset_value = parse_offset_command(offset_pair.clone())?;
             total_offset += offset_value;
         }
         new_offset = Some(total_offset);
+        total_offset
     } else if !reset_commands.is_empty() {
         // Reset without offset - just set to 0
         new_offset = Some(0);
+        0
+    } else {
+        measure_offset
+    };
+
+    // Now parse measure_time using the effective offset (which includes any offset commands in this cue)
+    if let Some(measure_pair) = measure_time_pair {
+        let (measure, beat) = parse_measure_time(measure_pair.as_str())?;
+        // Apply effective offset to measure number
+        let playback_measure = measure + effective_offset;
+        if let Some(tm) = tempo_map {
+            // For sequences, measure 1 should be 0.0s relative to the sequence start
+            // So we subtract the start_offset to make it relative to 0.0s
+            // Pass effective_offset so tempo changes respect offsets
+            let absolute_time = tm
+                .measure_to_time_with_offset(measure, beat, effective_offset)
+                .ok_or_else(|| {
+                    format!(
+                        "Invalid measure/beat position: {}/{}",
+                        playback_measure, beat
+                    )
+                })?;
+            time = absolute_time - tm.start_offset;
+        } else {
+            return Err("Measure-based timing requires a tempo section".into());
+        }
     }
 
     // Parse effects and layer commands (these can be parsed immediately)
@@ -697,31 +708,18 @@ fn parse_cue_definition(
     let mut stop_sequence_pairs = Vec::new();
     let mut offset_commands = Vec::new();
     let mut reset_commands = Vec::new();
+    let mut measure_time_pair: Option<Pair<Rule>> = None;
     let mut new_offset: Option<u32> = None;
 
-    // First pass: parse time and collect effect/layer_command/sequence_reference/stop_sequence pairs
+    // First pass: collect all pairs (don't parse measure_time yet, as we need to process offsets first)
     for inner_pair in pair.into_inner() {
         match inner_pair.as_rule() {
             Rule::time_string => {
                 time = parse_time_string(inner_pair.as_str())?;
             }
             Rule::measure_time => {
-                let (measure, beat) = parse_measure_time(inner_pair.as_str())?;
-                // Apply offset to measure number
-                let playback_measure = measure + measure_offset;
-                if let Some(tm) = tempo_map {
-                    // Pass measure_offset so tempo changes respect offsets
-                    time = tm
-                        .measure_to_time_with_offset(measure, beat, measure_offset)
-                        .ok_or_else(|| {
-                            format!(
-                                "Invalid measure/beat position: {}/{}",
-                                playback_measure, beat
-                            )
-                        })?;
-                } else {
-                    return Err("Measure-based timing requires a tempo section".into());
-                }
+                // Store the measure_time pair to parse after we know the effective offset
+                measure_time_pair = Some(inner_pair);
             }
             Rule::offset_command => {
                 offset_commands.push(inner_pair);
@@ -747,7 +745,7 @@ fn parse_cue_definition(
         }
     }
 
-    // Process offset commands
+    // Process offset commands to determine effective offset for THIS cue
     // If reset is present, start from 0, then add any offset commands
     let base_offset = if !reset_commands.is_empty() {
         0
@@ -755,17 +753,41 @@ fn parse_cue_definition(
         measure_offset
     };
 
-    if !offset_commands.is_empty() {
+    let effective_offset = if !offset_commands.is_empty() {
         // Parse the offset value from the last offset command
         let mut total_offset = base_offset;
-        for offset_pair in offset_commands {
-            let offset_value = parse_offset_command(offset_pair)?;
+        for offset_pair in &offset_commands {
+            let offset_value = parse_offset_command(offset_pair.clone())?;
             total_offset += offset_value;
         }
         new_offset = Some(total_offset);
+        total_offset
     } else if !reset_commands.is_empty() {
         // Reset without offset - just set to 0
         new_offset = Some(0);
+        0
+    } else {
+        measure_offset
+    };
+
+    // Now parse measure_time using the effective offset (which includes any offset commands in this cue)
+    if let Some(measure_pair) = measure_time_pair {
+        let (measure, beat) = parse_measure_time(measure_pair.as_str())?;
+        // Apply effective offset to measure number
+        let playback_measure = measure + effective_offset;
+        if let Some(tm) = tempo_map {
+            // Pass effective_offset so tempo changes respect offsets
+            time = tm
+                .measure_to_time_with_offset(measure, beat, effective_offset)
+                .ok_or_else(|| {
+                    format!(
+                        "Invalid measure/beat position: {}/{}",
+                        playback_measure, beat
+                    )
+                })?;
+        } else {
+            return Err("Measure-based timing requires a tempo section".into());
+        }
     }
 
     // Parse stop sequence commands
