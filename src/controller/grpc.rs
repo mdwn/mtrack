@@ -22,8 +22,9 @@ use crate::{
     player::Player,
     proto::player::v1::{
         player_service_server::{PlayerService, PlayerServiceServer},
-        NextRequest, NextResponse, PlayRequest, PlayResponse, PreviousRequest, PreviousResponse,
-        StatusRequest, StatusResponse, StopRequest, StopResponse, SwitchToPlaylistRequest,
+        Cue, GetCuesRequest, GetCuesResponse, NextRequest, NextResponse, PlayFromRequest,
+        PlayRequest, PlayResponse, PreviousRequest, PreviousResponse, StatusRequest,
+        StatusResponse, StopRequest, StopResponse, SwitchToPlaylistRequest,
         SwitchToPlaylistResponse, FILE_DESCRIPTOR_SET,
     },
 };
@@ -98,6 +99,27 @@ impl PlayerService for PlayerServer {
                 "lighting show validation failed: {}",
                 e
             ))),
+        }
+    }
+
+    async fn play_from(
+        &self,
+        request: Request<PlayFromRequest>,
+    ) -> Result<Response<PlayResponse>, Status> {
+        let start_time = request
+            .into_inner()
+            .start_time
+            .map(std::time::Duration::try_from)
+            .transpose()
+            .map_err(|e| Status::invalid_argument(format!("Invalid duration: {}", e)))?
+            .unwrap_or(std::time::Duration::ZERO);
+
+        match self.player.play_from(start_time).await {
+            Ok(Some(song)) => Ok(Response::new(PlayResponse {
+                song: Some(song.to_proto()?),
+            })),
+            Ok(None) => Err(Status::failed_precondition("song already playing")),
+            Err(e) => Err(Status::invalid_argument(format!("Playback failed: {}", e))),
         }
     }
 
@@ -192,6 +214,27 @@ impl PlayerService for PlayerServer {
             playing: elapsed.is_some(),
             elapsed,
         }))
+    }
+
+    async fn get_cues(
+        &self,
+        _: Request<GetCuesRequest>,
+    ) -> Result<Response<GetCuesResponse>, Status> {
+        // Get cues from the player
+        let cues = self.player.get_cues();
+        let proto_cues: Result<Vec<Cue>, Status> = cues
+            .into_iter()
+            .map(|(time, index)| {
+                Ok(Cue {
+                    time: Some(prost_types::Duration::try_from(time).map_err(|e| {
+                        Status::internal(format!("Failed to convert duration: {}", e))
+                    })?),
+                    index: index as u32,
+                })
+            })
+            .collect();
+
+        Ok(Response::new(GetCuesResponse { cues: proto_cues? }))
     }
 }
 

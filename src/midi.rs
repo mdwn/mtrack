@@ -36,12 +36,13 @@ pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {
     /// Stops watching events.
     fn stop_watch_events(&self);
 
-    /// Plays the given song through the MIDI interface.
-    fn play(
+    /// Plays the given song through the MIDI interface, starting from a specific time.
+    fn play_from(
         &self,
         song: Arc<Song>,
         cancel_handle: CancelHandle,
         play_barrier: Arc<Barrier>,
+        start_time: std::time::Duration,
     ) -> Result<(), Box<dyn Error>>;
 
     /// Emits an event.

@@ -20,6 +20,7 @@ use std::{
         mpsc, Arc, Barrier,
     },
     thread,
+    time::Duration,
 };
 
 use tracing::{info, span, Level};
@@ -50,21 +51,24 @@ impl Device {
 }
 
 impl crate::audio::Device for Device {
-    /// A mock device that will sleep for the length of the song duration.
-    fn play(
+    /// A mock device that will sleep for the remaining song duration after start_time.
+    fn play_from(
         &self,
         song: Arc<Song>,
         _: &HashMap<String, Vec<u16>>,
         cancel_handle: CancelHandle,
         play_barrier: Arc<Barrier>,
+        start_time: Duration,
     ) -> Result<(), Box<dyn Error>> {
         let span = span!(Level::INFO, "play song (mock)");
         let _enter = span.enter();
 
+        let remaining_duration = song.duration().saturating_sub(start_time);
         info!(
             device = self.name,
             song = song.name(),
             duration = song.duration_string(),
+            start_time = format!("{:?}", start_time),
             "Playing song."
         );
 
@@ -80,7 +84,7 @@ impl crate::audio::Device for Device {
                 play_barrier.wait();
 
                 // Wait for a signal or until we hit cancellation.
-                let _ = sleep_rx.recv_timeout(song.duration());
+                let _ = sleep_rx.recv_timeout(remaining_duration);
 
                 // Expire at the end of playback.
                 finished.store(true, Ordering::Relaxed);

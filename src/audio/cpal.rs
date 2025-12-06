@@ -517,13 +517,14 @@ impl Device {
 }
 
 impl AudioDevice for Device {
-    /// Play the given song through the audio device.
-    fn play(
+    /// Play the given song through the audio device, starting from a specific time.
+    fn play_from(
         &self,
         song: Arc<Song>,
         mappings: &HashMap<String, Vec<u16>>,
         cancel_handle: CancelHandle,
         play_barrier: Arc<Barrier>,
+        start_time: Duration,
     ) -> Result<(), Box<dyn Error>> {
         let span = span!(Level::INFO, "play song (cpal)");
         let _enter = span.enter();
@@ -562,8 +563,9 @@ impl AudioDevice for Device {
         play_barrier.wait();
         spin_sleep::sleep(self.playback_delay);
 
-        // Create channel mapped sources for each track in the song
-        let channel_mapped_sources = song.create_channel_mapped_sources(
+        // Create channel mapped sources for each track in the song, starting from start_time
+        let channel_mapped_sources = song.create_channel_mapped_sources_from(
+            start_time,
             mappings,
             self.target_format.clone(),
             self.audio_config.buffer_size(),

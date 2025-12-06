@@ -165,12 +165,13 @@ impl super::Device for Device {
         mem::drop(event_connection);
     }
 
-    /// Plays the given song through the MIDI interface.
-    fn play(
+    /// Plays the given song through the MIDI interface, starting from a specific time.
+    fn play_from(
         &self,
         song: Arc<Song>,
         cancel_handle: CancelHandle,
         play_barrier: Arc<Barrier>,
+        start_time: Duration,
     ) -> Result<(), Box<dyn Error>> {
         let span = span!(Level::INFO, "play song (midir)");
         let _enter = span.enter();
@@ -202,6 +203,7 @@ impl super::Device for Device {
             device = self.name,
             song = song.name(),
             duration = song.duration_string(),
+            start_time = ?start_time,
             "Playing song MIDI."
         );
 
@@ -213,23 +215,51 @@ impl super::Device for Device {
 
             // Wrap the midir connection in a cancel connection so that we can stop playback.
             let midir_connection = output.connect(output_port, "mtrack player")?;
-            let connection = ExcludeConnection {
+            let base_connection = ExcludeConnection {
                 connection: midir_connection,
                 cancel_handle: cancel_handle.clone(),
                 exclude_midi_channels,
             };
-            let mut player = Player::new(
-                CancelableTimer::new(midi_sheet.ticker, cancel_handle.clone()),
-                connection,
-            );
 
-            thread::spawn(move || {
-                play_barrier.wait();
-                spin_sleep::sleep(playback_delay);
-                player.play(&midi_sheet.sheet);
-                finished.store(true, Ordering::Relaxed);
-                cancel_handle.notify();
-            })
+            // If we need to seek, create wrappers that track elapsed time and skip early events
+            if start_time > Duration::ZERO {
+                let elapsed_time = Arc::new(Mutex::new(Duration::ZERO));
+                let seek_connection =
+                    SeekConnection::new(base_connection, start_time, elapsed_time.clone());
+                let seek_timer = SeekTimer::new(
+                    CancelableTimer::new(midi_sheet.ticker, cancel_handle.clone()),
+                    elapsed_time,
+                    start_time,
+                );
+                let mut player = Player::new(seek_timer, seek_connection);
+
+                thread::spawn(move || {
+                    play_barrier.wait();
+                    spin_sleep::sleep(playback_delay);
+
+                    // Play the sheet - events before start_time will be skipped by SeekConnection
+                    player.play(&midi_sheet.sheet);
+
+                    finished.store(true, Ordering::Relaxed);
+                    cancel_handle.notify();
+                })
+            } else {
+                let mut player = Player::new(
+                    CancelableTimer::new(midi_sheet.ticker, cancel_handle.clone()),
+                    base_connection,
+                );
+
+                thread::spawn(move || {
+                    play_barrier.wait();
+                    spin_sleep::sleep(playback_delay);
+
+                    // Play the sheet
+                    player.play(&midi_sheet.sheet);
+
+                    finished.store(true, Ordering::Relaxed);
+                    cancel_handle.notify();
+                })
+            }
         };
 
         cancel_handle.wait(finished);
@@ -490,6 +520,87 @@ impl<T: Timer> Timer for CancelableTimer<T> {
                 return;
             }
         }
+    }
+}
+
+/// SeekTimer tracks elapsed MIDI time by accumulating sleep durations
+/// and skips actual sleeps before start_time is reached
+struct SeekTimer<T: Timer> {
+    timer: T,
+    elapsed_time: Arc<Mutex<Duration>>,
+    start_time: Duration,
+}
+
+impl<T: Timer> SeekTimer<T> {
+    fn new(timer: T, elapsed_time: Arc<Mutex<Duration>>, start_time: Duration) -> Self {
+        Self {
+            timer,
+            elapsed_time,
+            start_time,
+        }
+    }
+}
+
+impl<T: Timer> Timer for SeekTimer<T> {
+    fn sleep_duration(&mut self, n_ticks: u32) -> Duration {
+        // Don't update elapsed time here - sleep_duration may be called without sleeping
+        self.timer.sleep_duration(n_ticks)
+    }
+
+    fn change_tempo(&mut self, tempo: u32) {
+        self.timer.change_tempo(tempo);
+    }
+
+    fn sleep(&mut self, n_ticks: u32) {
+        // Get the duration before sleeping so we can track elapsed time
+        let duration = self.timer.sleep_duration(n_ticks);
+
+        // Update elapsed time
+        let should_sleep = {
+            let mut elapsed = self.elapsed_time.lock().unwrap();
+            *elapsed += duration;
+            // Only sleep if we've reached or passed start_time
+            *elapsed >= self.start_time
+        };
+
+        // Only actually sleep if we've reached start_time
+        // Before that, we just update the elapsed time counter to skip through
+        if should_sleep {
+            self.timer.sleep(n_ticks);
+        }
+        // If we haven't reached start_time yet, we skip the sleep entirely
+    }
+}
+
+/// SeekConnection skips events before start_time by checking elapsed MIDI time
+struct SeekConnection<C: Connection> {
+    connection: C,
+    start_time: Duration,
+    elapsed_time: Arc<Mutex<Duration>>,
+}
+
+impl<C: Connection> SeekConnection<C> {
+    fn new(connection: C, start_time: Duration, elapsed_time: Arc<Mutex<Duration>>) -> Self {
+        Self {
+            connection,
+            start_time,
+            elapsed_time,
+        }
+    }
+}
+
+impl<C: Connection> Connection for SeekConnection<C> {
+    fn play(&mut self, event: nodi::MidiEvent) -> bool {
+        // Check if we've reached start_time
+        let elapsed = self.elapsed_time.lock().unwrap();
+        if *elapsed < self.start_time {
+            // Skip this event - we haven't reached start_time yet
+            return true; // Continue processing but don't send the event
+        }
+        drop(elapsed);
+
+        // We've reached start_time, forward the event
+        self.connection.play(event)
     }
 }
 

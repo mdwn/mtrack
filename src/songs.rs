@@ -378,10 +378,11 @@ impl Song {
         format!("{}:{:02}", secs / 60, secs % 60)
     }
 
-    /// Creates ChannelMappedSampleSource instances for each track in the song
-    /// This is the new, simpler architecture that replaces SongSource
-    pub fn create_channel_mapped_sources(
+    /// Creates ChannelMappedSampleSource instances for each track in the song, starting from a specific time.
+    /// This is the new, simpler architecture that replaces SongSource.
+    pub fn create_channel_mapped_sources_from(
         &self,
+        start_time: Duration,
         track_mappings: &HashMap<String, Vec<u16>>,
         target_format: TargetFormat,
         buffer_size: usize,
@@ -389,7 +390,9 @@ impl Song {
     ) -> Result<Vec<Box<dyn crate::audio::sample_source::ChannelMappedSampleSource>>, Box<dyn Error>>
     {
         use crate::audio::sample_source::create_channel_mapped_sample_source;
-        use crate::audio::sample_source::create_sample_source_from_file;
+        use crate::audio::sample_source::{
+            create_sample_source_from_file, create_sample_source_from_file_with_seek,
+        };
 
         let mut sources = Vec::new();
 
@@ -402,7 +405,13 @@ impl Song {
                 .push(track);
         }
 
-        for (file_path, tracks) in files_to_tracks {
+        // Sort files by path to ensure deterministic processing order
+        // This ensures all tracks are processed in the same order every time,
+        // which is critical for synchronization when seeking
+        let mut sorted_files: Vec<_> = files_to_tracks.into_iter().collect();
+        sorted_files.sort_by_key(|(path, _)| path.clone());
+
+        for (file_path, tracks) in sorted_files {
             // Get the audio file info to determine the actual number of channels
             let wav_source = crate::audio::sample_source::WavSampleSource::from_file(&file_path)?;
             let wav_channels = wav_source.channel_count();
@@ -425,8 +434,12 @@ impl Song {
                 channel_mappings.push(labels);
             }
 
-            // Create the channel mapped source for this file
-            let sample_source = create_sample_source_from_file(&file_path)?;
+            // Create the channel mapped source for this file, with optional seeking
+            let sample_source = if start_time == Duration::ZERO {
+                create_sample_source_from_file(&file_path)?
+            } else {
+                create_sample_source_from_file_with_seek(&file_path, Some(start_time))?
+            };
             let source = create_channel_mapped_sample_source(
                 sample_source,
                 target_format.clone(),

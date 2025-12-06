@@ -100,11 +100,38 @@ message StatusResponse {
     google.protobuf.Duration elapsed = 4;
 }
 
+// PlayFromRequest is the message for requesting the player to play from a specific time.
+message PlayFromRequest {
+    // StartTime is the time to start playback from (e.g., "1:23.456" or "45.5s").
+    // If not provided or zero, plays from the beginning.
+    google.protobuf.Duration start_time = 1;
+}
+
+// GetCuesRequest is the message for requesting the list of cues in the current song.
+message GetCuesRequest {}
+
+// Cue represents a single cue in the lighting timeline.
+message Cue {
+    // Time is the time at which this cue triggers.
+    google.protobuf.Duration time = 1;
+    // Index is the index of this cue in the timeline.
+    uint32 index = 2;
+}
+
+// GetCuesResponse is the response containing the list of cues.
+message GetCuesResponse {
+    // Cues is the list of cues in the current song's lighting timeline.
+    repeated Cue cues = 1;
+}
+
 // PlayerService is a service for controlling the mtrack player.
 service PlayerService {
     // Play will play the current song in the playlist if no other songs
     // are playing.
     rpc Play(PlayRequest) returns (PlayResponse);
+
+    // PlayFrom will play the current song starting from a specific time.
+    rpc PlayFrom(PlayFromRequest) returns (PlayResponse);
 
     // Previous will move the playlist to the previous song.
     rpc Previous(PreviousRequest) returns (PreviousResponse);
@@ -120,4 +147,8 @@ service PlayerService {
 
     // Status will return the current status of the player.
     rpc Status(StatusRequest) returns (StatusResponse);
+
+
+    // GetCues returns the list of cues in the current song's lighting timeline.
+    rpc GetCues(GetCuesRequest) returns (GetCuesResponse);
 }

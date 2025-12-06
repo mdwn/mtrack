@@ -163,6 +163,15 @@ impl Player {
         self.dmx_engine.clone()
     }
 
+    /// Gets all cues from the current song's lighting timeline.
+    pub fn get_cues(&self) -> Vec<(Duration, usize)> {
+        if let Some(ref dmx_engine) = self.dmx_engine {
+            dmx_engine.get_timeline_cues()
+        } else {
+            Vec::new()
+        }
+    }
+
     /// Reports status as MIDI events.
     async fn report_status(
         span: Span,
@@ -221,6 +230,17 @@ impl Player {
     /// Returns None if a song is already playing.
     /// Returns an error if lighting show validation fails.
     pub async fn play(&self) -> Result<Option<Arc<Song>>, Box<dyn Error>> {
+        self.play_from(Duration::ZERO).await
+    }
+
+    /// Plays the song starting from a specific time position.
+    /// Returns the song if playback started successfully.
+    /// Returns None if a song is already playing.
+    /// Returns an error if lighting show validation fails.
+    pub async fn play_from(
+        &self,
+        start_time: Duration,
+    ) -> Result<Option<Arc<Song>>, Box<dyn Error>> {
         let _enter = self.span.enter();
 
         let mut join = self.join.lock().await;
@@ -250,6 +270,7 @@ impl Player {
         let play_start_time = self.play_start_time.clone();
 
         let cancel_handle = CancelHandle::new();
+        let cancel_handle_for_cleanup = cancel_handle.clone();
         let (play_tx, play_rx) = oneshot::channel::<()>();
 
         let join_handle = {
@@ -268,6 +289,7 @@ impl Player {
                     song,
                     cancel_handle,
                     play_tx,
+                    start_time,
                 );
             })
         };
@@ -293,13 +315,10 @@ impl Player {
                 }
                 let mut join = join_mutex.lock().await;
 
-                let mut cancelled = false;
+                let cancelled = cancel_handle_for_cleanup.is_cancelled();
                 // Only move to the next playlist entry if this wasn't cancelled.
-                if let Some(join) = join.as_ref() {
-                    cancelled = join.cancel.is_cancelled();
-                    if !cancelled {
-                        Player::next_and_emit(midi_device.clone(), playlist);
-                    }
+                if !cancelled {
+                    Player::next_and_emit(midi_device.clone(), playlist);
                 }
 
                 // Reset the play start time as well.
@@ -315,6 +334,7 @@ impl Player {
                 );
 
                 // Remove the handles and reset stop run.
+                // Note: stop() may have already cleared this, but we ensure it's cleared here too
                 *join = None;
                 stop_run.store(false, Ordering::Relaxed);
             });
@@ -323,6 +343,7 @@ impl Player {
         Ok(Some(song))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn play_files(
         device: Arc<dyn audio::Device>,
         mappings: Arc<HashMap<String, Vec<u16>>>,
@@ -331,6 +352,7 @@ impl Player {
         song: Arc<Song>,
         cancel_handle: CancelHandle,
         play_tx: oneshot::Sender<()>,
+        start_time: Duration,
     ) {
         let song = song.clone();
         let cancel_handle = cancel_handle.clone();
@@ -359,7 +381,9 @@ impl Player {
             thread::spawn(move || {
                 let song_name = song.name().to_string();
 
-                if let Err(e) = device.play(song, &mappings, cancel_handle, barrier) {
+                if let Err(e) =
+                    device.play_from(song, &mappings, cancel_handle, barrier, start_time)
+                {
                     error!(
                         err = e.as_ref(),
                         song = song_name,
@@ -378,7 +402,8 @@ impl Player {
             thread::spawn(move || {
                 let song_name = song.name().to_string();
 
-                if let Err(e) = dmx::engine::Engine::play(dmx_engine, song, cancel_handle, barrier)
+                if let Err(e) =
+                    dmx::engine::Engine::play(dmx_engine, song, cancel_handle, barrier, start_time)
                 {
                     error!(
                         err = e.as_ref(),
@@ -398,7 +423,7 @@ impl Player {
             Some(thread::spawn(move || {
                 let song_name = song.name().to_string();
 
-                if let Err(e) = midi_device.play(song, cancel_handle, barrier) {
+                if let Err(e) = midi_device.play_from(song, cancel_handle, barrier, start_time) {
                     error!(
                         err = e.as_ref(),
                         song = song_name,
@@ -485,8 +510,8 @@ impl Player {
     pub async fn stop(&self) -> Option<Arc<Song>> {
         let mut join = self.join.lock().await;
 
-        let join = match join.as_mut() {
-            Some(join) => join,
+        let play_handles = match join.take() {
+            Some(handles) => handles,
             None => {
                 info!("Player is not active, nothing to stop.");
                 return None;
@@ -498,6 +523,8 @@ impl Player {
             .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
             .is_err()
         {
+            // Put the handles back since we're not stopping
+            *join = Some(play_handles);
             info!("The previous stop is still processing.");
             return None;
         }
@@ -506,7 +533,21 @@ impl Player {
         info!(song = song.name(), "Stopping playback.");
 
         // Cancel the playback.
-        join.cancel.cancel();
+        play_handles.cancel.cancel();
+
+        // Clear the join handle immediately so we can play again
+        // The cleanup task will still run, but we don't need to wait for it
+        // Drop the join handle - it will complete in the background
+        drop(play_handles.join);
+        drop(join); // Release the lock
+
+        // Reset stop_run after a brief delay to allow any remaining cleanup to complete
+        let stop_run = self.stop_run.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            stop_run.store(false, Ordering::Relaxed);
+        });
+
         Some(song)
     }
 

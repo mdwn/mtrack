@@ -191,6 +191,122 @@ impl EffectEngine {
         Ok(())
     }
 
+    /// Start an effect with a pre-calculated elapsed time (for seeking)
+    /// This sets the effect's start_time to be in the past so it appears at the correct point in its lifecycle
+    pub fn start_effect_with_elapsed(
+        &mut self,
+        mut effect: EffectInstance,
+        elapsed_time: Duration,
+    ) -> Result<(), EffectError> {
+        // Validate effect
+        validation::validate_effect(&self.fixture_registry, &effect)?;
+
+        // Log effect parameters once when the effect is started
+        let (effect_kind, effect_params) = match &effect.effect_type {
+            EffectType::Static {
+                parameters,
+                duration,
+            } => (
+                "Static",
+                format!("params={:?}, duration={:?}", parameters, duration),
+            ),
+            EffectType::ColorCycle {
+                colors,
+                speed,
+                direction,
+                transition,
+            } => (
+                "ColorCycle",
+                format!(
+                    "colors={:?}, speed={:?}, direction={:?}, transition={:?}",
+                    colors, speed, direction, transition
+                ),
+            ),
+            EffectType::Strobe {
+                frequency,
+                duration,
+            } => (
+                "Strobe",
+                format!("frequency={:?}, duration={:?}", frequency, duration),
+            ),
+            EffectType::Dimmer {
+                start_level,
+                end_level,
+                duration,
+                curve,
+            } => (
+                "Dimmer",
+                format!(
+                    "start_level={:?}, end_level={:?}, duration={:?}, curve={:?}",
+                    start_level, end_level, duration, curve
+                ),
+            ),
+            EffectType::Chase {
+                pattern,
+                speed,
+                direction,
+                transition: _,
+            } => (
+                "Chase",
+                format!(
+                    "pattern={:?}, speed={:?}, direction={:?}",
+                    pattern, speed, direction
+                ),
+            ),
+            EffectType::Rainbow {
+                speed,
+                saturation,
+                brightness,
+            } => (
+                "Rainbow",
+                format!(
+                    "speed={:?}, saturation={:?}, brightness={:?}",
+                    speed, saturation, brightness
+                ),
+            ),
+            EffectType::Pulse {
+                base_level,
+                pulse_amplitude,
+                frequency,
+                duration,
+            } => (
+                "Pulse",
+                format!(
+                    "base_level={:?}, pulse_amplitude={:?}, frequency={:?}, duration={:?}",
+                    base_level, pulse_amplitude, frequency, duration
+                ),
+            ),
+        };
+
+        info!(
+            effect_id = %effect.id,
+            effect_kind,
+            effect_params = %effect_params,
+            layer = ?effect.layer,
+            blend_mode = ?effect.blend_mode,
+            priority = effect.priority,
+            up_time = ?effect.up_time,
+            hold_time = ?effect.hold_time,
+            down_time = ?effect.down_time,
+            targets = ?effect.target_fixtures,
+            elapsed_time = ?elapsed_time,
+            "Starting lighting effect with elapsed time"
+        );
+
+        // Stop any conflicting effects
+        layers::stop_conflicting_effects(&mut self.active_effects, &effect, &self.fixture_registry);
+
+        // Set the start time to be in the past by the elapsed amount
+        // This makes the effect appear at the correct point in its lifecycle
+        effect.start_time = Some(
+            self.current_time
+                .checked_sub(elapsed_time)
+                .unwrap_or(self.current_time),
+        );
+        self.active_effects.insert(effect.id.clone(), effect);
+        Ok(())
+    }
+
     /// Update the engine and return DMX commands
     pub fn update(&mut self, dt: Duration) -> Result<Vec<DmxCommand>, EffectError> {
         self.current_time += dt;
