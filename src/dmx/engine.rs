@@ -612,8 +612,9 @@ impl Engine {
     pub fn update_effects(&self) -> Result<(), Box<dyn std::error::Error>> {
         // Update the effects engine with a 44Hz frame time (matching Universe TARGET_HZ)
         let dt = Duration::from_secs_f64(1.0 / 44.0);
+        let song_time = self.get_song_time();
         let mut effect_engine = self.effect_engine.lock().unwrap();
-        let commands = effect_engine.update(dt)?;
+        let commands = effect_engine.update(dt, Some(song_time))?;
 
         // Group commands by universe
         let mut universe_commands: std::collections::HashMap<u16, Vec<(u16, u8)>> =
@@ -684,27 +685,39 @@ impl Engine {
             for cmd in &timeline_update.layer_commands {
                 match cmd.command_type {
                     LayerCommandType::Clear => {
-                        effects_engine.clear_layer(cmd.layer);
+                        if let Some(layer) = cmd.layer {
+                            effects_engine.clear_layer(layer);
+                        } else {
+                            effects_engine.clear_all_layers();
+                        }
                     }
                     LayerCommandType::Release => {
-                        if let Some(fade_time) = cmd.fade_time {
-                            effects_engine.release_layer_with_time(cmd.layer, Some(fade_time));
-                        } else {
-                            effects_engine.release_layer(cmd.layer);
+                        if let Some(layer) = cmd.layer {
+                            if let Some(fade_time) = cmd.fade_time {
+                                effects_engine.release_layer_with_time(layer, Some(fade_time));
+                            } else {
+                                effects_engine.release_layer(layer);
+                            }
                         }
                     }
                     LayerCommandType::Freeze => {
-                        effects_engine.freeze_layer(cmd.layer);
+                        if let Some(layer) = cmd.layer {
+                            effects_engine.freeze_layer(layer);
+                        }
                     }
                     LayerCommandType::Unfreeze => {
-                        effects_engine.unfreeze_layer(cmd.layer);
+                        if let Some(layer) = cmd.layer {
+                            effects_engine.unfreeze_layer(layer);
+                        }
                     }
                     LayerCommandType::Master => {
-                        if let Some(intensity) = cmd.intensity {
-                            effects_engine.set_layer_intensity_master(cmd.layer, intensity);
-                        }
-                        if let Some(speed) = cmd.speed {
-                            effects_engine.set_layer_speed_master(cmd.layer, speed);
+                        if let Some(layer) = cmd.layer {
+                            if let Some(intensity) = cmd.intensity {
+                                effects_engine.set_layer_intensity_master(layer, intensity);
+                            }
+                            if let Some(speed) = cmd.speed {
+                                effects_engine.set_layer_speed_master(layer, speed);
+                            }
                         }
                     }
                 }
@@ -721,7 +734,17 @@ impl Engine {
 
         // Start the effects in the effects engine, resolving groups to fixtures
         // First handle effects with pre-calculated elapsed time (from seeking)
-        for (effect, elapsed_time) in timeline_update.effects_with_elapsed.values() {
+        // IMPORTANT: Sort by cue_time to ensure effects are started in chronological order
+        // This ensures that earlier effects are started first, so later effects can properly
+        // conflict with and stop them (e.g., a Static effect at @1/4 should stop a ColorCycle at @1/1)
+        let mut effects_sorted: Vec<_> = timeline_update.effects_with_elapsed.values().collect();
+        effects_sorted.sort_by(|a, b| {
+            let cue_time_a = a.0.cue_time.unwrap_or(Duration::ZERO);
+            let cue_time_b = b.0.cue_time.unwrap_or(Duration::ZERO);
+            cue_time_a.cmp(&cue_time_b)
+        });
+
+        for (effect, elapsed_time) in effects_sorted {
             // Resolve groups to fixtures if lighting system is available
             if let Some(lighting_system) = &self.lighting_system {
                 let mut lighting_system = lighting_system.lock().unwrap();
@@ -831,27 +854,39 @@ impl Engine {
             for cmd in &timeline_update.layer_commands {
                 match cmd.command_type {
                     LayerCommandType::Clear => {
-                        effects_engine.clear_layer(cmd.layer);
+                        if let Some(layer) = cmd.layer {
+                            effects_engine.clear_layer(layer);
+                        } else {
+                            effects_engine.clear_all_layers();
+                        }
                     }
                     LayerCommandType::Release => {
-                        if let Some(fade_time) = cmd.fade_time {
-                            effects_engine.release_layer_with_time(cmd.layer, Some(fade_time));
-                        } else {
-                            effects_engine.release_layer(cmd.layer);
+                        if let Some(layer) = cmd.layer {
+                            if let Some(fade_time) = cmd.fade_time {
+                                effects_engine.release_layer_with_time(layer, Some(fade_time));
+                            } else {
+                                effects_engine.release_layer(layer);
+                            }
                         }
                     }
                     LayerCommandType::Freeze => {
-                        effects_engine.freeze_layer(cmd.layer);
+                        if let Some(layer) = cmd.layer {
+                            effects_engine.freeze_layer(layer);
+                        }
                     }
                     LayerCommandType::Unfreeze => {
-                        effects_engine.unfreeze_layer(cmd.layer);
+                        if let Some(layer) = cmd.layer {
+                            effects_engine.unfreeze_layer(layer);
+                        }
                     }
                     LayerCommandType::Master => {
-                        if let Some(intensity) = cmd.intensity {
-                            effects_engine.set_layer_intensity_master(cmd.layer, intensity);
-                        }
-                        if let Some(speed) = cmd.speed {
-                            effects_engine.set_layer_speed_master(cmd.layer, speed);
+                        if let Some(layer) = cmd.layer {
+                            if let Some(intensity) = cmd.intensity {
+                                effects_engine.set_layer_intensity_master(layer, intensity);
+                            }
+                            if let Some(speed) = cmd.speed {
+                                effects_engine.set_layer_speed_master(layer, speed);
+                            }
                         }
                     }
                 }
@@ -868,7 +903,17 @@ impl Engine {
 
         // Start the effects in the effects engine, resolving groups to fixtures
         // First handle effects with pre-calculated elapsed time (from seeking)
-        for (effect, elapsed_time) in timeline_update.effects_with_elapsed.values() {
+        // IMPORTANT: Sort by cue_time to ensure effects are started in chronological order
+        // This ensures that earlier effects are started first, so later effects can properly
+        // conflict with and stop them (e.g., a Static effect at @1/4 should stop a ColorCycle at @1/1)
+        let mut effects_sorted: Vec<_> = timeline_update.effects_with_elapsed.values().collect();
+        effects_sorted.sort_by(|a, b| {
+            let cue_time_a = a.0.cue_time.unwrap_or(Duration::ZERO);
+            let cue_time_b = b.0.cue_time.unwrap_or(Duration::ZERO);
+            cue_time_a.cmp(&cue_time_b)
+        });
+
+        for (effect, elapsed_time) in effects_sorted {
             // Resolve groups to fixtures if lighting system is available
             if let Some(lighting_system) = &self.lighting_system {
                 let mut lighting_system = lighting_system.lock().unwrap();
@@ -942,7 +987,8 @@ impl Engine {
 
         // Note: We do NOT stop effects here - they should continue running
         // until they naturally complete or until the next song starts.
-        // Effects are only cleared when a new song starts or playback is cancelled.
+        // Effects are only cleared when a new song starts (in start_lighting_timeline_at)
+        // or when explicitly stopping playback.
     }
 
     /// Updates the current song time
@@ -955,6 +1001,12 @@ impl Engine {
     pub fn get_song_time(&self) -> Duration {
         let current_time = self.current_song_time.lock().unwrap();
         *current_time
+    }
+
+    /// Get a formatted string listing all active effects
+    pub fn format_active_effects(&self) -> String {
+        let effect_engine = self.effect_engine.lock().unwrap();
+        effect_engine.format_active_effects()
     }
 
     /// Gets all cues from the current timeline with their times and indices

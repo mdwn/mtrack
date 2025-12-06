@@ -162,7 +162,7 @@ pub enum LayerCommandType {
 #[derive(Debug, Clone)]
 pub struct LayerCommand {
     pub command_type: LayerCommandType,
-    pub layer: EffectLayer,
+    pub layer: Option<EffectLayer>, // None means all layers (only valid for clear)
     pub fade_time: Option<Duration>,
     pub intensity: Option<f64>,
     pub speed: Option<f64>,

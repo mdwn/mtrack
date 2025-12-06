@@ -46,6 +46,12 @@ pub struct LightingSystem {
     group_cache: HashMap<String, HashMap<String, Vec<String>>>,
 }
 
+impl Default for LightingSystem {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LightingSystem {
     /// Creates a new lighting system.
     pub fn new() -> LightingSystem {

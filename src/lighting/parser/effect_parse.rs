@@ -33,6 +33,10 @@ pub(crate) fn parse_effect_definition(
     pair: Pair<Rule>,
     tempo_map: &Option<TempoMap>,
     cue_time: Duration,
+    offset_secs: f64,
+    unshifted_score_time: Option<Duration>,
+    score_measure: Option<u32>,
+    measure_offset: u32,
 ) -> Result<Effect, Box<dyn Error>> {
     let mut groups = Vec::new();
     let mut effect_type = EffectType::Static {
@@ -127,19 +131,74 @@ pub(crate) fn parse_effect_definition(
                                 });
                             }
                             "up_time" => {
+                                // Use unshifted_score_time for tempo lookup to get correct tempo
+                                // Duration is independent of offsets - it's calculated in score space
+                                let tempo_lookup_time = unshifted_score_time.unwrap_or_else(|| {
+                                    cue_time.saturating_sub(Duration::from_secs_f64(offset_secs))
+                                });
                                 let duration = parse_duration_string(
                                     value.as_str(),
                                     tempo_map,
-                                    Some(cue_time),
+                                    Some(tempo_lookup_time),
+                                    0.0, // Use 0.0 offset since we're using score-space time
                                 )?;
                                 up_time = Some(duration);
                             }
                             "hold_time" => {
-                                let duration = parse_duration_string(
-                                    value.as_str(),
-                                    tempo_map,
-                                    Some(cue_time),
-                                )?;
+                                // For hold_time: 30measures means 30 PLAYBACK measures
+                                // Calculate duration in playback measure space
+                                let duration = if value.ends_with("measures") {
+                                    let num_str = value.trim_end_matches("measures");
+                                    if let Ok(playback_measures) = num_str.parse::<f64>() {
+                                        if let Some(tm) = tempo_map {
+                                            if let Some(score_measure_val) = score_measure {
+                                                // Calculate duration for N playback measures
+                                                tm.playback_measures_to_duration(
+                                                    score_measure_val,
+                                                    playback_measures,
+                                                    measure_offset,
+                                                )
+                                            } else {
+                                                // Fallback to time-based calculation if no score measure
+                                                let score_time_for_calc = unshifted_score_time
+                                                    .unwrap_or_else(|| {
+                                                        cue_time.saturating_sub(
+                                                            Duration::from_secs_f64(offset_secs),
+                                                        )
+                                                    });
+                                                parse_duration_string(
+                                                    value.as_str(),
+                                                    tempo_map,
+                                                    Some(score_time_for_calc),
+                                                    0.0,
+                                                )?
+                                            }
+                                        } else {
+                                            return Err(
+                                                "Measure-based durations require a tempo section"
+                                                    .into(),
+                                            );
+                                        }
+                                    } else {
+                                        return Err(
+                                            format!("Invalid measure count: {}", num_str).into()
+                                        );
+                                    }
+                                } else {
+                                    // For non-measure durations, use standard calculation
+                                    let score_time_for_calc =
+                                        unshifted_score_time.unwrap_or_else(|| {
+                                            cue_time.saturating_sub(Duration::from_secs_f64(
+                                                offset_secs,
+                                            ))
+                                        });
+                                    parse_duration_string(
+                                        value.as_str(),
+                                        tempo_map,
+                                        Some(score_time_for_calc),
+                                        0.0,
+                                    )?
+                                };
                                 hold_time = Some(duration);
                             }
                             "down_time" => {
@@ -147,6 +206,7 @@ pub(crate) fn parse_effect_definition(
                                     value.as_str(),
                                     tempo_map,
                                     Some(cue_time),
+                                    offset_secs,
                                 )?;
                                 down_time = Some(duration);
                             }
@@ -168,6 +228,7 @@ pub(crate) fn parse_effect_definition(
         &color_parameters,
         tempo_map,
         cue_time,
+        offset_secs,
     )?;
 
     Ok(Effect {
@@ -189,6 +250,7 @@ pub(crate) fn apply_parameters_to_effect_type(
     color_parameters: &[String],
     tempo_map: &Option<TempoMap>,
     cue_time: Duration,
+    offset_secs: f64,
 ) -> Result<EffectType, Box<dyn Error>> {
     match &mut effect_type {
         EffectType::Static {
@@ -215,7 +277,10 @@ pub(crate) fn apply_parameters_to_effect_type(
                         }
                     }
                     "duration" => {
-                        let dur = parse_duration_string(value, tempo_map, Some(cue_time))?;
+                        // Convert shifted cue_time back to score-space for duration calculation
+                        let score_time =
+                            cue_time.saturating_sub(Duration::from_secs_f64(offset_secs));
+                        let dur = parse_duration_string(value, tempo_map, Some(score_time), 0.0)?;
                         *duration = Some(dur);
                     }
                     _ => {
@@ -282,7 +347,10 @@ pub(crate) fn apply_parameters_to_effect_type(
                         }
                     },
                     "duration" => {
-                        let dur = parse_duration_string(value, tempo_map, Some(cue_time))?;
+                        // Convert shifted cue_time back to score-space for duration calculation
+                        let score_time =
+                            cue_time.saturating_sub(Duration::from_secs_f64(offset_secs));
+                        let dur = parse_duration_string(value, tempo_map, Some(score_time), 0.0)?;
                         *duration = Some(dur);
                     }
                     _ => {}
@@ -316,7 +384,10 @@ pub(crate) fn apply_parameters_to_effect_type(
                         }
                     },
                     "duration" => {
-                        let dur = parse_duration_string(value, tempo_map, Some(cue_time))?;
+                        // Convert shifted cue_time back to score-space for duration calculation
+                        let score_time =
+                            cue_time.saturating_sub(Duration::from_secs_f64(offset_secs));
+                        let dur = parse_duration_string(value, tempo_map, Some(score_time), 0.0)?;
                         *duration = Some(dur);
                     }
                     _ => {}
@@ -390,7 +461,8 @@ pub(crate) fn apply_parameters_to_effect_type(
                         }
                     }
                     "duration" => {
-                        let dur = parse_duration_string(value, tempo_map, Some(cue_time))?;
+                        let dur =
+                            parse_duration_string(value, tempo_map, Some(cue_time), offset_secs)?;
                         *duration = dur;
                     }
                     "curve" => {

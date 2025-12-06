@@ -119,7 +119,7 @@ impl LightingTimeline {
 
             // For effects, only include ones that would still be active at start_time
             for effect in &cue.effects {
-                if let Some(effect_instance) = Self::create_effect_instance(effect) {
+                if let Some(effect_instance) = Self::create_effect_instance(effect, cue.time) {
                     // Check if this effect would still be active at start_time
                     let effect_start_time = cue.time;
                     let elapsed_at_start = start_time.saturating_sub(effect_start_time);
@@ -192,7 +192,7 @@ impl LightingTimeline {
             if cue.time <= song_time {
                 // This cue should trigger - process effects
                 for effect in &cue.effects {
-                    if let Some(effect_instance) = Self::create_effect_instance(effect) {
+                    if let Some(effect_instance) = Self::create_effect_instance(effect, cue.time) {
                         result.effects.push(effect_instance);
                     }
                 }
@@ -221,9 +221,11 @@ impl LightingTimeline {
     }
 
     /// Creates an EffectInstance from a DSL Effect
-    pub fn create_effect_instance(effect: &Effect) -> Option<EffectInstance> {
+    /// cue_time is the song time when this effect was supposed to start (for deterministic randomness)
+    pub fn create_effect_instance(effect: &Effect, cue_time: Duration) -> Option<EffectInstance> {
         // Create base effect instance using the DSL EffectType directly with timing
         // Include sequence name in ID if this effect came from a sequence
+        // Use SystemTime for IDs to keep them unique, but use cue_time for randomness seeds
         let effect_id = if let Some(ref seq_name) = effect.sequence_name {
             format!(
                 "seq_{}_effect_{}",
@@ -251,6 +253,9 @@ impl LightingTimeline {
             effect.hold_time,
             effect.down_time,
         );
+
+        // Store the cue time for deterministic randomness
+        effect_instance.cue_time = Some(cue_time);
 
         // Apply layering information if specified in DSL
         if let Some(layer) = effect.layer {
@@ -560,7 +565,7 @@ mod tests {
                 effects: vec![],
                 layer_commands: vec![LayerCommand {
                     command_type: LayerCommandType::Clear,
-                    layer: EffectLayer::Foreground,
+                    layer: Some(EffectLayer::Foreground),
                     fade_time: None,
                     intensity: None,
                     speed: None,
@@ -572,7 +577,7 @@ mod tests {
                 effects: vec![],
                 layer_commands: vec![LayerCommand {
                     command_type: LayerCommandType::Release,
-                    layer: EffectLayer::Background,
+                    layer: Some(EffectLayer::Background),
                     fade_time: Some(Duration::from_secs(2)),
                     intensity: None,
                     speed: None,
@@ -584,7 +589,7 @@ mod tests {
                 effects: vec![],
                 layer_commands: vec![LayerCommand {
                     command_type: LayerCommandType::Master,
-                    layer: EffectLayer::Midground,
+                    layer: Some(EffectLayer::Midground),
                     fade_time: None,
                     intensity: Some(0.5),
                     speed: Some(2.0),
@@ -604,7 +609,10 @@ mod tests {
             result0.layer_commands[0].command_type,
             LayerCommandType::Clear
         );
-        assert_eq!(result0.layer_commands[0].layer, EffectLayer::Foreground);
+        assert_eq!(
+            result0.layer_commands[0].layer,
+            Some(EffectLayer::Foreground)
+        );
 
         // Second cue: release command with fade time
         let result1 = timeline.update(Duration::from_secs(1));
@@ -655,7 +663,7 @@ mod tests {
             effects: vec![effect],
             layer_commands: vec![LayerCommand {
                 command_type: LayerCommandType::Master,
-                layer: EffectLayer::Background,
+                layer: Some(EffectLayer::Background),
                 fade_time: None,
                 intensity: Some(0.75),
                 speed: None,

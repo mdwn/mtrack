@@ -302,13 +302,13 @@ impl TempoMap {
     }
 
     /// Convert a measure/beat position to absolute time with an offset
-    /// The offset is applied to both the target measure and tempo change positions
-    /// This allows tempo changes specified in score measures to respect offsets
+    /// The offset is applied to both the target position and tempo change positions
     pub fn measure_to_time_with_offset(
         &self,
         measure: u32,
         beat: f64,
         measure_offset: u32,
+        offset_secs: f64,
     ) -> Option<Duration> {
         // Measures are 1-indexed
         if measure < 1 {
@@ -320,8 +320,13 @@ impl TempoMap {
             return None;
         }
 
+        let offset_duration = Duration::from_secs_f64(offset_secs);
+
         // Integrate through tempo segments to reach target position
         // We need to account for time signature changes that affect beats per measure
+        // Note: offset_secs is used to shift tempo change times, but NOT added to the result
+        // The result is in "score space" where tempo changes are shifted but the offset isn't added
+        // The parser will add applied_offset_secs separately to get absolute time
         let mut current_bpm = self.initial_bpm;
         let mut accumulated_time = self.start_offset;
         let mut accumulated_beats = 0.0;
@@ -423,12 +428,12 @@ impl TempoMap {
                 // Find the most recent time signature change that applies at or before the start of this measure
                 // Time signature changes apply at the START of the specified measure/beat
                 // So if a change is at measure 4/1, measure 4 uses the NEW time signature
-                // Note: ts_changes are in score measures, so we need to apply offset when comparing
+                // NOTE: Tempo/time-signature change positions are in score measures and should NOT be offset.
                 let mut ts = self.initial_time_signature;
                 // Iterate through sorted changes (ascending order) to find the most recent one that applies
                 for (change_m, change_b, new_ts) in &ts_changes {
-                    let change_playback_measure = *change_m + measure_offset;
-                    // If change is exactly at the start of current measure (beat 1), the measure uses the NEW time sig
+                    let change_playback_measure = *change_m; // do not apply measure_offset to time signatures
+                                                             // If change is exactly at the start of current measure (beat 1), the measure uses the NEW time sig
                     if change_playback_measure == current_measure && (*change_b - 1.0).abs() < 0.001
                     {
                         ts = *new_ts;
@@ -464,17 +469,16 @@ impl TempoMap {
         // We apply the measure_offset to tempo changes so they respect the offset timeline,
         // ensuring consistent measure numbering with the target measure.
         for change in &self.changes {
-            // Tempo changes are already resolved to absolute time, so use that directly
-            let change_time = change.position.absolute_time()?;
+            // Tempo changes are resolved to absolute time; apply offset to slide them
+            let change_time = change.position.absolute_time()? + offset_duration;
 
             // Calculate beats to this tempo change
             // If we have original_measure_beat, use it to calculate beats directly (same way as target_beats)
             // Otherwise, convert time to beats by integrating through tempo changes
             let change_beats = if let Some((change_m, change_b)) = change.original_measure_beat {
                 // Calculate beats by integrating through measures (same logic as target_beats)
-                // Apply offset to tempo change measure (tempo changes are in score measures)
-                // This ensures tempo changes respect the measure offset, aligning with the offset timeline
-                let change_playback_measure = change_m + measure_offset;
+                // Tempo changes are specified in score measures and should NOT be offset.
+                let change_playback_measure = change_m;
 
                 let mut change_target_beats = 0.0;
                 let mut change_current_measure = 1;
@@ -485,14 +489,14 @@ impl TempoMap {
                         && change_current_beat < change_b)
                 {
                     // Determine time signature for current measure
-                    // Note: ts_changes are in score measures, so we need to apply offset when comparing
+                    // Note: time signature changes are in score measures and should NOT be offset.
                     let ts_for_measure = {
                         let mut ts = self.initial_time_signature;
                         for (ts_m, ts_b, new_ts) in &ts_changes {
-                            let ts_playback_measure = *ts_m + measure_offset;
-                            // Time signature changes apply at or before the current measure.
-                            // If the change is exactly at the start of the measure (beat 1),
-                            // or in any previous measure, it governs this measure.
+                            let ts_playback_measure = *ts_m; // no offset applied
+                                                             // Time signature changes apply at or before the current measure.
+                                                             // If the change is exactly at the start of the measure (beat 1),
+                                                             // or in any previous measure, it governs this measure.
                             if ts_playback_measure < change_current_measure
                                 || (ts_playback_measure == change_current_measure
                                     && (*ts_b - 1.0).abs() < 0.001)
@@ -551,6 +555,21 @@ impl TempoMap {
                 let time_for_remaining =
                     Duration::from_secs_f64(remaining_beats * 60.0 / current_bpm);
                 let result_time = accumulated_time + time_for_remaining;
+                #[cfg(test)]
+                eprintln!(
+                    "[tempo-debug] early-return target-before-change measure={} beat={} offset={} target_beats={} change_beats={} accumulated_beats={} remaining_beats={} bpm={:.6} start_offset_secs={:.6} accumulated_time_secs={:.6} result_time_secs={:.6}",
+                    measure,
+                    beat,
+                    measure_offset,
+                    target_beats,
+                    change_beats,
+                    accumulated_beats,
+                    remaining_beats,
+                    current_bpm,
+                    self.start_offset.as_secs_f64(),
+                    accumulated_time.as_secs_f64(),
+                    result_time.as_secs_f64()
+                );
                 return Some(result_time);
             }
 
@@ -569,19 +588,41 @@ impl TempoMap {
         }
 
         // Target is beyond all changes - use final tempo
-        // accumulated_time already includes start_offset, so we just need to add the remaining time
+        // accumulated_time already includes start_offset (but NOT offset_duration), so we just need to add the remaining time
         let remaining_beats = target_beats - accumulated_beats;
         let time_for_remaining = Duration::from_secs_f64(remaining_beats * 60.0 / current_bpm);
         let result_time = accumulated_time + time_for_remaining;
+
+        // Emit detailed debug info in tests to diagnose timing issues
+        #[cfg(test)]
+        eprintln!(
+            "[tempo-debug] measure_to_time_with_offset measure={} beat={} offset={} \
+                 target_beats={} change_beats={} remaining_beats={} start_offset_secs={:.6} \
+                 accumulated_time_secs={:.6} current_bpm={:.6} result_time_secs={:.6}",
+            measure,
+            beat,
+            measure_offset,
+            target_beats,
+            accumulated_beats,
+            remaining_beats,
+            self.start_offset.as_secs_f64(),
+            accumulated_time.as_secs_f64(),
+            current_bpm,
+            result_time.as_secs_f64()
+        );
+
         Some(result_time)
     }
 
     /// Get BPM at a given time (accounting for tempo changes)
-    pub fn bpm_at_time(&self, time: Duration) -> f64 {
+    /// If offset_secs is provided, it's added to tempo change times to account for timeline shifts
+    pub fn bpm_at_time(&self, time: Duration, offset_secs: f64) -> f64 {
+        let offset_duration = Duration::from_secs_f64(offset_secs);
         let mut bpm = self.initial_bpm;
 
         for change in &self.changes {
-            let change_time = change.position.absolute_time().unwrap_or(Duration::ZERO);
+            let change_time =
+                change.position.absolute_time().unwrap_or(Duration::ZERO) + offset_duration;
             if change_time <= time {
                 match change.transition {
                     TempoTransition::Snap => {
@@ -593,8 +634,8 @@ impl TempoMap {
                         // For gradual transitions, calculate current BPM
                         if let Some(new_bpm) = change.bpm {
                             // Get BPM before this change
-                            let old_bpm = if change_time > self.start_offset {
-                                self.bpm_at_time(change_time - Duration::from_nanos(1))
+                            let old_bpm = if change_time > self.start_offset + offset_duration {
+                                self.bpm_at_time(change_time - Duration::from_nanos(1), offset_secs)
                             } else {
                                 self.initial_bpm
                             };
@@ -605,7 +646,8 @@ impl TempoMap {
                                     Duration::from_secs_f64(beats * 60.0 / old_bpm)
                                 }
                                 TempoTransition::Measures(measures, _) => {
-                                    let current_ts = self.time_signature_at_time(change_time);
+                                    let current_ts =
+                                        self.time_signature_at_time(change_time, offset_secs);
                                     let beats = measures * current_ts.beats_per_measure();
                                     Duration::from_secs_f64(beats * 60.0 / old_bpm)
                                 }
@@ -631,11 +673,14 @@ impl TempoMap {
     }
 
     /// Get time signature at a given time
-    pub fn time_signature_at_time(&self, time: Duration) -> TimeSignature {
+    /// If offset_secs is provided, it's added to tempo change times to account for timeline shifts
+    pub fn time_signature_at_time(&self, time: Duration, offset_secs: f64) -> TimeSignature {
+        let offset_duration = Duration::from_secs_f64(offset_secs);
         let mut ts = self.initial_time_signature;
 
         for change in &self.changes {
-            let change_time = change.position.absolute_time().unwrap_or(Duration::ZERO);
+            let change_time =
+                change.position.absolute_time().unwrap_or(Duration::ZERO) + offset_duration;
             if change_time <= time {
                 if let Some(new_ts) = change.time_signature {
                     // Time signature changes are always instant (snap)
@@ -649,29 +694,31 @@ impl TempoMap {
 
     /// Convert a duration in beats to absolute Duration at a given time
     /// This integrates through tempo changes during the duration
-    pub fn beats_to_duration(&self, beats: f64, at_time: Duration) -> Duration {
+    /// If offset_secs is provided, it's used to adjust tempo change lookups
+    pub fn beats_to_duration(&self, beats: f64, at_time: Duration, offset_secs: f64) -> Duration {
         let mut remaining_beats = beats;
         let mut current_time = at_time;
-        let mut current_bpm = self.bpm_at_time(at_time);
+        let mut current_bpm = self.bpm_at_time(at_time, offset_secs);
 
         // Find all tempo changes that occur during the duration
         // We'll process them in order, integrating through each segment
+        let offset_duration = Duration::from_secs_f64(offset_secs);
         let mut relevant_changes: Vec<&TempoChange> = self
             .changes
             .iter()
             .filter(|change| {
                 if let Some(change_time) = change.position.absolute_time() {
-                    change_time >= at_time
+                    (change_time + offset_duration) >= at_time
                 } else {
                     false
                 }
             })
             .collect();
 
-        // Sort by time
+        // Sort by time (with offset applied)
         relevant_changes.sort_by(|a, b| {
-            let time_a = a.position.absolute_time().unwrap_or(Duration::ZERO);
-            let time_b = b.position.absolute_time().unwrap_or(Duration::ZERO);
+            let time_a = a.position.absolute_time().unwrap_or(Duration::ZERO) + offset_duration;
+            let time_b = b.position.absolute_time().unwrap_or(Duration::ZERO) + offset_duration;
             time_a.cmp(&time_b)
         });
 
@@ -681,7 +728,7 @@ impl TempoMap {
                 break;
             }
 
-            let change_time = change.position.absolute_time().unwrap();
+            let change_time = change.position.absolute_time().unwrap() + offset_duration;
             if change_time <= current_time {
                 // This change already happened, update current BPM
                 match change.transition {
@@ -692,8 +739,8 @@ impl TempoMap {
                     }
                     TempoTransition::Beats(_, curve) | TempoTransition::Measures(_, curve) => {
                         // Check if we're still in the transition
-                        let old_bpm = if change_time > self.start_offset {
-                            self.bpm_at_time(change_time - Duration::from_nanos(1))
+                        let old_bpm = if change_time > self.start_offset + offset_duration {
+                            self.bpm_at_time(change_time - Duration::from_nanos(1), offset_secs)
                         } else {
                             self.initial_bpm
                         };
@@ -703,7 +750,8 @@ impl TempoMap {
                                 Duration::from_secs_f64(beats * 60.0 / old_bpm)
                             }
                             TempoTransition::Measures(measures, _) => {
-                                let current_ts = self.time_signature_at_time(change_time);
+                                let current_ts =
+                                    self.time_signature_at_time(change_time, offset_secs);
                                 let beats = measures * current_ts.beats_per_measure();
                                 Duration::from_secs_f64(beats * 60.0 / old_bpm)
                             }
@@ -759,14 +807,25 @@ impl TempoMap {
             }
 
             // Calculate how many beats occur before this change
-            let time_to_change = change_time - current_time;
+            let change_time_playback = change_time; // change_time already has offset applied
+            let time_to_change = change_time_playback - current_time;
             let beats_in_segment = time_to_change.as_secs_f64() * current_bpm / 60.0;
 
-            if remaining_beats <= beats_in_segment {
+            // Use a small epsilon for floating point comparison to handle precision issues
+            // This ensures that when remaining_beats is very close to beats_in_segment,
+            // we treat it as equal and end the effect exactly at the tempo change
+            const EPSILON: f64 = 1e-6;
+            let beats_diff = (remaining_beats - beats_in_segment).abs();
+
+            if remaining_beats < beats_in_segment {
                 // All remaining beats fit in this segment (constant BPM)
                 let duration_for_remaining =
                     Duration::from_secs_f64(remaining_beats * 60.0 / current_bpm);
                 return current_time + duration_for_remaining - at_time;
+            } else if beats_diff < EPSILON {
+                // remaining_beats is essentially equal to beats_in_segment (within epsilon)
+                // Effect ends exactly at the tempo change
+                return change_time - at_time;
             }
 
             // Consume all beats in this segment
@@ -790,7 +849,7 @@ impl TempoMap {
                             Duration::from_secs_f64(beats * 60.0 / old_bpm)
                         }
                         TempoTransition::Measures(measures, _) => {
-                            let current_ts = self.time_signature_at_time(change_time);
+                            let current_ts = self.time_signature_at_time(change_time, offset_secs);
                             let beats = measures * current_ts.beats_per_measure();
                             Duration::from_secs_f64(beats * 60.0 / old_bpm)
                         }
@@ -836,14 +895,87 @@ impl TempoMap {
 
     /// Convert a duration in measures to absolute Duration at a given time
     /// This integrates through tempo and time signature changes during the duration
-    pub fn measures_to_duration(&self, measures: f64, at_time: Duration) -> Duration {
-        let initial_time_sig = self.time_signature_at_time(at_time);
+    /// If offset_secs is provided, it's used to adjust tempo change lookups
+    pub fn measures_to_duration(
+        &self,
+        measures: f64,
+        at_time: Duration,
+        offset_secs: f64,
+    ) -> Duration {
+        let initial_time_sig = self.time_signature_at_time(at_time, offset_secs);
         let initial_beats = measures * initial_time_sig.beats_per_measure();
 
         // Convert measures to beats, then use beats_to_duration
         // Note: This is approximate if time signature changes during the duration
         // A more accurate implementation would integrate through time signature changes
         // but for now, we use the initial time signature
-        self.beats_to_duration(initial_beats, at_time)
+        self.beats_to_duration(initial_beats, at_time, offset_secs)
+    }
+
+    /// Calculate duration for N playback measures
+    /// score_start_measure: The score measure where the effect starts (e.g., 88)
+    /// playback_measures: Number of playback measures (e.g., 30)
+    /// measure_offset: The offset in measures (playback_measure = score_measure + measure_offset)
+    ///
+    /// This calculates duration by iterating through playback measures and finding tempo changes
+    /// at their playback measure positions (which are the same as score measure positions for tempo changes)
+    pub fn playback_measures_to_duration(
+        &self,
+        score_start_measure: u32,
+        playback_measures: f64,
+        measure_offset: u32,
+    ) -> Duration {
+        let playback_start_measure = score_start_measure as f64 + measure_offset as f64;
+        let playback_end_measure = playback_start_measure + playback_measures;
+
+        // Calculate duration by integrating through playback measures
+        // Tempo changes are at fixed score measures, which correspond to the same playback measures
+        let mut duration = Duration::ZERO;
+        let mut current_playback_measure = playback_start_measure;
+        let mut current_bpm = self.bpm_at_time(
+            self.measure_to_time_with_offset(score_start_measure, 1.0, 0, 0.0)
+                .unwrap_or(self.start_offset),
+            0.0,
+        );
+        let mut current_ts = self.time_signature_at_time(
+            self.measure_to_time_with_offset(score_start_measure, 1.0, 0, 0.0)
+                .unwrap_or(self.start_offset),
+            0.0,
+        );
+
+        while current_playback_measure < playback_end_measure {
+            let playback_measure_int = current_playback_measure as u32;
+
+            // Check if there's a tempo change at this playback measure
+            // Tempo changes are at score measures, which are the same as playback measures
+            // (offsets don't affect tempo change positions)
+            let mut measure_bpm = current_bpm;
+            let mut measure_ts = current_ts;
+
+            for change in &self.changes {
+                if let Some((score_measure, beat)) = change.original_measure_beat {
+                    // Tempo changes are at score measures, which equal playback measures
+                    if score_measure == playback_measure_int && (beat - 1.0).abs() < 0.001 {
+                        if let Some(new_bpm) = change.bpm {
+                            measure_bpm = new_bpm;
+                            current_bpm = new_bpm;
+                        }
+                        if let Some(new_ts) = change.time_signature {
+                            measure_ts = new_ts;
+                            current_ts = new_ts;
+                        }
+                    }
+                }
+            }
+
+            // Calculate duration for this measure
+            let beats = measure_ts.beats_per_measure();
+            let measure_duration = Duration::from_secs_f64(beats * 60.0 / measure_bpm);
+            duration += measure_duration;
+
+            current_playback_measure += 1.0;
+        }
+
+        duration
     }
 }

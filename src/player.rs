@@ -606,6 +606,13 @@ impl Player {
         })
     }
 
+    /// Gets a formatted string listing all active lighting effects
+    pub fn format_active_effects(&self) -> Option<String> {
+        self.dmx_engine
+            .as_ref()
+            .map(|engine| engine.format_active_effects())
+    }
+
     /// Goes to the previous song and emits the MIDI event associated if one exists.
     fn prev_and_emit(
         midi_device: Option<Arc<dyn midi::Device>>,

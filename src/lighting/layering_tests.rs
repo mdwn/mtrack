@@ -78,7 +78,7 @@ mod layering_behavior_tests {
             None,
         );
         engine.start_effect(bg_blue).unwrap();
-        let _ = engine.update(Duration::from_millis(1000)).unwrap();
+        let _ = engine.update(Duration::from_millis(1000), None).unwrap();
 
         // 00:01 Midground dim to 50% (instant, permanent persist at completion)
         let mut mid_dim_50 = EffectInstance::new(
@@ -97,7 +97,7 @@ mod layering_behavior_tests {
         mid_dim_50.layer = EffectLayer::Midground;
         mid_dim_50.blend_mode = BlendMode::Multiply;
         engine.start_effect(mid_dim_50).unwrap();
-        let _ = engine.update(Duration::from_millis(1)).unwrap();
+        let _ = engine.update(Duration::from_millis(1), None).unwrap();
 
         // 00:02 Foreground dim to 50% (instant)
         let mut fg_dim_50 = EffectInstance::new(
@@ -116,7 +116,7 @@ mod layering_behavior_tests {
         fg_dim_50.layer = EffectLayer::Foreground;
         fg_dim_50.blend_mode = BlendMode::Multiply;
         engine.start_effect(fg_dim_50).unwrap();
-        let _ = engine.update(Duration::from_millis(1)).unwrap();
+        let _ = engine.update(Duration::from_millis(1), None).unwrap();
 
         // 00:03 Midground dim to 100% (instant) — should overwrite mid 0.5 to 1.0
         let mut mid_dim_100 = EffectInstance::new(
@@ -135,7 +135,7 @@ mod layering_behavior_tests {
         mid_dim_100.layer = EffectLayer::Midground;
         mid_dim_100.blend_mode = BlendMode::Multiply;
         engine.start_effect(mid_dim_100).unwrap();
-        let cmds = engine.update(Duration::from_millis(1)).unwrap();
+        let cmds = engine.update(Duration::from_millis(1), None).unwrap();
 
         // Expect blue = 127 (50% of 255) — only foreground 0.5 remains
         let blue_ch = 1 + 3 - 1; // address 1 + blue offset 3 - 1 = 3
@@ -169,7 +169,7 @@ mod layering_behavior_tests {
             None,
         );
         engine.start_effect(bg_blue).unwrap();
-        let _ = engine.update(Duration::from_millis(1)).unwrap();
+        let _ = engine.update(Duration::from_millis(1), None).unwrap();
 
         // 00:01 Foreground dim to 50%
         let mut fg_dim_50 = EffectInstance::new(
@@ -188,7 +188,7 @@ mod layering_behavior_tests {
         fg_dim_50.layer = EffectLayer::Foreground;
         fg_dim_50.blend_mode = BlendMode::Multiply;
         engine.start_effect(fg_dim_50).unwrap();
-        let _ = engine.update(Duration::from_millis(1)).unwrap();
+        let _ = engine.update(Duration::from_millis(1), None).unwrap();
 
         // 00:02 Midground dim to 50%
         let mut mid_dim_50 = EffectInstance::new(
@@ -207,7 +207,7 @@ mod layering_behavior_tests {
         mid_dim_50.layer = EffectLayer::Midground;
         mid_dim_50.blend_mode = BlendMode::Multiply;
         engine.start_effect(mid_dim_50).unwrap();
-        let _ = engine.update(Duration::from_millis(1)).unwrap();
+        let _ = engine.update(Duration::from_millis(1), None).unwrap();
 
         // 00:03 Foreground dim to 100%
         let mut fg_dim_100 = EffectInstance::new(
@@ -226,7 +226,7 @@ mod layering_behavior_tests {
         fg_dim_100.layer = EffectLayer::Foreground;
         fg_dim_100.blend_mode = BlendMode::Multiply;
         engine.start_effect(fg_dim_100).unwrap();
-        let cmds = engine.update(Duration::from_millis(1)).unwrap();
+        let cmds = engine.update(Duration::from_millis(1), None).unwrap();
 
         // Expect blue ≈ 127 (mid=0.5, fg=1.0)
         let blue_ch = 1 + 3 - 1;
@@ -260,7 +260,7 @@ mod layering_behavior_tests {
             None,
         );
         engine.start_effect(bg_blue).unwrap();
-        let _ = engine.update(Duration::from_millis(1)).unwrap();
+        let _ = engine.update(Duration::from_millis(1), None).unwrap();
 
         // Midground: dimmer multiply 50%
         let mut mid_dim = EffectInstance::new(
@@ -279,7 +279,7 @@ mod layering_behavior_tests {
         mid_dim.layer = EffectLayer::Midground;
         mid_dim.blend_mode = BlendMode::Multiply;
         engine.start_effect(mid_dim).unwrap();
-        let cmds = engine.update(Duration::from_millis(1)).unwrap();
+        let cmds = engine.update(Duration::from_millis(1), None).unwrap();
 
         let blue_ch = 1 + 3 - 1;
         let blue = cmds
@@ -312,7 +312,7 @@ mod layering_behavior_tests {
             None,
         );
         engine.start_effect(bg_blue).unwrap();
-        let _ = engine.update(Duration::from_millis(1)).unwrap();
+        let _ = engine.update(Duration::from_millis(1), None).unwrap();
 
         // Midground: static red (replace)
         let mut mid_red = EffectInstance::new(
@@ -333,7 +333,7 @@ mod layering_behavior_tests {
         mid_red.layer = EffectLayer::Midground;
         mid_red.blend_mode = BlendMode::Replace;
         engine.start_effect(mid_red).unwrap();
-        let cmds = engine.update(Duration::from_millis(1)).unwrap();
+        let cmds = engine.update(Duration::from_millis(1), None).unwrap();
 
         let red_ch = 1 + 1 - 1;
         let red = cmds
@@ -366,7 +366,7 @@ mod layering_behavior_tests {
             None,
         );
         engine.start_effect(bg_blue).unwrap();
-        let _ = engine.update(Duration::from_millis(1)).unwrap();
+        let _ = engine.update(Duration::from_millis(1), None).unwrap();
 
         // Midground: static red
         let mut mid_red = EffectInstance::new(
@@ -387,7 +387,7 @@ mod layering_behavior_tests {
         mid_red.layer = EffectLayer::Midground;
         mid_red.blend_mode = BlendMode::Replace;
         engine.start_effect(mid_red).unwrap();
-        let _ = engine.update(Duration::from_millis(1)).unwrap();
+        let _ = engine.update(Duration::from_millis(1), None).unwrap();
 
         // Foreground: static green
         let mut fg_green = EffectInstance::new(
@@ -408,7 +408,7 @@ mod layering_behavior_tests {
         fg_green.layer = EffectLayer::Foreground;
         fg_green.blend_mode = BlendMode::Replace;
         engine.start_effect(fg_green).unwrap();
-        let cmds = engine.update(Duration::from_millis(1)).unwrap();
+        let cmds = engine.update(Duration::from_millis(1), None).unwrap();
 
         let green_ch = 1 + 2 - 1;
         let green = cmds
@@ -441,7 +441,7 @@ mod layering_behavior_tests {
             None,
         );
         engine.start_effect(bg_blue).unwrap();
-        let _ = engine.update(Duration::from_millis(1)).unwrap();
+        let _ = engine.update(Duration::from_millis(1), None).unwrap();
 
         // Midground: static red (replace) - should only affect red channel
         let mut mid_red = EffectInstance::new(
@@ -462,7 +462,7 @@ mod layering_behavior_tests {
         mid_red.layer = EffectLayer::Midground;
         mid_red.blend_mode = BlendMode::Replace;
         engine.start_effect(mid_red).unwrap();
-        let cmds = engine.update(Duration::from_millis(1)).unwrap();
+        let cmds = engine.update(Duration::from_millis(1), None).unwrap();
 
         let blue_ch = 1 + 3 - 1;
         let blue = cmds
@@ -495,7 +495,7 @@ mod layering_behavior_tests {
             None,
         );
         engine.start_effect(bg_blue).unwrap();
-        let _ = engine.update(Duration::from_millis(1)).unwrap();
+        let _ = engine.update(Duration::from_millis(1), None).unwrap();
 
         // Foreground: static red (replace)
         let mut fg_red = EffectInstance::new(
@@ -516,7 +516,7 @@ mod layering_behavior_tests {
         fg_red.layer = EffectLayer::Foreground;
         fg_red.blend_mode = BlendMode::Replace;
         engine.start_effect(fg_red).unwrap();
-        let _ = engine.update(Duration::from_millis(1)).unwrap();
+        let _ = engine.update(Duration::from_millis(1), None).unwrap();
 
         // Midground: dimmer multiply 50% (should not affect red channel locked by foreground)
         let mut mid_dim = EffectInstance::new(
@@ -535,7 +535,7 @@ mod layering_behavior_tests {
         mid_dim.layer = EffectLayer::Midground;
         mid_dim.blend_mode = BlendMode::Multiply;
         engine.start_effect(mid_dim).unwrap();
-        let cmds = engine.update(Duration::from_millis(1)).unwrap();
+        let cmds = engine.update(Duration::from_millis(1), None).unwrap();
 
         let red_ch = 1 + 1 - 1;
         let red = cmds
@@ -604,7 +604,7 @@ mod layering_show_regression {
         static_blue.layer = EffectLayer::Background;
         static_blue.blend_mode = BlendMode::Replace;
         engine.start_effect(static_blue).unwrap();
-        let _ = engine.update(Duration::from_millis(1)).unwrap();
+        let _ = engine.update(Duration::from_millis(1), None).unwrap();
 
         // Midground dimmer to 50% (instant, permanent)
         let mut dimmer_50 = EffectInstance::new(
@@ -623,7 +623,7 @@ mod layering_show_regression {
         dimmer_50.layer = EffectLayer::Midground;
         dimmer_50.blend_mode = BlendMode::Multiply;
         engine.start_effect(dimmer_50).unwrap();
-        let cmds = engine.update(Duration::from_millis(1)).unwrap();
+        let cmds = engine.update(Duration::from_millis(1), None).unwrap();
 
         // Expect blue = 127 (50% of 255) for all fixtures
         for i in 0..8 {

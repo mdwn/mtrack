@@ -131,10 +131,12 @@ pub(crate) fn parse_speed_string(
 
 /// Parses a duration string (e.g., "2s", "500ms", "4beats", "2measures") to Duration
 /// For beats/measures, uses tempo_map if available. If not available, returns an error.
+/// offset_secs is used to adjust tempo change lookups when calculating measure/beat durations.
 pub(crate) fn parse_duration_string(
     value: &str,
     tempo_map: &Option<TempoMap>,
     at_time: Option<Duration>,
+    offset_secs: f64,
 ) -> Result<Duration, Box<dyn Error>> {
     if value.ends_with("ms") {
         let num_str = value.trim_end_matches("ms");
@@ -145,7 +147,16 @@ pub(crate) fn parse_duration_string(
         let num = num_str.parse::<f64>()?;
         if let Some(tm) = tempo_map {
             let time = at_time.unwrap_or(Duration::ZERO);
-            Ok(tm.measures_to_duration(num, time))
+            // Only debug for 30measures
+            if num == 30.0 {
+                eprintln!(
+                    "[parse-duration-string] measures={} at_time={:.6}s offset_secs={:.6}",
+                    num,
+                    time.as_secs_f64(),
+                    offset_secs
+                );
+            }
+            Ok(tm.measures_to_duration(num, time, offset_secs))
         } else {
             Err("Measure-based durations require a tempo section".into())
         }
@@ -154,7 +165,7 @@ pub(crate) fn parse_duration_string(
         let num = num_str.parse::<f64>()?;
         if let Some(tm) = tempo_map {
             let time = at_time.unwrap_or(Duration::ZERO);
-            Ok(tm.beats_to_duration(num, time))
+            Ok(tm.beats_to_duration(num, time, offset_secs))
         } else {
             Err("Beat-based durations require a tempo section".into())
         }

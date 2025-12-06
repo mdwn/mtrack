@@ -48,7 +48,7 @@ impl TempoAwareSpeed {
                     return 0.0; // Zero/negative measures means stopped
                 }
                 if let Some(tm) = tempo_map {
-                    let duration = tm.measures_to_duration(*measures, at_time);
+                    let duration = tm.measures_to_duration(*measures, at_time, 0.0);
                     let secs = duration.as_secs_f64();
                     if secs <= 0.0 {
                         0.0
@@ -71,7 +71,7 @@ impl TempoAwareSpeed {
                     return 0.0; // Zero/negative beats means stopped
                 }
                 if let Some(tm) = tempo_map {
-                    let duration = tm.beats_to_duration(*beats, at_time);
+                    let duration = tm.beats_to_duration(*beats, at_time, 0.0);
                     let secs = duration.as_secs_f64();
                     if secs <= 0.0 {
                         0.0
@@ -126,7 +126,7 @@ impl TempoAwareFrequency {
                     return 0.0; // Zero/negative measures means stopped
                 }
                 if let Some(tm) = tempo_map {
-                    let duration = tm.measures_to_duration(*measures, at_time);
+                    let duration = tm.measures_to_duration(*measures, at_time, 0.0);
                     let secs = duration.as_secs_f64();
                     if secs <= 0.0 {
                         0.0
@@ -149,7 +149,7 @@ impl TempoAwareFrequency {
                     return 0.0; // Zero/negative beats means stopped
                 }
                 if let Some(tm) = tempo_map {
-                    let duration = tm.beats_to_duration(*beats, at_time);
+                    let duration = tm.beats_to_duration(*beats, at_time, 0.0);
                     let secs = duration.as_secs_f64();
                     if secs <= 0.0 {
                         0.0

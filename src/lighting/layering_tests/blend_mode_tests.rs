@@ -172,14 +172,14 @@ fn test_blend_mode_loss_debug() {
     engine.start_effect(static_effect).unwrap();
 
     // Update to apply static effect
-    let _commands = engine.update(Duration::from_secs(0)).unwrap();
+    let _commands = engine.update(Duration::from_secs(0), None).unwrap();
     println!("✅ Applied static effect");
 
     // Start the dimmer effect
     engine.start_effect(dimmer_effect).unwrap();
 
     // Update to apply dimmer effect
-    let _commands = engine.update(Duration::from_secs(2)).unwrap();
+    let _commands = engine.update(Duration::from_secs(2), None).unwrap();
     println!("✅ Applied dimmer effect");
 
     // The debug output should show where the blend mode is being lost
@@ -277,7 +277,7 @@ fn test_timeline_blend_mode_loss() {
     }
 
     // Update to apply static effect
-    let _commands = engine.update(Duration::from_secs(0)).unwrap();
+    let _commands = engine.update(Duration::from_secs(0), None).unwrap();
     println!("✅ Applied static effect from timeline");
 
     // Start the dimmer effect from timeline
@@ -286,7 +286,7 @@ fn test_timeline_blend_mode_loss() {
     }
 
     // Update to apply dimmer effect
-    let _commands = engine.update(Duration::from_secs(2)).unwrap();
+    let _commands = engine.update(Duration::from_secs(2), None).unwrap();
     println!("✅ Applied dimmer effect from timeline");
 
     // The debug output should show where the blend mode is being lost

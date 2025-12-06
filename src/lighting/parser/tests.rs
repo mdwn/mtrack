@@ -570,7 +570,7 @@ venue "built-in" {
         assert_eq!(show.cues[1].layer_commands.len(), 1);
         let release_cmd = &show.cues[1].layer_commands[0];
         assert_eq!(release_cmd.command_type, LayerCommandType::Release);
-        assert_eq!(release_cmd.layer, EffectLayer::Foreground);
+        assert_eq!(release_cmd.layer, Some(EffectLayer::Foreground));
         assert_eq!(
             release_cmd.fade_time,
             Some(std::time::Duration::from_secs(2))
@@ -579,24 +579,56 @@ venue "built-in" {
         // Third cue: clear command
         let clear_cmd = &show.cues[2].layer_commands[0];
         assert_eq!(clear_cmd.command_type, LayerCommandType::Clear);
-        assert_eq!(clear_cmd.layer, EffectLayer::Foreground);
+        assert_eq!(clear_cmd.layer, Some(EffectLayer::Foreground));
 
         // Fourth cue: freeze command
         let freeze_cmd = &show.cues[3].layer_commands[0];
         assert_eq!(freeze_cmd.command_type, LayerCommandType::Freeze);
-        assert_eq!(freeze_cmd.layer, EffectLayer::Background);
+        assert_eq!(freeze_cmd.layer, Some(EffectLayer::Background));
 
         // Fifth cue: unfreeze command
         let unfreeze_cmd = &show.cues[4].layer_commands[0];
         assert_eq!(unfreeze_cmd.command_type, LayerCommandType::Unfreeze);
-        assert_eq!(unfreeze_cmd.layer, EffectLayer::Background);
+        assert_eq!(unfreeze_cmd.layer, Some(EffectLayer::Background));
 
         // Sixth cue: master command
         let master_cmd = &show.cues[5].layer_commands[0];
         assert_eq!(master_cmd.command_type, LayerCommandType::Master);
-        assert_eq!(master_cmd.layer, EffectLayer::Midground);
+        assert_eq!(master_cmd.layer, Some(EffectLayer::Midground));
         assert!((master_cmd.intensity.unwrap() - 0.5).abs() < 0.01);
         assert!((master_cmd.speed.unwrap() - 2.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_clear_all_layers_command() {
+        // Test parsing clear() without layer parameter (clears all layers)
+        let content = r#"show "Clear All Test" {
+    @00:00.000
+        front_wash: static color: "blue", layer: foreground
+        back_wash: static color: "red", layer: background
+
+    @00:05.000
+        clear()
+}"#;
+        let result = parse_light_shows(content);
+        assert!(
+            result.is_ok(),
+            "Clear all command parsing should succeed: {:?}",
+            result.err()
+        );
+
+        let shows = result.unwrap();
+        let show = shows.get("Clear All Test").expect("Show should exist");
+
+        // Check that cues were parsed
+        assert_eq!(show.cues.len(), 2, "Should have 2 cues");
+
+        // Second cue: clear all command (no layer parameter)
+        assert_eq!(show.cues[1].effects.len(), 0);
+        assert_eq!(show.cues[1].layer_commands.len(), 1);
+        let clear_cmd = &show.cues[1].layer_commands[0];
+        assert_eq!(clear_cmd.command_type, LayerCommandType::Clear);
+        assert_eq!(clear_cmd.layer, None, "Clear all should have no layer");
     }
 
     #[test]
@@ -2331,8 +2363,8 @@ show "Beat Duration Tempo Change Test" {
         let actual_duration = duration2.as_secs_f64();
         println!("Beat duration with tempo change test: cue 0 at @2/1 (time={:?}), cue 1 at @5/1 (time={:?}), duration = {}s (expected 4.0s at 60 BPM)", show.cues[0].time, cue1_time, actual_duration);
         if let Some(tm) = &show.tempo_map {
-            let bpm_at_cue0 = tm.bpm_at_time(show.cues[0].time);
-            let bpm_at_cue1 = tm.bpm_at_time(cue1_time);
+            let bpm_at_cue0 = tm.bpm_at_time(show.cues[0].time, 0.0);
+            let bpm_at_cue1 = tm.bpm_at_time(cue1_time, 0.0);
             println!(
                 "BPM at cue 0 time {:?} = {}, BPM at cue 1 time {:?} = {}",
                 show.cues[0].time, bpm_at_cue0, cue1_time, bpm_at_cue1
@@ -2673,7 +2705,7 @@ show "BPM Interpolation Test" {
         let change_time = tempo_map.changes[0].position.absolute_time().unwrap();
 
         // At start of transition: should be 120 BPM
-        let bpm_start = tempo_map.bpm_at_time(change_time);
+        let bpm_start = tempo_map.bpm_at_time(change_time, 0.0);
         assert!(
             (bpm_start - 120.0).abs() < 0.1,
             "BPM at transition start should be 120"
@@ -2682,7 +2714,7 @@ show "BPM Interpolation Test" {
         // During transition (midway): should be interpolated (120 + (180-120)*0.5 = 150)
         // Transition duration: 4 beats at 120 BPM = 4 * 60/120 = 2.0s
         let mid_time = change_time + Duration::from_secs(1); // 1 second into transition
-        let bpm_mid = tempo_map.bpm_at_time(mid_time);
+        let bpm_mid = tempo_map.bpm_at_time(mid_time, 0.0);
         assert!(
             (bpm_mid - 150.0).abs() < 1.0,
             "BPM at transition midpoint should be ~150, got {}",
@@ -2691,7 +2723,7 @@ show "BPM Interpolation Test" {
 
         // After transition: should be 180 BPM
         let end_time = change_time + Duration::from_secs(3); // After transition completes
-        let bpm_end = tempo_map.bpm_at_time(end_time);
+        let bpm_end = tempo_map.bpm_at_time(end_time, 0.0);
         assert!(
             (bpm_end - 180.0).abs() < 0.1,
             "BPM after transition should be 180"
@@ -3254,12 +3286,12 @@ show "Measure Transition Test" {
         let change_time = tempo_map.changes[0].position.absolute_time().unwrap();
 
         // At start of transition: should be 120 BPM
-        let bpm_start = tempo_map.bpm_at_time(change_time);
+        let bpm_start = tempo_map.bpm_at_time(change_time, 0.0);
         assert!((bpm_start - 120.0).abs() < 0.1);
 
         // During transition (midway): should be interpolated
         let mid_time = change_time + Duration::from_secs(2); // 2 seconds into 4-second transition
-        let bpm_mid = tempo_map.bpm_at_time(mid_time);
+        let bpm_mid = tempo_map.bpm_at_time(mid_time, 0.0);
         assert!(
             (bpm_mid - 150.0).abs() < 1.0,
             "BPM at transition midpoint should be ~150, got {}",
@@ -3268,7 +3300,7 @@ show "Measure Transition Test" {
 
         // After transition: should be 180 BPM
         let end_time = change_time + Duration::from_secs(5); // After transition completes
-        let bpm_end = tempo_map.bpm_at_time(end_time);
+        let bpm_end = tempo_map.bpm_at_time(end_time, 0.0);
         assert!((bpm_end - 180.0).abs() < 0.1);
     }
 
@@ -3397,15 +3429,15 @@ show "Consecutive Transitions" {
         let change2_time = tempo_map.changes[1].position.absolute_time().unwrap();
 
         // Before first transition: 120 BPM
-        let bpm_before = tempo_map.bpm_at_time(change1_time - Duration::from_millis(100));
+        let bpm_before = tempo_map.bpm_at_time(change1_time - Duration::from_millis(100), 0.0);
         assert!((bpm_before - 120.0).abs() < 0.1);
 
         // After first transition completes: 140 BPM
-        let bpm_after1 = tempo_map.bpm_at_time(change1_time + Duration::from_secs(2));
+        let bpm_after1 = tempo_map.bpm_at_time(change1_time + Duration::from_secs(2), 0.0);
         assert!((bpm_after1 - 140.0).abs() < 1.0);
 
         // After second transition completes: 160 BPM
-        let bpm_after2 = tempo_map.bpm_at_time(change2_time + Duration::from_secs(2));
+        let bpm_after2 = tempo_map.bpm_at_time(change2_time + Duration::from_secs(2), 0.0);
         assert!((bpm_after2 - 160.0).abs() < 1.0);
     }
 
@@ -3438,7 +3470,7 @@ show "Measure Transition Time Sig Change" {
         let change_time = tempo_map.changes[0].position.absolute_time().unwrap();
 
         // After transition completes: should be 140 BPM
-        let bpm_after = tempo_map.bpm_at_time(change_time + Duration::from_secs(5));
+        let bpm_after = tempo_map.bpm_at_time(change_time + Duration::from_secs(5), 0.0);
         assert!((bpm_after - 140.0).abs() < 1.0);
     }
 
@@ -3618,7 +3650,7 @@ show "Transition Spanning Changes" {
 
         // During first transition (early): should be interpolating 120 -> 140
         let early_time = change1_time + Duration::from_secs(1); // 1 second into 4-second transition
-        let bpm_early = tempo_map.bpm_at_time(early_time);
+        let bpm_early = tempo_map.bpm_at_time(early_time, 0.0);
         // At 25% through transition: 120 + (140-120)*0.25 = 125
         assert!(
             (bpm_early - 125.0).abs() < 2.0,
@@ -3628,7 +3660,7 @@ show "Transition Spanning Changes" {
 
         // During first transition (midway): should be interpolating
         let mid_time = change1_time + Duration::from_secs(2); // 2 seconds into 4-second transition
-        let bpm_mid = tempo_map.bpm_at_time(mid_time);
+        let bpm_mid = tempo_map.bpm_at_time(mid_time, 0.0);
         // At 50% through transition: 120 + (140-120)*0.5 = 130
         assert!(
             (bpm_mid - 130.0).abs() < 2.0,
@@ -3639,7 +3671,7 @@ show "Transition Spanning Changes" {
         // After first transition completes but before second change: should be 140
         // Transition completes at 10.0s, change2 should be after that
         let after_transition = change1_time + Duration::from_secs(5); // After transition completes
-        let bpm_after_transition = tempo_map.bpm_at_time(after_transition);
+        let bpm_after_transition = tempo_map.bpm_at_time(after_transition, 0.0);
         assert!(
             (bpm_after_transition - 140.0).abs() < 1.0,
             "BPM after transition completes should be 140, got {}",
@@ -3648,7 +3680,7 @@ show "Transition Spanning Changes" {
 
         // After second change: should be 160
         let after_change2 = change2_time + Duration::from_millis(100);
-        let bpm_after2 = tempo_map.bpm_at_time(after_change2);
+        let bpm_after2 = tempo_map.bpm_at_time(after_change2, 0.0);
         assert!((bpm_after2 - 160.0).abs() < 0.1);
     }
 
@@ -4651,10 +4683,274 @@ show "Test" {
     }
 
     #[test]
+    fn test_measure_offset_in_same_cue() {
+        // Test that when a cue has both a measure time and an offset command,
+        // the offset does NOT apply to that cue's measure time, but DOES apply to subsequent cues.
+        // This tests the scenario where offset is in the same cue definition as a measure time.
+        let content = r#"tempo {
+            start: 1.5s
+            bpm: 160
+            time_signature: 4/4
+            changes: [
+                @68/1 { bpm: 180 },
+                @104/1 { bpm: 160 }
+            ]
+        }
+
+show "Test" {
+    @70/1
+    all_wash: static, color: "blue"
+    
+    @74/1
+    all_wash: static, color: "green"
+    offset 5 measures
+    
+    @70/1
+    all_wash: static, color: "red"
+    
+    @74/1
+    all_wash: static, color: "yellow"
+}
+"#;
+
+        let result = parse_light_shows(content);
+        assert!(
+            result.is_ok(),
+            "Failed to parse show with offset in same cue: {:?}",
+            result.err()
+        );
+
+        let shows = result.unwrap();
+        let show = shows.get("Test").unwrap();
+
+        // Verify we have 4 cues
+        assert!(show.cues.len() >= 4, "Should have at least 4 cues");
+
+        // First cue at @70/1 (no offset yet)
+        // Tempo changes at @68/1 to 180 BPM
+        // Measures 1-67 at 160 BPM: 67 * 1.5s = 100.5s
+        // Measures 68-70 at 180 BPM: 2 * 1.333s = 2.667s
+        // Total: 100.5 + 2.667 = 103.167s
+        // Plus start_offset 1.5s: 103.167 + 1.5 = 104.667s
+        let first_cue_time = show.cues[0].time;
+        let expected_first = Duration::from_secs_f64(104.666666667);
+        assert!(
+            (first_cue_time.as_secs_f64() - expected_first.as_secs_f64()).abs() < 0.01,
+            "First cue should be at measure 70 (104.667s), got {:?} ({:.3}s)",
+            first_cue_time,
+            first_cue_time.as_secs_f64()
+        );
+
+        // Second cue at @74/1 (no offset yet)
+        // Measures 1-67 @160 BPM: 100.5s
+        // Measures 68-73 @180 BPM: 6 * 1.333s = 8.0s
+        // Plus start_offset 1.5s => 110.0s
+        let second_cue_time = show.cues[1].time;
+        let expected_second = Duration::from_secs_f64(110.0);
+        assert!(
+            (second_cue_time.as_secs_f64() - expected_second.as_secs_f64()).abs() < 0.01,
+            "Second cue should be at measure 74 (110.0s), got {:?} ({:.3}s)",
+            second_cue_time,
+            second_cue_time.as_secs_f64()
+        );
+
+        // Third cue at @70/1 with offset 5 measures = playback measure 75
+        // Base @70/1 time: 104.667s, offset 5 measures at 180 BPM = 6.667s
+        let third_cue_time = show.cues[2].time;
+        let expected_third = Duration::from_secs_f64(111.333333333);
+        assert!(
+            (third_cue_time.as_secs_f64() - expected_third.as_secs_f64()).abs() < 0.01,
+            "Third cue should be at playback measure 75 (~111.33s) after offset 5, got {:?} ({:.3}s)",
+            third_cue_time,
+            third_cue_time.as_secs_f64()
+        );
+
+        // Fourth cue at @74/1 with offset 5 measures = playback measure 79
+        // Base @74/1 time: 110.0s, offset still 5 measures at 180 BPM = 6.667s => ~116.67s
+        let fourth_cue_time = show.cues[3].time;
+        let expected_fourth = Duration::from_secs_f64(116.666666667);
+        assert!(
+            (fourth_cue_time.as_secs_f64() - expected_fourth.as_secs_f64()).abs() < 0.01,
+            "Fourth cue should be at playback measure 79 (~116.67s) after offset 5, got {:?} ({:.3}s)",
+            fourth_cue_time,
+            fourth_cue_time.as_secs_f64()
+        );
+    }
+
+    #[test]
+    fn test_measure_offset_with_measure_time_in_same_cue() {
+        // Test that when a cue has both a measure time AND an offset command in the same
+        // cue definition, the offset does NOT apply to the current cue's measure time.
+        // The offset should only affect subsequent cues. The effect should still be included.
+        let content = r#"tempo {
+            start: 0.0s
+            bpm: 120
+            time_signature: 4/4
+        }
+
+show "Test" {
+    @1/1
+    all_wash: static, color: "blue"
+    
+    @5/1
+    all_wash: static, color: "green"
+    offset 10 measures
+    
+    @1/1
+    all_wash: static, color: "red"
+}
+"#;
+
+        let result = parse_light_shows(content);
+        assert!(
+            result.is_ok(),
+            "Failed to parse show with offset and measure time in same cue: {:?}",
+            result.err()
+        );
+
+        let shows = result.unwrap();
+        let show = shows.get("Test").unwrap();
+
+        // Verify we have 3 cues
+        assert!(show.cues.len() >= 3, "Should have at least 3 cues");
+
+        // At 120 BPM in 4/4: 1 measure = 2.0s
+
+        // First cue at @1/1 (no offset) = 0.0s
+        let first_cue_time = show.cues[0].time;
+        let expected_first = Duration::from_secs_f64(0.0);
+        assert!(
+            (first_cue_time.as_secs_f64() - expected_first.as_secs_f64()).abs() < 0.001,
+            "First cue should be at measure 1 (0.0s), got {:?} ({:.3}s)",
+            first_cue_time,
+            first_cue_time.as_secs_f64()
+        );
+        // Verify first cue has the effect
+        assert!(
+            !show.cues[0].effects.is_empty(),
+            "First cue should have effects"
+        );
+
+        // Second cue at @5/1 with offset 10 measures in the SAME cue
+        // IMPORTANT: The offset should NOT apply to this cue's measure time.
+        // So @5/1 should be at playback measure 5 = 4 measures * 2.0s = 8.0s
+        let second_cue_time = show.cues[1].time;
+        let expected_second = Duration::from_secs_f64(8.0);
+        assert!(
+            (second_cue_time.as_secs_f64() - expected_second.as_secs_f64()).abs() < 0.001,
+            "Second cue should be at playback measure 5 (8.0s), offset should NOT apply to current cue, got {:?} ({:.3}s)",
+            second_cue_time,
+            second_cue_time.as_secs_f64()
+        );
+        // Verify second cue has the effect (this is the key test - effect should not be lost)
+        assert!(
+            !show.cues[1].effects.is_empty(),
+            "Second cue should have effects even though it has an offset command"
+        );
+
+        // Third cue at @1/1 (with offset 10 from previous cue) = playback measure 11 = 10 measures * 2.0s = 20.0s
+        let third_cue_time = show.cues[2].time;
+        let expected_third = Duration::from_secs_f64(20.0);
+        assert!(
+            (third_cue_time.as_secs_f64() - expected_third.as_secs_f64()).abs() < 0.001,
+            "Third cue should be at playback measure 11 (20.0s) with offset 10, got {:?} ({:.3}s)",
+            third_cue_time,
+            third_cue_time.as_secs_f64()
+        );
+    }
+
+    #[test]
+    fn test_offset_timing_at_180_bpm_with_tempo_change() {
+        // Test the exact scenario: @70/1, @74/1 with offset 5, @70/1 at 180 BPM
+        // This verifies that the offset is applied correctly and timing is accurate
+        // when there's a tempo change from 160 to 180 BPM at @68/1
+        let content = r#"tempo {
+            start: 1.5s
+            bpm: 160
+            time_signature: 4/4
+            changes: [
+                @68/1 { bpm: 180 },
+                @104/1 { bpm: 160 }
+            ]
+        }
+
+show "Test" {
+    @70/1
+    all_wash: static, color: "blue"
+    
+    @74/1
+    all_wash: static, color: "green"
+    offset 5 measures
+    
+    @70/1
+    all_wash: static, color: "red"
+}
+"#;
+
+        let result = parse_light_shows(content);
+        assert!(result.is_ok(), "Failed to parse show: {:?}", result.err());
+
+        let shows = result.unwrap();
+        let show = shows.get("Test").unwrap();
+
+        assert!(show.cues.len() >= 3, "Should have at least 3 cues");
+
+        // At 180 BPM in 4/4: 1 measure = 4 beats * (60/180) = 1.333... seconds
+        // Measure 74 to measure 75 = 1 measure = 1.333 seconds
+
+        let second_cue_time = show.cues[1].time; // @74/1
+        let third_cue_time = show.cues[2].time; // @70/1 with offset 5 (should be measure 75)
+
+        println!(
+            "Second cue (@74/1) time: {:.3}s",
+            second_cue_time.as_secs_f64()
+        );
+        println!(
+            "Third cue (@70/1 with offset 5) time: {:.3}s",
+            third_cue_time.as_secs_f64()
+        );
+
+        // Also compute directly from tempo map for visibility
+        let tm = show.tempo_map.as_ref().unwrap();
+        let calc_74 = tm
+            .measure_to_time_with_offset(74, 1.0, 0, 0.0)
+            .unwrap()
+            .as_secs_f64();
+        let calc_70_off5 = tm
+            .measure_to_time_with_offset(70, 1.0, 5, 0.0)
+            .unwrap()
+            .as_secs_f64();
+        println!(
+            "Calc tempo map: @74/1 = {:.3}s, @70/1 (offset 5) = {:.3}s, diff = {:.3}s",
+            calc_74,
+            calc_70_off5,
+            calc_70_off5 - calc_74
+        );
+
+        let time_diff = third_cue_time.as_secs_f64() - second_cue_time.as_secs_f64();
+        let expected_diff = 1.333333333; // 1 measure at 180 BPM
+
+        // Calculate what measure the third cue is actually at based on the time difference
+        let actual_measures = time_diff / 1.333333333; // measures at 180 BPM
+        println!(
+            "Time difference: {:.3}s = {:.3} measures at 180 BPM (expected: 1.0 measure)",
+            time_diff, actual_measures
+        );
+
+        assert!(
+            (time_diff - expected_diff).abs() < 0.01,
+            "Time difference between @74/1 and second @70/1 (with offset 5) should be ~1.333s (1 measure at 180 BPM), got {:.3}s (difference: {:.3}s, actual: {:.3} measures)",
+            time_diff,
+            time_diff - expected_diff,
+            actual_measures
+        );
+    }
+
+    #[test]
     fn test_measure_offset_at_start() {
         // Test that offset can be in the first cue
         let content = r#"tempo {
-    start: 0.0s
+            start: 0.0s
     bpm: 120
     time_signature: 4/4
 }

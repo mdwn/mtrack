@@ -12,7 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-use std::{error::Error, fmt};
+use std::{error::Error, fmt, str::FromStr};
 
 /// Sample format enumeration for audio processing
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,9 +23,9 @@ pub enum SampleFormat {
     Float,
 }
 
-impl SampleFormat {
+impl FromStr for SampleFormat {
     /// Convert from string representation
-    pub fn from_str(s: &str) -> Result<Self, Box<dyn Error>> {
+    fn from_str(s: &str) -> Result<Self, Box<dyn Error>> {
         match s {
             "float" | "Float" => Ok(SampleFormat::Float),
             "int" | "Int" => Ok(SampleFormat::Int),
@@ -33,6 +33,10 @@ impl SampleFormat {
         }
     }
 
+    type Err = Box<dyn Error>;
+}
+
+impl SampleFormat {
     /// Convert to string representation
     pub fn as_str(self) -> &'static str {
         match self {

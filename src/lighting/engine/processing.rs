@@ -470,9 +470,9 @@ fn apply_chase(
     }
 
     // Calculate fixture order based on pattern and direction
-    // For Random pattern, use effect ID to generate a unique seed per effect
-    let fixture_order =
-        calculate_fixture_order(fixture_count, pattern, direction, Some(&effect.id));
+    // For Random pattern, use cue_time (song time) as seed for deterministic randomness
+    // This ensures random effects are consistent when seeking to the same time
+    let fixture_order = calculate_fixture_order(fixture_count, pattern, direction, effect.cue_time);
 
     // Calculate the pattern cycle length
     let pattern_length = fixture_order.len();
@@ -576,7 +576,7 @@ fn calculate_fixture_order(
     fixture_count: usize,
     pattern: &ChasePattern,
     direction: &ChaseDirection,
-    effect_id: Option<&str>,
+    cue_time: Option<Duration>,
 ) -> Vec<usize> {
     match pattern {
         ChasePattern::Random => {
@@ -587,12 +587,16 @@ fn calculate_fixture_order(
 
             let mut order: Vec<usize> = (0..fixture_count).collect();
 
-            // Generate a seed from the effect ID (or use a default if not provided)
-            let seed = if let Some(id) = effect_id {
+            // Generate a seed from the cue_time (song time when effect was supposed to start)
+            // This ensures random effects are deterministic based on their position in the timeline
+            // When seeking, effects use their intended cue time, ensuring consistency
+            let seed = if let Some(cue) = cue_time {
                 let mut hasher = DefaultHasher::new();
-                id.hash(&mut hasher);
+                cue.as_nanos().hash(&mut hasher);
+                fixture_count.hash(&mut hasher); // Include fixture count for uniqueness
                 hasher.finish()
             } else {
+                // Fallback if cue_time not set (shouldn't happen in normal operation)
                 fixture_count as u64 * 7 + 13
             };
 
