@@ -467,6 +467,15 @@ fn parse_sequence_cue_structure(
     } else {
         score_time + Duration::from_secs_f64(applied_offset_secs)
     };
+    #[cfg(debug_assertions)]
+    eprintln!(
+        "[cue-debug] abs_time={:.6}s score_time={:.6}s applied_offset_secs={:.6} has_measure_time={} new_offset={:?}",
+        abs_time.as_secs_f64(),
+        score_time.as_secs_f64(),
+        applied_offset_secs,
+        has_measure_time,
+        new_offset
+    );
     let last_time = Some(abs_time);
 
     // Parse effects and layer commands
@@ -777,6 +786,15 @@ fn parse_cue_definition(
             score_time = tm
                 .measure_to_time_with_offset(measure, beat, 0, offset_secs)
                 .ok_or_else(|| format!("Invalid measure/beat position: {}/{}", measure, beat))?;
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "[cue-debug] measure_time cue measure={} beat={} score_time={:.6}s offset_secs={:.6} start_offset={:.6}",
+                measure,
+                beat,
+                score_time.as_secs_f64(),
+                offset_secs,
+                tm.start_offset.as_secs_f64()
+            );
         } else {
             return Err("Measure-based timing requires a tempo section".into());
         }
