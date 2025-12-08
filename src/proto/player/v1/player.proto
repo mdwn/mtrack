@@ -124,6 +124,15 @@ message GetCuesResponse {
     repeated Cue cues = 1;
 }
 
+// GetActiveEffectsRequest is the message for requesting active lighting effects.
+message GetActiveEffectsRequest {}
+
+// GetActiveEffectsResponse is the response containing active lighting effects information.
+message GetActiveEffectsResponse {
+    // ActiveEffects is a formatted string listing all active lighting effects.
+    string active_effects = 1;
+}
+
 // PlayerService is a service for controlling the mtrack player.
 service PlayerService {
     // Play will play the current song in the playlist if no other songs
@@ -151,4 +160,7 @@ service PlayerService {
 
     // GetCues returns the list of cues in the current song's lighting timeline.
     rpc GetCues(GetCuesRequest) returns (GetCuesResponse);
+
+    // GetActiveEffects returns a formatted string listing all active lighting effects.
+    rpc GetActiveEffects(GetActiveEffectsRequest) returns (GetActiveEffectsResponse);
 }

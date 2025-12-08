@@ -150,7 +150,7 @@ mod tests {
             0.25,
             EffectLayer::Background,
         );
-        eng_rgb.update(Duration::from_millis(10)).unwrap();
+        eng_rgb.update(Duration::from_millis(10), None).unwrap();
 
         // Dedicated dimmer fixture
         let mut eng_dim = EffectEngine::new();
@@ -163,7 +163,7 @@ mod tests {
             0.25,
             EffectLayer::Background,
         );
-        eng_dim.update(Duration::from_millis(10)).unwrap();
+        eng_dim.update(Duration::from_millis(10), None).unwrap();
 
         // Case 1: Multiply blend dimmer 1.0 -> 0.0 over 2s (midpoint = 1s)
         start_dimmer(
@@ -185,8 +185,8 @@ mod tests {
             BlendMode::Multiply,
         );
 
-        let cmds_rgb_1s = eng_rgb.update(Duration::from_secs(1)).unwrap();
-        let cmds_dim_1s = eng_dim.update(Duration::from_secs(1)).unwrap();
+        let cmds_rgb_1s = eng_rgb.update(Duration::from_secs(1), None).unwrap();
+        let cmds_dim_1s = eng_dim.update(Duration::from_secs(1), None).unwrap();
 
         // For Multiply, both implementations should yield identical effective brightness
         // RGB-only fixture bakes multiplier into RGB; dedicated uses dimmer channel
@@ -209,7 +209,7 @@ mod tests {
             0.25,
             EffectLayer::Background,
         );
-        eng_rgb_r.update(Duration::from_millis(10)).unwrap();
+        eng_rgb_r.update(Duration::from_millis(10), None).unwrap();
         start_dimmer(
             &mut eng_rgb_r,
             "fx_rgb",
@@ -230,7 +230,7 @@ mod tests {
             0.25,
             EffectLayer::Background,
         );
-        eng_dim_r.update(Duration::from_millis(10)).unwrap();
+        eng_dim_r.update(Duration::from_millis(10), None).unwrap();
         start_dimmer(
             &mut eng_dim_r,
             "fx_dim",
@@ -241,8 +241,8 @@ mod tests {
             BlendMode::Replace,
         );
 
-        let cmds_rgb_r_1s = eng_rgb_r.update(Duration::from_secs(1)).unwrap();
-        let cmds_dim_r_1s = eng_dim_r.update(Duration::from_secs(1)).unwrap();
+        let cmds_rgb_r_1s = eng_rgb_r.update(Duration::from_secs(1), None).unwrap();
+        let cmds_dim_r_1s = eng_dim_r.update(Duration::from_secs(1), None).unwrap();
 
         // Visual equivalence: effective RGB should match between the two strategies
         let (r1, g1, b1) = get_rgb(1, 1, &cmds_rgb_r_1s);
@@ -259,7 +259,7 @@ mod tests {
         let mut eng = EffectEngine::new();
         register_rgb_only_fixture(&mut eng, "fx", 1);
         start_static_rgb(&mut eng, "fx", 0.0, 0.0, 1.0, EffectLayer::Background);
-        eng.update(Duration::from_millis(10)).unwrap();
+        eng.update(Duration::from_millis(10), None).unwrap();
 
         // 2s fade to black - dimmer effects are permanent, so final value persists
         start_dimmer(
@@ -273,23 +273,23 @@ mod tests {
         );
 
         // t=0
-        let cmds_0 = eng.update(Duration::from_millis(0)).unwrap();
+        let cmds_0 = eng.update(Duration::from_millis(0), None).unwrap();
         let (_, _, b0) = get_rgb(1, 1, &cmds_0);
         assert_eq!(b0, 255);
 
         // t=1.0s -> ~50%
-        let cmds_1 = eng.update(Duration::from_secs(1)).unwrap();
+        let cmds_1 = eng.update(Duration::from_secs(1), None).unwrap();
         let (_, _, b1) = get_rgb(1, 1, &cmds_1);
         assert!((120..=135).contains(&b1));
 
         // t=1.5s -> ~25%
-        let cmds_15 = eng.update(Duration::from_millis(500)).unwrap();
+        let cmds_15 = eng.update(Duration::from_millis(500), None).unwrap();
         let (_, _, b15) = get_rgb(1, 1, &cmds_15);
         assert!((50..=75).contains(&b15));
 
         // effect ends at 2.0s; dimmer effects are permanent so final dimmed value (0) persists
-        let _cmds_2 = eng.update(Duration::from_millis(500)).unwrap();
-        let cmds_after = eng.update(Duration::from_millis(10)).unwrap();
+        let _cmds_2 = eng.update(Duration::from_millis(500), None).unwrap();
+        let cmds_after = eng.update(Duration::from_millis(10), None).unwrap();
         let (_, _, b_after) = get_rgb(1, 1, &cmds_after);
         assert_eq!(b_after, 0, "Dimmer should persist at 0.0 after completion");
     }
@@ -298,11 +298,11 @@ mod tests {
     fn test_color_cycle_parity() {
         let mut eng_rgb = EffectEngine::new();
         register_rgb_only_fixture(&mut eng_rgb, "fx_rgb", 1);
-        eng_rgb.update(Duration::from_millis(1)).unwrap();
+        eng_rgb.update(Duration::from_millis(1), None).unwrap();
 
         let mut eng_dim = EffectEngine::new();
         register_dedicated_dimmer_fixture(&mut eng_dim, "fx_dim", 1);
-        eng_dim.update(Duration::from_millis(1)).unwrap();
+        eng_dim.update(Duration::from_millis(1), None).unwrap();
 
         // Start identical color cycles (3 colors)
         let colors = vec![
@@ -346,8 +346,8 @@ mod tests {
 
         // Sample a few points in time and compare effective RGBs
         for dt in [0u64, 500, 1000, 1500, 2000] {
-            let cmds_rgb = eng_rgb.update(Duration::from_millis(dt)).unwrap();
-            let cmds_dim = eng_dim.update(Duration::from_millis(dt)).unwrap();
+            let cmds_rgb = eng_rgb.update(Duration::from_millis(dt), None).unwrap();
+            let cmds_dim = eng_dim.update(Duration::from_millis(dt), None).unwrap();
             let (r1, g1, b1) = get_rgb(1, 1, &cmds_rgb);
             let (r2, g2, b2) = get_rgb(1, 2, &cmds_dim);
             let d2 = get_dimmer(1, 1, &cmds_dim) as f32 / 255.0;
@@ -370,7 +370,7 @@ mod tests {
             1.0,
             EffectLayer::Background,
         );
-        eng_rgb.update(Duration::from_millis(10)).unwrap();
+        eng_rgb.update(Duration::from_millis(10), None).unwrap();
 
         let mut eng_dim = EffectEngine::new();
         register_dedicated_dimmer_fixture(&mut eng_dim, "fx_dim", 1);
@@ -382,7 +382,7 @@ mod tests {
             1.0,
             EffectLayer::Background,
         );
-        eng_dim.update(Duration::from_millis(10)).unwrap();
+        eng_dim.update(Duration::from_millis(10), None).unwrap();
 
         let mut s1 = EffectInstance::new(
             "strobe_rgb".to_string(),
@@ -416,8 +416,8 @@ mod tests {
 
         // Sample a few points and compare effective RGBs allowing small mismatches
         for dt in [0u64, 50, 100, 150, 200, 500] {
-            let cmds_rgb = eng_rgb.update(Duration::from_millis(dt)).unwrap();
-            let cmds_dim = eng_dim.update(Duration::from_millis(dt)).unwrap();
+            let cmds_rgb = eng_rgb.update(Duration::from_millis(dt), None).unwrap();
+            let cmds_dim = eng_dim.update(Duration::from_millis(dt), None).unwrap();
             let (r1, g1, b1) = get_rgb(1, 1, &cmds_rgb);
             let (r2, g2, b2) = get_rgb(1, 2, &cmds_dim);
             let d2 = get_dimmer(1, 1, &cmds_dim) as f32 / 255.0;
@@ -440,7 +440,7 @@ mod tests {
             1.0,
             EffectLayer::Background,
         );
-        eng_rgb.update(Duration::from_millis(10)).unwrap();
+        eng_rgb.update(Duration::from_millis(10), None).unwrap();
 
         let mut eng_dim = EffectEngine::new();
         register_dedicated_dimmer_fixture(&mut eng_dim, "fx_dim", 1);
@@ -452,7 +452,7 @@ mod tests {
             1.0,
             EffectLayer::Background,
         );
-        eng_dim.update(Duration::from_millis(10)).unwrap();
+        eng_dim.update(Duration::from_millis(10), None).unwrap();
 
         let mut p1 = EffectInstance::new(
             "pulse_rgb".to_string(),
@@ -489,8 +489,8 @@ mod tests {
         eng_dim.start_effect(p2).unwrap();
 
         for dt in [0u64, 250, 500, 750, 1000] {
-            let cmds_rgb = eng_rgb.update(Duration::from_millis(dt)).unwrap();
-            let cmds_dim = eng_dim.update(Duration::from_millis(dt)).unwrap();
+            let cmds_rgb = eng_rgb.update(Duration::from_millis(dt), None).unwrap();
+            let cmds_dim = eng_dim.update(Duration::from_millis(dt), None).unwrap();
             let (r1, g1, b1) = get_rgb(1, 1, &cmds_rgb);
             let (r2, g2, b2) = get_rgb(1, 2, &cmds_dim);
             let d2 = get_dimmer(1, 1, &cmds_dim) as f32 / 255.0;
@@ -513,7 +513,7 @@ mod tests {
             0.0,
             EffectLayer::Background,
         );
-        eng_rgb.update(Duration::from_millis(10)).unwrap();
+        eng_rgb.update(Duration::from_millis(10), None).unwrap();
 
         let mut eng_dim = EffectEngine::new();
         register_dedicated_dimmer_fixture(&mut eng_dim, "fx_dim", 1);
@@ -525,7 +525,7 @@ mod tests {
             0.0,
             EffectLayer::Background,
         );
-        eng_dim.update(Duration::from_millis(10)).unwrap();
+        eng_dim.update(Duration::from_millis(10), None).unwrap();
 
         let pattern = ChasePattern::Linear;
         let mut c1 = EffectInstance::new(
@@ -563,8 +563,8 @@ mod tests {
         eng_dim.start_effect(c2).unwrap();
 
         for dt in [0u64, 250, 500, 750, 1000] {
-            let cmds_rgb = eng_rgb.update(Duration::from_millis(dt)).unwrap();
-            let cmds_dim = eng_dim.update(Duration::from_millis(dt)).unwrap();
+            let cmds_rgb = eng_rgb.update(Duration::from_millis(dt), None).unwrap();
+            let cmds_dim = eng_dim.update(Duration::from_millis(dt), None).unwrap();
             let (r1, g1, b1) = get_rgb(1, 1, &cmds_rgb);
             let (r2, g2, b2) = get_rgb(1, 2, &cmds_dim);
             let d2 = get_dimmer(1, 1, &cmds_dim) as f32 / 255.0;
@@ -579,11 +579,11 @@ mod tests {
     fn test_rainbow_parity_basic() {
         let mut eng_rgb = EffectEngine::new();
         register_rgb_only_fixture(&mut eng_rgb, "fx_rgb", 1);
-        eng_rgb.update(Duration::from_millis(5)).unwrap();
+        eng_rgb.update(Duration::from_millis(5), None).unwrap();
 
         let mut eng_dim = EffectEngine::new();
         register_dedicated_dimmer_fixture(&mut eng_dim, "fx_dim", 1);
-        eng_dim.update(Duration::from_millis(5)).unwrap();
+        eng_dim.update(Duration::from_millis(5), None).unwrap();
 
         let mut r1 = EffectInstance::new(
             "rainbow_rgb".to_string(),
@@ -618,8 +618,8 @@ mod tests {
         eng_dim.start_effect(r2).unwrap();
 
         for dt in [0u64, 250, 500, 750, 1000] {
-            let cmds_rgb = eng_rgb.update(Duration::from_millis(dt)).unwrap();
-            let cmds_dim = eng_dim.update(Duration::from_millis(dt)).unwrap();
+            let cmds_rgb = eng_rgb.update(Duration::from_millis(dt), None).unwrap();
+            let cmds_dim = eng_dim.update(Duration::from_millis(dt), None).unwrap();
             let (r1, g1, b1) = get_rgb(1, 1, &cmds_rgb);
             let (r2, g2, b2) = get_rgb(1, 2, &cmds_dim);
             let d2 = get_dimmer(1, 1, &cmds_dim) as f32 / 255.0;
@@ -655,10 +655,10 @@ mod tests {
                 for direction in dirs {
                     let mut eng_rgb = EffectEngine::new();
                     register_rgb_only_fixture(&mut eng_rgb, "fx_rgb", 1);
-                    eng_rgb.update(Duration::from_millis(1)).unwrap();
+                    eng_rgb.update(Duration::from_millis(1), None).unwrap();
                     let mut eng_dim = EffectEngine::new();
                     register_dedicated_dimmer_fixture(&mut eng_dim, "fx_dim", 1);
-                    eng_dim.update(Duration::from_millis(1)).unwrap();
+                    eng_dim.update(Duration::from_millis(1), None).unwrap();
 
                     let mut e1 = EffectInstance::new(
                         "cc_rgb_param".to_string(),
@@ -695,8 +695,8 @@ mod tests {
                     eng_dim.start_effect(e2).unwrap();
 
                     for dt in sample_ms {
-                        let cmds_rgb = eng_rgb.update(Duration::from_millis(dt)).unwrap();
-                        let cmds_dim = eng_dim.update(Duration::from_millis(dt)).unwrap();
+                        let cmds_rgb = eng_rgb.update(Duration::from_millis(dt), None).unwrap();
+                        let cmds_dim = eng_dim.update(Duration::from_millis(dt), None).unwrap();
                         let (r1, g1, b1) = get_rgb(1, 1, &cmds_rgb);
                         let (r2, g2, b2) = get_rgb(1, 2, &cmds_dim);
                         let d2 = get_dimmer(1, 1, &cmds_dim) as f32 / 255.0;
@@ -726,7 +726,7 @@ mod tests {
                 1.0,
                 EffectLayer::Background,
             );
-            eng_rgb.update(Duration::from_millis(1)).unwrap();
+            eng_rgb.update(Duration::from_millis(1), None).unwrap();
             let mut eng_dim = EffectEngine::new();
             register_dedicated_dimmer_fixture(&mut eng_dim, "fx_dim", 1);
             start_static_rgb(
@@ -737,7 +737,7 @@ mod tests {
                 1.0,
                 EffectLayer::Background,
             );
-            eng_dim.update(Duration::from_millis(1)).unwrap();
+            eng_dim.update(Duration::from_millis(1), None).unwrap();
             let mut s1 = EffectInstance::new(
                 "strobe_rgb_param".to_string(),
                 EffectType::Strobe {
@@ -767,8 +767,8 @@ mod tests {
             s2.blend_mode = BlendMode::Replace;
             eng_dim.start_effect(s2).unwrap();
             for dt in sample_ms {
-                let cmds_rgb = eng_rgb.update(Duration::from_millis(dt)).unwrap();
-                let cmds_dim = eng_dim.update(Duration::from_millis(dt)).unwrap();
+                let cmds_rgb = eng_rgb.update(Duration::from_millis(dt), None).unwrap();
+                let cmds_dim = eng_dim.update(Duration::from_millis(dt), None).unwrap();
                 let (r1, g1, b1) = get_rgb(1, 1, &cmds_rgb);
                 let (r2, g2, b2) = get_rgb(1, 2, &cmds_dim);
                 let d2 = get_dimmer(1, 1, &cmds_dim) as f32 / 255.0;
@@ -799,7 +799,7 @@ mod tests {
                         1.0,
                         EffectLayer::Background,
                     );
-                    eng_rgb.update(Duration::from_millis(1)).unwrap();
+                    eng_rgb.update(Duration::from_millis(1), None).unwrap();
                     let mut eng_dim = EffectEngine::new();
                     register_dedicated_dimmer_fixture(&mut eng_dim, "fx_dim", 1);
                     start_static_rgb(
@@ -810,7 +810,7 @@ mod tests {
                         1.0,
                         EffectLayer::Background,
                     );
-                    eng_dim.update(Duration::from_millis(1)).unwrap();
+                    eng_dim.update(Duration::from_millis(1), None).unwrap();
                     let mut p1 = EffectInstance::new(
                         "pulse_rgb_param".to_string(),
                         EffectType::Pulse {
@@ -844,8 +844,8 @@ mod tests {
                     p2.blend_mode = BlendMode::Multiply;
                     eng_dim.start_effect(p2).unwrap();
                     for dt in sample_ms {
-                        let cmds_rgb = eng_rgb.update(Duration::from_millis(dt)).unwrap();
-                        let cmds_dim = eng_dim.update(Duration::from_millis(dt)).unwrap();
+                        let cmds_rgb = eng_rgb.update(Duration::from_millis(dt), None).unwrap();
+                        let cmds_dim = eng_dim.update(Duration::from_millis(dt), None).unwrap();
                         let (r1, g1, b1) = get_rgb(1, 1, &cmds_rgb);
                         let (r2, g2, b2) = get_rgb(1, 2, &cmds_dim);
                         let d2 = get_dimmer(1, 1, &cmds_dim) as f32 / 255.0;
@@ -882,7 +882,7 @@ mod tests {
                         0.0,
                         EffectLayer::Background,
                     );
-                    eng_rgb.update(Duration::from_millis(1)).unwrap();
+                    eng_rgb.update(Duration::from_millis(1), None).unwrap();
                     let mut eng_dim = EffectEngine::new();
                     register_dedicated_dimmer_fixture(&mut eng_dim, "fx_dim", 1);
                     start_static_rgb(
@@ -893,7 +893,7 @@ mod tests {
                         0.0,
                         EffectLayer::Background,
                     );
-                    eng_dim.update(Duration::from_millis(1)).unwrap();
+                    eng_dim.update(Duration::from_millis(1), None).unwrap();
                     let mut c1 = EffectInstance::new(
                         "chase_rgb_param".to_string(),
                         EffectType::Chase {
@@ -927,8 +927,8 @@ mod tests {
                     c2.blend_mode = BlendMode::Multiply;
                     eng_dim.start_effect(c2).unwrap();
                     for dt in sample_ms {
-                        let cmds_rgb = eng_rgb.update(Duration::from_millis(dt)).unwrap();
-                        let cmds_dim = eng_dim.update(Duration::from_millis(dt)).unwrap();
+                        let cmds_rgb = eng_rgb.update(Duration::from_millis(dt), None).unwrap();
+                        let cmds_dim = eng_dim.update(Duration::from_millis(dt), None).unwrap();
                         let (r1, g1, b1) = get_rgb(1, 1, &cmds_rgb);
                         let (r2, g2, b2) = get_rgb(1, 2, &cmds_dim);
                         let d2 = get_dimmer(1, 1, &cmds_dim) as f32 / 255.0;
@@ -953,10 +953,10 @@ mod tests {
                 for bri in brightnesses {
                     let mut eng_rgb = EffectEngine::new();
                     register_rgb_only_fixture(&mut eng_rgb, "fx_rgb", 1);
-                    eng_rgb.update(Duration::from_millis(1)).unwrap();
+                    eng_rgb.update(Duration::from_millis(1), None).unwrap();
                     let mut eng_dim = EffectEngine::new();
                     register_dedicated_dimmer_fixture(&mut eng_dim, "fx_dim", 1);
-                    eng_dim.update(Duration::from_millis(1)).unwrap();
+                    eng_dim.update(Duration::from_millis(1), None).unwrap();
                     let mut r1 = EffectInstance::new(
                         "rainbow_rgb_param".to_string(),
                         EffectType::Rainbow {
@@ -988,8 +988,8 @@ mod tests {
                     r2.blend_mode = BlendMode::Replace;
                     eng_dim.start_effect(r2).unwrap();
                     for dt in sample_ms {
-                        let cmds_rgb = eng_rgb.update(Duration::from_millis(dt)).unwrap();
-                        let cmds_dim = eng_dim.update(Duration::from_millis(dt)).unwrap();
+                        let cmds_rgb = eng_rgb.update(Duration::from_millis(dt), None).unwrap();
+                        let cmds_dim = eng_dim.update(Duration::from_millis(dt), None).unwrap();
                         let (r1, g1, b1) = get_rgb(1, 1, &cmds_rgb);
                         let (r2, g2, b2) = get_rgb(1, 2, &cmds_dim);
                         let d2 = get_dimmer(1, 1, &cmds_dim) as f32 / 255.0;
@@ -1010,7 +1010,7 @@ mod tests {
 
         // Background blue
         start_static_rgb(&mut eng, "fx", 0.0, 0.0, 1.0, EffectLayer::Background);
-        eng.update(Duration::from_millis(10)).unwrap();
+        eng.update(Duration::from_millis(10), None).unwrap();
 
         // Foreground replace static red locks RGB
         let mut fg = EffectInstance::new(
@@ -1035,7 +1035,7 @@ mod tests {
         eng.start_effect(fg).unwrap();
 
         // Let lock engage
-        eng.update(Duration::from_millis(50)).unwrap();
+        eng.update(Duration::from_millis(50), None).unwrap();
 
         // Foreground multiply dimmer - multipliers pass through channel locks
         start_dimmer(
@@ -1048,7 +1048,7 @@ mod tests {
             BlendMode::Multiply,
         );
 
-        let cmds_mid = eng.update(Duration::from_millis(250)).unwrap();
+        let cmds_mid = eng.update(Duration::from_millis(250), None).unwrap();
         let (r_mid, _, _) = get_rgb(1, 1, &cmds_mid);
         // At midpoint, red should be dimmed to ~50% (multiplier passes through lock)
         assert!(
@@ -1058,7 +1058,7 @@ mod tests {
         );
 
         // After dimmer completes, final dimmed value (0) persists (dimmers are permanent)
-        let cmds_end = eng.update(Duration::from_millis(300)).unwrap();
+        let cmds_end = eng.update(Duration::from_millis(300), None).unwrap();
         let (r_end, g_end, b_end) = get_rgb(1, 1, &cmds_end);
         assert_eq!(r_end, 0);
         assert_eq!(g_end, 0);
@@ -1070,7 +1070,7 @@ mod tests {
         let mut eng = EffectEngine::new();
         register_rgb_only_fixture(&mut eng, "fx", 1);
         start_static_rgb(&mut eng, "fx", 0.0, 0.0, 1.0, EffectLayer::Background);
-        eng.update(Duration::from_millis(10)).unwrap();
+        eng.update(Duration::from_millis(10), None).unwrap();
 
         // Use near-instant dimmer; engine expires zero/near-zero quickly. Ensure no panic and subsequent long fade behaves.
         start_dimmer(
@@ -1082,11 +1082,11 @@ mod tests {
             EffectLayer::Foreground,
             BlendMode::Multiply,
         );
-        let _ = eng.update(Duration::from_millis(2)).unwrap();
+        let _ = eng.update(Duration::from_millis(2), None).unwrap();
 
         // Long duration minimal change early on
         start_static_rgb(&mut eng, "fx", 0.0, 0.0, 1.0, EffectLayer::Background);
-        eng.update(Duration::from_millis(10)).unwrap();
+        eng.update(Duration::from_millis(10), None).unwrap();
         start_dimmer(
             &mut eng,
             "fx",
@@ -1096,7 +1096,7 @@ mod tests {
             EffectLayer::Foreground,
             BlendMode::Multiply,
         );
-        let cmds_100ms = eng.update(Duration::from_millis(100)).unwrap();
+        let cmds_100ms = eng.update(Duration::from_millis(100), None).unwrap();
         let (_, _, b_100) = get_rgb(1, 1, &cmds_100ms);
         assert!(b_100 > 240);
     }
@@ -1105,7 +1105,7 @@ mod tests {
     fn test_rainbow_extreme_speeds() {
         let mut eng = EffectEngine::new();
         register_rgb_only_fixture(&mut eng, "fx", 1);
-        eng.update(Duration::from_millis(1)).unwrap();
+        eng.update(Duration::from_millis(1), None).unwrap();
 
         // Low speed snapshot
         let mut r_low = EffectInstance::new(
@@ -1123,7 +1123,7 @@ mod tests {
         r_low.layer = EffectLayer::Foreground;
         r_low.blend_mode = BlendMode::Replace;
         eng.start_effect(r_low).unwrap();
-        let c0 = eng.update(Duration::from_millis(0)).unwrap();
+        let c0 = eng.update(Duration::from_millis(0), None).unwrap();
         let (r0, g0, b0) = get_rgb(1, 1, &c0);
 
         // High speed snapshot at non-integer multiple of the cycle (period=100ms at 10Hz); use 125ms
@@ -1142,7 +1142,7 @@ mod tests {
         r_high.layer = EffectLayer::Foreground;
         r_high.blend_mode = BlendMode::Replace;
         eng.start_effect(r_high).unwrap();
-        let c1 = eng.update(Duration::from_millis(125)).unwrap();
+        let c1 = eng.update(Duration::from_millis(125), None).unwrap();
         let (r1, g1, b1) = get_rgb(1, 1, &c1);
 
         assert_ne!((r0, g0, b0), (r1, g1, b1));

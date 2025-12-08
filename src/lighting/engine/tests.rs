@@ -93,7 +93,7 @@ mod tests {
         engine.start_effect(effect).unwrap();
 
         // Update the engine
-        let commands = engine.update(Duration::from_millis(16)).unwrap();
+        let commands = engine.update(Duration::from_millis(16), None).unwrap();
 
         // Should have commands for dimmer and red channels
         assert_eq!(commands.len(), 2);
@@ -137,7 +137,7 @@ mod tests {
 
         // Test cycling over time
         // At t=0ms: should be red (index 0)
-        let commands = engine.update(Duration::from_millis(0)).unwrap();
+        let commands = engine.update(Duration::from_millis(0), None).unwrap();
         assert_eq!(commands.len(), 3);
         let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
         let green_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
@@ -147,7 +147,7 @@ mod tests {
         assert_eq!(blue_cmd.value, 0);
 
         // At t=500ms: should be green (index 1) - clearly in green's range
-        let commands = engine.update(Duration::from_millis(500)).unwrap();
+        let commands = engine.update(Duration::from_millis(500), None).unwrap();
         assert_eq!(commands.len(), 3);
         let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
         let green_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
@@ -157,7 +157,7 @@ mod tests {
         assert_eq!(blue_cmd.value, 0);
 
         // At t=300ms: should be blue (index 2) - 300ms into the second cycle
-        let commands = engine.update(Duration::from_millis(300)).unwrap();
+        let commands = engine.update(Duration::from_millis(300), None).unwrap();
         assert_eq!(commands.len(), 3);
         let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
         let green_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
@@ -198,7 +198,7 @@ mod tests {
         engine.start_effect(effect).unwrap();
 
         // At t=0ms: should be red (index 0) - start of cycle
-        let commands = engine.update(Duration::from_millis(0)).unwrap();
+        let commands = engine.update(Duration::from_millis(0), None).unwrap();
         let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
         let green_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
         let blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
@@ -210,7 +210,7 @@ mod tests {
 
         // At t=500ms: cycle_progress = 0.5, ping_pong_progress = 1.0 (peak)
         // Should show the LAST color (blue, index 2), not the first color (red)
-        let commands = engine.update(Duration::from_millis(500)).unwrap();
+        let commands = engine.update(Duration::from_millis(500), None).unwrap();
         let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
         let green_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
         let blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
@@ -222,7 +222,7 @@ mod tests {
 
         // At t=1000ms: cycle_progress = 0.0, back to start
         // Should be red again (index 0)
-        let commands = engine.update(Duration::from_millis(500)).unwrap();
+        let commands = engine.update(Duration::from_millis(500), None).unwrap();
         let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
         let green_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
         let blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
@@ -269,7 +269,7 @@ mod tests {
 
         // At t=0ms: cycle_progress = 0.0, reversed_progress = 1.0
         // Should be BLUE (last color, index 2), NOT red (first color)
-        let commands = engine.update(Duration::from_millis(0)).unwrap();
+        let commands = engine.update(Duration::from_millis(0), None).unwrap();
         let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
         let green_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
         let blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
@@ -281,7 +281,7 @@ mod tests {
 
         // At t=500ms (dt=500): cycle_progress = 0.5, reversed_progress = 0.5
         // color_index_f = 1.5, color_index = 1 → green
-        let commands = engine.update(Duration::from_millis(500)).unwrap();
+        let commands = engine.update(Duration::from_millis(500), None).unwrap();
         let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
         let green_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
         let blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
@@ -293,7 +293,7 @@ mod tests {
 
         // At t=834ms (dt=334, total=834): cycle_progress ≈ 0.834, reversed_progress ≈ 0.166
         // color_index_f ≈ 0.5, color_index = 0 → red
-        let commands = engine.update(Duration::from_millis(334)).unwrap();
+        let commands = engine.update(Duration::from_millis(334), None).unwrap();
         let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
         let green_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
         let blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
@@ -338,7 +338,7 @@ mod tests {
 
         // At t=0ms: cycle_progress = 0, should be PURE BLUE (last color)
         // With the bug, segment_progress was 1.0, causing lerp to return Green instead
-        let commands = engine.update(Duration::from_millis(0)).unwrap();
+        let commands = engine.update(Duration::from_millis(0), None).unwrap();
         let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
         let green_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
         let blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
@@ -349,7 +349,7 @@ mod tests {
         );
 
         // At t=166ms: ~50% through Blue->Green segment, should be teal-ish
-        let commands = engine.update(Duration::from_millis(166)).unwrap();
+        let commands = engine.update(Duration::from_millis(166), None).unwrap();
         let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
         let green_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
         let blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
@@ -396,7 +396,7 @@ mod tests {
         engine.start_effect(effect).unwrap();
 
         // At t=0ms: should be pure red (start of first segment)
-        let commands = engine.update(Duration::from_millis(0)).unwrap();
+        let commands = engine.update(Duration::from_millis(0), None).unwrap();
         let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
         let green_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
         let blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
@@ -409,7 +409,7 @@ mod tests {
         // At t=250ms: 50% through red→blue segment, should be purple (127, 0, 127)
         // With the bug, segment_progress would be 1.0 (clamped from 0.5 * 2 = 1.0),
         // resulting in pure blue instead of purple.
-        let commands = engine.update(Duration::from_millis(250)).unwrap();
+        let commands = engine.update(Duration::from_millis(250), None).unwrap();
         let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
         let green_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
         let blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
@@ -425,7 +425,7 @@ mod tests {
         );
 
         // At t=500ms: start of blue→red segment, should be pure blue
-        let commands = engine.update(Duration::from_millis(250)).unwrap();
+        let commands = engine.update(Duration::from_millis(250), None).unwrap();
         let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
         let green_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
         let blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
@@ -436,7 +436,7 @@ mod tests {
         );
 
         // At t=750ms: 50% through blue→red segment, should be purple again
-        let commands = engine.update(Duration::from_millis(250)).unwrap();
+        let commands = engine.update(Duration::from_millis(250), None).unwrap();
         let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
         let green_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
         let blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
@@ -487,22 +487,22 @@ mod tests {
         // Color 2 (blue): 666.66ms - 999.99ms
 
         // At t=0ms: should be red (start of cycle)
-        let commands = engine.update(Duration::from_millis(0)).unwrap();
+        let commands = engine.update(Duration::from_millis(0), None).unwrap();
         let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
         assert_eq!(red_cmd.value, 255, "At t=0ms should be red");
 
         // At t=350ms: should be green (past 333.33ms threshold)
-        let commands = engine.update(Duration::from_millis(350)).unwrap();
+        let commands = engine.update(Duration::from_millis(350), None).unwrap();
         let green_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
         assert_eq!(green_cmd.value, 255, "At t=350ms should be green");
 
         // At t=700ms: should be blue (past 666.66ms threshold)
-        let commands = engine.update(Duration::from_millis(350)).unwrap();
+        let commands = engine.update(Duration::from_millis(350), None).unwrap();
         let blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
         assert_eq!(blue_cmd.value, 255, "At t=700ms should be blue");
 
         // At t=1050ms: should wrap back to red (past 1000ms)
-        let commands = engine.update(Duration::from_millis(350)).unwrap();
+        let commands = engine.update(Duration::from_millis(350), None).unwrap();
         let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
         assert_eq!(red_cmd.value, 255, "At t=1050ms should wrap back to red");
     }
@@ -541,7 +541,7 @@ mod tests {
             engine.start_effect(effect).unwrap();
 
             // At t=0: should have a valid color (not crash, not garbage values)
-            let commands = engine.update(Duration::from_millis(0)).unwrap();
+            let commands = engine.update(Duration::from_millis(0), None).unwrap();
             let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
             let blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
 
@@ -555,7 +555,7 @@ mod tests {
             );
 
             // At t=500ms (half cycle): should still be valid
-            let commands = engine.update(Duration::from_millis(500)).unwrap();
+            let commands = engine.update(Duration::from_millis(500), None).unwrap();
             let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
             let blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
 
@@ -608,12 +608,12 @@ mod tests {
         engine.start_effect(effect).unwrap();
 
         // At t=0ms: strobe_phase=0, which is < 0.5, so ON (dimmer=255)
-        let commands = engine.update(Duration::from_millis(0)).unwrap();
+        let commands = engine.update(Duration::from_millis(0), None).unwrap();
         let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
         assert_eq!(dimmer_cmd.value, 255, "At t=0ms strobe should be ON");
 
         // At t=249ms: still in first half of period, should be ON
-        let commands = engine.update(Duration::from_millis(249)).unwrap();
+        let commands = engine.update(Duration::from_millis(249), None).unwrap();
         let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
         assert_eq!(
             dimmer_cmd.value, 255,
@@ -621,12 +621,12 @@ mod tests {
         );
 
         // At t=251ms: just past 50% of period, should be OFF
-        let commands = engine.update(Duration::from_millis(2)).unwrap();
+        let commands = engine.update(Duration::from_millis(2), None).unwrap();
         let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
         assert_eq!(dimmer_cmd.value, 0, "At t=251ms strobe should be OFF");
 
         // At t=500ms: start of new period, should be ON again
-        let commands = engine.update(Duration::from_millis(249)).unwrap();
+        let commands = engine.update(Duration::from_millis(249), None).unwrap();
         let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
         assert_eq!(
             dimmer_cmd.value, 255,
@@ -681,7 +681,7 @@ mod tests {
         };
 
         // At t=0ms: first fixture should be active (pattern_index = 0)
-        let commands = engine.update(Duration::from_millis(0)).unwrap();
+        let commands = engine.update(Duration::from_millis(0), None).unwrap();
         assert_eq!(
             count_active(&commands),
             1,
@@ -689,7 +689,7 @@ mod tests {
         );
 
         // At t=350ms: second fixture should be active (past 333.33ms)
-        let commands = engine.update(Duration::from_millis(350)).unwrap();
+        let commands = engine.update(Duration::from_millis(350), None).unwrap();
         assert_eq!(
             count_active(&commands),
             1,
@@ -697,7 +697,7 @@ mod tests {
         );
 
         // At t=700ms: third fixture should be active (past 666.66ms)
-        let commands = engine.update(Duration::from_millis(350)).unwrap();
+        let commands = engine.update(Duration::from_millis(350), None).unwrap();
         assert_eq!(
             count_active(&commands),
             1,
@@ -705,7 +705,7 @@ mod tests {
         );
 
         // At t=1050ms: should wrap back (past 1000ms)
-        let commands = engine.update(Duration::from_millis(350)).unwrap();
+        let commands = engine.update(Duration::from_millis(350), None).unwrap();
         assert_eq!(
             count_active(&commands),
             1,
@@ -737,7 +737,7 @@ mod tests {
         engine.start_effect(effect).unwrap();
 
         // At t=0ms: hue=0 (red)
-        let commands_start = engine.update(Duration::from_millis(0)).unwrap();
+        let commands_start = engine.update(Duration::from_millis(0), None).unwrap();
         let red_start = commands_start
             .iter()
             .find(|cmd| cmd.channel == 2)
@@ -764,7 +764,7 @@ mod tests {
         );
 
         // At t=1000ms: hue should wrap back to 0 (red again)
-        let commands_end = engine.update(Duration::from_millis(1000)).unwrap();
+        let commands_end = engine.update(Duration::from_millis(1000), None).unwrap();
         let red_end = commands_end
             .iter()
             .find(|cmd| cmd.channel == 2)
@@ -827,7 +827,7 @@ mod tests {
         engine.start_effect(effect).unwrap();
 
         // At t=0ms: phase=0, sin(0)=0, pulse_value = 0 + 1.0 * (0 * 0.5 + 0.5) = 0.5
-        let commands = engine.update(Duration::from_millis(0)).unwrap();
+        let commands = engine.update(Duration::from_millis(0), None).unwrap();
         let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
         // 0.5 * 255 ≈ 127
         assert!(
@@ -837,7 +837,7 @@ mod tests {
         );
 
         // At t=250ms: phase=π/2, sin(π/2)=1, pulse_value = 0 + 1.0 * (1 * 0.5 + 0.5) = 1.0 (peak)
-        let commands = engine.update(Duration::from_millis(250)).unwrap();
+        let commands = engine.update(Duration::from_millis(250), None).unwrap();
         let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
         assert!(
             dimmer_cmd.value >= 250,
@@ -846,7 +846,7 @@ mod tests {
         );
 
         // At t=750ms: phase=3π/2, sin(3π/2)=-1, pulse_value = 0 + 1.0 * (-1 * 0.5 + 0.5) = 0.0 (trough)
-        let commands = engine.update(Duration::from_millis(500)).unwrap();
+        let commands = engine.update(Duration::from_millis(500), None).unwrap();
         let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
         assert!(
             dimmer_cmd.value <= 5,
@@ -855,7 +855,7 @@ mod tests {
         );
 
         // At t=1000ms: should be back to mid-point
-        let commands = engine.update(Duration::from_millis(250)).unwrap();
+        let commands = engine.update(Duration::from_millis(250), None).unwrap();
         let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
         assert!(
             (120..=135).contains(&dimmer_cmd.value),
@@ -894,7 +894,7 @@ mod tests {
         engine.start_effect(effect).unwrap();
 
         // Should not panic, and should show first color
-        let commands = engine.update(Duration::from_millis(0)).unwrap();
+        let commands = engine.update(Duration::from_millis(0), None).unwrap();
         let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
         let green_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
         let blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
@@ -905,7 +905,7 @@ mod tests {
         );
 
         // Even after time passes, should still show first color (frozen)
-        let commands = engine.update(Duration::from_millis(5000)).unwrap();
+        let commands = engine.update(Duration::from_millis(5000), None).unwrap();
         let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
         let green_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
         let blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
@@ -948,7 +948,7 @@ mod tests {
         engine.start_effect(effect).unwrap();
 
         // Should not panic, first fixture should be active
-        let commands = engine.update(Duration::from_millis(0)).unwrap();
+        let commands = engine.update(Duration::from_millis(0), None).unwrap();
         let dimmer_channels = [1, 11, 21];
         let active_count = commands
             .iter()
@@ -964,7 +964,7 @@ mod tests {
         assert_eq!(first_dimmer.value, 255, "First fixture should be active");
 
         // Even after time passes, should still be frozen on first fixture
-        let commands = engine.update(Duration::from_millis(5000)).unwrap();
+        let commands = engine.update(Duration::from_millis(5000), None).unwrap();
         let first_dimmer = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
         assert_eq!(
             first_dimmer.value, 255,
@@ -995,14 +995,14 @@ mod tests {
         engine.start_effect(effect).unwrap();
 
         // Should not panic, should return empty commands
-        let commands = engine.update(Duration::from_millis(0)).unwrap();
+        let commands = engine.update(Duration::from_millis(0), None).unwrap();
         assert!(
             commands.is_empty(),
             "Empty fixture chase should produce no commands"
         );
 
         // Should still work after time passes
-        let commands = engine.update(Duration::from_millis(1000)).unwrap();
+        let commands = engine.update(Duration::from_millis(1000), None).unwrap();
         assert!(
             commands.is_empty(),
             "Empty fixture chase should still produce no commands"
@@ -1044,7 +1044,7 @@ mod tests {
 
             // Should always be the same color at any time
             for ms in [0, 250, 500, 750, 1000] {
-                let commands = test_engine.update(Duration::from_millis(ms)).unwrap();
+                let commands = test_engine.update(Duration::from_millis(ms), None).unwrap();
                 let red_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
                 let green_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
                 let blue_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
@@ -1080,7 +1080,7 @@ mod tests {
         engine.start_effect(effect).unwrap();
 
         // Update the engine
-        let commands = engine.update(Duration::from_millis(16)).unwrap();
+        let commands = engine.update(Duration::from_millis(16), None).unwrap();
 
         // Should have strobe command since fixture has dedicated strobe channel
         assert_eq!(commands.len(), 1);
@@ -1114,7 +1114,7 @@ mod tests {
         engine.start_effect(effect).unwrap();
 
         // Update the engine after 500ms (half duration)
-        let commands = engine.update(Duration::from_millis(500)).unwrap();
+        let commands = engine.update(Duration::from_millis(500), None).unwrap();
 
         // Should have only dimmer command since fixture has dedicated dimmer channel
         // The fixture profile system uses DedicatedDimmer strategy for RGB+dimmer fixtures
@@ -1147,7 +1147,7 @@ mod tests {
         engine.start_effect(effect).unwrap();
 
         // Update the engine
-        let commands = engine.update(Duration::from_millis(16)).unwrap();
+        let commands = engine.update(Duration::from_millis(16), None).unwrap();
 
         // Should have RGB commands
         assert_eq!(commands.len(), 3);
@@ -1184,7 +1184,7 @@ mod tests {
         engine.start_effect(effect).unwrap();
 
         // Update the engine
-        let commands = engine.update(Duration::from_millis(16)).unwrap();
+        let commands = engine.update(Duration::from_millis(16), None).unwrap();
 
         // Should have dimmer command since fixture has dedicated dimmer channel
         assert_eq!(commands.len(), 1);
@@ -1225,7 +1225,7 @@ mod tests {
         engine.start_effect(effect).unwrap();
 
         // Update the engine
-        let commands = engine.update(Duration::from_millis(16)).unwrap();
+        let commands = engine.update(Duration::from_millis(16), None).unwrap();
 
         // Should have dimmer commands for all fixtures
         // Note: The chase effect might generate more commands than expected
@@ -1299,7 +1299,7 @@ mod tests {
         engine.start_effect(high_effect).unwrap();
 
         // Update the engine
-        let commands = engine.update(Duration::from_millis(16)).unwrap();
+        let commands = engine.update(Duration::from_millis(16), None).unwrap();
 
         // Should have only one dimmer command (high priority wins)
         assert_eq!(commands.len(), 1);
@@ -1331,13 +1331,13 @@ mod tests {
         engine.start_effect(effect).unwrap();
 
         // Update the engine - should have command
-        let commands = engine.update(Duration::from_millis(16)).unwrap();
+        let commands = engine.update(Duration::from_millis(16), None).unwrap();
         assert_eq!(commands.len(), 1);
 
         // Stop the effect
 
         // Update again - should still have commands since we didn't stop the effect
-        let commands = engine.update(Duration::from_millis(16)).unwrap();
+        let commands = engine.update(Duration::from_millis(16), None).unwrap();
         assert_eq!(commands.len(), 1);
     }
 
@@ -1395,11 +1395,11 @@ mod tests {
         engine.start_effect(effect).unwrap();
 
         // Update before expiry - should have commands
-        let commands = engine.update(Duration::from_millis(50)).unwrap();
+        let commands = engine.update(Duration::from_millis(50), None).unwrap();
         assert_eq!(commands.len(), 1);
 
         // Update after expiry - timed static effects end and don't preserve their state
-        let commands = engine.update(Duration::from_millis(100)).unwrap();
+        let commands = engine.update(Duration::from_millis(100), None).unwrap();
         // Timed static effects end and don't generate commands after expiry
         assert_eq!(commands.len(), 0);
     }
@@ -1454,14 +1454,14 @@ mod tests {
 
         // At t=0s (120 BPM): 1 measure = 2.0s, so speed = 0.5 cycles/sec
         // Verify effect is running
-        let commands = engine.update(Duration::from_millis(100)).unwrap();
+        let commands = engine.update(Duration::from_millis(100), None).unwrap();
         assert!(!commands.is_empty(), "Effect should generate commands");
 
         // At t=4s: tempo changes to 60 BPM
         // At t=4.1s (60 BPM): 1 measure = 4.0s, so speed = 0.25 cycles/sec
         // This is slower than before - the effect should have adapted
-        engine.update(Duration::from_secs(4)).unwrap(); // Advance to tempo change
-        let commands_after = engine.update(Duration::from_millis(100)).unwrap(); // 0.1s after tempo change
+        engine.update(Duration::from_secs(4), None).unwrap(); // Advance to tempo change
+        let commands_after = engine.update(Duration::from_millis(100), None).unwrap(); // 0.1s after tempo change
 
         // At slower tempo, the cycle should be progressing more slowly
         // The effect should still be running and generating commands
@@ -1473,7 +1473,7 @@ mod tests {
         // Verify that the speed calculation uses the new tempo
         // We can't easily verify exact color values, but we can verify the effect is adapting
         // by checking that it's still running and producing different values over time
-        let commands_later = engine.update(Duration::from_millis(1000)).unwrap(); // 1.1s after tempo change
+        let commands_later = engine.update(Duration::from_millis(1000), None).unwrap(); // 1.1s after tempo change
         assert!(
             !commands_later.is_empty(),
             "Effect should continue running after tempo change"
@@ -1522,7 +1522,7 @@ mod tests {
             None,
         );
         engine.start_effect(bg_effect).unwrap();
-        engine.update(Duration::from_millis(10)).unwrap(); // Let background settle
+        engine.update(Duration::from_millis(10), None).unwrap(); // Let background settle
 
         // Create a strobe effect with frequency: 1beat (tempo-aware)
         let effect = EffectInstance::new(
@@ -1541,7 +1541,7 @@ mod tests {
 
         // At t=0s (120 BPM): 1 beat = 0.5s, so frequency = 2.0 Hz
         // At 2 Hz, period = 0.5s
-        let commands_before = engine.update(Duration::from_millis(100)).unwrap();
+        let commands_before = engine.update(Duration::from_millis(100), None).unwrap();
         let strobe_before = commands_before.iter().find(|cmd| cmd.channel == 6);
         assert!(
             strobe_before.is_some(),
@@ -1552,8 +1552,8 @@ mod tests {
         // At t=2.1s (60 BPM): 1 beat = 1.0s, so frequency = 1.0 Hz
         // At 1 Hz, period = 1.0s
         // This is slower than before - the effect should have adapted
-        engine.update(Duration::from_secs(2)).unwrap(); // Advance to tempo change
-        let commands_after = engine.update(Duration::from_millis(100)).unwrap(); // 0.1s after tempo change
+        engine.update(Duration::from_secs(2), None).unwrap(); // Advance to tempo change
+        let commands_after = engine.update(Duration::from_millis(100), None).unwrap(); // 0.1s after tempo change
 
         // The effect should still be running (may or may not generate strobe commands depending on phase)
         // The key is that the frequency calculation uses the new tempo
@@ -1615,7 +1615,7 @@ mod tests {
         engine.start_effect(effect).unwrap();
 
         // At t=0s (120 BPM): 1 measure = 2.0s, so speed = 0.5 cycles/sec
-        let commands_before = engine.update(Duration::from_millis(100)).unwrap();
+        let commands_before = engine.update(Duration::from_millis(100), None).unwrap();
         assert!(
             !commands_before.is_empty(),
             "Chase should generate commands before tempo change"
@@ -1624,8 +1624,8 @@ mod tests {
         // At t=3s: tempo changes to 60 BPM
         // At t=3.1s (60 BPM): 1 measure = 4.0s, so speed = 0.25 cycles/sec
         // This is slower than before - the effect should have adapted
-        engine.update(Duration::from_secs(3)).unwrap(); // Advance to tempo change
-        let commands_after = engine.update(Duration::from_millis(100)).unwrap(); // 0.1s after tempo change
+        engine.update(Duration::from_secs(3), None).unwrap(); // Advance to tempo change
+        let commands_after = engine.update(Duration::from_millis(100), None).unwrap(); // 0.1s after tempo change
 
         // The effect should still be running and generating commands
         assert!(
@@ -1634,7 +1634,7 @@ mod tests {
         );
 
         // Verify it continues running
-        let commands_later = engine.update(Duration::from_millis(1000)).unwrap();
+        let commands_later = engine.update(Duration::from_millis(1000), None).unwrap();
         assert!(
             !commands_later.is_empty(),
             "Chase should continue running after tempo change"
@@ -1695,22 +1695,22 @@ mod tests {
         engine.start_effect(effect).unwrap();
 
         // Shortly after start at 120 BPM, the chase should generate commands
-        let commands_before = engine.update(Duration::from_millis(100)).unwrap();
+        let commands_before = engine.update(Duration::from_millis(100), None).unwrap();
         assert!(
             !commands_before.is_empty(),
             "Chase with beats-based speed should generate commands before tempo change"
         );
 
         // Advance past the tempo change and ensure the chase still generates commands
-        engine.update(Duration::from_secs(3)).unwrap(); // Advance to tempo change
-        let commands_after = engine.update(Duration::from_millis(100)).unwrap(); // 0.1s after change
+        engine.update(Duration::from_secs(3), None).unwrap(); // Advance to tempo change
+        let commands_after = engine.update(Duration::from_millis(100), None).unwrap(); // 0.1s after change
         assert!(
             !commands_after.is_empty(),
             "Chase with beats-based speed should still generate commands after tempo change"
         );
 
         // And it should continue to run later in time as well
-        let commands_later = engine.update(Duration::from_millis(1000)).unwrap();
+        let commands_later = engine.update(Duration::from_millis(1000), None).unwrap();
         assert!(
             !commands_later.is_empty(),
             "Chase with beats-based speed should continue running after tempo change"
@@ -1760,10 +1760,10 @@ mod tests {
         // Measure offset of 8 means score measure 70 becomes playback measure 78
         let measure_offset = 8;
         let random_chase_time = tempo_map
-            .measure_to_time_with_offset(70, 1.0, measure_offset)
+            .measure_to_time_with_offset(70, 1.0, measure_offset, 0.0)
             .expect("Should be able to calculate time for measure 70/1");
         let linear_chase_time = tempo_map
-            .measure_to_time_with_offset(74, 1.0, measure_offset)
+            .measure_to_time_with_offset(74, 1.0, measure_offset, 0.0)
             .expect("Should be able to calculate time for measure 74/1");
 
         // Create random chase at @70/1 with speed: 1beats
@@ -1808,7 +1808,7 @@ mod tests {
 
         // Advance to just before the random chase
         let time_before_random = random_chase_time - Duration::from_millis(10);
-        engine.update(time_before_random).unwrap();
+        engine.update(time_before_random, None).unwrap();
 
         // Start the random chase
         engine.start_effect(random_chase).unwrap();
@@ -1816,7 +1816,7 @@ mod tests {
         // Test that random chase produces output at various times
         // Test immediately after start
         let commands_at_start = engine
-            .update(random_chase_time + Duration::from_millis(16))
+            .update(random_chase_time + Duration::from_millis(16), None)
             .unwrap();
         assert!(
             !commands_at_start.is_empty(),
@@ -1825,7 +1825,7 @@ mod tests {
 
         // Test a bit later (during the chase)
         let commands_during = engine
-            .update(random_chase_time + Duration::from_millis(100))
+            .update(random_chase_time + Duration::from_millis(100), None)
             .unwrap();
         assert!(
             !commands_during.is_empty(),
@@ -1834,7 +1834,7 @@ mod tests {
 
         // Advance to just before the linear chase
         let time_before_linear = linear_chase_time - Duration::from_millis(10);
-        engine.update(time_before_linear).unwrap();
+        engine.update(time_before_linear, None).unwrap();
 
         // Start the linear chase
         engine.start_effect(linear_chase).unwrap();
@@ -1842,7 +1842,7 @@ mod tests {
         // Test that linear chase produces output at various times
         // Test immediately after start
         let commands_linear_start = engine
-            .update(linear_chase_time + Duration::from_millis(16))
+            .update(linear_chase_time + Duration::from_millis(16), None)
             .unwrap();
         assert!(
             !commands_linear_start.is_empty(),
@@ -1851,7 +1851,7 @@ mod tests {
 
         // Test a bit later (during the chase)
         let commands_linear_during = engine
-            .update(linear_chase_time + Duration::from_millis(100))
+            .update(linear_chase_time + Duration::from_millis(100), None)
             .unwrap();
         assert!(
             !commands_linear_during.is_empty(),
@@ -1860,7 +1860,7 @@ mod tests {
 
         // Test even later to ensure it keeps running
         let commands_linear_later = engine
-            .update(linear_chase_time + Duration::from_millis(500))
+            .update(linear_chase_time + Duration::from_millis(500), None)
             .unwrap();
         assert!(
             !commands_linear_later.is_empty(),
@@ -1915,7 +1915,7 @@ mod tests {
 
         let measure_offset = 8;
         let linear_chase_time = tempo_map
-            .measure_to_time_with_offset(74, 1.0, measure_offset)
+            .measure_to_time_with_offset(74, 1.0, measure_offset, 0.0)
             .expect("Should be able to calculate time for measure 74/1");
 
         // Test speed calculation at multiple time points around the chase start
@@ -1963,16 +1963,16 @@ mod tests {
 
         // Advance to just before the chase
         engine
-            .update(linear_chase_time - Duration::from_millis(10))
+            .update(linear_chase_time - Duration::from_millis(10), None)
             .unwrap();
         engine.start_effect(linear_chase).unwrap();
 
         // Test at multiple time points to catch any frame where it might fail
         for (i, test_time) in test_times.iter().enumerate() {
             if *test_time >= linear_chase_time {
-                engine.update(*test_time).unwrap();
+                engine.update(*test_time, None).unwrap();
                 let commands = engine
-                    .update(*test_time + Duration::from_millis(16))
+                    .update(*test_time + Duration::from_millis(16), None)
                     .unwrap();
                 assert!(
                     !commands.is_empty(),
@@ -2026,7 +2026,7 @@ mod tests {
         engine.start_effect(effect).unwrap();
 
         // At t=0s (120 BPM): 2 beats = 1.0s, so speed = 1.0 cycles/sec
-        let commands_before = engine.update(Duration::from_millis(100)).unwrap();
+        let commands_before = engine.update(Duration::from_millis(100), None).unwrap();
         assert!(
             !commands_before.is_empty(),
             "Rainbow should generate commands before tempo change"
@@ -2035,8 +2035,8 @@ mod tests {
         // At t=2.5s: tempo changes to 60 BPM
         // At t=2.6s (60 BPM): 2 beats = 2.0s, so speed = 0.5 cycles/sec
         // This is slower than before - the effect should have adapted
-        engine.update(Duration::from_millis(2500)).unwrap(); // Advance to tempo change
-        let commands_after = engine.update(Duration::from_millis(100)).unwrap(); // 0.1s after tempo change
+        engine.update(Duration::from_millis(2500), None).unwrap(); // Advance to tempo change
+        let commands_after = engine.update(Duration::from_millis(100), None).unwrap(); // 0.1s after tempo change
 
         // The effect should still be running and generating commands
         assert!(
@@ -2045,7 +2045,7 @@ mod tests {
         );
 
         // Verify it continues running
-        let commands_later = engine.update(Duration::from_millis(1000)).unwrap();
+        let commands_later = engine.update(Duration::from_millis(1000), None).unwrap();
         assert!(
             !commands_later.is_empty(),
             "Rainbow should continue running after tempo change"
@@ -2095,7 +2095,7 @@ mod tests {
         engine.start_effect(effect).unwrap();
 
         // At t=0s (120 BPM): 1 beat = 0.5s, so frequency = 2.0 Hz
-        let commands_before = engine.update(Duration::from_millis(100)).unwrap();
+        let commands_before = engine.update(Duration::from_millis(100), None).unwrap();
         assert!(
             !commands_before.is_empty(),
             "Pulse should generate commands before tempo change"
@@ -2104,8 +2104,8 @@ mod tests {
         // At t=1.5s: tempo changes to 60 BPM
         // At t=1.6s (60 BPM): 1 beat = 1.0s, so frequency = 1.0 Hz
         // This is slower than before - the effect should have adapted
-        engine.update(Duration::from_millis(1500)).unwrap(); // Advance to tempo change
-        let commands_after = engine.update(Duration::from_millis(100)).unwrap(); // 0.1s after tempo change
+        engine.update(Duration::from_millis(1500), None).unwrap(); // Advance to tempo change
+        let commands_after = engine.update(Duration::from_millis(100), None).unwrap(); // 0.1s after tempo change
 
         // The effect should still be running and generating commands
         assert!(
@@ -2114,7 +2114,7 @@ mod tests {
         );
 
         // Verify it continues running
-        let commands_later = engine.update(Duration::from_millis(1000)).unwrap();
+        let commands_later = engine.update(Duration::from_millis(1000), None).unwrap();
         assert!(
             !commands_later.is_empty(),
             "Pulse should continue running after tempo change"
@@ -2207,10 +2207,10 @@ mod tests {
         engine.start_effect(effect).unwrap();
 
         // Let the effect run for a bit to get to an interesting state
-        let _commands1 = engine.update(Duration::from_millis(250)).unwrap();
+        let _commands1 = engine.update(Duration::from_millis(250), None).unwrap();
 
         // Capture the state at this point
-        let commands_before_freeze = engine.update(Duration::from_millis(10)).unwrap();
+        let commands_before_freeze = engine.update(Duration::from_millis(10), None).unwrap();
         assert!(!commands_before_freeze.is_empty());
 
         // Freeze the background layer
@@ -2218,9 +2218,9 @@ mod tests {
         assert!(engine.is_layer_frozen(EffectLayer::Background));
 
         // Update multiple times - the values should stay the same while frozen
-        let commands_frozen1 = engine.update(Duration::from_millis(100)).unwrap();
-        let commands_frozen2 = engine.update(Duration::from_millis(100)).unwrap();
-        let commands_frozen3 = engine.update(Duration::from_millis(500)).unwrap();
+        let commands_frozen1 = engine.update(Duration::from_millis(100), None).unwrap();
+        let commands_frozen2 = engine.update(Duration::from_millis(100), None).unwrap();
+        let commands_frozen3 = engine.update(Duration::from_millis(500), None).unwrap();
 
         assert!(!commands_frozen1.is_empty());
         assert!(!commands_frozen2.is_empty());
@@ -2251,8 +2251,8 @@ mod tests {
         assert!(!engine.is_layer_frozen(EffectLayer::Background));
 
         // After unfreezing, the effect should resume and values should change
-        let commands_after1 = engine.update(Duration::from_millis(100)).unwrap();
-        let commands_after2 = engine.update(Duration::from_millis(200)).unwrap();
+        let commands_after1 = engine.update(Duration::from_millis(100), None).unwrap();
+        let commands_after2 = engine.update(Duration::from_millis(200), None).unwrap();
 
         assert!(!commands_after1.is_empty());
         assert!(!commands_after2.is_empty());
@@ -2310,20 +2310,20 @@ mod tests {
         engine.start_effect(effect).unwrap();
 
         // Run effect to get to an interesting state (250ms into the cycle)
-        engine.update(Duration::from_millis(250)).unwrap();
+        engine.update(Duration::from_millis(250), None).unwrap();
 
         // Capture the current state (before freeze)
-        let _commands_before_freeze = engine.update(Duration::from_millis(10)).unwrap();
+        let _commands_before_freeze = engine.update(Duration::from_millis(10), None).unwrap();
 
         // Freeze the layer
         engine.freeze_layer(EffectLayer::Background);
 
         // Let significant time pass while frozen (1 second = full cycle if not frozen)
-        engine.update(Duration::from_millis(500)).unwrap();
-        engine.update(Duration::from_millis(500)).unwrap();
+        engine.update(Duration::from_millis(500), None).unwrap();
+        engine.update(Duration::from_millis(500), None).unwrap();
 
         // Capture the frozen state (should be same as before freeze)
-        let commands_frozen = engine.update(Duration::from_millis(10)).unwrap();
+        let commands_frozen = engine.update(Duration::from_millis(10), None).unwrap();
         // Sort by channel for consistent comparison (DMX commands may be returned in any order)
         let mut frozen_sorted: Vec<_> = commands_frozen
             .iter()
@@ -2337,7 +2337,7 @@ mod tests {
 
         // Immediately after release, the effect should continue from where it was frozen,
         // NOT jump forward by the 1 second that passed while frozen.
-        let commands_after_release = engine.update(Duration::from_millis(10)).unwrap();
+        let commands_after_release = engine.update(Duration::from_millis(10), None).unwrap();
         // Sort by channel for consistent comparison
         let mut after_release_sorted: Vec<_> = commands_after_release
             .iter()
@@ -2372,8 +2372,8 @@ mod tests {
         );
 
         // Also verify the effect is actually fading out over time
-        engine.update(Duration::from_millis(1000)).unwrap();
-        let commands_mid_fade = engine.update(Duration::from_millis(10)).unwrap();
+        engine.update(Duration::from_millis(1000), None).unwrap();
+        let commands_mid_fade = engine.update(Duration::from_millis(10), None).unwrap();
         // Sort by channel for consistent comparison
         let mut mid_fade_sorted: Vec<_> = commands_mid_fade
             .iter()
@@ -2422,7 +2422,7 @@ mod tests {
         engine.start_effect(effect).unwrap();
 
         // Get commands at full intensity
-        let commands_full = engine.update(Duration::from_millis(16)).unwrap();
+        let commands_full = engine.update(Duration::from_millis(16), None).unwrap();
         assert_eq!(commands_full.len(), 1);
         let full_value = commands_full[0].value;
         assert_eq!(full_value, 255); // Full intensity
@@ -2432,7 +2432,7 @@ mod tests {
         assert!((engine.get_layer_intensity_master(EffectLayer::Background) - 0.5).abs() < 0.01);
 
         // Get commands at 50% master
-        let commands_half = engine.update(Duration::from_millis(16)).unwrap();
+        let commands_half = engine.update(Duration::from_millis(16), None).unwrap();
         assert_eq!(commands_half.len(), 1);
         let half_value = commands_half[0].value;
         assert_eq!(half_value, 127); // 50% of 255
@@ -2481,7 +2481,7 @@ mod tests {
         engine.start_effect(effect).unwrap();
 
         // Get initial commands at full brightness
-        let commands_before = engine.update(Duration::from_millis(16)).unwrap();
+        let commands_before = engine.update(Duration::from_millis(16), None).unwrap();
         assert_eq!(commands_before.len(), 1);
         assert_eq!(commands_before[0].value, 255);
 
@@ -2489,11 +2489,11 @@ mod tests {
         engine.release_layer_with_time(EffectLayer::Background, Some(Duration::from_secs(1)));
 
         // Immediately after release, should still be near full
-        let commands_start = engine.update(Duration::from_millis(16)).unwrap();
+        let commands_start = engine.update(Duration::from_millis(16), None).unwrap();
         assert!(!commands_start.is_empty());
 
         // Halfway through fade (500ms), should be around half brightness
-        let commands_mid = engine.update(Duration::from_millis(500)).unwrap();
+        let commands_mid = engine.update(Duration::from_millis(500), None).unwrap();
         if !commands_mid.is_empty() {
             // Value should be less than full
             assert!(
@@ -2504,7 +2504,7 @@ mod tests {
         }
 
         // After fade completes (another 600ms), effect should be gone
-        let _commands_end = engine.update(Duration::from_millis(600)).unwrap();
+        let _commands_end = engine.update(Duration::from_millis(600), None).unwrap();
         // Effect should have completed and been removed
         assert_eq!(engine.active_effects_count(), 0);
     }
@@ -2566,7 +2566,7 @@ mod tests {
         engine.start_effect(effect).unwrap();
 
         // Get initial value
-        let cmd1 = engine.update(Duration::from_millis(100)).unwrap();
+        let cmd1 = engine.update(Duration::from_millis(100), None).unwrap();
         assert!(!cmd1.is_empty());
         let _initial_value = cmd1[0].value;
 
@@ -2575,8 +2575,8 @@ mod tests {
 
         // With speed = 0, elapsed time stays at same effective position
         // So values should stay similar
-        let cmd2 = engine.update(Duration::from_millis(500)).unwrap();
-        let cmd3 = engine.update(Duration::from_millis(500)).unwrap();
+        let cmd2 = engine.update(Duration::from_millis(500), None).unwrap();
+        let cmd3 = engine.update(Duration::from_millis(500), None).unwrap();
 
         assert!(!cmd2.is_empty());
         assert!(!cmd3.is_empty());
@@ -2617,24 +2617,24 @@ mod tests {
         engine.start_effect(effect).unwrap();
 
         // Run for a bit to get to a known state
-        engine.update(Duration::from_millis(250)).unwrap();
+        engine.update(Duration::from_millis(250), None).unwrap();
 
         // Freeze with speed=0
         engine.set_layer_speed_master(EffectLayer::Background, 0.0);
 
         // Record frozen value
-        let frozen_cmd = engine.update(Duration::from_millis(100)).unwrap();
+        let frozen_cmd = engine.update(Duration::from_millis(100), None).unwrap();
         let frozen_val = frozen_cmd[0].value;
 
         // Wait a bit while frozen
-        engine.update(Duration::from_millis(500)).unwrap();
+        engine.update(Duration::from_millis(500), None).unwrap();
 
         // Resume with speed=1
         engine.set_layer_speed_master(EffectLayer::Background, 1.0);
 
         // The effect should now progress from where it was frozen
-        let resume_cmd1 = engine.update(Duration::from_millis(100)).unwrap();
-        let resume_cmd2 = engine.update(Duration::from_millis(100)).unwrap();
+        let resume_cmd1 = engine.update(Duration::from_millis(100), None).unwrap();
+        let resume_cmd2 = engine.update(Duration::from_millis(100), None).unwrap();
 
         // After resuming, values should change (effect is running again)
         // We can't predict exact values due to sinusoidal pulse, but they should differ
@@ -2716,5 +2716,60 @@ mod tests {
         assert_eq!(engine.active_effects_count(), 1);
         assert!(engine.has_effect("bg"));
         assert!(!engine.has_effect("mid"));
+    }
+
+    #[test]
+    fn test_format_active_effects() {
+        let mut engine = EffectEngine::new();
+        let fixture = create_test_fixture("test_fixture", 1, 1);
+        engine.register_fixture(fixture);
+
+        // Test with no effects
+        let output = engine.format_active_effects();
+        assert_eq!(output, "No active effects");
+
+        // Add a static effect
+        let mut params = HashMap::new();
+        params.insert("red".to_string(), 1.0);
+        let effect = EffectInstance::new(
+            "test_effect_1".to_string(),
+            EffectType::Static {
+                parameters: params,
+                duration: None,
+            },
+            vec!["test_fixture".to_string()],
+            None,
+            Some(Duration::from_secs(5)),
+            None,
+        );
+        engine.start_effect(effect).unwrap();
+
+        // Add a chase effect on a different layer
+        let mut chase_effect = EffectInstance::new(
+            "test_effect_2".to_string(),
+            EffectType::Chase {
+                pattern: ChasePattern::Linear,
+                speed: TempoAwareSpeed::Fixed(1.0),
+                direction: ChaseDirection::LeftToRight,
+                transition: CycleTransition::Snap,
+            },
+            vec!["test_fixture".to_string()],
+            None,
+            None,
+            None,
+        );
+        chase_effect.layer = EffectLayer::Foreground;
+        engine.start_effect(chase_effect).unwrap();
+
+        // Format and verify output
+        let output = engine.format_active_effects();
+        assert!(output.contains("Active effects (2)"));
+        assert!(output.contains("Background"));
+        assert!(output.contains("Foreground"));
+        assert!(output.contains("test_effect_1"));
+        assert!(output.contains("test_effect_2"));
+        assert!(output.contains("Static"));
+        assert!(output.contains("Chase"));
+        assert!(output.contains("1 fixture(s)"));
     }
 }

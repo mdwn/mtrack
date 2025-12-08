@@ -84,7 +84,7 @@ fn test_layering_demo() {
     let dt = Duration::from_millis(200); // 5 FPS for demo
 
     while time < 3.0 {
-        let commands = engine.update(dt).unwrap();
+        let commands = engine.update(dt, None).unwrap();
 
         // Print state every 0.4 seconds
         if (time * 5.0) as i32 % 2 == 0 {
@@ -172,7 +172,7 @@ fn test_multiple_effects_simultaneous() {
     engine.start_effect(static_effect).unwrap();
 
     // Check at 0s
-    let commands = engine.update(Duration::from_secs(0)).unwrap();
+    let commands = engine.update(Duration::from_secs(0), None).unwrap();
     println!("=== At 0s (Static blue on 4 fixtures) ===");
     for cmd in &commands {
         let fixture_num = ((cmd.channel - 1) / 4) + 1;
@@ -212,7 +212,7 @@ fn test_multiple_effects_simultaneous() {
     engine.start_effect(dimmer_effect).unwrap();
 
     // Check at 2s (dimmer start)
-    let commands = engine.update(Duration::from_secs(2)).unwrap();
+    let commands = engine.update(Duration::from_secs(2), None).unwrap();
     println!("\n=== At 2s (Dimmer starts on 4 fixtures) ===");
     for cmd in &commands {
         let fixture_num = ((cmd.channel - 1) / 4) + 1;
@@ -231,13 +231,13 @@ fn test_multiple_effects_simultaneous() {
     }
 
     // Check at 4.5s (50% through dimmer)
-    engine.update(Duration::from_secs(2)).unwrap();
-    let commands = engine.update(Duration::from_secs(0)).unwrap();
+    engine.update(Duration::from_secs(2), None).unwrap();
+    let commands = engine.update(Duration::from_secs(0), None).unwrap();
     println!("\n=== At 4.5s (50% through dimmer on 4 fixtures) ===");
 
     // Advance to 25s to trigger debug logging
-    engine.update(Duration::from_secs(20)).unwrap();
-    let commands_25s = engine.update(Duration::from_secs(0)).unwrap();
+    engine.update(Duration::from_secs(20), None).unwrap();
+    let commands_25s = engine.update(Duration::from_secs(0), None).unwrap();
     println!("\n=== At 25s (Debug logging should appear) ===");
     println!("Commands at 25s: {} commands", commands_25s.len());
     for cmd in &commands_25s {
@@ -363,7 +363,7 @@ fn test_astera_pixelblock_real_behavior() {
     engine.start_effect(static_effect).unwrap();
 
     // Check at 0s
-    let commands = engine.update(Duration::from_secs(0)).unwrap();
+    let commands = engine.update(Duration::from_secs(0), None).unwrap();
     println!("\n=== At 0s (Static blue) ===");
     for cmd in &commands {
         let channel_name = match cmd.channel {
@@ -391,11 +391,11 @@ fn test_astera_pixelblock_real_behavior() {
     );
 
     // Advance to 2s and start dimmer
-    engine.update(Duration::from_secs(2)).unwrap();
+    engine.update(Duration::from_secs(2), None).unwrap();
     engine.start_effect(dimmer_effect).unwrap();
 
     // Check at 2s (dimmer start)
-    let commands = engine.update(Duration::from_secs(0)).unwrap();
+    let commands = engine.update(Duration::from_secs(0), None).unwrap();
     println!("\n=== At 2s (Dimmer starts) ===");
     for cmd in &commands {
         let channel_name = match cmd.channel {
@@ -409,8 +409,8 @@ fn test_astera_pixelblock_real_behavior() {
     }
 
     // Check at 4.5s (50% through dimmer)
-    engine.update(Duration::from_secs(2)).unwrap();
-    let commands = engine.update(Duration::from_secs(0)).unwrap();
+    engine.update(Duration::from_secs(2), None).unwrap();
+    let commands = engine.update(Duration::from_secs(0), None).unwrap();
     println!("\n=== At 4.5s (50% through dimmer) ===");
     for cmd in &commands {
         let channel_name = match cmd.channel {
@@ -494,7 +494,7 @@ fn test_permanent_vs_temporary_effects() {
     engine.start_effect(static_effect).unwrap();
 
     // Let the static effect run for a bit
-    engine.update(Duration::from_secs(1)).unwrap();
+    engine.update(Duration::from_secs(1), None).unwrap();
 
     // Now add a background effect that should be blocked by the locked channels
     let mut background_effect = EffectInstance::new(
@@ -521,7 +521,7 @@ fn test_permanent_vs_temporary_effects() {
     engine.start_effect(background_effect).unwrap();
 
     // The background effect should not be able to override the foreground static effect
-    let commands = engine.update(Duration::from_secs(1)).unwrap();
+    let commands = engine.update(Duration::from_secs(1), None).unwrap();
 
     println!("Testing permanent effect behavior:");
     for cmd in &commands {
@@ -606,7 +606,7 @@ fn test_grandma_style_fade_out() {
     engine.start_effect(blue_effect).unwrap();
 
     // Let the blue effect run for a bit
-    engine.update(Duration::from_secs(1)).unwrap();
+    engine.update(Duration::from_secs(1), None).unwrap();
 
     // Now add a fade-out effect (2 seconds) - crossfade all channels to black
     let mut fade_out_effect = EffectInstance::new(
@@ -635,7 +635,7 @@ fn test_grandma_style_fade_out() {
     println!("Testing grandMA-style fade-out behavior");
 
     // Test during fade-out
-    let commands_1s = engine.update(Duration::from_secs(1)).unwrap();
+    let commands_1s = engine.update(Duration::from_secs(1), None).unwrap();
     println!("\nAt 1s (50% through fade-out):");
     for cmd in &commands_1s {
         let channel_name = match cmd.channel {
@@ -654,7 +654,7 @@ fn test_grandma_style_fade_out() {
     }
 
     // Test at end of fade-out
-    let commands_2s = engine.update(Duration::from_secs(1)).unwrap();
+    let commands_2s = engine.update(Duration::from_secs(1), None).unwrap();
     println!("\nAt 2s (end of fade-out):");
     for cmd in &commands_2s {
         let channel_name = match cmd.channel {
@@ -673,7 +673,7 @@ fn test_grandma_style_fade_out() {
     }
 
     // Test after fade-out (should stay at 0 - grandMA behavior)
-    let commands_3s = engine.update(Duration::from_secs(1)).unwrap();
+    let commands_3s = engine.update(Duration::from_secs(1), None).unwrap();
     println!("\nAt 3s (after fade-out - should stay at 0):");
     for cmd in &commands_3s {
         let channel_name = match cmd.channel {
@@ -791,23 +791,23 @@ fn test_real_layering_show_file() {
     println!("\n=== Testing REAL Layering Show File ===");
 
     // At 0 seconds - should have static blue
-    let commands = engine.update(Duration::from_secs(0)).unwrap();
+    let commands = engine.update(Duration::from_secs(0), None).unwrap();
     println!("At 0s (static blue):");
     for cmd in &commands {
         println!("  Channel {}: {}", cmd.channel, cmd.value);
     }
 
     // At 2 seconds - should have static blue + dimmer starting
-    engine.update(Duration::from_secs(2)).unwrap();
-    let commands = engine.update(Duration::from_secs(0)).unwrap();
+    engine.update(Duration::from_secs(2), None).unwrap();
+    let commands = engine.update(Duration::from_secs(0), None).unwrap();
     println!("\nAt 2s (static blue + dimmer start):");
     for cmd in &commands {
         println!("  Channel {}: {}", cmd.channel, cmd.value);
     }
 
     // At 4.5 seconds - should have dimmed blue (50% through dimmer)
-    engine.update(Duration::from_secs(2)).unwrap();
-    let commands = engine.update(Duration::from_secs(0)).unwrap();
+    engine.update(Duration::from_secs(2), None).unwrap();
+    let commands = engine.update(Duration::from_secs(0), None).unwrap();
     println!("\nAt 4.5s (50% through dimmer):");
     for cmd in &commands {
         println!("  Channel {}: {}", cmd.channel, cmd.value);
@@ -916,23 +916,23 @@ fn test_layering_show_effect_execution() {
     println!("\n=== Testing DSL Effect Execution ===");
 
     // At 0 seconds - should have static blue
-    let commands = engine.update(Duration::from_secs(0)).unwrap();
+    let commands = engine.update(Duration::from_secs(0), None).unwrap();
     println!("At 0s (static blue):");
     for cmd in &commands {
         println!("  Channel {}: {}", cmd.channel, cmd.value);
     }
 
     // At 2 seconds - should have static blue + dimmer starting
-    engine.update(Duration::from_secs(2)).unwrap();
-    let commands = engine.update(Duration::from_secs(0)).unwrap();
+    engine.update(Duration::from_secs(2), None).unwrap();
+    let commands = engine.update(Duration::from_secs(0), None).unwrap();
     println!("\nAt 2s (static blue + dimmer start):");
     for cmd in &commands {
         println!("  Channel {}: {}", cmd.channel, cmd.value);
     }
 
     // At 4.5 seconds - should have dimmed blue (50% through dimmer)
-    engine.update(Duration::from_secs(2)).unwrap();
-    let commands = engine.update(Duration::from_secs(0)).unwrap();
+    engine.update(Duration::from_secs(2), None).unwrap();
+    let commands = engine.update(Duration::from_secs(0), None).unwrap();
     println!("\nAt 4.5s (50% through dimmer):");
     for cmd in &commands {
         println!("  Channel {}: {}", cmd.channel, cmd.value);
@@ -1004,7 +1004,7 @@ fn test_custom_rgb_dimming() {
     );
 
     engine.start_effect(rgb_effect).unwrap();
-    let commands = engine.update(Duration::from_millis(0)).unwrap();
+    let commands = engine.update(Duration::from_millis(0), None).unwrap();
 
     println!("Commands: {:?}", commands);
     for cmd in &commands {
@@ -1043,7 +1043,9 @@ fn test_custom_rgb_dimming() {
     let mut last_time = 0;
     for (time_ms, description) in [(0, "Start"), (500, "25%"), (1000, "50%"), (2000, "End")] {
         let delta_ms = time_ms - last_time;
-        let commands = engine.update(Duration::from_millis(delta_ms)).unwrap();
+        let commands = engine
+            .update(Duration::from_millis(delta_ms), None)
+            .unwrap();
         println!("\n  At {} ({}ms):", description, time_ms);
         last_time = time_ms;
         for cmd in &commands {
@@ -1070,7 +1072,7 @@ fn test_custom_rgb_dimming() {
     println!("- This maintains the relative brightness ratios between colors");
 
     // Verify the behavior is correct
-    let final_commands = engine.update(Duration::from_millis(2000)).unwrap();
+    let final_commands = engine.update(Duration::from_millis(2000), None).unwrap();
     assert_eq!(final_commands.len(), 3); // RGB channels only
 
     // At the end (4000ms), the dimmer effect should have completed and persisted at 0.0
@@ -1167,7 +1169,7 @@ fn test_software_strobing_rgb_only_fixture() {
 
     // Test at different time points to verify strobing behavior
     // At t=0ms (start of cycle) - should be ON
-    let commands = engine.update(Duration::from_millis(0)).unwrap();
+    let commands = engine.update(Duration::from_millis(0), None).unwrap();
     let red_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     let green_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
     let blue_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
@@ -1177,12 +1179,12 @@ fn test_software_strobing_rgb_only_fixture() {
     assert_eq!(blue_cmd.value, 255);
 
     // At t=125ms (1/4 cycle) - should still be ON
-    let commands = engine.update(Duration::from_millis(125)).unwrap();
+    let commands = engine.update(Duration::from_millis(125), None).unwrap();
     let red_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     assert_eq!(red_cmd.value, 255); // Should still be ON
 
     // At t=250ms (1/2 cycle) - should be OFF
-    let commands = engine.update(Duration::from_millis(125)).unwrap(); // 125ms more = 250ms total
+    let commands = engine.update(Duration::from_millis(125), None).unwrap(); // 125ms more = 250ms total
     let red_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     let green_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
     let blue_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
@@ -1192,12 +1194,12 @@ fn test_software_strobing_rgb_only_fixture() {
     assert_eq!(blue_cmd.value, 0);
 
     // At t=375ms (3/4 cycle) - should still be OFF
-    let commands = engine.update(Duration::from_millis(125)).unwrap(); // 125ms more = 375ms total
+    let commands = engine.update(Duration::from_millis(125), None).unwrap(); // 125ms more = 375ms total
     let red_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     assert_eq!(red_cmd.value, 0); // Should still be OFF
 
     // At t=500ms (full cycle) - should be ON again
-    let commands = engine.update(Duration::from_millis(125)).unwrap(); // 125ms more = 500ms total
+    let commands = engine.update(Duration::from_millis(125), None).unwrap(); // 125ms more = 500ms total
     let red_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     assert_eq!(red_cmd.value, 255); // Should be ON again
 }
@@ -1257,7 +1259,7 @@ fn test_software_strobing_with_layering() {
 
     // Test that layering works with software strobing
     // At t=0ms (strobe ON) - should see blue light
-    let commands = engine.update(Duration::from_millis(0)).unwrap();
+    let commands = engine.update(Duration::from_millis(0), None).unwrap();
     let red_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     let green_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
     let blue_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
@@ -1267,7 +1269,7 @@ fn test_software_strobing_with_layering() {
     assert_eq!(blue_cmd.value, 255); // Blue should be 255 (static + strobe overlay)
 
     // At t=250ms (strobe OFF) - should see no light
-    let commands = engine.update(Duration::from_millis(250)).unwrap();
+    let commands = engine.update(Duration::from_millis(250), None).unwrap();
     let red_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     let green_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
     let blue_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
@@ -1313,7 +1315,7 @@ fn test_software_strobing_simple() {
 
     // Test basic strobe functionality
     // At t=0ms (strobe ON) - should see white light
-    let commands = engine.update(Duration::from_millis(0)).unwrap();
+    let commands = engine.update(Duration::from_millis(0), None).unwrap();
     let red_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     let green_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
     let blue_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
@@ -1323,7 +1325,7 @@ fn test_software_strobing_simple() {
     assert_eq!(blue_cmd.value, 255);
 
     // At t=250ms (strobe OFF) - should see no light
-    let commands = engine.update(Duration::from_millis(250)).unwrap();
+    let commands = engine.update(Duration::from_millis(250), None).unwrap();
     let red_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     let green_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
     let blue_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
@@ -1387,7 +1389,7 @@ fn test_software_strobing_frequency_zero() {
     engine.start_effect(strobe_effect).unwrap();
 
     // Test that strobe off defers to parent layers
-    let commands = engine.update(Duration::from_millis(0)).unwrap();
+    let commands = engine.update(Duration::from_millis(0), None).unwrap();
     let red_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     let green_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
     let blue_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
@@ -1534,7 +1536,7 @@ fn test_full_layering_show_sequence_with_replace() {
 
     // Check state before fade-out
     println!("\nAt 25s (before fade-out):");
-    let commands = engine.update(Duration::from_secs(25)).unwrap();
+    let commands = engine.update(Duration::from_secs(25), None).unwrap();
     for cmd in &commands {
         let fixture = if cmd.channel <= 4 {
             "front_wash"
@@ -1606,7 +1608,7 @@ fn test_full_layering_show_sequence_with_replace() {
         (1500, "75%"),
         (2000, "End"),
     ] {
-        let commands = engine.update(Duration::from_millis(time_ms)).unwrap();
+        let commands = engine.update(Duration::from_millis(time_ms), None).unwrap();
         println!("\nAt {} ({}ms):", description, time_ms);
 
         for cmd in &commands {

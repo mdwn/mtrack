@@ -59,16 +59,16 @@ fn test_effect_layering_with_strobe() {
     engine.start_effect(strobe_effect).unwrap();
 
     // Test strobe at different phases
-    let commands = engine.update(Duration::from_millis(16)).unwrap();
+    let commands = engine.update(Duration::from_millis(16), None).unwrap();
     assert_eq!(commands.len(), 4); // red, green, blue, strobe (no dimmer channel)
 
     // At strobe peak (should be on)
-    let commands = engine.update(Duration::from_millis(250)).unwrap(); // 1/4 cycle
+    let commands = engine.update(Duration::from_millis(250), None).unwrap(); // 1/4 cycle
     let strobe_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
     assert_eq!(strobe_cmd.value, 12); // Should be 1.0Hz / 20.0Hz * 255 = 12.75, rounded to 12
 
     // At strobe trough (should be off)
-    let commands = engine.update(Duration::from_millis(500)).unwrap(); // 1/2 cycle
+    let commands = engine.update(Duration::from_millis(500), None).unwrap(); // 1/2 cycle
     let strobe_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap();
     assert_eq!(strobe_cmd.value, 12); // Strobe channel value should remain at the speed, not turn off
 }
@@ -107,21 +107,21 @@ fn test_strobe_effect_crossfade() {
     engine.start_effect(strobe_effect).unwrap();
 
     // Test fade in phase - strobe should be dimmed
-    let commands = engine.update(Duration::from_millis(500)).unwrap();
+    let commands = engine.update(Duration::from_millis(500), None).unwrap();
     let strobe_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     assert!(strobe_cmd.value > 0 && strobe_cmd.value < 255); // Dimmed strobe during fade in
 
     // Test full intensity phase - strobe should be at full speed
-    let commands = engine.update(Duration::from_secs(2)).unwrap();
+    let commands = engine.update(Duration::from_secs(2), None).unwrap();
     let strobe_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     assert!(strobe_cmd.value > 200); // High strobe speed during full intensity
 
     // Test fade out phase - strobe should be dimmed (at 4.5s total: 0.5s into down_time)
-    let commands = engine.update(Duration::from_millis(2000)).unwrap(); // 2.5s + 2s = 4.5s
+    let commands = engine.update(Duration::from_millis(2000), None).unwrap(); // 2.5s + 2s = 4.5s
     let strobe_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     assert!(strobe_cmd.value > 0 && strobe_cmd.value < 255); // Dimmed strobe during fade out
 
     // Test effect end - should be no commands (at 5s total)
-    let commands = engine.update(Duration::from_millis(500)).unwrap(); // 4.5s + 0.5s = 5s
+    let commands = engine.update(Duration::from_millis(500), None).unwrap(); // 4.5s + 0.5s = 5s
     assert!(commands.is_empty()); // Effect should be finished
 }

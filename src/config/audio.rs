@@ -11,7 +11,7 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-use std::{error::Error, time::Duration};
+use std::{error::Error, str::FromStr, time::Duration};
 
 use duration_string::DurationString;
 use serde::Deserialize;

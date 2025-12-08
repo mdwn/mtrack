@@ -64,27 +64,27 @@ fn test_chase_pattern_linear_left_to_right() {
 
     // Test chase sequence: fixture_1 -> fixture_2 -> fixture_3 -> fixture_4
     // At t=0ms (start) - fixture_1 should be ON
-    let commands = engine.update(Duration::from_millis(0)).unwrap();
+    let commands = engine.update(Duration::from_millis(0), None).unwrap();
     let fixture1_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     assert_eq!(fixture1_cmd.value, 255); // Should be ON
 
     // At t=125ms (1/4 cycle) - fixture_2 should be ON
-    let commands = engine.update(Duration::from_millis(125)).unwrap();
+    let commands = engine.update(Duration::from_millis(125), None).unwrap();
     let fixture2_cmd = commands.iter().find(|cmd| cmd.channel == 5).unwrap(); // fixture_2 dimmer
     assert_eq!(fixture2_cmd.value, 255); // Should be ON
 
     // At t=250ms (1/2 cycle) - fixture_3 should be ON
-    let commands = engine.update(Duration::from_millis(125)).unwrap(); // 125ms more = 250ms total
+    let commands = engine.update(Duration::from_millis(125), None).unwrap(); // 125ms more = 250ms total
     let fixture3_cmd = commands.iter().find(|cmd| cmd.channel == 9).unwrap(); // fixture_3 dimmer
     assert_eq!(fixture3_cmd.value, 255); // Should be ON
 
     // At t=375ms (3/4 cycle) - fixture_4 should be ON
-    let commands = engine.update(Duration::from_millis(125)).unwrap(); // 125ms more = 375ms total
+    let commands = engine.update(Duration::from_millis(125), None).unwrap(); // 125ms more = 375ms total
     let fixture4_cmd = commands.iter().find(|cmd| cmd.channel == 13).unwrap(); // fixture_4 dimmer
     assert_eq!(fixture4_cmd.value, 255); // Should be ON
 
     // At t=500ms (full cycle) - fixture_1 should be ON again
-    let commands = engine.update(Duration::from_millis(125)).unwrap(); // 125ms more = 500ms total
+    let commands = engine.update(Duration::from_millis(125), None).unwrap(); // 125ms more = 500ms total
     let fixture1_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     assert_eq!(fixture1_cmd.value, 255); // Should be ON again
 }
@@ -133,22 +133,22 @@ fn test_chase_pattern_linear_right_to_left() {
 
     // Test chase sequence: fixture_4 -> fixture_3 -> fixture_2 -> fixture_1
     // At t=0ms (start) - fixture_4 should be ON
-    let commands = engine.update(Duration::from_millis(0)).unwrap();
+    let commands = engine.update(Duration::from_millis(0), None).unwrap();
     let fixture4_cmd = commands.iter().find(|cmd| cmd.channel == 13).unwrap(); // fixture_4 dimmer
     assert_eq!(fixture4_cmd.value, 255); // Should be ON
 
     // At t=125ms (1/4 cycle) - fixture_3 should be ON
-    let commands = engine.update(Duration::from_millis(125)).unwrap();
+    let commands = engine.update(Duration::from_millis(125), None).unwrap();
     let fixture3_cmd = commands.iter().find(|cmd| cmd.channel == 9).unwrap(); // fixture_3 dimmer
     assert_eq!(fixture3_cmd.value, 255); // Should be ON
 
     // At t=250ms (1/2 cycle) - fixture_2 should be ON
-    let commands = engine.update(Duration::from_millis(125)).unwrap(); // 125ms more = 250ms total
+    let commands = engine.update(Duration::from_millis(125), None).unwrap(); // 125ms more = 250ms total
     let fixture2_cmd = commands.iter().find(|cmd| cmd.channel == 5).unwrap(); // fixture_2 dimmer
     assert_eq!(fixture2_cmd.value, 255); // Should be ON
 
     // At t=375ms (3/4 cycle) - fixture_1 should be ON
-    let commands = engine.update(Duration::from_millis(125)).unwrap(); // 125ms more = 375ms total
+    let commands = engine.update(Duration::from_millis(125), None).unwrap(); // 125ms more = 375ms total
     let fixture1_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     assert_eq!(fixture1_cmd.value, 255); // Should be ON
 }
@@ -200,37 +200,37 @@ fn test_chase_pattern_snake() {
     // Each position lasts 500ms/6 = 83.33ms
 
     // At t=0ms (start) - fixture_1 should be ON
-    let commands = engine.update(Duration::from_millis(0)).unwrap();
+    let commands = engine.update(Duration::from_millis(0), None).unwrap();
     let fixture1_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     assert_eq!(fixture1_cmd.value, 255); // Should be ON
 
     // At t=125ms (1/6 cycle) - fixture_2 should be ON
-    let commands = engine.update(Duration::from_millis(125)).unwrap();
+    let commands = engine.update(Duration::from_millis(125), None).unwrap();
     let fixture2_cmd = commands.iter().find(|cmd| cmd.channel == 5).unwrap();
     assert_eq!(fixture2_cmd.value, 255); // Should be ON
 
     // At t=250ms (2/6 cycle) - fixture_3 should be ON
-    let commands = engine.update(Duration::from_millis(125)).unwrap(); // 125+125=250ms total
+    let commands = engine.update(Duration::from_millis(125), None).unwrap(); // 125+125=250ms total
     let fixture3_cmd = commands.iter().find(|cmd| cmd.channel == 9).unwrap();
     assert_eq!(fixture3_cmd.value, 255); // Should be ON
 
     // At t=375ms (3/6 cycle) - fixture_4 should be ON
-    let commands = engine.update(Duration::from_millis(125)).unwrap(); // 250+125=375ms total
+    let commands = engine.update(Duration::from_millis(125), None).unwrap(); // 250+125=375ms total
     let fixture4_cmd = commands.iter().find(|cmd| cmd.channel == 13).unwrap();
     assert_eq!(fixture4_cmd.value, 255); // Should be ON
 
     // At t=500ms (4/6 cycle) - fixture_3 should be ON (snake back)
-    let commands = engine.update(Duration::from_millis(125)).unwrap(); // 375+125=500ms total
+    let commands = engine.update(Duration::from_millis(125), None).unwrap(); // 375+125=500ms total
     let fixture3_cmd = commands.iter().find(|cmd| cmd.channel == 9).unwrap();
     assert_eq!(fixture3_cmd.value, 255); // Should be ON
 
     // At t=625ms (5/6 cycle) - fixture_2 should be ON (snake back)
-    let commands = engine.update(Duration::from_millis(125)).unwrap(); // 500+125=625ms total
+    let commands = engine.update(Duration::from_millis(125), None).unwrap(); // 500+125=625ms total
     let fixture2_cmd = commands.iter().find(|cmd| cmd.channel == 5).unwrap();
     assert_eq!(fixture2_cmd.value, 255); // Should be ON
 
     // At t=750ms (6/6 cycle) - fixture_1 should be ON again
-    let commands = engine.update(Duration::from_millis(125)).unwrap(); // 625+125=750ms total
+    let commands = engine.update(Duration::from_millis(125), None).unwrap(); // 625+125=750ms total
     let fixture1_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     assert_eq!(fixture1_cmd.value, 255); // Should be ON again
 }
@@ -279,17 +279,17 @@ fn test_chase_pattern_random() {
 
     // Test random pattern - should have some fixture ON at each time point
     // At t=0ms - some fixture should be ON
-    let commands = engine.update(Duration::from_millis(0)).unwrap();
+    let commands = engine.update(Duration::from_millis(0), None).unwrap();
     let on_fixtures: Vec<_> = commands.iter().filter(|cmd| cmd.value == 255).collect();
     assert_eq!(on_fixtures.len(), 1); // Exactly one fixture should be ON
 
     // At t=125ms - some fixture should be ON
-    let commands = engine.update(Duration::from_millis(125)).unwrap();
+    let commands = engine.update(Duration::from_millis(125), None).unwrap();
     let on_fixtures: Vec<_> = commands.iter().filter(|cmd| cmd.value == 255).collect();
     assert_eq!(on_fixtures.len(), 1); // Exactly one fixture should be ON
 
     // At t=250ms - some fixture should be ON
-    let commands = engine.update(Duration::from_millis(125)).unwrap(); // 125ms more = 250ms total
+    let commands = engine.update(Duration::from_millis(125), None).unwrap(); // 125ms more = 250ms total
     let on_fixtures: Vec<_> = commands.iter().filter(|cmd| cmd.value == 255).collect();
     assert_eq!(on_fixtures.len(), 1); // Exactly one fixture should be ON
 }
@@ -338,7 +338,7 @@ fn test_chase_direction_vertical() {
     engine.start_effect(chase_effect).unwrap();
 
     // TopToBottom should behave like LeftToRight (fixture_1 -> fixture_2 -> fixture_3 -> fixture_4)
-    let commands = engine.update(Duration::from_millis(0)).unwrap();
+    let commands = engine.update(Duration::from_millis(0), None).unwrap();
     let fixture1_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     assert_eq!(fixture1_cmd.value, 255); // Should be ON
 }
@@ -387,7 +387,7 @@ fn test_chase_direction_circular() {
     engine.start_effect(chase_effect).unwrap();
 
     // Clockwise should behave like LeftToRight (fixture_1 -> fixture_2 -> fixture_3 -> fixture_4)
-    let commands = engine.update(Duration::from_millis(0)).unwrap();
+    let commands = engine.update(Duration::from_millis(0), None).unwrap();
     let fixture1_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     assert_eq!(fixture1_cmd.value, 255); // Should be ON
 }
@@ -435,17 +435,17 @@ fn test_chase_speed_variations() {
     engine.start_effect(slow_chase).unwrap();
 
     // At t=0ms - fixture_1 should be ON
-    let commands = engine.update(Duration::from_millis(0)).unwrap();
+    let commands = engine.update(Duration::from_millis(0), None).unwrap();
     let fixture1_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     assert_eq!(fixture1_cmd.value, 255); // Should be ON
 
     // At t=600ms (1/3 cycle) - fixture_1 should still be ON
-    let commands = engine.update(Duration::from_millis(600)).unwrap();
+    let commands = engine.update(Duration::from_millis(600), None).unwrap();
     let fixture1_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     assert_eq!(fixture1_cmd.value, 255); // Should still be ON
 
     // At t=1200ms (2/3 cycle) - fixture_2 should be ON
-    let commands = engine.update(Duration::from_millis(600)).unwrap(); // 600ms more = 1200ms total
+    let commands = engine.update(Duration::from_millis(600), None).unwrap(); // 600ms more = 1200ms total
     let fixture2_cmd = commands.iter().find(|cmd| cmd.channel == 5).unwrap();
     assert_eq!(fixture2_cmd.value, 255); // Should be ON
 }
@@ -486,12 +486,12 @@ fn test_chase_single_fixture() {
     engine.start_effect(chase_effect).unwrap();
 
     // With single fixture, it should always be ON
-    let commands = engine.update(Duration::from_millis(0)).unwrap();
+    let commands = engine.update(Duration::from_millis(0), None).unwrap();
     let fixture_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     assert_eq!(fixture_cmd.value, 255); // Should be ON
 
     // At any time, single fixture should be ON
-    let commands = engine.update(Duration::from_millis(500)).unwrap();
+    let commands = engine.update(Duration::from_millis(500), None).unwrap();
     let fixture_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     assert_eq!(fixture_cmd.value, 255); // Should be ON
 }
@@ -538,7 +538,7 @@ fn test_chase_rgb_only_fixtures() {
     engine.start_effect(chase_effect).unwrap();
 
     // Test that RGB channels are used for chase (white chase)
-    let commands = engine.update(Duration::from_millis(0)).unwrap();
+    let commands = engine.update(Duration::from_millis(0), None).unwrap();
 
     // fixture_1 should have all RGB channels ON
     let red_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
@@ -549,7 +549,7 @@ fn test_chase_rgb_only_fixtures() {
     assert_eq!(blue_cmd.value, 255);
 
     // At t=167ms (1/3 cycle) - fixture_2 should be ON
-    let commands = engine.update(Duration::from_millis(167)).unwrap();
+    let commands = engine.update(Duration::from_millis(167), None).unwrap();
     let red_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap(); // fixture_2 red
     let green_cmd = commands.iter().find(|cmd| cmd.channel == 5).unwrap(); // fixture_2 green
     let blue_cmd = commands.iter().find(|cmd| cmd.channel == 6).unwrap(); // fixture_2 blue
@@ -601,7 +601,7 @@ fn test_chase_effect_crossfade() {
     engine.start_effect(chase_effect).unwrap();
 
     // Test fade in phase - chase should be dimmed
-    let commands = engine.update(Duration::from_millis(500)).unwrap();
+    let commands = engine.update(Duration::from_millis(500), None).unwrap();
     let active_fixture = commands.iter().find(|cmd| cmd.value > 0);
     assert!(active_fixture.is_some());
     if let Some(cmd) = active_fixture {
@@ -609,7 +609,7 @@ fn test_chase_effect_crossfade() {
     }
 
     // Test full intensity phase - chase should be at full brightness
-    let commands = engine.update(Duration::from_secs(2)).unwrap();
+    let commands = engine.update(Duration::from_secs(2), None).unwrap();
     let active_fixture = commands.iter().find(|cmd| cmd.value > 0);
     assert!(active_fixture.is_some());
     if let Some(cmd) = active_fixture {
@@ -617,7 +617,7 @@ fn test_chase_effect_crossfade() {
     }
 
     // Test fade out phase - chase should be dimmed (at 3.5s total: 0.5s into down_time)
-    let commands = engine.update(Duration::from_millis(1000)).unwrap(); // 2.5s + 1s = 3.5s
+    let commands = engine.update(Duration::from_millis(1000), None).unwrap(); // 2.5s + 1s = 3.5s
     let active_fixture = commands.iter().find(|cmd| cmd.value > 0);
     assert!(active_fixture.is_some());
     if let Some(cmd) = active_fixture {
@@ -625,7 +625,7 @@ fn test_chase_effect_crossfade() {
     }
 
     // Test effect end - should be no commands (at 4s total)
-    let commands = engine.update(Duration::from_millis(500)).unwrap(); // 3.5s + 0.5s = 4s
+    let commands = engine.update(Duration::from_millis(500), None).unwrap(); // 3.5s + 0.5s = 4s
     assert!(commands.is_empty()); // Effect should be finished
 }
 #[test]
@@ -684,7 +684,7 @@ fn test_random_chase_pattern_visibility() {
 
     // Check over multiple time points to see if pattern is advancing
     for _step in 0..20 {
-        let cmds = engine.update(Duration::from_millis(50)).unwrap();
+        let cmds = engine.update(Duration::from_millis(50), None).unwrap();
         total_commands += cmds.len();
 
         // Track which fixtures have non-zero values (active)

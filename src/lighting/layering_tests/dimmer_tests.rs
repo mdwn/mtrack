@@ -64,7 +64,7 @@ fn test_dimmer_multiplier_passes_through_locks_rgb_only() {
     engine.start_effect(static_blue).unwrap();
 
     // Advance so static applies
-    engine.update(Duration::from_millis(100)).unwrap();
+    engine.update(Duration::from_millis(100), None).unwrap();
 
     // Foreground multiply dimmer fade to black over 2s
     let mut fade_out = EffectInstance::new(
@@ -85,7 +85,7 @@ fn test_dimmer_multiplier_passes_through_locks_rgb_only() {
     engine.start_effect(fade_out).unwrap();
 
     // Halfway through fade (1s): blue should be ~50%
-    let cmds_1s = engine.update(Duration::from_secs(1)).unwrap();
+    let cmds_1s = engine.update(Duration::from_secs(1), None).unwrap();
     let blue_1s = cmds_1s
         .iter()
         .find(|c| c.universe == 1 && c.channel == 3)
@@ -98,7 +98,7 @@ fn test_dimmer_multiplier_passes_through_locks_rgb_only() {
     );
 
     // Near end of fade (additional 500ms, total 1.5s): blue should be around 25% (faded 75% to black)
-    let cmds_15s = engine.update(Duration::from_millis(500)).unwrap();
+    let cmds_15s = engine.update(Duration::from_millis(500), None).unwrap();
     let blue_15s = cmds_15s
         .iter()
         .find(|c| c.universe == 1 && c.channel == 3)
@@ -112,7 +112,7 @@ fn test_dimmer_multiplier_passes_through_locks_rgb_only() {
 
     // After fade completes (exceed 2s): foreground Replace static is temporary but the dimmer
     // that faded it to black is permanent, so the final dimmed value (0) persists
-    let cmds_after = engine.update(Duration::from_millis(500)).unwrap();
+    let cmds_after = engine.update(Duration::from_millis(500), None).unwrap();
     let blue_after = cmds_after
         .iter()
         .find(|c| c.universe == 1 && c.channel == 3)
@@ -169,7 +169,7 @@ fn test_dedicated_dimmer_preserves_rgb() {
     engine.start_effect(static_blue).unwrap();
 
     // Allow static to apply
-    engine.update(Duration::from_millis(50)).unwrap();
+    engine.update(Duration::from_millis(50), None).unwrap();
 
     // Foreground replace dimmer fade from 1.0 to 0.0 over 2s
     let mut fade_out = EffectInstance::new(
@@ -190,7 +190,7 @@ fn test_dedicated_dimmer_preserves_rgb() {
     engine.start_effect(fade_out).unwrap();
 
     // At 1s into fade: dimmer should be ~50% while RGB stays at static values
-    let cmds_1s = engine.update(Duration::from_secs(1)).unwrap();
+    let cmds_1s = engine.update(Duration::from_secs(1), None).unwrap();
     let dimmer_1s = cmds_1s
         .iter()
         .find(|c| c.universe == 1 && c.channel == 1)
@@ -264,7 +264,7 @@ fn test_effect_layering_static_blue_and_dimmer() {
     engine.start_effect(dimmer_effect).unwrap();
 
     // Update engine at start (dimmer should be at 100%)
-    let commands = engine.update(Duration::from_millis(16)).unwrap();
+    let commands = engine.update(Duration::from_millis(16), None).unwrap();
 
     // Should have 3 commands: red, green, blue (dimmer uses Multiply mode, affects all RGB channels)
     assert_eq!(commands.len(), 3);
@@ -281,8 +281,8 @@ fn test_effect_layering_static_blue_and_dimmer() {
     assert!(blue_cmd.value >= 250);
 
     // Update engine at t=532ms (26.6% through 2s up_time)
-    engine.update(Duration::from_millis(500)).unwrap();
-    let commands = engine.update(Duration::from_millis(16)).unwrap();
+    engine.update(Duration::from_millis(500), None).unwrap();
+    let commands = engine.update(Duration::from_millis(16), None).unwrap();
 
     // The dimmer effect is applied to RGB channels
     let blue_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
@@ -291,8 +291,8 @@ fn test_effect_layering_static_blue_and_dimmer() {
     assert!(blue_cmd.value >= 215 && blue_cmd.value <= 225);
 
     // Update engine at t=1048ms (52.4% through 2s up_time)
-    engine.update(Duration::from_millis(500)).unwrap();
-    let commands = engine.update(Duration::from_millis(16)).unwrap();
+    engine.update(Duration::from_millis(500), None).unwrap();
+    let commands = engine.update(Duration::from_millis(16), None).unwrap();
 
     let blue_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
     // At 52.4% progress: dimmer = 1.0 + (0.5 - 1.0) * 0.524 = 0.738
@@ -366,7 +366,7 @@ fn test_dimmer_without_dedicated_channel() {
     engine.start_effect(dimmer_effect).unwrap();
 
     // Update engine immediately at start (dimmer should be at 100%)
-    let commands = engine.update(Duration::from_millis(0)).unwrap();
+    let commands = engine.update(Duration::from_millis(0), None).unwrap();
 
     // Should have only RGB commands (no dedicated dimmer channel)
     assert_eq!(commands.len(), 3);
@@ -383,7 +383,7 @@ fn test_dimmer_without_dedicated_channel() {
     assert_eq!(blue_cmd.value, 255); // 255 * 1.0 = 255
 
     // Update engine at 50% (dimmer should be at 0.75)
-    let commands = engine.update(Duration::from_millis(500)).unwrap();
+    let commands = engine.update(Duration::from_millis(500), None).unwrap();
 
     // Should still have only RGB commands
     assert_eq!(commands.len(), 3);
@@ -448,7 +448,7 @@ fn test_dimmer_precedence_and_selective_dimming() {
     );
 
     engine.start_effect(blue_effect).unwrap();
-    let commands = engine.update(Duration::from_millis(0)).unwrap();
+    let commands = engine.update(Duration::from_millis(0), None).unwrap();
 
     println!("Commands: {:?}", commands);
     for cmd in &commands {
@@ -492,7 +492,9 @@ fn test_dimmer_precedence_and_selective_dimming() {
     let mut previous_time = 0;
     for (time_ms, description) in [(0, "Start"), (500, "25%"), (1000, "50%"), (2000, "End")] {
         let increment = time_ms - previous_time;
-        let commands = engine.update(Duration::from_millis(increment)).unwrap();
+        let commands = engine
+            .update(Duration::from_millis(increment), None)
+            .unwrap();
         previous_time = time_ms;
         println!("\n  At {} ({}ms):", description, time_ms);
         for cmd in &commands {
@@ -519,7 +521,7 @@ fn test_dimmer_precedence_and_selective_dimming() {
     println!("- Blue channel: Gets dimmer values multiplied with static blue value (for layering)");
 
     // Verify the behavior is correct
-    let final_commands = engine.update(Duration::from_millis(2000)).unwrap();
+    let final_commands = engine.update(Duration::from_millis(2000), None).unwrap();
     // At the end (4000ms), the dimmer effect has completed and persisted at 0.0
     assert_eq!(final_commands.len(), 1); // Only blue channel from static effect
 
@@ -589,7 +591,7 @@ fn test_dimmer_debug() {
     engine.start_effect(dimmer_effect).unwrap();
 
     // Update engine and check results
-    let commands = engine.update(Duration::from_millis(16)).unwrap();
+    let commands = engine.update(Duration::from_millis(16), None).unwrap();
 
     println!("Commands at start:");
     for cmd in &commands {
@@ -597,8 +599,8 @@ fn test_dimmer_debug() {
     }
 
     // Update to middle of dimmer
-    engine.update(Duration::from_millis(500)).unwrap();
-    let commands = engine.update(Duration::from_millis(16)).unwrap();
+    engine.update(Duration::from_millis(500), None).unwrap();
+    let commands = engine.update(Duration::from_millis(16), None).unwrap();
 
     println!("Commands at middle (should be dimmed blue):");
     for cmd in &commands {
@@ -684,7 +686,7 @@ fn test_static_with_dimmer_parameter() {
     engine.start_effect(static_effect).unwrap();
 
     // Check what the static effect produces
-    let commands = engine.update(Duration::from_secs(0)).unwrap();
+    let commands = engine.update(Duration::from_secs(0), None).unwrap();
     println!("Static effect with dimmer parameter:");
     for cmd in &commands {
         println!("  Channel {}: {}", cmd.channel, cmd.value);
@@ -707,7 +709,7 @@ fn test_static_with_dimmer_parameter() {
     engine.start_effect(dimmer_effect).unwrap();
 
     // Check what happens with the dimmer effect
-    let commands = engine.update(Duration::from_secs(500)).unwrap(); // 50% through dimmer
+    let commands = engine.update(Duration::from_secs(500), None).unwrap(); // 50% through dimmer
     println!("\nWith dimmer effect (50% through):");
     for cmd in &commands {
         println!("  Channel {}: {}", cmd.channel, cmd.value);
@@ -784,7 +786,7 @@ fn test_dimmer_replace_vs_multiply() {
     engine.start_effect(dimmer_replace).unwrap();
 
     // Update engine and check results
-    let commands = engine.update(Duration::from_millis(16)).unwrap();
+    let commands = engine.update(Duration::from_millis(16), None).unwrap();
 
     println!("Commands with Replace blend mode:");
     for cmd in &commands {
@@ -830,7 +832,7 @@ fn test_dimmer_replace_vs_multiply() {
     engine2.start_effect(dimmer_multiply).unwrap();
 
     // Update engine and check results
-    let commands = engine2.update(Duration::from_millis(16)).unwrap();
+    let commands = engine2.update(Duration::from_millis(16), None).unwrap();
 
     println!("Commands with Multiply blend mode:");
     for cmd in &commands {
@@ -911,7 +913,7 @@ fn test_astera_pixelblock_dimmer() {
     engine.start_effect(dimmer_effect).unwrap();
 
     // Update engine and check results
-    let commands = engine.update(Duration::from_millis(16)).unwrap();
+    let commands = engine.update(Duration::from_millis(16), None).unwrap();
 
     println!("Commands with Astera PixelBlock fixture:");
     for cmd in &commands {
@@ -953,7 +955,7 @@ fn test_astera_pixelblock_dimmer() {
 
     engine2.start_effect(dimmer_replace).unwrap();
 
-    let commands = engine2.update(Duration::from_millis(16)).unwrap();
+    let commands = engine2.update(Duration::from_millis(16), None).unwrap();
 
     println!("Commands with Replace blend mode:");
     for cmd in &commands {
@@ -1019,7 +1021,7 @@ fn test_chase_effect_without_dimmer_channel() {
     );
 
     // Update engine to generate commands
-    let commands = engine.update(Duration::from_millis(100)).unwrap();
+    let commands = engine.update(Duration::from_millis(100), None).unwrap();
 
     // Should have RGB commands (not dimmer commands)
     let red_cmd = commands.iter().find(|cmd| cmd.channel == 1);
@@ -1079,7 +1081,7 @@ fn test_chase_effect_with_dimmer_channel() {
     );
 
     // Update engine to generate commands
-    let commands = engine.update(Duration::from_millis(100)).unwrap();
+    let commands = engine.update(Duration::from_millis(100), None).unwrap();
 
     // Should have dimmer command (not RGB commands)
     let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 4);
@@ -1139,27 +1141,27 @@ fn test_software_strobing_dimmer_only_fixture() {
 
     // Test at different time points to verify strobing behavior
     // At t=0ms (start of cycle) - should be ON
-    let commands = engine.update(Duration::from_millis(0)).unwrap();
+    let commands = engine.update(Duration::from_millis(0), None).unwrap();
     let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     assert_eq!(dimmer_cmd.value, 255); // Should be ON (1.0 * 255)
 
     // At t=62ms (1/4 cycle) - should still be ON
-    let commands = engine.update(Duration::from_millis(62)).unwrap();
+    let commands = engine.update(Duration::from_millis(62), None).unwrap();
     let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     assert_eq!(dimmer_cmd.value, 255); // Should still be ON
 
     // At t=125ms (1/2 cycle) - should be OFF
-    let commands = engine.update(Duration::from_millis(63)).unwrap(); // 62ms more = 125ms total
+    let commands = engine.update(Duration::from_millis(63), None).unwrap(); // 62ms more = 125ms total
     let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     assert_eq!(dimmer_cmd.value, 0); // Should be OFF (0.0 * 255)
 
     // At t=187ms (3/4 cycle) - should still be OFF
-    let commands = engine.update(Duration::from_millis(62)).unwrap(); // 62ms more = 187ms total
+    let commands = engine.update(Duration::from_millis(62), None).unwrap(); // 62ms more = 187ms total
     let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     assert_eq!(dimmer_cmd.value, 0); // Should still be OFF
 
     // At t=250ms (full cycle) - should be ON again
-    let commands = engine.update(Duration::from_millis(63)).unwrap(); // 63ms more = 250ms total
+    let commands = engine.update(Duration::from_millis(63), None).unwrap(); // 63ms more = 250ms total
     let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     assert_eq!(dimmer_cmd.value, 255); // Should be ON again
 }
@@ -1243,7 +1245,7 @@ fn test_multiple_dimmer_fade_to_black() {
         (1500, "75%"),
         (2000, "End"),
     ] {
-        let commands = engine.update(Duration::from_millis(time_ms)).unwrap();
+        let commands = engine.update(Duration::from_millis(time_ms), None).unwrap();
         println!("\nAt {} ({}ms):", description, time_ms);
 
         let front_dimmer = commands.iter().find(|cmd| cmd.channel == 1);
@@ -1271,7 +1273,7 @@ fn test_multiple_dimmer_fade_to_black() {
     }
 
     // Verify the behavior
-    let final_commands = engine.update(Duration::from_millis(2000)).unwrap();
+    let final_commands = engine.update(Duration::from_millis(2000), None).unwrap();
     // Dimmers persist at 0.0, so dimmer channels should be 0
     // (or no commands if fixtures have no RGB to emit)
     for cmd in &final_commands {
@@ -1342,22 +1344,22 @@ fn test_dimmer_effect_mid_level_start() {
 
     // Test the fade behavior at various time points
     // At 0s - dimmer is at start_level (0.5)
-    let commands = engine.update(Duration::from_secs(0)).unwrap();
+    let commands = engine.update(Duration::from_secs(0), None).unwrap();
     let blue_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
     assert_eq!(blue_cmd.value, 127, "Blue should be at 50% (127) at 0s"); // 255 * 0.5 = 127
 
     // At 0.5s (25% through 2s fade) - dimmer at 0.5 + (0.0 - 0.5) * 0.25 = 0.375
-    let commands = engine.update(Duration::from_millis(500)).unwrap();
+    let commands = engine.update(Duration::from_millis(500), None).unwrap();
     let blue_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
     assert_eq!(blue_cmd.value, 95, "Blue should be at 37.5% (95) at 0.5s"); // 255 * 0.375 ≈ 95
 
     // At 1s (50% through 2s fade) - dimmer at 0.5 + (0.0 - 0.5) * 0.5 = 0.25
-    let commands = engine.update(Duration::from_millis(500)).unwrap();
+    let commands = engine.update(Duration::from_millis(500), None).unwrap();
     let blue_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
     assert_eq!(blue_cmd.value, 63, "Blue should be at 25% (63) at 1s"); // 255 * 0.25 ≈ 63
 
     // At 2s (end of fade) - dimmer persists at end_level (0.0)
-    let commands = engine.update(Duration::from_secs(1)).unwrap();
+    let commands = engine.update(Duration::from_secs(1), None).unwrap();
     let blue_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
     assert_eq!(
         blue_cmd.value, 0,
@@ -1486,7 +1488,9 @@ fn test_dimmer_curves() {
 
         let mut values = Vec::new();
         for (time_ms, label) in test_points {
-            let commands = test_engine.update(Duration::from_millis(time_ms)).unwrap();
+            let commands = test_engine
+                .update(Duration::from_millis(time_ms), None)
+                .unwrap();
             let blue_cmd = commands.iter().find(|c| c.channel == 3).unwrap();
             values.push(blue_cmd.value);
             println!("  {} ({:4}ms): {}", label, time_ms, blue_cmd.value);

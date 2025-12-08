@@ -105,7 +105,7 @@ mod tests {
         engine.start_effect(dimmer_effect).unwrap();
 
         // Test at 50% progress (should be 50% brightness for all fixtures)
-        let commands = engine.update(Duration::from_millis(500)).unwrap();
+        let commands = engine.update(Duration::from_millis(500), None).unwrap();
 
         // RGB-only fixture: should use _dimmer_multiplier (no direct DMX commands)
         // RGB+dimmer fixture: should use dedicated dimmer channel
@@ -173,7 +173,7 @@ mod tests {
         engine.start_effect(pulse_effect).unwrap();
 
         // Test at a specific time point
-        let commands = engine.update(Duration::from_millis(250)).unwrap();
+        let commands = engine.update(Duration::from_millis(250), None).unwrap();
 
         // RGB+dimmer fixture: should use dedicated dimmer channel
         // Dimmer-only fixture: should use dedicated dimmer channel
@@ -234,7 +234,7 @@ mod tests {
         engine.start_effect(strobe_effect).unwrap();
 
         // Test at a specific time point
-        let commands = engine.update(Duration::from_millis(100)).unwrap();
+        let commands = engine.update(Duration::from_millis(100), None).unwrap();
 
         // RGB-only fixture: should use RGB channels for software strobing
         // RGB+dimmer fixture: should use dimmer channel for software strobing
@@ -298,7 +298,7 @@ mod tests {
         engine.start_effect(chase_effect).unwrap();
 
         // Test at a specific time point
-        let commands = engine.update(Duration::from_millis(100)).unwrap();
+        let commands = engine.update(Duration::from_millis(100), None).unwrap();
 
         // All fixtures should have appropriate commands based on their capabilities
         // RGB-only fixture: should use RGB channels
@@ -367,9 +367,9 @@ mod tests {
         engine_rgb_dimmer.start_effect(dimmer_effect).unwrap();
 
         // Test at 50% progress
-        let commands_rgb = engine_rgb.update(Duration::from_millis(500)).unwrap();
+        let commands_rgb = engine_rgb.update(Duration::from_millis(500), None).unwrap();
         let commands_rgb_dimmer = engine_rgb_dimmer
-            .update(Duration::from_millis(500))
+            .update(Duration::from_millis(500), None)
             .unwrap();
 
         // RGB-only engine: should have no direct DMX commands (uses _dimmer_multiplier)

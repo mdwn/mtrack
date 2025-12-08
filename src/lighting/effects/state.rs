@@ -80,6 +80,12 @@ pub struct FixtureState {
     pub channels: HashMap<String, ChannelState>,
 }
 
+impl Default for FixtureState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FixtureState {
     pub fn new() -> Self {
         Self {

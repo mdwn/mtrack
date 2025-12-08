@@ -16,8 +16,8 @@ use super::common::*;
 #[cfg(test)]
 use crate::lighting::effects::*;
 use crate::lighting::engine::EffectEngine;
+use crate::lighting::parser::parse_light_shows;
 use crate::lighting::timeline::LightingTimeline;
-use crate::parse_light_shows;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -232,29 +232,29 @@ fn test_static_effect_crossfade_comprehensive() {
     engine.start_effect(static_effect).unwrap();
 
     // Test up_time phase (0s - 1s)
-    let commands = engine.update(Duration::from_secs(0)).unwrap();
+    let commands = engine.update(Duration::from_secs(0), None).unwrap();
     let red_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     assert_eq!(red_cmd.value, 0); // 0% at start
 
-    let commands = engine.update(Duration::from_millis(500)).unwrap();
+    let commands = engine.update(Duration::from_millis(500), None).unwrap();
     let red_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     assert!(red_cmd.value > 0 && red_cmd.value < 255); // ~50% during up_time
 
     // Test hold_time phase (1s - 9s)
-    let commands = engine.update(Duration::from_millis(1500)).unwrap(); // 0.5s + 1.5s = 2s
+    let commands = engine.update(Duration::from_millis(1500), None).unwrap(); // 0.5s + 1.5s = 2s
     let red_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     assert_eq!(red_cmd.value, 255); // Full intensity during hold_time
 
     // Test down_time phase (9s - 10s)
-    let commands = engine.update(Duration::from_secs(7)).unwrap(); // 2s + 7s = 9s
+    let commands = engine.update(Duration::from_secs(7), None).unwrap(); // 2s + 7s = 9s
     let red_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     assert_eq!(red_cmd.value, 255); // Still full intensity at start of down_time
 
-    let commands = engine.update(Duration::from_millis(500)).unwrap(); // 9s + 0.5s = 9.5s
+    let commands = engine.update(Duration::from_millis(500), None).unwrap(); // 9s + 0.5s = 9.5s
     let red_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     assert!(red_cmd.value > 0 && red_cmd.value < 255); // ~50% during down_time
 
-    let commands = engine.update(Duration::from_millis(500)).unwrap(); // 9.5s + 0.5s = 10s
+    let commands = engine.update(Duration::from_millis(500), None).unwrap(); // 9.5s + 0.5s = 10s
     let red_cmd = commands.iter().find(|cmd| cmd.channel == 1);
     if red_cmd.is_none() {
         // Effect should have ended at 10s
@@ -320,22 +320,22 @@ fn test_color_cycle_effect_crossfade() {
     engine.start_effect(cycle_effect).unwrap();
 
     // Test fade in phase - colors should cycle but be dimmed
-    let commands = engine.update(Duration::from_millis(500)).unwrap();
+    let commands = engine.update(Duration::from_millis(500), None).unwrap();
     let active_channel = commands.iter().find(|cmd| cmd.value > 0);
     assert!(active_channel.is_some());
     let active_channel = active_channel.unwrap();
     assert!(active_channel.value > 0 && active_channel.value < 255); // Dimmed color during fade in
 
     // Test full intensity phase - colors should cycle at full brightness
-    let commands = engine.update(Duration::from_millis(1500)).unwrap(); // 0.5s + 1.5s = 2s
+    let commands = engine.update(Duration::from_millis(1500), None).unwrap(); // 0.5s + 1.5s = 2s
     let active_channel = commands.iter().find(|cmd| cmd.value > 0);
     assert!(active_channel.is_some());
     let active_channel = active_channel.unwrap();
     assert_eq!(active_channel.value, 255); // Full intensity during full phase
 
     // Test that the effect continues running (fade out phase is optional for this test)
-    let _commands = engine.update(Duration::from_secs(7)).unwrap(); // 2s + 7s = 9s
-                                                                    // At this point, the effect may have ended or be in fade out - both are valid
+    let _commands = engine.update(Duration::from_secs(7), None).unwrap(); // 2s + 7s = 9s
+                                                                          // At this point, the effect may have ended or be in fade out - both are valid
 }
 #[test]
 fn test_pulse_effect_crossfade() {
@@ -378,23 +378,23 @@ fn test_pulse_effect_crossfade() {
     // Test fade in phase - pulse should be dimmed
     // With fixture profile system, RGB-only fixtures use _pulse_multiplier
     // which gets applied during blending, so we expect no direct RGB commands
-    let commands = engine.update(Duration::from_millis(500)).unwrap();
+    let commands = engine.update(Duration::from_millis(500), None).unwrap();
     // The pulse effect for RGB-only fixtures uses _pulse_multiplier, not direct RGB channels
     // So there should be no DMX commands at this point (multiplier is internal)
     assert!(commands.is_empty()); // No direct RGB commands with fixture profile system
 
     // Test full intensity phase - pulse should be at full amplitude
-    let commands = engine.update(Duration::from_secs(2)).unwrap();
+    let commands = engine.update(Duration::from_secs(2), None).unwrap();
     // Same as above - no direct RGB commands with fixture profile system
     assert!(commands.is_empty()); // No direct RGB commands with fixture profile system
 
     // Test fade out phase - pulse should be dimmed (at 4.5s total: 0.5s into down_time)
-    let commands = engine.update(Duration::from_millis(2000)).unwrap(); // 2.5s + 2s = 4.5s
-                                                                        // Same as above - no direct RGB commands with fixture profile system
+    let commands = engine.update(Duration::from_millis(2000), None).unwrap(); // 2.5s + 2s = 4.5s
+                                                                              // Same as above - no direct RGB commands with fixture profile system
     assert!(commands.is_empty()); // No direct RGB commands with fixture profile system
 
     // Test effect end - should be no commands (at 5s total)
-    let commands = engine.update(Duration::from_millis(500)).unwrap(); // 4.5s + 0.5s = 5s
+    let commands = engine.update(Duration::from_millis(500), None).unwrap(); // 4.5s + 0.5s = 5s
     assert!(commands.is_empty()); // Effect should be finished
 }
 #[test]
@@ -435,22 +435,22 @@ fn test_rainbow_effect_crossfade() {
     engine.start_effect(rainbow_effect).unwrap();
 
     // Test fade in phase - rainbow should be dimmed
-    let commands = engine.update(Duration::from_millis(500)).unwrap();
+    let commands = engine.update(Duration::from_millis(500), None).unwrap();
     let active_cmd = commands.iter().find(|cmd| cmd.value > 0).unwrap();
     assert!(active_cmd.value > 0 && active_cmd.value < 255); // Dimmed rainbow during fade in
 
     // Test full intensity phase - rainbow should be at full brightness
-    let commands = engine.update(Duration::from_secs(2)).unwrap();
+    let commands = engine.update(Duration::from_secs(2), None).unwrap();
     let active_cmd = commands.iter().find(|cmd| cmd.value > 0).unwrap();
     assert!(active_cmd.value > 200); // High rainbow brightness during full intensity
 
     // Test fade out phase - rainbow should be dimmed (at 4.5s total: 0.5s into down_time)
-    let commands = engine.update(Duration::from_millis(2000)).unwrap(); // 2.5s + 2s = 4.5s
+    let commands = engine.update(Duration::from_millis(2000), None).unwrap(); // 2.5s + 2s = 4.5s
     let active_cmd = commands.iter().find(|cmd| cmd.value > 0).unwrap();
     assert!(active_cmd.value > 0 && active_cmd.value < 255); // Dimmed rainbow during fade out
 
     // Test effect end - should be no commands (at 5s total)
-    let commands = engine.update(Duration::from_millis(500)).unwrap(); // 4.5s + 0.5s = 5s
+    let commands = engine.update(Duration::from_millis(500), None).unwrap(); // 4.5s + 0.5s = 5s
     assert!(commands.is_empty()); // Effect should be finished
 }
 #[test]
@@ -492,7 +492,7 @@ fn test_dsl_crossfade_integration() {
     engine.register_fixture(fixture);
 
     // Create EffectInstance from DSL Effect
-    let effect_instance = LightingTimeline::create_effect_instance(effect);
+    let effect_instance = LightingTimeline::create_effect_instance(effect, show.cues[0].time);
     assert!(
         effect_instance.is_some(),
         "Failed to create EffectInstance from DSL Effect"
@@ -505,32 +505,32 @@ fn test_dsl_crossfade_integration() {
     engine.start_effect(effect_instance).unwrap();
 
     // Test fade in: at t=0ms, should be 0% (no blue)
-    let commands = engine.update(Duration::from_millis(0)).unwrap();
+    let commands = engine.update(Duration::from_millis(0), None).unwrap();
     if let Some(blue_cmd) = commands.iter().find(|cmd| cmd.channel == 3) {
         assert_eq!(blue_cmd.value, 0); // 0% blue during fade in
     }
 
     // Test fade in: at t=1000ms (50% of 2s fade in), should be ~50% blue
-    let commands = engine.update(Duration::from_millis(1000)).unwrap();
+    let commands = engine.update(Duration::from_millis(1000), None).unwrap();
     if let Some(blue_cmd) = commands.iter().find(|cmd| cmd.channel == 3) {
         assert!(blue_cmd.value > 100 && blue_cmd.value < 150); // ~50% blue
     }
 
     // Test full intensity: at t=2000ms (after fade in complete), should be 100% blue
-    let commands = engine.update(Duration::from_millis(1000)).unwrap(); // Add 1s more (t=0 + 1s + 1s = 2s total)
+    let commands = engine.update(Duration::from_millis(1000), None).unwrap(); // Add 1s more (t=0 + 1s + 1s = 2s total)
     if let Some(blue_cmd) = commands.iter().find(|cmd| cmd.channel == 3) {
         assert_eq!(blue_cmd.value, 255); // 100% blue
     }
 
     // Test hold phase: at t=7000ms (end of hold phase), should still be 100% blue
-    let commands = engine.update(Duration::from_millis(5000)).unwrap(); // t=2s + 5s = 7s
+    let commands = engine.update(Duration::from_millis(5000), None).unwrap(); // t=2s + 5s = 7s
     if let Some(blue_cmd) = commands.iter().find(|cmd| cmd.channel == 3) {
         assert_eq!(blue_cmd.value, 255); // 100% blue at end of hold phase
     }
 
     // Test fade out: at t=8000ms (fade out complete), effect ends (not permanent)
-    let commands = engine.update(Duration::from_millis(1000)).unwrap(); // Add 1s more (7s + 1s = 8s)
-                                                                        // Static effect with timing params is not permanent, so no persistence after completion
+    let commands = engine.update(Duration::from_millis(1000), None).unwrap(); // Add 1s more (7s + 1s = 8s)
+                                                                              // Static effect with timing params is not permanent, so no persistence after completion
     assert!(
         commands.is_empty() || commands.iter().all(|cmd| cmd.value == 0),
         "Effect should end with no commands or all zeros (not permanent)"
@@ -579,26 +579,26 @@ fn test_static_effect_crossfade() {
     engine.start_effect(static_effect).unwrap();
 
     // Test fade in: at t=0ms, should be 0% (no blue)
-    let commands = engine.update(Duration::from_millis(0)).unwrap();
+    let commands = engine.update(Duration::from_millis(0), None).unwrap();
     let blue_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
     assert_eq!(blue_cmd.value, 0); // Should be 0 (0% of 255)
 
     // Test fade in: at t=500ms, should be 50% (half blue)
-    let commands = engine.update(Duration::from_millis(500)).unwrap();
+    let commands = engine.update(Duration::from_millis(500), None).unwrap();
     let blue_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
     assert_eq!(blue_cmd.value, 127); // Should be 127 (50% of 255)
 
     // Test full intensity: at t=1000ms, should be 100% (full blue)
-    let commands = engine.update(Duration::from_millis(500)).unwrap(); // 500ms more = 1000ms total
+    let commands = engine.update(Duration::from_millis(500), None).unwrap(); // 500ms more = 1000ms total
     let blue_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
     assert_eq!(blue_cmd.value, 255); // Should be 255 (100% of 255)
 
     // Test fade out: at t=2500ms, should be 50% (half blue)
-    let commands = engine.update(Duration::from_millis(1500)).unwrap(); // 1500ms more = 2500ms total
+    let commands = engine.update(Duration::from_millis(1500), None).unwrap(); // 1500ms more = 2500ms total
     let blue_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
     assert_eq!(blue_cmd.value, 127); // Should be 127 (50% of 255)
 
     // Test fade out: at t=3000ms, effect should be finished (no commands)
-    let commands = engine.update(Duration::from_millis(500)).unwrap(); // 500ms more = 3000ms total
+    let commands = engine.update(Duration::from_millis(500), None).unwrap(); // 500ms more = 3000ms total
     assert!(commands.is_empty()); // Effect should be finished, no commands
 }
