@@ -230,6 +230,7 @@ impl super::Device for Device {
                     CancelableTimer::new(midi_sheet.ticker, cancel_handle.clone()),
                     elapsed_time,
                     start_time,
+                    cancel_handle.clone(),
                 );
                 let mut player = Player::new(seek_timer, seek_connection);
 
@@ -529,14 +530,21 @@ struct SeekTimer<T: Timer> {
     timer: T,
     elapsed_time: Arc<Mutex<Duration>>,
     start_time: Duration,
+    cancel_handle: CancelHandle,
 }
 
 impl<T: Timer> SeekTimer<T> {
-    fn new(timer: T, elapsed_time: Arc<Mutex<Duration>>, start_time: Duration) -> Self {
+    fn new(
+        timer: T,
+        elapsed_time: Arc<Mutex<Duration>>,
+        start_time: Duration,
+        cancel_handle: CancelHandle,
+    ) -> Self {
         Self {
             timer,
             elapsed_time,
             start_time,
+            cancel_handle,
         }
     }
 }
@@ -552,23 +560,61 @@ impl<T: Timer> Timer for SeekTimer<T> {
     }
 
     fn sleep(&mut self, n_ticks: u32) {
+        // Check for cancellation first - if cancelled, don't sleep at all
+        if self.cancel_handle.is_cancelled() {
+            return;
+        }
+
         // Get the duration before sleeping so we can track elapsed time
         let duration = self.timer.sleep_duration(n_ticks);
 
-        // Update elapsed time
-        let should_sleep = {
+        // Calculate elapsed time after this sleep and determine if/how much to sleep
+        let (should_sleep, sleep_ticks) = {
             let mut elapsed = self.elapsed_time.lock().unwrap();
-            *elapsed += duration;
-            // Only sleep if we've reached or passed start_time
-            *elapsed >= self.start_time
+            let elapsed_before = *elapsed;
+            let elapsed_after = elapsed_before + duration;
+
+            if elapsed_after < self.start_time {
+                // We haven't reached start_time yet, skip the sleep entirely
+                // Update elapsed time to reflect that we've "skipped" through this duration
+                *elapsed = elapsed_after;
+                (false, 0)
+            } else if elapsed_before >= self.start_time {
+                // We've already passed start_time, sleep the full duration
+                *elapsed = elapsed_after;
+                (true, n_ticks)
+            } else {
+                // We're in the middle of a gap that spans start_time
+                // Calculate partial sleep: from start_time to elapsed_after
+                let partial_duration = elapsed_after - self.start_time;
+
+                // Calculate what fraction of ticks this represents
+                // Use floating point for precision, then round
+                // Handle zero duration case to avoid division by zero
+                let sleep_ticks = if duration.is_zero() {
+                    // If duration is zero, we can't calculate a fraction, so sleep all ticks
+                    n_ticks
+                } else {
+                    let fraction = partial_duration.as_secs_f64() / duration.as_secs_f64();
+                    let partial_ticks = (n_ticks as f64 * fraction).round() as u32;
+                    // Ensure we don't sleep more than the original ticks
+                    min(partial_ticks, n_ticks)
+                };
+
+                // Calculate what fraction of ticks to sleep
+                // We update elapsed_time to elapsed_after (the MIDI timeline position)
+                // even though we only sleep a partial amount. This is correct because
+                // elapsed_time tracks MIDI timeline position, not wall-clock time.
+                *elapsed = elapsed_after;
+                (true, sleep_ticks)
+            }
         };
 
-        // Only actually sleep if we've reached start_time
-        // Before that, we just update the elapsed time counter to skip through
-        if should_sleep {
-            self.timer.sleep(n_ticks);
+        // Sleep the calculated amount (if any)
+        // Note: CancelableTimer::sleep() will also check for cancellation during the sleep
+        if should_sleep && sleep_ticks > 0 {
+            self.timer.sleep(sleep_ticks);
         }
-        // If we haven't reached start_time yet, we skip the sleep entirely
     }
 }
 
