@@ -11,26 +11,18 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-pub mod channel_mapped;
-pub mod error;
-pub mod factory;
-pub mod memory;
-pub mod traits;
-pub mod transcoder;
-pub mod wav;
+/// Error types for transcoding operations
+#[derive(Debug, thiserror::Error)]
+pub enum TranscodingError {
+    #[error("Resampling failed: {0}Hz -> {1}Hz")]
+    ResamplingFailed(u32, u32),
 
-#[cfg(test)]
-mod tests;
+    #[error("Sample conversion failed for {0}")]
+    SampleConversionFailed(String),
 
-// Re-exports for use by other modules
-pub use channel_mapped::create_channel_mapped_sample_source;
-#[cfg(test)]
-pub use channel_mapped::ChannelMappedSource;
-pub use factory::{create_sample_source_from_file, create_sample_source_from_file_with_seek};
-pub use traits::{ChannelMappedSampleSource, SampleSource};
-pub use wav::WavSampleSource;
+    #[error("WAV file error: {0}")]
+    WavError(#[from] hound::Error),
 
-#[cfg(test)]
-pub use memory::MemorySampleSource;
-#[cfg(test)]
-pub use traits::SampleSourceTestExt;
+    #[error("IO error: {0}")]
+    IoError(#[from] std::io::Error),
+}
