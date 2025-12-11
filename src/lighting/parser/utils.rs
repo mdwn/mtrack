@@ -365,6 +365,7 @@ pub(crate) fn parse_parameter(pair: Pair<Rule>) -> Result<(String, String), Box<
             Rule::percentage
             | Rule::time_parameter
             | Rule::direction_parameter
+            | Rule::chase_pattern_parameter
             | Rule::loop_parameter
             | Rule::step_parameter
             | Rule::transition_parameter
