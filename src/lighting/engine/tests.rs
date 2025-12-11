@@ -17,6 +17,8 @@ mod common;
 #[cfg(test)]
 mod basic_tests;
 #[cfg(test)]
+mod channel_locking_tests;
+#[cfg(test)]
 mod chase_tests;
 #[cfg(test)]
 mod color_cycle_tests;
@@ -33,8 +35,16 @@ mod pulse_tests;
 #[cfg(test)]
 mod rainbow_tests;
 #[cfg(test)]
+mod seeking_tests;
+#[cfg(test)]
+mod sequence_and_layer_control_tests;
+#[cfg(test)]
 mod static_effect_tests;
 #[cfg(test)]
 mod strobe_tests;
 #[cfg(test)]
 mod tempo_aware_tests;
+#[cfg(test)]
+mod utility_and_edge_cases_tests;
+#[cfg(test)]
+mod validation_tests;

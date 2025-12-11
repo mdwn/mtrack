@@ -503,4 +503,67 @@ mod test {
         // After 2.5 seconds, we should be all the way there.
         assert_eq!([100u8], buffer.as_slice()[0..1]);
     }
+
+    #[test]
+    fn test_dimming_down_from_higher_to_lower() {
+        let (universe, _) = new_universe();
+
+        // Dim over 1 second.
+        universe.update_dim_speed(Duration::from_secs(1));
+
+        // First, dim up to 200
+        universe.update_channel_data(1, 200, true);
+
+        let mut buffer = DmxBuffer::new();
+
+        // There are TARGET_HZ updates per second.
+        for _ in 0..(TARGET_HZ as usize) {
+            assert!(Universe::approach_target(
+                &universe.rates,
+                &universe.current,
+                &universe.target,
+                &universe.max_channels,
+                &mut buffer,
+            ))
+        }
+
+        // After one second, we should be at 200.
+        assert_eq!([200u8], buffer.as_slice()[0..1]);
+
+        // Now dim down from 200 to 100
+        universe.update_channel_data(1, 100, true);
+
+        // After half a second, we should be halfway (at 150)
+        for _ in 0..((TARGET_HZ / 2.0) as usize) {
+            assert!(Universe::approach_target(
+                &universe.rates,
+                &universe.current,
+                &universe.target,
+                &universe.max_channels,
+                &mut buffer,
+            ))
+        }
+
+        // Should be around 150 (halfway between 200 and 100)
+        let value = buffer.as_slice()[0];
+        assert!(
+            value >= 148 && value <= 152,
+            "Expected ~150 when dimming down from 200 to 100, got {}",
+            value
+        );
+
+        // Continue for another half second to reach target
+        for _ in 0..((TARGET_HZ / 2.0) as usize) {
+            assert!(Universe::approach_target(
+                &universe.rates,
+                &universe.current,
+                &universe.target,
+                &universe.max_channels,
+                &mut buffer,
+            ))
+        }
+
+        // After one second total, we should be at 100.
+        assert_eq!([100u8], buffer.as_slice()[0..1]);
+    }
 }
