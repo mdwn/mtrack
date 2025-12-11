@@ -91,6 +91,7 @@ parameter_value = {
     percentage |
     time_parameter |
     direction_parameter |
+    chase_pattern_parameter |
     loop_parameter |
     step_parameter |
     transition_parameter |
@@ -103,7 +104,8 @@ parameter_value = {
 }
 
 // Restrictive bare identifier to avoid swallowing typos
-bare_identifier = { (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* }
+// Atomic to prevent backtracking issues when it's the last parameter
+bare_identifier = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* }
 
 color_parameter = { 
     quoted_hex_color |
@@ -128,7 +130,14 @@ quoted_rgb_color = @{ "\"" ~ "rgb(" ~ ASCII_DIGIT+ ~ "," ~ " "? ~ ASCII_DIGIT+ ~
 // Supports absolute time (ms, s) and musical time (beats, measures)
 time_parameter = @{ time_value ~ time_unit }
 
-direction_parameter = { "forward" | "backward" | "random" | "pingpong" }
+direction_parameter = {
+    "forward" | "backward" | "random" | "pingpong" |
+    "left_to_right" | "right_to_left" |
+    "top_to_bottom" | "bottom_to_top" |
+    "clockwise" | "counter_clockwise"
+}
+
+chase_pattern_parameter = { "linear" | "snake" | "random" }
 
 loop_parameter = { "once" | "loop" | "pingpong" | "random" }
 
