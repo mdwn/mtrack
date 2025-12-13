@@ -618,6 +618,111 @@ show "Test" {
 }
 
 #[test]
+fn test_sequence_with_fractional_measure_hold_time() {
+    // Test that fractional measure durations in hold_time are calculated correctly
+    // This verifies the fix for playback_measures_to_duration handling fractional measures
+    // Since parse_light_shows only returns shows, not sequences directly,
+    // we need to test the sequence by referencing it in a show
+    // We'll verify the hold_time calculation by using the sequence in a show
+    let show_content = r##"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+}
+
+sequence "riff-e" {
+    @1/1
+    all_wash: static, color: "#B5C637", layer: background, blend_mode: replace
+
+    @1/3
+    all_wash: static, color: "#8A0303", layer: background, blend_mode: replace, hold_time: 1.5measures
+}
+
+show "Test" {
+    @0.000
+    sequence "riff-e"
+}
+"##;
+
+    let show_result = parse_light_shows(show_content);
+    assert!(
+        show_result.is_ok(),
+        "Failed to parse show with sequence: {:?}",
+        show_result.err()
+    );
+
+    let shows_with_sequence = show_result.unwrap();
+    let show = shows_with_sequence
+        .get("Test")
+        .expect("Show 'Test' should exist");
+
+    // The sequence should be expanded into the show's cues
+    // We should have 2 cues from the sequence
+    assert!(
+        show.cues.len() >= 2,
+        "Show should have at least 2 cues from sequence, got {}",
+        show.cues.len()
+    );
+
+    // Find the cue with the effect that has hold_time
+    let cue_with_hold_time = show
+        .cues
+        .iter()
+        .find(|cue| cue.effects.iter().any(|effect| effect.hold_time.is_some()));
+
+    let (sequence_cue, second_effect) = if let Some(cue) = cue_with_hold_time {
+        let effect = cue
+            .effects
+            .iter()
+            .find(|e| e.hold_time.is_some())
+            .expect("Should find effect with hold_time");
+        (cue, effect)
+    } else {
+        panic!("Should find a cue with an effect that has hold_time");
+    };
+
+    // Second effect has hold_time: 1.5measures
+    let hold_time = second_effect
+        .hold_time
+        .expect("Second effect should have hold_time");
+
+    // At 120 BPM in 4/4: 1.5 measures = 6 beats = 3.0 seconds
+    let expected_hold_time = Duration::from_secs_f64(3.0);
+    assert!(
+        (hold_time.as_secs_f64() - expected_hold_time.as_secs_f64()).abs() < 0.001,
+        "hold_time should be 3.0s (1.5 measures at 120 BPM in 4/4), got {}s",
+        hold_time.as_secs_f64()
+    );
+
+    // Verify the effect's total duration (should be just hold_time since no up_time or down_time)
+    let total_duration = second_effect
+        .total_duration()
+        .expect("Second effect should have a duration");
+    assert!(
+        (total_duration.as_secs_f64() - expected_hold_time.as_secs_f64()).abs() < 0.001,
+        "Total duration should be 3.0s, got {}s",
+        total_duration.as_secs_f64()
+    );
+
+    // Verify the effect completes at the expected time
+    // Second effect starts at measure 1, beat 3 (1.0s) and has hold_time of 1.5 measures (3.0s)
+    // So second effect completes at: 1.0s + 3.0s = 4.0s
+    // At 120 BPM in 4/4: 4.0s = 8 beats = 2 measures
+    let effect_start_time = sequence_cue.time;
+    let total_duration = second_effect
+        .total_duration()
+        .expect("Second effect should have a duration");
+    let effect_completion_time = effect_start_time + total_duration;
+    let expected_completion_time = Duration::from_secs_f64(4.0);
+    assert!(
+        (effect_completion_time.as_secs_f64() - expected_completion_time.as_secs_f64()).abs()
+            < 0.001,
+        "Effect should complete at 4.0s (2 measures from sequence start), got {}s",
+        effect_completion_time.as_secs_f64()
+    );
+}
+
+#[test]
 fn test_self_referencing_sequence() {
     let content = r#"
 sequence "self_ref" {

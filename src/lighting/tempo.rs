@@ -968,9 +968,15 @@ impl TempoMap {
                 }
             }
 
-            // Calculate duration for this measure
-            let beats = measure_ts.beats_per_measure();
-            let measure_duration = Duration::from_secs_f64(beats * 60.0 / measure_bpm);
+            // Calculate how much of this measure we need
+            let measures_remaining = playback_end_measure - current_playback_measure;
+            let measures_in_this_iteration = measures_remaining.min(1.0);
+
+            // Calculate duration for this measure (full or partial)
+            let beats_per_measure = measure_ts.beats_per_measure();
+            let beats_in_this_iteration = beats_per_measure * measures_in_this_iteration;
+            let measure_duration =
+                Duration::from_secs_f64(beats_in_this_iteration * 60.0 / measure_bpm);
             duration += measure_duration;
 
             current_playback_measure += 1.0;
