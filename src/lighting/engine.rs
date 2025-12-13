@@ -873,6 +873,26 @@ impl EffectEngine {
     /// Clear a layer - immediately stops all effects on the specified layer
     /// This is equivalent to a "kill" or panic button for a layer
     pub fn clear_layer(&mut self, layer: EffectLayer) {
+        // Collect fixtures that have strobe effects on this layer before clearing
+        let mut fixtures_with_strobe: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        for effect in self.active_effects.values() {
+            if effect.layer == layer {
+                if let EffectType::Strobe { .. } = effect.effect_type {
+                    for fixture_name in &effect.target_fixtures {
+                        if let Some(fixture_info) = self.fixture_registry.get(fixture_name) {
+                            // Check if fixture has dedicated strobe channel
+                            if fixture_info.has_capability(FixtureCapabilities::STROBING)
+                                && fixture_info.channels.contains_key("strobe")
+                            {
+                                fixtures_with_strobe.insert(fixture_name.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         layers::clear_layer(
             &mut self.active_effects,
             &mut self.releasing_effects,
@@ -885,11 +905,49 @@ impl EffectEngine {
         // This is a bit aggressive but ensures clear works correctly
         self.fixture_states.clear();
         self.channel_locks.clear();
+
+        // Explicitly set strobe channels to 0 for fixtures that had strobe effects
+        // This ensures dedicated strobe channels are turned off when effects are cleared
+        // Use the cleared layer with Replace mode - if there are strobe effects on higher
+        // layers, they will override this (which is desired behavior)
+        for fixture_name in fixtures_with_strobe {
+            if let Some(fixture_info) = self.fixture_registry.get(&fixture_name) {
+                if fixture_info.channels.contains_key("strobe") {
+                    // Set strobe channel to 0 using Replace blend mode
+                    // This will turn off strobe for this layer, but higher layers can still override
+                    let mut strobe_state = FixtureState::new();
+                    strobe_state.set_channel(
+                        "strobe".to_string(),
+                        ChannelState::new(0.0, layer, BlendMode::Replace),
+                    );
+                    // Store in fixture_states so it gets emitted in the next frame
+                    self.fixture_states.insert(fixture_name, strobe_state);
+                }
+            }
+        }
     }
 
     /// Clear all layers - immediately stops all effects on all layers
     /// This is equivalent to a "kill all" or panic button for everything
     pub fn clear_all_layers(&mut self) {
+        // Collect all fixtures that have strobe effects before clearing
+        let mut fixtures_with_strobe: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        for effect in self.active_effects.values() {
+            if let EffectType::Strobe { .. } = effect.effect_type {
+                for fixture_name in &effect.target_fixtures {
+                    if let Some(fixture_info) = self.fixture_registry.get(fixture_name) {
+                        // Check if fixture has dedicated strobe channel
+                        if fixture_info.has_capability(FixtureCapabilities::STROBING)
+                            && fixture_info.channels.contains_key("strobe")
+                        {
+                            fixtures_with_strobe.insert(fixture_name.clone());
+                        }
+                    }
+                }
+            }
+        }
+
         layers::clear_all_layers(
             &mut self.active_effects,
             &mut self.releasing_effects,
@@ -898,6 +956,24 @@ impl EffectEngine {
         // Clear all persisted fixture states and channel locks
         self.fixture_states.clear();
         self.channel_locks.clear();
+
+        // Explicitly set strobe channels to 0 for all fixtures that had strobe effects
+        // This ensures dedicated strobe channels are turned off when effects are cleared
+        for fixture_name in fixtures_with_strobe {
+            if let Some(fixture_info) = self.fixture_registry.get(&fixture_name) {
+                if fixture_info.channels.contains_key("strobe") {
+                    // Set strobe channel to 0 using Replace blend mode to ensure it overrides
+                    // Use foreground layer since we're clearing everything
+                    let mut strobe_state = FixtureState::new();
+                    strobe_state.set_channel(
+                        "strobe".to_string(),
+                        ChannelState::new(0.0, EffectLayer::Foreground, BlendMode::Replace),
+                    );
+                    // Store in fixture_states so it gets emitted in the next frame
+                    self.fixture_states.insert(fixture_name, strobe_state);
+                }
+            }
+        }
     }
 
     /// Release a layer - gracefully fades out all effects on the specified layer
