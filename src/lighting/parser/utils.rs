@@ -22,6 +22,7 @@ use pest::iterators::Pair;
 
 /// Parses a percentage string (e.g., "50%") to f64 (e.g., 0.5)
 pub(crate) fn parse_percentage_to_f64(value: &str) -> Result<f64, Box<dyn Error>> {
+    let value = value.trim();
     if value.ends_with('%') {
         let num_str = value.trim_end_matches('%');
         let num = num_str.parse::<f64>()?;
@@ -138,6 +139,7 @@ pub(crate) fn parse_duration_string(
     at_time: Option<Duration>,
     offset_secs: f64,
 ) -> Result<Duration, Box<dyn Error>> {
+    let value = value.trim();
     if value.ends_with("ms") {
         let num_str = value.trim_end_matches("ms");
         let num = num_str.parse::<u64>()?;
@@ -357,7 +359,7 @@ pub(crate) fn parse_parameter(pair: Pair<Rule>) -> Result<(String, String), Box<
     for inner_pair in pair.into_inner() {
         match inner_pair.as_rule() {
             Rule::parameter_name => {
-                key = inner_pair.as_str().to_string();
+                key = inner_pair.as_str().trim().to_string();
             }
             Rule::color_parameter => {
                 value = parse_color_parameter(inner_pair)?;
@@ -377,7 +379,7 @@ pub(crate) fn parse_parameter(pair: Pair<Rule>) -> Result<(String, String), Box<
                 value = parse_generic_parameter(inner_pair)?;
             }
             _ => {
-                value = inner_pair.as_str().to_string();
+                value = inner_pair.as_str().trim().to_string();
             }
         }
     }
@@ -417,5 +419,5 @@ pub(crate) fn parse_color_parameter(pair: Pair<Rule>) -> Result<String, Box<dyn 
 
 /// Generic parameter parser that extracts the string value from any parameter type
 pub(crate) fn parse_generic_parameter(pair: Pair<Rule>) -> Result<String, Box<dyn Error>> {
-    Ok(pair.as_str().to_string())
+    Ok(pair.as_str().trim().to_string())
 }

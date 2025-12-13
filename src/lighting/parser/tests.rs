@@ -31,3 +31,5 @@ mod tempo_durations_tests;
 mod tempo_end_to_end_tests;
 #[cfg(test)]
 mod tempo_validation_tests;
+#[cfg(test)]
+mod comment_whitespace_edge_cases_tests;

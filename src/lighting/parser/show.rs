@@ -571,6 +571,7 @@ fn parse_sequence_cue_structure(
             .ok_or("Stop sequence command missing sequence name")?
             .as_str()
             .trim_matches('"')
+            .trim()
             .to_string();
         stop_sequences.push(seq_name);
     }
@@ -593,11 +594,11 @@ fn parse_sequence_cue_structure(
 
                             for param_inner in param_pair.into_inner() {
                                 match param_inner.as_rule() {
-                                    Rule::sequence_param_name => {
-                                        param_name = param_inner.as_str().to_string();
-                                    }
+                                Rule::sequence_param_name => {
+                                    param_name = param_inner.as_str().trim().to_string();
+                                }
                                     Rule::sequence_param_value => {
-                                        param_value = param_inner.as_str().to_string();
+                                        param_value = param_inner.as_str().trim().to_string();
                                     }
                                     _ => {}
                                 }
@@ -970,6 +971,7 @@ fn parse_cue_definition(
             .ok_or("Stop sequence command missing sequence name")?
             .as_str()
             .trim_matches('"')
+            .trim()
             .to_string();
         stop_sequences.push(seq_name);
     }
@@ -1020,11 +1022,11 @@ fn parse_cue_definition(
 
                                 for param_inner in param_pair.into_inner() {
                                     match param_inner.as_rule() {
-                                        Rule::sequence_param_name => {
-                                            param_name = param_inner.as_str().to_string();
-                                        }
+                                Rule::sequence_param_name => {
+                                    param_name = param_inner.as_str().trim().to_string();
+                                }
                                         Rule::sequence_param_value => {
-                                            param_value = param_inner.as_str().to_string();
+                                            param_value = param_inner.as_str().trim().to_string();
                                         }
                                         _ => {}
                                     }
@@ -1213,10 +1215,10 @@ fn parse_layer_command(
                         for param_inner in param_pair.into_inner() {
                             match param_inner.as_rule() {
                                 Rule::layer_command_param_name => {
-                                    param_name = param_inner.as_str().to_string();
+                                    param_name = param_inner.as_str().trim().to_string();
                                 }
                                 Rule::layer_command_param_value => {
-                                    param_value = param_inner.as_str().to_string();
+                                    param_value = param_inner.as_str().trim().to_string();
                                 }
                                 _ => {}
                             }

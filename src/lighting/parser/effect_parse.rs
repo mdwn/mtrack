@@ -56,7 +56,7 @@ pub(crate) fn parse_effect_definition(
             Rule::group_list => {
                 for group_pair in inner_pair.into_inner() {
                     if group_pair.as_rule() == Rule::group_name {
-                        groups.push(group_pair.as_str().to_string());
+                        groups.push(group_pair.as_str().trim().to_string());
                     }
                 }
             }

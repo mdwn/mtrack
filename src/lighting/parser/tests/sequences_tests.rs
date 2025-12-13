@@ -258,6 +258,147 @@ show "Test Show" {
 }
 
 #[test]
+fn test_sequence_with_comment_after_loop() {
+    // Test that comments on a new line after sequence loop directive work
+    let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+}
+
+sequence "test" {
+    @1/1
+    front_wash: static color: "red"
+}
+
+show "Test" {
+    @0.000
+    sequence "test", loop: 3
+    # Some comment
+}
+"#;
+
+    let result = parse_light_shows(content);
+    assert!(
+        result.is_ok(),
+        "Failed to parse sequence with comment after loop directive: {:?}",
+        result.err()
+    );
+
+    let shows = result.unwrap();
+    let show = shows.get("Test").expect("Show 'Test' should exist");
+    
+    // Should have 3 cues (1 cue per iteration × 3 iterations)
+    assert_eq!(show.cues.len(), 3);
+}
+
+#[test]
+fn test_layer_command_with_comment_after_parameter() {
+    // Test that comments on a new line after layer command parameters work
+    let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+}
+
+show "Test" {
+    @0.000
+    clear(layer: foreground)
+    # Some comment
+    
+    @1.000
+    release(layer: background, time: 2s)
+    # Another comment
+    
+    @2.000
+    master(layer: midground, intensity: 0.5)
+    # Yet another comment
+}
+"#;
+
+    let result = parse_light_shows(content);
+    assert!(
+        result.is_ok(),
+        "Failed to parse layer commands with comments: {:?}",
+        result.err()
+    );
+
+    let shows = result.unwrap();
+    let show = shows.get("Test").expect("Show 'Test' should exist");
+    
+    // Should have 3 cues
+    assert_eq!(show.cues.len(), 3);
+    
+    // First cue should have clear command with foreground layer
+    let first_cue = &show.cues[0];
+    assert_eq!(first_cue.layer_commands.len(), 1);
+    let clear_cmd = &first_cue.layer_commands[0];
+    assert_eq!(clear_cmd.command_type, crate::lighting::parser::LayerCommandType::Clear);
+    assert_eq!(clear_cmd.layer, Some(crate::lighting::effects::EffectLayer::Foreground));
+    
+    // Second cue should have release command with time
+    let second_cue = &show.cues[1];
+    assert_eq!(second_cue.layer_commands.len(), 1);
+    let release_cmd = &second_cue.layer_commands[0];
+    assert_eq!(release_cmd.command_type, crate::lighting::parser::LayerCommandType::Release);
+    assert_eq!(release_cmd.layer, Some(crate::lighting::effects::EffectLayer::Background));
+    assert!(release_cmd.fade_time.is_some());
+    
+    // Third cue should have master command with intensity
+    let third_cue = &show.cues[2];
+    assert_eq!(third_cue.layer_commands.len(), 1);
+    let master_cmd = &third_cue.layer_commands[0];
+    assert_eq!(master_cmd.command_type, crate::lighting::parser::LayerCommandType::Master);
+    assert_eq!(master_cmd.layer, Some(crate::lighting::effects::EffectLayer::Midground));
+    assert!(master_cmd.intensity.is_some());
+    assert!((master_cmd.intensity.unwrap() - 0.5).abs() < 0.001);
+}
+
+#[test]
+fn test_effect_parameter_with_comment_after() {
+    // Test that comments on a new line after effect parameters work
+    let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+}
+
+show "Test" {
+    @0.000
+    front_wash: static, color: "red", layer: foreground
+    # Comment after effect
+    
+    @1.000
+    back_wash: cycle, speed: 2beats, direction: forward
+    # Another comment
+}
+"#;
+
+    let result = parse_light_shows(content);
+    assert!(
+        result.is_ok(),
+        "Failed to parse effects with comments: {:?}",
+        result.err()
+    );
+
+    let shows = result.unwrap();
+    let show = shows.get("Test").expect("Show 'Test' should exist");
+    
+    // Should have 2 cues
+    assert_eq!(show.cues.len(), 2);
+    
+    // First cue should have static effect
+    let first_cue = &show.cues[0];
+    assert_eq!(first_cue.effects.len(), 1);
+    let effect = &first_cue.effects[0];
+    assert_eq!(effect.layer, Some(crate::lighting::effects::EffectLayer::Foreground));
+    
+    // Second cue should have cycle effect
+    let second_cue = &show.cues[1];
+    assert_eq!(second_cue.effects.len(), 1);
+}
+
+#[test]
 fn test_sequence_looping_finite() {
     let content = r#"
 sequence "simple_sequence" {
