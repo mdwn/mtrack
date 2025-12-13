@@ -112,3 +112,140 @@ fn test_strobe_effect() {
     let strobe_cmd = commands.iter().find(|cmd| cmd.channel == 6).unwrap();
     assert_eq!(strobe_cmd.value, 25);
 }
+
+#[test]
+fn test_clear_layer_resets_strobe_channel() {
+    // Test that clearing a layer with a strobe effect resets the strobe channel to 0
+    let mut engine = EffectEngine::new();
+    let fixture = create_test_fixture("test_fixture", 1, 1);
+    engine.register_fixture(fixture);
+
+    // Start a strobe effect on foreground layer
+    let mut strobe_effect = EffectInstance::new(
+        "strobe_effect".to_string(),
+        EffectType::Strobe {
+            frequency: TempoAwareFrequency::Fixed(5.0), // 5 Hz
+            duration: None,
+        },
+        vec!["test_fixture".to_string()],
+        None,
+        None,
+        None,
+    );
+    strobe_effect.layer = EffectLayer::Foreground;
+
+    engine.start_effect(strobe_effect).unwrap();
+
+    // Update to process the strobe effect
+    let commands_before = engine.update(Duration::from_millis(16), None).unwrap();
+
+    // Verify strobe channel has a non-zero value
+    let strobe_cmd_before = commands_before.iter().find(|cmd| cmd.channel == 6);
+    assert!(
+        strobe_cmd_before.is_some(),
+        "Should have strobe command before clear"
+    );
+    let strobe_value_before = strobe_cmd_before.unwrap().value;
+    assert!(
+        strobe_value_before > 0,
+        "Strobe channel should be non-zero before clear: {}",
+        strobe_value_before
+    );
+
+    // Clear the foreground layer
+    engine.clear_layer(EffectLayer::Foreground);
+
+    // Verify the effect is stopped
+    assert_eq!(engine.active_effects_count(), 0);
+    assert!(!engine.has_effect("strobe_effect"));
+
+    // Update again - strobe channel should now be 0
+    let commands_after = engine.update(Duration::from_millis(16), None).unwrap();
+
+    // Find the strobe command
+    let strobe_cmd_after = commands_after.iter().find(|cmd| cmd.channel == 6);
+    assert!(
+        strobe_cmd_after.is_some(),
+        "Should have strobe command after clear (to reset it to 0)"
+    );
+    assert_eq!(
+        strobe_cmd_after.unwrap().value,
+        0,
+        "Strobe channel should be reset to 0 after clear"
+    );
+}
+
+#[test]
+fn test_clear_all_layers_resets_strobe_channel() {
+    // Test that clearing all layers with strobe effects resets strobe channels to 0
+    let mut engine = EffectEngine::new();
+    let fixture = create_test_fixture("test_fixture", 1, 1);
+    engine.register_fixture(fixture);
+
+    // Start strobe effects on multiple layers
+    let mut bg_strobe = EffectInstance::new(
+        "bg_strobe".to_string(),
+        EffectType::Strobe {
+            frequency: TempoAwareFrequency::Fixed(3.0),
+            duration: None,
+        },
+        vec!["test_fixture".to_string()],
+        None,
+        None,
+        None,
+    );
+    bg_strobe.layer = EffectLayer::Background;
+
+    let mut fg_strobe = EffectInstance::new(
+        "fg_strobe".to_string(),
+        EffectType::Strobe {
+            frequency: TempoAwareFrequency::Fixed(4.0),
+            duration: None,
+        },
+        vec!["test_fixture".to_string()],
+        None,
+        None,
+        None,
+    );
+    fg_strobe.layer = EffectLayer::Foreground;
+
+    engine.start_effect(bg_strobe).unwrap();
+    engine.start_effect(fg_strobe).unwrap();
+
+    // Update to process the strobe effects
+    let commands_before = engine.update(Duration::from_millis(16), None).unwrap();
+
+    // Verify strobe channel has a non-zero value
+    let strobe_cmd_before = commands_before.iter().find(|cmd| cmd.channel == 6);
+    assert!(
+        strobe_cmd_before.is_some(),
+        "Should have strobe command before clear"
+    );
+    let strobe_value_before = strobe_cmd_before.unwrap().value;
+    assert!(
+        strobe_value_before > 0,
+        "Strobe channel should be non-zero before clear: {}",
+        strobe_value_before
+    );
+
+    // Clear all layers
+    engine.clear_all_layers();
+
+    // Verify all effects are stopped
+    assert_eq!(engine.active_effects_count(), 0);
+
+    // Update again - strobe channel should now be 0
+    let commands_after = engine.update(Duration::from_millis(16), None).unwrap();
+
+    // Find the strobe command
+    let strobe_cmd_after = commands_after.iter().find(|cmd| cmd.channel == 6);
+    assert!(
+        strobe_cmd_after.is_some(),
+        "Should have strobe command after clear (to reset it to 0)"
+    );
+    assert_eq!(
+        strobe_cmd_after.unwrap().value,
+        0,
+        "Strobe channel should be reset to 0 after clear_all_layers"
+    );
+}
