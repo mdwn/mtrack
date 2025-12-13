@@ -183,7 +183,7 @@ fn parse_special_case_list(pair: Pair<Rule>) -> Vec<String> {
 }
 
 fn extract_string(pair: Pair<Rule>) -> String {
-    pair.as_str().trim_matches('"').to_string()
+    pair.as_str().trim_matches('"').trim().to_string()
 }
 
 fn parse_venue_definition(pair: Pair<Rule>) -> Result<Venue, Box<dyn Error>> {
@@ -302,6 +302,6 @@ fn parse_group_definition(pair: Pair<Rule>) -> Result<Group, Box<dyn Error>> {
 fn parse_identifier_list(pair: Pair<Rule>) -> Vec<String> {
     pair.into_inner()
         .filter(|p| p.as_rule() == Rule::identifier)
-        .map(|id| id.as_str().to_string())
+        .map(|id| id.as_str().trim().to_string())
         .collect()
 }

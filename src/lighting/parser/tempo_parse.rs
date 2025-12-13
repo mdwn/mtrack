@@ -176,10 +176,10 @@ pub(crate) fn parse_tempo_change(pair: Pair<Rule>) -> Result<TempoChange, Box<dy
                                                     }
                                                     Rule::tempo_transition_measures => {
                                                         // tempo_transition_measures is atomic, so we can get the string directly
-                                                        let measure_str = trans_pair.as_str();
+                                                        let measure_str = trans_pair.as_str().trim();
                                                         let num_str =
                                                             measure_str.trim_end_matches('m');
-                                                        let measures = num_str.parse()?;
+                                                        let measures = num_str.trim().parse()?;
                                                         transition = TempoTransition::Measures(
                                                             measures,
                                                             TransitionCurve::Linear,
@@ -222,12 +222,13 @@ pub(crate) fn parse_tempo_change(pair: Pair<Rule>) -> Result<TempoChange, Box<dy
 }
 
 pub(crate) fn parse_time_signature(value: &str) -> Result<(u32, u32), Box<dyn Error>> {
+    let value = value.trim();
     let parts: Vec<&str> = value.split('/').collect();
     if parts.len() != 2 {
         return Err(format!("Invalid time signature format: {}", value).into());
     }
-    let numerator: u32 = parts[0].parse()?;
-    let denominator: u32 = parts[1].parse()?;
+    let numerator: u32 = parts[0].trim().parse()?;
+    let denominator: u32 = parts[1].trim().parse()?;
     Ok((numerator, denominator))
 }
 
