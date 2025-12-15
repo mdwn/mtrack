@@ -176,7 +176,8 @@ pub(crate) fn parse_tempo_change(pair: Pair<Rule>) -> Result<TempoChange, Box<dy
                                                     }
                                                     Rule::tempo_transition_measures => {
                                                         // tempo_transition_measures is atomic, so we can get the string directly
-                                                        let measure_str = trans_pair.as_str().trim();
+                                                        let measure_str =
+                                                            trans_pair.as_str().trim();
                                                         let num_str =
                                                             measure_str.trim_end_matches('m');
                                                         let measures = num_str.trim().parse()?;
