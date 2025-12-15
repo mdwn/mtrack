@@ -571,6 +571,7 @@ fn parse_sequence_cue_structure(
             .ok_or("Stop sequence command missing sequence name")?
             .as_str()
             .trim_matches('"')
+            .trim()
             .to_string();
         stop_sequences.push(seq_name);
     }
@@ -594,10 +595,10 @@ fn parse_sequence_cue_structure(
                             for param_inner in param_pair.into_inner() {
                                 match param_inner.as_rule() {
                                     Rule::sequence_param_name => {
-                                        param_name = param_inner.as_str().to_string();
+                                        param_name = param_inner.as_str().trim().to_string();
                                     }
                                     Rule::sequence_param_value => {
-                                        param_value = param_inner.as_str().to_string();
+                                        param_value = param_inner.as_str().trim().to_string();
                                     }
                                     _ => {}
                                 }
@@ -631,20 +632,43 @@ fn parse_sequence_cue_structure(
 }
 
 fn parse_sequence_loop_param(value: &str) -> Result<SequenceLoop, Box<dyn Error>> {
-    match value.trim() {
+    // Be robust against trailing comments or extra tokens after the loop value.
+    // Examples we want to support:
+    //   loop: 3
+    //   loop: 3   # comment
+    //   loop: 3 // comment
+    //
+    // We first strip anything after a comment marker on the same line,
+    // then take only the first whitespace-delimited token.
+    let cleaned = value
+        .split(|c| c == '#' || c == '/')
+        .next()
+        .unwrap_or("")
+        .trim();
+    let token = cleaned.split_whitespace().next().unwrap_or("");
+
+    match token {
         "once" => Ok(SequenceLoop::Once),
         "loop" => Ok(SequenceLoop::Loop),
         "pingpong" => Ok(SequenceLoop::PingPong),
         "random" => Ok(SequenceLoop::Random),
-        numeric => {
+        numeric if !numeric.is_empty() => {
             // Try to parse as a number
-            let count: usize = numeric.parse()
-                .map_err(|_| format!("Invalid loop count: '{}'. Expected 'once', 'loop', 'pingpong', 'random', or a number", numeric))?;
+            let count: usize = numeric.parse().map_err(|_| {
+                format!(
+                    "Invalid loop count: '{}'. Expected 'once', 'loop', 'pingpong', 'random', or a number",
+                    numeric
+                )
+            })?;
             if count == 0 {
                 return Err("Loop count must be at least 1".into());
             }
             Ok(SequenceLoop::Count(count))
         }
+        _ => Err(
+            "Invalid loop parameter. Expected 'once', 'loop', 'pingpong', 'random', or a number"
+                .into(),
+        ),
     }
 }
 
@@ -970,6 +994,7 @@ fn parse_cue_definition(
             .ok_or("Stop sequence command missing sequence name")?
             .as_str()
             .trim_matches('"')
+            .trim()
             .to_string();
         stop_sequences.push(seq_name);
     }
@@ -1021,10 +1046,10 @@ fn parse_cue_definition(
                                 for param_inner in param_pair.into_inner() {
                                     match param_inner.as_rule() {
                                         Rule::sequence_param_name => {
-                                            param_name = param_inner.as_str().to_string();
+                                            param_name = param_inner.as_str().trim().to_string();
                                         }
                                         Rule::sequence_param_value => {
-                                            param_value = param_inner.as_str().to_string();
+                                            param_value = param_inner.as_str().trim().to_string();
                                         }
                                         _ => {}
                                     }
@@ -1213,10 +1238,10 @@ fn parse_layer_command(
                         for param_inner in param_pair.into_inner() {
                             match param_inner.as_rule() {
                                 Rule::layer_command_param_name => {
-                                    param_name = param_inner.as_str().to_string();
+                                    param_name = param_inner.as_str().trim().to_string();
                                 }
                                 Rule::layer_command_param_value => {
-                                    param_value = param_inner.as_str().to_string();
+                                    param_value = param_inner.as_str().trim().to_string();
                                 }
                                 _ => {}
                             }
