@@ -15,7 +15,9 @@
 file = { SOI ~ (fixture_type | venue | light_show | sequence | tempo)* ~ EOI }
 
 // Light show rules
-light_show = { "show" ~ show_name ~ show_content }
+// Allow optional show names so a single unnamed show per file is valid.
+// When multiple shows are present, the parser will enforce that each has a name.
+light_show = { "show" ~ show_name? ~ show_content }
 
 show_name = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 
