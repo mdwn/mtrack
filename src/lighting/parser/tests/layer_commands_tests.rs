@@ -130,13 +130,39 @@ fn test_t_dsl_parsing_errors() {
     let result = parse_light_shows(invalid_syntax);
     assert!(result.is_err(), "Invalid syntax should fail");
 
-    // Test missing show name
-    let missing_name = r#"show {
+    // Test single unnamed show (allowed)
+    let single_unnamed = r#"show {
     @00:00.000
     front_wash: static color: "blue"
 }"#;
-    let result = parse_light_shows(missing_name);
-    assert!(result.is_err(), "Missing show name should fail");
+    let result = parse_light_shows(single_unnamed);
+    assert!(
+        result.is_ok(),
+        "Single unnamed show should be allowed: {:?}",
+        result.err()
+    );
+    let shows = result.unwrap();
+    assert_eq!(
+        shows.len(),
+        1,
+        "Expected exactly one show for single unnamed block"
+    );
+
+    // Test multiple shows where one is unnamed (should fail)
+    let multiple_with_unnamed = r#"show "Named Show" {
+    @00:00.000
+    front_wash: static color: "blue"
+}
+
+show {
+    @00:05.000
+    back_wash: static color: "red"
+}"#;
+    let result = parse_light_shows(multiple_with_unnamed);
+    assert!(
+        result.is_err(),
+        "Missing show name should fail when multiple shows are defined"
+    );
 
     // Test malformed time string
     let malformed_time = r#"show "Test Show" {

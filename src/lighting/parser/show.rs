@@ -211,13 +211,36 @@ pub fn parse_light_shows(content: &str) -> Result<HashMap<String, LightShow>, Bo
     }
 
     // Second pass: parse shows with tempo and sequences available
+    let mut parsed_shows = Vec::new();
     for pair in show_pairs {
         let mut show = parse_light_show_definition(pair, &global_tempo, &sequences)?;
         // If show doesn't have its own tempo, use global tempo
         if show.tempo_map.is_none() {
             show.tempo_map = global_tempo.clone();
         }
+        parsed_shows.push(show);
+    }
+
+    // Enforce naming rules:
+    // - If there's exactly one show and it has no name, synthesize a default name.
+    // - If there are multiple shows, all must have explicit names.
+    if parsed_shows.len() == 1 {
+        let mut show = parsed_shows.remove(0);
+        if show.name.trim().is_empty() {
+            show.name = "default".to_string();
+        }
         shows.insert(show.name.clone(), show);
+    } else {
+        for show in parsed_shows {
+            if show.name.trim().is_empty() {
+                return Err(
+                    "Show name is required when multiple shows are defined in a file"
+                        .to_string()
+                        .into(),
+                );
+            }
+            shows.insert(show.name.clone(), show);
+        }
     }
 
     // If we have content that looks like a show but no shows were parsed, provide detailed analysis
@@ -641,7 +664,7 @@ fn parse_sequence_loop_param(value: &str) -> Result<SequenceLoop, Box<dyn Error>
     // We first strip anything after a comment marker on the same line,
     // then take only the first whitespace-delimited token.
     let cleaned = value
-        .split(|c| c == '#' || c == '/')
+        .split(|c| ['#', '/'].contains(&c))
         .next()
         .unwrap_or("")
         .trim();
