@@ -135,6 +135,19 @@ impl Effect {
             return Some(*duration);
         }
 
+        // For static effects, if duration is specified in effect_type, use it as the hold_time
+        // and include up_time and down_time in the total calculation
+        if let EffectType::Static {
+            duration: Some(static_duration),
+            ..
+        } = &self.effect_type
+        {
+            let duration = self.up_time.unwrap_or(Duration::from_secs(0))
+                + *static_duration
+                + self.down_time.unwrap_or(Duration::from_secs(0));
+            return Some(duration);
+        }
+
         let duration = self.up_time.unwrap_or(Duration::from_secs(0))
             + self.hold_time.unwrap_or(Duration::from_secs(0))
             + self.down_time.unwrap_or(Duration::from_secs(0));

@@ -23,7 +23,7 @@ show_name = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 
 show_content = { "{" ~ (tempo | cue)* ~ "}" }
 
-cue = { (time_string | measure_time) ~ (effect | layer_command | sequence_reference | stop_sequence_command | offset_command | reset_measures_command)* }
+cue = { (time_string | measure_time) ~ (effect | layer_command | sequence_reference | stop_sequence_command | offset_command | reset_measures_command | inline_loop)* }
 
 // Sequence definition rules
 sequence = { "sequence" ~ sequence_name ~ sequence_content }
@@ -32,7 +32,7 @@ sequence_name = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 
 sequence_content = { "{" ~ (tempo | sequence_cue)* ~ "}" }
 
-sequence_cue = { (time_string | measure_time) ~ (effect | layer_command | sequence_reference | stop_sequence_command | offset_command | reset_measures_command)* }
+sequence_cue = { (time_string | measure_time) ~ (effect | layer_command | sequence_reference | stop_sequence_command | offset_command | reset_measures_command | inline_loop)* }
 
 // Sequence reference in a cue
 sequence_reference = { "sequence" ~ sequence_name ~ (","? ~ sequence_params)? }
@@ -47,6 +47,12 @@ sequence_param_value = { loop_parameter | number_value }
 
 // Stop sequence command
 stop_sequence_command = { "stop" ~ "sequence" ~ sequence_name }
+
+// Inline loop - allows repeating a block of cues inline
+inline_loop = { "loop" ~ "{" ~ inline_loop_cue* ~ "}" ~ ","? ~ "repeats" ~ ":" ~ number_value }
+
+// Cues inside an inline loop (timing is relative to loop start)
+inline_loop_cue = { (time_string | measure_time) ~ (effect | layer_command | stop_sequence_command | offset_command | reset_measures_command)* }
 
 // Measure offset commands
 offset_command = { "offset" ~ number_value ~ "measures" }
