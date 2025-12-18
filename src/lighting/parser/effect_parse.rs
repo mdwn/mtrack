@@ -29,6 +29,36 @@ use super::utils::{
 };
 use pest::iterators::Pair;
 
+/// Helper to convert color to normalized RGB parameters
+fn color_to_normalized_params(color: &super::super::effects::Color) -> (f64, f64, f64) {
+    (
+        color.r as f64 / 255.0,
+        color.g as f64 / 255.0,
+        color.b as f64 / 255.0,
+    )
+}
+
+/// Helper to calculate score time from cue_time and offset
+fn calculate_score_time(cue_time: Duration, offset_secs: f64) -> Duration {
+    cue_time.saturating_sub(Duration::from_secs_f64(offset_secs))
+}
+
+/// Helper to parse duration in score space
+fn parse_duration_in_score_space(
+    value: &str,
+    tempo_map: &Option<TempoMap>,
+    cue_time: Duration,
+    offset_secs: f64,
+) -> Result<Duration, Box<dyn Error>> {
+    let score_time = calculate_score_time(cue_time, offset_secs);
+    parse_duration_string(value, tempo_map, Some(score_time), 0.0)
+}
+
+/// Helper to clean and normalize string values (strip quotes, trim, lowercase)
+fn clean_string_value(value: &str) -> String {
+    value.trim_matches('"').trim().to_lowercase()
+}
+
 pub(crate) fn parse_effect_definition(
     pair: Pair<Rule>,
     tempo_map: &Option<TempoMap>,
@@ -271,16 +301,16 @@ pub(crate) fn apply_parameters_to_effect_type(
                     }
                     "color" => {
                         if let Some(color) = parse_color_string(value) {
-                            static_params.insert("red".to_string(), color.r as f64 / 255.0);
-                            static_params.insert("green".to_string(), color.g as f64 / 255.0);
-                            static_params.insert("blue".to_string(), color.b as f64 / 255.0);
+                            let (r, g, b) = color_to_normalized_params(&color);
+                            static_params.insert("red".to_string(), r);
+                            static_params.insert("green".to_string(), g);
+                            static_params.insert("blue".to_string(), b);
                         }
                     }
                     "duration" => {
                         // Convert shifted cue_time back to score-space for duration calculation
-                        let score_time =
-                            cue_time.saturating_sub(Duration::from_secs_f64(offset_secs));
-                        let dur = parse_duration_string(value, tempo_map, Some(score_time), 0.0)?;
+                        let dur =
+                            parse_duration_in_score_space(value, tempo_map, cue_time, offset_secs)?;
                         *duration = Some(dur);
                     }
                     _ => {
@@ -348,9 +378,8 @@ pub(crate) fn apply_parameters_to_effect_type(
                     },
                     "duration" => {
                         // Convert shifted cue_time back to score-space for duration calculation
-                        let score_time =
-                            cue_time.saturating_sub(Duration::from_secs_f64(offset_secs));
-                        let dur = parse_duration_string(value, tempo_map, Some(score_time), 0.0)?;
+                        let dur =
+                            parse_duration_in_score_space(value, tempo_map, cue_time, offset_secs)?;
                         *duration = Some(dur);
                     }
                     _ => {}
@@ -385,9 +414,8 @@ pub(crate) fn apply_parameters_to_effect_type(
                     },
                     "duration" => {
                         // Convert shifted cue_time back to score-space for duration calculation
-                        let score_time =
-                            cue_time.saturating_sub(Duration::from_secs_f64(offset_secs));
-                        let dur = parse_duration_string(value, tempo_map, Some(score_time), 0.0)?;
+                        let dur =
+                            parse_duration_in_score_space(value, tempo_map, cue_time, offset_secs)?;
                         *duration = Some(dur);
                     }
                     _ => {}
@@ -403,9 +431,7 @@ pub(crate) fn apply_parameters_to_effect_type(
             for (key, value) in parameters {
                 match key.as_str() {
                     "pattern" => {
-                        // Strip quotes if present, trim whitespace, and convert to lowercase for case-insensitive matching
-                        let clean_value = value.trim_matches('"').trim().to_lowercase();
-                        *pattern = match clean_value.as_str() {
+                        *pattern = match clean_string_value(value).as_str() {
                             "linear" => ChasePattern::Linear,
                             "snake" => ChasePattern::Snake,
                             "random" => ChasePattern::Random,
@@ -419,9 +445,7 @@ pub(crate) fn apply_parameters_to_effect_type(
                         }
                     },
                     "direction" => {
-                        // Strip quotes if present (e.g., "right_to_left" -> right_to_left)
-                        let clean_value = value.trim_matches('"').trim();
-                        *direction = match clean_value {
+                        *direction = match clean_string_value(value).as_str() {
                             "left_to_right" => ChaseDirection::LeftToRight,
                             "right_to_left" => ChaseDirection::RightToLeft,
                             "top_to_bottom" => ChaseDirection::TopToBottom,

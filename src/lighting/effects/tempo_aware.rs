@@ -14,6 +14,47 @@
 
 use std::time::Duration;
 
+/// Helper to convert duration to frequency/cycles per second
+#[inline]
+fn duration_to_rate(duration_secs: f64) -> f64 {
+    if duration_secs <= 0.0 {
+        0.0
+    } else {
+        1.0 / duration_secs
+    }
+}
+
+/// Helper to convert measures to duration using tempo map or fallback
+fn measures_to_duration_secs(
+    measures: f64,
+    tempo_map: Option<&crate::lighting::tempo::TempoMap>,
+    at_time: Duration,
+) -> f64 {
+    if let Some(tm) = tempo_map {
+        let duration = tm.measures_to_duration(measures, at_time, 0.0);
+        duration.as_secs_f64()
+    } else {
+        // Fallback: assume 120 BPM, 4/4 time
+        let beats = measures * 4.0;
+        beats * 60.0 / 120.0
+    }
+}
+
+/// Helper to convert beats to duration using tempo map or fallback
+fn beats_to_duration_secs(
+    beats: f64,
+    tempo_map: Option<&crate::lighting::tempo::TempoMap>,
+    at_time: Duration,
+) -> f64 {
+    if let Some(tm) = tempo_map {
+        let duration = tm.beats_to_duration(beats, at_time, 0.0);
+        duration.as_secs_f64()
+    } else {
+        // Fallback: assume 120 BPM
+        beats * 60.0 / 120.0
+    }
+}
+
 /// Tempo-aware speed specification that can adapt to tempo changes
 #[derive(Debug, Clone, PartialEq)]
 pub enum TempoAwareSpeed {
@@ -36,57 +77,20 @@ impl TempoAwareSpeed {
     ) -> f64 {
         match self {
             TempoAwareSpeed::Fixed(speed) => *speed,
-            TempoAwareSpeed::Seconds(duration) => {
-                if *duration <= 0.0 {
-                    0.0 // Zero/negative duration means stopped
-                } else {
-                    1.0 / duration
-                }
-            }
+            TempoAwareSpeed::Seconds(duration) => duration_to_rate(*duration),
             TempoAwareSpeed::Measures(measures) => {
                 if *measures <= 0.0 {
                     return 0.0; // Zero/negative measures means stopped
                 }
-                if let Some(tm) = tempo_map {
-                    let duration = tm.measures_to_duration(*measures, at_time, 0.0);
-                    let secs = duration.as_secs_f64();
-                    if secs <= 0.0 {
-                        0.0
-                    } else {
-                        1.0 / secs
-                    }
-                } else {
-                    // Fallback: assume 120 BPM, 4/4 time
-                    let beats = measures * 4.0;
-                    let duration_secs = beats * 60.0 / 120.0;
-                    if duration_secs <= 0.0 {
-                        0.0
-                    } else {
-                        1.0 / duration_secs
-                    }
-                }
+                let duration_secs = measures_to_duration_secs(*measures, tempo_map, at_time);
+                duration_to_rate(duration_secs)
             }
             TempoAwareSpeed::Beats(beats) => {
                 if *beats <= 0.0 {
                     return 0.0; // Zero/negative beats means stopped
                 }
-                if let Some(tm) = tempo_map {
-                    let duration = tm.beats_to_duration(*beats, at_time, 0.0);
-                    let secs = duration.as_secs_f64();
-                    if secs <= 0.0 {
-                        0.0
-                    } else {
-                        1.0 / secs
-                    }
-                } else {
-                    // Fallback: assume 120 BPM
-                    let duration_secs = beats * 60.0 / 120.0;
-                    if duration_secs <= 0.0 {
-                        0.0
-                    } else {
-                        1.0 / duration_secs
-                    }
-                }
+                let duration_secs = beats_to_duration_secs(*beats, tempo_map, at_time);
+                duration_to_rate(duration_secs)
             }
         }
     }
@@ -114,57 +118,20 @@ impl TempoAwareFrequency {
     ) -> f64 {
         match self {
             TempoAwareFrequency::Fixed(freq) => *freq,
-            TempoAwareFrequency::Seconds(duration) => {
-                if *duration <= 0.0 {
-                    0.0 // Zero/negative duration means no frequency (stopped)
-                } else {
-                    1.0 / duration
-                }
-            }
+            TempoAwareFrequency::Seconds(duration) => duration_to_rate(*duration),
             TempoAwareFrequency::Measures(measures) => {
                 if *measures <= 0.0 {
                     return 0.0; // Zero/negative measures means stopped
                 }
-                if let Some(tm) = tempo_map {
-                    let duration = tm.measures_to_duration(*measures, at_time, 0.0);
-                    let secs = duration.as_secs_f64();
-                    if secs <= 0.0 {
-                        0.0
-                    } else {
-                        1.0 / secs
-                    }
-                } else {
-                    // Fallback: assume 120 BPM, 4/4 time
-                    let beats = measures * 4.0;
-                    let duration_secs = beats * 60.0 / 120.0;
-                    if duration_secs <= 0.0 {
-                        0.0
-                    } else {
-                        1.0 / duration_secs
-                    }
-                }
+                let duration_secs = measures_to_duration_secs(*measures, tempo_map, at_time);
+                duration_to_rate(duration_secs)
             }
             TempoAwareFrequency::Beats(beats) => {
                 if *beats <= 0.0 {
                     return 0.0; // Zero/negative beats means stopped
                 }
-                if let Some(tm) = tempo_map {
-                    let duration = tm.beats_to_duration(*beats, at_time, 0.0);
-                    let secs = duration.as_secs_f64();
-                    if secs <= 0.0 {
-                        0.0
-                    } else {
-                        1.0 / secs
-                    }
-                } else {
-                    // Fallback: assume 120 BPM
-                    let duration_secs = beats * 60.0 / 120.0;
-                    if duration_secs <= 0.0 {
-                        0.0
-                    } else {
-                        1.0 / duration_secs
-                    }
-                }
+                let duration_secs = beats_to_duration_secs(*beats, tempo_map, at_time);
+                duration_to_rate(duration_secs)
             }
         }
     }

@@ -17,6 +17,13 @@ use std::collections::HashMap;
 use super::fixture::FixtureInfo;
 use super::types::{BlendMode, EffectLayer};
 
+/// Check if a channel name is a multiplier channel (dimmer or pulse)
+/// These are special internal channels used for RGB-only fixtures
+#[inline]
+pub fn is_multiplier_channel(channel_name: &str) -> bool {
+    channel_name.starts_with("_dimmer_mult") || channel_name.starts_with("_pulse_mult")
+}
+
 /// DMX command for sending to fixtures
 #[derive(Debug, Clone)]
 pub struct DmxCommand {
@@ -49,6 +56,7 @@ impl ChannelState {
             BlendMode::Multiply => self.value * other.value,
             BlendMode::Add => (self.value + other.value).min(1.0),
             BlendMode::Overlay => {
+                // Overlay: multiply if base < 0.5, screen if base >= 0.5
                 if self.value < 0.5 {
                     2.0 * self.value * other.value
                 } else {
@@ -103,7 +111,7 @@ impl FixtureState {
         // Blend other channels normally
         for (channel_name, other_state) in &other.channels {
             // For per-layer multiplier channels, overwrite (last-writer-wins) to avoid compounding across frames
-            if channel_name.starts_with("_dimmer_mult") || channel_name.starts_with("_pulse_mult") {
+            if is_multiplier_channel(channel_name) {
                 self.channels.insert(channel_name.clone(), *other_state);
                 continue;
             }
@@ -127,11 +135,14 @@ impl FixtureState {
         // Apply per-layer multipliers for RGB-only fixtures at emission time
         // Combine multipliers from all layers
         let read = |k: &str| self.channels.get(k).map(|c| c.value).unwrap_or(1.0);
-        let dimmer_multiplier =
+
+        // Calculate combined multipliers across all layers
+        let dimmer_mult =
             read("_dimmer_mult_bg") * read("_dimmer_mult_mid") * read("_dimmer_mult_fg");
-        let pulse_multiplier =
-            read("_pulse_mult_bg") * read("_pulse_mult_mid") * read("_pulse_mult_fg");
-        let combined_multiplier = (dimmer_multiplier * pulse_multiplier).clamp(0.0, 1.0);
+        let pulse_mult = read("_pulse_mult_bg") * read("_pulse_mult_mid") * read("_pulse_mult_fg");
+        let combined_multiplier = (dimmer_mult * pulse_mult).clamp(0.0, 1.0);
+
+        // Foreground multiplier (for Replace blend mode handling)
         let fg_multiplier = (read("_dimmer_mult_fg") * read("_pulse_mult_fg")).clamp(0.0, 1.0);
         let has_dedicated_dimmer = fixture_info.channels.contains_key("dimmer");
 

@@ -18,6 +18,78 @@ use std::time::Duration;
 use super::super::effects::*;
 use super::super::tempo::TempoMap;
 
+/// Calculate cycle progress (0.0 to 1.0) for a given elapsed time and cycle period
+#[inline]
+fn cycle_progress(elapsed: Duration, cycle_period: f64) -> f64 {
+    (elapsed.as_secs_f64() % cycle_period) / cycle_period
+}
+
+/// Calculate phase for periodic effects (0.0 to 2π)
+#[inline]
+fn phase(elapsed: Duration, frequency: f64) -> f64 {
+    elapsed.as_secs_f64() * frequency * 2.0 * std::f64::consts::PI
+}
+
+/// Calculate color indices and interpolation progress for color cycle effects
+fn calculate_color_indices(
+    cycle_progress: f64,
+    color_count: usize,
+    direction: &CycleDirection,
+) -> (usize, usize, f64) {
+    match direction {
+        CycleDirection::Forward => {
+            let color_index_f = cycle_progress * color_count as f64;
+            let color_index = color_index_f.floor() as usize;
+            let next_index = (color_index + 1) % color_count;
+            let segment_progress = color_index_f - color_index as f64;
+            (color_index, next_index, segment_progress)
+        }
+        CycleDirection::Backward => {
+            let reversed_progress = 1.0 - cycle_progress;
+            let color_index_f = reversed_progress * color_count as f64;
+            let color_index = color_index_f.floor() as usize;
+
+            // Handle boundary case: when reversed_progress = 1.0 (cycle start),
+            // color_index_f = color_count, which is out of bounds.
+            if color_index >= color_count {
+                (color_count - 1, color_count - 1, 0.0)
+            } else {
+                let next_index = if color_index == 0 {
+                    color_count - 1
+                } else {
+                    color_index - 1
+                };
+                let segment_progress = color_index_f - color_index as f64;
+                (color_index, next_index, segment_progress)
+            }
+        }
+        CycleDirection::PingPong => {
+            // PingPong: go forward then backward through colors
+            // ping_pong_progress goes 0 → 1 → 0 over one cycle
+            let ping_pong_progress = if cycle_progress < 0.5 {
+                cycle_progress * 2.0
+            } else {
+                2.0 - cycle_progress * 2.0
+            };
+
+            // Map ping_pong_progress (0 to 1) to color indices (0 to len-1)
+            let max_index = (color_count - 1) as f64;
+            let color_progress = ping_pong_progress * max_index;
+
+            // Calculate current and next color indices for interpolation
+            let color_index = color_progress.floor() as usize;
+            let seg_progress = color_progress - color_index as f64;
+
+            // Handle edge case when at exactly the last color
+            if color_index >= color_count - 1 {
+                (color_count - 1, color_count - 1, 0.0)
+            } else {
+                (color_index, color_index + 1, seg_progress)
+            }
+        }
+    }
+}
+
 /// Process a single effect and return fixture states
 pub(crate) fn process_effect(
     fixture_registry: &HashMap<String, FixtureInfo>,
@@ -186,9 +258,10 @@ fn apply_color_cycle(
         let mut fixture_states = HashMap::new();
         for fixture_name in &effect.target_fixtures {
             if let Some(fixture) = fixture_registry.get(fixture_name) {
-                let mut fixture_state = FixtureState::new();
                 let profile = FixtureProfile::for_fixture(fixture);
                 let channel_commands = profile.apply_color(color, effect.layer, effect.blend_mode);
+
+                let mut fixture_state = FixtureState::new();
                 for (channel_name, mut channel_state) in channel_commands {
                     channel_state.value *= crossfade_multiplier;
                     fixture_state.set_channel(channel_name, channel_state);
@@ -200,63 +273,11 @@ fn apply_color_cycle(
     }
 
     let cycle_time = 1.0 / speed;
-    let cycle_progress = (elapsed.as_secs_f64() % cycle_time) / cycle_time;
+    let cycle_progress_val = cycle_progress(elapsed, cycle_time);
 
     // Calculate color indices and interpolation factor for smooth transitions
-    let (color_index, next_index, segment_progress) = match direction {
-        CycleDirection::Forward => {
-            let color_index_f = cycle_progress * colors.len() as f64;
-            let color_index = color_index_f.floor() as usize;
-            let next_index = (color_index + 1) % colors.len();
-            let segment_progress = color_index_f - color_index as f64;
-            (color_index, next_index, segment_progress)
-        }
-        CycleDirection::Backward => {
-            let reversed_progress = 1.0 - cycle_progress;
-            let color_index_f = reversed_progress * colors.len() as f64;
-            let color_index = color_index_f.floor() as usize;
-
-            // Handle boundary case: when reversed_progress = 1.0 (cycle start),
-            // color_index_f = colors.len(), which is out of bounds.
-            // At this point we should show the last color with no interpolation.
-            if color_index >= colors.len() {
-                (colors.len() - 1, colors.len() - 1, 0.0)
-            } else {
-                let next_index = if color_index == 0 {
-                    colors.len() - 1
-                } else {
-                    color_index - 1
-                };
-                let segment_progress = color_index_f - color_index as f64;
-                (color_index, next_index, segment_progress)
-            }
-        }
-        CycleDirection::PingPong => {
-            // PingPong: go forward then backward through colors
-            // ping_pong_progress goes 0 → 1 → 0 over one cycle
-            let ping_pong_progress = if cycle_progress < 0.5 {
-                cycle_progress * 2.0
-            } else {
-                2.0 - cycle_progress * 2.0
-            };
-
-            // Map ping_pong_progress (0 to 1) to color indices (0 to len-1)
-            // At progress=0, color_index=0; at progress=1, color_index=len-1
-            let max_index = (colors.len() - 1) as f64;
-            let color_progress = ping_pong_progress * max_index;
-
-            // Calculate current and next color indices for interpolation
-            let color_index = color_progress.floor() as usize;
-            let seg_progress = color_progress - color_index as f64;
-
-            // Handle edge case when at exactly the last color (ping_pong_progress = 1.0)
-            if color_index >= colors.len() - 1 {
-                (colors.len() - 1, colors.len() - 1, 0.0)
-            } else {
-                (color_index, color_index + 1, seg_progress)
-            }
-        }
-    };
+    let (color_index, next_index, segment_progress) =
+        calculate_color_indices(cycle_progress_val, colors.len(), direction);
 
     // Apply transition based on transition type
     let color = match transition {
@@ -336,7 +357,7 @@ fn apply_strobe(
                     } else {
                         // Software strobe: calculate on/off value
                         let strobe_period = 1.0 / frequency;
-                        let strobe_phase = (elapsed.as_secs_f64() % strobe_period) / strobe_period;
+                        let strobe_phase = cycle_progress(elapsed, strobe_period);
                         let is_strobe_on = strobe_phase < 0.5; // 50% duty cycle
                         (frequency, Some(if is_strobe_on { 1.0 } else { 0.0 }))
                     };
@@ -404,22 +425,18 @@ fn apply_dimmer(
         start_level + (end_level - start_level) * curved_progress
     };
 
+    // Apply dimmer to all fixtures
     let mut fixture_states = HashMap::new();
-
     for fixture_name in &effect.target_fixtures {
         if let Some(fixture) = fixture_registry.get(fixture_name) {
-            let mut fixture_state = FixtureState::new();
-
-            // Use fixture profile to determine how to apply brightness control
             let profile = FixtureProfile::for_fixture(fixture);
             let channel_commands =
                 profile.apply_brightness(dimmer_value, effect.layer, effect.blend_mode);
 
-            // Apply the channel commands from the profile
+            let mut fixture_state = FixtureState::new();
             for (channel_name, channel_state) in channel_commands {
                 fixture_state.set_channel(channel_name, channel_state);
             }
-
             fixture_states.insert(fixture_name.clone(), fixture_state);
         }
     }
@@ -459,7 +476,11 @@ fn apply_chase(
         return Ok(Some(fixture_states));
     }
 
-    let chase_period = 1.0 / speed;
+    let chase_period = if speed > 0.0 {
+        1.0 / speed
+    } else {
+        f64::INFINITY
+    };
 
     let mut fixture_states = HashMap::new();
     let fixture_count = effect.target_fixtures.len();
@@ -481,7 +502,7 @@ fn apply_chase(
     // Each position in the pattern should last the same time as a linear chase position
     let position_duration = chase_period / fixture_count as f64;
     let pattern_cycle_period = position_duration * pattern_length as f64;
-    let pattern_progress = (elapsed.as_secs_f64() % pattern_cycle_period) / pattern_cycle_period;
+    let pattern_progress = cycle_progress(elapsed, pattern_cycle_period);
     let current_pattern_index_f = pattern_progress * pattern_length as f64;
     let current_pattern_index = current_pattern_index_f.floor() as usize;
     let position_progress = current_pattern_index_f - current_pattern_index as f64;
@@ -678,6 +699,7 @@ fn apply_rainbow(
     // Calculate crossfade multiplier
     let crossfade_multiplier = effect.calculate_crossfade_multiplier(elapsed);
 
+    // Calculate hue: cycles through 360 degrees based on speed
     let hue = (elapsed.as_secs_f64() * speed * 360.0) % 360.0;
     let color = Color::from_hsv(hue, saturation, brightness);
 
@@ -717,26 +739,23 @@ fn apply_pulse(
     // Calculate crossfade multiplier
     let crossfade_multiplier = effect.calculate_crossfade_multiplier(elapsed);
 
-    let pulse_phase = elapsed.as_secs_f64() * frequency * 2.0 * std::f64::consts::PI;
+    let pulse_phase = phase(elapsed, frequency);
+    // Convert sine wave (-1 to 1) to 0-1 range, then scale by amplitude
     let pulse_value =
         (base_level + pulse_amplitude * (pulse_phase.sin() * 0.5 + 0.5)) * crossfade_multiplier;
 
+    // Apply pulse to all fixtures
     let mut fixture_states = HashMap::new();
-
     for fixture_name in &effect.target_fixtures {
         if let Some(fixture) = fixture_registry.get(fixture_name) {
-            let mut fixture_state = FixtureState::new();
-
-            // Use fixture profile to determine how to apply pulse control
             let profile = FixtureProfile::for_fixture(fixture);
             let channel_commands =
                 profile.apply_pulse(pulse_value, effect.layer, effect.blend_mode);
 
-            // Apply the channel commands from the profile
+            let mut fixture_state = FixtureState::new();
             for (channel_name, channel_state) in channel_commands {
                 fixture_state.set_channel(channel_name, channel_state);
             }
-
             fixture_states.insert(fixture_name.clone(), fixture_state);
         }
     }

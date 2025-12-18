@@ -113,18 +113,16 @@ impl Color {
         let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
         let m = v - c;
 
-        let (r, g, b) = if h < 60.0 {
-            (c, x, 0.0)
-        } else if h < 120.0 {
-            (x, c, 0.0)
-        } else if h < 180.0 {
-            (0.0, c, x)
-        } else if h < 240.0 {
-            (0.0, x, c)
-        } else if h < 300.0 {
-            (x, 0.0, c)
-        } else {
-            (c, 0.0, x)
+        // HSV to RGB conversion: determine which sector of the color wheel
+        // Each sector is 60 degrees, with different RGB component ordering
+        let sector = (h / 60.0).floor() as u8 % 6;
+        let (r, g, b) = match sector {
+            0 => (c, x, 0.0),
+            1 => (x, c, 0.0),
+            2 => (0.0, c, x),
+            3 => (0.0, x, c),
+            4 => (x, 0.0, c),
+            _ => (c, 0.0, x), // sector 5
         };
 
         Self {
@@ -141,12 +139,15 @@ impl Color {
         let t = t.clamp(0.0, 1.0);
         let t_inv = 1.0 - t;
 
+        // Helper to interpolate between two u8 values
+        let lerp_u8 = |a: u8, b: u8| -> u8 { (a as f64 * t_inv + b as f64 * t) as u8 };
+
         Self {
-            r: ((self.r as f64 * t_inv + other.r as f64 * t) as u8),
-            g: ((self.g as f64 * t_inv + other.g as f64 * t) as u8),
-            b: ((self.b as f64 * t_inv + other.b as f64 * t) as u8),
+            r: lerp_u8(self.r, other.r),
+            g: lerp_u8(self.g, other.g),
+            b: lerp_u8(self.b, other.b),
             w: match (self.w, other.w) {
-                (Some(w1), Some(w2)) => Some((w1 as f64 * t_inv + w2 as f64 * t) as u8),
+                (Some(w1), Some(w2)) => Some(lerp_u8(w1, w2)),
                 (Some(w1), None) => Some((w1 as f64 * t_inv) as u8),
                 (None, Some(w2)) => Some((w2 as f64 * t) as u8),
                 (None, None) => None,

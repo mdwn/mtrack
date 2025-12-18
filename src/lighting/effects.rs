@@ -28,7 +28,7 @@ pub use color::Color;
 pub use error::EffectError;
 pub use fixture::{FixtureCapabilities, FixtureInfo, FixtureProfile, StrobeStrategy};
 pub use instance::EffectInstance;
-pub use state::{ChannelState, DmxCommand, FixtureState};
+pub use state::{is_multiplier_channel, ChannelState, DmxCommand, FixtureState};
 pub use tempo_aware::{TempoAwareFrequency, TempoAwareSpeed};
 pub use types::{
     BlendMode, ChaseDirection, ChasePattern, CycleDirection, CycleTransition, DimmerCurve,

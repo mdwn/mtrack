@@ -95,34 +95,23 @@ fn effects_conflict_by_type(existing: &EffectInstance, new: &EffectInstance) -> 
 
     // Effect type specific conflict rules
     match (&existing.effect_type, &new.effect_type) {
-        // Static effects conflict with other static effects
-        (Static { .. }, Static { .. }) => true,
+        // Same type conflicts (except dimmer/pulse which layer)
+        (Static { .. }, Static { .. })
+        | (ColorCycle { .. }, ColorCycle { .. })
+        | (Strobe { .. }, Strobe { .. })
+        | (Chase { .. }, Chase { .. })
+        | (Rainbow { .. }, Rainbow { .. }) => true,
 
-        // Static effects conflict with color cycle effects
-        (Static { .. }, ColorCycle { .. }) => true,
-        (ColorCycle { .. }, Static { .. }) => true,
-
-        // Color cycle effects conflict with other color cycle effects
-        (ColorCycle { .. }, ColorCycle { .. }) => true,
-
-        // Strobe effects conflict with other strobe effects
-        (Strobe { .. }, Strobe { .. }) => true,
-
-        // Chase effects conflict with other chase effects
-        (Chase { .. }, Chase { .. }) => true,
-
-        // Rainbow effects conflict with static and color cycle effects
-        (Rainbow { .. }, Static { .. }) => true,
-        (Static { .. }, Rainbow { .. }) => true,
-        (Rainbow { .. }, ColorCycle { .. }) => true,
-        (ColorCycle { .. }, Rainbow { .. }) => true,
-        (Rainbow { .. }, Rainbow { .. }) => true,
+        // Cross-type conflicts between color effects
+        (Static { .. }, ColorCycle { .. })
+        | (ColorCycle { .. }, Static { .. })
+        | (Rainbow { .. }, Static { .. })
+        | (Static { .. }, Rainbow { .. })
+        | (Rainbow { .. }, ColorCycle { .. })
+        | (ColorCycle { .. }, Rainbow { .. }) => true,
 
         // Dimmer and pulse effects are generally compatible (they layer)
-        (Dimmer { .. }, _) => false,
-        (_, Dimmer { .. }) => false,
-        (Pulse { .. }, _) => false,
-        (_, Pulse { .. }) => false,
+        (Dimmer { .. }, _) | (_, Dimmer { .. }) | (Pulse { .. }, _) | (_, Pulse { .. }) => false,
 
         // Default: effects of different types don't conflict
         _ => false,
@@ -131,31 +120,13 @@ fn effects_conflict_by_type(existing: &EffectInstance, new: &EffectInstance) -> 
 
 /// Check if two blend modes are compatible (can layer together)
 pub(crate) fn blend_modes_are_compatible(existing: BlendMode, new: BlendMode) -> bool {
-    match (existing, new) {
-        // Replace mode conflicts with everything
-        (BlendMode::Replace, _) => false,
-        (_, BlendMode::Replace) => false,
-
-        // Multiply, Add, Overlay, and Screen can generally layer together
-        (BlendMode::Multiply, BlendMode::Multiply) => true,
-        (BlendMode::Add, BlendMode::Add) => true,
-        (BlendMode::Overlay, BlendMode::Overlay) => true,
-        (BlendMode::Screen, BlendMode::Screen) => true,
-
-        // Different blend modes can layer if they're not Replace
-        (BlendMode::Multiply, BlendMode::Add) => true,
-        (BlendMode::Multiply, BlendMode::Overlay) => true,
-        (BlendMode::Multiply, BlendMode::Screen) => true,
-        (BlendMode::Add, BlendMode::Multiply) => true,
-        (BlendMode::Add, BlendMode::Overlay) => true,
-        (BlendMode::Add, BlendMode::Screen) => true,
-        (BlendMode::Overlay, BlendMode::Multiply) => true,
-        (BlendMode::Overlay, BlendMode::Add) => true,
-        (BlendMode::Overlay, BlendMode::Screen) => true,
-        (BlendMode::Screen, BlendMode::Multiply) => true,
-        (BlendMode::Screen, BlendMode::Add) => true,
-        (BlendMode::Screen, BlendMode::Overlay) => true,
+    // Replace mode conflicts with everything
+    if existing == BlendMode::Replace || new == BlendMode::Replace {
+        return false;
     }
+
+    // All other blend modes (Multiply, Add, Overlay, Screen) can layer together
+    true
 }
 
 /// Clear a layer - immediately stops all effects on the specified layer

@@ -18,6 +18,16 @@ use super::color::Color;
 use super::state::ChannelState;
 use super::types::{BlendMode, EffectLayer};
 
+/// Get the layer suffix for multiplier channel names
+#[inline]
+fn layer_suffix(layer: EffectLayer) -> &'static str {
+    match layer {
+        EffectLayer::Background => "_bg",
+        EffectLayer::Midground => "_mid",
+        EffectLayer::Foreground => "_fg",
+    }
+}
+
 /// Bitwise flags for fixture capabilities
 /// This allows for fast bitwise operations instead of HashSet lookups
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -258,15 +268,8 @@ impl FixtureProfile {
             BrightnessStrategy::RgbMultiplication => {
                 // For RGB-only fixtures, always use RGB multiplication
                 // This ensures consistent behavior regardless of blend mode
-                let key = match layer {
-                    EffectLayer::Background => "_dimmer_mult_bg",
-                    EffectLayer::Midground => "_dimmer_mult_mid",
-                    EffectLayer::Foreground => "_dimmer_mult_fg",
-                };
-                result.insert(
-                    key.to_string(),
-                    ChannelState::new(level, layer, BlendMode::Multiply),
-                );
+                let key = format!("_dimmer_mult{}", layer_suffix(layer));
+                result.insert(key, ChannelState::new(level, layer, BlendMode::Multiply));
             }
         }
 
@@ -284,24 +287,27 @@ impl FixtureProfile {
 
         match self.color_strategy {
             ColorStrategy::Rgb => {
+                // Helper to convert u8 color value to normalized f64
+                let normalize = |v: u8| v as f64 / 255.0;
+
                 result.insert(
                     "red".to_string(),
-                    ChannelState::new(color.r as f64 / 255.0, layer, blend_mode),
+                    ChannelState::new(normalize(color.r), layer, blend_mode),
                 );
                 result.insert(
                     "green".to_string(),
-                    ChannelState::new(color.g as f64 / 255.0, layer, blend_mode),
+                    ChannelState::new(normalize(color.g), layer, blend_mode),
                 );
                 result.insert(
                     "blue".to_string(),
-                    ChannelState::new(color.b as f64 / 255.0, layer, blend_mode),
+                    ChannelState::new(normalize(color.b), layer, blend_mode),
                 );
 
                 // Add white channel if present in color
                 if let Some(w) = color.w {
                     result.insert(
                         "white".to_string(),
-                        ChannelState::new(w as f64 / 255.0, layer, blend_mode),
+                        ChannelState::new(normalize(w), layer, blend_mode),
                     );
                 }
             }
@@ -390,13 +396,9 @@ impl FixtureProfile {
             PulseStrategy::RgbMultiplication => {
                 // Use RGB multiplication (preserves color)
                 // Store as multiplier for blending system to apply to existing channels
-                let key = match layer {
-                    EffectLayer::Background => "_pulse_mult_bg",
-                    EffectLayer::Midground => "_pulse_mult_mid",
-                    EffectLayer::Foreground => "_pulse_mult_fg",
-                };
+                let key = format!("_pulse_mult{}", layer_suffix(layer));
                 result.insert(
-                    key.to_string(),
+                    key,
                     ChannelState::new(pulse_value, layer, BlendMode::Multiply),
                 );
             }
@@ -458,7 +460,7 @@ impl FixtureInfo {
     pub fn capabilities(&self) -> FixtureCapabilities {
         let mut capabilities = FixtureCapabilities::NONE;
 
-        // Check for RGB color capability
+        // Check for RGB color capability (requires all three)
         if self.channels.contains_key("red")
             && self.channels.contains_key("green")
             && self.channels.contains_key("blue")
@@ -466,52 +468,37 @@ impl FixtureInfo {
             capabilities = capabilities.with(FixtureCapabilities::RGB_COLOR);
         }
 
-        // Check for white color capability
+        // Single-channel capabilities
         if self.channels.contains_key("white") {
             capabilities = capabilities.with(FixtureCapabilities::WHITE_COLOR);
         }
-
-        // Check for dimming capability
         if self.channels.contains_key("dimmer") {
             capabilities = capabilities.with(FixtureCapabilities::DIMMING);
         }
-
-        // Check for strobing capability
         if self.channels.contains_key("strobe") {
             capabilities = capabilities.with(FixtureCapabilities::STROBING);
         }
-
-        // Check for panning capability
         if self.channels.contains_key("pan") {
             capabilities = capabilities.with(FixtureCapabilities::PANNING);
         }
-
-        // Check for tilting capability
         if self.channels.contains_key("tilt") {
             capabilities = capabilities.with(FixtureCapabilities::TILTING);
         }
-
-        // Check for zoom capability
         if self.channels.contains_key("zoom") {
             capabilities = capabilities.with(FixtureCapabilities::ZOOMING);
         }
-
-        // Check for focus capability
         if self.channels.contains_key("focus") {
             capabilities = capabilities.with(FixtureCapabilities::FOCUSING);
         }
-
-        // Check for gobo capability
         if self.channels.contains_key("gobo") {
             capabilities = capabilities.with(FixtureCapabilities::GOBO);
         }
 
-        // Check for color temperature capability
+        // Multi-channel capabilities
         if self.channels.contains_key("ct") || self.channels.contains_key("color_temp") {
             capabilities = capabilities.with(FixtureCapabilities::COLOR_TEMPERATURE);
         }
 
-        // Check for effects capability
         if self.channels.contains_key("effects")
             || self.channels.contains_key("prism")
             || self.channels.contains_key("frost")
