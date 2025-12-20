@@ -48,6 +48,9 @@ pub struct EffectEngine {
     frozen_layers: HashMap<EffectLayer, Instant>,
     /// Effects being released - tracks (release_fade_time, release_start_time) per effect
     releasing_effects: HashMap<String, (Duration, Instant)>,
+    /// Last computed merged fixture states (for preview/debugging)
+    /// This stores the merged states from the last update() call
+    last_merged_states: HashMap<String, FixtureState>,
 }
 
 impl Default for EffectEngine {
@@ -70,6 +73,7 @@ impl EffectEngine {
             layer_speed_masters: HashMap::new(),
             frozen_layers: HashMap::new(),
             releasing_effects: HashMap::new(),
+            last_merged_states: HashMap::new(),
         }
     }
 
@@ -652,6 +656,9 @@ impl EffectEngine {
             }
         }
 
+        // Store merged states for preview/debugging (before converting to DMX)
+        self.last_merged_states = merged_states.clone();
+
         // Convert fixture states to DMX commands
         let mut commands = Vec::new();
         for (fixture_name, fixture_state) in merged_states {
@@ -713,6 +720,7 @@ impl EffectEngine {
         // This ensures consistent behavior when starting a new timeline or seeking
         self.fixture_states.clear();
         self.channel_locks.clear();
+        self.last_merged_states.clear();
     }
 
     /// Stop all effects from a specific sequence
@@ -772,6 +780,7 @@ impl EffectEngine {
         // This is a bit aggressive but ensures clear works correctly
         self.fixture_states.clear();
         self.channel_locks.clear();
+        self.last_merged_states.clear();
 
         // Explicitly set strobe channels to 0 for fixtures that had strobe effects
         // This ensures dedicated strobe channels are turned off when effects are cleared
@@ -823,6 +832,7 @@ impl EffectEngine {
         // Clear all persisted fixture states and channel locks
         self.fixture_states.clear();
         self.channel_locks.clear();
+        self.last_merged_states.clear();
 
         // Explicitly set strobe channels to 0 for all fixtures that had strobe effects
         // This ensures dedicated strobe channels are turned off when effects are cleared
@@ -945,14 +955,12 @@ impl EffectEngine {
         &self.active_effects
     }
 
-    /// Get current fixture states (for debugging/simulation)
     #[allow(dead_code)]
+    /// Get current fixture states (for debugging/simulation/preview)
+    /// Returns the merged fixture states from the last update() call.
+    /// This provides a snapshot of all fixture states without generating DMX commands.
     pub fn get_fixture_states(&self) -> HashMap<String, FixtureState> {
-        // Process all active effects to get current states
-        // We need to process effects to get states, but we don't want to modify the engine
-        // So we'll create a temporary engine state or use a different approach
-        // For now, return empty - we can enhance this later if needed
-        HashMap::new()
+        self.last_merged_states.clone()
     }
 
     /// Get a formatted string listing all active effects
