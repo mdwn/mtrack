@@ -113,24 +113,33 @@ fn test_get_active_effects_returns_reference() {
 }
 
 #[test]
-fn test_get_fixture_states_returns_empty() {
+fn test_get_fixture_states_returns_empty_initially() {
+    let engine = EffectEngine::new();
+    // Before any update, states should be empty
+    let states = engine.get_fixture_states();
+    assert!(states.is_empty());
+}
+
+#[test]
+fn test_get_fixture_states_returns_states_after_update() {
     let mut engine = EffectEngine::new();
     let fixture = create_test_fixture("test_fixture", 1, 1);
     engine.register_fixture(fixture);
 
-    // Currently get_fixture_states always returns empty
-    let states = engine.get_fixture_states();
-    assert!(states.is_empty());
+    // Before starting effects and updating, states should be empty
+    let states_before = engine.get_fixture_states();
+    assert!(states_before.is_empty());
 
-    // Even after starting an effect
+    // Start an effect
+    let mut parameters = HashMap::new();
+    parameters.insert("dimmer".to_string(), 0.5);
+    parameters.insert("red".to_string(), 1.0);
+    parameters.insert("green".to_string(), 0.8);
+
     let effect = EffectInstance::new(
         "test_effect".to_string(),
         EffectType::Static {
-            parameters: {
-                let mut p = HashMap::new();
-                p.insert("dimmer".to_string(), 0.5);
-                p
-            },
+            parameters: parameters.clone(),
             duration: None,
         },
         vec!["test_fixture".to_string()],
@@ -140,10 +149,192 @@ fn test_get_fixture_states_returns_empty() {
     );
 
     engine.start_effect(effect).unwrap();
+
+    // Update the engine to process effects
     engine.update(Duration::from_millis(100), None).unwrap();
 
+    // Now get_fixture_states should return the fixture states
+    let states_after = engine.get_fixture_states();
+    assert!(!states_after.is_empty());
+    assert!(states_after.contains_key("test_fixture"));
+
+    // Verify the fixture state has the expected channel values
+    let fixture_state = states_after.get("test_fixture").unwrap();
+    assert!(fixture_state.channels.contains_key("dimmer"));
+    assert!(fixture_state.channels.contains_key("red"));
+    assert!(fixture_state.channels.contains_key("green"));
+
+    // Check values (0.5 for dimmer, 1.0 for red, 0.8 for green)
+    let dimmer_value = fixture_state.channels.get("dimmer").unwrap().value;
+    assert!((dimmer_value - 0.5).abs() < 0.01);
+
+    let red_value = fixture_state.channels.get("red").unwrap().value;
+    assert!((red_value - 1.0).abs() < 0.01);
+
+    let green_value = fixture_state.channels.get("green").unwrap().value;
+    assert!((green_value - 0.8).abs() < 0.01);
+}
+
+#[test]
+fn test_get_fixture_states_reflects_latest_update() {
+    let mut engine = EffectEngine::new();
+    let fixture = create_test_fixture("test_fixture", 1, 1);
+    engine.register_fixture(fixture);
+
+    // Start with one effect
+    let mut parameters1 = HashMap::new();
+    parameters1.insert("red".to_string(), 1.0);
+    let effect1 = EffectInstance::new(
+        "effect1".to_string(),
+        EffectType::Static {
+            parameters: parameters1,
+            duration: None,
+        },
+        vec!["test_fixture".to_string()],
+        None,
+        None,
+        None,
+    );
+    engine.start_effect(effect1).unwrap();
+    engine.update(Duration::from_millis(100), None).unwrap();
+
+    let states1 = engine.get_fixture_states();
+    let red1 = states1
+        .get("test_fixture")
+        .and_then(|s| s.channels.get("red"))
+        .map(|c| c.value)
+        .unwrap_or(0.0);
+    assert!((red1 - 1.0).abs() < 0.01);
+
+    // Start a new effect that changes the color
+    let mut parameters2 = HashMap::new();
+    parameters2.insert("red".to_string(), 0.0);
+    parameters2.insert("blue".to_string(), 1.0);
+    let effect2 = EffectInstance::new(
+        "effect2".to_string(),
+        EffectType::Static {
+            parameters: parameters2,
+            duration: None,
+        },
+        vec!["test_fixture".to_string()],
+        None,
+        None,
+        None,
+    );
+    engine.start_effect(effect2).unwrap();
+    engine.update(Duration::from_millis(100), None).unwrap();
+
+    // States should reflect the new effect
+    let states2 = engine.get_fixture_states();
+    let red2 = states2
+        .get("test_fixture")
+        .and_then(|s| s.channels.get("red"))
+        .map(|c| c.value)
+        .unwrap_or(1.0);
+    let blue2 = states2
+        .get("test_fixture")
+        .and_then(|s| s.channels.get("blue"))
+        .map(|c| c.value)
+        .unwrap_or(0.0);
+
+    // Red should be 0, blue should be 1.0
+    assert!((red2 - 0.0).abs() < 0.01);
+    assert!((blue2 - 1.0).abs() < 0.01);
+}
+
+#[test]
+fn test_get_fixture_states_cleared_on_stop_all() {
+    let mut engine = EffectEngine::new();
+    let fixture = create_test_fixture("test_fixture", 1, 1);
+    engine.register_fixture(fixture);
+
+    // Start an effect and update
+    let mut parameters = HashMap::new();
+    parameters.insert("red".to_string(), 1.0);
+    let effect = EffectInstance::new(
+        "test_effect".to_string(),
+        EffectType::Static {
+            parameters,
+            duration: None,
+        },
+        vec!["test_fixture".to_string()],
+        None,
+        None,
+        None,
+    );
+    engine.start_effect(effect).unwrap();
+    engine.update(Duration::from_millis(100), None).unwrap();
+
+    // States should exist
+    let states_before = engine.get_fixture_states();
+    assert!(!states_before.is_empty());
+
+    // Stop all effects
+    engine.stop_all_effects();
+
+    // States should be cleared
     let states_after = engine.get_fixture_states();
     assert!(states_after.is_empty());
+}
+
+#[test]
+fn test_get_fixture_states_multiple_fixtures() {
+    let mut engine = EffectEngine::new();
+    let fixture1 = create_test_fixture("fixture1", 1, 1);
+    let fixture2 = create_test_fixture("fixture2", 1, 10);
+    engine.register_fixture(fixture1);
+    engine.register_fixture(fixture2);
+
+    // Start effect on fixture1
+    let mut parameters1 = HashMap::new();
+    parameters1.insert("red".to_string(), 1.0);
+    let effect1 = EffectInstance::new(
+        "effect1".to_string(),
+        EffectType::Static {
+            parameters: parameters1,
+            duration: None,
+        },
+        vec!["fixture1".to_string()],
+        None,
+        None,
+        None,
+    );
+    engine.start_effect(effect1).unwrap();
+
+    // Start different effect on fixture2
+    let mut parameters2 = HashMap::new();
+    parameters2.insert("blue".to_string(), 1.0);
+    let effect2 = EffectInstance::new(
+        "effect2".to_string(),
+        EffectType::Static {
+            parameters: parameters2,
+            duration: None,
+        },
+        vec!["fixture2".to_string()],
+        None,
+        None,
+        None,
+    );
+    engine.start_effect(effect2).unwrap();
+
+    engine.update(Duration::from_millis(100), None).unwrap();
+
+    let states = engine.get_fixture_states();
+    assert_eq!(states.len(), 2);
+    assert!(states.contains_key("fixture1"));
+    assert!(states.contains_key("fixture2"));
+
+    // Verify fixture1 has red
+    let state1 = states.get("fixture1").unwrap();
+    assert!(state1.channels.contains_key("red"));
+    let red = state1.channels.get("red").unwrap().value;
+    assert!((red - 1.0).abs() < 0.01);
+
+    // Verify fixture2 has blue
+    let state2 = states.get("fixture2").unwrap();
+    assert!(state2.channels.contains_key("blue"));
+    let blue = state2.channels.get("blue").unwrap().value;
+    assert!((blue - 1.0).abs() < 0.01);
 }
 
 #[test]
