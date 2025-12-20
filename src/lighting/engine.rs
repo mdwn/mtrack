@@ -78,27 +78,9 @@ impl EffectEngine {
         self.tempo_map = tempo_map;
     }
 
-    /// Register a fixture with the engine
-    pub fn register_fixture(&mut self, fixture: FixtureInfo) {
-        // Validate fixture capabilities based on special cases
-        if let Err(e) = validation::validate_fixture_capabilities(&fixture) {
-            eprintln!(
-                "Warning: Fixture '{}' has capability issues: {}",
-                fixture.name, e
-            );
-        }
-
-        self.fixture_registry.insert(fixture.name.clone(), fixture);
-    }
-
-    /// Start an effect
-    pub fn start_effect(&mut self, mut effect: EffectInstance) -> Result<(), EffectError> {
-        // Validate effect
-        validation::validate_effect(&self.fixture_registry, &effect)?;
-
-        // Log effect parameters once when the effect is started
-        // This captures the configuration that will guide execution.
-        let (effect_kind, effect_params) = match &effect.effect_type {
+    /// Format effect type for logging
+    fn format_effect_for_logging(effect: &EffectInstance) -> (&'static str, String) {
+        match &effect.effect_type {
             EffectType::Static {
                 parameters,
                 duration,
@@ -172,8 +154,93 @@ impl EffectEngine {
                     base_level, pulse_amplitude, frequency, duration
                 ),
             ),
-        };
+        }
+    }
 
+    /// Preserve state of permanent effects that will be stopped by a new effect
+    fn preserve_conflicting_permanent_effects(
+        &mut self,
+        new_effect: &EffectInstance,
+    ) -> Result<(), EffectError> {
+        // Find conflicting effects
+        let conflicting_effect_ids: Vec<String> = self
+            .active_effects
+            .iter()
+            .filter(|(_, existing_effect)| {
+                existing_effect.enabled
+                    && layers::should_effects_conflict(
+                        existing_effect,
+                        new_effect,
+                        &self.fixture_registry,
+                    )
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        // Only preserve if the new effect is also permanent
+        let new_effect_is_permanent = new_effect.is_permanent();
+        if !new_effect_is_permanent {
+            return Ok(());
+        }
+
+        // Collect permanent effects to preserve
+        let mut permanent_effects_to_preserve = Vec::new();
+        for effect_id in &conflicting_effect_ids {
+            if let Some(effect) = self.active_effects.get(effect_id) {
+                if effect.is_permanent() {
+                    permanent_effects_to_preserve.push(effect.clone());
+                }
+            }
+        }
+
+        // Process and preserve state
+        for conflicting_effect in permanent_effects_to_preserve {
+            let elapsed = conflicting_effect
+                .start_time
+                .map(|start| self.current_time.duration_since(start))
+                .unwrap_or(Duration::ZERO);
+
+            if let Some(final_states) = processing::process_effect(
+                &self.fixture_registry,
+                &conflicting_effect,
+                elapsed,
+                self.engine_elapsed,
+                self.tempo_map.as_ref(),
+            )? {
+                for (fixture_name, final_state) in final_states {
+                    if self.fixture_registry.contains_key(&fixture_name) {
+                        self.fixture_states
+                            .entry(fixture_name)
+                            .or_default()
+                            .blend_with(&final_state);
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Register a fixture with the engine
+    pub fn register_fixture(&mut self, fixture: FixtureInfo) {
+        // Validate fixture capabilities based on special cases
+        if let Err(e) = validation::validate_fixture_capabilities(&fixture) {
+            eprintln!(
+                "Warning: Fixture '{}' has capability issues: {}",
+                fixture.name, e
+            );
+        }
+
+        self.fixture_registry.insert(fixture.name.clone(), fixture);
+    }
+
+    /// Start an effect
+    pub fn start_effect(&mut self, mut effect: EffectInstance) -> Result<(), EffectError> {
+        // Validate effect
+        validation::validate_effect(&self.fixture_registry, &effect)?;
+
+        // Log effect parameters
+        let (effect_kind, effect_params) = Self::format_effect_for_logging(&effect);
         info!(
             effect_id = %effect.id,
             effect_kind,
@@ -188,66 +255,8 @@ impl EffectEngine {
             "Starting lighting effect"
         );
 
-        // Before stopping conflicting effects, preserve the state of any permanent effects that will be stopped
-        // This prevents flickering when permanent effects are replaced
-        let conflicting_effect_ids: Vec<String> = self
-            .active_effects
-            .iter()
-            .filter(|(_, existing_effect)| {
-                existing_effect.enabled
-                    && layers::should_effects_conflict(
-                        existing_effect,
-                        &effect,
-                        &self.fixture_registry,
-                    )
-            })
-            .map(|(id, _)| id.clone())
-            .collect();
-
         // Preserve state of permanent effects that will be stopped
-        // Only preserve if the new effect is also permanent - if a temporary effect
-        // stops a permanent effect, we shouldn't preserve state because the temporary
-        // effect will end and leave nothing
-        let new_effect_is_permanent = effect.is_permanent();
-        let mut permanent_effects_to_preserve = Vec::new();
-        if new_effect_is_permanent {
-            for effect_id in &conflicting_effect_ids {
-                if let Some(effect) = self.active_effects.get(effect_id) {
-                    if effect.is_permanent() {
-                        permanent_effects_to_preserve.push(effect.clone());
-                    }
-                }
-            }
-        }
-
-        // Process and preserve state (now we can borrow self mutably)
-        for conflicting_effect in permanent_effects_to_preserve {
-            // Calculate the actual elapsed time for this effect
-            let elapsed = conflicting_effect
-                .start_time
-                .map(|start| self.current_time.duration_since(start))
-                .unwrap_or(Duration::ZERO);
-
-            // Process the effect at its current elapsed time to get its final state
-            // This ensures we preserve the correct state, not Duration::ZERO state
-            if let Some(final_states) = processing::process_effect(
-                &self.fixture_registry,
-                &conflicting_effect,
-                elapsed,
-                self.engine_elapsed,
-                self.tempo_map.as_ref(),
-            )? {
-                // Preserve the final state in fixture_states
-                for (fixture_name, final_state) in final_states {
-                    if self.fixture_registry.contains_key(&fixture_name) {
-                        self.fixture_states
-                            .entry(fixture_name.clone())
-                            .or_default()
-                            .blend_with(&final_state);
-                    }
-                }
-            }
-        }
+        self.preserve_conflicting_permanent_effects(&effect)?;
 
         // Stop any conflicting effects
         layers::stop_conflicting_effects(&mut self.active_effects, &effect, &self.fixture_registry);
@@ -268,83 +277,8 @@ impl EffectEngine {
         // Validate effect
         validation::validate_effect(&self.fixture_registry, &effect)?;
 
-        // Log effect parameters once when the effect is started
-        let (effect_kind, effect_params) = match &effect.effect_type {
-            EffectType::Static {
-                parameters,
-                duration,
-            } => (
-                "Static",
-                format!("params={:?}, duration={:?}", parameters, duration),
-            ),
-            EffectType::ColorCycle {
-                colors,
-                speed,
-                direction,
-                transition,
-            } => (
-                "ColorCycle",
-                format!(
-                    "colors={:?}, speed={:?}, direction={:?}, transition={:?}",
-                    colors, speed, direction, transition
-                ),
-            ),
-            EffectType::Strobe {
-                frequency,
-                duration,
-            } => (
-                "Strobe",
-                format!("frequency={:?}, duration={:?}", frequency, duration),
-            ),
-            EffectType::Dimmer {
-                start_level,
-                end_level,
-                duration,
-                curve,
-            } => (
-                "Dimmer",
-                format!(
-                    "start_level={:?}, end_level={:?}, duration={:?}, curve={:?}",
-                    start_level, end_level, duration, curve
-                ),
-            ),
-            EffectType::Chase {
-                pattern,
-                speed,
-                direction,
-                transition: _,
-            } => (
-                "Chase",
-                format!(
-                    "pattern={:?}, speed={:?}, direction={:?}",
-                    pattern, speed, direction
-                ),
-            ),
-            EffectType::Rainbow {
-                speed,
-                saturation,
-                brightness,
-            } => (
-                "Rainbow",
-                format!(
-                    "speed={:?}, saturation={:?}, brightness={:?}",
-                    speed, saturation, brightness
-                ),
-            ),
-            EffectType::Pulse {
-                base_level,
-                pulse_amplitude,
-                frequency,
-                duration,
-            } => (
-                "Pulse",
-                format!(
-                    "base_level={:?}, pulse_amplitude={:?}, frequency={:?}, duration={:?}",
-                    base_level, pulse_amplitude, frequency, duration
-                ),
-            ),
-        };
-
+        // Log effect parameters
+        let (effect_kind, effect_params) = Self::format_effect_for_logging(&effect);
         info!(
             effect_id = %effect.id,
             effect_kind,
@@ -360,72 +294,13 @@ impl EffectEngine {
             "Starting lighting effect with elapsed time"
         );
 
-        // Before stopping conflicting effects, preserve the state of any permanent effects that will be stopped
-        // This prevents flickering when permanent effects are replaced
-        let conflicting_effect_ids: Vec<String> = self
-            .active_effects
-            .iter()
-            .filter(|(_, existing_effect)| {
-                existing_effect.enabled
-                    && layers::should_effects_conflict(
-                        existing_effect,
-                        &effect,
-                        &self.fixture_registry,
-                    )
-            })
-            .map(|(id, _)| id.clone())
-            .collect();
-
         // Preserve state of permanent effects that will be stopped
-        // Only preserve if the new effect is also permanent - if a temporary effect
-        // stops a permanent effect, we shouldn't preserve state because the temporary
-        // effect will end and leave nothing
-        let new_effect_is_permanent = effect.is_permanent();
-        let mut permanent_effects_to_preserve = Vec::new();
-        if new_effect_is_permanent {
-            for effect_id in &conflicting_effect_ids {
-                if let Some(effect) = self.active_effects.get(effect_id) {
-                    if effect.is_permanent() {
-                        permanent_effects_to_preserve.push(effect.clone());
-                    }
-                }
-            }
-        }
-
-        // Process and preserve state (now we can borrow self mutably)
-        for conflicting_effect in permanent_effects_to_preserve {
-            // Calculate the actual elapsed time for this effect
-            let elapsed = conflicting_effect
-                .start_time
-                .map(|start| self.current_time.duration_since(start))
-                .unwrap_or(Duration::ZERO);
-
-            // Process the effect at its current elapsed time to get its final state
-            // This ensures we preserve the correct state, not Duration::ZERO state
-            if let Some(final_states) = processing::process_effect(
-                &self.fixture_registry,
-                &conflicting_effect,
-                elapsed,
-                self.engine_elapsed,
-                self.tempo_map.as_ref(),
-            )? {
-                // Preserve the final state in fixture_states
-                for (fixture_name, final_state) in final_states {
-                    if self.fixture_registry.contains_key(&fixture_name) {
-                        self.fixture_states
-                            .entry(fixture_name.clone())
-                            .or_default()
-                            .blend_with(&final_state);
-                    }
-                }
-            }
-        }
+        self.preserve_conflicting_permanent_effects(&effect)?;
 
         // Stop any conflicting effects
         layers::stop_conflicting_effects(&mut self.active_effects, &effect, &self.fixture_registry);
 
         // Set the start time to be in the past by the elapsed amount
-        // This makes the effect appear at the correct point in its lifecycle
         effect.start_time = Some(
             self.current_time
                 .checked_sub(elapsed_time)
@@ -523,8 +398,8 @@ impl EffectEngine {
             let frozen_at = self.frozen_layers.get(&layer).cloned();
 
             for effect_id in effect_ids {
-                // Clone the effect to avoid borrowing conflicts
-                let effect = self.active_effects.get(&effect_id).unwrap().clone();
+                // Get reference to effect to avoid unnecessary clone
+                let effect = self.active_effects.get(&effect_id).unwrap();
 
                 // Check if this effect is being released
                 let release_info = self.releasing_effects.get(&effect_id).cloned();
@@ -540,9 +415,10 @@ impl EffectEngine {
                 // Apply speed master to elapsed time
                 // Speed 0.0 triggers freeze_layer, and frozen_at provides the frozen reference time.
                 // We use base_elapsed directly for both 0.0 and 1.0 (no multiplication needed).
-                let elapsed = if layer_speed == 0.0 || layer_speed == 1.0 {
+                let elapsed = if (layer_speed - 1.0).abs() < f64::EPSILON || layer_speed == 0.0 {
                     base_elapsed
                 } else {
+                    // Multiply duration by speed factor
                     Duration::from_secs_f64(base_elapsed.as_secs_f64() * layer_speed)
                 };
 
@@ -584,7 +460,7 @@ impl EffectEngine {
                 // Process the effect and get fixture states
                 if let Some(mut effect_states) = processing::process_effect(
                     &self.fixture_registry,
-                    &effect,
+                    effect,
                     elapsed,
                     self.engine_elapsed,
                     self.tempo_map.as_ref(),
@@ -628,8 +504,8 @@ impl EffectEngine {
                                 // Remove locked channels from the effect state, but always allow
                                 // brightness/pulse multipliers to pass through
                                 filtered_state.channels.retain(|channel_name, _| {
-                                    channel_name.starts_with("_dimmer_mult")
-                                        || channel_name.starts_with("_pulse_mult")
+                                    use super::effects::is_multiplier_channel;
+                                    is_multiplier_channel(channel_name)
                                         || channel_name == "dimmer"
                                         || !locked.contains(channel_name)
                                 });
@@ -663,9 +539,8 @@ impl EffectEngine {
                         // Preserve the final state in persistent storage
                         for (fixture_name, final_state) in final_states {
                             if self.fixture_registry.contains_key(&fixture_name) {
-                                let fixture_name_clone = fixture_name.clone();
                                 current_fixture_states
-                                    .entry(fixture_name_clone.clone())
+                                    .entry(fixture_name.clone())
                                     .or_insert_with(FixtureState::new)
                                     .blend_with(&final_state);
 
@@ -674,7 +549,7 @@ impl EffectEngine {
                                     && effect.blend_mode == BlendMode::Replace
                                 {
                                     let locked_channels =
-                                        self.channel_locks.entry(fixture_name_clone).or_default();
+                                        self.channel_locks.entry(fixture_name.clone()).or_default();
 
                                     // Lock all channels that this effect affected
                                     for channel_name in final_state.channels.keys() {
@@ -691,10 +566,9 @@ impl EffectEngine {
                                 }
                                 // Also include any per-layer multiplier channels materialized by blend_with
                                 if let Some(cur) = current_fixture_states.get(&fixture_name) {
+                                    use super::effects::is_multiplier_channel;
                                     for ch in cur.channels.keys() {
-                                        if ch.starts_with("_dimmer_mult")
-                                            || ch.starts_with("_pulse_mult")
-                                        {
+                                        if is_multiplier_channel(ch) {
                                             entry.insert(ch.clone());
                                         }
                                     }
@@ -703,36 +577,29 @@ impl EffectEngine {
                         }
                     } else {
                         // Temporary effects complete and end — remove per-layer multipliers for this effect's layer
+                        // Pre-compute layer suffix keys to avoid repeated formatting
+                        let (dimmer_key, pulse_key) = match effect.layer {
+                            EffectLayer::Background => ("_dimmer_mult_bg", "_pulse_mult_bg"),
+                            EffectLayer::Midground => ("_dimmer_mult_mid", "_pulse_mult_mid"),
+                            EffectLayer::Foreground => ("_dimmer_mult_fg", "_pulse_mult_fg"),
+                        };
+
                         for (fixture_name, _final_state) in final_states {
                             if self.fixture_registry.contains_key(&fixture_name) {
-                                // Identify the layer suffix for this effect
-                                let layer_suffix = match effect.layer {
-                                    EffectLayer::Background => "_bg",
-                                    EffectLayer::Midground => "_mid",
-                                    EffectLayer::Foreground => "_fg",
-                                };
-
                                 // Remove per-layer multipliers for this layer from current_fixture_states
                                 if let Some(current_state) =
                                     current_fixture_states.get_mut(&fixture_name)
                                 {
-                                    // Remove dimmer multiplier for this layer (defaults to 1.0 at emission)
-                                    let dimmer_key = format!("_dimmer_mult{}", layer_suffix);
-                                    current_state.channels.remove(&dimmer_key);
-
-                                    // Remove pulse multiplier for this layer (defaults to 1.0 at emission)
-                                    let pulse_key = format!("_pulse_mult{}", layer_suffix);
-                                    current_state.channels.remove(&pulse_key);
+                                    current_state.channels.remove(dimmer_key);
+                                    current_state.channels.remove(pulse_key);
                                 }
 
                                 // Also remove from persisted fixture_states
                                 if let Some(persisted_state) =
                                     self.fixture_states.get_mut(&fixture_name)
                                 {
-                                    let dimmer_key = format!("_dimmer_mult{}", layer_suffix);
-                                    persisted_state.channels.remove(&dimmer_key);
-                                    let pulse_key = format!("_pulse_mult{}", layer_suffix);
-                                    persisted_state.channels.remove(&pulse_key);
+                                    persisted_state.channels.remove(dimmer_key);
+                                    persisted_state.channels.remove(pulse_key);
                                 }
                             }
                         }

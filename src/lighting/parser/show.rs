@@ -523,7 +523,7 @@ fn parse_sequence_cue_structure(
         // Convert absolute time to score time (from start_offset)
         last_abs_time
             .map(|t| {
-                let abs_time = t.saturating_sub(Duration::from_secs_f64(applied_offset_secs));
+                let abs_time = remove_time_offset(t, applied_offset_secs);
                 if let Some(tm) = tempo_map {
                     // Convert absolute time to score time by subtracting start_offset
                     abs_time.saturating_sub(tm.start_offset)
@@ -567,7 +567,7 @@ fn parse_sequence_cue_structure(
     }
 
     // Absolute time uses the currently applied offset (not the newly computed one)
-    let abs_time = score_time + Duration::from_secs_f64(applied_offset_secs);
+    let abs_time = apply_time_offset(score_time, applied_offset_secs);
 
     // Parse effects and layer commands
     let unshifted_for_effects = if unshifted_score_time != Duration::ZERO {
@@ -608,42 +608,7 @@ fn parse_sequence_cue_structure(
 
     // Parse sequence references (store as metadata for later expansion)
     for seq_ref_pair in sequence_ref_pairs {
-        let mut seq_name = String::new();
-        let mut loop_param: Option<SequenceLoop> = None;
-
-        for inner in seq_ref_pair.into_inner() {
-            match inner.as_rule() {
-                Rule::sequence_name => {
-                    seq_name = inner.as_str().trim_matches('"').to_string();
-                }
-                Rule::sequence_params => {
-                    for param_pair in inner.into_inner() {
-                        if param_pair.as_rule() == Rule::sequence_param {
-                            let mut param_name = String::new();
-                            let mut param_value = String::new();
-
-                            for param_inner in param_pair.into_inner() {
-                                match param_inner.as_rule() {
-                                    Rule::sequence_param_name => {
-                                        param_name = param_inner.as_str().trim().to_string();
-                                    }
-                                    Rule::sequence_param_value => {
-                                        param_value = param_inner.as_str().trim().to_string();
-                                    }
-                                    _ => {}
-                                }
-                            }
-
-                            if param_name == "loop" {
-                                loop_param = Some(parse_sequence_loop_param(&param_value)?);
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-
+        let (seq_name, loop_param) = parse_sequence_reference_pair(seq_ref_pair)?;
         sequence_references.push((seq_name, loop_param));
     }
 
@@ -711,6 +676,119 @@ fn parse_sequence_cue_structure(
         Some(cumulative_measure_offset),
         Some(last_time),
     ))
+}
+
+/// Get sequence base time (first cue time, or ZERO if empty)
+fn get_sequence_base_time(sequence: &Sequence) -> Duration {
+    sequence
+        .cues
+        .first()
+        .map(|cue| cue.time)
+        .unwrap_or(Duration::ZERO)
+}
+
+/// Calculate relative time from an absolute time and base time
+#[inline]
+fn relative_time(absolute_time: Duration, base_time: Duration) -> Duration {
+    absolute_time.saturating_sub(base_time)
+}
+
+/// Apply time offset to a base time
+#[inline]
+fn apply_time_offset(base_time: Duration, offset_secs: f64) -> Duration {
+    base_time + Duration::from_secs_f64(offset_secs)
+}
+
+/// Remove time offset from an absolute time
+#[inline]
+fn remove_time_offset(absolute_time: Duration, offset_secs: f64) -> Duration {
+    absolute_time.saturating_sub(Duration::from_secs_f64(offset_secs))
+}
+
+/// Calculate iteration offset for sequence/loop expansion
+#[inline]
+fn iteration_offset(base_time: Duration, duration: Duration, iteration: usize) -> Duration {
+    base_time + (duration * iteration as u32)
+}
+
+/// Calculate sequence duration from a sequence
+fn calculate_sequence_duration(sequence: &Sequence) -> Duration {
+    let sequence_base_time = get_sequence_base_time(sequence);
+
+    match sequence.duration() {
+        Some(completion_time) => {
+            // duration() returns absolute completion time, convert to relative
+            completion_time.saturating_sub(sequence_base_time)
+        }
+        None => {
+            // Sequence has only perpetual effects - use relative time from first to last cue
+            if sequence.cues.is_empty() {
+                Duration::ZERO
+            } else {
+                let last_time = sequence.cues.last().unwrap().time;
+                last_time.saturating_sub(sequence_base_time)
+            }
+        }
+    }
+}
+
+/// Determine loop count from a SequenceLoop parameter
+fn determine_loop_count(loop_param: Option<SequenceLoop>) -> Result<usize, Box<dyn Error>> {
+    match loop_param {
+        Some(SequenceLoop::Once) => Ok(1),
+        Some(SequenceLoop::Loop) => Ok(10000), // Practical infinity
+        Some(SequenceLoop::PingPong) => {
+            Err("PingPong loop mode not yet implemented for sequences".into())
+        }
+        Some(SequenceLoop::Random) => {
+            Err("Random loop mode not yet implemented for sequences".into())
+        }
+        Some(SequenceLoop::Count(n)) => Ok(n),
+        None => Ok(1), // Default to once if not specified
+    }
+}
+
+/// Parse sequence reference from a Pair
+fn parse_sequence_reference_pair(
+    seq_ref_pair: Pair<Rule>,
+) -> Result<(String, Option<SequenceLoop>), Box<dyn Error>> {
+    let mut seq_name = String::new();
+    let mut loop_param: Option<SequenceLoop> = None;
+
+    for inner in seq_ref_pair.into_inner() {
+        match inner.as_rule() {
+            Rule::sequence_name => {
+                seq_name = inner.as_str().trim_matches('"').to_string();
+            }
+            Rule::sequence_params => {
+                for param_pair in inner.into_inner() {
+                    if param_pair.as_rule() == Rule::sequence_param {
+                        let mut param_name = String::new();
+                        let mut param_value = String::new();
+
+                        for param_inner in param_pair.into_inner() {
+                            match param_inner.as_rule() {
+                                Rule::sequence_param_name => {
+                                    param_name = param_inner.as_str().trim().to_string();
+                                }
+                                Rule::sequence_param_value => {
+                                    param_value = param_inner.as_str().trim().to_string();
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        if param_name == "loop" {
+                            loop_param = Some(parse_sequence_loop_param(&param_value)?);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok((seq_name, loop_param))
 }
 
 fn parse_sequence_loop_param(value: &str) -> Result<SequenceLoop, Box<dyn Error>> {
@@ -816,58 +894,25 @@ fn expand_unexpanded_sequence_cue(
                 .into());
             }
 
-            // Get the sequence's base time (first cue time, or ZERO if empty)
-            // Sequence cue times are stored as absolute, but we need them relative to sequence start
-            let sequence_base_time = sequence
-                .cues
-                .first()
-                .map(|cue| cue.time)
-                .unwrap_or(Duration::ZERO);
-
-            // Calculate sequence duration based on effect completion times
-            // If sequence has only perpetual effects, use the relative time from first to last cue
-            let sequence_duration = match sequence.duration() {
-                Some(completion_time) => {
-                    // duration() returns absolute completion time, convert to relative
-                    completion_time.saturating_sub(sequence_base_time)
-                }
-                None => {
-                    // Sequence has only perpetual effects - use relative time from first to last cue
-                    if sequence.cues.is_empty() {
-                        Duration::ZERO
-                    } else {
-                        let last_time = sequence.cues.last().unwrap().time;
-                        last_time.saturating_sub(sequence_base_time)
-                    }
-                }
-            };
+            // Calculate sequence duration
+            let sequence_duration = calculate_sequence_duration(sequence);
 
             // Determine how many times to loop
-            let loop_count = match loop_param {
-                Some(SequenceLoop::Once) => 1,
-                Some(SequenceLoop::Loop) => 10000, // Practical infinity
-                Some(SequenceLoop::PingPong) => {
-                    return Err("PingPong loop mode not yet implemented for sequences".into());
-                }
-                Some(SequenceLoop::Random) => {
-                    return Err("Random loop mode not yet implemented for sequences".into());
-                }
-                Some(SequenceLoop::Count(n)) => n,
-                None => 1, // Default to once if not specified
-            };
+            let loop_count = determine_loop_count(loop_param)?;
 
             // Add to recursion stack
             recursion_stack.push(seq_name.clone());
 
             // Expand the sequence the specified number of times
+            let sequence_base_time = get_sequence_base_time(sequence);
             for iteration in 0..loop_count {
-                let iteration_offset = unexpanded.time + (sequence_duration * iteration as u32);
+                let iter_offset = iteration_offset(unexpanded.time, sequence_duration, iteration);
 
                 for seq_cue in &sequence.cues {
                     let mut expanded_cue = seq_cue.clone();
                     // Convert absolute sequence cue time to relative, then add to iteration offset
-                    let relative_time = seq_cue.time.saturating_sub(sequence_base_time);
-                    expanded_cue.time = iteration_offset + relative_time;
+                    let rel_time = relative_time(seq_cue.time, sequence_base_time);
+                    expanded_cue.time = iter_offset + rel_time;
                     // Mark all effects in this cue as belonging to the referenced sequence
                     for effect in &mut expanded_cue.effects {
                         if effect.sequence_name.is_none() {
@@ -1001,8 +1046,8 @@ fn parse_and_expand_inline_loop(
     for cue in &loop_cues {
         for effect in &cue.effects {
             if let Some(effect_duration) = effect.total_duration() {
-                let relative_cue_time = cue.time.saturating_sub(loop_base_time);
-                let completion_time = relative_cue_time + effect_duration;
+                let rel_cue_time = relative_time(cue.time, loop_base_time);
+                let completion_time = rel_cue_time + effect_duration;
                 if completion_time > max_completion_time {
                     max_completion_time = completion_time;
                 }
@@ -1019,9 +1064,9 @@ fn parse_and_expand_inline_loop(
             .map(|c| c.time)
             .max()
             .unwrap_or(loop_base_time);
-        let relative_last_time = max_cue_time.saturating_sub(loop_base_time);
-        if relative_last_time > max_completion_time {
-            max_completion_time = relative_last_time;
+        let rel_last_time = relative_time(max_cue_time, loop_base_time);
+        if rel_last_time > max_completion_time {
+            max_completion_time = rel_last_time;
         }
     }
 
@@ -1035,7 +1080,7 @@ fn parse_and_expand_inline_loop(
                 .map(|c| c.time)
                 .max()
                 .unwrap_or(loop_base_time);
-            max_time.saturating_sub(loop_base_time)
+            relative_time(max_time, loop_base_time)
         } else {
             Duration::ZERO
         }
@@ -1044,13 +1089,13 @@ fn parse_and_expand_inline_loop(
     // Expand the loop by repeating it N times
     let mut expanded_cues = Vec::new();
     for iteration in 0..repeats {
-        let iteration_offset = base_cue_time + (loop_duration * iteration as u32);
+        let iter_offset = iteration_offset(base_cue_time, loop_duration, iteration);
 
         for loop_cue in &loop_cues {
             let mut expanded_cue = loop_cue.clone();
             // Convert relative loop cue time to absolute time
-            let relative_time = loop_cue.time.saturating_sub(loop_base_time);
-            expanded_cue.time = iteration_offset + relative_time;
+            let rel_time = relative_time(loop_cue.time, loop_base_time);
+            expanded_cue.time = iter_offset + rel_time;
             expanded_cues.push(expanded_cue);
         }
     }
@@ -1165,7 +1210,7 @@ fn parse_cue_definition(
         // Convert absolute time to score time (from start_offset)
         last_abs_time
             .map(|t| {
-                let abs_time = t.saturating_sub(Duration::from_secs_f64(applied_offset_secs));
+                let abs_time = remove_time_offset(t, applied_offset_secs);
                 if let Some(tm) = tempo_map {
                     // Convert absolute time to score time by subtracting start_offset
                     abs_time.saturating_sub(tm.start_offset)
@@ -1209,7 +1254,7 @@ fn parse_cue_definition(
     }
 
     // Absolute time is from start_offset (not absolute start), matching how score_time is calculated
-    let abs_time = score_time + Duration::from_secs_f64(applied_offset_secs);
+    let abs_time = apply_time_offset(score_time, applied_offset_secs);
     let mut last_time = Some(abs_time);
 
     // Parse stop sequence commands
@@ -1295,96 +1340,28 @@ fn parse_cue_definition(
 
         // Expand each sequence reference
         for seq_ref_pair in sequence_references {
-            let mut seq_name = String::new();
-            let mut loop_param: Option<SequenceLoop> = None;
-
-            // Parse sequence name and parameters
-            for inner in seq_ref_pair.into_inner() {
-                match inner.as_rule() {
-                    Rule::sequence_name => {
-                        seq_name = inner.as_str().trim_matches('"').to_string();
-                    }
-                    Rule::sequence_params => {
-                        for param_pair in inner.into_inner() {
-                            if param_pair.as_rule() == Rule::sequence_param {
-                                let mut param_name = String::new();
-                                let mut param_value = String::new();
-
-                                for param_inner in param_pair.into_inner() {
-                                    match param_inner.as_rule() {
-                                        Rule::sequence_param_name => {
-                                            param_name = param_inner.as_str().trim().to_string();
-                                        }
-                                        Rule::sequence_param_value => {
-                                            param_value = param_inner.as_str().trim().to_string();
-                                        }
-                                        _ => {}
-                                    }
-                                }
-
-                                if param_name == "loop" {
-                                    loop_param = Some(parse_sequence_loop_param(&param_value)?);
-                                }
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
+            let (seq_name, loop_param) = parse_sequence_reference_pair(seq_ref_pair)?;
 
             let sequence = sequences
                 .get(&seq_name)
                 .ok_or_else(|| format!("Sequence '{}' not found", seq_name))?;
 
-            // Get the sequence's base time (first cue time, or ZERO if empty)
-            // Sequence cue times are stored as absolute, but we need them relative to sequence start
-            let sequence_base_time = sequence
-                .cues
-                .first()
-                .map(|cue| cue.time)
-                .unwrap_or(Duration::ZERO);
-
-            // Calculate sequence duration based on effect completion times
-            // If sequence has only perpetual effects, use the relative time from first to last cue
-            let sequence_duration = match sequence.duration() {
-                Some(completion_time) => {
-                    // duration() returns absolute completion time, convert to relative
-                    completion_time.saturating_sub(sequence_base_time)
-                }
-                None => {
-                    // Sequence has only perpetual effects - use relative time from first to last cue
-                    if sequence.cues.is_empty() {
-                        Duration::ZERO
-                    } else {
-                        let last_time = sequence.cues.last().unwrap().time;
-                        last_time.saturating_sub(sequence_base_time)
-                    }
-                }
-            };
+            // Calculate sequence duration
+            let sequence_duration = calculate_sequence_duration(sequence);
 
             // Determine how many times to loop
-            let loop_count = match loop_param {
-                Some(SequenceLoop::Once) => 1,
-                Some(SequenceLoop::Loop) => 10000, // Practical infinity
-                Some(SequenceLoop::PingPong) => {
-                    return Err("PingPong loop mode not yet implemented for sequences".into());
-                }
-                Some(SequenceLoop::Random) => {
-                    return Err("Random loop mode not yet implemented for sequences".into());
-                }
-                Some(SequenceLoop::Count(n)) => n,
-                None => 1, // Default to once if not specified
-            };
+            let loop_count = determine_loop_count(loop_param)?;
 
             // Expand the sequence the specified number of times
+            let sequence_base_time = get_sequence_base_time(sequence);
             for iteration in 0..loop_count {
-                let iteration_offset = abs_time + (sequence_duration * iteration as u32);
+                let iter_offset = iteration_offset(abs_time, sequence_duration, iteration);
 
                 for seq_cue in &sequence.cues {
                     let mut expanded_cue = seq_cue.clone();
                     // Convert absolute sequence cue time to relative, then add to iteration offset
-                    let relative_time = seq_cue.time.saturating_sub(sequence_base_time);
-                    expanded_cue.time = iteration_offset + relative_time;
+                    let rel_time = relative_time(seq_cue.time, sequence_base_time);
+                    expanded_cue.time = iter_offset + rel_time;
                     // Mark all effects in this cue as belonging to this sequence
                     for effect in &mut expanded_cue.effects {
                         effect.sequence_name = Some(seq_name.clone());
