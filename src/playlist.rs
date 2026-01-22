@@ -1,4 +1,4 @@
-// Copyright (C) 2025 Michael Wilson <mike@mdwn.dev>
+// Copyright (C) 2026 Michael Wilson <mike@mdwn.dev>
 //
 // This program is free software: you can redistribute it and/or modify it under
 // the terms of the GNU General Public License as published by the Free Software
@@ -21,6 +21,8 @@ use std::sync::{Arc, RwLock};
 
 /// Playlist is a playlist for use by a player.
 pub struct Playlist {
+    /// The name of this playlist.
+    name: String,
     /// The songs that this playlist will play.
     songs: Vec<String>,
     /// The current position of the playlist.
@@ -48,6 +50,7 @@ impl fmt::Display for Playlist {
 impl Playlist {
     /// Creates a new playlist.
     pub fn new(
+        name: &str,
         config: &config::Playlist,
         registry: Arc<Songs>,
     ) -> Result<Arc<Playlist>, Box<dyn Error>> {
@@ -58,11 +61,17 @@ impl Playlist {
         }
 
         Ok(Arc::new(Playlist {
+            name: name.to_string(),
             songs: song_names.clone(),
             position: Arc::new(RwLock::new(0)),
             registry: Arc::clone(&registry),
             span: span!(Level::INFO, "playlist"),
         }))
+    }
+
+    /// Returns the name of this playlist.
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     /// Returns the list of songs in the playlist.
@@ -143,7 +152,7 @@ pub fn from_songs(songs: Arc<Songs>) -> Result<Arc<Playlist>, Box<dyn Error>> {
             .into_iter()
             .map(|song| song.name().to_string()),
     );
-    Playlist::new(&config::Playlist::new(&sorted), songs)
+    Playlist::new("All Songs", &config::Playlist::new(&sorted), songs)
 }
 
 #[cfg(test)]
@@ -158,6 +167,7 @@ mod test {
             .expect("Parse songs should have succeeded.");
 
         let playlist = super::Playlist::new(
+            "Test Playlist",
             &config::Playlist::new(&["Song 1".to_string(), "Song 2".to_string()]),
             songs,
         )

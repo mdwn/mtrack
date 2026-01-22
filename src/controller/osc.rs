@@ -1,4 +1,4 @@
-// Copyright (C) 2025 Michael Wilson <mike@mdwn.dev>
+// Copyright (C) 2026 Michael Wilson <mike@mdwn.dev>
 //
 // This program is free software: you can redistribute it and/or modify it under
 // the terms of the GNU General Public License as published by the Free Software
@@ -373,6 +373,7 @@ mod test {
         let player = Arc::new(Player::new(
             songs.clone(),
             Playlist::new(
+                "Playlist",
                 &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
                 songs,
             )?,

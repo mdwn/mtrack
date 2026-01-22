@@ -1,4 +1,4 @@
-// Copyright (C) 2025 Michael Wilson <mike@mdwn.dev>
+// Copyright (C) 2026 Michael Wilson <mike@mdwn.dev>
 //
 // This program is free software: you can redistribute it and/or modify it under
 // the terms of the GNU General Public License as published by the Free Software
@@ -30,8 +30,8 @@ use crate::{
 };
 
 // Playlist name constants.
-const PLAYLIST_NAME: &str = "playlist";
-const ALL_SONGS_NAME: &str = "all_songs";
+const PLAYLIST_NAME: &str = "Playlist";
+const ALL_SONGS_NAME: &str = "All Songs";
 
 /// A controller that controls a player using gRPC.
 pub struct Driver {
@@ -186,12 +186,7 @@ impl PlayerService for PlayerServer {
     }
 
     async fn status(&self, _: Request<StatusRequest>) -> Result<Response<StatusResponse>, Status> {
-        let all_songs_playlist = self.player.get_all_songs_playlist();
-        let playlist_name = if Arc::ptr_eq(&all_songs_playlist, &self.player.get_playlist()) {
-            PLAYLIST_NAME
-        } else {
-            ALL_SONGS_NAME
-        };
+        let playlist_name = self.player.get_playlist().name().to_string();
 
         let elapsed = {
             let elapsed = self.player.elapsed().await;
@@ -222,19 +217,24 @@ impl PlayerService for PlayerServer {
     ) -> Result<Response<GetCuesResponse>, Status> {
         // Get cues from the player
         let cues = self.player.get_cues();
-        let proto_cues: Result<Vec<Cue>, Status> = cues
+        let proto_cues: Result<Vec<Cue>, Box<Status>> = cues
             .into_iter()
             .map(|(time, index)| {
                 Ok(Cue {
                     time: Some(prost_types::Duration::try_from(time).map_err(|e| {
-                        Status::internal(format!("Failed to convert duration: {}", e))
+                        Box::new(Status::internal(format!(
+                            "Failed to convert duration: {}",
+                            e
+                        )))
                     })?),
                     index: index as u32,
                 })
             })
             .collect();
 
-        Ok(Response::new(GetCuesResponse { cues: proto_cues? }))
+        Ok(Response::new(GetCuesResponse {
+            cues: proto_cues.map_err(|e| *e)?,
+        }))
     }
 
     async fn get_active_effects(
@@ -287,6 +287,7 @@ mod test {
         let player = Arc::new(Player::new(
             songs.clone(),
             Playlist::new(
+                "Playlist",
                 &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
                 songs,
             )?,
@@ -331,6 +332,15 @@ mod test {
 
         // Direct the player.
         let mut client = client.expect("client was none");
+
+        // Verify initial playlist name in status
+        let resp = client.status(StatusRequest {}).await?;
+        let status = resp.into_inner();
+        assert_eq!(
+            status.playlist_name, "Playlist",
+            "Initial playlist name should be 'Playlist'"
+        );
+
         println!("Playlist -> Song 1");
         assert_eq!(player.get_playlist().current().name(), "Song 1");
 
@@ -351,6 +361,14 @@ mod test {
             })
             .await?;
         assert_eq!(player.get_playlist().current().name(), "Song 1");
+
+        // Verify playlist name changed to "All Songs" in status
+        let resp = client.status(StatusRequest {}).await?;
+        let status = resp.into_inner();
+        assert_eq!(
+            status.playlist_name, "All Songs",
+            "Playlist name should be 'All Songs' after switching"
+        );
 
         let resp = client.next(NextRequest {}).await?;
         println!("AllSongs -> Song 10");
@@ -375,6 +393,14 @@ mod test {
         println!("Switch to Playlist");
         assert_eq!(player.get_playlist().current().name(), "Song 1");
 
+        // Verify playlist name changed back to "Playlist" in status
+        let resp = client.status(StatusRequest {}).await?;
+        let status = resp.into_inner();
+        assert_eq!(
+            status.playlist_name, "Playlist",
+            "Playlist name should be 'Playlist' after switching back"
+        );
+
         let resp = client.next(NextRequest {}).await?;
         println!("Playlist -> Song 3");
         assert_eq!(player.get_playlist().current().name(), "Song 3");
@@ -393,7 +419,12 @@ mod test {
             .as_str(),
         );
         let resp = client.status(StatusRequest {}).await?;
-        assert_eq!(resp.into_inner().current_song.unwrap().name, "Song 5");
+        let status = resp.into_inner();
+        assert_eq!(
+            status.playlist_name, "Playlist",
+            "Playlist name should still be 'Playlist' after playback"
+        );
+        assert_eq!(status.current_song.unwrap().name, "Song 5");
 
         // Play a song and cancel it.
         let resp = client.play(PlayRequest {}).await?;

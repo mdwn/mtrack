@@ -1,4 +1,4 @@
-// Copyright (C) 2025 Michael Wilson <mike@mdwn.dev>
+// Copyright (C) 2026 Michael Wilson <mike@mdwn.dev>
 //
 // This program is free software: you can redistribute it and/or modify it under
 // the terms of the GNU General Public License as published by the Free Software
@@ -176,6 +176,7 @@ mod test {
         let player = Arc::new(Player::new(
             songs.clone(),
             Playlist::new(
+                "Playlist",
                 &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
                 songs,
             )?,
@@ -190,15 +191,13 @@ mod test {
             None,
         )?);
         let playlist = player.get_playlist();
-        let all_songs_playlist = player.get_all_songs_playlist();
         let binding = player.audio_device();
         let device = binding.to_mock()?;
 
-        let driver = Arc::new(TestDriver::new(player, TestEvent::Unset));
+        let driver = Arc::new(TestDriver::new(player.clone(), TestEvent::Unset));
         let mut controller = super::Controller::new_from_drivers(vec![driver.clone()]);
 
         println!("Playlist: {}", playlist);
-        println!("AllSongs: {}", all_songs_playlist);
 
         // Test the controller directing the player.
         println!("Playlist -> Song 1");
@@ -233,25 +232,25 @@ mod test {
         println!("Switch to AllSongs");
         driver.next_event(TestEvent::AllSongs).await;
         eventually(
-            || all_songs_playlist.current().name() == "Song 1",
+            || player.get_playlist().current().name() == "Song 1",
             "All Songs Playlist never became Song 1",
         );
         println!("AllSongs -> Song 10");
         driver.next_event(TestEvent::Next).await;
         eventually(
-            || all_songs_playlist.current().name() == "Song 10",
+            || player.get_playlist().current().name() == "Song 10",
             "All Songs Playlist never became Song 10",
         );
         println!("AllSongs -> Song 2");
         driver.next_event(TestEvent::Next).await;
         eventually(
-            || all_songs_playlist.current().name() == "Song 2",
+            || player.get_playlist().current().name() == "Song 2",
             "All Songs Playlist never became Song 2",
         );
         println!("AllSongs -> Song 10");
         driver.next_event(TestEvent::Prev).await;
         eventually(
-            || all_songs_playlist.current().name() == "Song 10",
+            || player.get_playlist().current().name() == "Song 10",
             "All Songs Playlist never became Song 10",
         );
         println!("Switch to Playlist");

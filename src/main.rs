@@ -1,4 +1,4 @@
-// Copyright (C) 2025 Michael Wilson <mike@mdwn.dev>
+// Copyright (C) 2026 Michael Wilson <mike@mdwn.dev>
 //
 // This program is free software: you can redistribute it and/or modify it under
 // the terms of the GNU General Public License as published by the Free Software
@@ -463,7 +463,11 @@ async fn run() -> Result<(), Box<dyn Error>> {
             };
 
             let songs = songs::get_all_songs(Path::new(&repository_path))?;
-            let playlist = Playlist::new(&config::Playlist::new(&[song_name]), Arc::clone(&songs))?;
+            let playlist = Playlist::new(
+                "Playlist",
+                &config::Playlist::new(&[song_name]),
+                Arc::clone(&songs),
+            )?;
 
             let player = Player::new(
                 songs,
@@ -493,6 +497,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
         } => {
             let songs = songs::get_all_songs(Path::new(&repository_path))?;
             let playlist = Playlist::new(
+                "Playlist",
                 &config::Playlist::deserialize(Path::new(&playlist_path))?,
                 songs,
             )?;
@@ -517,6 +522,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
             };
             let songs = songs::get_all_songs(&player_config.songs(player_path))?;
             let playlist = Playlist::new(
+                "Playlist",
                 &config::Playlist::deserialize(playlist_path.as_path())?,
                 songs.clone(),
             )?;

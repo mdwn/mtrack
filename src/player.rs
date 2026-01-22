@@ -1,4 +1,4 @@
-// Copyright (C) 2025 Michael Wilson <mike@mdwn.dev>
+// Copyright (C) 2026 Michael Wilson <mike@mdwn.dev>
 //
 // This program is free software: you can redistribute it and/or modify it under
 // the terms of the GNU General Public License as published by the Free Software
@@ -592,11 +592,6 @@ impl Player {
         self.playlist.clone()
     }
 
-    /// Gets the all songs playlist used by the player.
-    pub fn get_all_songs_playlist(&self) -> Arc<Playlist> {
-        self.all_songs.clone()
-    }
-
     /// Gets the elapsed time from the play start time.
     pub async fn elapsed(&self) -> Result<Option<Duration>, Box<dyn Error>> {
         let play_start_time = self.play_start_time.lock().await;
@@ -684,6 +679,7 @@ mod test {
         let player = Player::new(
             songs.clone(),
             Playlist::new(
+                "Playlist",
                 &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
                 songs,
             )?,
@@ -860,7 +856,7 @@ mod test {
         let song = songs::Song::new(temp_path, &song_config)?;
         let songs_map = HashMap::from([("Test Song".to_string(), Arc::new(song))]);
         let songs = Arc::new(songs::Songs::new(songs_map));
-        let playlist = Playlist::new(&playlist_config, songs.clone())?;
+        let playlist = Playlist::new("Test Playlist", &playlist_config, songs.clone())?;
 
         // Create player with DMX engine that has lighting config
         let player = Player::new(
@@ -957,7 +953,7 @@ mod test {
         let song = songs::Song::new(temp_path, &song_config)?;
         let songs_map = HashMap::from([("Test Song".to_string(), Arc::new(song))]);
         let songs = Arc::new(songs::Songs::new(songs_map));
-        let playlist = Playlist::new(&playlist_config, songs.clone())?;
+        let playlist = Playlist::new("Test Playlist", &playlist_config, songs.clone())?;
 
         // Create player with DMX engine that has lighting config
         let player = Player::new(
@@ -1055,7 +1051,7 @@ mod test {
         let song = songs::Song::new(temp_path, &song_config)?;
         let songs_map = HashMap::from([("Test Song".to_string(), Arc::new(song))]);
         let songs = Arc::new(songs::Songs::new(songs_map));
-        let playlist = Playlist::new(&playlist_config, songs.clone())?;
+        let playlist = Playlist::new("Test Playlist", &playlist_config, songs.clone())?;
 
         // Create player with DMX engine
         let player = Player::new(
@@ -1153,7 +1149,7 @@ mod test {
         let song = songs::Song::new(temp_path, &song_config)?;
         let songs_map = HashMap::from([("Test Song".to_string(), Arc::new(song))]);
         let songs = Arc::new(songs::Songs::new(songs_map));
-        let playlist = Playlist::new(&playlist_config, songs.clone())?;
+        let playlist = Playlist::new("Test Playlist", &playlist_config, songs.clone())?;
 
         // Create player with DMX engine that has lighting config
         let player = Player::new(
