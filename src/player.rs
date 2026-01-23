@@ -684,7 +684,7 @@ mod test {
                 songs,
             )?,
             &config::Player::new(
-                vec![config::Controller::Keyboard],
+                vec![],
                 config::Audio::new("mock-device"),
                 Some(config::Midi::new("mock-midi-device", None)),
                 None,
@@ -863,7 +863,7 @@ mod test {
             songs,
             playlist,
             &config::Player::new(
-                vec![config::Controller::Keyboard],
+                vec![],
                 config::Audio::new("mock-device"),
                 Some(config::Midi::new("mock-midi-device", None)),
                 Some(dmx_config),
@@ -960,7 +960,7 @@ mod test {
             songs,
             playlist,
             &config::Player::new(
-                vec![config::Controller::Keyboard],
+                vec![],
                 config::Audio::new("mock-device"),
                 Some(config::Midi::new("mock-midi-device", None)),
                 Some(dmx_config),
@@ -1058,7 +1058,7 @@ mod test {
             songs,
             playlist,
             &config::Player::new(
-                vec![config::Controller::Keyboard],
+                vec![],
                 config::Audio::new("mock-device"),
                 Some(config::Midi::new("mock-midi-device", None)),
                 Some(dmx_config),
@@ -1156,7 +1156,7 @@ mod test {
             songs,
             playlist,
             &config::Player::new(
-                vec![config::Controller::Keyboard],
+                vec![],
                 config::Audio::new("mock-device"),
                 Some(config::Midi::new("mock-midi-device", None)),
                 Some(dmx_config),

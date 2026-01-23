@@ -218,8 +218,7 @@ dmx:
       fixture_types: "lighting/fixture_types"
       venues: "lighting/venues"
 
-controllers:
-  - kind: keyboard
+controllers: []
 
 track_mappings:
   click: [1]
@@ -244,7 +243,6 @@ songs: "songs"
         assert!(config.audio().is_some());
         assert!(config.midi().is_some());
         assert!(config.dmx().is_some());
-        assert!(!config.controllers().is_empty());
 
         // Verify lighting configuration is present
         let dmx_config = config.dmx().unwrap();

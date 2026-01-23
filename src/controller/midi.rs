@@ -180,7 +180,7 @@ mod test {
                 songs,
             )?,
             &config::Player::new(
-                vec![config::Controller::Keyboard],
+                vec![],
                 config::Audio::new("mock-device"),
                 Some(config::Midi::new("mock-midi-device", None)),
                 None,

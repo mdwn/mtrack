@@ -473,7 +473,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
                 songs,
                 playlist,
                 &config::Player::new(
-                    vec![config::Controller::Keyboard {}],
+                    vec![],
                     audio_config,
                     midi_config,
                     dmx_config,

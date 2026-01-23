@@ -181,7 +181,7 @@ mod test {
                 songs,
             )?,
             &config::Player::new(
-                vec![config::Controller::Keyboard],
+                vec![],
                 config::Audio::new("mock-device"),
                 None,
                 None,
