@@ -561,11 +561,14 @@ player:
 
 ```
 $ mtrack play
+$ mtrack play --from "1:23.456"  # Start playback from a specific time
 $ mtrack previous
 $ mtrack next
 $ mtrack stop
 $ mtrack switch-to-playlist all_songs|playlist
 $ mtrack status
+$ mtrack active-effects  # Print all active lighting effects
+$ mtrack cues  # List all cues in the current song's lighting timeline
 ```
 
 This will allow for multiple, arbitrary connections to the player, potentially from clients
@@ -590,6 +593,26 @@ whether or not the player is currently playing, how much time has elapsed, and t
 the playlist. Again, refer to the example configuration above for the defaults for these events.
 
 An starting TouchOSC file has been supplied [here](touchosc/mtrack.tosc).
+
+## Light Show Verification
+
+You can verify the syntax of a light show file using the `verify-light-show` command:
+
+```
+$ mtrack verify-light-show path/to/show.light
+```
+
+This will check the syntax of the light show file and report any errors. You can also validate
+the show against your mtrack configuration to ensure all referenced groups and fixtures exist:
+
+```
+$ mtrack verify-light-show path/to/show.light --config /path/to/mtrack.yaml
+```
+
+This will verify that:
+- The light show syntax is valid
+- All referenced fixture groups exist in your configuration
+- All referenced fixtures exist in your configuration
 
 ## Light shows
 
@@ -624,6 +647,11 @@ dmx:
   lighting:
     # Current venue selection - determines which physical fixtures to use
     current_venue: "main_stage"
+    
+    # Simple inline fixture definitions (for basic cases)
+    # These can be used instead of or alongside venue definitions
+    fixtures:
+      emergency_light: "Emergency @ 1:500"
     
     # Logical groups with role-based constraints
     groups:
@@ -770,6 +798,8 @@ The system supports several constraint types for group resolution:
 - **`Prefer`**: Prefer fixtures with these tags (e.g., `["premium"]`)
 - **`MinCount`**: Minimum number of fixtures required
 - **`MaxCount`**: Maximum number of fixtures allowed
+- **`FallbackTo`**: Fallback to another group if primary group fails (e.g., `"all_lights"`)
+- **`AllowEmpty`**: Allow group to be empty if no fixtures match (graceful degradation, e.g., `true`)
 
 ### Benefits
 
