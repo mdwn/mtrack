@@ -46,6 +46,7 @@ pub struct Dmx {
 
 impl Dmx {
     /// Creates a new DMX configuration.
+    #[cfg(test)]
     pub fn new(
         dim_speed_modifier: Option<f64>,
         playback_delay: Option<String>,
@@ -111,6 +112,7 @@ pub struct Universe {
 
 impl Universe {
     /// Creates a new universe configuration.
+    #[cfg(test)]
     pub fn new(universe: u16, name: String) -> Universe {
         Universe { universe, name }
     }

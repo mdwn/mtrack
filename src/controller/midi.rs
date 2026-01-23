@@ -175,7 +175,7 @@ mod test {
         let player = Arc::new(Player::new(
             songs.clone(),
             Playlist::new(
-                "Playlist",
+                "playlist",
                 &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
                 songs,
             )?,

@@ -30,13 +30,12 @@ use crate::playlist::Playlist;
 use clap::{crate_version, Parser, Subcommand};
 use lighting::parser::{parse_light_shows, utils::parse_time_string};
 use lighting::validation::validate_groups;
-use player::Player;
 use proto::player::v1::player_service_client::PlayerServiceClient;
 use proto::player::v1::{
     GetActiveEffectsRequest, GetCuesRequest, NextRequest, PlayFromRequest, PlayRequest,
     PreviousRequest, Song, StatusRequest, StopRequest, SwitchToPlaylistRequest,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::env;
 use std::error::Error;
 use std::path::{Path, PathBuf};
@@ -44,7 +43,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tonic::transport::Channel;
 use tonic::Request;
-use tracing::{error, info};
+use tracing::info;
 
 const SYSTEMD_SERVICE: &str = r#"
 [Unit]
@@ -88,33 +87,6 @@ enum Commands {
     /// Lists the available MIDI input/output devices.
     MidiDevices {},
     /// Plays a song through the audio interface.
-    PlayDirect {
-        /// The device name to play through.
-        device_name: String,
-        /// The channel to device mappings. Should be in the form <TRACKNAME>=<CHANNEL>,...
-        /// For example, click=1,cue=2,backing-l=3.
-        mappings: String,
-        /// The MIDI device name to play through.
-        #[arg[short, long]]
-        midi_device_name: Option<String>,
-        /// The MIDI playback delay.
-        #[arg[long]]
-        midi_playback_delay: Option<String>,
-        /// The path to the song repository.
-        repository_path: String,
-        /// The name of the song to play.
-        song_name: String,
-        /// The DMX dimming speed modifier.
-        #[arg[short = 's', long]]
-        dmx_dimming_speed_modifier: Option<f64>,
-        /// The DMX playback delay.
-        #[arg[long]]
-        dmx_playback_delay: Option<String>,
-        /// The DMX universe configuration. Should be in the form: universe=<OLA-UNIVERSE>,name=<NAME>;...
-        /// For example, universe=1,name=light-show;universe=2,name=another-light-show
-        #[arg[short, long]]
-        dmx_universe_config: Option<String>,
-    },
     /// Playlist will verify a playlist.
     Playlist {
         /// The path to the song repository.
@@ -373,131 +345,13 @@ async fn run() -> Result<(), Box<dyn Error>> {
                 println!("- {}", device);
             }
         }
-        Commands::PlayDirect {
-            device_name,
-            mappings,
-            midi_device_name,
-            midi_playback_delay,
-            dmx_dimming_speed_modifier,
-            dmx_playback_delay,
-            dmx_universe_config,
-            repository_path,
-            song_name,
-        } => {
-            let mut converted_mappings: HashMap<String, Vec<u16>> = HashMap::new();
-            for mapping in mappings.split(',') {
-                let track_and_channel: Vec<&str> = mapping.split('=').collect();
-                if track_and_channel.len() != 2 {
-                    return Err("malformed track to channel mapping".into());
-                };
-                let track = track_and_channel[0];
-                let channel = track_and_channel[1].parse::<u16>()?;
-                if !converted_mappings.contains_key(track) {
-                    converted_mappings.insert(track.into(), vec![]);
-                }
-                converted_mappings
-                    .get_mut(track)
-                    .expect("expected mapping")
-                    .push(channel);
-            }
-
-            let audio_config = config::Audio::new(device_name.as_str());
-            let midi_config = midi_device_name.map(|midi_device_name| {
-                config::Midi::new(midi_device_name.as_str(), midi_playback_delay)
-            });
-            let dmx_config = match dmx_universe_config {
-                Some(dmx_universe_config) => {
-                    let mut universe_configs: Vec<config::Universe> = Vec::new();
-                    for universe_config in dmx_universe_config.split(';') {
-                        let config_fields: Vec<&str> = universe_config.split(',').collect();
-
-                        let mut universe: Option<u16> = None;
-                        let mut name: Option<String> = None;
-                        for config in config_fields.into_iter() {
-                            let config_parts: Vec<&str> = config.split('=').collect();
-
-                            if config_parts.len() != 2 {
-                                return Err(format!(
-                                    "malformed DMX configuration '{}'",
-                                    universe_config
-                                )
-                                .into());
-                            }
-
-                            // Parse the DMX configuration.
-                            match config_parts[0] {
-                                "universe" => {
-                                    let universe_num: u16 = config_parts[1].parse()?;
-                                    universe = Some(universe_num);
-                                }
-                                "name" => name = Some(config_parts[1].into()),
-                                _ => {} // Do nothing
-                            }
-                        }
-
-                        if let (Some(universe_id), Some(universe_name)) = (universe, name) {
-                            universe_configs
-                                .push(config::Universe::new(universe_id, universe_name));
-                        } else {
-                            return Err(format!(
-                                "Missing device specified for config {}",
-                                universe_config
-                            )
-                            .into());
-                        }
-                    }
-
-                    if universe_configs.is_empty() {
-                        None
-                    } else {
-                        Some(config::Dmx::new(
-                            dmx_dimming_speed_modifier,
-                            dmx_playback_delay,
-                            None,
-                            universe_configs,
-                            None, // lighting configuration
-                        ))
-                    }
-                }
-                None => None,
-            };
-
-            let songs = songs::get_all_songs(Path::new(&repository_path))?;
-            let playlist = Playlist::new(
-                "Playlist",
-                &config::Playlist::new(&[song_name]),
-                Arc::clone(&songs),
-            )?;
-
-            let player = Player::new(
-                songs,
-                playlist,
-                &config::Player::new(
-                    vec![],
-                    audio_config,
-                    midi_config,
-                    dmx_config,
-                    converted_mappings,
-                    &repository_path,
-                ),
-                None,
-            )?;
-
-            if let Err(e) = player.play().await {
-                error!(err = e.as_ref(), "Failed to play song: {}", e);
-                return Err(e);
-            }
-            while !player.wait_for_current_song().await? {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        }
         Commands::Playlist {
             repository_path,
             playlist_path,
         } => {
             let songs = songs::get_all_songs(Path::new(&repository_path))?;
             let playlist = Playlist::new(
-                "Playlist",
+                "playlist",
                 &config::Playlist::deserialize(Path::new(&playlist_path))?,
                 songs,
             )?;
@@ -522,7 +376,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
             };
             let songs = songs::get_all_songs(&player_config.songs(player_path))?;
             let playlist = Playlist::new(
-                "Playlist",
+                "playlist",
                 &config::Playlist::deserialize(playlist_path.as_path())?,
                 songs.clone(),
             )?;
