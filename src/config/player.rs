@@ -52,6 +52,7 @@ pub struct Player {
 }
 
 impl Player {
+    #[cfg(test)]
     pub fn new(
         controllers: Vec<Controller>,
         audio: Audio,

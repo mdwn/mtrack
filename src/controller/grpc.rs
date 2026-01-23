@@ -30,8 +30,8 @@ use crate::{
 };
 
 // Playlist name constants.
-const PLAYLIST_NAME: &str = "Playlist";
-const ALL_SONGS_NAME: &str = "All Songs";
+const PLAYLIST_NAME: &str = "playlist";
+const ALL_SONGS_NAME: &str = "all_songs";
 
 /// A controller that controls a player using gRPC.
 pub struct Driver {
@@ -287,7 +287,7 @@ mod test {
         let player = Arc::new(Player::new(
             songs.clone(),
             Playlist::new(
-                "Playlist",
+                "playlist",
                 &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
                 songs,
             )?,
@@ -337,8 +337,8 @@ mod test {
         let resp = client.status(StatusRequest {}).await?;
         let status = resp.into_inner();
         assert_eq!(
-            status.playlist_name, "Playlist",
-            "Initial playlist name should be 'Playlist'"
+            status.playlist_name, "playlist",
+            "Initial playlist name should be 'playlist'"
         );
 
         println!("Playlist -> Song 1");
@@ -362,12 +362,12 @@ mod test {
             .await?;
         assert_eq!(player.get_playlist().current().name(), "Song 1");
 
-        // Verify playlist name changed to "All Songs" in status
+        // Verify playlist name changed to "all_songs" in status
         let resp = client.status(StatusRequest {}).await?;
         let status = resp.into_inner();
         assert_eq!(
-            status.playlist_name, "All Songs",
-            "Playlist name should be 'All Songs' after switching"
+            status.playlist_name, "all_songs",
+            "Playlist name should be 'all_songs' after switching"
         );
 
         let resp = client.next(NextRequest {}).await?;
@@ -393,12 +393,12 @@ mod test {
         println!("Switch to Playlist");
         assert_eq!(player.get_playlist().current().name(), "Song 1");
 
-        // Verify playlist name changed back to "Playlist" in status
+        // Verify playlist name changed back to "playlist" in status
         let resp = client.status(StatusRequest {}).await?;
         let status = resp.into_inner();
         assert_eq!(
-            status.playlist_name, "Playlist",
-            "Playlist name should be 'Playlist' after switching back"
+            status.playlist_name, "playlist",
+            "Playlist name should be 'playlist' after switching back"
         );
 
         let resp = client.next(NextRequest {}).await?;
@@ -421,8 +421,8 @@ mod test {
         let resp = client.status(StatusRequest {}).await?;
         let status = resp.into_inner();
         assert_eq!(
-            status.playlist_name, "Playlist",
-            "Playlist name should still be 'Playlist' after playback"
+            status.playlist_name, "playlist",
+            "Playlist name should still be 'playlist' after playback"
         );
         assert_eq!(status.current_song.unwrap().name, "Song 5");
 

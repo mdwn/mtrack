@@ -152,7 +152,7 @@ pub fn from_songs(songs: Arc<Songs>) -> Result<Arc<Playlist>, Box<dyn Error>> {
             .into_iter()
             .map(|song| song.name().to_string()),
     );
-    Playlist::new("All Songs", &config::Playlist::new(&sorted), songs)
+    Playlist::new("all_songs", &config::Playlist::new(&sorted), songs)
 }
 
 #[cfg(test)]

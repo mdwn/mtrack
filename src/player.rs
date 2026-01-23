@@ -456,26 +456,6 @@ impl Player {
         }
     }
 
-    /// Wait for the current song to stop. Just waits until the is playing mutex is finished. Returns true
-    /// if a song was waited for.
-    pub async fn wait_for_current_song(&self) -> Result<bool, Box<dyn Error>> {
-        let _enter = self.span.enter();
-
-        let mut join = self.join.lock().await;
-        Ok(match join.as_mut() {
-            Some(join) => {
-                info!(
-                    song = self.get_playlist().current().name(),
-                    "Waiting for song to finish.",
-                );
-                // Wait for the mutex to become available and immediately drop it.
-                (&mut join.join).await?;
-                true
-            }
-            None => false,
-        })
-    }
-
     /// Next goes to the next entry in the playlist.
     pub async fn next(&self) -> Arc<Song> {
         let join = self.join.lock().await;
@@ -679,7 +659,7 @@ mod test {
         let player = Player::new(
             songs.clone(),
             Playlist::new(
-                "Playlist",
+                "playlist",
                 &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
                 songs,
             )?,
