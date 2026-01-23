@@ -37,7 +37,6 @@ const DEFAULT_OSC_PLAYLIST_CURRENT_SONG_ELAPSED: &str = "/mtrack/playlist/curren
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Controller {
     Grpc(GrpcController),
-    Keyboard,
     Midi(MidiController),
     Multi(HashMap<String, Controller>),
     Osc(Box<OscController>),

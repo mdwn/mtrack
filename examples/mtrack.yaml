@@ -175,10 +175,8 @@ dmx:
 
 # The controller definitions. As of now, the valid kinds of controllers are:
 # - grpc
-# - keyboard
 # - midi
 # - osc
-# Keyboard is largely for testing.
 controllers:
 # The gRPC server configuration.
 - kind: grpc
