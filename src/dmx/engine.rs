@@ -562,7 +562,7 @@ impl Engine {
             midly::MidiMessage::Controller { controller, value } => {
                 self.update_universe(
                     universe_name,
-                    controller.as_int().into(),
+                    (controller.as_int() + 1).into(), // Convert from 0-based MIDI to 1-based DMX
                     value.as_int() * 2,
                     false,
                 );
@@ -580,7 +580,7 @@ impl Engine {
     fn handle_key_velocity(&self, universe_name: String, key: u7, velocity: u7) {
         self.update_universe(
             universe_name,
-            key.as_int().into(),
+            (key.as_int() + 1).into(), // Convert from 0-based MIDI to 1-based DMX
             velocity.as_int() * 2,
             true,
         )
@@ -1652,6 +1652,77 @@ mod test {
 
         // DMX commands may or may not be generated depending on fixture registration
         // This is acceptable behavior for the test
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_midi_to_dmx_channel_mapping() -> Result<(), Box<dyn Error>> {
+        let (engine, _cancel_handle) = create_engine()?;
+
+        // Test that MIDI keys map to correct DMX channels
+        // MIDI is 0-based (0-127), DMX is 1-based (1-512)
+        // So MIDI key 0 should map to DMX channel 1 (array index 0)
+        // and MIDI key 1 should map to DMX channel 2 (array index 1), etc.
+
+        // Test NoteOn: MIDI key 0 should update DMX channel 1 (index 0)
+        engine.handle_midi_event(
+            "universe1".to_string(),
+            midly::MidiMessage::NoteOn {
+                key: 0.into(),
+                vel: 100.into(),
+            },
+        );
+        let universe = engine.get_universe(5).unwrap();
+        assert_eq!(
+            universe.get_target_value(0),
+            200.0,
+            "MIDI key 0 should map to DMX channel 1 (index 0)"
+        );
+
+        // Test NoteOn: MIDI key 1 should update DMX channel 2 (index 1)
+        engine.handle_midi_event(
+            "universe1".to_string(),
+            midly::MidiMessage::NoteOn {
+                key: 1.into(),
+                vel: 50.into(),
+            },
+        );
+        assert_eq!(
+            universe.get_target_value(1),
+            100.0,
+            "MIDI key 1 should map to DMX channel 2 (index 1)"
+        );
+
+        // Test Controller: MIDI controller 2 should update DMX channel 3 (index 2)
+        // Note: Controller values are multiplied by 2, so 100 * 2 = 200
+        engine.handle_midi_event(
+            "universe1".to_string(),
+            midly::MidiMessage::Controller {
+                controller: 2.into(),
+                value: 100.into(),
+            },
+        );
+        assert_eq!(
+            universe.get_target_value(2),
+            200.0,
+            "MIDI controller 2 should map to DMX channel 3 (index 2)"
+        );
+
+        // Test Controller: MIDI controller 3 should update DMX channel 4 (index 3)
+        // Note: Controller values are multiplied by 2, so 50 * 2 = 100
+        engine.handle_midi_event(
+            "universe1".to_string(),
+            midly::MidiMessage::Controller {
+                controller: 3.into(),
+                value: 50.into(),
+            },
+        );
+        assert_eq!(
+            universe.get_target_value(3),
+            100.0,
+            "MIDI controller 3 should map to DMX channel 4 (index 3)"
+        );
 
         Ok(())
     }

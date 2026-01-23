@@ -80,6 +80,13 @@ impl Universe {
             .expect("Unable to get global dim rate read lock")
     }
 
+    #[cfg(test)]
+    pub fn get_target_value(&self, channel_index: usize) -> f64 {
+        self.target
+            .read()
+            .expect("Unable to get universe target read lock")[channel_index]
+    }
+
     /// Updates the dim speed.
     pub fn update_dim_speed(&self, dim_rate: Duration) {
         let mut global_dim_rate = self
