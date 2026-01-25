@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-[0.7.0]
+## [0.7.0]
 
 A major resampling bug discovered in 0.6.0 was fixed, apologies to everyone who encountered
 it. 0.6.0 was pulled for this.
@@ -25,7 +25,7 @@ for testing.
 OSC commands now broadcast back to any connecting clients. Right now these clients are never
 forgotten, so it's possible to DDoS mtrack, so be responsible with your network security!
 
-[0.6.0]
+## [0.6.0]
 
 **Note**: You can now explicitly specify the sample rate, sample format, and bits per
 sample for your audio device. This may be a breaking change depending on the audio files
