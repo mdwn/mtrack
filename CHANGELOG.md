@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+[0.7.0]
+
+A major resampling bug discovered in 0.6.0 was fixed, apologies to everyone who encountered
+it. 0.6.0 was pulled for this.
+
+A new lighting engine has been added that mimics grandMA style lighting consoles. There are
+multiple layers and multiple effects. It exists entirely differently from the MIDI to DMX
+conversion that was written before, but it lives along side the previous functionality.
+In general, I found the MIDI to DMX engine to be too cumbersome so I'm hoping this new
+engine is easier to deal with. It has its own DSL as well. Feedback on all of this would be
+appreciated.
+
+The play-direct command was removed, as I think it's outlived its purpose, which was largely
+for testing.
+
+OSC commands now broadcast back to any connecting clients. Right now these clients are never
+forgotten, so it's possible to DDoS mtrack, so be responsible with your network security!
+
 [0.6.0]
 
 **Note**: You can now explicitly specify the sample rate, sample format, and bits per
