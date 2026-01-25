@@ -13,6 +13,7 @@
 //
 
 use std::{
+    collections::HashSet,
     error::Error,
     io,
     net::{AddrParseError, Ipv4Addr, SocketAddr, SocketAddrV4},
@@ -27,7 +28,10 @@ use rosc::{
 use tokio::{
     net::UdpSocket,
     select,
-    sync::mpsc::{self, Receiver, Sender},
+    sync::{
+        mpsc::{self, Receiver, Sender},
+        Mutex,
+    },
     task::JoinHandle,
 };
 use tracing::{error, info, span, Level};
@@ -140,10 +144,13 @@ impl super::Driver for Driver {
             }
             let (rx_sender, mut rx_receiver) = mpsc::channel::<OscPacket>(10);
             let (tx_sender, tx_receiver) = mpsc::channel::<OscPacket>(10);
+            let connected_clients: Arc<Mutex<HashSet<SocketAddr>>> =
+                Arc::new(Mutex::new(HashSet::new()));
 
             tokio::spawn(Self::handle_udp_comms(
                 socket,
                 broadcast_addresses,
+                connected_clients.clone(),
                 rx_sender,
                 tx_receiver,
             ));
@@ -189,6 +196,7 @@ impl Driver {
     pub(super) async fn handle_udp_comms(
         socket: UdpSocket,
         broadcast_addresses: Vec<SocketAddr>,
+        connected_clients: Arc<Mutex<HashSet<SocketAddr>>>,
         rx_sender: Sender<OscPacket>,
         mut tx_receiver: Receiver<OscPacket>,
     ) {
@@ -200,7 +208,12 @@ impl Driver {
             select! {
                 result = socket.recv_from(&mut buf) => {
                     match result {
-                        Ok((size, _)) => {
+                        Ok((size, sender_addr)) => {
+                            // Add the sender to the list of connected clients
+                            {
+                                let mut clients = connected_clients.lock().await;
+                                clients.insert(sender_addr);
+                            }
                             match rosc::decoder::decode_udp(&buf[..size]) {
                                 Ok((_, packet)) => {
                                     if let Err(e) = rx_sender.send(packet).await {
@@ -214,19 +227,25 @@ impl Driver {
                     }
                 }
                 packet = tx_receiver.recv() => {
-                    if !broadcast_addresses.is_empty() {
-                        if let Some(packet) = packet {
-                            match rosc::encoder::encode(&packet) {
-                                Ok(buf) => {
-                                    for addr in broadcast_addresses.iter() {
-                                        if let Err(e) = socket.send_to(&buf, addr).await {
-                                            error!(err = e.to_string(), "Error sending UDP data.");
-                                        }
+                    if let Some(packet) = packet {
+                        match rosc::encoder::encode(&packet) {
+                            Ok(buf) => {
+                                // Send to configured broadcast addresses
+                                for addr in broadcast_addresses.iter() {
+                                    if let Err(e) = socket.send_to(&buf, addr).await {
+                                        error!(err = e.to_string(), "Error sending UDP data.");
                                     }
                                 }
-                                Err(e) => error!(err = e.to_string(), "Error encoding OSC message"),
-                            };
-                        }
+                                // Send to all connected clients
+                                let clients = connected_clients.lock().await;
+                                for addr in clients.iter() {
+                                    if let Err(e) = socket.send_to(&buf, addr).await {
+                                        error!(err = e.to_string(), "Error sending UDP data to client.");
+                                    }
+                                }
+                            }
+                            Err(e) => error!(err = e.to_string(), "Error encoding OSC message"),
+                        };
                     }
                 }
             };
@@ -352,10 +371,12 @@ impl Driver {
 
 #[cfg(test)]
 mod test {
-    use std::{collections::HashMap, error::Error, path::Path, sync::Arc};
+    use std::{
+        collections::HashMap, error::Error, net::SocketAddr, path::Path, sync::Arc, time::Duration,
+    };
 
     use rosc::{OscMessage, OscPacket, OscType};
-    use tokio::sync::mpsc;
+    use tokio::{net::UdpSocket, sync::mpsc, time::timeout};
 
     use crate::{
         config,
@@ -525,5 +546,257 @@ mod test {
 
     fn osc_event(addr: String) -> OscPacket {
         OscPacket::Message(OscMessage { addr, args: vec![] })
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_osc_client_tracking() -> Result<(), Box<dyn Error>> {
+        // Set up a player (not used directly, but needed for Driver initialization)
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
+        let _player = Arc::new(Player::new(
+            songs.clone(),
+            Playlist::new(
+                "playlist",
+                &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
+                songs,
+            )?,
+            &config::Player::new(
+                vec![],
+                config::Audio::new("mock-device"),
+                Some(config::Midi::new("mock-midi-device", None)),
+                None,
+                HashMap::new(),
+                "assets/songs",
+            ),
+            None,
+        )?);
+
+        // Test the client tracking by directly testing the handle_udp_comms logic
+        // with a controlled setup
+
+        // Create test UDP sockets
+        let server_socket = UdpSocket::bind("127.0.0.1:0").await?;
+        let server_addr = server_socket.local_addr()?;
+
+        let client_socket = UdpSocket::bind("127.0.0.1:0").await?;
+        let client_addr = client_socket.local_addr()?;
+
+        // Set up channels
+        let (rx_sender, _rx_receiver) = mpsc::channel::<OscPacket>(10);
+        let (tx_sender, tx_receiver) = mpsc::channel::<OscPacket>(10);
+
+        // Create connected clients tracker
+        let connected_clients: Arc<tokio::sync::Mutex<std::collections::HashSet<SocketAddr>>> =
+            Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::new()));
+
+        // Spawn the UDP handler
+        let handler_clients = connected_clients.clone();
+        let handler_socket = server_socket;
+        let handler_task = tokio::spawn(async move {
+            Driver::handle_udp_comms(
+                handler_socket,
+                vec![], // No broadcast addresses for this test
+                handler_clients,
+                rx_sender,
+                tx_receiver,
+            )
+            .await;
+        });
+
+        // Send a message from the client to the server
+        let test_message = OscPacket::Message(OscMessage {
+            addr: "/test".to_string(),
+            args: vec![],
+        });
+        let encoded = rosc::encoder::encode(&test_message)?;
+        client_socket.send_to(&encoded, server_addr).await?;
+
+        // Wait a bit for the message to be processed
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Verify the client was added to the connected clients list
+        let clients = connected_clients.lock().await;
+        assert!(
+            clients.contains(&client_addr),
+            "Client address should be in connected clients list"
+        );
+        drop(clients);
+
+        // Send a broadcast packet
+        let broadcast_packet = OscPacket::Message(OscMessage {
+            addr: "/status".to_string(),
+            args: vec![OscType::String("test".to_string())],
+        });
+        tx_sender.send(broadcast_packet).await?;
+
+        // Wait a bit for the broadcast to be sent
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Try to receive the broadcast on the client socket
+        let mut recv_buf = [0u8; 1024];
+        match timeout(
+            Duration::from_secs(1),
+            client_socket.recv_from(&mut recv_buf),
+        )
+        .await
+        {
+            Ok(Ok((size, _))) => {
+                // Decode the received packet
+                match rosc::decoder::decode_udp(&recv_buf[..size]) {
+                    Ok((_, packet)) => {
+                        // Verify it's the status message we sent
+                        if let OscPacket::Message(msg) = packet {
+                            assert_eq!(msg.addr, "/status");
+                            assert_eq!(msg.args.len(), 1);
+                            if let OscType::String(s) = &msg.args[0] {
+                                assert_eq!(s, "test");
+                            } else {
+                                panic!("Expected string argument");
+                            }
+                        } else {
+                            panic!("Expected OSC message");
+                        }
+                    }
+                    Err(e) => panic!("Failed to decode received packet: {}", e),
+                }
+            }
+            Ok(Err(e)) => panic!("Failed to receive broadcast: {}", e),
+            Err(_) => panic!("Timeout waiting for broadcast message"),
+        }
+
+        // Clean up
+        handler_task.abort();
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_osc_multiple_clients() -> Result<(), Box<dyn Error>> {
+        // Test that multiple clients can connect and all receive broadcasts
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
+        let _player = Arc::new(Player::new(
+            songs.clone(),
+            Playlist::new(
+                "playlist",
+                &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
+                songs,
+            )?,
+            &config::Player::new(
+                vec![],
+                config::Audio::new("mock-device"),
+                Some(config::Midi::new("mock-midi-device", None)),
+                None,
+                HashMap::new(),
+                "assets/songs",
+            ),
+            None,
+        )?);
+
+        // Create test UDP sockets
+        let server_socket = UdpSocket::bind("127.0.0.1:0").await?;
+        let server_addr = server_socket.local_addr()?;
+
+        let client1_socket = UdpSocket::bind("127.0.0.1:0").await?;
+        let client1_addr = client1_socket.local_addr()?;
+
+        let client2_socket = UdpSocket::bind("127.0.0.1:0").await?;
+        let client2_addr = client2_socket.local_addr()?;
+
+        // Set up channels
+        let (rx_sender, _rx_receiver) = mpsc::channel::<OscPacket>(10);
+        let (tx_sender, tx_receiver) = mpsc::channel::<OscPacket>(10);
+
+        // Create connected clients tracker
+        let connected_clients: Arc<tokio::sync::Mutex<std::collections::HashSet<SocketAddr>>> =
+            Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::new()));
+
+        // Spawn the UDP handler
+        let handler_clients = connected_clients.clone();
+        let handler_socket = server_socket;
+        let handler_task = tokio::spawn(async move {
+            Driver::handle_udp_comms(
+                handler_socket,
+                vec![],
+                handler_clients,
+                rx_sender,
+                tx_receiver,
+            )
+            .await;
+        });
+
+        // Send messages from both clients
+        let test_message = OscPacket::Message(OscMessage {
+            addr: "/test".to_string(),
+            args: vec![],
+        });
+        let encoded = rosc::encoder::encode(&test_message)?;
+        client1_socket.send_to(&encoded, server_addr).await?;
+        client2_socket.send_to(&encoded, server_addr).await?;
+
+        // Wait for messages to be processed
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Verify both clients are in the list
+        let clients = connected_clients.lock().await;
+        assert!(
+            clients.contains(&client1_addr),
+            "Client 1 should be in connected clients list"
+        );
+        assert!(
+            clients.contains(&client2_addr),
+            "Client 2 should be in connected clients list"
+        );
+        assert_eq!(clients.len(), 2, "Should have exactly 2 clients");
+        drop(clients);
+
+        // Send a broadcast packet
+        let broadcast_packet = OscPacket::Message(OscMessage {
+            addr: "/broadcast".to_string(),
+            args: vec![OscType::String("test".to_string())],
+        });
+        tx_sender.send(broadcast_packet).await?;
+
+        // Wait for broadcasts to be sent
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Both clients should receive the broadcast
+        let mut recv_buf1 = [0u8; 1024];
+        let mut recv_buf2 = [0u8; 1024];
+
+        // Client 1 should receive it
+        match timeout(
+            Duration::from_secs(1),
+            client1_socket.recv_from(&mut recv_buf1),
+        )
+        .await
+        {
+            Ok(Ok((size, _))) => {
+                let decoded = rosc::decoder::decode_udp(&recv_buf1[..size])?;
+                if let OscPacket::Message(msg) = decoded.1 {
+                    assert_eq!(msg.addr, "/broadcast");
+                }
+            }
+            _ => panic!("Client 1 should receive broadcast"),
+        }
+
+        // Client 2 should also receive it
+        match timeout(
+            Duration::from_secs(1),
+            client2_socket.recv_from(&mut recv_buf2),
+        )
+        .await
+        {
+            Ok(Ok((size, _))) => {
+                let decoded = rosc::decoder::decode_udp(&recv_buf2[..size])?;
+                if let OscPacket::Message(msg) = decoded.1 {
+                    assert_eq!(msg.addr, "/broadcast");
+                }
+            }
+            _ => panic!("Client 2 should receive broadcast"),
+        }
+
+        // Clean up
+        handler_task.abort();
+
+        Ok(())
     }
 }
