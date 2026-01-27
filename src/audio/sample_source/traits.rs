@@ -11,7 +11,7 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-use super::error::TranscodingError;
+use super::error::SampleSourceError;
 
 /// A source of audio samples that processes an iterator
 pub trait SampleSource: Send + Sync {
@@ -19,7 +19,7 @@ pub trait SampleSource: Send + Sync {
     /// Returns Ok(Some(sample)) if a sample is available
     /// Returns Ok(None) if the source is finished
     /// Returns Err(error) if an error occurred
-    fn next_sample(&mut self) -> Result<Option<f32>, TranscodingError>;
+    fn next_sample(&mut self) -> Result<Option<f32>, SampleSourceError>;
 
     /// Get the number of channels in this source
     fn channel_count(&self) -> u16;
@@ -38,6 +38,35 @@ pub trait SampleSource: Send + Sync {
     fn duration(&self) -> Option<std::time::Duration>;
 }
 
+/// Blanket implementation for Box<dyn SampleSource>
+/// This allows Box<dyn SampleSource> to be used directly with generic functions
+/// that require S: SampleSource, eliminating the need for wrapper types.
+impl SampleSource for Box<dyn SampleSource> {
+    fn next_sample(&mut self) -> Result<Option<f32>, SampleSourceError> {
+        (**self).next_sample()
+    }
+
+    fn channel_count(&self) -> u16 {
+        (**self).channel_count()
+    }
+
+    fn sample_rate(&self) -> u32 {
+        (**self).sample_rate()
+    }
+
+    fn bits_per_sample(&self) -> u16 {
+        (**self).bits_per_sample()
+    }
+
+    fn sample_format(&self) -> crate::audio::SampleFormat {
+        (**self).sample_format()
+    }
+
+    fn duration(&self) -> Option<std::time::Duration> {
+        (**self).duration()
+    }
+}
+
 /// A sample source with explicit channel mapping information
 /// This replaces the complex SongSource architecture with a simpler, more debuggable approach
 pub trait ChannelMappedSampleSource: Send + Sync {
@@ -45,7 +74,7 @@ pub trait ChannelMappedSampleSource: Send + Sync {
     /// Returns Ok(Some(sample)) if a sample is available
     /// Returns Ok(None) if the source is finished
     /// Returns Err(error) if an error occurred
-    fn next_sample(&mut self) -> Result<Option<f32>, TranscodingError>;
+    fn next_sample(&mut self) -> Result<Option<f32>, SampleSourceError>;
 
     /// Get the next frame of samples (all channels for one time step)
     /// Writes samples directly into the provided output slice
@@ -53,10 +82,10 @@ pub trait ChannelMappedSampleSource: Send + Sync {
     /// Returns Ok(None) if the source is finished
     /// Returns Err(error) if an error occurred
     /// The output slice must have capacity for at least source_channel_count() samples
-    fn next_frame(&mut self, output: &mut [f32]) -> Result<Option<usize>, TranscodingError> {
+    fn next_frame(&mut self, output: &mut [f32]) -> Result<Option<usize>, SampleSourceError> {
         let channel_count = self.source_channel_count() as usize;
         if output.len() < channel_count {
-            return Err(TranscodingError::SampleConversionFailed(format!(
+            return Err(SampleSourceError::SampleConversionFailed(format!(
                 "Output buffer too small: need {} samples",
                 channel_count
             )));

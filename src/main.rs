@@ -272,7 +272,12 @@ fn verify_light_show(show_path: &str, config_path: Option<&str>) -> Result<(), B
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt::init();
+    // Initialize tracing with a filter that sets default logging to off, with mtrack at info level
+    // This prevents noisy INFO messages from symphonia crates (which are suppressed by the default "off")
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("off,mtrack=info"));
+
+    tracing_subscriber::fmt().with_env_filter(filter).init();
 
     if let Err(e) = run().await {
         eprintln!("Error: {}", e);

@@ -17,7 +17,7 @@ use rubato::{
 };
 use std::sync::Mutex;
 
-use super::error::TranscodingError;
+use super::error::SampleSourceError;
 use super::traits::SampleSource;
 
 // Import VecResampler trait to bring methods into scope for method resolution
@@ -126,7 +126,7 @@ impl<S> SampleSource for AudioTranscoder<S>
 where
     S: SampleSource,
 {
-    fn next_sample(&mut self) -> Result<Option<f32>, TranscodingError> {
+    fn next_sample(&mut self) -> Result<Option<f32>, SampleSourceError> {
         // If no resampler, just pass through directly
         if self.resampler.is_none() {
             return self.source.next_sample();
@@ -176,7 +176,7 @@ where
         source_format: &TargetFormat,
         target_format: &TargetFormat,
         channels: u16,
-    ) -> Result<Self, TranscodingError> {
+    ) -> Result<Self, SampleSourceError> {
         let needs_resampling = source_format.sample_rate != target_format.sample_rate;
 
         let (resampler, output_scratch) = if needs_resampling {
@@ -199,7 +199,7 @@ where
                 channels as usize,
             )
             .map_err(|_e| {
-                TranscodingError::ResamplingFailed(
+                SampleSourceError::ResamplingFailed(
                     source_format.sample_rate,
                     target_format.sample_rate,
                 )
@@ -226,7 +226,7 @@ where
 
     /// Fill the output FIFO by reading from source and processing through resampler.
     /// This uses rubato's standard process_into_buffer pattern for streaming resampling.
-    fn fill_output_fifo(&mut self) -> Result<(), TranscodingError> {
+    fn fill_output_fifo(&mut self) -> Result<(), SampleSourceError> {
         let resampler_mutex = match self.resampler.as_ref() {
             Some(r) => r,
             None => return Ok(()), // No resampling needed
@@ -286,7 +286,7 @@ where
                         None,
                     )
                     .map_err(|_e| {
-                        TranscodingError::ResamplingFailed(self.source_rate, self.target_rate)
+                        SampleSourceError::ResamplingFailed(self.source_rate, self.target_rate)
                     })?;
 
                 drop(resampler); // Release lock before drain
@@ -320,7 +320,7 @@ where
                         None,
                     )
                     .map_err(|_e| {
-                        TranscodingError::ResamplingFailed(self.source_rate, self.target_rate)
+                        SampleSourceError::ResamplingFailed(self.source_rate, self.target_rate)
                     })?;
 
                 drop(resampler); // Release lock before drain

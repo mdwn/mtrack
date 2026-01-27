@@ -19,6 +19,7 @@ use serde::Deserialize;
 use crate::audio::SampleFormat;
 
 const DEFAULT_AUDIO_PLAYBACK_DELAY: Duration = Duration::ZERO;
+const DEFAULT_BUFFER_SIZE: usize = 1024;
 
 /// A YAML representation of the audio configuration.
 #[derive(Deserialize, Clone)]
@@ -29,12 +30,6 @@ pub struct Audio {
     /// Controls how long to wait before playback of an audio file starts.
     playback_delay: Option<String>,
 
-    /// Buffer size for background reading (number of frames to buffer ahead)
-    buffer_size: Option<usize>,
-
-    /// Threshold for triggering background reads (when buffer drops below this)
-    buffer_threshold: Option<usize>,
-
     /// Target sample rate in Hz (default: 44100)
     sample_rate: Option<u32>,
 
@@ -43,6 +38,9 @@ pub struct Audio {
 
     /// Target bits per sample (default: 32)
     bits_per_sample: Option<u16>,
+
+    /// Buffer size for decoded audio samples (default: 1024 samples per channel)
+    buffer_size: Option<usize>,
 }
 
 impl Audio {
@@ -51,11 +49,10 @@ impl Audio {
         Audio {
             device: device.to_string(),
             playback_delay: None,
-            buffer_size: None,
-            buffer_threshold: None,
             sample_rate: None,
             sample_format: None,
             bits_per_sample: None,
+            buffer_size: None,
         }
     }
 
@@ -90,13 +87,8 @@ impl Audio {
         self.bits_per_sample.unwrap_or(32)
     }
 
-    /// Returns the buffer size for background reading (default: 1024)
+    /// Returns the buffer size for decoded audio samples (default: 1024 samples per channel)
     pub fn buffer_size(&self) -> usize {
-        self.buffer_size.unwrap_or(1024)
-    }
-
-    /// Returns the buffer threshold for triggering background reads (default: 256)
-    pub fn buffer_threshold(&self) -> usize {
-        self.buffer_threshold.unwrap_or(256)
+        self.buffer_size.unwrap_or(DEFAULT_BUFFER_SIZE)
     }
 }

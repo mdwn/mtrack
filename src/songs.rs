@@ -29,7 +29,6 @@ use nodi::Sheet;
 
 use tracing::{debug, info, warn};
 
-use crate::audio::sample_source::SampleSource;
 use crate::audio::TargetFormat;
 use crate::config;
 use crate::proto::player;
@@ -115,7 +114,7 @@ pub struct Song {
 }
 
 /// A simple sample for songs. Boils down to i32 or f32, which we can be reasonably assured that
-/// hound is able to read.
+/// symphonia is able to read.
 impl Song {
     // Create a new song.
     pub fn new(start_path: &Path, config: &config::Song) -> Result<Song, Box<dyn Error>> {
@@ -346,7 +345,11 @@ impl Song {
         // Check if any track has different sample rate, format, or bit depth
         self.tracks.iter().any(|track| {
             // Use the generic SampleSource infrastructure to check transcoding needs
-            match crate::audio::sample_source::create_sample_source_from_file(&track.file) {
+            match crate::audio::sample_source::create_sample_source_from_file(
+                &track.file,
+                None,
+                1024,
+            ) {
                 Ok(sample_source) => {
                     // Create source format from the SampleSource metadata
                     let source_format = TargetFormat::new(
@@ -386,13 +389,10 @@ impl Song {
         track_mappings: &HashMap<String, Vec<u16>>,
         target_format: TargetFormat,
         buffer_size: usize,
-        buffer_threshold: usize,
     ) -> Result<Vec<Box<dyn crate::audio::sample_source::ChannelMappedSampleSource>>, Box<dyn Error>>
     {
         use crate::audio::sample_source::create_channel_mapped_sample_source;
-        use crate::audio::sample_source::{
-            create_sample_source_from_file, create_sample_source_from_file_with_seek,
-        };
+        use crate::audio::sample_source::create_sample_source_from_file;
 
         let mut sources = Vec::new();
 
@@ -412,9 +412,20 @@ impl Song {
         sorted_files.sort_by_key(|(path, _)| path.clone());
 
         for (file_path, tracks) in sorted_files {
-            // Get the audio file info to determine the actual number of channels
-            let wav_source = crate::audio::sample_source::WavSampleSource::from_file(&file_path)?;
-            let wav_channels = wav_source.channel_count();
+            // Create the sample source once and reuse it for both metadata and playback
+            // This avoids creating two instances which can cause issues with symphonia's global state
+            let sample_source = create_sample_source_from_file(
+                &file_path,
+                if start_time == Duration::ZERO {
+                    None
+                } else {
+                    Some(start_time)
+                },
+                buffer_size,
+            )?;
+
+            // Get the channel count from the source we just created
+            let wav_channels = sample_source.channel_count();
 
             // Create channel mappings for each channel in the WAV file
             let mut channel_mappings = Vec::new();
@@ -434,18 +445,10 @@ impl Song {
                 channel_mappings.push(labels);
             }
 
-            // Create the channel mapped source for this file, with optional seeking
-            let sample_source = if start_time == Duration::ZERO {
-                create_sample_source_from_file(&file_path)?
-            } else {
-                create_sample_source_from_file_with_seek(&file_path, Some(start_time))?
-            };
             let source = create_channel_mapped_sample_source(
                 sample_source,
                 target_format.clone(),
                 channel_mappings,
-                buffer_size,
-                buffer_threshold,
             )?;
 
             sources.push(source);
@@ -640,10 +643,14 @@ impl Track {
         let file_channel = config.file_channel();
         let name = config.name();
 
-        let source = create_sample_source_from_file(&track_file)?;
+        let source = create_sample_source_from_file(&track_file, None, 1024)?;
+
+        // Extract all metadata before the source might be dropped or cause issues
         let sample_rate = source.sample_rate();
         let duration = source.duration().unwrap_or(Duration::ZERO);
-        if source.channel_count() > 1 && file_channel.is_none() {
+        let channel_count = source.channel_count();
+
+        if channel_count > 1 && file_channel.is_none() {
             return Err(format!(
                 "track {} has more than one channel but file_channel is not specified",
                 name,
@@ -652,12 +659,13 @@ impl Track {
         }
         let file_channel = file_channel.unwrap_or(1);
 
+        let sample_format = source.sample_format();
         Ok(Track {
             name: name.to_string(),
             file: track_file.clone(),
             file_channel,
             sample_rate,
-            sample_format: source.sample_format(),
+            sample_format,
             duration,
         })
     }
@@ -674,7 +682,7 @@ impl Track {
 
         assert_eq!(extension, "wav", "Expected file name to end in '.wav'");
         let track_name = stem.to_string();
-        let source = create_sample_source_from_file(track_path)?;
+        let source = create_sample_source_from_file(track_path, None, 1024)?;
         let sample_rate = source.sample_rate();
         let sample_format = source.sample_format();
         let duration = source.duration().unwrap_or(Duration::ZERO);
@@ -1252,7 +1260,8 @@ mod test {
 
         // Measure file reading time with sample source
         let start = Instant::now();
-        let mut source = crate::audio::sample_source::create_sample_source_from_file(&wav_path)?;
+        let mut source =
+            crate::audio::sample_source::create_sample_source_from_file(&wav_path, None, 1024)?;
         println!(
             "WAV file spec: {}Hz, {}bit, {}ch",
             source.sample_rate(),
@@ -1274,13 +1283,15 @@ mod test {
         );
         println!("Samples read: {}", samples_read);
 
-        // Measure WavSampleSource performance
+        // Measure AudioSampleSource performance
         let start = Instant::now();
-        let mut wav_source = crate::audio::sample_source::WavSampleSource::from_file(&wav_path)?;
+        let mut wav_source = crate::audio::sample_source::audio::AudioSampleSource::from_file(
+            &wav_path, None, 1024,
+        )?;
         let mut samples_processed = 0;
 
         loop {
-            match crate::audio::sample_source::SampleSource::next_sample(&mut wav_source) {
+            match crate::audio::sample_source::traits::SampleSource::next_sample(&mut wav_source) {
                 Ok(Some(_)) => samples_processed += 1,
                 Ok(None) => break,
                 Err(e) => return Err(e.into()),
@@ -1288,9 +1299,9 @@ mod test {
         }
         let wav_source_time = start.elapsed();
 
-        println!("WavSampleSource processing time: {:?}", wav_source_time);
+        println!("AudioSampleSource processing time: {:?}", wav_source_time);
         println!(
-            "WavSampleSource speed: {:.2} MB/s",
+            "AudioSampleSource speed: {:.2} MB/s",
             (samples_processed * 4) as f64 / wav_source_time.as_secs_f64() / 1_000_000.0
         );
         println!("Samples processed: {}", samples_processed);

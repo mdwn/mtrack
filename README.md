@@ -81,9 +81,24 @@ MIDI device, you would use the string `UltraLite-mk5`.
 
 ## File formats
 
+### Configuration files
+
 `mtrack` now uses [config-rs](https://github.com/rust-cli/config-rs) for configuration parsing, which
 means we should support any of the configuration file formats that it supports. Testing for anything
 other than YAML is limited at the moment.
+
+### Audio files
+
+`mtrack` supports a wide variety of audio formats through the [symphonia](https://github.com/pdeljanov/Symphonia) library. Supported formats include:
+
+- **WAV** (PCM, various bit depths)
+- **FLAC** (Free Lossless Audio Codec)
+- **MP3** (MPEG Audio Layer III)
+- **OGG Vorbis**
+- **AAC** (Advanced Audio Coding)
+- **ALAC** (Apple Lossless, in M4A containers)
+
+All audio files are automatically transcoded to match your audio device's configuration (sample rate, bit depth, and format). Files can be mixed and matched within a song - for example, you can use a WAV file for your click track and an MP3 file for your backing track.
 
 ## Structure of an mtrack repository and supporting files
 
@@ -163,6 +178,7 @@ tracks:
   file: Backing Tracks.wav
   file_channel: 2
 # Our keys file has two channels, but we're only interested in one.
+# Note: You can use any supported audio format (WAV, MP3, FLAC, OGG, AAC, ALAC, etc.)
 - name: keys
   file: Keys.wav
   file_channel: 1
@@ -205,7 +221,7 @@ $ mtrack songs --init /mnt/song-storage
 ```
 
 This will create a file called `song.yaml` in each subfolder of `/mnt/storage`. The name of the
-subfolder determines the song's name. WAV files are used as tracks. The track's name is
+subfolder determines the song's name. Audio files (WAV, MP3, FLAC, OGG, AAC, ALAC, etc.) are used as tracks. The track's name is
 determined using the file name and the number of channels within the file. MIDI files are used as
 MIDI playback, MIDI files that start with `dmx_` will be used as light shows. You can edit the generated files to refine the settings to your needs. 
 
@@ -247,11 +263,10 @@ audio:
   # Run `mtrack devices` to see a list of the devices that mtrack recognizes.
   device: UltraLite-mk5
 
-  # (Optional) The buffer size to use for background reads. Defaults to 1024 samples.
+  # (Optional) The buffer size for decoded audio samples. This controls how many samples
+  # per channel are buffered internally before being returned. Larger values reduce I/O
+  # operations but use more memory. Defaults to 1024 samples per channel.
   buffer_size: 1024
-
-  # (Optional) The threshold for triggering background reads. Defaults to 256 samples.
-  buffer_threshold: 256
 
   # (Optional) The sample rate to use for the audio device. Defaults to 44100.
   sample_rate: 44100
@@ -768,7 +783,7 @@ lighting:
   - file: "lighting/outro.light"      # Multiple shows can be referenced
 tracks:
   - name: "backing-track"
-    file: "backing-track.wav"
+    file: "backing-track.wav"  # Can be WAV, MP3, FLAC, OGG, AAC, ALAC, etc.
 ```
 
 The `.light` files use the DSL format and can reference logical groups defined in your `mtrack.yaml`:
@@ -1415,6 +1430,7 @@ DMX is expected to be well supported through OLA, but the devices that have been
 
 - Entec DMX USB Pro
 - RatPac Satellite (Art-Net and sACN)
+- Cinelex Skycast A (sACN)
 
 ### General disclaimer
 

@@ -7,4 +7,5 @@ lighting:
     file: "lighting/outro.light"
 tracks:
   - name: "Main Track"
-    audio_file: "song.wav"
+    file: "song.mp3"  # MP3 format example - can use WAV, MP3, FLAC, OGG, AAC, ALAC, etc.
+    file_channel: 1

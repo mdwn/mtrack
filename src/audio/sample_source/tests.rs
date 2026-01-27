@@ -13,12 +13,67 @@
 //
 #[cfg(test)]
 mod tests {
+    use crate::audio::sample_source::audio::AudioSampleSource;
+    use crate::audio::sample_source::create_sample_source_from_file;
+    use crate::audio::sample_source::memory::MemorySampleSource;
+    use crate::audio::sample_source::traits::{SampleSource, SampleSourceTestExt};
     use crate::audio::sample_source::transcoder::AudioTranscoder;
-    use crate::audio::sample_source::{
-        create_sample_source_from_file, MemorySampleSource, SampleSource, SampleSourceTestExt,
-        WavSampleSource,
-    };
     use crate::audio::TargetFormat;
+
+    // ---------------------------------------------------------------------
+    // Scaling helpers – direct unit tests for all integer formats
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn test_integer_scaling_signed_ranges() {
+        // S8
+        assert!((AudioSampleSource::scale_s8(0) - 0.0).abs() < 1e-7);
+        assert!(AudioSampleSource::scale_s8(i8::MAX) <= 1.0 + 1e-7);
+        assert!(AudioSampleSource::scale_s8(i8::MIN) >= -1.0 - 1e-7);
+
+        // S16
+        assert!((AudioSampleSource::scale_s16(0) - 0.0).abs() < 1e-7);
+        assert!(AudioSampleSource::scale_s16(i16::MAX) <= 1.0 + 1e-7);
+        assert!(AudioSampleSource::scale_s16(i16::MIN) >= -1.0 - 1e-7);
+
+        // S24
+        assert!((AudioSampleSource::scale_s24(0) - 0.0).abs() < 1e-7);
+        assert!(AudioSampleSource::scale_s24((1 << 23) - 1) <= 1.0 + 1e-7);
+        assert!(AudioSampleSource::scale_s24(-(1 << 23)) >= -1.0 - 1e-7);
+
+        // S32
+        assert!((AudioSampleSource::scale_s32(0) - 0.0).abs() < 1e-7);
+        assert!(AudioSampleSource::scale_s32(i32::MAX) <= 1.0 + 1e-7);
+        assert!(AudioSampleSource::scale_s32(i32::MIN) >= -1.0 - 1e-7);
+    }
+
+    #[test]
+    fn test_integer_scaling_unsigned_ranges() {
+        // U8
+        assert!((AudioSampleSource::scale_u8(0) + 1.0).abs() < 1e-7);
+        assert!((AudioSampleSource::scale_u8(u8::MAX) - 1.0).abs() < 1e-7);
+        let mid_u8 = AudioSampleSource::scale_u8(128);
+        assert!(mid_u8 > -0.01 && mid_u8 < 0.01);
+
+        // U16
+        assert!((AudioSampleSource::scale_u16(0) + 1.0).abs() < 1e-7);
+        assert!((AudioSampleSource::scale_u16(u16::MAX) - 1.0).abs() < 1e-7);
+        let mid_u16 = AudioSampleSource::scale_u16(u16::MAX / 2);
+        assert!(mid_u16 > -0.01 && mid_u16 < 0.01);
+
+        // U24
+        let max_u24 = (1u32 << 24) - 1;
+        assert!((AudioSampleSource::scale_u24(0) + 1.0).abs() < 1e-7);
+        assert!((AudioSampleSource::scale_u24(max_u24) - 1.0).abs() < 1e-7);
+        let mid_u24 = AudioSampleSource::scale_u24(max_u24 / 2);
+        assert!(mid_u24 > -0.01 && mid_u24 < 0.01);
+
+        // U32
+        assert!((AudioSampleSource::scale_u32(0) + 1.0).abs() < 1e-7);
+        assert!((AudioSampleSource::scale_u32(u32::MAX) - 1.0).abs() < 1e-7);
+        let mid_u32 = AudioSampleSource::scale_u32(u32::MAX / 2);
+        assert!(mid_u32 > -0.01 && mid_u32 < 0.01);
+    }
     use crate::testutil::audio_test_utils::calculate_snr;
     use rand;
 
@@ -252,7 +307,7 @@ mod tests {
 
             match converter {
                 Ok(converter) => {
-                    // Transcoding is now handled internally by WavSampleSource
+                    // Transcoding is now handled internally by AudioSampleSource
                     // The old needs_resampling check is no longer needed
                     let _needs_resampling = should_need_resampling;
                     // Test that the converter was created successfully
@@ -279,7 +334,7 @@ mod tests {
             AudioTranscoder::new(mock_source, &source_format, &target_format, 1).unwrap();
 
         // Should not need resampling
-        // Transcoding is now handled internally by WavSampleSource
+        // Transcoding is now handled internally by AudioSampleSource
 
         // Test that samples are returned unchanged when no resampling is needed
         let mut output_samples = Vec::with_capacity(10);
@@ -1316,7 +1371,7 @@ mod tests {
         write_wav_with_bits(wav_path.clone(), vec![samples], 44100, 16).unwrap();
 
         // Test reading the WAV file using generic function
-        let mut wav_source = create_sample_source_from_file(&wav_path).unwrap();
+        let mut wav_source = create_sample_source_from_file(&wav_path, None, 1024).unwrap();
 
         let mut read_samples = Vec::new();
         loop {
@@ -1365,7 +1420,7 @@ mod tests {
         write_wav_with_bits(wav_path.clone(), vec![samples], 44100, 24).unwrap();
 
         // Test reading the WAV file using generic function
-        let mut wav_source = create_sample_source_from_file(&wav_path).unwrap();
+        let mut wav_source = create_sample_source_from_file(&wav_path, None, 1024).unwrap();
 
         let mut read_samples = Vec::new();
         loop {
@@ -1414,7 +1469,7 @@ mod tests {
         write_wav(wav_path.clone(), vec![samples], 44100).unwrap();
 
         // Test reading the WAV file using generic function
-        let mut wav_source = create_sample_source_from_file(&wav_path).unwrap();
+        let mut wav_source = create_sample_source_from_file(&wav_path, None, 1024).unwrap();
 
         let mut read_samples = Vec::new();
         loop {
@@ -1464,7 +1519,7 @@ mod tests {
         write_wav(wav_path.clone(), vec![left_samples, right_samples], 44100).unwrap();
 
         // Test reading the WAV file
-        let mut wav_source = WavSampleSource::from_file(&wav_path).unwrap();
+        let mut wav_source = AudioSampleSource::from_file(&wav_path, None, 1024).unwrap();
 
         let mut read_samples = Vec::new();
         loop {
@@ -1512,7 +1567,7 @@ mod tests {
         write_wav(wav_path.clone(), vec![Vec::<i32>::new()], 44100).unwrap();
 
         // Test reading the empty WAV file
-        let mut wav_source = WavSampleSource::from_file(&wav_path).unwrap();
+        let mut wav_source = AudioSampleSource::from_file(&wav_path, None, 1024).unwrap();
 
         // Should return None immediately
         match wav_source.next_sample() {
@@ -1530,7 +1585,7 @@ mod tests {
         let wav_path = std::path::Path::new("nonexistent_file.wav");
 
         // Should return an error for nonexistent file
-        if WavSampleSource::from_file(wav_path).is_ok() {
+        if AudioSampleSource::from_file(wav_path, None, 1024).is_ok() {
             panic!("Expected error for nonexistent file")
         }
     }
@@ -1547,7 +1602,7 @@ mod tests {
         let samples: Vec<i32> = vec![1000, 2000, 3000];
         write_wav(wav_path.clone(), vec![samples], 44100).unwrap();
 
-        let mut wav_source = WavSampleSource::from_file(&wav_path).unwrap();
+        let mut wav_source = AudioSampleSource::from_file(&wav_path, None, 1024).unwrap();
 
         // Initially not finished
         assert!(!wav_source.is_finished());
@@ -1615,9 +1670,9 @@ mod tests {
         write_wav_with_bits(wav_32_path.clone(), vec![samples_32], sample_rate, 32).unwrap();
 
         // Read samples from each WAV file
-        let mut wav_16_source = WavSampleSource::from_file(&wav_16_path).unwrap();
-        let mut wav_24_source = WavSampleSource::from_file(&wav_24_path).unwrap();
-        let mut wav_32_source = WavSampleSource::from_file(&wav_32_path).unwrap();
+        let mut wav_16_source = AudioSampleSource::from_file(&wav_16_path, None, 1024).unwrap();
+        let mut wav_24_source = AudioSampleSource::from_file(&wav_24_path, None, 1024).unwrap();
+        let mut wav_32_source = AudioSampleSource::from_file(&wav_32_path, None, 1024).unwrap();
 
         let mut samples_16_read = Vec::new();
         let mut samples_24_read = Vec::new();
@@ -1716,7 +1771,7 @@ mod tests {
             write_wav(wav_path.clone(), vec![samples], sample_rate).unwrap();
 
             // Test reading the WAV file
-            let mut wav_source = WavSampleSource::from_file(&wav_path).unwrap();
+            let mut wav_source = AudioSampleSource::from_file(&wav_path, None, 1024).unwrap();
 
             let mut read_samples = Vec::new();
             loop {
@@ -1763,7 +1818,7 @@ mod tests {
         // Test seeking to 5 seconds
         let seek_time = Duration::from_secs(5);
         let mut wav_source =
-            WavSampleSource::from_file_with_seek(&wav_path, Some(seek_time)).unwrap();
+            AudioSampleSource::from_file(&wav_path, Some(seek_time), 1024).unwrap();
 
         // Read a few samples and verify we can read after seeking
         // At 5 seconds, we should be at sample index ~220500 (5 * 44100)
@@ -1779,10 +1834,65 @@ mod tests {
 
         // Test seeking to 0 (should work like from_file)
         let mut wav_source_start =
-            WavSampleSource::from_file_with_seek(&wav_path, Some(std::time::Duration::ZERO))
-                .unwrap();
+            AudioSampleSource::from_file(&wav_path, Some(std::time::Duration::ZERO), 1024).unwrap();
         let start_sample = wav_source_start.next_sample().unwrap();
         assert!(start_sample.is_some(), "Should have samples from start");
+    }
+
+    #[test]
+    fn test_wav_sample_source_seek_clears_leftover_samples() {
+        use crate::testutil::write_wav;
+        use std::time::Duration;
+        use tempfile::tempdir;
+
+        let tempdir = tempdir().unwrap();
+        let wav_path = tempdir.path().join("test_seek_leftover.wav");
+
+        // Create a WAV file with 4 seconds of samples at 44100 Hz.
+        // First half (0-2s) is positive; second half (2-4s) is negative so we
+        // can distinguish pre‑seek from post‑seek regions by sign alone.
+        let sample_rate = 44100u32;
+        let duration_secs = 4;
+        let total_samples = sample_rate as usize * duration_secs;
+
+        let samples: Vec<i32> = (0..total_samples)
+            .map(|i| {
+                if i < (sample_rate as usize * 2) {
+                    1000
+                } else {
+                    -1000
+                }
+            })
+            .collect();
+
+        write_wav(wav_path.clone(), vec![samples], sample_rate).unwrap();
+
+        // Force AudioSampleSource to go through detect_channels_and_prime_buffer so
+        // that it decodes some audio at the beginning of the stream and stores it
+        // in leftover_samples before we seek.
+        std::env::set_var("MTRACK_FORCE_DETECT_CHANNELS", "1");
+
+        // Seek to 3 seconds, which lies firmly in the negative region.
+        let seek_time = Duration::from_secs(3);
+        let mut wav_source =
+            AudioSampleSource::from_file(&wav_path, Some(seek_time), 1024).unwrap();
+
+        let first_sample = wav_source
+            .next_sample()
+            .unwrap()
+            .expect("expected sample after seeking");
+
+        // If leftover_samples were not cleared before seeking, we'd first see
+        // positive samples from the start of the file. With the bug fixed we
+        // should start in the negative region.
+        assert!(
+            first_sample < 0.0,
+            "expected first sample after seek to come from post‑seek (negative) region, got {}",
+            first_sample
+        );
+
+        // Clean up the env var so it doesn't affect other tests.
+        std::env::remove_var("MTRACK_FORCE_DETECT_CHANNELS");
     }
 
     #[test]
@@ -1808,10 +1918,10 @@ mod tests {
         .unwrap();
 
         // Test reading the WAV file
-        let mut wav_source = WavSampleSource::from_file(&wav_path).unwrap();
+        let mut wav_source = AudioSampleSource::from_file(&wav_path, None, 1024).unwrap();
 
         // Verify channel count
-        assert_eq!(wav_source.channels(), 4);
+        assert_eq!(wav_source.channel_count(), 4);
 
         // Read samples and verify interleaving
         let mut samples_read = Vec::new();
@@ -1880,10 +1990,10 @@ mod tests {
         .unwrap();
 
         // Test reading the WAV file
-        let mut wav_source = WavSampleSource::from_file(&wav_path).unwrap();
+        let mut wav_source = AudioSampleSource::from_file(&wav_path, None, 1024).unwrap();
 
         // Verify channel count and sample rate
-        assert_eq!(wav_source.channels(), 6);
+        assert_eq!(wav_source.channel_count(), 6);
         assert_eq!(wav_source.sample_rate(), 48000);
 
         // Read samples and verify interleaving
@@ -1924,5 +2034,70 @@ mod tests {
                 actual
             );
         }
+    }
+
+    fn decode_some_samples_from<P: AsRef<std::path::Path>>(path: P) {
+        let path = path.as_ref();
+
+        assert!(
+            path.exists(),
+            "expected audio fixture to exist at {:?}",
+            path
+        );
+
+        let mut source = create_sample_source_from_file(path, None, 1024)
+            .expect("failed to create sample source");
+
+        // Basic sanity checks: metadata should look sensible.
+        assert!(source.sample_rate() > 0, "sample_rate should be > 0");
+        assert!(source.channel_count() > 0, "channel_count should be > 0");
+
+        // Try to read a small number of samples to ensure we actually decode audio.
+        let mut count = 0usize;
+        const MAX_SAMPLES: usize = 2048;
+        while count < MAX_SAMPLES {
+            match source.next_sample() {
+                Ok(Some(_)) => count += 1,
+                Ok(None) => break,
+                Err(e) => panic!("error while decoding samples: {}", e),
+            }
+        }
+
+        assert!(count > 0, "no samples decoded from test file: {:?}", path);
+    }
+
+    #[test]
+    fn test_symphonia_can_decode_wav() {
+        decode_some_samples_from(std::path::Path::new("assets/1Channel44.1k.wav"));
+    }
+
+    #[test]
+    fn test_symphonia_can_decode_flac() {
+        decode_some_samples_from(std::path::Path::new("assets/1Channel44.1k.flac"));
+    }
+
+    #[test]
+    fn test_symphonia_can_decode_ogg_vorbis() {
+        decode_some_samples_from(std::path::Path::new("assets/1Channel44.1k.ogg"));
+    }
+
+    #[test]
+    fn test_symphonia_can_decode_mp3() {
+        decode_some_samples_from(std::path::Path::new("assets/1Channel44.1k.mp3"));
+    }
+
+    #[test]
+    fn test_symphonia_can_decode_aac() {
+        decode_some_samples_from(std::path::Path::new("assets/1Channel44.1k.aac"));
+    }
+
+    #[test]
+    fn test_symphonia_can_decode_alac() {
+        decode_some_samples_from(std::path::Path::new("assets/1Channel44.1k_alac.m4a"));
+    }
+
+    #[test]
+    fn test_symphonia_can_decode_alac_stereo() {
+        decode_some_samples_from(std::path::Path::new("assets/2Channel44.1k_alac.m4a"));
     }
 }

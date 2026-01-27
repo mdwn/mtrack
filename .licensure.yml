@@ -10,6 +10,12 @@ excludes:
   - Cargo.toml
   - .*\.yaml
   - .*\.wav
+  - .*\.mp3
+  - .*\.flac
+  - .*\.ogg
+  - .*\.aac
+  - .*\.alac
+  - .*\.m4a
   - .*\.mid
   - lcov.info
   - .*\.tosc

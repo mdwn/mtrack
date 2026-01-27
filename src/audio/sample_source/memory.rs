@@ -14,7 +14,7 @@
 // These imports are used in the impl blocks below, but the linter may not see them
 // in non-test mode due to #[cfg(test)] blocks
 #[allow(unused_imports)]
-use super::error::TranscodingError;
+use super::error::SampleSourceError;
 #[allow(unused_imports)]
 use super::traits::SampleSource;
 
@@ -46,7 +46,7 @@ impl MemorySampleSource {
 
 #[cfg(test)]
 impl SampleSource for MemorySampleSource {
-    fn next_sample(&mut self) -> Result<Option<f32>, TranscodingError> {
+    fn next_sample(&mut self) -> Result<Option<f32>, SampleSourceError> {
         if self.current_index >= self.samples.len() {
             Ok(None)
         } else {
