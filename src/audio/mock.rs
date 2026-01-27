@@ -17,7 +17,7 @@ use std::{
     fmt,
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc, Arc, Barrier,
+        mpsc, Arc,
     },
     thread,
     time::Duration,
@@ -26,6 +26,7 @@ use std::{
 use tracing::{info, span, Level};
 
 use crate::{playsync::CancelHandle, songs::Song};
+use std::sync::Barrier;
 
 /// A mock device. Doesn't actually play anything.
 #[derive(Clone)]
@@ -79,11 +80,15 @@ impl crate::audio::Device for Device {
         let join_handle = {
             let cancel_handle = cancel_handle.clone();
             let finished = finished.clone();
-            // Wait until the song is cancelled or until the song is done.
             thread::spawn(move || {
                 play_barrier.wait();
 
-                // Wait for a signal or until we hit cancellation.
+                if cancel_handle.is_cancelled() {
+                    finished.store(true, Ordering::Relaxed);
+                    cancel_handle.notify();
+                    return;
+                }
+
                 let _ = sleep_rx.recv_timeout(remaining_duration);
 
                 // Expire at the end of playback.
@@ -93,10 +98,13 @@ impl crate::audio::Device for Device {
         };
 
         cancel_handle.wait(finished);
+
+        // Set is_playing to false as soon as we know playback is stopping
+        // This ensures tests can check is_playing immediately after stop() without races
+        self.is_playing.store(false, Ordering::Relaxed);
+
         sleep_tx.send(())?;
         let join_result = join_handle.join();
-
-        self.is_playing.store(false, Ordering::Relaxed);
 
         if join_result.is_err() {
             return Err("Error while joining thread!".into());

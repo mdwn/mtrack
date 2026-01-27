@@ -17,7 +17,7 @@ use std::{
     fmt,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc, Barrier,
+        Arc,
     },
     thread,
     time::Duration,
@@ -34,6 +34,7 @@ use crate::{
     playsync::CancelHandle,
     songs::Song,
 };
+use std::sync::Barrier;
 
 /// Lock-free circular buffer for zero-copy audio streaming
 struct CircularBuffer {
@@ -561,6 +562,11 @@ impl AudioDevice for Device {
         }
 
         play_barrier.wait();
+
+        if cancel_handle.is_cancelled() {
+            return Ok(());
+        }
+
         spin_sleep::sleep(self.playback_delay);
 
         // Create channel mapped sources for each track in the song, starting from start_time

@@ -432,6 +432,26 @@ impl Engine {
 
         if dmx_midi_sheets.is_empty() && !has_lighting {
             info!(song = song.name(), "Song has no matching light shows.");
+
+            // Even though we're returning early, we still need to account for the barrier count.
+            // The barrier count in play_files() includes song.light_shows().len() if
+            // song.light_shows() is not empty. The empty_barrier_counter tracks light shows
+            // that don't have matching universes, so we need to spawn threads for them to
+            // reach the expected barrier count. Otherwise, other threads will hang waiting
+            // for the barrier count to be reached.
+            (0..empty_barrier_counter)
+                .map(|_| {
+                    let play_barrier = play_barrier.clone();
+                    thread::spawn(move || {
+                        play_barrier.wait();
+                    })
+                })
+                .for_each(|join_handle| {
+                    join_handle
+                        .join()
+                        .expect("Empty barrier join handle should join immediately");
+                });
+
             return Ok(());
         }
 
@@ -447,6 +467,12 @@ impl Engine {
                 let play_barrier = play_barrier.clone();
 
                 thread::spawn(move || {
+                    play_barrier.wait();
+
+                    if cancel_handle.is_cancelled() {
+                        return;
+                    }
+
                     let connection = DMXConnection {
                         cancel_handle: cancel_handle.clone(),
                         universe_name,
@@ -463,8 +489,13 @@ impl Engine {
 
                     let play_finished = Arc::new(AtomicBool::new(false));
 
-                    play_barrier.wait();
                     spin_sleep::sleep(playback_delay);
+
+                    // Check again before playing
+                    if cancel_handle.is_cancelled() {
+                        return;
+                    }
+
                     player.play(&dmx_midi_sheet.sheet);
                     play_finished.store(true, std::sync::atomic::Ordering::Relaxed);
                 })
@@ -486,8 +517,6 @@ impl Engine {
             join_handles.push(thread::spawn(move || {
                 play_barrier.wait();
 
-                // Wait for either cancellation or timeline completion
-                // The effects loop will set timeline_finished and call notify() when all cues are processed
                 cancel_handle.wait(timeline_finished);
             }));
         }
@@ -508,21 +537,27 @@ impl Engine {
                     .expect("Empty barrier join handle should join immediately");
             });
 
+        // When cancelled, drop join handles to avoid hanging if threads are stuck on barrier wait.
+        // Threads will become detached but should exit quickly after barrier wait when they
+        // check for cancellation.
         if cancel_handle.is_cancelled() {
-            info!("DMX playback has been cancelled.");
-        }
-
-        let results: Vec<Result<(), Box<dyn Error>>> = join_handles
-            .drain(..)
-            .map(|join_handle| {
-                if join_handle.join().is_err() {
-                    return Err("Error while joining thread!".into());
-                }
-                Ok(())
-            })
-            .collect();
-        for result in results.into_iter() {
-            result?;
+            info!(
+                "DMX playback has been cancelled. Dropping thread join handles to avoid deadlock."
+            );
+            drop(join_handles);
+        } else {
+            let results: Vec<Result<(), Box<dyn Error>>> = join_handles
+                .drain(..)
+                .map(|join_handle| {
+                    if join_handle.join().is_err() {
+                        return Err("Error while joining thread!".into());
+                    }
+                    Ok(())
+                })
+                .collect();
+            for result in results.into_iter() {
+                result?;
+            }
         }
 
         // Song playback finished - signal the song time tracker to stop
@@ -1122,6 +1157,7 @@ mod test {
     use nodi::{Connection, MidiEvent};
 
     use crate::playsync::CancelHandle;
+    use std::sync::Barrier;
 
     use super::{config, DMXConnection, Engine};
     use crate::dmx::ola_client::OlaClientFactory;
@@ -1590,7 +1626,7 @@ mod test {
         // Test timeline setup
         let song_arc = Arc::new(song);
         let cancel_handle = crate::playsync::CancelHandle::new();
-        let play_barrier = Arc::new(std::sync::Barrier::new(1));
+        let play_barrier = Arc::new(Barrier::new(1));
 
         // This should set up the timeline
         Engine::play(

@@ -512,14 +512,10 @@ impl Player {
         let song = self.get_playlist().current();
         info!(song = song.name(), "Stopping playback.");
 
-        // Cancel the playback.
         play_handles.cancel.cancel();
 
-        // Clear the join handle immediately so we can play again
-        // The cleanup task will still run, but we don't need to wait for it
-        // Drop the join handle - it will complete in the background
         drop(play_handles.join);
-        drop(join); // Release the lock
+        drop(join);
 
         // Reset stop_run after a brief delay to allow any remaining cleanup to complete
         let stop_run = self.stop_run.clone();
