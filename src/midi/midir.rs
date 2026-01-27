@@ -18,7 +18,7 @@ use std::{
     fmt, mem,
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc, Arc, Barrier, Mutex,
+        mpsc, Arc, Mutex,
     },
     thread,
     time::Duration,
@@ -36,6 +36,7 @@ use crate::{
     playsync::CancelHandle,
     songs::Song,
 };
+use std::sync::Barrier;
 
 use super::transform::{ControlChangeMapper, MidiTransformer, NoteMapper};
 
@@ -236,6 +237,13 @@ impl super::Device for Device {
 
                 thread::spawn(move || {
                     play_barrier.wait();
+
+                    if cancel_handle.is_cancelled() {
+                        finished.store(true, Ordering::Relaxed);
+                        cancel_handle.notify();
+                        return;
+                    }
+
                     spin_sleep::sleep(playback_delay);
 
                     // Play the sheet - events before start_time will be skipped by SeekConnection
@@ -252,6 +260,13 @@ impl super::Device for Device {
 
                 thread::spawn(move || {
                     play_barrier.wait();
+
+                    if cancel_handle.is_cancelled() {
+                        finished.store(true, Ordering::Relaxed);
+                        cancel_handle.notify();
+                        return;
+                    }
+
                     spin_sleep::sleep(playback_delay);
 
                     // Play the sheet

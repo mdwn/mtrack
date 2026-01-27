@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Fixed a bug where stopping too fast after playing could produce a hang. This is unlikely to
+have happened in a live scenario.
+
 ## [0.7.0]
 
 A major resampling bug discovered in 0.6.0 was fixed, apologies to everyone who encountered

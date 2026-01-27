@@ -148,10 +148,15 @@ impl super::Device for Device {
         let join_handle = {
             let cancel_handle = cancel_handle.clone();
             let finished = finished.clone();
-            // Wait until the song is cancelled or until the song is done.
             thread::spawn(move || {
                 play_barrier.wait();
-                // Wait for a signal or until we hit cancellation.
+
+                if cancel_handle.is_cancelled() {
+                    finished.store(true, Ordering::Relaxed);
+                    cancel_handle.notify();
+                    return;
+                }
+
                 let _ = sleep_rx.recv_timeout(remaining_duration);
 
                 // Expire at the end of playback.
