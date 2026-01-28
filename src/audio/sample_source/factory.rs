@@ -11,40 +11,17 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-use std::path::Path;
-
-use super::error::TranscodingError;
+use super::audio::AudioSampleSource;
+use super::error::SampleSourceError;
 use super::traits::SampleSource;
-use super::wav::WavSampleSource;
 
 /// Create a SampleSource from a file, automatically detecting the file type
-pub fn create_sample_source_from_file<P: AsRef<Path>>(
-    path: P,
-) -> Result<Box<dyn SampleSource>, TranscodingError> {
-    create_sample_source_from_file_with_seek(path, None)
-}
-
-pub fn create_sample_source_from_file_with_seek<P: AsRef<Path>>(
+pub fn create_sample_source_from_file<P: AsRef<std::path::Path>>(
     path: P,
     start_time: Option<std::time::Duration>,
-) -> Result<Box<dyn SampleSource>, TranscodingError> {
+    buffer_size: usize,
+) -> Result<Box<dyn SampleSource>, SampleSourceError> {
     let path = path.as_ref();
-
-    // Get file extension to determine type
-    let extension = path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-
-    match extension.as_str() {
-        "wav" => {
-            let wav_source = WavSampleSource::from_file_with_seek(path, start_time)?;
-            Ok(Box::new(wav_source))
-        }
-        _ => Err(TranscodingError::SampleConversionFailed(format!(
-            "Unsupported file format: {}",
-            extension
-        ))),
-    }
+    let audio_source = AudioSampleSource::from_file(path, start_time, buffer_size)?;
+    Ok(Box::new(audio_source))
 }

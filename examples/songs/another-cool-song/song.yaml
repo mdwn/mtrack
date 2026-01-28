@@ -20,8 +20,8 @@ tracks:
 - name: click
   file: click.wav
 - name: backing-track-l
-  file: backing-track.wav
+  file: backing-track.flac  # FLAC format example
   file_channel: 1
 - name: backing-track-r
-  file: backing-track.wav
+  file: backing-track.flac  # FLAC format example
   file_channel: 2

@@ -13,7 +13,7 @@
 //
 use crate::audio::TargetFormat;
 
-use super::error::TranscodingError;
+use super::error::SampleSourceError;
 use super::traits::{ChannelMappedSampleSource, SampleSource};
 use super::transcoder::AudioTranscoder;
 
@@ -40,25 +40,8 @@ impl ChannelMappedSource {
 }
 
 impl ChannelMappedSampleSource for ChannelMappedSource {
-    fn next_sample(&mut self) -> Result<Option<f32>, TranscodingError> {
+    fn next_sample(&mut self) -> Result<Option<f32>, SampleSourceError> {
         self.source.next_sample()
-    }
-
-    fn next_frame(&mut self, output: &mut [f32]) -> Result<Option<usize>, TranscodingError> {
-        let channel_count = self.source_channel_count as usize;
-        if output.len() < channel_count {
-            return Err(TranscodingError::SampleConversionFailed(format!(
-                "Output buffer too small: need {} samples",
-                channel_count
-            )));
-        }
-        for out in output.iter_mut().take(channel_count) {
-            match self.source.next_sample()? {
-                Some(sample) => *out = sample,
-                None => return Ok(None),
-            }
-        }
-        Ok(Some(channel_count))
     }
 
     fn channel_mappings(&self) -> &Vec<Vec<String>> {
@@ -70,51 +53,18 @@ impl ChannelMappedSampleSource for ChannelMappedSource {
     }
 }
 
-/// A wrapper that makes Box<dyn SampleSource> work with AudioTranscoder
-struct SampleSourceWrapper {
-    source: Box<dyn SampleSource>,
-}
-
-impl SampleSource for SampleSourceWrapper {
-    fn next_sample(&mut self) -> Result<Option<f32>, TranscodingError> {
-        self.source.next_sample()
-    }
-
-    fn channel_count(&self) -> u16 {
-        self.source.channel_count()
-    }
-
-    fn sample_rate(&self) -> u32 {
-        self.source.sample_rate()
-    }
-
-    fn bits_per_sample(&self) -> u16 {
-        self.source.bits_per_sample()
-    }
-
-    fn sample_format(&self) -> crate::audio::SampleFormat {
-        self.source.sample_format()
-    }
-
-    fn duration(&self) -> Option<std::time::Duration> {
-        self.source.duration()
-    }
-}
-
 /// Create a ChannelMappedSampleSource from a generic SampleSource
 pub fn create_channel_mapped_sample_source(
     source: Box<dyn SampleSource>,
     target_format: TargetFormat,
     channel_mappings: Vec<Vec<String>>,
-    _buffer_size: usize,
-    _buffer_threshold: usize,
-) -> Result<Box<dyn ChannelMappedSampleSource>, TranscodingError> {
+) -> Result<Box<dyn ChannelMappedSampleSource>, SampleSourceError> {
     let source_format = TargetFormat::new(
         source.sample_rate(),
         source.sample_format(),
         source.bits_per_sample(),
     )
-    .map_err(|e| TranscodingError::SampleConversionFailed(e.to_string()))?;
+    .map_err(|e| SampleSourceError::SampleConversionFailed(e.to_string()))?;
 
     let needs_transcoding = source_format.sample_rate != target_format.sample_rate
         || source_format.sample_format != target_format.sample_format
@@ -122,10 +72,9 @@ pub fn create_channel_mapped_sample_source(
 
     let channel_count = source.channel_count();
     let sample_source: Box<dyn SampleSource> = if needs_transcoding {
-        // Create a wrapper that can be used with AudioTranscoder
-        let wrapper = SampleSourceWrapper { source };
+        // Box<dyn SampleSource> now implements SampleSource directly, so we can use it with AudioTranscoder
         let transcoder =
-            AudioTranscoder::new(wrapper, &source_format, &target_format, channel_count)?;
+            AudioTranscoder::new(source, &source_format, &target_format, channel_count)?;
         Box::new(transcoder)
     } else {
         source

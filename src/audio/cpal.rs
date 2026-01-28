@@ -338,7 +338,7 @@ impl OutputManager {
             };
 
             // Create the output stream based on the target format
-            // Map hound::SampleFormat to the appropriate CPAL stream type
+            // Map SampleFormat to the appropriate CPAL stream type
 
             let stream_result = if target_format.sample_format == crate::audio::SampleFormat::Float
             {
@@ -575,7 +575,6 @@ impl AudioDevice for Device {
             mappings,
             self.target_format.clone(),
             self.audio_config.buffer_size(),
-            self.audio_config.buffer_threshold(),
         )?;
 
         // Add all sources to the output manager
