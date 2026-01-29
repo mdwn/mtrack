@@ -13,7 +13,6 @@
 //
 // Core audio mixing logic that can be used by both CPAL and test implementations
 use crate::audio::sample_source::ChannelMappedSampleSource;
-use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
@@ -21,42 +20,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 #[cfg(test)]
 use std::time::Instant;
-
-/// Result of reading from a single audio source (used for parallel processing)
-enum SourceReadResult {
-    /// Source finished (EOF, cancelled, or error)
-    Finished { id: u64 },
-    /// Successfully read frames
-    Success {
-        id: u64,
-        frames_read: usize,
-        is_finished: bool,
-        planar_data: Vec<Vec<f32>>,
-        channel_mappings: Vec<Vec<usize>>,
-    },
-}
-
-impl SourceReadResult {
-    fn finished(id: u64) -> Self {
-        Self::Finished { id }
-    }
-
-    fn success(
-        id: u64,
-        frames_read: usize,
-        is_finished: bool,
-        planar_data: Vec<Vec<f32>>,
-        channel_mappings: Vec<Vec<usize>>,
-    ) -> Self {
-        Self::Success {
-            id,
-            frames_read,
-            is_finished,
-            planar_data,
-            channel_mappings,
-        }
-    }
-}
 
 /// Pre-allocated buffers for mixing operations (avoids allocation in hot path)
 struct MixerBuffers {
@@ -365,7 +328,6 @@ impl AudioMixer {
     /// Processes multiple frames directly into the provided interleaved output buffer.
     /// Mixes in planar format internally for efficiency, then interleaves at the end.
     /// The buffer must be sized to num_frames * num_channels.
-    /// Uses parallel processing to decode/resample sources concurrently.
     pub fn process_into_output(&self, output: &mut [f32], num_frames: usize) {
         let channels = self.num_channels as usize;
         debug_assert_eq!(output.len(), num_frames * channels);
@@ -375,110 +337,76 @@ impl AudioMixer {
         buffers.prepare(channels, num_frames);
 
         // Get a snapshot of source references to process (minimize lock duration)
-        let sources_to_process: Vec<_> = {
+        let sources_to_process = {
             let sources = self.active_sources.read().unwrap();
             sources.clone()
         };
 
-        // Read from all sources in parallel - rayon handles small collections efficiently
-        // Each source decodes/resamples independently, which is the expensive work
-        let read_results: Vec<_> = sources_to_process
-            .par_iter()
-            .map(|active_source_arc| {
-                let mut active_source = active_source_arc.lock().unwrap();
+        // Process each active source - read all frames at once in planar format
+        for active_source_arc in sources_to_process {
+            let mut active_source = active_source_arc.lock().unwrap();
 
-                // Check if source should be skipped
-                if active_source.is_finished.load(Ordering::Relaxed)
-                    || active_source.cancel_handle.is_cancelled()
-                {
-                    return SourceReadResult::finished(active_source.id);
-                }
+            if active_source.is_finished.load(Ordering::Relaxed)
+                || active_source.cancel_handle.is_cancelled()
+            {
+                buffers.finished_ids.push(active_source.id);
+                continue;
+            }
 
-                let source_channel_count = active_source.cached_source_channel_count as usize;
+            let source_channel_count = active_source.cached_source_channel_count as usize;
 
-                // Take buffer out of struct to avoid borrow conflict
-                let mut read_buffer = std::mem::take(&mut active_source.planar_read_buffer);
+            // Take buffer out of struct to avoid borrow conflict
+            let mut read_buffer = std::mem::take(&mut active_source.planar_read_buffer);
 
-                // Ensure planar buffer is properly sized
-                if read_buffer.len() != source_channel_count {
-                    read_buffer = vec![Vec::new(); source_channel_count];
-                }
+            // Ensure planar buffer is properly sized
+            if read_buffer.len() != source_channel_count {
+                read_buffer = vec![Vec::new(); source_channel_count];
+            }
 
-                // Read all frames at once in planar format (the expensive part)
-                let result = active_source.source.next_frames(&mut read_buffer, num_frames);
+            // Read all frames at once in planar format
+            let result = active_source.source.next_frames(&mut read_buffer, num_frames);
 
-                // Build result based on read outcome
-                match result {
-                    Ok(frames_read) => {
-                        if frames_read == 0 {
-                            // EOF - put buffer back immediately
-                            active_source.is_finished.store(true, Ordering::Relaxed);
-                            active_source.planar_read_buffer = read_buffer;
-                            SourceReadResult::finished(active_source.id)
-                        } else {
-                            let is_done = frames_read < num_frames;
-                            if is_done {
-                                active_source.is_finished.store(true, Ordering::Relaxed);
-                            }
-                            // Move buffer into result - will be returned after mixing
-                            SourceReadResult::success(
-                                active_source.id,
-                                frames_read,
-                                is_done,
-                                read_buffer,
-                                active_source.channel_mappings.clone(),
-                            )
-                        }
-                    }
-                    Err(_) => {
-                        // Error - put buffer back immediately
-                        active_source.is_finished.store(true, Ordering::Relaxed);
-                        active_source.planar_read_buffer = read_buffer;
-                        SourceReadResult::finished(active_source.id)
-                    }
-                }
-            })
-            .collect();
-
-        // Mix all results into output buffer (sequential - fast and avoids contention)
-        for (idx, result) in read_results.into_iter().enumerate() {
+            // Process the result
             match result {
-                SourceReadResult::Finished { id } => {
-                    buffers.finished_ids.push(id);
-                }
-                SourceReadResult::Success {
-                    id,
-                    frames_read,
-                    is_finished,
-                    planar_data,
-                    channel_mappings,
-                } => {
-                    // Mix planar data into output
-                    for (source_channel, channel_samples) in planar_data.iter().enumerate() {
-                        if let Some(output_channels) = channel_mappings.get(source_channel) {
-                            for &output_index in output_channels {
-                                if output_index < channels {
-                                    for (frame_idx, &sample) in
-                                        channel_samples.iter().take(frames_read).enumerate()
-                                    {
-                                        buffers.planar_output[output_index][frame_idx] += sample;
+                Ok(frames_read) => {
+                    if frames_read == 0 {
+                        // EOF reached
+                        active_source.is_finished.store(true, Ordering::Relaxed);
+                        buffers.finished_ids.push(active_source.id);
+                    } else {
+                        // Mix planar data: for each source channel, add to mapped output channels
+                        for (source_channel, channel_samples) in read_buffer.iter().enumerate() {
+                            if let Some(output_channels) =
+                                active_source.channel_mappings.get(source_channel)
+                            {
+                                for &output_index in output_channels {
+                                    if output_index < channels {
+                                        // Add all frames from this source channel to output channel
+                                        for (frame_idx, &sample) in
+                                            channel_samples.iter().take(frames_read).enumerate()
+                                        {
+                                            buffers.planar_output[output_index][frame_idx] += sample;
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
 
-                    // Return buffer to source
-                    if let Some(source_arc) = sources_to_process.get(idx) {
-                        let mut source = source_arc.lock().unwrap();
-                        source.planar_read_buffer = planar_data;
-                    }
-
-                    if is_finished {
-                        buffers.finished_ids.push(id);
+                        // If we got fewer frames than requested, source is finished
+                        if frames_read < num_frames {
+                            active_source.is_finished.store(true, Ordering::Relaxed);
+                            buffers.finished_ids.push(active_source.id);
+                        }
                     }
                 }
+                Err(_) => {
+                    active_source.is_finished.store(true, Ordering::Relaxed);
+                    buffers.finished_ids.push(active_source.id);
+                }
             }
+
+            // Put buffer back
+            active_source.planar_read_buffer = read_buffer;
         }
 
         // Remove finished sources in a separate, quick write lock
