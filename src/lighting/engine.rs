@@ -19,12 +19,51 @@ mod validation;
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use super::effects::*;
 use super::tempo::TempoMap;
 use tracing::info;
+
+/// Pre-allocated buffers for the update() hot path (avoids per-frame allocations)
+struct UpdateBuffers {
+    /// Current frame's fixture states being computed
+    current_fixture_states: HashMap<String, FixtureState>,
+    /// Tracks which channels come from permanent effects
+    permanent_channels: HashMap<String, HashSet<String>>,
+    /// Effects grouped by layer for processing order
+    effects_by_layer: BTreeMap<EffectLayer, Vec<String>>,
+    /// Effects that completed this frame
+    completed_effects: Vec<String>,
+    /// Merged states for DMX output
+    merged_states: HashMap<String, FixtureState>,
+    /// DMX commands output
+    commands: Vec<DmxCommand>,
+}
+
+impl UpdateBuffers {
+    fn new() -> Self {
+        Self {
+            current_fixture_states: HashMap::with_capacity(64),
+            permanent_channels: HashMap::with_capacity(64),
+            effects_by_layer: BTreeMap::new(),
+            completed_effects: Vec::with_capacity(16),
+            merged_states: HashMap::with_capacity(64),
+            commands: Vec::with_capacity(512),
+        }
+    }
+
+    /// Clear all buffers for a new update cycle (retains allocated capacity)
+    fn clear(&mut self) {
+        self.current_fixture_states.clear();
+        self.permanent_channels.clear();
+        self.effects_by_layer.clear();
+        self.completed_effects.clear();
+        self.merged_states.clear();
+        self.commands.clear();
+    }
+}
 
 /// The main effects engine that manages and processes lighting effects
 pub struct EffectEngine {
@@ -36,7 +75,7 @@ pub struct EffectEngine {
     /// Persistent fixture states - maintains the current state of each fixture
     fixture_states: HashMap<String, FixtureState>,
     /// Channel locks - prevents lower-layer effects from affecting locked channels
-    channel_locks: HashMap<String, std::collections::HashSet<String>>,
+    channel_locks: HashMap<String, HashSet<String>>,
     /// Optional tempo map for tempo-aware effects (measure/beat-based timing)
     tempo_map: Option<TempoMap>,
     /// Layer intensity masters (0.0 to 1.0) - multiplies effect output per layer
@@ -51,6 +90,8 @@ pub struct EffectEngine {
     /// Last computed merged fixture states (for preview/debugging)
     /// This stores the merged states from the last update() call
     last_merged_states: HashMap<String, FixtureState>,
+    /// Pre-allocated buffers for update() hot path
+    update_buffers: UpdateBuffers,
 }
 
 impl Default for EffectEngine {
@@ -74,6 +115,7 @@ impl EffectEngine {
             frozen_layers: HashMap::new(),
             releasing_effects: HashMap::new(),
             last_merged_states: HashMap::new(),
+            update_buffers: UpdateBuffers::new(),
         }
     }
 
@@ -324,20 +366,23 @@ impl EffectEngine {
         self.current_time += dt;
         self.engine_elapsed += dt;
 
-        // Start with only states from permanent effects as the base
-        let mut current_fixture_states = HashMap::new();
+        // Clear pre-allocated buffers for this update cycle
+        self.update_buffers.clear();
 
         // Always include persisted permanent states as the base
         for (fixture_name, state) in &self.fixture_states {
-            current_fixture_states.insert(fixture_name.clone(), state.clone());
+            self.update_buffers
+                .current_fixture_states
+                .insert(fixture_name.clone(), state.clone());
         }
 
         // Track which channels come from permanent effects to preserve them later
-        let mut permanent_channels: HashMap<String, std::collections::HashSet<String>> =
-            current_fixture_states
-                .iter()
-                .map(|(name, state)| (name.clone(), state.channels.keys().cloned().collect()))
-                .collect();
+        for (name, state) in &self.update_buffers.current_fixture_states {
+            let channels: HashSet<String> = state.channels.keys().cloned().collect();
+            self.update_buffers
+                .permanent_channels
+                .insert(name.clone(), channels);
+        }
 
         // Group effects by layer - collect effect IDs first to avoid borrowing conflicts
         // Within each layer, we will sort effects deterministically so that:
@@ -345,12 +390,10 @@ impl EffectEngine {
         // - For equal priority, later-started effects are processed after earlier ones
         // This ensures consistent layering behavior between runs and avoids
         // HashMap iteration order affecting visual output.
-        let mut effects_by_layer: std::collections::BTreeMap<EffectLayer, Vec<String>> =
-            std::collections::BTreeMap::new();
-
         for (effect_id, effect) in &self.active_effects {
             if effect.enabled {
-                effects_by_layer
+                self.update_buffers
+                    .effects_by_layer
                     .entry(effect.layer)
                     .or_default()
                     .push(effect_id.clone());
@@ -359,7 +402,7 @@ impl EffectEngine {
 
         // Sort effect IDs within each layer by (priority, start_time, cue_time, id)
         // Using cue_time ensures deterministic ordering when multiple effects start at the same time
-        for (_layer, effect_ids) in effects_by_layer.iter_mut() {
+        for (_layer, effect_ids) in self.update_buffers.effects_by_layer.iter_mut() {
             effect_ids.sort_by(|a, b| {
                 let ea = self.active_effects.get(a).unwrap();
                 let eb = self.active_effects.get(b).unwrap();
@@ -391,10 +434,9 @@ impl EffectEngine {
             });
         }
 
-        // Track effects that have just completed to preserve their final state
-        let mut completed_effects = Vec::new();
-
         // Process each layer in order
+        // Note: We need to take ownership of effects_by_layer to iterate while modifying other buffers
+        let effects_by_layer = std::mem::take(&mut self.update_buffers.effects_by_layer);
         for (layer, effect_ids) in effects_by_layer {
             // Get layer masters
             let layer_intensity = self.get_layer_intensity_master(layer);
@@ -457,7 +499,7 @@ impl EffectEngine {
                     // For permanent effects, preserve via the completion handler below.
 
                     // Queue for removal after this frame
-                    completed_effects.push(effect_id.clone());
+                    self.update_buffers.completed_effects.push(effect_id.clone());
                     continue;
                 }
 
@@ -517,7 +559,8 @@ impl EffectEngine {
 
                             // Only blend if there are unlocked channels
                             if !filtered_state.channels.is_empty() {
-                                current_fixture_states
+                                self.update_buffers
+                                    .current_fixture_states
                                     .entry(fixture_name.clone())
                                     .or_insert_with(FixtureState::new)
                                     .blend_with(&filtered_state);
@@ -531,6 +574,8 @@ impl EffectEngine {
         }
 
         // Handle completed effects by preserving their final state
+        // Take completed_effects out to avoid borrow conflict during iteration
+        let completed_effects = std::mem::take(&mut self.update_buffers.completed_effects);
         for effect_id in completed_effects {
             // Clean up releasing effects tracking
             self.releasing_effects.remove(&effect_id);
@@ -543,7 +588,8 @@ impl EffectEngine {
                         // Preserve the final state in persistent storage
                         for (fixture_name, final_state) in final_states {
                             if self.fixture_registry.contains_key(&fixture_name) {
-                                current_fixture_states
+                                self.update_buffers
+                                    .current_fixture_states
                                     .entry(fixture_name.clone())
                                     .or_insert_with(FixtureState::new)
                                     .blend_with(&final_state);
@@ -562,14 +608,21 @@ impl EffectEngine {
                                 }
 
                                 // Ensure channels from this permanent effect are saved
-                                let entry =
-                                    permanent_channels.entry(fixture_name.clone()).or_default();
+                                let entry = self
+                                    .update_buffers
+                                    .permanent_channels
+                                    .entry(fixture_name.clone())
+                                    .or_default();
                                 // Include original final channels
                                 for ch in final_state.channels.keys() {
                                     entry.insert(ch.clone());
                                 }
                                 // Also include any per-layer multiplier channels materialized by blend_with
-                                if let Some(cur) = current_fixture_states.get(&fixture_name) {
+                                if let Some(cur) = self
+                                    .update_buffers
+                                    .current_fixture_states
+                                    .get(&fixture_name)
+                                {
                                     use super::effects::is_multiplier_channel;
                                     for ch in cur.channels.keys() {
                                         if is_multiplier_channel(ch) {
@@ -591,8 +644,10 @@ impl EffectEngine {
                         for (fixture_name, _final_state) in final_states {
                             if self.fixture_registry.contains_key(&fixture_name) {
                                 // Remove per-layer multipliers for this layer from current_fixture_states
-                                if let Some(current_state) =
-                                    current_fixture_states.get_mut(&fixture_name)
+                                if let Some(current_state) = self
+                                    .update_buffers
+                                    .current_fixture_states
+                                    .get_mut(&fixture_name)
                                 {
                                     current_state.channels.remove(dimmer_key);
                                     current_state.channels.remove(pulse_key);
@@ -614,8 +669,8 @@ impl EffectEngine {
 
         // Update persistent fixture states - only save channels from permanent effects
         self.fixture_states.clear();
-        for (fixture_name, state) in &current_fixture_states {
-            if let Some(perm_channels) = permanent_channels.get(fixture_name) {
+        for (fixture_name, state) in &self.update_buffers.current_fixture_states {
+            if let Some(perm_channels) = self.update_buffers.permanent_channels.get(fixture_name) {
                 // Only save channels that were from permanent effects
                 let mut preserved_state = FixtureState::new();
                 for channel_name in perm_channels {
@@ -634,40 +689,47 @@ impl EffectEngine {
 
         // Merge current frame states with persisted permanent states for emission,
         // so permanent dimming (e.g., RGB multipliers) persists even when no effect is active.
-        let mut merged_states: HashMap<String, FixtureState> = HashMap::new();
         for name in self.fixture_registry.keys() {
             match (
-                current_fixture_states.get(name),
+                self.update_buffers.current_fixture_states.get(name),
                 self.fixture_states.get(name),
             ) {
                 (Some(current), Some(persisted)) => {
                     // Start from persisted, then overlay current so current wins
                     let mut merged = persisted.clone();
                     merged.blend_with(current);
-                    merged_states.insert(name.clone(), merged);
+                    self.update_buffers
+                        .merged_states
+                        .insert(name.clone(), merged);
                 }
                 (Some(current), None) => {
-                    merged_states.insert(name.clone(), current.clone());
+                    self.update_buffers
+                        .merged_states
+                        .insert(name.clone(), current.clone());
                 }
                 (None, Some(persisted)) => {
-                    merged_states.insert(name.clone(), persisted.clone());
+                    self.update_buffers
+                        .merged_states
+                        .insert(name.clone(), persisted.clone());
                 }
                 (None, None) => {}
             }
         }
 
         // Store merged states for preview/debugging (before converting to DMX)
-        self.last_merged_states = merged_states.clone();
+        self.last_merged_states = self.update_buffers.merged_states.clone();
 
         // Convert fixture states to DMX commands
-        let mut commands = Vec::new();
-        for (fixture_name, fixture_state) in merged_states {
-            if let Some(fixture_info) = self.fixture_registry.get(&fixture_name) {
-                commands.extend(fixture_state.to_dmx_commands(fixture_info));
+        for (fixture_name, fixture_state) in &self.update_buffers.merged_states {
+            if let Some(fixture_info) = self.fixture_registry.get(fixture_name) {
+                self.update_buffers
+                    .commands
+                    .extend(fixture_state.to_dmx_commands(fixture_info));
             }
         }
 
-        Ok(commands)
+        // Return the commands (take ownership from the buffer)
+        Ok(std::mem::take(&mut self.update_buffers.commands))
     }
 
     /// Process the final state of a completed effect
