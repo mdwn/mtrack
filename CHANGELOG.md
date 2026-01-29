@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Switched from hound to Symphonia. which supports a great deal more formats than just wav.
+We now support flag, ogg, vorbis, mp3, alac, aac, and anything else Symphonia supports.
+
 Fixed a bug where stopping too fast after playing could produce a hang. This is unlikely to
 have happened in a live scenario.
 
