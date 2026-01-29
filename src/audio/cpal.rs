@@ -596,6 +596,7 @@ impl AudioDevice for Device {
                 cached_source_channel_count: source_channel_count,
                 cancel_handle: cancel_handle.clone(), // Clone for each source
                 is_finished: Arc::new(AtomicBool::new(false)),
+                planar_read_buffer: Vec::new(),   // Will be allocated in add_source
             };
 
             source_ids.push(current_source_id);

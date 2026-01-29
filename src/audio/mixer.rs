@@ -21,7 +21,63 @@ use std::sync::{Arc, Mutex, RwLock};
 #[cfg(test)]
 use std::time::Instant;
 
-/// Core audio mixing logic that's independent of any audio backend
+/// Pre-allocated buffers for mixing operations (avoids allocation in hot path)
+struct MixerBuffers {
+    /// Planar output buffer for mixing (one Vec per output channel)
+    planar_output: Vec<Vec<f32>>,
+    /// IDs of sources that have finished (reused to avoid HashSet allocation)
+    finished_ids: Vec<u64>,
+    /// Capacity these buffers were sized for
+    num_frames_capacity: usize,
+    num_channels_capacity: usize,
+}
+
+impl MixerBuffers {
+    fn new(num_channels: usize, initial_frames: usize) -> Self {
+        Self {
+            planar_output: (0..num_channels)
+                .map(|_| vec![0.0f32; initial_frames])
+                .collect(),
+            finished_ids: Vec::with_capacity(8),
+            num_frames_capacity: initial_frames,
+            num_channels_capacity: num_channels,
+        }
+    }
+
+    /// Ensure buffers are sized for the given frame count, resizing only if needed
+    fn ensure_capacity(&mut self, num_channels: usize, num_frames: usize) {
+        // Resize channel count if needed
+        if self.planar_output.len() != num_channels {
+            self.planar_output.resize_with(num_channels, Vec::new);
+            self.num_channels_capacity = num_channels;
+        }
+
+        // Resize frame capacity if needed (only grow, never shrink)
+        if num_frames > self.num_frames_capacity {
+            for ch in &mut self.planar_output {
+                ch.resize(num_frames, 0.0);
+            }
+            self.num_frames_capacity = num_frames;
+        }
+    }
+
+    /// Clear and prepare buffers for a new mixing pass
+    fn prepare(&mut self, num_channels: usize, num_frames: usize) {
+        self.ensure_capacity(num_channels, num_frames);
+
+        // Zero out the output buffers (only the portion we'll use)
+        for ch in &mut self.planar_output {
+            for sample in ch.iter_mut().take(num_frames) {
+                *sample = 0.0;
+            }
+        }
+
+        self.finished_ids.clear();
+    }
+}
+
+/// Core audio mixing logic that's independent of any audio backend.
+/// Uses planar format internally for efficient mixing, interleaves only at output.
 #[derive(Clone)]
 pub struct AudioMixer {
     /// Active audio sources currently playing
@@ -30,6 +86,8 @@ pub struct AudioMixer {
     num_channels: u16,
     /// Sample rate
     sample_rate: u32,
+    /// Pre-allocated buffers for mixing (shared via Arc<Mutex> for Clone support)
+    buffers: Arc<Mutex<MixerBuffers>>,
     /// Performance monitoring (test only)
     #[cfg(test)]
     frame_count: Arc<AtomicUsize>,
@@ -56,15 +114,23 @@ pub struct ActiveSource {
     pub is_finished: Arc<AtomicBool>,
     /// Cancel handle for this source
     pub cancel_handle: crate::playsync::CancelHandle,
+    /// Pre-allocated planar buffer for reading from this source
+    pub planar_read_buffer: Vec<Vec<f32>>,
 }
 
 impl AudioMixer {
     /// Creates a new audio mixer
     pub fn new(num_channels: u16, sample_rate: u32) -> Self {
+        // Pre-allocate buffers for typical audio callback size (1024 frames is common)
+        let initial_frames = 1024;
         Self {
             active_sources: Arc::new(RwLock::new(Vec::new())),
             num_channels,
             sample_rate,
+            buffers: Arc::new(Mutex::new(MixerBuffers::new(
+                num_channels as usize,
+                initial_frames,
+            ))),
             #[cfg(test)]
             frame_count: Arc::new(AtomicUsize::new(0)),
             #[cfg(test)]
@@ -111,6 +177,11 @@ impl AudioMixer {
         if source.cached_source_channel_count == 0 {
             source.cached_source_channel_count = source.source.source_channel_count();
         }
+
+        // Pre-allocate planar read buffer for this source
+        let source_channels = source.cached_source_channel_count as usize;
+        source.planar_read_buffer = vec![Vec::new(); source_channels];
+
         // Precompute channel mappings for optimal performance
         let channel_mappings =
             Self::precompute_channel_mappings(source.source.as_ref(), &source.track_mappings);
@@ -131,13 +202,14 @@ impl AudioMixer {
     }
 
     /// Processes one frame of audio mixing with performance monitoring (test only)
-    /// This is the core mixing logic extracted from the CPAL callback
-    /// Minimizes lock duration by cloning Arc references and processing without holding the lock
+    /// Returns interleaved output for compatibility with existing tests.
     #[cfg(test)]
     pub fn process_frame(&self) -> Vec<f32> {
         #[cfg(test)]
         let start_time = Instant::now();
-        let mut frame = vec![0.0f32; self.num_channels as usize];
+
+        let channels = self.num_channels as usize;
+        let mut frame = vec![0.0f32; channels];
 
         // Get a snapshot of source references to process (minimize lock duration)
         let sources_to_process = {
@@ -146,8 +218,6 @@ impl AudioMixer {
         };
 
         let mut finished_source_ids = HashSet::new();
-        // Reusable scratch buffer for source frames (max 64 channels should cover most cases)
-        let mut source_frame_buffer = vec![0.0f32; 64];
 
         // Process each source without holding the lock
         for active_source_arc in sources_to_process {
@@ -160,38 +230,38 @@ impl AudioMixer {
                 continue;
             }
 
-            // Get next frame from this source
             let source_channel_count = active_source.cached_source_channel_count as usize;
-            // Resize buffer if needed (should be rare)
-            if source_frame_buffer.len() < source_channel_count {
-                source_frame_buffer.resize(source_channel_count, 0.0);
+
+            // Take buffer out of struct to avoid borrow conflict
+            let mut read_buffer = std::mem::take(&mut active_source.planar_read_buffer);
+
+            // Ensure planar buffer is properly sized
+            if read_buffer.len() != source_channel_count {
+                read_buffer = vec![Vec::new(); source_channel_count];
             }
 
-            match active_source
-                .source
-                .next_frame(&mut source_frame_buffer[..source_channel_count])
-            {
-                Ok(Some(_count)) => {
-                    // Process each channel in the source frame using precomputed mappings
-                    for (source_channel, &sample) in source_frame_buffer[..source_channel_count]
-                        .iter()
-                        .enumerate()
-                    {
-                        // Use precomputed channel mappings for optimal performance
-                        if let Some(output_channels) =
-                            active_source.channel_mappings.get(source_channel)
-                        {
-                            // Map this sample to all precomputed output channels
-                            for &output_index in output_channels {
-                                if output_index < frame.len() {
-                                    // Mix: add new sample to existing
-                                    frame[output_index] += sample;
+            // Read one frame in planar format
+            let result = active_source.source.next_frames(&mut read_buffer, 1);
+
+            match result {
+                Ok(frames_read) if frames_read > 0 => {
+                    // Mix planar data into output frame
+                    for (source_channel, channel_samples) in read_buffer.iter().enumerate() {
+                        if let Some(&sample) = channel_samples.first() {
+                            if let Some(output_channels) =
+                                active_source.channel_mappings.get(source_channel)
+                            {
+                                for &output_index in output_channels {
+                                    if output_index < channels {
+                                        frame[output_index] += sample;
+                                    }
                                 }
                             }
                         }
                     }
                 }
-                Ok(None) => {
+                Ok(_) => {
+                    // 0 frames read means EOF
                     active_source.is_finished.store(true, Ordering::Relaxed);
                     finished_source_ids.insert(active_source.id);
                 }
@@ -200,6 +270,9 @@ impl AudioMixer {
                     finished_source_ids.insert(active_source.id);
                 }
             }
+
+            // Put buffer back
+            active_source.planar_read_buffer = read_buffer;
         }
 
         // Remove finished sources in a separate, quick write lock
@@ -221,7 +294,6 @@ impl AudioMixer {
             self.total_frame_time
                 .fetch_add(frame_time_us, Ordering::Relaxed);
 
-            // Update max frame time (using compare_and_swap for thread safety)
             let mut current_max = self.max_frame_time.load(Ordering::Relaxed);
             while frame_time_us > current_max {
                 match self.max_frame_time.compare_exchange_weak(
@@ -240,6 +312,7 @@ impl AudioMixer {
     }
 
     /// Processes multiple frames of audio mixing (test only)
+    /// Returns interleaved output.
     #[cfg(test)]
     pub fn process_frames(&self, num_frames: usize) -> Vec<f32> {
         let mut frames = Vec::with_capacity(num_frames * self.num_channels as usize);
@@ -252,14 +325,16 @@ impl AudioMixer {
         frames
     }
 
-    /// Processes multiple frames directly into the provided output buffer (zero-allocation)
+    /// Processes multiple frames directly into the provided interleaved output buffer.
+    /// Mixes in planar format internally for efficiency, then interleaves at the end.
     /// The buffer must be sized to num_frames * num_channels.
     pub fn process_into_output(&self, output: &mut [f32], num_frames: usize) {
         let channels = self.num_channels as usize;
         debug_assert_eq!(output.len(), num_frames * channels);
 
-        // Clear the buffer once
-        output.fill(0.0);
+        // Lock pre-allocated buffers and prepare them for this mixing pass
+        let mut buffers = self.buffers.lock().unwrap();
+        buffers.prepare(channels, num_frames);
 
         // Get a snapshot of source references to process (minimize lock duration)
         let sources_to_process = {
@@ -267,71 +342,89 @@ impl AudioMixer {
             sources.clone()
         };
 
-        let mut finished_source_ids = HashSet::new();
-        // Reusable scratch buffer for source frames (max 64 channels should cover most cases)
-        let mut source_frame_buffer = vec![0.0f32; 64];
-
-        // Process each active source across all frames
+        // Process each active source - read all frames at once in planar format
         for active_source_arc in sources_to_process {
             let mut active_source = active_source_arc.lock().unwrap();
 
             if active_source.is_finished.load(Ordering::Relaxed)
                 || active_source.cancel_handle.is_cancelled()
             {
-                finished_source_ids.insert(active_source.id);
+                buffers.finished_ids.push(active_source.id);
                 continue;
             }
 
             let source_channel_count = active_source.cached_source_channel_count as usize;
-            // Resize buffer if needed (should be rare)
-            if source_frame_buffer.len() < source_channel_count {
-                source_frame_buffer.resize(source_channel_count, 0.0);
+
+            // Take buffer out of struct to avoid borrow conflict
+            let mut read_buffer = std::mem::take(&mut active_source.planar_read_buffer);
+
+            // Ensure planar buffer is properly sized
+            if read_buffer.len() != source_channel_count {
+                read_buffer = vec![Vec::new(); source_channel_count];
             }
 
-            for frame_index in 0..num_frames {
-                match active_source
-                    .source
-                    .next_frame(&mut source_frame_buffer[..source_channel_count])
-                {
-                    Ok(Some(_count)) => {
-                        // Mix using precomputed mappings
-                        for (source_channel, &sample) in source_frame_buffer[..source_channel_count]
-                            .iter()
-                            .enumerate()
-                        {
+            // Read all frames at once in planar format
+            let result = active_source.source.next_frames(&mut read_buffer, num_frames);
+
+            // Process the result
+            match result {
+                Ok(frames_read) => {
+                    if frames_read == 0 {
+                        // EOF reached
+                        active_source.is_finished.store(true, Ordering::Relaxed);
+                        buffers.finished_ids.push(active_source.id);
+                    } else {
+                        // Mix planar data: for each source channel, add to mapped output channels
+                        for (source_channel, channel_samples) in read_buffer.iter().enumerate() {
                             if let Some(output_channels) =
                                 active_source.channel_mappings.get(source_channel)
                             {
-                                let base = frame_index * channels;
                                 for &output_index in output_channels {
                                     if output_index < channels {
-                                        output[base + output_index] += sample;
+                                        // Add all frames from this source channel to output channel
+                                        for (frame_idx, &sample) in
+                                            channel_samples.iter().take(frames_read).enumerate()
+                                        {
+                                            buffers.planar_output[output_index][frame_idx] += sample;
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
-                    Ok(None) => {
-                        active_source.is_finished.store(true, Ordering::Relaxed);
-                        finished_source_ids.insert(active_source.id);
-                        break;
-                    }
-                    Err(_) => {
-                        active_source.is_finished.store(true, Ordering::Relaxed);
-                        finished_source_ids.insert(active_source.id);
-                        break;
+
+                        // If we got fewer frames than requested, source is finished
+                        if frames_read < num_frames {
+                            active_source.is_finished.store(true, Ordering::Relaxed);
+                            buffers.finished_ids.push(active_source.id);
+                        }
                     }
                 }
+                Err(_) => {
+                    active_source.is_finished.store(true, Ordering::Relaxed);
+                    buffers.finished_ids.push(active_source.id);
+                }
             }
+
+            // Put buffer back
+            active_source.planar_read_buffer = read_buffer;
         }
 
         // Remove finished sources in a separate, quick write lock
-        if !finished_source_ids.is_empty() {
+        if !buffers.finished_ids.is_empty() {
             let mut sources = self.active_sources.write().unwrap();
             sources.retain(|source| {
                 let source_guard = source.lock().unwrap();
-                !finished_source_ids.contains(&source_guard.id)
+                !buffers.finished_ids.contains(&source_guard.id)
             });
+        }
+
+        // Interleave planar output into the final interleaved buffer
+        // This is the ONLY place we interleave in the entire pipeline
+        for frame_idx in 0..num_frames {
+            let output_base = frame_idx * channels;
+            for (ch_idx, channel_data) in buffers.planar_output.iter().enumerate() {
+                output[output_base + ch_idx] = channel_data[frame_idx];
+            }
         }
     }
 
@@ -390,10 +483,11 @@ mod tests {
                 map.insert("test".to_string(), vec![1]); // Map to channel 1 only
                 map
             },
-            channel_mappings: Vec::new(), // Will be precomputed in add_source
+            channel_mappings: Vec::new(),
             cached_source_channel_count: 1,
             is_finished: Arc::new(AtomicBool::new(false)),
             cancel_handle: CancelHandle::new(),
+            planar_read_buffer: Vec::new(),
         };
 
         mixer.add_source(active_source);
@@ -402,8 +496,6 @@ mod tests {
         let frames = mixer.process_frames(2);
 
         assert_eq!(frames.len(), 4); // 2 frames * 2 channels
-                                     // The output should be: [frame1_ch1, frame1_ch2, frame2_ch1, frame2_ch2]
-                                     // Which is: [0.5, 0.0, 0.8, 0.0] based on the input samples
         assert_eq!(frames[0], 0.5); // Frame 1, Channel 1
         assert_eq!(frames[1], 0.0); // Frame 1, Channel 2 (unused)
         assert_eq!(frames[2], 0.8); // Frame 2, Channel 1
@@ -435,10 +527,11 @@ mod tests {
                 map.insert("ch1".to_string(), vec![2]);
                 map
             },
-            channel_mappings: Vec::new(), // Will be precomputed in add_source
+            channel_mappings: Vec::new(),
             cached_source_channel_count: 2,
             is_finished: Arc::new(AtomicBool::new(false)),
             cancel_handle: CancelHandle::new(),
+            planar_read_buffer: Vec::new(),
         };
 
         let active_source2 = ActiveSource {
@@ -450,10 +543,11 @@ mod tests {
                 map.insert("ch1".to_string(), vec![2]);
                 map
             },
-            channel_mappings: Vec::new(), // Will be precomputed in add_source
+            channel_mappings: Vec::new(),
             cached_source_channel_count: 2,
             is_finished: Arc::new(AtomicBool::new(false)),
             cancel_handle: CancelHandle::new(),
+            planar_read_buffer: Vec::new(),
         };
 
         mixer.add_source(active_source1);
@@ -493,10 +587,11 @@ mod tests {
                 map.insert("ch1".to_string(), vec![2]); // Map to channel 2
                 map
             },
-            channel_mappings: Vec::new(), // Will be precomputed in add_source
+            channel_mappings: Vec::new(),
             cached_source_channel_count: 32,
             is_finished: Arc::new(AtomicBool::new(false)),
             cancel_handle: CancelHandle::new(),
+            planar_read_buffer: Vec::new(),
         };
 
         mixer.add_source(active_source);

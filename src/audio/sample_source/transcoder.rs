@@ -21,26 +21,22 @@ use super::error::SampleSourceError;
 use super::traits::SampleSource;
 
 // Import VecResampler trait to bring methods into scope for method resolution
-// The `as _` prevents the "unused import" warning while still bringing trait methods into scope
 #[allow(unused_imports)]
 use rubato::VecResampler as _;
 
 // Resampling configuration constants
 /// Input block size for the sinc resampler.
-/// Smaller blocks = lower latency. Sinc resampling has much lower latency than FFT.
-/// 1024 provides a good balance (~21ms latency at 48kHz).
 const INPUT_BLOCK_SIZE: usize = 1024;
 
-/// Sliding-window input buffer for streaming resampling
-/// Matches the clean rubato usage pattern: accumulate input, process when ready, drain consumed
-struct SlidingInputBuffer {
+/// Sliding-window input buffer for streaming resampling (planar format)
+struct PlanarInputBuffer {
     /// Per-channel input samples (sliding window)
     channels: Vec<Vec<f32>>,
     /// Whether source has reached EOF
     source_finished: bool,
 }
 
-impl SlidingInputBuffer {
+impl PlanarInputBuffer {
     fn new(num_channels: usize) -> Self {
         Self {
             channels: vec![Vec::new(); num_channels],
@@ -53,10 +49,13 @@ impl SlidingInputBuffer {
         self.channels.first().map(|c| c.len()).unwrap_or(0)
     }
 
-    /// Append a frame (one sample per channel)
-    fn push_frame(&mut self, frame: &[f32]) {
-        for (ch, &sample) in self.channels.iter_mut().zip(frame.iter()) {
-            ch.push(sample);
+    /// Append planar frames from source
+    fn push_planar(&mut self, planar_input: &[Vec<f32>], num_frames: usize) {
+        for (ch_idx, ch) in self.channels.iter_mut().enumerate() {
+            if ch_idx < planar_input.len() {
+                let frames_to_copy = num_frames.min(planar_input[ch_idx].len());
+                ch.extend_from_slice(&planar_input[ch_idx][..frames_to_copy]);
+            }
         }
     }
 
@@ -68,80 +67,141 @@ impl SlidingInputBuffer {
     }
 }
 
-/// FIFO output buffer for streaming sample delivery
-struct OutputFifo {
-    /// Interleaved output samples ready for consumption
-    samples: std::collections::VecDeque<f32>,
+/// Planar FIFO output buffer for streaming sample delivery
+struct PlanarOutputFifo {
+    /// Per-channel output samples ready for consumption
+    channels: Vec<Vec<f32>>,
+    /// Current read position (in frames)
+    read_pos: usize,
 }
 
-impl OutputFifo {
-    fn new() -> Self {
+impl PlanarOutputFifo {
+    fn new(num_channels: usize) -> Self {
         Self {
-            samples: std::collections::VecDeque::new(),
+            channels: vec![Vec::new(); num_channels],
+            read_pos: 0,
         }
     }
 
-    /// Pop the next sample
-    fn pop(&mut self) -> Option<f32> {
-        self.samples.pop_front()
+    /// Number of frames available to read
+    fn available_frames(&self) -> usize {
+        self.channels
+            .first()
+            .map(|c| c.len().saturating_sub(self.read_pos))
+            .unwrap_or(0)
     }
 
-    /// Append frames from per-channel buffers (interleaved)
-    fn push_frames(&mut self, per_channel: &[Vec<f32>], num_frames: usize) {
-        for frame_idx in 0..num_frames {
-            for ch in per_channel {
-                if let Some(&sample) = ch.get(frame_idx) {
-                    self.samples.push_back(sample);
+    /// Drain frames into planar output buffers, returns number of frames written
+    fn drain_to_planar(&mut self, output: &mut [Vec<f32>], max_frames: usize) -> usize {
+        let available = self.available_frames();
+        let to_copy = available.min(max_frames);
+
+        if to_copy > 0 {
+            for (ch_idx, out_ch) in output.iter_mut().enumerate() {
+                if ch_idx < self.channels.len() {
+                    out_ch.extend_from_slice(
+                        &self.channels[ch_idx][self.read_pos..self.read_pos + to_copy],
+                    );
                 }
+            }
+            self.read_pos += to_copy;
+
+            // Compact buffers if we've consumed a lot
+            if self.read_pos > 4096 {
+                for ch in self.channels.iter_mut() {
+                    ch.drain(..self.read_pos);
+                }
+                self.read_pos = 0;
+            }
+        }
+        to_copy
+    }
+
+    /// Append frames from resampler output (already planar)
+    fn push_planar(&mut self, per_channel: &[Vec<f32>], num_frames: usize) {
+        for (ch_idx, ch) in self.channels.iter_mut().enumerate() {
+            if ch_idx < per_channel.len() {
+                let frames_to_copy = num_frames.min(per_channel[ch_idx].len());
+                ch.extend_from_slice(&per_channel[ch_idx][..frames_to_copy]);
             }
         }
     }
 }
 
-/// Audio transcoder with rubato resampling
-/// Takes a SampleSource and resamples its output to the target format
-///
-/// Uses a streaming sliding-window approach that matches rubato's expected usage:
-/// - Accumulate input samples until we have enough for a processing block
-/// - Process, drain consumed input, append output to FIFO
-/// - Return samples from output FIFO one at a time
+/// Audio transcoder with rubato resampling (planar format throughout)
 pub struct AudioTranscoder<S: SampleSource> {
     source: S,
-    /// Sinc resampler wrapped in Mutex for Sync (contains non-Sync internals)
+    /// Sinc resampler wrapped in Mutex for Sync
     pub resampler: Option<Mutex<SincFixedIn<f32>>>,
     pub source_rate: u32,
     pub target_rate: u32,
     target_bits_per_sample: u16,
     channels: u16,
 
-    /// Sliding window of input samples (per-channel)
-    input_buffer: SlidingInputBuffer,
-    /// FIFO of output samples ready for consumption
-    output_fifo: OutputFifo,
+    /// Sliding window of input samples (planar)
+    input_buffer: PlanarInputBuffer,
+    /// FIFO of output samples ready for consumption (planar)
+    output_fifo: PlanarOutputFifo,
     /// Temporary buffer for resampler output (reused to avoid allocation)
     output_scratch: Vec<Vec<f32>>,
+    /// Temporary buffer for reading from source (planar, reused)
+    source_planar_buffer: Vec<Vec<f32>>,
 }
 
 impl<S> SampleSource for AudioTranscoder<S>
 where
     S: SampleSource,
 {
-    fn next_sample(&mut self) -> Result<Option<f32>, SampleSourceError> {
+    fn next_chunk(
+        &mut self,
+        output: &mut [Vec<f32>],
+        max_frames: usize,
+    ) -> Result<usize, SampleSourceError> {
         // If no resampler, just pass through directly
         if self.resampler.is_none() {
-            return self.source.next_sample();
+            return self.source.next_chunk(output, max_frames);
         }
 
-        // Try to return from output FIFO first
-        if let Some(sample) = self.output_fifo.pop() {
-            return Ok(Some(sample));
+        let num_channels = self.channels as usize;
+        if output.len() != num_channels {
+            return Err(SampleSourceError::SampleConversionFailed(format!(
+                "Output has {} channels, expected {}",
+                output.len(),
+                num_channels
+            )));
         }
 
-        // Output FIFO empty - need to process more input
-        self.fill_output_fifo()?;
+        // Clear output buffers
+        for ch in output.iter_mut() {
+            ch.clear();
+        }
 
-        // Try again after processing
-        Ok(self.output_fifo.pop())
+        let mut total_frames = 0;
+
+        while total_frames < max_frames {
+            // First, drain any available frames from the output FIFO
+            let drained = self
+                .output_fifo
+                .drain_to_planar(output, max_frames - total_frames);
+            total_frames += drained;
+
+            if total_frames >= max_frames {
+                break;
+            }
+
+            // Output FIFO depleted - need to process more input
+            let had_output = self.fill_output_fifo()?;
+
+            // If fill_output_fifo didn't produce any output and source is done, we're finished
+            if !had_output
+                && self.input_buffer.source_finished
+                && self.output_fifo.available_frames() == 0
+            {
+                break;
+            }
+        }
+
+        Ok(total_frames)
     }
 
     fn channel_count(&self) -> u16 {
@@ -157,11 +217,10 @@ where
     }
 
     fn sample_format(&self) -> crate::audio::SampleFormat {
-        crate::audio::SampleFormat::Float // AudioTranscoder outputs float samples
+        crate::audio::SampleFormat::Float
     }
 
     fn duration(&self) -> Option<std::time::Duration> {
-        // Delegate to the underlying source - transcoding doesn't change duration
         self.source.duration()
     }
 }
@@ -180,7 +239,6 @@ where
         let needs_resampling = source_format.sample_rate != target_format.sample_rate;
 
         let (resampler, output_scratch) = if needs_resampling {
-            // Use sinc resampling for lower latency and high quality.
             let sinc_params = SincInterpolationParameters {
                 sinc_len: 256,
                 f_cutoff: 0.95,
@@ -193,7 +251,7 @@ where
 
             let r = SincFixedIn::<f32>::new(
                 resample_ratio,
-                1.0, // max_resample_ratio_relative: no dynamic changes
+                1.0,
                 sinc_params,
                 INPUT_BLOCK_SIZE,
                 channels as usize,
@@ -211,6 +269,9 @@ where
             (None, Vec::new())
         };
 
+        // Pre-allocate planar buffer for reading from source
+        let source_planar_buffer = vec![Vec::with_capacity(INPUT_BLOCK_SIZE); channels as usize];
+
         Ok(AudioTranscoder {
             source,
             resampler,
@@ -218,126 +279,105 @@ where
             target_rate: target_format.sample_rate,
             target_bits_per_sample: target_format.bits_per_sample,
             channels,
-            input_buffer: SlidingInputBuffer::new(channels as usize),
-            output_fifo: OutputFifo::new(),
+            input_buffer: PlanarInputBuffer::new(channels as usize),
+            output_fifo: PlanarOutputFifo::new(channels as usize),
             output_scratch,
+            source_planar_buffer,
         })
     }
 
     /// Fill the output FIFO by reading from source and processing through resampler.
-    /// This uses rubato's standard process_into_buffer pattern for streaming resampling.
-    fn fill_output_fifo(&mut self) -> Result<(), SampleSourceError> {
+    /// Returns true if any output was produced.
+    fn fill_output_fifo(&mut self) -> Result<bool, SampleSourceError> {
         let resampler_mutex = match self.resampler.as_ref() {
             Some(r) => r,
-            None => return Ok(()), // No resampling needed
+            None => return Ok(false),
         };
 
-        let num_channels = self.channels as usize;
+        // 1. Try to fill input buffer from source
+        if !self.input_buffer.source_finished {
+            let input_frames_needed = {
+                let r = resampler_mutex.lock().unwrap();
+                r.input_frames_next()
+            };
 
-        // Keep processing until we have output or source is exhausted
-        loop {
-            // 1. Try to fill input buffer from source
-            if !self.input_buffer.source_finished {
-                let mut frame = vec![0.0f32; num_channels];
+            // Read planar chunks from source until we have enough frames
+            while self.input_buffer.len() < input_frames_needed {
+                let frames_needed = input_frames_needed - self.input_buffer.len();
 
-                // Get input_frames_next while holding the lock briefly
-                let input_frames_needed = {
-                    let r = resampler_mutex.lock().unwrap();
-                    r.input_frames_next()
-                };
+                // Read planar data from source
+                let frames_read = self
+                    .source
+                    .next_chunk(&mut self.source_planar_buffer, frames_needed)?;
 
-                loop {
-                    // Read one frame at a time from source
-                    let mut got_frame = true;
-                    for sample in frame.iter_mut().take(num_channels) {
-                        match self.source.next_sample()? {
-                            Some(s) => *sample = s,
-                            None => {
-                                self.input_buffer.source_finished = true;
-                                got_frame = false;
-                                break;
-                            }
-                        }
-                    }
-
-                    if got_frame {
-                        self.input_buffer.push_frame(&frame);
-                    }
-
-                    // Stop filling when we have enough for processing or source finished
-                    if self.input_buffer.source_finished
-                        || self.input_buffer.len() >= input_frames_needed
-                    {
-                        break;
-                    }
-                }
-            }
-
-            // 2. Process if we have enough input
-            let mut resampler = resampler_mutex.lock().unwrap();
-            let input_frames_needed = resampler.input_frames_next();
-
-            if self.input_buffer.len() >= input_frames_needed {
-                // Process a full chunk
-                let (nbr_in, nbr_out) = resampler
-                    .process_into_buffer(
-                        &self.input_buffer.channels,
-                        &mut self.output_scratch,
-                        None,
-                    )
-                    .map_err(|_e| {
-                        SampleSourceError::ResamplingFailed(self.source_rate, self.target_rate)
-                    })?;
-
-                drop(resampler); // Release lock before drain
-
-                // Drain consumed input (this is the key difference from old code!)
-                self.input_buffer.drain_frames(nbr_in);
-
-                // Append output to FIFO
-                if nbr_out > 0 {
-                    self.output_fifo.push_frames(&self.output_scratch, nbr_out);
-                    return Ok(()); // We have output, caller can consume it
+                if frames_read == 0 {
+                    self.input_buffer.source_finished = true;
+                    break;
                 }
 
-                // Safety: if resampler consumed nothing, we can't make progress
-                if nbr_in == 0 {
-                    return Ok(());
-                }
-                // No output yet, continue processing
-            } else if self.input_buffer.source_finished {
-                // 3. Source finished - process any remaining input
-
-                // If no remaining input, we're done
-                if self.input_buffer.len() == 0 {
-                    return Ok(());
-                }
-
-                let (_nbr_in, nbr_out) = resampler
-                    .process_partial_into_buffer(
-                        Some(&self.input_buffer.channels as &[Vec<f32>]),
-                        &mut self.output_scratch,
-                        None,
-                    )
-                    .map_err(|_e| {
-                        SampleSourceError::ResamplingFailed(self.source_rate, self.target_rate)
-                    })?;
-
-                drop(resampler); // Release lock before drain
-
-                // Clear remaining input
-                self.input_buffer.drain_frames(self.input_buffer.len());
-
-                if nbr_out > 0 {
-                    self.output_fifo.push_frames(&self.output_scratch, nbr_out);
-                }
-
-                // Done processing - return regardless of whether we got output
-                return Ok(());
-            } else {
-                // Need more input but source isn't finished yet - shouldn't happen in normal flow
-                return Ok(());
+                // Add to input buffer (already planar, no conversion needed!)
+                self.input_buffer
+                    .push_planar(&self.source_planar_buffer, frames_read);
             }
         }
+
+        // 2. Process if we have enough input
+        let mut resampler = resampler_mutex.lock().unwrap();
+        let input_frames_needed = resampler.input_frames_next();
+
+        if self.input_buffer.len() >= input_frames_needed {
+            let (nbr_in, nbr_out) = resampler
+                .process_into_buffer(
+                    &self.input_buffer.channels,
+                    &mut self.output_scratch,
+                    None,
+                )
+                .map_err(|_e| {
+                    SampleSourceError::ResamplingFailed(self.source_rate, self.target_rate)
+                })?;
+
+            drop(resampler);
+
+            self.input_buffer.drain_frames(nbr_in);
+
+            if nbr_out > 0 {
+                // Output is already planar from rubato, just copy to FIFO
+                self.output_fifo.push_planar(&self.output_scratch, nbr_out);
+                return Ok(true);
+            }
+
+            if nbr_in == 0 {
+                return Ok(false);
+            }
+            return Ok(false);
+        } else if self.input_buffer.source_finished {
+            // 3. Source finished - process any remaining input
+            if self.input_buffer.len() == 0 {
+                return Ok(false);
+            }
+
+            let (_nbr_in, nbr_out) = resampler
+                .process_partial_into_buffer(
+                    Some(&self.input_buffer.channels as &[Vec<f32>]),
+                    &mut self.output_scratch,
+                    None,
+                )
+                .map_err(|_e| {
+                    SampleSourceError::ResamplingFailed(self.source_rate, self.target_rate)
+                })?;
+
+            drop(resampler);
+
+            self.input_buffer.drain_frames(self.input_buffer.len());
+
+            if nbr_out > 0 {
+                self.output_fifo.push_planar(&self.output_scratch, nbr_out);
+                return Ok(true);
+            }
+
+            return Ok(false);
+        }
+
+        Ok(false)
     }
 }

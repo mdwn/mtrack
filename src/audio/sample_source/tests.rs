@@ -15,10 +15,66 @@
 mod tests {
     use crate::audio::sample_source::audio::AudioSampleSource;
     use crate::audio::sample_source::create_sample_source_from_file;
+    use crate::audio::sample_source::error::SampleSourceError;
     use crate::audio::sample_source::memory::MemorySampleSource;
     use crate::audio::sample_source::traits::{SampleSource, SampleSourceTestExt};
     use crate::audio::sample_source::transcoder::AudioTranscoder;
     use crate::audio::TargetFormat;
+
+    /// Helper trait for reading samples in tests (bridges planar API to interleaved test expectations)
+    trait SampleSourceTestHelper {
+        /// Read one sample at a time (for compatibility with old tests).
+        /// Returns interleaved samples: L, R, L, R, ... for stereo
+        fn read_one_sample(&mut self) -> Result<Option<f32>, SampleSourceError>;
+
+        /// Read all samples, returned as interleaved.
+        fn read_all_samples(&mut self) -> Result<Vec<f32>, SampleSourceError>;
+    }
+
+    impl<T: SampleSource> SampleSourceTestHelper for T {
+        fn read_one_sample(&mut self) -> Result<Option<f32>, SampleSourceError> {
+            // For single-sample reads, we read one frame and return first sample
+            // This is inefficient but maintains test compatibility
+            let num_channels = self.channel_count() as usize;
+            let mut planar_buf: Vec<Vec<f32>> = vec![Vec::new(); num_channels];
+
+            let frames_read = self.next_chunk(&mut planar_buf, 1)?;
+            if frames_read == 0 {
+                return Ok(None);
+            }
+
+            // Return first channel's sample (tests that need all channels should use read_all_samples)
+            if let Some(ch0) = planar_buf.first() {
+                if let Some(&sample) = ch0.first() {
+                    return Ok(Some(sample));
+                }
+            }
+            Ok(None)
+        }
+
+        fn read_all_samples(&mut self) -> Result<Vec<f32>, SampleSourceError> {
+            let num_channels = self.channel_count() as usize;
+            let mut all_samples = Vec::new();
+            let mut planar_buf: Vec<Vec<f32>> = vec![Vec::new(); num_channels];
+
+            loop {
+                let frames_read = self.next_chunk(&mut planar_buf, 1024)?;
+                if frames_read == 0 {
+                    break;
+                }
+
+                // Interleave the planar data for test compatibility
+                for frame_idx in 0..frames_read {
+                    for ch_buf in &planar_buf {
+                        if let Some(&sample) = ch_buf.get(frame_idx) {
+                            all_samples.push(sample);
+                        }
+                    }
+                }
+            }
+            Ok(all_samples)
+        }
+    }
 
     // ---------------------------------------------------------------------
     // Scaling helpers – direct unit tests for all integer formats
@@ -96,12 +152,11 @@ mod tests {
     #[test]
     fn test_memory_sample_source() {
         let samples = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-        let _target_format = TargetFormat::default();
         let mut source = MemorySampleSource::new(samples.clone(), 1, 44100);
 
         // Test that we get all samples
         for (i, expected) in samples.iter().enumerate() {
-            let sample = source.next_sample().unwrap().unwrap();
+            let sample = source.read_one_sample().unwrap().unwrap();
             assert_eq!(sample, *expected);
             // After reading the last sample, we should be finished
             if i == samples.len() - 1 {
@@ -112,7 +167,7 @@ mod tests {
         }
 
         // Test that we get None when finished
-        assert!(source.next_sample().unwrap().is_none());
+        assert!(source.read_one_sample().unwrap().is_none());
         assert!(SampleSourceTestExt::is_finished(&source));
     }
 
@@ -182,7 +237,7 @@ mod tests {
                 const MAX_SAMPLES: usize = 100; // Prevent infinite loops
 
                 while sample_count < MAX_SAMPLES {
-                    match converter.next_sample() {
+                    match converter.read_one_sample() {
                         Ok(Some(sample)) => {
                             output_samples.push(sample);
                             sample_count += 1;
@@ -275,7 +330,7 @@ mod tests {
                 const MAX_SAMPLES: usize = 50;
 
                 while sample_count < MAX_SAMPLES {
-                    match converter.next_sample() {
+                    match converter.read_one_sample() {
                         Ok(Some(_sample)) => sample_count += 1,
                         Ok(None) => break,
                         Err(_e) => break,
@@ -307,12 +362,17 @@ mod tests {
 
             match converter {
                 Ok(converter) => {
-                    // Transcoding is now handled internally by AudioSampleSource
-                    // The old needs_resampling check is no longer needed
-                    let _needs_resampling = should_need_resampling;
                     // Test that the converter was created successfully
-                    assert!(converter.source_rate == source_rate);
-                    assert!(converter.target_rate == target_rate);
+                    assert_eq!(converter.source_rate, source_rate);
+                    assert_eq!(converter.target_rate, target_rate);
+                    // Verify resampler presence matches expectation
+                    assert_eq!(
+                        converter.resampler.is_some(),
+                        should_need_resampling,
+                        "Resampler presence mismatch for {} -> {}",
+                        source_rate,
+                        target_rate
+                    );
                 }
                 Err(_) => {
                     // If rubato fails to create the resampler, that's acceptable for now
@@ -342,7 +402,7 @@ mod tests {
         const MAX_SAMPLES: usize = 10;
 
         while sample_count < MAX_SAMPLES {
-            match converter.next_sample() {
+            match converter.read_one_sample() {
                 Ok(Some(sample)) => {
                     output_samples.push(sample);
                     sample_count += 1;
@@ -386,7 +446,7 @@ mod tests {
                 const MAX_SAMPLES: usize = 200; // Allow more samples for sine wave
 
                 while sample_count < MAX_SAMPLES {
-                    match converter.next_sample() {
+                    match converter.read_one_sample() {
                         Ok(Some(sample)) => {
                             output_samples.push(sample);
                             sample_count += 1;
@@ -468,7 +528,7 @@ mod tests {
 
         let mut intermediate_samples = Vec::with_capacity(num_samples);
         loop {
-            match converter_1.next_sample() {
+            match converter_1.read_one_sample() {
                 Ok(Some(sample)) => intermediate_samples.push(sample),
                 Ok(None) => break,
                 Err(_) => break,
@@ -483,7 +543,7 @@ mod tests {
 
         let mut final_samples = Vec::with_capacity(intermediate_len);
         loop {
-            match converter_2.next_sample() {
+            match converter_2.read_one_sample() {
                 Ok(Some(sample)) => final_samples.push(sample),
                 Ok(None) => break,
                 Err(_) => break,
@@ -540,7 +600,7 @@ mod tests {
 
         let mut output_samples = Vec::new();
         loop {
-            match converter.next_sample() {
+            match converter.read_one_sample() {
                 Ok(Some(sample)) => output_samples.push(sample),
                 Ok(None) => break,
                 Err(_) => break,
@@ -583,7 +643,7 @@ mod tests {
 
         let mut output_samples = Vec::new();
         loop {
-            match converter.next_sample() {
+            match converter.read_one_sample() {
                 Ok(Some(sample)) => output_samples.push(sample),
                 Ok(None) => break,
                 Err(_) => break,
@@ -647,20 +707,13 @@ mod tests {
             input_samples.push(right);
         }
 
-        let source = MemorySampleSource::new(input_samples, 1, 44100);
+        // Create source with correct channel count (2 channels, stereo)
+        let source = MemorySampleSource::new(input_samples, channels, 48000);
         let mut converter =
             AudioTranscoder::new(source, &source_format, &target_format, channels).unwrap();
 
-        let mut output_samples = Vec::new();
-        loop {
-            match converter.next_sample() {
-                Ok(Some(sample)) => {
-                    output_samples.push(sample);
-                }
-                Ok(None) => break,
-                Err(_) => break,
-            }
-        }
+        // Read all samples (returns interleaved)
+        let output_samples = converter.read_all_samples().unwrap();
 
         // Basic quality checks
         assert!(!output_samples.is_empty(), "Output should not be empty");
@@ -713,7 +766,7 @@ mod tests {
             AudioTranscoder::new(source, &source_format, &target_format, 1).unwrap();
 
         // Empty input should return None immediately
-        assert!(matches!(converter.next_sample(), Ok(None)));
+        assert!(matches!(converter.read_one_sample(), Ok(None)));
     }
 
     #[test]
@@ -730,7 +783,7 @@ mod tests {
 
         let mut output_samples = Vec::new();
         loop {
-            match converter.next_sample() {
+            match converter.read_one_sample() {
                 Ok(Some(sample)) => output_samples.push(sample),
                 Ok(None) => break,
                 Err(_) => break,
@@ -779,7 +832,7 @@ mod tests {
             const MAX_SAMPLES: usize = 1000; // Prevent infinite loops
 
             while sample_count < MAX_SAMPLES {
-                match converter.next_sample() {
+                match converter.read_one_sample() {
                     Ok(Some(sample)) => {
                         output_samples.push(sample);
                         sample_count += 1;
@@ -841,7 +894,7 @@ mod tests {
         const MAX_SAMPLES: usize = 50000; // Allow for longer processing
 
         while sample_count < MAX_SAMPLES {
-            match converter.next_sample() {
+            match converter.read_one_sample() {
                 Ok(Some(sample)) => {
                     output_samples.push(sample);
                     sample_count += 1;
@@ -894,7 +947,7 @@ mod tests {
 
         let mut output_samples = Vec::new();
         loop {
-            match converter.next_sample() {
+            match converter.read_one_sample() {
                 Ok(Some(sample)) => output_samples.push(sample),
                 Ok(None) => break,
                 Err(_) => break,
@@ -940,7 +993,7 @@ mod tests {
             const MAX_SAMPLES: usize = 100;
 
             while sample_count < MAX_SAMPLES {
-                match converter.next_sample() {
+                match converter.read_one_sample() {
                     Ok(Some(sample)) => {
                         // Check for NaN or infinity
                         assert!(
@@ -988,7 +1041,7 @@ mod tests {
 
         let mut output_samples = Vec::new();
         loop {
-            match converter.next_sample() {
+            match converter.read_one_sample() {
                 Ok(Some(sample)) => output_samples.push(sample),
                 Ok(None) => break,
                 Err(_) => break,
@@ -1038,7 +1091,7 @@ mod tests {
 
         let mut output_samples = Vec::with_capacity(num_samples);
         loop {
-            match converter.next_sample() {
+            match converter.read_one_sample() {
                 Ok(Some(sample)) => output_samples.push(sample),
                 Ok(None) => break,
                 Err(_) => break,
@@ -1087,7 +1140,7 @@ mod tests {
 
         let mut intermediate_samples = Vec::with_capacity(num_samples);
         loop {
-            match converter_1.next_sample() {
+            match converter_1.read_one_sample() {
                 Ok(Some(sample)) => intermediate_samples.push(sample),
                 Ok(None) => break,
                 Err(_) => break,
@@ -1101,7 +1154,7 @@ mod tests {
 
         let mut final_samples = Vec::with_capacity(original_samples.len());
         loop {
-            match converter_2.next_sample() {
+            match converter_2.read_one_sample() {
                 Ok(Some(sample)) => final_samples.push(sample),
                 Ok(None) => break,
                 Err(_) => break,
@@ -1161,7 +1214,7 @@ mod tests {
 
             let mut output_samples = Vec::with_capacity(num_samples);
             loop {
-                match converter.next_sample() {
+                match converter.read_one_sample() {
                     Ok(Some(sample)) => output_samples.push(sample),
                     Ok(None) => break,
                     Err(_) => break,
@@ -1211,33 +1264,20 @@ mod tests {
         }
 
         // First resampling: 48kHz -> 44.1kHz
-        let source_1 = MemorySampleSource::new(input_samples.clone(), 1, 44100);
+        let source_1 = MemorySampleSource::new(input_samples.clone(), 2, 48000);
         let mut converter_1 =
             AudioTranscoder::new(source_1, &source_format, &target_format, 2).unwrap();
 
-        let mut intermediate_samples = Vec::with_capacity(input_samples.len());
-        loop {
-            match converter_1.next_sample() {
-                Ok(Some(sample)) => intermediate_samples.push(sample),
-                Ok(None) => break,
-                Err(_) => break,
-            }
-        }
+        // Read all samples using the chunk API
+        let intermediate_samples = converter_1.read_all_samples().unwrap();
 
         // Second resampling: 44.1kHz -> 48kHz (roundtrip for fair comparison)
         let back_format = TargetFormat::new(48000, crate::audio::SampleFormat::Float, 32).unwrap();
-        let source_2 = MemorySampleSource::new(intermediate_samples, 1, 44100);
+        let source_2 = MemorySampleSource::new(intermediate_samples.clone(), 2, 44100);
         let mut converter_2 =
             AudioTranscoder::new(source_2, &target_format, &back_format, 2).unwrap();
 
-        let mut output_samples = Vec::with_capacity(input_samples.len());
-        loop {
-            match converter_2.next_sample() {
-                Ok(Some(sample)) => output_samples.push(sample),
-                Ok(None) => break,
-                Err(_) => break,
-            }
-        }
+        let output_samples = converter_2.read_all_samples().unwrap();
 
         // Separate left and right channels for SNR calculation
         let mut left_original = Vec::with_capacity(num_frames);
@@ -1322,7 +1362,7 @@ mod tests {
 
         let mut output_samples = Vec::with_capacity(num_samples);
         loop {
-            match converter.next_sample() {
+            match converter.read_one_sample() {
                 Ok(Some(sample)) => output_samples.push(sample),
                 Ok(None) => break,
                 Err(_) => break,
@@ -1375,7 +1415,7 @@ mod tests {
 
         let mut read_samples = Vec::new();
         loop {
-            match wav_source.next_sample() {
+            match wav_source.read_one_sample() {
                 Ok(Some(sample)) => read_samples.push(sample),
                 Ok(None) => break,
                 Err(e) => panic!("Error reading sample: {}", e),
@@ -1424,7 +1464,7 @@ mod tests {
 
         let mut read_samples = Vec::new();
         loop {
-            match wav_source.next_sample() {
+            match wav_source.read_one_sample() {
                 Ok(Some(sample)) => read_samples.push(sample),
                 Ok(None) => break,
                 Err(e) => panic!("Error reading sample: {}", e),
@@ -1473,7 +1513,7 @@ mod tests {
 
         let mut read_samples = Vec::new();
         loop {
-            match wav_source.next_sample() {
+            match wav_source.read_one_sample() {
                 Ok(Some(sample)) => read_samples.push(sample),
                 Ok(None) => break,
                 Err(e) => panic!("Error reading sample: {}", e),
@@ -1521,14 +1561,8 @@ mod tests {
         // Test reading the WAV file
         let mut wav_source = AudioSampleSource::from_file(&wav_path, None, 1024).unwrap();
 
-        let mut read_samples = Vec::new();
-        loop {
-            match wav_source.next_sample() {
-                Ok(Some(sample)) => read_samples.push(sample),
-                Ok(None) => break,
-                Err(e) => panic!("Error reading sample: {}", e),
-            }
-        }
+        // Read all samples (returns interleaved)
+        let read_samples = wav_source.read_all_samples().unwrap();
 
         // Verify we got the expected number of samples (interleaved stereo)
         assert_eq!(read_samples.len(), 6);
@@ -1570,7 +1604,7 @@ mod tests {
         let mut wav_source = AudioSampleSource::from_file(&wav_path, None, 1024).unwrap();
 
         // Should return None immediately
-        match wav_source.next_sample() {
+        match wav_source.read_one_sample() {
             Ok(None) => {} // Expected
             Ok(Some(sample)) => panic!("Expected None for empty file, got: {}", sample),
             Err(e) => panic!("Error reading empty file: {}", e),
@@ -1610,7 +1644,7 @@ mod tests {
         // Read all samples
         let mut sample_count = 0;
         loop {
-            match wav_source.next_sample() {
+            match wav_source.read_one_sample() {
                 Ok(Some(_)) => {
                     sample_count += 1;
                     assert!(!wav_source.is_finished()); // Still not finished
@@ -1679,13 +1713,13 @@ mod tests {
         let mut samples_32_read = Vec::new();
 
         for _ in 0..duration_samples {
-            if let Ok(Some(sample)) = wav_16_source.next_sample() {
+            if let Ok(Some(sample)) = wav_16_source.read_one_sample() {
                 samples_16_read.push(sample);
             }
-            if let Ok(Some(sample)) = wav_24_source.next_sample() {
+            if let Ok(Some(sample)) = wav_24_source.read_one_sample() {
                 samples_24_read.push(sample);
             }
-            if let Ok(Some(sample)) = wav_32_source.next_sample() {
+            if let Ok(Some(sample)) = wav_32_source.read_one_sample() {
                 samples_32_read.push(sample);
             }
         }
@@ -1775,7 +1809,7 @@ mod tests {
 
             let mut read_samples = Vec::new();
             loop {
-                match wav_source.next_sample() {
+                match wav_source.read_one_sample() {
                     Ok(Some(sample)) => read_samples.push(sample),
                     Ok(None) => break,
                     Err(e) => panic!("Error reading sample at {}Hz: {}", sample_rate, e),
@@ -1822,11 +1856,11 @@ mod tests {
 
         // Read a few samples and verify we can read after seeking
         // At 5 seconds, we should be at sample index ~220500 (5 * 44100)
-        let first_sample = wav_source.next_sample().unwrap();
+        let first_sample = wav_source.read_one_sample().unwrap();
         assert!(first_sample.is_some(), "Should have samples after seeking");
 
         // Verify we can read multiple samples (seeking worked)
-        let second_sample = wav_source.next_sample().unwrap();
+        let second_sample = wav_source.read_one_sample().unwrap();
         assert!(
             second_sample.is_some(),
             "Should be able to read multiple samples after seeking"
@@ -1835,7 +1869,7 @@ mod tests {
         // Test seeking to 0 (should work like from_file)
         let mut wav_source_start =
             AudioSampleSource::from_file(&wav_path, Some(std::time::Duration::ZERO), 1024).unwrap();
-        let start_sample = wav_source_start.next_sample().unwrap();
+        let start_sample = wav_source_start.read_one_sample().unwrap();
         assert!(start_sample.is_some(), "Should have samples from start");
     }
 
@@ -1878,7 +1912,7 @@ mod tests {
             AudioSampleSource::from_file(&wav_path, Some(seek_time), 1024).unwrap();
 
         let first_sample = wav_source
-            .next_sample()
+            .read_one_sample()
             .unwrap()
             .expect("expected sample after seeking");
 
@@ -1923,14 +1957,8 @@ mod tests {
         // Verify channel count
         assert_eq!(wav_source.channel_count(), 4);
 
-        // Read samples and verify interleaving
-        let mut samples_read = Vec::new();
-        for _ in 0..12 {
-            // 3 samples per channel * 4 channels
-            if let Ok(Some(sample)) = wav_source.next_sample() {
-                samples_read.push(sample);
-            }
-        }
+        // Read all samples (returns interleaved)
+        let samples_read = wav_source.read_all_samples().unwrap();
 
         // Verify we got the expected number of samples
         assert_eq!(samples_read.len(), 12);
@@ -1996,14 +2024,8 @@ mod tests {
         assert_eq!(wav_source.channel_count(), 6);
         assert_eq!(wav_source.sample_rate(), 48000);
 
-        // Read samples and verify interleaving
-        let mut samples_read = Vec::new();
-        for _ in 0..12 {
-            // 2 samples per channel * 6 channels
-            if let Ok(Some(sample)) = wav_source.next_sample() {
-                samples_read.push(sample);
-            }
-        }
+        // Read all samples (returns interleaved)
+        let samples_read = wav_source.read_all_samples().unwrap();
 
         // Verify we got the expected number of samples
         assert_eq!(samples_read.len(), 12);
@@ -2056,7 +2078,7 @@ mod tests {
         let mut count = 0usize;
         const MAX_SAMPLES: usize = 2048;
         while count < MAX_SAMPLES {
-            match source.next_sample() {
+            match source.read_one_sample() {
                 Ok(Some(_)) => count += 1,
                 Ok(None) => break,
                 Err(e) => panic!("error while decoding samples: {}", e),

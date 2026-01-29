@@ -17,11 +17,13 @@ use super::error::SampleSourceError;
 use super::traits::{ChannelMappedSampleSource, SampleSource};
 use super::transcoder::AudioTranscoder;
 
-/// A wrapper that implements ChannelMappedSampleSource for any SampleSource
+/// A wrapper that implements ChannelMappedSampleSource for any SampleSource (planar format)
 pub struct ChannelMappedSource {
     source: Box<dyn SampleSource>,
     channel_mappings: Vec<Vec<String>>,
     source_channel_count: u16,
+    /// Pre-allocated buffer for reading from source (reused to avoid allocation)
+    read_buffer: Vec<Vec<f32>>,
 }
 
 impl ChannelMappedSource {
@@ -31,17 +33,56 @@ impl ChannelMappedSource {
         channel_mappings: Vec<Vec<String>>,
         source_channel_count: u16,
     ) -> Self {
+        // Pre-allocate read buffer for the number of channels
+        let read_buffer = vec![Vec::new(); source_channel_count as usize];
         Self {
             source,
             channel_mappings,
             source_channel_count,
+            read_buffer,
         }
     }
 }
 
 impl ChannelMappedSampleSource for ChannelMappedSource {
-    fn next_sample(&mut self) -> Result<Option<f32>, SampleSourceError> {
-        self.source.next_sample()
+    fn next_frames(
+        &mut self,
+        output: &mut [Vec<f32>],
+        max_frames: usize,
+    ) -> Result<usize, SampleSourceError> {
+        let channel_count = self.source_channel_count as usize;
+
+        if output.len() != channel_count {
+            return Err(SampleSourceError::SampleConversionFailed(format!(
+                "Output has {} channels, expected {}",
+                output.len(),
+                channel_count
+            )));
+        }
+
+        // Clear output buffers
+        for ch in output.iter_mut() {
+            ch.clear();
+        }
+
+        // Ensure read buffer has the right number of channels
+        if self.read_buffer.len() != channel_count {
+            self.read_buffer = vec![Vec::new(); channel_count];
+        }
+
+        // Read planar data from the underlying source
+        let frames_read = self
+            .source
+            .next_chunk(&mut self.read_buffer, max_frames)?;
+
+        // Copy to output
+        for (ch_idx, out_ch) in output.iter_mut().enumerate() {
+            if ch_idx < self.read_buffer.len() {
+                out_ch.extend_from_slice(&self.read_buffer[ch_idx]);
+            }
+        }
+
+        Ok(frames_read)
     }
 
     fn channel_mappings(&self) -> &Vec<Vec<String>> {
@@ -72,7 +113,6 @@ pub fn create_channel_mapped_sample_source(
 
     let channel_count = source.channel_count();
     let sample_source: Box<dyn SampleSource> = if needs_transcoding {
-        // Box<dyn SampleSource> now implements SampleSource directly, so we can use it with AudioTranscoder
         let transcoder =
             AudioTranscoder::new(source, &source_format, &target_format, channel_count)?;
         Box::new(transcoder)
@@ -80,8 +120,6 @@ pub fn create_channel_mapped_sample_source(
         source
     };
 
-    // Use the sample source directly - buffering adds complexity without benefit
-    // since the resampler already handles buffering internally
     Ok(Box::new(ChannelMappedSource::new(
         sample_source,
         channel_mappings,

@@ -13,13 +13,23 @@
 //
 use super::error::SampleSourceError;
 
-/// A source of audio samples that processes an iterator
+/// A source of audio samples that processes chunks in planar format.
+/// Planar format stores all samples for channel 0, then all samples for channel 1, etc.
+/// This is more efficient for processing and matches the native format of most decoders.
 pub trait SampleSource: Send + Sync {
-    /// Get the next sample from the source
-    /// Returns Ok(Some(sample)) if a sample is available
-    /// Returns Ok(None) if the source is finished
-    /// Returns Err(error) if an error occurred
-    fn next_sample(&mut self) -> Result<Option<f32>, SampleSourceError>;
+    /// Get the next chunk of samples from the source in planar format.
+    /// Each inner Vec corresponds to one channel.
+    /// All channels will have the same number of samples written.
+    /// Returns the number of frames (samples per channel) written (0 = EOF).
+    /// Returns Err(error) if an error occurred.
+    ///
+    /// The output Vec must have exactly channel_count() elements.
+    /// Each channel Vec will be cleared and filled with up to max_frames samples.
+    fn next_chunk(
+        &mut self,
+        output: &mut [Vec<f32>],
+        max_frames: usize,
+    ) -> Result<usize, SampleSourceError>;
 
     /// Get the number of channels in this source
     fn channel_count(&self) -> u16;
@@ -42,8 +52,12 @@ pub trait SampleSource: Send + Sync {
 /// This allows Box<dyn SampleSource> to be used directly with generic functions
 /// that require S: SampleSource, eliminating the need for wrapper types.
 impl SampleSource for Box<dyn SampleSource> {
-    fn next_sample(&mut self) -> Result<Option<f32>, SampleSourceError> {
-        (**self).next_sample()
+    fn next_chunk(
+        &mut self,
+        output: &mut [Vec<f32>],
+        max_frames: usize,
+    ) -> Result<usize, SampleSourceError> {
+        (**self).next_chunk(output, max_frames)
     }
 
     fn channel_count(&self) -> u16 {
@@ -67,37 +81,20 @@ impl SampleSource for Box<dyn SampleSource> {
     }
 }
 
-/// A sample source with explicit channel mapping information
-/// This replaces the complex SongSource architecture with a simpler, more debuggable approach
+/// A sample source with explicit channel mapping information.
+/// Uses planar format internally for efficiency.
 pub trait ChannelMappedSampleSource: Send + Sync {
-    /// Get the next sample from the source
-    /// Returns Ok(Some(sample)) if a sample is available
-    /// Returns Ok(None) if the source is finished
-    /// Returns Err(error) if an error occurred
-    fn next_sample(&mut self) -> Result<Option<f32>, SampleSourceError>;
-
-    /// Get the next frame of samples (all channels for one time step)
-    /// Writes samples directly into the provided output slice
-    /// Returns Ok(Some(count)) where count is the number of samples written
-    /// Returns Ok(None) if the source is finished
-    /// Returns Err(error) if an error occurred
-    /// The output slice must have capacity for at least source_channel_count() samples
-    fn next_frame(&mut self, output: &mut [f32]) -> Result<Option<usize>, SampleSourceError> {
-        let channel_count = self.source_channel_count() as usize;
-        if output.len() < channel_count {
-            return Err(SampleSourceError::SampleConversionFailed(format!(
-                "Output buffer too small: need {} samples",
-                channel_count
-            )));
-        }
-        for out in output.iter_mut().take(channel_count) {
-            match self.next_sample()? {
-                Some(sample) => *out = sample,
-                None => return Ok(None),
-            }
-        }
-        Ok(Some(channel_count))
-    }
+    /// Get multiple frames of samples from the source in planar format.
+    /// Each inner Vec corresponds to one source channel.
+    /// Returns the number of frames written (0 = EOF).
+    /// Returns Err(error) if an error occurred.
+    ///
+    /// The output Vec must have exactly source_channel_count() elements.
+    fn next_frames(
+        &mut self,
+        output: &mut [Vec<f32>],
+        max_frames: usize,
+    ) -> Result<usize, SampleSourceError>;
 
     /// Get the channel mappings for this source
     /// Returns a Vec where each element corresponds to a source channel

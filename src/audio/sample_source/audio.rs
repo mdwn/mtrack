@@ -31,18 +31,19 @@ use super::traits::SampleSource;
 use super::traits::SampleSourceTestExt;
 
 /// A sample source that reads audio files (WAV, MP3, FLAC, etc.) and provides scaled samples
-/// This uses symphonia to decode various audio formats - no transcoding logic
+/// in planar format. This uses symphonia to decode various audio formats.
 pub struct AudioSampleSource {
     format_reader: Box<dyn FormatReader>,
     decoder: Box<dyn symphonia::core::codecs::Decoder>,
     track_id: u32,
     is_finished: bool,
-    // Buffered reading to reduce I/O operations
-    sample_buffer: Vec<f32>,
-    buffer_position: usize,
-    buffer_size: usize,
-    // Leftover samples from the last decoded packet that didn't fit in the buffer
-    leftover_samples: Vec<f32>,
+    // Buffered reading in planar format to reduce I/O operations
+    // Each Vec<f32> is one channel's samples
+    planar_buffer: Vec<Vec<f32>>,
+    buffer_position: usize, // Position in frames (not samples)
+    buffer_size: usize,     // Target frames per buffer fill
+    // Leftover frames from the last decoded packet (planar format)
+    leftover_frames: Vec<Vec<f32>>,
     // WAV / PCM metadata for scaling & reporting
     bits_per_sample: u16,
     channels: u16,
@@ -52,26 +53,63 @@ pub struct AudioSampleSource {
 }
 
 impl SampleSource for AudioSampleSource {
-    fn next_sample(&mut self) -> Result<Option<f32>, SampleSourceError> {
-        if self.is_finished {
-            return Ok(None);
+    fn next_chunk(
+        &mut self,
+        output: &mut [Vec<f32>],
+        max_frames: usize,
+    ) -> Result<usize, SampleSourceError> {
+        if self.is_finished || max_frames == 0 {
+            return Ok(0);
         }
 
-        // Check if we need to refill the buffer
-        if self.buffer_position >= self.sample_buffer.len() {
-            self.refill_buffer()?;
+        let num_channels = self.channels as usize;
+        if output.len() != num_channels {
+            return Err(SampleSourceError::SampleConversionFailed(format!(
+                "Output has {} channels, expected {}",
+                output.len(),
+                num_channels
+            )));
+        }
 
-            // If buffer is still empty after refill, we're finished
-            if self.sample_buffer.is_empty() {
-                self.is_finished = true;
-                return Ok(None);
+        // Clear output buffers
+        for ch in output.iter_mut() {
+            ch.clear();
+        }
+
+        let mut total_frames = 0;
+
+        while total_frames < max_frames {
+            // Check if we need to refill the internal buffer
+            let buffer_frames = self.planar_buffer.first().map(|c| c.len()).unwrap_or(0);
+            if self.buffer_position >= buffer_frames {
+                self.refill_buffer()?;
+
+                // If buffer is still empty after refill, we're finished
+                let new_buffer_frames = self.planar_buffer.first().map(|c| c.len()).unwrap_or(0);
+                if new_buffer_frames == 0 {
+                    self.is_finished = true;
+                    break;
+                }
             }
+
+            // Calculate how many frames we can copy in this iteration
+            let buffer_frames = self.planar_buffer.first().map(|c| c.len()).unwrap_or(0);
+            let available = buffer_frames - self.buffer_position;
+            let remaining = max_frames - total_frames;
+            let to_copy = available.min(remaining);
+
+            // Bulk copy from internal buffer to output for each channel
+            for (ch_idx, out_ch) in output.iter_mut().enumerate() {
+                out_ch.extend_from_slice(
+                    &self.planar_buffer[ch_idx][self.buffer_position..self.buffer_position + to_copy],
+                );
+            }
+
+            self.buffer_position += to_copy;
+            total_frames += to_copy;
         }
 
-        // Return the next sample from the buffer
-        let sample = self.sample_buffer[self.buffer_position];
-        self.buffer_position += 1;
-        Ok(Some(sample))
+        Ok(total_frames)
     }
 
     fn channel_count(&self) -> u16 {
@@ -172,20 +210,13 @@ impl AudioSampleSource {
         // Determine channels. Prefer container/codec metadata, but if it's
         // missing we proactively decode the first audio packet to derive the
         // actual channel count. If we still can't determine it, we fail.
-        //
-        // Here, a value of 0 means "unspecified" and is only used inside this
-        // constructor; if it remains 0 after probing, we return an error and
-        // never construct an AudioSampleSource with channel_count == 0.
         let channels = params.channels.map(|c| c.count() as u16).unwrap_or(0);
 
         // In tests we sometimes want to exercise the channel‑detection path
-        // even for formats where the container/codec already reports the
-        // channel count. This is controlled by an env var so production
-        // behaviour is unaffected.
         let force_detect = cfg!(test) && std::env::var("MTRACK_FORCE_DETECT_CHANNELS").is_ok();
 
         let (channels, initial_leftover) = if channels > 0 && !force_detect {
-            (channels, Vec::new())
+            (channels, vec![Vec::new(); channels as usize])
         } else {
             Self::detect_channels_and_prime_buffer(
                 format_reader.as_mut(),
@@ -199,10 +230,10 @@ impl AudioSampleSource {
             decoder,
             track_id,
             is_finished: false,
-            sample_buffer: Vec::with_capacity(buffer_size * channels as usize),
+            planar_buffer: vec![Vec::with_capacity(buffer_size); channels as usize],
             buffer_position: 0,
             buffer_size,
-            leftover_samples: initial_leftover,
+            leftover_frames: initial_leftover,
             bits_per_sample,
             channels,
             sample_rate,
@@ -212,11 +243,10 @@ impl AudioSampleSource {
 
         // If start_time is provided, seek to that position
         if let Some(start) = start_time {
-            // Any samples decoded while probing for channels belong to the
-            // beginning of the stream. If the caller requested a non‑zero
-            // start time, those samples are no longer relevant and must not
-            // be returned ahead of the seek target.
-            source.leftover_samples.clear();
+            // Clear leftover frames when seeking
+            for ch in source.leftover_frames.iter_mut() {
+                ch.clear();
+            }
 
             use symphonia::core::units::Time;
             let seek_to = SeekTo::Time {
@@ -230,101 +260,83 @@ impl AudioSampleSource {
     }
 
     /// Helper function to read the next packet with common error handling.
-    /// Returns:
-    /// - `Ok(Some(packet))` if a packet was successfully read
-    /// - `Ok(None)` if EOF was reached (UnexpectedEof or DecodeError)
-    /// - `Err(...)` if an error occurred that should be returned
-    ///
-    /// Note: ResetRequired errors are propagated to callers so they can reset the decoder.
     fn read_next_packet(
         format_reader: &mut dyn FormatReader,
     ) -> Result<Option<symphonia::core::formats::Packet>, SampleSourceError> {
         match format_reader.next_packet() {
             Ok(packet) => Ok(Some(packet)),
             Err(SymphoniaError::ResetRequired) => {
-                // ResetRequired is propagated to callers so they can reset the decoder
                 Err(SampleSourceError::AudioError(SymphoniaError::ResetRequired))
             }
             Err(SymphoniaError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                // End of file - we're done reading
                 Ok(None)
             }
-            Err(SymphoniaError::DecodeError(_)) => {
-                // Some decoders return DecodeError at EOF instead of IoError
-                Ok(None)
-            }
+            Err(SymphoniaError::DecodeError(_)) => Ok(None),
             Err(e) => Err(SampleSourceError::AudioError(e)),
         }
     }
 
-    /// Refills the sample buffer by reading a chunk from the audio file
+    /// Refills the planar buffer by reading chunks from the audio file
     fn refill_buffer(&mut self) -> Result<(), SampleSourceError> {
+
         // Clear the buffer and reset position
-        self.sample_buffer.clear();
+        for ch in self.planar_buffer.iter_mut() {
+            ch.clear();
+        }
         self.buffer_position = 0;
 
-        let mut samples_read = 0;
-        let target_samples = self.buffer_size * self.channels as usize;
-        // First, add any leftover samples from the previous buffer fill
-        if !self.leftover_samples.is_empty() {
-            let to_take = target_samples.min(self.leftover_samples.len());
-            self.sample_buffer
-                .extend_from_slice(&self.leftover_samples[..to_take]);
-            samples_read += to_take;
+        let mut frames_read = 0;
+        let target_frames = self.buffer_size;
+
+        // First, add any leftover frames from the previous buffer fill
+        let leftover_frames = self.leftover_frames.first().map(|c| c.len()).unwrap_or(0);
+        if leftover_frames > 0 {
+            let to_take = target_frames.min(leftover_frames);
+            for (ch_idx, ch) in self.planar_buffer.iter_mut().enumerate() {
+                ch.extend_from_slice(&self.leftover_frames[ch_idx][..to_take]);
+            }
+            frames_read += to_take;
 
             // Keep the rest as leftover for next time
-            if self.leftover_samples.len() > to_take {
-                self.leftover_samples.drain(..to_take);
+            if leftover_frames > to_take {
+                for ch in self.leftover_frames.iter_mut() {
+                    ch.drain(..to_take);
+                }
             } else {
-                self.leftover_samples.clear();
+                for ch in self.leftover_frames.iter_mut() {
+                    ch.clear();
+                }
             }
-            // If leftover samples completely filled the buffer, we're done for this iteration
-            if samples_read >= target_samples {
+
+            if frames_read >= target_frames {
                 return Ok(());
             }
         }
 
-        // Read packets until we reach the end of the file or fill our buffer.
-        //
-        // NOTE: We intentionally *do not* special‑case "no progress" here based on
-        // samples_read. Some formats (e.g. Ogg/Vorbis) have multiple header packets
-        // that decode to zero PCM frames before the first audio packet. Treating
-        // those as "no progress" would cause us to bail out early and never see
-        // the real audio data.
+        // Read packets until we reach the end of the file or fill our buffer
         loop {
-            // Read the next packet
             let packet = match Self::read_next_packet(self.format_reader.as_mut()) {
                 Ok(Some(packet)) => packet,
-                Ok(None) => {
-                    // EOF reached
-                    break;
-                }
+                Ok(None) => break,
                 Err(SampleSourceError::AudioError(SymphoniaError::ResetRequired)) => {
-                    // The codec needs to be reset after a discontinuity (e.g., after seeking).
-                    // Reset the decoder and continue reading the next packet.
                     self.decoder.reset();
                     continue;
                 }
                 Err(e) => {
-                    // For very small files, some errors might indicate EOF
-                    // Check if we've read any samples - if not, this might be a false error
-                    if samples_read == 0 && self.sample_buffer.is_empty() {
+                    if frames_read == 0 && self.planar_buffer.first().map(|c| c.is_empty()).unwrap_or(true) {
                         break;
                     }
                     return Err(e);
                 }
             };
 
-            // Only process packets from the track we're interested in
             if packet.track_id() != self.track_id {
                 continue;
             }
 
-            // Decode the packet
             let decoded = match self.decoder.decode(&packet) {
                 Ok(decoded) => decoded,
                 Err(SymphoniaError::ResetRequired) => {
-                    // The codec needs to be reset. Reset and retry decoding the same packet.
                     self.decoder.reset();
                     match self.decoder.decode(&packet) {
                         Ok(decoded) => decoded,
@@ -334,53 +346,54 @@ impl AudioSampleSource {
                 Err(e) => return Err(SampleSourceError::AudioError(e)),
             };
 
-            // Convert the decoded buffer to f32 samples. Channel count is
-            // established during construction; here we only care about the
-            // sample data.
-            let (samples, _decoded_channels) = Self::decode_buffer_to_f32(decoded)?;
+            // Decode to planar format directly
+            let (planar_samples, _decoded_channels) = Self::decode_buffer_to_planar(decoded)?;
+            let decoded_frames = planar_samples.first().map(|c| c.len()).unwrap_or(0);
 
-            // Add samples to the buffer
-            if !samples.is_empty() {
-                let remaining = target_samples.saturating_sub(samples_read);
+            if decoded_frames > 0 {
+                let remaining = target_frames.saturating_sub(frames_read);
                 if remaining > 0 {
-                    let to_take = remaining.min(samples.len());
-                    self.sample_buffer.extend_from_slice(&samples[..to_take]);
-                    samples_read += to_take;
+                    let to_take = remaining.min(decoded_frames);
+                    for (ch_idx, ch) in self.planar_buffer.iter_mut().enumerate() {
+                        if ch_idx < planar_samples.len() {
+                            ch.extend_from_slice(&planar_samples[ch_idx][..to_take]);
+                        }
+                    }
+                    frames_read += to_take;
 
-                    // If we have more samples than we can fit, save them as leftover
-                    if samples.len() > to_take {
-                        self.leftover_samples.extend_from_slice(&samples[to_take..]);
-                        // Buffer is full for this iteration, break to avoid infinite loops
-                        // Leftover samples will be used in the next refill_buffer call
+                    // Save leftover frames
+                    if decoded_frames > to_take {
+                        for (ch_idx, ch) in self.leftover_frames.iter_mut().enumerate() {
+                            if ch_idx < planar_samples.len() {
+                                ch.extend_from_slice(&planar_samples[ch_idx][to_take..]);
+                            }
+                        }
                         break;
                     }
 
-                    // For very small files, if we got a small number of samples (less than 32 total),
-                    // the file is likely exhausted. Break immediately to avoid calling next_packet() again
-                    // which might block indefinitely. This handles edge cases with tiny files
-                    // (like the test file with only 3 samples).
-                    // We use a fixed threshold (32) rather than channels-based to catch all tiny files.
-                    // This is critical for preventing hangs on very small audio files.
-                    if samples.len() < 32 {
+                    // Small file optimization
+                    if decoded_frames < 32 {
                         break;
                     }
                 } else {
-                    // Buffer is full, save all samples as leftover and break
-                    self.leftover_samples.extend_from_slice(&samples);
+                    // Buffer is full, save all as leftover
+                    for (ch_idx, ch) in self.leftover_frames.iter_mut().enumerate() {
+                        if ch_idx < planar_samples.len() {
+                            ch.extend_from_slice(&planar_samples[ch_idx]);
+                        }
+                    }
                     break;
                 }
             }
 
-            // If we've filled our target buffer, break for this iteration
-            // This prevents infinite loops while still allowing us to read all samples
-            // across multiple refill_buffer calls
-            if samples_read >= target_samples {
+            if frames_read >= target_frames {
                 break;
             }
         }
 
-        // If we read no samples and have no leftovers, we're at the end of the file
-        if samples_read == 0 && self.leftover_samples.is_empty() {
+        // If we read no frames and have no leftovers, we're at the end of the file
+        let leftover_remaining = self.leftover_frames.first().map(|c| c.len()).unwrap_or(0);
+        if frames_read == 0 && leftover_remaining == 0 {
             self.is_finished = true;
         }
 
@@ -388,24 +401,17 @@ impl AudioSampleSource {
     }
 
     /// When codec/channel metadata is missing, read and decode packets until we
-    /// see the first audio buffer for our track, and derive the channel count
-    /// from that buffer. The decoded samples are returned so they can be used
-    /// as the initial contents of the sample buffer.
+    /// see the first audio buffer for our track.
     fn detect_channels_and_prime_buffer(
         format_reader: &mut dyn FormatReader,
         decoder: &mut dyn symphonia::core::codecs::Decoder,
         track_id: u32,
-    ) -> Result<(u16, Vec<f32>), SampleSourceError> {
+    ) -> Result<(u16, Vec<Vec<f32>>), SampleSourceError> {
         loop {
             let packet = match Self::read_next_packet(format_reader) {
                 Ok(Some(packet)) => packet,
-                Ok(None) => {
-                    // EOF reached
-                    break;
-                }
+                Ok(None) => break,
                 Err(SampleSourceError::AudioError(SymphoniaError::ResetRequired)) => {
-                    // The codec needs to be reset after a discontinuity.
-                    // Reset the decoder and continue reading the next packet.
                     decoder.reset();
                     continue;
                 }
@@ -419,7 +425,6 @@ impl AudioSampleSource {
             let decoded = match decoder.decode(&packet) {
                 Ok(decoded) => decoded,
                 Err(SymphoniaError::ResetRequired) => {
-                    // The codec needs to be reset. Reset and retry decoding the same packet.
                     decoder.reset();
                     match decoder.decode(&packet) {
                         Ok(decoded) => decoded,
@@ -429,9 +434,10 @@ impl AudioSampleSource {
                 Err(e) => return Err(SampleSourceError::AudioError(e)),
             };
 
-            let (samples, channels) = Self::decode_buffer_to_f32(decoded)?;
-            if channels > 0 && !samples.is_empty() {
-                return Ok((channels as u16, samples));
+            let (planar_samples, channels) = Self::decode_buffer_to_planar(decoded)?;
+            let frames = planar_samples.first().map(|c| c.len()).unwrap_or(0);
+            if channels > 0 && frames > 0 {
+                return Ok((channels as u16, planar_samples));
             }
         }
 
@@ -440,46 +446,31 @@ impl AudioSampleSource {
         ))
     }
 
-    /// Converts a decoded AudioBufferRef to a Vec<f32> of interleaved samples
-    /// and returns the channel count as observed in the decoded buffer.
-    fn decode_buffer_to_f32(
+    /// Converts a decoded AudioBufferRef to planar Vec<Vec<f32>> format.
+    /// Each inner Vec contains all samples for one channel.
+    fn decode_buffer_to_planar(
         decoded: AudioBufferRef,
-    ) -> Result<(Vec<f32>, usize), SampleSourceError> {
+    ) -> Result<(Vec<Vec<f32>>, usize), SampleSourceError> {
         match decoded {
-            AudioBufferRef::F32(buf) => Ok(Self::interleave_planar_samples(&buf, |sample| sample)),
-            AudioBufferRef::F64(buf) => Ok(Self::interleave_planar_samples(&buf, |sample| {
-                sample as f32
-            })),
-            AudioBufferRef::S8(buf) => Ok(Self::interleave_planar_samples(&buf, |sample| {
-                Self::scale_s8(sample)
-            })),
-            AudioBufferRef::S16(buf) => Ok(Self::interleave_planar_samples(&buf, |sample| {
-                Self::scale_s16(sample)
-            })),
-            AudioBufferRef::S24(buf) => Ok(Self::interleave_planar_samples(&buf, |sample| {
-                Self::scale_s24(sample.inner())
-            })),
-            AudioBufferRef::S32(buf) => Ok(Self::interleave_planar_samples(&buf, |sample| {
-                Self::scale_s32(sample)
-            })),
-            AudioBufferRef::U8(buf) => Ok(Self::interleave_planar_samples(&buf, |sample| {
-                Self::scale_u8(sample)
-            })),
-            AudioBufferRef::U16(buf) => Ok(Self::interleave_planar_samples(&buf, |sample| {
-                Self::scale_u16(sample)
-            })),
-            AudioBufferRef::U24(buf) => Ok(Self::interleave_planar_samples(&buf, |sample| {
-                Self::scale_u24(sample.inner())
-            })),
-            AudioBufferRef::U32(buf) => Ok(Self::interleave_planar_samples(&buf, |sample| {
-                Self::scale_u32(sample)
-            })),
+            AudioBufferRef::F32(buf) => Ok(Self::copy_planar_samples(&buf, |sample| sample)),
+            AudioBufferRef::F64(buf) => Ok(Self::copy_planar_samples(&buf, |sample| sample as f32)),
+            AudioBufferRef::S8(buf) => Ok(Self::copy_planar_samples(&buf, Self::scale_s8)),
+            AudioBufferRef::S16(buf) => Ok(Self::copy_planar_samples(&buf, Self::scale_s16)),
+            AudioBufferRef::S24(buf) => {
+                Ok(Self::copy_planar_samples(&buf, |sample| Self::scale_s24(sample.inner())))
+            }
+            AudioBufferRef::S32(buf) => Ok(Self::copy_planar_samples(&buf, Self::scale_s32)),
+            AudioBufferRef::U8(buf) => Ok(Self::copy_planar_samples(&buf, Self::scale_u8)),
+            AudioBufferRef::U16(buf) => Ok(Self::copy_planar_samples(&buf, Self::scale_u16)),
+            AudioBufferRef::U24(buf) => {
+                Ok(Self::copy_planar_samples(&buf, |sample| Self::scale_u24(sample.inner())))
+            }
+            AudioBufferRef::U32(buf) => Ok(Self::copy_planar_samples(&buf, Self::scale_u32)),
         }
     }
 
-    /// Helper to interleave planar samples from a generic AudioBuffer.
-    /// The closure receives a single sample value and returns the f32 sample value.
-    fn interleave_planar_samples<T, F>(buf: &AudioBuffer<T>, convert: F) -> (Vec<f32>, usize)
+    /// Helper to copy planar samples from a generic AudioBuffer without interleaving.
+    fn copy_planar_samples<T, F>(buf: &AudioBuffer<T>, convert: F) -> (Vec<Vec<f32>>, usize)
     where
         T: symphonia::core::sample::Sample,
         F: Fn(T) -> f32,
@@ -487,17 +478,20 @@ impl AudioSampleSource {
         let frames = buf.frames();
         let channels = buf.spec().channels.count();
         let planes = buf.planes();
-        let mut samples = Vec::with_capacity(frames * channels);
-        for frame_idx in 0..frames {
-            for ch_idx in 0..channels {
-                samples.push(convert(planes.planes()[ch_idx][frame_idx]));
+
+        let mut planar_output = Vec::with_capacity(channels);
+        for ch_idx in 0..channels {
+            let mut channel_samples = Vec::with_capacity(frames);
+            for frame_idx in 0..frames {
+                channel_samples.push(convert(planes.planes()[ch_idx][frame_idx]));
             }
+            planar_output.push(channel_samples);
         }
-        (samples, channels)
+
+        (planar_output, channels)
     }
 
-    // Scaling helpers for all integer formats. These are `pub(crate)` so they can
-    // be validated directly in unit tests.
+    // Scaling helpers for all integer formats.
 
     #[inline]
     pub(crate) fn scale_s8(sample: i8) -> f32 {

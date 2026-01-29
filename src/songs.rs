@@ -872,6 +872,7 @@ mod test {
     use thiserror::Error;
 
     use crate::{
+        audio::sample_source::traits::SampleSource,
         songs::{get_all_songs, initialize_songs},
         testutil::write_wav,
     };
@@ -1269,10 +1270,20 @@ mod test {
             source.channel_count()
         );
 
-        // Read all samples
+        // Read all samples using planar chunk API
         let mut samples_read = 0;
-        while let Ok(Some(_)) = source.next_sample() {
-            samples_read += 1;
+        let num_channels = source.channel_count() as usize;
+        let mut planar_buf: Vec<Vec<f32>> = vec![Vec::new(); num_channels];
+        loop {
+            let frames = crate::audio::sample_source::traits::SampleSource::next_chunk(
+                &mut source,
+                &mut planar_buf,
+                1024,
+            )?;
+            if frames == 0 {
+                break;
+            }
+            samples_read += frames * num_channels;
         }
         let read_time = start.elapsed();
 
@@ -1289,11 +1300,17 @@ mod test {
             &wav_path, None, 1024,
         )?;
         let mut samples_processed = 0;
+        let wav_channels = wav_source.channel_count() as usize;
+        let mut wav_planar_buf: Vec<Vec<f32>> = vec![Vec::new(); wav_channels];
 
         loop {
-            match crate::audio::sample_source::traits::SampleSource::next_sample(&mut wav_source) {
-                Ok(Some(_)) => samples_processed += 1,
-                Ok(None) => break,
+            match crate::audio::sample_source::traits::SampleSource::next_chunk(
+                &mut wav_source,
+                &mut wav_planar_buf,
+                1024,
+            ) {
+                Ok(0) => break,
+                Ok(frames) => samples_processed += frames * wav_channels,
                 Err(e) => return Err(e.into()),
             }
         }
