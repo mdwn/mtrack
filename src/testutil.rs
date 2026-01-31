@@ -276,6 +276,8 @@ songs: "songs"
                 crate::config::LightingShow::new("lighting/outro.light".to_string()),
             ]),
             vec![],
+            std::collections::HashMap::new(),
+            Vec::new(),
         );
 
         // Verify song has lighting shows
@@ -500,6 +502,8 @@ songs: "songs"
                 "show.light".to_string(),
             )]),
             vec![],
+            std::collections::HashMap::new(),
+            Vec::new(),
         );
 
         // Verify the song has lighting shows

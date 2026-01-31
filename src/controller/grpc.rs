@@ -25,7 +25,8 @@ use crate::{
         Cue, GetActiveEffectsRequest, GetActiveEffectsResponse, GetCuesRequest, GetCuesResponse,
         NextRequest, NextResponse, PlayFromRequest, PlayRequest, PlayResponse, PreviousRequest,
         PreviousResponse, StatusRequest, StatusResponse, StopRequest, StopResponse,
-        SwitchToPlaylistRequest, SwitchToPlaylistResponse, FILE_DESCRIPTOR_SET,
+        StopSamplesRequest, StopSamplesResponse, SwitchToPlaylistRequest, SwitchToPlaylistResponse,
+        FILE_DESCRIPTOR_SET,
     },
 };
 
@@ -247,6 +248,14 @@ impl PlayerService for PlayerServer {
             .unwrap_or_else(|| "No DMX engine available".to_string());
 
         Ok(Response::new(GetActiveEffectsResponse { active_effects }))
+    }
+
+    async fn stop_samples(
+        &self,
+        _: Request<StopSamplesRequest>,
+    ) -> Result<Response<StopSamplesResponse>, Status> {
+        self.player.stop_samples();
+        Ok(Response::new(StopSamplesResponse {}))
     }
 }
 

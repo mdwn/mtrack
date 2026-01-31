@@ -70,6 +70,8 @@ pub(super) struct OscEvents {
     all_songs: Matcher,
     /// The OSC address to look for to switch back to the current playlist.
     playlist: Matcher,
+    /// The OSC address to look for to stop all triggered samples.
+    stop_samples: Matcher,
     /// The OSC address to use to broadcast the player status.
     status: String,
     /// The OSC address to use to broadcast the current playlist.
@@ -104,6 +106,7 @@ impl Driver {
                 stop: Matcher::new(config.stop().as_str())?,
                 all_songs: Matcher::new(config.all_songs().as_str())?,
                 playlist: Matcher::new(config.playlist().as_str())?,
+                stop_samples: Matcher::new(config.stop_samples().as_str())?,
                 status: config.status(),
                 playlist_current: config.playlist_current(),
                 playlist_current_song: config.playlist_current_song(),
@@ -362,6 +365,9 @@ impl Driver {
             recognized_event = true;
         } else if osc_events.playlist.match_address(&address) {
             player.switch_to_playlist().await;
+            recognized_event = true;
+        } else if osc_events.stop_samples.match_address(&address) {
+            player.stop_samples();
             recognized_event = true;
         }
 

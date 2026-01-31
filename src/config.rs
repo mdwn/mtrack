@@ -21,6 +21,7 @@ pub mod midi;
 mod midi;
 mod player;
 mod playlist;
+pub mod samples;
 mod song;
 mod statusevents;
 mod track;
@@ -37,8 +38,15 @@ pub use self::dmx::Universe;
 pub use self::lighting::Lighting;
 pub use self::midi::Midi;
 pub use self::midi::MidiTransformer;
+pub use self::midi::ToMidiEvent;
 pub use self::player::Player;
 pub use self::playlist::Playlist;
+// Sample types are exported for external configuration
+#[allow(unused_imports)]
+pub use self::samples::{
+    NoteOffBehavior, RetriggerBehavior, SampleDefinition, SampleTrigger, SamplesConfig,
+    VelocityConfig, VelocityLayer, VelocityMode,
+};
 pub use self::song::{LightShow, LightingShow, MidiPlayback, Song};
 pub use self::statusevents::StatusEvents;
 pub use self::track::Track;

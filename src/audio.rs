@@ -29,6 +29,9 @@ pub mod sample_source;
 // Re-export the format types for backward compatibility
 pub use format::{SampleFormat, TargetFormat};
 
+/// Type alias for the channel sender used to add sources to the mixer.
+pub type SourceSender = crossbeam_channel::Sender<mixer::ActiveSource>;
+
 pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {
     /// Plays the given song through the audio interface, starting from a specific time.
     fn play_from(
@@ -39,6 +42,18 @@ pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {
         play_barrier: Arc<Barrier>,
         start_time: Duration,
     ) -> Result<(), Box<dyn Error>>;
+
+    /// Gets the mixer for adding triggered samples.
+    /// Returns None if the device doesn't support triggered samples.
+    fn mixer(&self) -> Option<Arc<mixer::AudioMixer>> {
+        None
+    }
+
+    /// Gets the source sender for adding triggered samples without lock contention.
+    /// Returns None if the device doesn't support triggered samples.
+    fn source_sender(&self) -> Option<SourceSender> {
+        None
+    }
 
     #[cfg(test)]
     fn to_mock(&self) -> Result<Arc<mock::Device>, Box<dyn Error>>;

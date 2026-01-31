@@ -11,46 +11,68 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-// These imports are used in the impl blocks below, but the linter may not see them
-// in non-test mode due to #[cfg(test)] blocks
-#[allow(unused_imports)]
+use std::sync::Arc;
+
 use super::error::SampleSourceError;
-#[allow(unused_imports)]
 use super::traits::SampleSource;
 
 #[cfg(test)]
 use super::traits::SampleSourceTestExt;
 
-/// A sample source that produces samples from memory
-/// Useful for testing and future sample trigger functionality
-#[cfg(test)]
+/// A sample source that produces samples from memory.
+/// Used for triggered samples and testing.
 pub struct MemorySampleSource {
-    samples: Vec<f32>,
+    /// The samples stored in an Arc for efficient cloning.
+    samples: Arc<Vec<f32>>,
+    /// Current playback position.
     current_index: usize,
+    /// Number of channels.
     channel_count: u16,
+    /// Sample rate.
     sample_rate: u32,
+    /// Volume scale factor (0.0 to 1.0).
+    volume: f32,
 }
 
-#[cfg(test)]
 impl MemorySampleSource {
-    /// Creates a new memory sample source
-    pub fn new(samples: Vec<f32>, channel_count: u16, sample_rate: u32) -> Self {
+    /// Creates a new memory sample source from shared sample data.
+    /// This allows multiple playback instances to share the same sample data.
+    pub fn from_shared(
+        samples: Arc<Vec<f32>>,
+        channel_count: u16,
+        sample_rate: u32,
+        volume: f32,
+    ) -> Self {
         Self {
             samples,
             current_index: 0,
             channel_count,
             sample_rate,
+            volume,
         }
     }
 }
 
 #[cfg(test)]
+impl MemorySampleSource {
+    /// Creates a new memory sample source (test only).
+    pub fn new(samples: Vec<f32>, channel_count: u16, sample_rate: u32) -> Self {
+        Self {
+            samples: Arc::new(samples),
+            current_index: 0,
+            channel_count,
+            sample_rate,
+            volume: 1.0,
+        }
+    }
+}
+
 impl SampleSource for MemorySampleSource {
     fn next_sample(&mut self) -> Result<Option<f32>, SampleSourceError> {
         if self.current_index >= self.samples.len() {
             Ok(None)
         } else {
-            let sample = self.samples[self.current_index];
+            let sample = self.samples[self.current_index] * self.volume;
             self.current_index += 1;
             Ok(Some(sample))
         }
@@ -65,20 +87,30 @@ impl SampleSource for MemorySampleSource {
     }
 
     fn bits_per_sample(&self) -> u16 {
-        32 // Memory samples are typically 32-bit float
+        32 // Memory samples are 32-bit float
     }
 
     fn sample_format(&self) -> crate::audio::SampleFormat {
-        crate::audio::SampleFormat::Float // Memory samples are float
+        crate::audio::SampleFormat::Float
     }
 
     fn duration(&self) -> Option<std::time::Duration> {
-        // Calculate duration from sample count and sample rate
-        // For interleaved samples, we need to account for the channel count
         let total_samples = self.samples.len() as f64;
         let samples_per_channel = total_samples / self.channel_count as f64;
         let duration_secs = samples_per_channel / self.sample_rate as f64;
         Some(std::time::Duration::from_secs_f64(duration_secs))
+    }
+}
+
+impl Clone for MemorySampleSource {
+    fn clone(&self) -> Self {
+        Self {
+            samples: self.samples.clone(),
+            current_index: 0, // Start from the beginning
+            channel_count: self.channel_count,
+            sample_rate: self.sample_rate,
+            volume: self.volume,
+        }
     }
 }
 

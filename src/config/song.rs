@@ -11,7 +11,7 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-use std::{error::Error, io::Write, path::Path};
+use std::{collections::HashMap, error::Error, io::Write, path::Path};
 
 use config::{Config, File};
 use midly::live::LiveEvent;
@@ -20,6 +20,7 @@ use tracing::info;
 
 use super::{
     midi::{self, ToMidiEvent},
+    samples::{SampleDefinition, SampleTrigger, SamplesConfig},
     track::Track,
 };
 
@@ -40,10 +41,17 @@ pub struct Song {
     lighting: Option<Vec<LightingShow>>,
     /// The associated tracks to play.
     tracks: Vec<Track>,
+    /// Song-specific sample definitions (overrides global samples with same name).
+    #[serde(default)]
+    samples: HashMap<String, SampleDefinition>,
+    /// Song-specific sample trigger mappings (overrides global triggers with same MIDI event).
+    #[serde(default)]
+    sample_triggers: Vec<SampleTrigger>,
 }
 
 impl Song {
     /// Creates a new song configuration.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         name: &str,
         midi_event: Option<midi::Event>,
@@ -52,6 +60,8 @@ impl Song {
         light_shows: Option<Vec<LightShow>>,
         lighting: Option<Vec<LightingShow>>,
         tracks: Vec<Track>,
+        samples: HashMap<String, SampleDefinition>,
+        sample_triggers: Vec<SampleTrigger>,
     ) -> Song {
         Song {
             name: name.to_string(),
@@ -61,6 +71,8 @@ impl Song {
             light_shows,
             lighting,
             tracks,
+            samples,
+            sample_triggers,
         }
     }
 
@@ -128,6 +140,16 @@ impl Song {
     /// Gets the tracks associated with the song.
     pub fn tracks(&self) -> &Vec<Track> {
         &self.tracks
+    }
+
+    /// Gets the song-specific samples configuration.
+    /// Returns a SamplesConfig that can be merged with the global config.
+    pub fn samples_config(&self) -> SamplesConfig {
+        SamplesConfig::new(
+            self.samples.clone(),
+            self.sample_triggers.clone(),
+            0, // Per-song config doesn't set global max_voices
+        )
     }
 }
 

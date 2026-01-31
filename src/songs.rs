@@ -93,6 +93,8 @@ impl DslLightingShow {
 pub struct Song {
     /// The name of the song.
     name: String,
+    /// The base path of the song (directory containing the song config).
+    base_path: PathBuf,
     /// The MIDI event to play when the song is selected in a playlist.
     midi_event: Option<LiveEvent<'static>>,
     /// The MIDI playback configuration.
@@ -111,6 +113,8 @@ pub struct Song {
     duration: Duration,
     /// The individual audio tracks.
     tracks: Vec<Track>,
+    /// Per-song samples configuration.
+    samples_config: config::SamplesConfig,
 }
 
 /// A simple sample for songs. Boils down to i32 or f32, which we can be reasonably assured that
@@ -174,6 +178,7 @@ impl Song {
 
         Ok(Song {
             name: config.name().to_string(),
+            base_path: start_path.to_path_buf(),
             midi_event: config.midi_event()?,
             midi_playback,
             light_shows,
@@ -183,6 +188,7 @@ impl Song {
             sample_format: sample_format.unwrap_or(SampleFormat::Int),
             duration: max_duration,
             tracks,
+            samples_config: config.samples_config(),
         })
     }
 
@@ -246,10 +252,12 @@ impl Song {
         }
         let song = Self {
             name,
+            base_path: song_directory.clone(),
             midi_playback,
             light_shows,
             dsl_lighting_shows: Vec::new(), // No DSL lighting in auto-discovered songs
             tracks,
+            samples_config: config::SamplesConfig::default(),
             ..Default::default()
         };
         Ok(song)
@@ -292,12 +300,24 @@ impl Song {
             light_shows,
             None, // No DSL lighting shows in config - they're handled separately
             tracks,
+            std::collections::HashMap::new(), // No sample overrides when creating from Song
+            Vec::new(),                       // No sample trigger overrides
         )
     }
 
     /// Gets the name of the song.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Gets the base path of the song (directory containing the song config).
+    pub fn base_path(&self) -> &Path {
+        &self.base_path
+    }
+
+    /// Gets the per-song samples configuration.
+    pub fn samples_config(&self) -> &config::SamplesConfig {
+        &self.samples_config
     }
 
     /// Gets the MIDI event.
@@ -495,6 +515,7 @@ impl Default for Song {
     fn default() -> Self {
         Self {
             name: Default::default(),
+            base_path: PathBuf::new(),
             midi_event: Default::default(),
             midi_playback: Default::default(),
             light_shows: Vec::new(),
@@ -504,6 +525,7 @@ impl Default for Song {
             sample_format: SampleFormat::Int,
             duration: Default::default(),
             tracks: Default::default(),
+            samples_config: config::SamplesConfig::default(),
         }
     }
 }

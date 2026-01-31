@@ -16,7 +16,7 @@ use crate::audio::sample_source::ChannelMappedSampleSource;
 use std::collections::{HashMap, HashSet};
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 #[cfg(test)]
 use std::time::Instant;
@@ -30,6 +30,8 @@ pub struct AudioMixer {
     num_channels: u16,
     /// Sample rate
     sample_rate: u32,
+    /// Global sample counter for scheduling (increments each frame processed)
+    sample_counter: Arc<AtomicU64>,
     /// Performance monitoring (test only)
     #[cfg(test)]
     frame_count: Arc<AtomicUsize>,
@@ -56,6 +58,12 @@ pub struct ActiveSource {
     pub is_finished: Arc<AtomicBool>,
     /// Cancel handle for this source
     pub cancel_handle: crate::playsync::CancelHandle,
+    /// Sample count at which this source should start playing (for fixed-latency scheduling)
+    /// If None, the source plays immediately
+    pub start_at_sample: Option<u64>,
+    /// Sample count at which this source should stop playing (for scheduled cuts)
+    /// If None, the source plays until finished or cancelled
+    pub cancel_at_sample: Option<Arc<std::sync::atomic::AtomicU64>>,
 }
 
 impl AudioMixer {
@@ -65,6 +73,7 @@ impl AudioMixer {
             active_sources: Arc::new(RwLock::new(Vec::new())),
             num_channels,
             sample_rate,
+            sample_counter: Arc::new(AtomicU64::new(0)),
             #[cfg(test)]
             frame_count: Arc::new(AtomicUsize::new(0)),
             #[cfg(test)]
@@ -72,6 +81,11 @@ impl AudioMixer {
             #[cfg(test)]
             max_frame_time: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    /// Returns the current sample count (for scheduling triggered sources)
+    pub fn current_sample(&self) -> u64 {
+        self.sample_counter.load(Ordering::Relaxed)
     }
 
     /// Precomputes channel mappings for optimal performance during mixing
@@ -258,6 +272,10 @@ impl AudioMixer {
         let channels = self.num_channels as usize;
         debug_assert_eq!(output.len(), num_frames * channels);
 
+        // Get current sample position for scheduling
+        let current_sample = self.sample_counter.load(Ordering::Relaxed);
+        let buffer_end_sample = current_sample + num_frames as u64;
+
         // Clear the buffer once
         output.fill(0.0);
 
@@ -282,13 +300,56 @@ impl AudioMixer {
                 continue;
             }
 
+            // Check if this source has a scheduled cancellation time
+            if let Some(ref cancel_at) = active_source.cancel_at_sample {
+                let cancel_sample = cancel_at.load(Ordering::Relaxed);
+                if cancel_sample > 0 && current_sample >= cancel_sample {
+                    // Scheduled cancellation time reached
+                    active_source.is_finished.store(true, Ordering::Relaxed);
+                    finished_source_ids.insert(active_source.id);
+                    continue;
+                }
+            }
+
+            // Check if this source should start playing yet (fixed-latency scheduling)
+            let start_frame = if let Some(start_at) = active_source.start_at_sample {
+                if start_at >= buffer_end_sample {
+                    // Source hasn't reached its start time yet, skip entirely
+                    continue;
+                }
+                // Calculate which frame in this buffer to start at
+                if start_at > current_sample {
+                    (start_at - current_sample) as usize
+                } else {
+                    0 // Start time already passed, play from beginning of buffer
+                }
+            } else {
+                0 // No scheduling, play immediately
+            };
+
+            // Check if this source has a scheduled end time within this buffer
+            let end_frame = if let Some(ref cancel_at) = active_source.cancel_at_sample {
+                let cancel_sample = cancel_at.load(Ordering::Relaxed);
+                if cancel_sample > 0
+                    && cancel_sample > current_sample
+                    && cancel_sample < buffer_end_sample
+                {
+                    // Source should stop partway through this buffer
+                    (cancel_sample - current_sample) as usize
+                } else {
+                    num_frames
+                }
+            } else {
+                num_frames
+            };
+
             let source_channel_count = active_source.cached_source_channel_count as usize;
             // Resize buffer if needed (should be rare)
             if source_frame_buffer.len() < source_channel_count {
                 source_frame_buffer.resize(source_channel_count, 0.0);
             }
 
-            for frame_index in 0..num_frames {
+            for frame_index in start_frame..end_frame {
                 match active_source
                     .source
                     .next_frame(&mut source_frame_buffer[..source_channel_count])
@@ -325,7 +386,11 @@ impl AudioMixer {
             }
         }
 
-        // Remove finished sources in a separate, quick write lock
+        // Increment the sample counter
+        self.sample_counter
+            .fetch_add(num_frames as u64, Ordering::Relaxed);
+
+        // Clean up finished sources inline - we're the only accessor in direct callback mode
         if !finished_source_ids.is_empty() {
             let mut sources = self.active_sources.write().unwrap();
             sources.retain(|source| {
@@ -394,6 +459,8 @@ mod tests {
             cached_source_channel_count: 1,
             is_finished: Arc::new(AtomicBool::new(false)),
             cancel_handle: CancelHandle::new(),
+            start_at_sample: None,
+            cancel_at_sample: None,
         };
 
         mixer.add_source(active_source);
@@ -439,6 +506,8 @@ mod tests {
             cached_source_channel_count: 2,
             is_finished: Arc::new(AtomicBool::new(false)),
             cancel_handle: CancelHandle::new(),
+            start_at_sample: None,
+            cancel_at_sample: None,
         };
 
         let active_source2 = ActiveSource {
@@ -454,6 +523,8 @@ mod tests {
             cached_source_channel_count: 2,
             is_finished: Arc::new(AtomicBool::new(false)),
             cancel_handle: CancelHandle::new(),
+            start_at_sample: None,
+            cancel_at_sample: None,
         };
 
         mixer.add_source(active_source1);
@@ -497,6 +568,8 @@ mod tests {
             cached_source_channel_count: 32,
             is_finished: Arc::new(AtomicBool::new(false)),
             cancel_handle: CancelHandle::new(),
+            start_at_sample: None,
+            cancel_at_sample: None,
         };
 
         mixer.add_source(active_source);
