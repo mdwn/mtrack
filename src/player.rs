@@ -19,7 +19,7 @@ use std::{
     path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Barrier,
+        Arc, Barrier, RwLock,
     },
     thread,
     time::{Duration, SystemTime},
@@ -30,6 +30,7 @@ use tokio::{
 };
 use tracing::{error, info, span, warn, Level, Span};
 
+use crate::samples::SampleEngine;
 use crate::songs::Songs;
 use crate::{
     audio, config, dmx, midi,
@@ -54,6 +55,8 @@ pub struct Player {
     midi_device: Option<Arc<dyn midi::Device>>,
     /// The DMX engine to use.
     dmx_engine: Option<Arc<dmx::engine::Engine>>,
+    /// The sample engine for MIDI-triggered samples.
+    sample_engine: Option<Arc<RwLock<SampleEngine>>>,
     /// The playlist to use.
     playlist: Arc<Playlist>,
     /// The all songs playlist.
@@ -95,11 +98,38 @@ impl Player {
             StatusEvents::new(config.status_events())
         });
 
+        // Initialize the sample engine if the audio device supports it
+        let sample_engine = match (device.mixer(), device.source_sender()) {
+            (Some(mixer), Some(source_tx)) => {
+                let max_voices = config.max_sample_voices();
+                let buffer_size = config.audio().map(|a| a.buffer_size()).unwrap_or(1024);
+                let mut engine = SampleEngine::new(mixer, source_tx, max_voices, buffer_size);
+
+                // Load global samples config if available
+                if let Some(base_path) = base_path {
+                    match config.samples_config(base_path) {
+                        Ok(samples_config) => {
+                            if let Err(e) = engine.load_global_config(&samples_config, base_path) {
+                                warn!(error = %e, "Failed to load global samples config");
+                            }
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "Failed to parse samples config");
+                        }
+                    }
+                }
+
+                Some(Arc::new(RwLock::new(engine)))
+            }
+            _ => None,
+        };
+
         let player = Player {
             device,
             mappings: Arc::new(config.track_mappings().clone()),
             midi_device,
             dmx_engine,
+            sample_engine,
             playlist,
             all_songs: playlist::from_songs(songs)?,
             use_all_songs: Arc::new(AtomicBool::new(false)),
@@ -155,6 +185,52 @@ impl Player {
     /// Gets the MIDI device currently in use by the player.
     pub fn midi_device(&self) -> Option<Arc<dyn midi::Device>> {
         self.midi_device.clone()
+    }
+
+    /// Processes a MIDI event for triggered samples.
+    /// This should be called by the MIDI controller when events are received.
+    /// Uses std::sync::RwLock for minimal latency (no async overhead).
+    pub fn process_sample_trigger(&self, raw_event: &[u8]) {
+        if let Some(ref sample_engine) = self.sample_engine {
+            let engine = sample_engine.read().unwrap();
+            engine.process_midi_event(raw_event);
+        }
+    }
+
+    /// Loads the sample configuration for a song.
+    /// This preloads samples for the song so they're ready for instant playback.
+    /// Note: Active voices continue playing through song transitions.
+    fn load_song_samples(&self, song: &Song) {
+        if let Some(ref sample_engine) = self.sample_engine {
+            // Load the new song's sample config if it has one
+            let samples_config = song.samples_config();
+            if !samples_config.samples().is_empty() || !samples_config.sample_triggers().is_empty()
+            {
+                let mut engine = sample_engine.write().unwrap();
+                if let Err(e) = engine.load_song_config(samples_config, song.base_path()) {
+                    warn!(
+                        song = song.name(),
+                        error = %e,
+                        "Failed to load song sample config"
+                    );
+                } else {
+                    info!(
+                        song = song.name(),
+                        samples = samples_config.samples().len(),
+                        triggers = samples_config.sample_triggers().len(),
+                        "Loaded song sample config"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Stops all triggered sample playback.
+    pub fn stop_samples(&self) {
+        if let Some(ref sample_engine) = self.sample_engine {
+            let engine = sample_engine.read().unwrap();
+            engine.stop_all();
+        }
     }
 
     /// Gets the DMX engine currently in use by the player (for testing).
@@ -254,6 +330,9 @@ impl Player {
             );
             return Ok(None);
         }
+
+        // Load samples for this song (if not already loaded)
+        self.load_song_samples(&song);
 
         // Validate lighting shows before starting playback
         if let Some(ref dmx_engine) = self.dmx_engine {
@@ -468,7 +547,9 @@ impl Player {
             );
             return current;
         }
-        Player::next_and_emit(self.midi_device.clone(), playlist)
+        let song = Player::next_and_emit(self.midi_device.clone(), playlist);
+        self.load_song_samples(&song);
+        song
     }
 
     /// Prev goes to the previous entry in the playlist.
@@ -483,7 +564,9 @@ impl Player {
             );
             return current;
         }
-        Player::prev_and_emit(self.midi_device.clone(), playlist)
+        let song = Player::prev_and_emit(self.midi_device.clone(), playlist);
+        self.load_song_samples(&song);
+        song
     }
 
     /// Stop will stop a song if a song is playing.
@@ -800,6 +883,8 @@ mod test {
                     .to_string(),
             )]),
             vec![],
+            HashMap::new(),
+            Vec::new(),
         );
 
         // Create a lighting config with valid groups (but not "invalid_group")
@@ -897,6 +982,8 @@ mod test {
                 wav_file.file_name().unwrap().to_str().unwrap(),
                 Some(1),
             )],
+            HashMap::new(),
+            Vec::new(),
         );
 
         // Create a lighting config with the valid group
@@ -1010,6 +1097,8 @@ mod test {
                 wav_file.file_name().unwrap().to_str().unwrap(),
                 Some(1),
             )],
+            HashMap::new(),
+            Vec::new(),
         );
 
         // Create DMX config without lighting (or with lighting, shouldn't matter)
@@ -1093,6 +1182,8 @@ mod test {
                     .to_string(),
             )]),
             vec![],
+            HashMap::new(),
+            Vec::new(),
         );
 
         // Create a lighting config with valid groups (but not the invalid ones)

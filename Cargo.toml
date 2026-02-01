@@ -21,7 +21,7 @@ exclude = [
 [dependencies]
 clap = { version = "4.5.23", features = ["cargo", "derive"] }
 config = "0.15.6"
-cpal = "0.15.3"
+cpal = "0.17.1"
 rayon = "1.8.0"
 num_cpus = "1.16.0"
 duration-string = "0.5.2"

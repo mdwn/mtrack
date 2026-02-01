@@ -133,6 +133,12 @@ message GetActiveEffectsResponse {
     string active_effects = 1;
 }
 
+// StopSamplesRequest is the message for requesting the player to stop all triggered samples.
+message StopSamplesRequest {}
+
+// StopSamplesResponse is the response message after stopping triggered samples.
+message StopSamplesResponse {}
+
 // PlayerService is a service for controlling the mtrack player.
 service PlayerService {
     // Play will play the current song in the playlist if no other songs
@@ -163,4 +169,7 @@ service PlayerService {
 
     // GetActiveEffects returns a formatted string listing all active lighting effects.
     rpc GetActiveEffects(GetActiveEffectsRequest) returns (GetActiveEffectsResponse);
+
+    // StopSamples will stop all triggered samples that are currently playing.
+    rpc StopSamples(StopSamplesRequest) returns (StopSamplesResponse);
 }

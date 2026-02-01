@@ -282,3 +282,77 @@ track_mappings:
   keys:
   - 5
   - 6
+
+# MIDI-triggered sample configuration.
+# Samples defined here are available globally and can be triggered via MIDI events.
+# Per-song sample overrides can be defined in individual song configuration files.
+samples:
+  # Sample definitions by name. These can be referenced by triggers below.
+  kick:
+    # The audio file to play. Path is relative to this config file.
+    file: songs/a-really-cool-song/click.wav
+    # Output channels to route this sample to (1-indexed).
+    output_channels: [3, 4]
+    # Velocity handling mode: ignore, scale, or layers.
+    velocity:
+      mode: scale
+    # Behavior on Note Off: play_to_completion, stop, or fade.
+    note_off: play_to_completion
+    # Behavior when retriggered while playing: cut or polyphonic.
+    retrigger: cut
+    # Maximum concurrent voices for this sample (optional).
+    max_voices: 4
+
+  snare:
+    file: songs/another-cool-song/click.wav
+    output_channels: [3, 4]
+    velocity:
+      mode: ignore
+      # Default velocity when mode is ignore (0-127).
+      default: 100
+    note_off: play_to_completion
+    retrigger: polyphonic
+    max_voices: 8
+
+  # Example of velocity layers - different samples for different velocity ranges.
+  hihat:
+    output_channels: [3, 4]
+    velocity:
+      mode: layers
+      # Whether to also scale volume by velocity within each layer.
+      scale: true
+      layers:
+      - range: [1, 60]
+        file: songs/the-slow-one/click.wav
+      - range: [61, 100]
+        file: songs/sound-check/click.wav
+      - range: [101, 127]
+        file: songs/a-really-fast-one/click.wav
+    note_off: play_to_completion
+    retrigger: polyphonic
+
+# Sample triggers map MIDI events to sample names defined above.
+sample_triggers:
+  # Trigger the "kick" sample on MIDI Note C3 (note 60) on channel 10.
+- trigger:
+    type: note_on
+    channel: 10
+    key: 60
+  sample: kick
+
+  # Trigger the "snare" sample on MIDI Note D3 (note 62) on channel 10.
+- trigger:
+    type: note_on
+    channel: 10
+    key: 62
+  sample: snare
+
+  # Trigger the "hihat" sample on MIDI Note F#3 (note 66) on channel 10.
+- trigger:
+    type: note_on
+    channel: 10
+    key: 66
+  sample: hihat
+
+# Maximum number of concurrent sample voices globally. Defaults to 32.
+max_sample_voices: 32

@@ -11,20 +11,23 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-pub mod audio;
-pub mod channel_mapped;
-pub mod error;
-pub mod factory;
-pub mod memory;
-pub mod traits;
-pub mod transcoder;
 
-#[cfg(test)]
-mod tests;
+//! MIDI-triggered sample playback system.
+//!
+//! This module provides:
+//! - Sample loading and caching (in-memory for zero-latency playback)
+//! - MIDI event to sample trigger matching
+//! - Voice management with polyphony limits
+//! - Integration with the audio mixer
 
-// Re-exports for use by other modules
-pub use channel_mapped::create_channel_mapped_sample_source;
-pub use channel_mapped::ChannelMappedSource;
-pub use factory::create_sample_source_from_file;
-pub use memory::MemorySampleSource;
-pub use traits::ChannelMappedSampleSource;
+mod engine;
+mod loader;
+mod voice;
+
+pub use engine::SampleEngine;
+
+// These types are exported for potential external use and testing
+#[allow(unused_imports)]
+pub use loader::{LoadedSample, SampleLoader};
+#[allow(unused_imports)]
+pub use voice::{Voice, VoiceManager};

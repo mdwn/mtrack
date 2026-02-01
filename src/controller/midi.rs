@@ -97,6 +97,9 @@ impl super::Driver for Driver {
                     }
                 };
 
+                // Process triggered samples (synchronous, minimal latency)
+                player.process_sample_trigger(&raw_event);
+
                 let event = match LiveEvent::parse(&raw_event) {
                     Ok(event) => event,
                     Err(e) => {

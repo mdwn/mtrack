@@ -27,6 +27,7 @@ const DEFAULT_OSC_NEXT: &str = "/mtrack/next";
 const DEFAULT_OSC_STOP: &str = "/mtrack/stop";
 const DEFAULT_OSC_ALL_SONGS: &str = "/mtrack/all_songs";
 const DEFAULT_OSC_PLAYLIST: &str = "/mtrack/playlist";
+const DEFAULT_OSC_STOP_SAMPLES: &str = "/mtrack/samples/stop";
 const DEFAULT_OSC_STATUS: &str = "/mtrack/status";
 const DEFAULT_OSC_PLAYLIST_CURRENT: &str = "/mtrack/playlist/current";
 const DEFAULT_OSC_PLAYLIST_CURRENT_SONG: &str = "/mtrack/playlist/current_song";
@@ -147,6 +148,8 @@ pub struct OscController {
     all_songs: Option<String>,
     /// The OSC address to look for to switch back to the current playlist.
     playlist: Option<String>,
+    /// The OSC address to look for to stop all triggered samples.
+    stop_samples: Option<String>,
     /// The OSC address to broadcast to display the current player status.
     status: Option<String>,
     /// The OSC address to broadcast the current playlist songs.
@@ -169,6 +172,7 @@ impl OscController {
             stop: None,
             all_songs: None,
             playlist: None,
+            stop_samples: None,
             status: None,
             playlist_current: None,
             playlist_current_song: None,
@@ -218,6 +222,13 @@ impl OscController {
         self.playlist
             .clone()
             .unwrap_or(DEFAULT_OSC_PLAYLIST.to_string())
+    }
+
+    /// Gets the stop samples OSC address.
+    pub fn stop_samples(&self) -> String {
+        self.stop_samples
+            .clone()
+            .unwrap_or(DEFAULT_OSC_STOP_SAMPLES.to_string())
     }
 
     /// Gets the player status.

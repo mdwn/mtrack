@@ -15,6 +15,7 @@ use super::audio::Audio;
 use super::controller::Controller;
 use super::dmx::Dmx;
 use super::midi::Midi;
+use super::samples::{SampleDefinition, SampleTrigger, SamplesConfig, DEFAULT_MAX_SAMPLE_VOICES};
 use super::statusevents::StatusEvents;
 use super::trackmappings::TrackMappings;
 use config::{Config, File};
@@ -22,7 +23,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::error::Error;
 use std::path::{Path, PathBuf};
-use tracing::error;
+use tracing::{error, info};
 
 /// The configuration for the multitrack player.
 #[derive(Deserialize)]
@@ -49,6 +50,16 @@ pub struct Player {
     playlist: Option<String>,
     /// The path to the song definitions.
     songs: String,
+    /// Inline sample definitions.
+    #[serde(default)]
+    samples: HashMap<String, SampleDefinition>,
+    /// Path to external samples configuration file.
+    samples_file: Option<String>,
+    /// Sample trigger mappings.
+    #[serde(default)]
+    sample_triggers: Vec<SampleTrigger>,
+    /// Maximum number of concurrent sample voices globally.
+    max_sample_voices: Option<u32>,
 }
 
 impl Player {
@@ -73,6 +84,10 @@ impl Player {
             status_events: None,
             playlist: None,
             songs: songs.to_string(),
+            samples: HashMap::new(),
+            samples_file: None,
+            sample_triggers: Vec::new(),
+            max_sample_voices: None,
         }
     }
 
@@ -155,5 +170,44 @@ impl Player {
             }
         };
         player_path_directory.join(&self.songs)
+    }
+
+    /// Gets the samples configuration, merging inline definitions with any external file.
+    /// The player_path is used to resolve relative paths.
+    pub fn samples_config(&self, player_path: &Path) -> Result<SamplesConfig, Box<dyn Error>> {
+        let mut config = SamplesConfig::new(
+            self.samples.clone(),
+            self.sample_triggers.clone(),
+            self.max_sample_voices.unwrap_or(DEFAULT_MAX_SAMPLE_VOICES),
+        );
+
+        // Load external samples file if specified
+        if let Some(samples_file) = &self.samples_file {
+            let samples_path = if Path::new(samples_file).is_absolute() {
+                PathBuf::from(samples_file)
+            } else {
+                let player_dir = player_path.parent().unwrap_or(Path::new("."));
+                player_dir.join(samples_file)
+            };
+
+            info!(path = ?samples_path, "Loading external samples configuration");
+
+            let external_config: SamplesConfig = Config::builder()
+                .add_source(File::from(samples_path.as_path()))
+                .build()?
+                .try_deserialize()?;
+
+            // External config is loaded first, then inline config overrides it
+            let mut merged = external_config;
+            merged.merge(config);
+            config = merged;
+        }
+
+        Ok(config)
+    }
+
+    /// Gets the maximum sample voices limit.
+    pub fn max_sample_voices(&self) -> u32 {
+        self.max_sample_voices.unwrap_or(DEFAULT_MAX_SAMPLE_VOICES)
     }
 }

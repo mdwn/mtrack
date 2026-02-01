@@ -7,8 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Switched from hound to Symphonia. which supports a great deal more formats than just wav.
-We now support flag, ogg, vorbis, mp3, alac, aac, and anything else Symphonia supports.
+### Added
+
+MIDI-triggered sample playback has been added. Samples can be configured globally or per-song
+with the following features:
+
+- **Velocity handling**: Configurable velocity sensitivity with optional fixed velocity override
+- **Note Off behavior**: Samples can play to completion, stop immediately, or fade out on Note Off
+- **Retrigger behavior**: Polyphonic mode allows layering, cut mode stops previous instances
+- **Voice limits**: Global and per-sample voice limits with oldest-voice stealing
+- **Output routing**: Samples can be routed to specific output channels via track mappings
+- **In-memory preloading**: Samples are decoded and cached in memory for low-latency playback
+
+Sample triggering uses a fixed-latency scheduling system that ensures consistent trigger-to-audio
+latency with zero jitter. At 256 sample buffer size (44.1kHz), latency is approximately 11.6ms
+(~5.8ms scheduled delay + ~5.8ms output buffer). Cut transitions are sample-accurate - old
+samples stop at exactly the same sample the new one starts, eliminating gaps.
+
+The audio engine has been refactored for lower latency and stability:
+
+- **Direct callback mode**: The CPAL callback now calls the mixer directly, eliminating the
+  intermediate ring buffer. This follows the pattern used by professional audio systems
+  (ASIO, CoreAudio, JACK) for lowest possible latency.
+- Lock-free voice cancellation using atomic flags
+- Channel-based source addition to decouple sample engine from mixer locks
+- Inline cleanup of finished sources during mixing (simpler, no separate cleanup pass)
+- Bounded source channel (capacity 64) to prevent unbounded memory growth
+- Precomputed channel mappings at sample load time (no allocations during trigger)
+
+### Changed
+
+Updated cpal from 0.15.3 to 0.17.1 for improved ALSA handling.
+(breaking) This may have changed device names. Please run mtrack devices to see if you need to update yours.
+
+Switched from hound to Symphonia, which supports a great deal more formats than just wav.
+We now support flac, ogg, vorbis, mp3, alac, aac, and anything else Symphonia supports.
+
+### Fixed
 
 Fixed a bug where stopping too fast after playing could produce a hang. This is unlikely to
 have happened in a live scenario.

@@ -24,7 +24,6 @@ use std::{
 };
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use std::sync::atomic::AtomicUsize;
 use tracing::{error, info, span, Level};
 
 use crate::audio::mixer::{ActiveSource as MixerActiveSource, AudioMixer};
@@ -35,118 +34,6 @@ use crate::{
     songs::Song,
 };
 use std::sync::Barrier;
-
-/// Lock-free circular buffer for zero-copy audio streaming
-struct CircularBuffer {
-    /// Backing buffer
-    buffer: Vec<f32>,
-    /// Capacity (must be power of 2)
-    capacity: usize,
-    /// Read position (consumer)
-    read_pos: AtomicUsize,
-    /// Write position (producer)
-    write_pos: AtomicUsize,
-}
-
-impl CircularBuffer {
-    fn new(capacity: usize) -> Self {
-        // Round up to next power of 2 for efficient modulo
-        let cap = capacity.next_power_of_two();
-        Self {
-            buffer: vec![0.0; cap],
-            capacity: cap,
-            read_pos: AtomicUsize::new(0),
-            write_pos: AtomicUsize::new(0),
-        }
-    }
-
-    /// Get number of samples available to read
-    #[inline]
-    fn available(&self) -> usize {
-        let write = self.write_pos.load(Ordering::Acquire);
-        let read = self.read_pos.load(Ordering::Acquire);
-        // Both positions are in [0, capacity), so:
-        // - If write >= read: available = write - read
-        // - If write < read: wrapped, available = capacity - read + write
-        if write >= read {
-            write - read
-        } else {
-            self.capacity - read + write
-        }
-    }
-
-    /// Get space available to write
-    #[inline]
-    fn space(&self) -> usize {
-        self.capacity - self.available() - 1
-    }
-
-    /// Write samples directly into buffer (zero-copy)
-    /// Returns number of samples actually written
-    fn write(&self, samples: &[f32]) -> usize {
-        let space = self.space();
-        if space == 0 {
-            return 0;
-        }
-        let to_write = space.min(samples.len());
-        let write = self.write_pos.load(Ordering::Acquire);
-        let mask = self.capacity - 1;
-
-        // Write in one or two chunks (if wrap-around)
-        let first_chunk = (self.capacity - write).min(to_write);
-        unsafe {
-            let ptr = self.buffer.as_ptr().add(write) as *mut f32;
-            std::ptr::copy_nonoverlapping(samples.as_ptr(), ptr, first_chunk);
-        }
-
-        if to_write > first_chunk {
-            let second_chunk = to_write - first_chunk;
-            unsafe {
-                let ptr = self.buffer.as_ptr() as *mut f32;
-                std::ptr::copy_nonoverlapping(samples.as_ptr().add(first_chunk), ptr, second_chunk);
-            }
-        }
-
-        self.write_pos
-            .store((write + to_write) & mask, Ordering::Release);
-        to_write
-    }
-
-    /// Read samples directly from buffer (zero-copy)
-    /// Returns number of samples actually read
-    fn read(&self, output: &mut [f32]) -> usize {
-        let available = self.available();
-        if available == 0 {
-            return 0;
-        }
-        let to_read = available.min(output.len());
-        let read = self.read_pos.load(Ordering::Acquire);
-        let mask = self.capacity - 1;
-
-        // Read in one or two chunks (if wrap-around)
-        let first_chunk = (self.capacity - read).min(to_read);
-        unsafe {
-            let ptr = self.buffer.as_ptr().add(read);
-            std::ptr::copy_nonoverlapping(ptr, output.as_mut_ptr(), first_chunk);
-        }
-
-        if to_read > first_chunk {
-            let second_chunk = to_read - first_chunk;
-            unsafe {
-                let ptr = self.buffer.as_ptr();
-                std::ptr::copy_nonoverlapping(
-                    ptr,
-                    output.as_mut_ptr().add(first_chunk),
-                    second_chunk,
-                );
-            }
-        }
-
-        self.read_pos
-            .store((read + to_read) & mask, Ordering::Release);
-        to_read
-    }
-}
 
 /// Global atomic counter for generating unique source IDs
 static SOURCE_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -182,8 +69,6 @@ struct OutputManager {
     source_rx: crossbeam_channel::Receiver<MixerActiveSource>,
     /// Handle to the output thread (keeps it alive).
     output_thread: Option<thread::JoinHandle<()>>,
-    /// Handle to the producer thread (fills ring buffer).
-    producer_thread: Option<thread::JoinHandle<()>>,
 }
 
 impl fmt::Display for Device {
@@ -199,34 +84,54 @@ impl fmt::Display for Device {
 }
 
 /// f32 callback: read directly into CPAL buffer (true zero-copy)
-fn create_f32_callback(
-    ring: Arc<CircularBuffer>,
+/// Direct mixer callback for f32 output - no intermediate ring buffer
+fn create_direct_f32_callback(
+    mixer: AudioMixer,
+    source_rx: crossbeam_channel::Receiver<MixerActiveSource>,
+    num_channels: u16,
 ) -> impl FnMut(&mut [f32], &cpal::OutputCallbackInfo) + Send + 'static {
     move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-        let read = ring.read(data);
-        // Zero-fill any shortfall
-        data[read..].fill(0.0);
+        // Process any pending new sources (non-blocking)
+        while let Ok(new_source) = source_rx.try_recv() {
+            mixer.add_source(new_source);
+        }
+
+        // Mix directly into the output buffer (cleanup happens inline)
+        let num_frames = data.len() / num_channels as usize;
+        mixer.process_into_output(data, num_frames);
     }
 }
 
-/// Integer callback: read from ring and convert
-fn create_single_thread_callback<T: cpal::Sample + cpal::FromSample<f32> + std::fmt::Debug>(
-    ring: Arc<CircularBuffer>,
+/// Direct mixer callback for integer output - no intermediate ring buffer
+fn create_direct_int_callback<T: cpal::Sample + cpal::FromSample<f32> + std::fmt::Debug>(
+    mixer: AudioMixer,
+    source_rx: crossbeam_channel::Receiver<MixerActiveSource>,
+    num_channels: u16,
 ) -> impl FnMut(&mut [T], &cpal::OutputCallbackInfo) + Send + 'static
 where
     f32: cpal::FromSample<T>,
 {
-    move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
-        let len = data.len();
-        let mut temp = vec![0.0f32; len];
-        let read = ring.read(&mut temp);
+    let mut temp_buffer: Vec<f32> = Vec::new();
 
-        // Zero-fill any shortfall
-        temp[read..].fill(0.0);
+    move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+        // Process any pending new sources (non-blocking)
+        while let Ok(new_source) = source_rx.try_recv() {
+            mixer.add_source(new_source);
+        }
+
+        // Ensure temp buffer is large enough
+        if temp_buffer.len() < data.len() {
+            temp_buffer.resize(data.len(), 0.0);
+        }
+
+        // Mix into temp buffer (cleanup happens inline)
+        let num_frames = data.len() / num_channels as usize;
+        let temp_slice = &mut temp_buffer[..data.len()];
+        mixer.process_into_output(temp_slice, num_frames);
 
         // Convert to output format
-        for (dst, &src) in data.iter_mut().zip(temp.iter()) {
-            *dst = T::from_sample(src);
+        for (out, &sample) in data.iter_mut().zip(temp_slice.iter()) {
+            *out = T::from_sample(sample);
         }
     }
 }
@@ -251,9 +156,6 @@ impl Drop for OutputManager {
         // Note: The channels will be automatically dropped when the struct is dropped
 
         // Wait for threads to finish
-        if let Some(thread) = self.producer_thread.take() {
-            let _ = thread.join();
-        }
         if let Some(thread) = self.output_thread.take() {
             let _ = thread.join();
         }
@@ -263,7 +165,11 @@ impl Drop for OutputManager {
 impl OutputManager {
     /// Creates a new output manager.
     fn new(num_channels: u16, sample_rate: u32) -> Result<Self, Box<dyn Error>> {
-        let (source_tx, source_rx) = crossbeam_channel::unbounded();
+        // Bounded channel with capacity for typical use cases:
+        // - Songs with many tracks (8-16)
+        // - Rapid sample triggering
+        // If full, send blocks (back-pressure) rather than unbounded growth
+        let (source_tx, source_rx) = crossbeam_channel::bounded(64);
 
         let mixer = AudioMixer::new(num_channels, sample_rate);
 
@@ -272,7 +178,6 @@ impl OutputManager {
             source_tx,
             source_rx,
             output_thread: None,
-            producer_thread: None,
         };
 
         Ok(manager)
@@ -285,64 +190,40 @@ impl OutputManager {
     }
 
     /// Starts the output thread that creates and manages the CPAL stream.
+    /// Uses direct callback mode - no intermediate ring buffer for lowest latency.
     fn start_output_thread(
         &mut self,
         device: cpal::Device,
         target_format: TargetFormat,
+        output_buffer_size: Option<u32>,
     ) -> Result<(), Box<dyn Error>> {
         let mixer = self.mixer.clone();
         let source_rx = self.source_rx.clone();
         let num_channels = mixer.num_channels();
         let sample_rate = mixer.sample_rate();
 
-        // Create shared circular buffer (~100ms of audio)
-        let capacity_samples = (sample_rate as usize * num_channels as usize) / 10;
-        let ring = Arc::new(CircularBuffer::new(capacity_samples.max(1024)));
-
-        // Producer thread: mix audio and write to ring buffer (zero-allocation)
-        let mixer_for_producer = mixer.clone();
-        let source_rx_for_producer = source_rx.clone();
-        let ring_for_producer = ring.clone();
-        let producer_thread = thread::spawn(move || {
-            // Pre-allocate scratch buffer (reused for all blocks)
-            let block_frames = 512; // Small block size for low latency
-            let block_samples = block_frames * num_channels as usize;
-            let mut scratch = vec![0.0f32; block_samples];
-
-            loop {
-                // Process new sources
-                while let Ok(new_source) = source_rx_for_producer.try_recv() {
-                    mixer_for_producer.add_source(new_source);
-                }
-
-                // Check if ring has space for a block
-                if ring_for_producer.space() >= block_samples {
-                    // Mix directly into scratch buffer (zero-allocation)
-                    mixer_for_producer.process_into_output(&mut scratch, block_frames);
-                    ring_for_producer.write(&scratch);
-                } else {
-                    // Ring full, yield briefly
-                    thread::sleep(Duration::from_micros(500));
-                }
-            }
-        });
+        // Use a barrier to ensure the stream is created before we return
+        let barrier = Arc::new(Barrier::new(2));
+        let barrier_clone = barrier.clone();
 
         // Start the output thread - create the stream inside the thread
         let output_thread = thread::spawn(move || {
-            // Create the CPAL stream
-            // Create the CPAL stream configuration - let CPAL choose appropriate buffer size
+            // Create the CPAL stream configuration
+            let buffer_size = match output_buffer_size {
+                Some(size) => cpal::BufferSize::Fixed(size),
+                None => cpal::BufferSize::Default,
+            };
             let config = cpal::StreamConfig {
                 channels: num_channels,
-                sample_rate: cpal::SampleRate(sample_rate),
-                buffer_size: cpal::BufferSize::Default, // Let CPAL choose the buffer size
+                sample_rate,
+                buffer_size,
             };
 
-            // Create the output stream based on the target format
-            // Map SampleFormat to the appropriate CPAL stream type
-
+            // Create the output stream with direct mixer callback (no ring buffer)
             let stream_result = if target_format.sample_format == crate::audio::SampleFormat::Float
             {
-                let mut callback = create_f32_callback(ring.clone());
+                let mut callback =
+                    create_direct_f32_callback(mixer.clone(), source_rx.clone(), num_channels);
                 device.build_output_stream(
                     &config,
                     move |data: &mut [f32], info: &cpal::OutputCallbackInfo| {
@@ -355,7 +236,11 @@ impl OutputManager {
                 // For integer formats, we need to convert from f32 to the target integer type
                 match target_format.bits_per_sample {
                     16 => {
-                        let mut callback = create_single_thread_callback::<i16>(ring.clone());
+                        let mut callback = create_direct_int_callback::<i16>(
+                            mixer.clone(),
+                            source_rx.clone(),
+                            num_channels,
+                        );
                         device.build_output_stream(
                             &config,
                             move |data: &mut [i16], info: &cpal::OutputCallbackInfo| {
@@ -366,7 +251,11 @@ impl OutputManager {
                         )
                     }
                     32 => {
-                        let mut callback = create_single_thread_callback::<i32>(ring.clone());
+                        let mut callback = create_direct_int_callback::<i32>(
+                            mixer.clone(),
+                            source_rx.clone(),
+                            num_channels,
+                        );
                         device.build_output_stream(
                             &config,
                             move |data: &mut [i32], info: &cpal::OutputCallbackInfo| {
@@ -378,6 +267,7 @@ impl OutputManager {
                     }
                     _ => {
                         error!("Unsupported bit depth for integer format");
+                        barrier_clone.wait();
                         return;
                     }
                 }
@@ -388,9 +278,13 @@ impl OutputManager {
                 Ok(stream) => {
                     if let Err(e) = stream.play() {
                         error!("Failed to start CPAL stream: {}", e);
+                        barrier_clone.wait();
                         return;
                     }
-                    info!("CPAL output stream started successfully");
+                    info!("CPAL output stream started successfully (direct callback mode)");
+
+                    // Signal that stream is ready
+                    barrier_clone.wait();
 
                     // Keep the stream alive by waiting
                     loop {
@@ -399,12 +293,15 @@ impl OutputManager {
                 }
                 Err(e) => {
                     error!("Failed to create CPAL stream: {}", e);
+                    barrier_clone.wait();
                 }
             }
         });
 
+        // Wait for stream to be created
+        barrier.wait();
+
         self.output_thread = Some(output_thread);
-        self.producer_thread = Some(producer_thread);
         Ok(())
     }
 }
@@ -466,7 +363,7 @@ impl Device {
                     )?);
 
                     devices.push(Device {
-                        name: device.name()?,
+                        name: device.id()?.to_string(),
                         playback_delay: Duration::ZERO,
                         max_channels,
                         host_id,
@@ -503,9 +400,12 @@ impl Device {
                 let mut output_manager =
                     OutputManager::new(device.max_channels, device.target_format.sample_rate)?;
 
-                // Start the output thread
-                output_manager
-                    .start_output_thread(device.device.clone(), device.target_format.clone())?;
+                // Start the output thread with configured buffer size
+                output_manager.start_output_thread(
+                    device.device.clone(),
+                    device.target_format.clone(),
+                    Some(config.buffer_size() as u32),
+                )?;
 
                 device.output_manager = Arc::new(output_manager);
                 device.audio_config = config;
@@ -582,12 +482,15 @@ impl AudioDevice for Device {
             return Err("No sources found in song".into());
         }
 
-        // Create unique IDs for each source and track them
-        let mut source_ids = Vec::new();
+        // Create sources and track their finish flags (no locks needed for monitoring)
+        let mut source_finish_flags = Vec::new();
 
         for source in channel_mapped_sources.into_iter() {
             let current_source_id = SOURCE_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
             let source_channel_count = source.source_channel_count();
+            let is_finished = Arc::new(AtomicBool::new(false));
+            source_finish_flags.push(is_finished.clone());
+
             let active_source = MixerActiveSource {
                 id: current_source_id,
                 source,
@@ -595,38 +498,31 @@ impl AudioDevice for Device {
                 channel_mappings: Vec::new(),     // Will be precomputed in add_source
                 cached_source_channel_count: source_channel_count,
                 cancel_handle: cancel_handle.clone(), // Clone for each source
-                is_finished: Arc::new(AtomicBool::new(false)),
+                is_finished,
+                start_at_sample: None,  // Song sources play immediately
+                cancel_at_sample: None, // Song sources don't have scheduled cancellation
             };
 
-            source_ids.push(current_source_id);
             self.output_manager.add_source(active_source)?;
         }
-
-        // Give the mixer a moment to process all the sources before starting monitoring
-        thread::sleep(Duration::from_millis(10));
 
         // Wait for either cancellation or natural completion
         let finished = Arc::new(AtomicBool::new(false));
 
         // Start a background thread to monitor if all sources have finished
+        // This is completely lock-free - just checks atomic flags
         let finished_monitor = finished.clone();
-        let mixer = self.output_manager.mixer.clone();
         let cancel_handle_for_notify = cancel_handle.clone();
         thread::spawn(move || {
-            // Poll the mixer to see if all sources for this play operation have finished
             loop {
-                let active_sources = mixer.get_active_sources();
-                let sources = active_sources.read().unwrap();
-                let has_active_sources = sources.iter().any(|source| {
-                    let source_guard = source.lock().unwrap();
-                    source_ids.contains(&source_guard.id)
-                });
-                drop(sources);
+                // Check if all sources have finished (lock-free)
+                let all_finished = source_finish_flags
+                    .iter()
+                    .all(|flag| flag.load(Ordering::Relaxed));
 
-                if !has_active_sources {
-                    // All sources for this play operation have finished
+                if all_finished {
                     finished_monitor.store(true, Ordering::Relaxed);
-                    cancel_handle_for_notify.notify(); // Wake up the waiting thread!
+                    cancel_handle_for_notify.notify();
                     break;
                 }
 
@@ -637,6 +533,14 @@ impl AudioDevice for Device {
         cancel_handle.wait(finished);
 
         Ok(())
+    }
+
+    fn mixer(&self) -> Option<Arc<super::mixer::AudioMixer>> {
+        Some(Arc::new(self.output_manager.mixer.clone()))
+    }
+
+    fn source_sender(&self) -> Option<super::SourceSender> {
+        Some(self.output_manager.source_tx.clone())
     }
 
     #[cfg(test)]

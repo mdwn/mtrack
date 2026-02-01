@@ -1417,6 +1417,8 @@ mod test {
             None,
             None, // No lighting shows for this test
             vec![],
+            std::collections::HashMap::new(),
+            Vec::new(),
         );
 
         // Test that the song config has lighting
@@ -1615,6 +1617,8 @@ mod test {
             None,
             None, // No lighting for this test
             vec![],
+            std::collections::HashMap::new(),
+            Vec::new(),
         );
         let song = crate::songs::Song::new(temp_path, &song_config)?;
 
