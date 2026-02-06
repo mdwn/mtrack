@@ -1,4 +1,3 @@
-use std::any::Any;
 // Copyright (C) 2026 Michael Wilson <mike@mdwn.dev>
 //
 // This program is free software: you can redistribute it and/or modify it under
@@ -12,6 +11,8 @@ use std::any::Any;
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
+use std::any::Any;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::{error::Error, fmt, sync::Arc, time::Duration};
 
 use crate::config;
@@ -28,6 +29,14 @@ pub mod sample_source;
 
 // Re-export the format types for backward compatibility
 pub use format::{SampleFormat, TargetFormat};
+
+/// Global source ID counter shared by song playback and sample triggers so IDs are unique.
+static SOURCE_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// Returns the next unique source ID for the mixer. Used by both song play_from and sample engine.
+pub(crate) fn next_source_id() -> u64 {
+    SOURCE_ID_COUNTER.fetch_add(1, Ordering::Relaxed)
+}
 
 /// Type alias for the channel sender used to add sources to the mixer.
 pub type SourceSender = crossbeam_channel::Sender<mixer::ActiveSource>;

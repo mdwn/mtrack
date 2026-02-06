@@ -17,7 +17,6 @@
 use std::collections::HashMap;
 use std::error::Error;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
 
 use midly::live::LiveEvent;
@@ -26,13 +25,11 @@ use tracing::{debug, error, info, warn};
 
 use super::loader::{LoadedSample, SampleLoader};
 use super::voice::{Voice, VoiceManager};
+use crate::audio;
 use crate::audio::sample_source::ChannelMappedSource;
 use crate::config::samples::{NoteOffBehavior, SampleDefinition, SampleTrigger, SamplesConfig};
 use crate::config::ToMidiEvent;
 use crate::playsync::CancelHandle;
-
-/// Global source ID counter for the mixer.
-static NEXT_SOURCE_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Precomputed data for a loaded sample file, avoiding allocations during trigger.
 struct PrecomputedSampleData {
@@ -412,7 +409,7 @@ impl SampleEngine {
 
         // Create a new source for playback
         let source = precomputed.loaded.create_source(volume);
-        let source_id = NEXT_SOURCE_ID.fetch_add(1, Ordering::SeqCst);
+        let source_id = audio::next_source_id();
 
         // Use precomputed channel labels and track mappings (no allocations!)
         let channel_mapped = ChannelMappedSource::new(
