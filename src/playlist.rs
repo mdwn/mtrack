@@ -16,8 +16,14 @@ use tracing::{info, span, Level, Span};
 use crate::config;
 use crate::songs::{Song, Songs};
 use core::fmt;
-use std::error::Error;
 use std::sync::{Arc, RwLock};
+
+/// Typed error for playlist creation so callers can distinguish e.g. missing song in registry.
+#[derive(Debug, thiserror::Error)]
+pub enum PlaylistError {
+    #[error("Song not in registry: {0}")]
+    SongNotFound(String),
+}
 
 /// Playlist is a playlist for use by a player.
 pub struct Playlist {
@@ -53,11 +59,13 @@ impl Playlist {
         name: &str,
         config: &config::Playlist,
         registry: Arc<Songs>,
-    ) -> Result<Arc<Playlist>, Box<dyn Error>> {
+    ) -> Result<Arc<Playlist>, PlaylistError> {
         // Verify that each song in the playlist exists in the registry.
         let song_names = config.songs();
         for song_name in song_names.iter() {
-            registry.get(song_name)?;
+            registry
+                .get(song_name)
+                .map_err(|_| PlaylistError::SongNotFound(song_name.clone()))?;
         }
 
         Ok(Arc::new(Playlist {
@@ -84,7 +92,7 @@ impl Playlist {
     pub fn next(&self) -> Arc<Song> {
         let _enter = self.span.enter();
 
-        let mut position = self.position.write().expect("unable to get lock");
+        let mut position = self.position.write().unwrap_or_else(|e| e.into_inner());
         if *position < self.songs.len() - 1 {
             *position += 1;
         }
@@ -106,10 +114,7 @@ impl Playlist {
     /// Move to the previous element of the playlist. If we're at the beginning of the playlist, the position
     /// will not decrement. The song at the current position will be returned.
     pub fn prev(&self) -> Arc<Song> {
-        let mut position = self
-            .position
-            .write()
-            .expect("unable to get write lock on position");
+        let mut position = self.position.write().unwrap_or_else(|e| e.into_inner());
         if *position > 0 {
             *position -= 1;
         }
@@ -130,7 +135,7 @@ impl Playlist {
 
     /// Return the song at the current position of the playlist.
     pub fn current(&self) -> Arc<Song> {
-        let position = self.position.read().expect("unable to get lock");
+        let position = self.position.read().unwrap_or_else(|e| e.into_inner());
         Arc::clone(
             &self
                 .registry
@@ -141,7 +146,7 @@ impl Playlist {
 }
 
 /// Creates an alphabetized playlist from all available songs.
-pub fn from_songs(songs: Arc<Songs>) -> Result<Arc<Playlist>, Box<dyn Error>> {
+pub fn from_songs(songs: Arc<Songs>) -> Result<Arc<Playlist>, PlaylistError> {
     // The easiest thing to do here is to gather the names of all of the songs and pass them
     // to new. This is a little silly, since new is just going to double check that they
     // all exist and then do an explicit mapping each time. However, the easiest way to

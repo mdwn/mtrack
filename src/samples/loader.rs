@@ -92,8 +92,12 @@ impl SampleLoader {
 
         info!(path = ?path, "Loading sample into memory");
 
-        // Create a sample source from the file
-        let mut source = create_sample_source_from_file(path, None, DEFAULT_BUFFER_SIZE)?;
+        // Create a sample source from the file (include path in error)
+        let mut source = create_sample_source_from_file(path, None, DEFAULT_BUFFER_SIZE).map_err(
+            |e| -> Box<dyn std::error::Error> {
+                format!("Failed to load sample {}: {}", path.display(), e).into()
+            },
+        )?;
         let source_sample_rate = source.sample_rate();
         let channel_count = source.channel_count();
 
@@ -170,7 +174,9 @@ impl SampleLoader {
                 }
                 Err(e) => {
                     warn!(path = ?full_path, error = ?e, "Failed to load sample");
-                    return Err(e);
+                    return Err(
+                        format!("Failed to load sample {}: {}", full_path.display(), e).into(),
+                    );
                 }
             }
         }

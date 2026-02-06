@@ -87,16 +87,16 @@ impl Player {
 
         let device = Self::wait_for_ok("audio device".to_string(), || {
             audio::get_device(config.audio())
-        });
+        })?;
         let dmx_engine = Self::wait_for_ok("dmx engine".to_string(), || {
             dmx::create_engine(config.dmx(), base_path)
-        });
+        })?;
         let midi_device = Self::wait_for_ok("midi device".to_string(), || {
             midi::get_device(config.midi(), dmx_engine.clone())
-        });
+        })?;
         let status_events = Self::wait_for_ok("status events".to_string(), || {
             StatusEvents::new(config.status_events())
-        });
+        })?;
 
         // Initialize the sample engine if the audio device supports it
         let sample_engine = match (device.mixer(), device.source_sender()) {
@@ -161,15 +161,36 @@ impl Player {
         Ok(player)
     }
 
-    /// Wait for constructor function to return an Ok(result) variant
-    fn wait_for_ok<T, E: Display, F: Fn() -> Result<T, E>>(name: String, constructor: F) -> T {
+    /// Wait for constructor function to return an Ok(result) variant.
+    /// Respects MTRACK_DEVICE_RETRY_LIMIT: if set to N, tries at most N times then returns
+    /// the last error. If unset or 0, retries indefinitely (original behavior).
+    fn wait_for_ok<T, E, F>(name: String, constructor: F) -> Result<T, Box<dyn Error>>
+    where
+        E: Display + Into<Box<dyn Error>>,
+        F: Fn() -> Result<T, E>,
+    {
+        let max_attempts = std::env::var("MTRACK_DEVICE_RETRY_LIMIT")
+            .ok()
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(0);
+        let delay_ms = 500;
+        let mut attempt = 0u32;
+
         loop {
             match constructor() {
-                Ok(ok) => return ok,
+                Ok(ok) => return Ok(ok),
                 Err(err) => {
                     warn!("Could not get {name}! {err}");
+                    attempt += 1;
+                    if max_attempts > 0 && attempt >= max_attempts {
+                        error!(
+                            attempt = attempt,
+                            limit = max_attempts,
+                            "Retry limit reached, giving up"
+                        );
+                        return Err(err.into());
+                    }
                     info!("Retrying after delay.");
-                    let delay_ms = 500;
                     thread::sleep(Duration::from_millis(delay_ms));
                 }
             }
@@ -350,7 +371,7 @@ impl Player {
 
         let cancel_handle = CancelHandle::new();
         let cancel_handle_for_cleanup = cancel_handle.clone();
-        let (play_tx, play_rx) = oneshot::channel::<()>();
+        let (play_tx, play_rx) = oneshot::channel::<Result<(), String>>();
 
         let join_handle = {
             let song = song.clone();
@@ -388,15 +409,30 @@ impl Player {
             let song = song.clone();
             let midi_device = self.midi_device.clone();
             tokio::spawn(async move {
-                if let Err(e) = play_rx.await {
-                    error!(err = e.to_string(), "Error receiving signal");
-                    return;
-                }
+                let playback_ok = match play_rx.await {
+                    Ok(Ok(())) => true,
+                    Ok(Err(e)) => {
+                        error!(
+                            err = %e,
+                            song = song.name(),
+                            "Playback failed (e.g. audio error); playlist not advanced"
+                        );
+                        false
+                    }
+                    Err(_e) => {
+                        error!("Error receiving playback signal (receiver dropped)");
+                        false
+                    }
+                };
                 let mut join = join_mutex.lock().await;
 
                 let cancelled = cancel_handle_for_cleanup.is_cancelled();
-                // Only move to the next playlist entry if this wasn't cancelled.
+                // Only move to the next playlist entry if not cancelled. On playback failure we still
+                // advance so the user is not stuck, but we already logged the error above.
                 if !cancelled {
+                    if !playback_ok {
+                        warn!("Advancing playlist despite playback failure so user is not stuck");
+                    }
                     Player::next_and_emit(midi_device.clone(), playlist);
                 }
 
@@ -409,6 +445,7 @@ impl Player {
                 info!(
                     song = song.name(),
                     cancelled = cancelled,
+                    playback_ok = playback_ok,
                     "Song finished playing."
                 );
 
@@ -430,7 +467,7 @@ impl Player {
         dmx_engine: Option<Arc<dmx::engine::Engine>>,
         song: Arc<Song>,
         cancel_handle: CancelHandle,
-        play_tx: oneshot::Sender<()>,
+        play_tx: oneshot::Sender<Result<(), String>>,
         start_time: Duration,
     ) {
         let song = song.clone();
@@ -451,24 +488,29 @@ impl Player {
             num_barriers
         }));
 
+        let audio_outcome: Arc<std::sync::Mutex<Option<Result<(), String>>>> =
+            Arc::new(std::sync::Mutex::new(None));
+
         let audio_join_handle = {
             let device = device.clone();
             let song = song.clone();
             let barrier = barrier.clone();
             let cancel_handle = cancel_handle.clone();
+            let audio_outcome = audio_outcome.clone();
 
             thread::spawn(move || {
                 let song_name = song.name().to_string();
-
-                if let Err(e) =
-                    device.play_from(song, &mappings, cancel_handle, barrier, start_time)
-                {
+                let result = device.play_from(song, &mappings, cancel_handle, barrier, start_time);
+                if let Err(ref e) = result {
                     error!(
                         err = e.as_ref(),
                         song = song_name,
                         "Error while playing song"
                     );
                 }
+                let outcome = result.map_err(|e| e.to_string());
+                let mut guard = audio_outcome.lock().unwrap_or_else(|e| e.into_inner());
+                *guard = Some(outcome);
             })
         };
 
@@ -530,23 +572,43 @@ impl Player {
             }
         }
 
-        if play_tx.send(()).is_err() {
-            error!("Error while sending to finish channel.")
+        let outcome = audio_outcome
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+            .unwrap_or_else(|| {
+                warn!(
+                    "Audio thread did not set outcome (e.g. panicked before setting); \
+                     treating as success so playlist is not stuck"
+                );
+                Ok(())
+            });
+        if play_tx.send(outcome).is_err() {
+            error!("Error while sending to finish channel (receiver dropped).")
+        }
+    }
+
+    /// If a song is currently playing, returns `Some(current_song)` so the caller can short-circuit.
+    /// Returns `None` if the player is idle.
+    async fn if_playing_then_current_song(&self) -> Option<Arc<Song>> {
+        let join = self.join.lock().await;
+        if join.is_some() {
+            Some(self.get_playlist().current())
+        } else {
+            None
         }
     }
 
     /// Next goes to the next entry in the playlist.
     pub async fn next(&self) -> Arc<Song> {
-        let join = self.join.lock().await;
-        let playlist = self.get_playlist();
-        if join.is_some() {
-            let current = playlist.current();
+        if let Some(current) = self.if_playing_then_current_song().await {
             info!(
                 current_song = current.name(),
                 "Can't go to next, player is active."
             );
             return current;
         }
+        let playlist = self.get_playlist();
         let song = Player::next_and_emit(self.midi_device.clone(), playlist);
         self.load_song_samples(&song);
         song
@@ -554,16 +616,14 @@ impl Player {
 
     /// Prev goes to the previous entry in the playlist.
     pub async fn prev(&self) -> Arc<Song> {
-        let join = self.join.lock().await;
-        let playlist = self.get_playlist();
-        if join.is_some() {
-            let current = playlist.current();
+        if let Some(current) = self.if_playing_then_current_song().await {
             info!(
                 current_song = current.name(),
                 "Can't go to previous, player is active."
             );
             return current;
         }
+        let playlist = self.get_playlist();
         let song = Player::prev_and_emit(self.midi_device.clone(), playlist);
         self.load_song_samples(&song);
         song
@@ -600,11 +660,22 @@ impl Player {
         drop(play_handles.join);
         drop(join);
 
-        // Reset stop_run after a brief delay to allow any remaining cleanup to complete
+        // stop_run is cleared by the cleanup task when it runs (after play_rx fires). As a fallback
+        // (e.g. if cleanup never runs because play_tx was dropped or the blocking task hangs),
+        // clear stop_run after a timeout so the user can call stop() again.
+        const STOP_RUN_FALLBACK_TIMEOUT: Duration = Duration::from_secs(30);
         let stop_run = self.stop_run.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            stop_run.store(false, Ordering::Relaxed);
+            tokio::time::sleep(STOP_RUN_FALLBACK_TIMEOUT).await;
+            if stop_run
+                .compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+            {
+                warn!(
+                    "Stop cleanup did not complete within {:?}; cleared stop_run so further stop() can be attempted",
+                    STOP_RUN_FALLBACK_TIMEOUT
+                );
+            }
         });
 
         Some(song)
@@ -612,10 +683,9 @@ impl Player {
 
     /// Switch to the all songs playlist.
     pub async fn switch_to_all_songs(&self) {
-        let join = self.join.lock().await;
-        if join.is_some() {
+        if let Some(current) = self.if_playing_then_current_song().await {
             info!(
-                current_song = self.get_playlist().current().name(),
+                current_song = current.name(),
                 "Can't switch to all songs, player is active."
             );
             return;
@@ -628,10 +698,9 @@ impl Player {
 
     /// Switch to the regular playlist.
     pub async fn switch_to_playlist(&self) {
-        let join = self.join.lock().await;
-        if join.is_some() {
+        if let Some(current) = self.if_playing_then_current_song().await {
             info!(
-                current_song = self.get_playlist().current().name(),
+                current_song = current.name(),
                 "Can't switch to playlist, player is active."
             );
             return;

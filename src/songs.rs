@@ -570,8 +570,10 @@ impl MidiPlayback {
 
 /// Returns a MIDI sheet for the given file.
 fn parse_midi(midi_file: &PathBuf) -> Result<MidiSheet, Box<dyn Error>> {
-    let buf: Vec<u8> = fs::read(midi_file)?;
-    let smf = Smf::parse(&buf)?;
+    let buf: Vec<u8> = fs::read(midi_file)
+        .map_err(|e| format!("Failed to read MIDI file {}: {}", midi_file.display(), e))?;
+    let smf = Smf::parse(&buf)
+        .map_err(|e| format!("Failed to parse MIDI file {}: {}", midi_file.display(), e))?;
     let ticker = Ticker::try_from(smf.header.timing)?;
 
     let midi_sheet = MidiSheet {
@@ -665,7 +667,11 @@ impl Track {
         let file_channel = config.file_channel();
         let name = config.name();
 
-        let source = create_sample_source_from_file(&track_file, None, 1024)?;
+        let source = create_sample_source_from_file(&track_file, None, 1024).map_err(
+            |e| -> Box<dyn Error> {
+                format!("track \"{}\" (file {}): {}", name, track_file.display(), e).into()
+            },
+        )?;
 
         // Extract all metadata before the source might be dropped or cause issues
         let sample_rate = source.sample_rate();
@@ -704,7 +710,9 @@ impl Track {
 
         assert_eq!(extension, "wav", "Expected file name to end in '.wav'");
         let track_name = stem.to_string();
-        let source = create_sample_source_from_file(track_path, None, 1024)?;
+        let source = create_sample_source_from_file(track_path, None, 1024).map_err(
+            |e| -> Box<dyn Error> { format!("file {}: {}", track_path.display(), e).into() },
+        )?;
         let sample_rate = source.sample_rate();
         let sample_format = source.sample_format();
         let duration = source.duration().unwrap_or(Duration::ZERO);
@@ -873,7 +881,11 @@ pub fn get_all_songs(path: &Path) -> Result<Arc<Songs>, Box<dyn Error>> {
             if let Ok(song) = config::Song::deserialize(path.as_path()) {
                 let song = match path.parent() {
                     Some(parent) => Song::new(&parent.canonicalize()?, &song)?,
-                    None => return Err("unable to get parent for path".into()),
+                    None => {
+                        return Err(
+                            format!("unable to get parent for path: {}", path.display()).into()
+                        )
+                    }
                 };
                 songs.insert(song.name().to_string(), Arc::new(song));
             }

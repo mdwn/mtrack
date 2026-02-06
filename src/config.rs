@@ -14,6 +14,7 @@
 mod audio;
 mod controller;
 mod dmx;
+mod error;
 pub mod lighting;
 #[cfg(test)]
 pub mod midi;
@@ -35,6 +36,7 @@ pub use self::controller::OscController;
 pub use self::controller::DEFAULT_GRPC_PORT;
 pub use self::dmx::Dmx;
 pub use self::dmx::Universe;
+pub use self::error::ConfigError;
 pub use self::lighting::Lighting;
 pub use self::midi::Midi;
 pub use self::midi::MidiTransformer;

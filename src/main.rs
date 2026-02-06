@@ -39,6 +39,7 @@ use proto::player::v1::{
 use std::collections::HashSet;
 use std::env;
 use std::error::Error;
+use std::fmt::Display;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -165,6 +166,18 @@ enum Commands {
         #[arg[short, long]]
         host_port: Option<String>,
     },
+}
+
+/// Prints a list of devices for the Devices and MidiDevices subcommands.
+fn print_device_list<T: Display>(devices: Vec<T>, empty_msg: &str) {
+    if devices.is_empty() {
+        println!("{}", empty_msg);
+        return;
+    }
+    println!("Devices:");
+    for device in devices {
+        println!("- {}", device);
+    }
 }
 
 /// Verifies a light show file, optionally validating against a config file.
@@ -326,30 +339,10 @@ async fn run() -> Result<(), Box<dyn Error>> {
             }
         }
         Commands::Devices {} => {
-            let devices = audio::list_devices()?;
-
-            if devices.is_empty() {
-                println!("No devices found.");
-                return Ok(());
-            }
-
-            println!("Devices:");
-            for device in devices {
-                println!("- {}", device);
-            }
+            print_device_list(audio::list_devices()?, "No devices found.");
         }
         Commands::MidiDevices {} => {
-            let devices = midi::list_devices()?;
-
-            if devices.is_empty() {
-                println!("No devices found.");
-                return Ok(());
-            }
-
-            println!("Devices:");
-            for device in devices {
-                println!("- {}", device);
-            }
+            print_device_list(midi::list_devices()?, "No devices found.");
         }
         Commands::Playlist {
             repository_path,
@@ -377,7 +370,12 @@ async fn run() -> Result<(), Box<dyn Error>> {
                 playlist_path = if let Some(parent) = player_path.parent() {
                     parent.join(playlist_path)
                 } else {
-                    return Err("Unable to determining playlist path. Please specify the playlist path using an absolute path.")?;
+                    return Err(format!(
+                        "Unable to determine playlist path (config base path has no parent): {}. \
+                         Please specify the playlist path using an absolute path.",
+                        playlist_path.display()
+                    )
+                    .into());
                 };
             };
             let songs = songs::get_all_songs(&player_config.songs(player_path))?;
@@ -533,9 +531,7 @@ fn print_song(song: Option<Song>) -> Result<(), Box<dyn Error>> {
 async fn connect(
     host_port: Option<String>,
 ) -> Result<PlayerServiceClient<Channel>, Box<dyn Error>> {
-    Ok(PlayerServiceClient::connect(
-        "http://".to_owned()
-            + &host_port.unwrap_or(format!("0.0.0.0:{}", config::DEFAULT_GRPC_PORT)),
-    )
-    .await?)
+    // Use 127.0.0.1 for local client; 0.0.0.0 is a bind address, not valid for connect.
+    let addr = host_port.unwrap_or_else(|| format!("127.0.0.1:{}", config::DEFAULT_GRPC_PORT));
+    Ok(PlayerServiceClient::connect(format!("http://{}", addr)).await?)
 }

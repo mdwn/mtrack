@@ -66,17 +66,27 @@ impl MockOlaClient {
 
     /// Get the number of messages sent
     pub fn message_count(&self) -> usize {
-        self.sent_messages.lock().unwrap().len()
+        self.sent_messages
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len()
     }
 
     /// Get the last sent message
     pub fn get_last_message(&self) -> Option<DmxMessage> {
-        self.sent_messages.lock().unwrap().last().cloned()
+        self.sent_messages
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .last()
+            .cloned()
     }
 
     /// Clear all sent messages
     pub fn clear_messages(&self) {
-        self.sent_messages.lock().unwrap().clear();
+        self.sent_messages
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
     }
 
     /// Get messages for a specific universe
@@ -109,7 +119,10 @@ impl OlaClient for MockOlaClient {
             universe,
             buffer: buffer.clone(),
         };
-        self.sent_messages.lock().unwrap().push(message);
+        self.sent_messages
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(message);
         Ok(())
     }
 }

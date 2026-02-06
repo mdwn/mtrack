@@ -77,7 +77,7 @@ impl Song {
     }
 
     /// Deserializes a file from the path into a song configuration struct.
-    pub fn deserialize(path: &Path) -> Result<Song, Box<dyn Error>> {
+    pub fn deserialize(path: &Path) -> Result<Song, crate::config::ConfigError> {
         Ok(Config::builder()
             .add_source(File::from(path))
             .build()?

@@ -11,10 +11,12 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-use std::{error::Error, path::Path};
+use std::path::Path;
 
 use config::{Config, File};
 use serde::Deserialize;
+
+use super::error::ConfigError;
 
 /// The configuration for a playlist.
 #[derive(Deserialize)]
@@ -32,7 +34,7 @@ impl Playlist {
     }
 
     /// Parse a playlist from a YAML file.
-    pub fn deserialize(path: &Path) -> Result<Playlist, Box<dyn Error>> {
+    pub fn deserialize(path: &Path) -> Result<Playlist, ConfigError> {
         Ok(Config::builder()
             .add_source(File::from(path))
             .build()?
