@@ -120,8 +120,6 @@ pub struct AudioTranscoder<S: SampleSource> {
     output_fifo: OutputFifo,
     /// Temporary buffer for resampler output (reused to avoid allocation)
     output_scratch: Vec<Vec<f32>>,
-    /// Reused when reading frames from source in fill_output_fifo (avoids alloc in hot path)
-    input_frame_scratch: Vec<f32>,
 }
 
 impl<S> SampleSource for AudioTranscoder<S>
@@ -223,7 +221,6 @@ where
             input_buffer: SlidingInputBuffer::new(channels as usize),
             output_fifo: OutputFifo::new(),
             output_scratch,
-            input_frame_scratch: Vec::with_capacity(channels as usize),
         })
     }
 
@@ -241,9 +238,7 @@ where
         loop {
             // 1. Try to fill input buffer from source
             if !self.input_buffer.source_finished {
-                self.input_frame_scratch.resize(num_channels, 0.0f32);
-                let frame = &mut self.input_frame_scratch[..num_channels];
-                frame.fill(0.0); // always zero before use (resize doesn't re-zero when same/smaller)
+                let mut frame = vec![0.0f32; num_channels];
 
                 // Get input_frames_next while holding the lock briefly
                 let input_frames_needed = {
@@ -254,7 +249,7 @@ where
                 loop {
                     // Read one frame at a time from source
                     let mut got_frame = true;
-                    for sample in frame.iter_mut() {
+                    for sample in frame.iter_mut().take(num_channels) {
                         match self.source.next_sample()? {
                             Some(s) => *sample = s,
                             None => {
@@ -266,7 +261,7 @@ where
                     }
 
                     if got_frame {
-                        self.input_buffer.push_frame(frame);
+                        self.input_buffer.push_frame(&frame);
                     }
 
                     // Stop filling when we have enough for processing or source finished
