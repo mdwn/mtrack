@@ -146,34 +146,6 @@ where
         Ok(self.output_fifo.pop())
     }
 
-    fn next_frame(&mut self, output: &mut [f32]) -> Result<Option<usize>, SampleSourceError> {
-        let n = self.channels as usize;
-        if output.len() < n {
-            return Err(SampleSourceError::SampleConversionFailed(format!(
-                "Output buffer too small: need {} samples",
-                n
-            )));
-        }
-        if self.resampler.is_none() {
-            return self.source.next_frame(&mut output[..n]);
-        }
-        for i in 0..n {
-            loop {
-                if let Some(s) = self.output_fifo.pop() {
-                    output[i] = s;
-                    break;
-                }
-                self.fill_output_fifo()?;
-                if let Some(s) = self.output_fifo.pop() {
-                    output[i] = s;
-                    break;
-                }
-                return Ok(None);
-            }
-        }
-        Ok(Some(n))
-    }
-
     fn channel_count(&self) -> u16 {
         self.channels
     }
