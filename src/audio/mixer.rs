@@ -13,6 +13,7 @@
 //
 // Core audio mixing logic that can be used by both CPAL and test implementations
 use crate::audio::sample_source::ChannelMappedSampleSource;
+use rayon::prelude::*;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 #[cfg(test)]
@@ -299,8 +300,89 @@ impl AudioMixer {
         frames
     }
 
+    /// Mixes one source into a buffer (num_frames * channels). Returns Some(source_id) if the source finished.
+    fn process_one_source_into_buffer(
+        &self,
+        active_source: &mut ActiveSource,
+        buffer: &mut [f32],
+        num_frames: usize,
+        channels: usize,
+        current_sample: u64,
+        buffer_end_sample: u64,
+    ) -> Option<u64> {
+        if active_source.is_finished.load(Ordering::Relaxed)
+            || active_source.cancel_handle.is_cancelled()
+        {
+            return Some(active_source.id);
+        }
+        if let Some(ref cancel_at) = active_source.cancel_at_sample {
+            let cancel_sample = cancel_at.load(Ordering::Relaxed);
+            if cancel_sample > 0 && current_sample >= cancel_sample {
+                active_source.is_finished.store(true, Ordering::Relaxed);
+                return Some(active_source.id);
+            }
+        }
+        let start_frame = if let Some(start_at) = active_source.start_at_sample {
+            if start_at >= buffer_end_sample {
+                return None;
+            }
+            if start_at > current_sample {
+                (start_at - current_sample) as usize
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+        let end_frame = if let Some(ref cancel_at) = active_source.cancel_at_sample {
+            let cancel_sample = cancel_at.load(Ordering::Relaxed);
+            if cancel_sample > 0
+                && cancel_sample > current_sample
+                && cancel_sample < buffer_end_sample
+            {
+                (cancel_sample - current_sample) as usize
+            } else {
+                num_frames
+            }
+        } else {
+            num_frames
+        };
+        let source_channel_count = active_source.cached_source_channel_count as usize;
+        SOURCE_FRAME_SCRATCH.with(|cell| {
+            let mut buf = cell.borrow_mut();
+            if buf.len() < source_channel_count {
+                buf.resize(source_channel_count, 0.0);
+            }
+            let sbuf = &mut buf[..source_channel_count];
+            for frame_index in start_frame..end_frame {
+                match active_source.source.next_frame(sbuf) {
+                    Ok(Some(_count)) => {
+                        for (source_channel, &sample) in sbuf.iter().enumerate() {
+                            if let Some(output_channels) =
+                                active_source.channel_mappings.get(source_channel)
+                            {
+                                let base = frame_index * channels;
+                                for &output_index in output_channels {
+                                    if output_index < channels {
+                                        buffer[base + output_index] += sample;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Ok(None) | Err(_) => {
+                        active_source.is_finished.store(true, Ordering::Relaxed);
+                        return Some(active_source.id);
+                    }
+                }
+            }
+            None
+        })
+    }
+
     /// Processes multiple frames directly into the provided output buffer (zero-allocation)
     /// The buffer must be sized to num_frames * num_channels.
+    /// With 2+ sources, mixes in parallel then sums to reduce worst-case callback time.
     pub fn process_into_output(&self, output: &mut [f32], num_frames: usize) {
         let channels = self.num_channels as usize;
         debug_assert_eq!(output.len(), num_frames * channels);
@@ -319,7 +401,39 @@ impl AudioMixer {
         };
 
         let mut finished_source_ids = HashSet::new();
+        let n = sources_to_process.len();
 
+        if n >= 2 {
+            // Parallel path: each source mixes into its own buffer, then we sum. Reduces worst-case
+            // time when multiple sources spike (e.g. stereo + 2× mono).
+            let buf_size = num_frames * channels;
+            let results: Vec<(Vec<f32>, Option<u64>)> = sources_to_process
+                .par_iter()
+                .map(|source_arc| {
+                    let mut active_source = source_arc.lock().unwrap();
+                    let mut buf = vec![0.0; buf_size];
+                    let finished =
+                        self.process_one_source_into_buffer(
+                            &mut active_source,
+                            &mut buf,
+                            num_frames,
+                            channels,
+                            current_sample,
+                            buffer_end_sample,
+                        );
+                    (buf, finished)
+                })
+                .collect();
+            for (buf, finished) in &results {
+                for (i, &s) in buf.iter().enumerate() {
+                    output[i] += s;
+                }
+                if let Some(id) = finished {
+                    finished_source_ids.insert(*id);
+                }
+            }
+        } else {
+            // Sequential path (0 or 1 source): no allocation, same as before.
         // Process each active source across all frames
         for active_source_arc in sources_to_process {
             let mut active_source = active_source_arc.lock().unwrap();
@@ -454,6 +568,7 @@ impl AudioMixer {
                 });
             }
         }
+        } // end sequential path (for loop)
 
         // Increment the sample counter
         self.sample_counter
