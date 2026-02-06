@@ -126,19 +126,29 @@ impl AudioMixer {
         channel_mappings
     }
 
-    /// Adds a new audio source to the mixer
-    pub fn add_source(&self, mut source: ActiveSource) {
-        // Cache source channel count (avoids repeated trait calls)
-        if source.cached_source_channel_count == 0 {
-            source.cached_source_channel_count = source.source.source_channel_count();
-        }
-        // Precompute channel mappings for optimal performance
-        let channel_mappings =
-            Self::precompute_channel_mappings(source.source.as_ref(), &source.track_mappings);
-        source.channel_mappings = channel_mappings;
+    /// Adds a new audio source to the mixer.
+    pub fn add_source(&self, source: ActiveSource) {
+        self.add_sources(vec![source]);
+    }
 
+    /// Adds multiple sources in one write-lock hold to reduce callback lock contention.
+    /// Use this when draining the channel so many sources don't each take the lock.
+    pub fn add_sources(&self, mut new_sources: Vec<ActiveSource>) {
+        if new_sources.is_empty() {
+            return;
+        }
+        // Precompute outside the lock so we hold it only for the push
+        for source in &mut new_sources {
+            if source.cached_source_channel_count == 0 {
+                source.cached_source_channel_count = source.source.source_channel_count();
+            }
+            source.channel_mappings =
+                Self::precompute_channel_mappings(source.source.as_ref(), &source.track_mappings);
+        }
         let mut sources = self.active_sources.write().unwrap();
-        sources.push(Arc::new(Mutex::new(source)));
+        for source in new_sources {
+            sources.push(Arc::new(Mutex::new(source)));
+        }
     }
 
     /// Removes sources by ID

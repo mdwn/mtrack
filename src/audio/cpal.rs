@@ -12,6 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 use std::{
+    cell::RefCell,
     collections::HashMap,
     error::Error,
     fmt,
@@ -34,6 +35,79 @@ use crate::{
     songs::Song,
 };
 use std::sync::Barrier;
+use std::time::Instant;
+
+// Reused in the audio callback to avoid allocating a Vec every callback.
+thread_local! {
+    static PENDING_SOURCES: RefCell<Vec<MixerActiveSource>> = RefCell::new(Vec::with_capacity(32));
+}
+
+/// Enable with MTRACK_PROFILE_AUDIO=1 to log callback timing ~once per second.
+fn profile_audio_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("MTRACK_PROFILE_AUDIO")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    })
+}
+
+/// ~1 second at 44.1kHz / 128 samples per period.
+const PROFILE_LOG_INTERVAL: u32 = 344;
+
+#[derive(Default)]
+struct CallbackProfileStats {
+    count: u32,
+    add_sum_us: u64,
+    mix_sum_us: u64,
+    convert_sum_us: u64,
+    total_sum_us: u64,
+    max_add_us: u64,
+    max_mix_us: u64,
+    max_convert_us: u64,
+    max_total_us: u64,
+}
+
+impl CallbackProfileStats {
+    fn record(&mut self, add_us: u64, mix_us: u64, convert_us: u64, total_us: u64) {
+        self.count += 1;
+        self.add_sum_us += add_us;
+        self.mix_sum_us += mix_us;
+        self.convert_sum_us += convert_us;
+        self.total_sum_us += total_us;
+        self.max_add_us = self.max_add_us.max(add_us);
+        self.max_mix_us = self.max_mix_us.max(mix_us);
+        self.max_convert_us = self.max_convert_us.max(convert_us);
+        self.max_total_us = self.max_total_us.max(total_us);
+    }
+    fn maybe_log_and_reset(&mut self, has_convert: bool) {
+        if self.count < PROFILE_LOG_INTERVAL {
+            return;
+        }
+        let n = self.count as u64;
+        tracing::info!(
+            add_avg_us = self.add_sum_us / n,
+            add_max_us = self.max_add_us,
+            mix_avg_us = self.mix_sum_us / n,
+            mix_max_us = self.max_mix_us,
+            convert_avg_us = if has_convert {
+                self.convert_sum_us / n
+            } else {
+                0
+            },
+            convert_max_us = if has_convert { self.max_convert_us } else { 0 },
+            total_avg_us = self.total_sum_us / n,
+            total_max_us = self.max_total_us,
+            callbacks = self.count,
+            "audio callback profile"
+        );
+        *self = CallbackProfileStats::default();
+    }
+}
+
+thread_local! {
+    static CALLBACK_PROFILE: RefCell<CallbackProfileStats> = RefCell::new(CallbackProfileStats::default());
+}
 
 /// A small wrapper around a cpal::Device. Used for storing some extra
 /// data that makes multitrack playing more convenient.
@@ -88,14 +162,41 @@ fn create_direct_f32_callback(
     num_channels: u16,
 ) -> impl FnMut(&mut [f32], &cpal::OutputCallbackInfo) + Send + 'static {
     move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-        // Process any pending new sources (non-blocking)
-        while let Ok(new_source) = source_rx.try_recv() {
-            mixer.add_source(new_source);
-        }
+        let t0 = if profile_audio_enabled() {
+            Some(Instant::now())
+        } else {
+            None
+        };
+
+        // Drain pending sources and add in one lock hold to reduce underrun risk
+        PENDING_SOURCES.with(|cell| {
+            let mut pending = cell.borrow_mut();
+            pending.clear();
+            while let Ok(new_source) = source_rx.try_recv() {
+                pending.push(new_source);
+            }
+            if !pending.is_empty() {
+                mixer.add_sources(std::mem::take(&mut *pending));
+                *pending = Vec::with_capacity(32);
+            }
+        });
+
+        let add_us = t0.map(|t| t.elapsed().as_micros() as u64).unwrap_or(0);
+        let t1 = t0.map(|_| Instant::now());
 
         // Mix directly into the output buffer (cleanup happens inline)
         let num_frames = data.len() / num_channels as usize;
         mixer.process_into_output(data, num_frames);
+
+        if let Some(_t1) = t1 {
+            let mix_us = _t1.elapsed().as_micros() as u64;
+            let total_us = t0.unwrap().elapsed().as_micros() as u64;
+            CALLBACK_PROFILE.with(|cell| {
+                let mut stats = cell.borrow_mut();
+                stats.record(add_us, mix_us, 0, total_us);
+                stats.maybe_log_and_reset(false);
+            });
+        }
     }
 }
 
@@ -114,10 +215,27 @@ where
     let mut temp_buffer = vec![0.0f32; max_samples];
 
     move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
-        // Process any pending new sources (non-blocking)
-        while let Ok(new_source) = source_rx.try_recv() {
-            mixer.add_source(new_source);
-        }
+        let t0 = if profile_audio_enabled() {
+            Some(Instant::now())
+        } else {
+            None
+        };
+
+        // Drain pending sources and add in one lock hold to reduce underrun risk
+        PENDING_SOURCES.with(|cell| {
+            let mut pending = cell.borrow_mut();
+            pending.clear();
+            while let Ok(new_source) = source_rx.try_recv() {
+                pending.push(new_source);
+            }
+            if !pending.is_empty() {
+                mixer.add_sources(std::mem::take(&mut *pending));
+                *pending = Vec::with_capacity(32);
+            }
+        });
+
+        let add_us = t0.map(|t| t.elapsed().as_micros() as u64).unwrap_or(0);
+        let t1 = t0.map(|_| Instant::now());
 
         // Pre-allocated for typical period size; resize only if backend gives a larger buffer (rare)
         if temp_buffer.len() < data.len() {
@@ -127,9 +245,22 @@ where
         let num_frames = data.len() / num_channels as usize;
         mixer.process_into_output(temp_slice, num_frames);
 
+        let mix_us = t1.map(|t| t.elapsed().as_micros() as u64).unwrap_or(0);
+        let t2 = t0.map(|_| Instant::now());
+
         // Convert to output format
         for (out, &sample) in data.iter_mut().zip(temp_slice.iter()) {
             *out = T::from_sample(sample);
+        }
+
+        if let (Some(t0), Some(t2)) = (t0, t2) {
+            let convert_us = t2.elapsed().as_micros() as u64;
+            let total_us = t0.elapsed().as_micros() as u64;
+            CALLBACK_PROFILE.with(|cell| {
+                let mut stats = cell.borrow_mut();
+                stats.record(add_us, mix_us, convert_us, total_us);
+                stats.maybe_log_and_reset(true);
+            });
         }
     }
 }
