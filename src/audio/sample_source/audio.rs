@@ -74,6 +74,28 @@ impl SampleSource for AudioSampleSource {
         Ok(Some(sample))
     }
 
+    fn next_frame(&mut self, output: &mut [f32]) -> Result<Option<usize>, SampleSourceError> {
+        let n = self.channels as usize;
+        if output.len() < n {
+            return Err(SampleSourceError::SampleConversionFailed(format!(
+                "Output buffer too small: need {} samples",
+                n
+            )));
+        }
+        for out in output.iter_mut().take(n) {
+            if self.buffer_position >= self.sample_buffer.len() {
+                self.refill_buffer()?;
+                if self.sample_buffer.is_empty() {
+                    self.is_finished = true;
+                    return Ok(None);
+                }
+            }
+            *out = self.sample_buffer[self.buffer_position];
+            self.buffer_position += 1;
+        }
+        Ok(Some(n))
+    }
+
     fn channel_count(&self) -> u16 {
         self.channels
     }

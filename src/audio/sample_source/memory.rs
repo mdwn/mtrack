@@ -78,6 +78,25 @@ impl SampleSource for MemorySampleSource {
         }
     }
 
+    fn next_frame(&mut self, output: &mut [f32]) -> Result<Option<usize>, SampleSourceError> {
+        let n = self.channel_count as usize;
+        if output.len() < n {
+            return Err(SampleSourceError::SampleConversionFailed(format!(
+                "Output buffer too small: need {} samples",
+                n
+            )));
+        }
+        let end = self.current_index + n;
+        if end > self.samples.len() {
+            return Ok(None);
+        }
+        for (i, out) in output.iter_mut().take(n).enumerate() {
+            *out = self.samples[self.current_index + i] * self.volume;
+        }
+        self.current_index = end;
+        Ok(Some(n))
+    }
+
     fn channel_count(&self) -> u16 {
         self.channel_count
     }

@@ -44,6 +44,10 @@ impl ChannelMappedSampleSource for ChannelMappedSource {
         self.source.next_sample()
     }
 
+    fn next_frame(&mut self, output: &mut [f32]) -> Result<Option<usize>, SampleSourceError> {
+        self.source.next_frame(output)
+    }
+
     fn channel_mappings(&self) -> &Vec<Vec<String>> {
         &self.channel_mappings
     }
