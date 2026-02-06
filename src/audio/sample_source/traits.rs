@@ -21,6 +21,25 @@ pub trait SampleSource: Send + Sync {
     /// Returns Err(error) if an error occurred
     fn next_sample(&mut self) -> Result<Option<f32>, SampleSourceError>;
 
+    /// Get the next frame (one sample per channel) into `output`.
+    /// Default implementation calls `next_sample()` per channel; override for batch reads.
+    fn next_frame(&mut self, output: &mut [f32]) -> Result<Option<usize>, SampleSourceError> {
+        let n = self.channel_count() as usize;
+        if output.len() < n {
+            return Err(SampleSourceError::SampleConversionFailed(format!(
+                "Output buffer too small: need {} samples",
+                n
+            )));
+        }
+        for out in output.iter_mut().take(n) {
+            match self.next_sample()? {
+                Some(s) => *out = s,
+                None => return Ok(None),
+            }
+        }
+        Ok(Some(n))
+    }
+
     /// Get the number of channels in this source
     fn channel_count(&self) -> u16;
 
@@ -44,6 +63,10 @@ pub trait SampleSource: Send + Sync {
 impl SampleSource for Box<dyn SampleSource> {
     fn next_sample(&mut self) -> Result<Option<f32>, SampleSourceError> {
         (**self).next_sample()
+    }
+
+    fn next_frame(&mut self, output: &mut [f32]) -> Result<Option<usize>, SampleSourceError> {
+        (**self).next_frame(output)
     }
 
     fn channel_count(&self) -> u16 {

@@ -120,6 +120,8 @@ pub struct AudioTranscoder<S: SampleSource> {
     output_fifo: OutputFifo,
     /// Temporary buffer for resampler output (reused to avoid allocation)
     output_scratch: Vec<Vec<f32>>,
+    /// Reused when reading frames from source in fill_output_fifo (avoids alloc in hot path)
+    input_frame_scratch: Vec<f32>,
 }
 
 impl<S> SampleSource for AudioTranscoder<S>
@@ -142,6 +144,34 @@ where
 
         // Try again after processing
         Ok(self.output_fifo.pop())
+    }
+
+    fn next_frame(&mut self, output: &mut [f32]) -> Result<Option<usize>, SampleSourceError> {
+        let n = self.channels as usize;
+        if output.len() < n {
+            return Err(SampleSourceError::SampleConversionFailed(format!(
+                "Output buffer too small: need {} samples",
+                n
+            )));
+        }
+        if self.resampler.is_none() {
+            return self.source.next_frame(&mut output[..n]);
+        }
+        for i in 0..n {
+            loop {
+                if let Some(s) = self.output_fifo.pop() {
+                    output[i] = s;
+                    break;
+                }
+                self.fill_output_fifo()?;
+                if let Some(s) = self.output_fifo.pop() {
+                    output[i] = s;
+                    break;
+                }
+                return Ok(None);
+            }
+        }
+        Ok(Some(n))
     }
 
     fn channel_count(&self) -> u16 {
@@ -221,6 +251,7 @@ where
             input_buffer: SlidingInputBuffer::new(channels as usize),
             output_fifo: OutputFifo::new(),
             output_scratch,
+            input_frame_scratch: Vec::with_capacity(channels as usize),
         })
     }
 
@@ -238,7 +269,8 @@ where
         loop {
             // 1. Try to fill input buffer from source
             if !self.input_buffer.source_finished {
-                let mut frame = vec![0.0f32; num_channels];
+                self.input_frame_scratch.resize(num_channels, 0.0f32);
+                let frame = &mut self.input_frame_scratch[..num_channels];
 
                 // Get input_frames_next while holding the lock briefly
                 let input_frames_needed = {
@@ -249,7 +281,7 @@ where
                 loop {
                     // Read one frame at a time from source
                     let mut got_frame = true;
-                    for sample in frame.iter_mut().take(num_channels) {
+                    for sample in frame.iter_mut() {
                         match self.source.next_sample()? {
                             Some(s) => *sample = s,
                             None => {
@@ -261,7 +293,7 @@ where
                     }
 
                     if got_frame {
-                        self.input_buffer.push_frame(&frame);
+                        self.input_buffer.push_frame(frame);
                     }
 
                     // Stop filling when we have enough for processing or source finished

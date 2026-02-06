@@ -20,7 +20,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-#[cfg(test)]
 use std::time::Instant;
 use tracing::debug;
 use tracing::info;
@@ -36,11 +35,17 @@ const MIXER_PROFILE_INTERVAL: u32 = 344;
 /// Max sources we support in the parallel path; buffers are reused up to this size.
 const PAR_MIX_MAX_SOURCES: usize = 32;
 
+/// When MTRACK_PROFILE_AUDIO=1 and mix exceeds this μs, we log per-source breakdown for that callback.
+const SPIKE_LOG_THRESHOLD_US: u64 = 1000;
+
 thread_local! {
     /// Reused in parallel mix path to avoid allocating per callback.
     static PAR_MIX_BUFFERS: RefCell<Arc<Vec<Mutex<Vec<f32>>>>> =
         RefCell::new(Arc::new(Vec::new()));
     static PAR_MIX_FINISHED: RefCell<Arc<Vec<Mutex<Option<u64>>>>> =
+        RefCell::new(Arc::new(Vec::new()));
+    /// (source_id, duration_us) per slot; only used when profiling and mix time exceeds threshold.
+    static PAR_MIX_SPIKE: RefCell<Arc<Vec<Mutex<(u64, u64)>>>> =
         RefCell::new(Arc::new(Vec::new()));
 }
 
