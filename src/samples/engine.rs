@@ -214,7 +214,10 @@ impl SampleEngine {
 
         // Set up per-sample voice limit if configured
         if let Some(max_voices) = definition.max_voices() {
-            let mut vm = self.voice_manager.write().unwrap();
+            let mut vm = self
+                .voice_manager
+                .write()
+                .unwrap_or_else(|e| e.into_inner());
             vm.set_sample_limit(name, max_voices);
         }
 
@@ -444,7 +447,10 @@ impl SampleEngine {
 
         // Acquire voice manager lock BEFORE adding to mixer to prevent race conditions
         // with concurrent triggers for the same sample (important for cut/monophonic mode)
-        let mut vm = self.voice_manager.write().unwrap();
+        let mut vm = self
+            .voice_manager
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
         let to_stop = vm.add_voice(voice, sample.definition.retrigger());
 
         // Schedule old voices to stop at the same time the new one starts (sample-accurate cut)
@@ -492,7 +498,10 @@ impl SampleEngine {
                 continue;
             }
 
-            let mut vm = self.voice_manager.write().unwrap();
+            let mut vm = self
+                .voice_manager
+                .write()
+                .unwrap_or_else(|e| e.into_inner());
             let to_stop = vm.handle_note_off(note, channel, behavior);
             drop(vm);
 
@@ -515,7 +524,10 @@ impl SampleEngine {
 
     /// Stops all sample playback.
     pub fn stop_all(&self) {
-        let mut vm = self.voice_manager.write().unwrap();
+        let mut vm = self
+            .voice_manager
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
         let to_stop = vm.clear();
         drop(vm);
 
@@ -532,7 +544,10 @@ impl SampleEngine {
 
     /// Returns the number of active voices.
     pub fn active_voice_count(&self) -> usize {
-        self.voice_manager.read().unwrap().active_count()
+        self.voice_manager
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .active_count()
     }
 
     /// Returns the total memory used by loaded samples.

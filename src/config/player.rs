@@ -21,8 +21,10 @@ use super::trackmappings::TrackMappings;
 use config::{Config, File};
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::error::Error;
 use std::path::{Path, PathBuf};
+
+use super::error::ConfigError;
+use std::error::Error;
 use tracing::{error, info};
 
 /// The configuration for the multitrack player.
@@ -92,7 +94,7 @@ impl Player {
     }
 
     /// Deserializes a file from the path into a player configuration struct.
-    pub fn deserialize(path: &Path) -> Result<Player, Box<dyn Error>> {
+    pub fn deserialize(path: &Path) -> Result<Player, ConfigError> {
         Ok(Config::builder()
             .add_source(File::from(path))
             .build()?

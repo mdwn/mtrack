@@ -103,8 +103,14 @@ impl AudioSampleSource {
         start_time: Option<std::time::Duration>,
         buffer_size: usize,
     ) -> Result<Self, SampleSourceError> {
-        // Open the file
-        let file = File::open(&path)?;
+        // Open the file (include path in error so user sees which file failed)
+        let path_ref = path.as_ref();
+        let file = File::open(path_ref).map_err(|e| {
+            SampleSourceError::IoError(std::io::Error::new(
+                e.kind(),
+                format!("{}: {}", path_ref.display(), e),
+            ))
+        })?;
         let mss = MediaSourceStream::new(Box::new(file), Default::default());
 
         // Create a hint to help the format registry guess the format
@@ -257,6 +263,45 @@ impl AudioSampleSource {
         }
     }
 
+    /// Reads and decodes the next packet for the given track. Handles ResetRequired by
+    /// resetting the decoder and retrying. Returns `Ok(Some((samples, channels)))` when
+    /// a packet was decoded, `Ok(None)` on EOF, or `Err` on other errors.
+    fn read_and_decode_next_packet_for_track(
+        format_reader: &mut dyn FormatReader,
+        decoder: &mut dyn symphonia::core::codecs::Decoder,
+        track_id: u32,
+    ) -> Result<Option<(Vec<f32>, usize)>, SampleSourceError> {
+        loop {
+            let packet = match Self::read_next_packet(format_reader) {
+                Ok(Some(packet)) => packet,
+                Ok(None) => return Ok(None),
+                Err(SampleSourceError::AudioError(SymphoniaError::ResetRequired)) => {
+                    decoder.reset();
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
+            if packet.track_id() != track_id {
+                continue;
+            }
+            let decoded = match decoder.decode(&packet) {
+                Ok(decoded) => decoded,
+                Err(SymphoniaError::ResetRequired) => {
+                    decoder.reset();
+                    match decoder.decode(&packet) {
+                        Ok(decoded) => decoded,
+                        Err(e) => return Err(SampleSourceError::AudioError(e)),
+                    }
+                }
+                Err(e) => return Err(SampleSourceError::AudioError(e)),
+            };
+            let (samples, channels) = Self::decode_buffer_to_f32(decoded)?;
+            if channels > 0 && !samples.is_empty() {
+                return Ok(Some((samples, channels)));
+            }
+        }
+    }
+
     /// Refills the sample buffer by reading a chunk from the audio file
     fn refill_buffer(&mut self) -> Result<(), SampleSourceError> {
         // Clear the buffer and reset position
@@ -292,52 +337,21 @@ impl AudioSampleSource {
         // those as "no progress" would cause us to bail out early and never see
         // the real audio data.
         loop {
-            // Read the next packet
-            let packet = match Self::read_next_packet(self.format_reader.as_mut()) {
-                Ok(Some(packet)) => packet,
-                Ok(None) => {
-                    // EOF reached
-                    break;
-                }
-                Err(SampleSourceError::AudioError(SymphoniaError::ResetRequired)) => {
-                    // The codec needs to be reset after a discontinuity (e.g., after seeking).
-                    // Reset the decoder and continue reading the next packet.
-                    self.decoder.reset();
-                    continue;
-                }
+            let (samples, _decoded_channels) = match Self::read_and_decode_next_packet_for_track(
+                self.format_reader.as_mut(),
+                self.decoder.as_mut(),
+                self.track_id,
+            ) {
+                Ok(Some((samples, ch))) => (samples, ch),
+                Ok(None) => break,
                 Err(e) => {
                     // For very small files, some errors might indicate EOF
-                    // Check if we've read any samples - if not, this might be a false error
                     if samples_read == 0 && self.sample_buffer.is_empty() {
                         break;
                     }
                     return Err(e);
                 }
             };
-
-            // Only process packets from the track we're interested in
-            if packet.track_id() != self.track_id {
-                continue;
-            }
-
-            // Decode the packet
-            let decoded = match self.decoder.decode(&packet) {
-                Ok(decoded) => decoded,
-                Err(SymphoniaError::ResetRequired) => {
-                    // The codec needs to be reset. Reset and retry decoding the same packet.
-                    self.decoder.reset();
-                    match self.decoder.decode(&packet) {
-                        Ok(decoded) => decoded,
-                        Err(e) => return Err(SampleSourceError::AudioError(e)),
-                    }
-                }
-                Err(e) => return Err(SampleSourceError::AudioError(e)),
-            };
-
-            // Convert the decoded buffer to f32 samples. Channel count is
-            // established during construction; here we only care about the
-            // sample data.
-            let (samples, _decoded_channels) = Self::decode_buffer_to_f32(decoded)?;
 
             // Add samples to the buffer
             if !samples.is_empty() {
@@ -396,48 +410,12 @@ impl AudioSampleSource {
         decoder: &mut dyn symphonia::core::codecs::Decoder,
         track_id: u32,
     ) -> Result<(u16, Vec<f32>), SampleSourceError> {
-        loop {
-            let packet = match Self::read_next_packet(format_reader) {
-                Ok(Some(packet)) => packet,
-                Ok(None) => {
-                    // EOF reached
-                    break;
-                }
-                Err(SampleSourceError::AudioError(SymphoniaError::ResetRequired)) => {
-                    // The codec needs to be reset after a discontinuity.
-                    // Reset the decoder and continue reading the next packet.
-                    decoder.reset();
-                    continue;
-                }
-                Err(e) => return Err(e),
-            };
-
-            if packet.track_id() != track_id {
-                continue;
-            }
-
-            let decoded = match decoder.decode(&packet) {
-                Ok(decoded) => decoded,
-                Err(SymphoniaError::ResetRequired) => {
-                    // The codec needs to be reset. Reset and retry decoding the same packet.
-                    decoder.reset();
-                    match decoder.decode(&packet) {
-                        Ok(decoded) => decoded,
-                        Err(e) => return Err(SampleSourceError::AudioError(e)),
-                    }
-                }
-                Err(e) => return Err(SampleSourceError::AudioError(e)),
-            };
-
-            let (samples, channels) = Self::decode_buffer_to_f32(decoded)?;
-            if channels > 0 && !samples.is_empty() {
-                return Ok((channels as u16, samples));
-            }
+        match Self::read_and_decode_next_packet_for_track(format_reader, decoder, track_id)? {
+            Some((samples, channels)) => Ok((channels as u16, samples)),
+            None => Err(SampleSourceError::SampleConversionFailed(
+                "Channels not specified".to_string(),
+            )),
         }
-
-        Err(SampleSourceError::SampleConversionFailed(
-            "Channels not specified".to_string(),
-        ))
     }
 
     /// Converts a decoded AudioBufferRef to a Vec<f32> of interleaved samples

@@ -77,14 +77,12 @@ impl Universe {
         *self
             .global_dim_rate
             .read()
-            .expect("Unable to get global dim rate read lock")
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     #[cfg(test)]
     pub fn get_target_value(&self, channel_index: usize) -> f64 {
-        self.target
-            .read()
-            .expect("Unable to get universe target read lock")[channel_index]
+        self.target.read().unwrap_or_else(|e| e.into_inner())[channel_index]
     }
 
     /// Updates the dim speed.
@@ -92,7 +90,7 @@ impl Universe {
         let mut global_dim_rate = self
             .global_dim_rate
             .write()
-            .expect("Unable to get global dim rate write lock");
+            .unwrap_or_else(|e| e.into_inner());
         if dim_rate.is_zero() {
             *global_dim_rate = 1.0
         } else {
@@ -108,21 +106,13 @@ impl Universe {
             0 // Handle channel 0 case - map to index 0
         };
         let value = f64::from(value);
-        self.target
-            .write()
-            .expect("Unable to get universe target write lock")[channel_index] = value;
-        self.rates
-            .write()
-            .expect("Unable to get universe rates write lock")[channel_index] = if dim {
-            (value
-                - self
-                    .current
-                    .read()
-                    .expect("unable to get universe current read lock")[channel_index])
+        self.target.write().unwrap_or_else(|e| e.into_inner())[channel_index] = value;
+        self.rates.write().unwrap_or_else(|e| e.into_inner())[channel_index] = if dim {
+            (value - self.current.read().unwrap_or_else(|e| e.into_inner())[channel_index])
                 / *self
                     .global_dim_rate
                     .read()
-                    .expect("Unable to get universe global dim rate")
+                    .unwrap_or_else(|e| e.into_inner())
         } else {
             0.0
         };
@@ -193,15 +183,9 @@ impl Universe {
         max_channels: &Arc<AtomicU16>,
         buffer: &mut DmxBuffer,
     ) -> bool {
-        let mut current = current
-            .write()
-            .expect("Unable to get current universe information write lock");
-        let rates = rates
-            .read()
-            .expect("Unable to get rates universe information lock");
-        let target = target
-            .read()
-            .expect("Unable to get target universe information lock");
+        let mut current = current.write().unwrap_or_else(|e| e.into_inner());
+        let rates = rates.read().unwrap_or_else(|e| e.into_inner());
+        let target = target.read().unwrap_or_else(|e| e.into_inner());
 
         let mut changed = false;
         for i in 0..usize::from(max_channels.load(Ordering::Relaxed)) {
