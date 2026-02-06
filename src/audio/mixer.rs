@@ -33,6 +33,17 @@ thread_local! {
 // Per-source profiling when MTRACK_PROFILE_AUDIO=1. Logs ~once per second.
 const MIXER_PROFILE_INTERVAL: u32 = 344;
 
+/// Max sources we support in the parallel path; buffers are reused up to this size.
+const PAR_MIX_MAX_SOURCES: usize = 32;
+
+thread_local! {
+    /// Reused in parallel mix path to avoid allocating per callback.
+    static PAR_MIX_BUFFERS: RefCell<Arc<Vec<Mutex<Vec<f32>>>>> =
+        RefCell::new(Arc::new(Vec::new()));
+    static PAR_MIX_FINISHED: RefCell<Arc<Vec<Mutex<Option<u64>>>>> =
+        RefCell::new(Arc::new(Vec::new()));
+}
+
 struct PerSourceTiming {
     count: u64,
     sum_us: u64,
@@ -404,16 +415,64 @@ impl AudioMixer {
         let n = sources_to_process.len();
 
         if n >= 2 {
-            // Parallel path: each source mixes into its own buffer, then we sum. Reduces worst-case
-            // time when multiple sources spike (e.g. stereo + 2× mono).
             let buf_size = num_frames * channels;
-            let results: Vec<(Vec<f32>, Option<u64>)> = sources_to_process
-                .par_iter()
-                .map(|source_arc| {
-                    let mut active_source = source_arc.lock().unwrap();
-                    let mut buf = vec![0.0; buf_size];
-                    let finished =
-                        self.process_one_source_into_buffer(
+            if n <= PAR_MIX_MAX_SOURCES {
+                // Reuse thread-local buffers so we don't allocate per callback.
+                PAR_MIX_BUFFERS.with(|buf_cell| {
+                    PAR_MIX_FINISHED.with(|fin_cell| {
+                        let mut buf_arc = buf_cell.borrow_mut();
+                        let mut fin_arc = fin_cell.borrow_mut();
+                        if buf_arc.len() < n {
+                            *buf_arc = Arc::new(
+                                (0..n).map(|_| Mutex::new(Vec::new())).collect(),
+                            );
+                        }
+                        if fin_arc.len() < n {
+                            *fin_arc = Arc::new(
+                                (0..n).map(|_| Mutex::new(None)).collect(),
+                            );
+                        }
+                        let buffers = Arc::clone(&buf_arc);
+                        let finished = Arc::clone(&fin_arc);
+                        for i in 0..n {
+                            buffers[i].lock().unwrap().resize(buf_size, 0.0);
+                            *finished[i].lock().unwrap() = None;
+                        }
+                        sources_to_process
+                            .par_iter()
+                            .enumerate()
+                            .for_each(|(i, source_arc)| {
+                                let mut active_source = source_arc.lock().unwrap();
+                                let mut buf = buffers[i].lock().unwrap();
+                                let result = self.process_one_source_into_buffer(
+                                    &mut active_source,
+                                    &mut buf,
+                                    num_frames,
+                                    channels,
+                                    current_sample,
+                                    buffer_end_sample,
+                                );
+                                *finished[i].lock().unwrap() = result;
+                            });
+                        for i in 0..n {
+                            let buf = buffers[i].lock().unwrap();
+                            for (j, &s) in buf.iter().enumerate() {
+                                output[j] += s;
+                            }
+                            if let Some(id) = *finished[i].lock().unwrap() {
+                                finished_source_ids.insert(id);
+                            }
+                        }
+                    });
+                });
+            } else {
+                // More than PAR_MIX_MAX_SOURCES: one alloc path so we still mix all sources in parallel.
+                let results: Vec<(Vec<f32>, Option<u64>)> = sources_to_process
+                    .par_iter()
+                    .map(|source_arc| {
+                        let mut active_source = source_arc.lock().unwrap();
+                        let mut buf = vec![0.0; buf_size];
+                        let finished = self.process_one_source_into_buffer(
                             &mut active_source,
                             &mut buf,
                             num_frames,
@@ -421,15 +480,16 @@ impl AudioMixer {
                             current_sample,
                             buffer_end_sample,
                         );
-                    (buf, finished)
-                })
-                .collect();
-            for (buf, finished) in &results {
-                for (i, &s) in buf.iter().enumerate() {
-                    output[i] += s;
-                }
-                if let Some(id) = finished {
-                    finished_source_ids.insert(*id);
+                        (buf, finished)
+                    })
+                    .collect();
+                for (buf, finished) in &results {
+                    for (i, &s) in buf.iter().enumerate() {
+                        output[i] += s;
+                    }
+                    if let Some(id) = finished {
+                        finished_source_ids.insert(*id);
+                    }
                 }
             }
         } else {
