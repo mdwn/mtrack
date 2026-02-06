@@ -243,6 +243,7 @@ where
             if !self.input_buffer.source_finished {
                 self.input_frame_scratch.resize(num_channels, 0.0f32);
                 let frame = &mut self.input_frame_scratch[..num_channels];
+                frame.fill(0.0); // always zero before use (resize doesn't re-zero when same/smaller)
 
                 // Get input_frames_next while holding the lock briefly
                 let input_frames_needed = {
