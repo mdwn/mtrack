@@ -13,6 +13,7 @@
 //
 // Core audio mixing logic that can be used by both CPAL and test implementations
 use crate::audio::sample_source::ChannelMappedSampleSource;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
@@ -20,6 +21,12 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 #[cfg(test)]
 use std::time::Instant;
+use tracing::debug;
+
+// Thread-local scratch for process_into_output so the audio callback never allocates.
+thread_local! {
+    static SOURCE_FRAME_SCRATCH: RefCell<Vec<f32>> = RefCell::new(vec![0.0; 64]);
+}
 
 /// Core audio mixing logic that's independent of any audio backend
 #[derive(Clone)]
@@ -286,8 +293,6 @@ impl AudioMixer {
         };
 
         let mut finished_source_ids = HashSet::new();
-        // Reusable scratch buffer for source frames (max 64 channels should cover most cases)
-        let mut source_frame_buffer = vec![0.0f32; 64];
 
         // Process each active source across all frames
         for active_source_arc in sources_to_process {
@@ -296,6 +301,15 @@ impl AudioMixer {
             if active_source.is_finished.load(Ordering::Relaxed)
                 || active_source.cancel_handle.is_cancelled()
             {
+                debug!(
+                    source_id = active_source.id,
+                    reason = if active_source.is_finished.load(Ordering::Relaxed) {
+                        "already_finished"
+                    } else {
+                        "cancel_handle_cancelled"
+                    },
+                    "mixer: source marked finished (skip)"
+                );
                 finished_source_ids.insert(active_source.id);
                 continue;
             }
@@ -304,7 +318,12 @@ impl AudioMixer {
             if let Some(ref cancel_at) = active_source.cancel_at_sample {
                 let cancel_sample = cancel_at.load(Ordering::Relaxed);
                 if cancel_sample > 0 && current_sample >= cancel_sample {
-                    // Scheduled cancellation time reached
+                    debug!(
+                        source_id = active_source.id,
+                        cancel_sample,
+                        current_sample,
+                        "mixer: source marked finished (cancel_at_sample reached)"
+                    );
                     active_source.is_finished.store(true, Ordering::Relaxed);
                     finished_source_ids.insert(active_source.id);
                     continue;
@@ -344,46 +363,49 @@ impl AudioMixer {
             };
 
             let source_channel_count = active_source.cached_source_channel_count as usize;
-            // Resize buffer if needed (should be rare)
-            if source_frame_buffer.len() < source_channel_count {
-                source_frame_buffer.resize(source_channel_count, 0.0);
-            }
-
-            for frame_index in start_frame..end_frame {
-                match active_source
-                    .source
-                    .next_frame(&mut source_frame_buffer[..source_channel_count])
-                {
-                    Ok(Some(_count)) => {
-                        // Mix using precomputed mappings
-                        for (source_channel, &sample) in source_frame_buffer[..source_channel_count]
-                            .iter()
-                            .enumerate()
-                        {
-                            if let Some(output_channels) =
-                                active_source.channel_mappings.get(source_channel)
-                            {
-                                let base = frame_index * channels;
-                                for &output_index in output_channels {
-                                    if output_index < channels {
-                                        output[base + output_index] += sample;
+            SOURCE_FRAME_SCRATCH.with(|cell| {
+                let mut buf = cell.borrow_mut();
+                if buf.len() < source_channel_count {
+                    buf.resize(source_channel_count, 0.0);
+                }
+                let sbuf = &mut buf[..source_channel_count];
+                for frame_index in start_frame..end_frame {
+                    match active_source.source.next_frame(sbuf) {
+                        Ok(Some(_count)) => {
+                            for (source_channel, &sample) in sbuf.iter().enumerate() {
+                                if let Some(output_channels) =
+                                    active_source.channel_mappings.get(source_channel)
+                                {
+                                    let base = frame_index * channels;
+                                    for &output_index in output_channels {
+                                        if output_index < channels {
+                                            output[base + output_index] += sample;
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
-                    Ok(None) => {
-                        active_source.is_finished.store(true, Ordering::Relaxed);
-                        finished_source_ids.insert(active_source.id);
-                        break;
-                    }
-                    Err(_) => {
-                        active_source.is_finished.store(true, Ordering::Relaxed);
-                        finished_source_ids.insert(active_source.id);
-                        break;
+                        Ok(None) => {
+                            debug!(
+                                source_id = active_source.id,
+                                "mixer: source marked finished (next_frame returned None)"
+                            );
+                            active_source.is_finished.store(true, Ordering::Relaxed);
+                            finished_source_ids.insert(active_source.id);
+                            break;
+                        }
+                        Err(_) => {
+                            debug!(
+                                source_id = active_source.id,
+                                "mixer: source marked finished (next_frame error)"
+                            );
+                            active_source.is_finished.store(true, Ordering::Relaxed);
+                            finished_source_ids.insert(active_source.id);
+                            break;
+                        }
                     }
                 }
-            }
+            });
         }
 
         // Increment the sample counter
@@ -392,6 +414,11 @@ impl AudioMixer {
 
         // Clean up finished sources inline - we're the only accessor in direct callback mode
         if !finished_source_ids.is_empty() {
+            debug!(
+                source_ids = ?finished_source_ids,
+                remaining_before = self.active_sources.read().unwrap().len(),
+                "mixer: removing finished sources"
+            );
             let mut sources = self.active_sources.write().unwrap();
             sources.retain(|source| {
                 let source_guard = source.lock().unwrap();
