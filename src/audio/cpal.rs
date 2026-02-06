@@ -42,14 +42,9 @@ thread_local! {
     static PENDING_SOURCES: RefCell<Vec<MixerActiveSource>> = RefCell::new(Vec::with_capacity(32));
 }
 
-/// Enable with MTRACK_PROFILE_AUDIO=1 to log callback timing ~once per second.
+/// Use shared profiling flag so mixer and cpal stay in sync.
 fn profile_audio_enabled() -> bool {
-    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        std::env::var("MTRACK_PROFILE_AUDIO")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false)
-    })
+    crate::audio::audio_callback_profiling_enabled()
 }
 
 /// ~1 second at 44.1kHz / 128 samples per period.

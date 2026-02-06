@@ -38,6 +38,16 @@ pub(crate) fn next_source_id() -> u64 {
     SOURCE_ID_COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 
+/// True when MTRACK_PROFILE_AUDIO=1 or true. Used by cpal callback and mixer for timing.
+pub(crate) fn audio_callback_profiling_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("MTRACK_PROFILE_AUDIO")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    })
+}
+
 /// Type alias for the channel sender used to add sources to the mixer.
 pub type SourceSender = crossbeam_channel::Sender<mixer::ActiveSource>;
 

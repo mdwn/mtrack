@@ -22,10 +22,25 @@ use std::sync::{Arc, Mutex, RwLock};
 #[cfg(test)]
 use std::time::Instant;
 use tracing::debug;
+use tracing::info;
 
 // Thread-local scratch for process_into_output so the audio callback never allocates.
 thread_local! {
     static SOURCE_FRAME_SCRATCH: RefCell<Vec<f32>> = RefCell::new(vec![0.0; 64]);
+}
+
+// Per-source profiling when MTRACK_PROFILE_AUDIO=1. Logs ~once per second.
+const MIXER_PROFILE_INTERVAL: u32 = 344;
+
+struct PerSourceTiming {
+    count: u64,
+    sum_us: u64,
+    max_us: u64,
+}
+
+thread_local! {
+    static MIXER_PROFILE: RefCell<(u32, HashMap<u64, PerSourceTiming>)> =
+        RefCell::new((0, HashMap::new()));
 }
 
 /// Core audio mixing logic that's independent of any audio backend
@@ -373,6 +388,12 @@ impl AudioMixer {
             };
 
             let source_channel_count = active_source.cached_source_channel_count as usize;
+            let source_id = active_source.id;
+            let t0 = if crate::audio::audio_callback_profiling_enabled() {
+                Some(std::time::Instant::now())
+            } else {
+                None
+            };
             SOURCE_FRAME_SCRATCH.with(|cell| {
                 let mut buf = cell.borrow_mut();
                 if buf.len() < source_channel_count {
@@ -416,6 +437,20 @@ impl AudioMixer {
                     }
                 }
             });
+            if let Some(t0) = t0 {
+                let us = t0.elapsed().as_micros() as u64;
+                MIXER_PROFILE.with(|cell| {
+                    let (_, map) = &mut *cell.borrow_mut();
+                    let e = map.entry(source_id).or_insert(PerSourceTiming {
+                        count: 0,
+                        sum_us: 0,
+                        max_us: 0,
+                    });
+                    e.count += 1;
+                    e.sum_us += us;
+                    e.max_us = e.max_us.max(us);
+                });
+            }
         }
 
         // Increment the sample counter
@@ -433,6 +468,38 @@ impl AudioMixer {
             sources.retain(|source| {
                 let source_guard = source.lock().unwrap();
                 !finished_source_ids.contains(&source_guard.id)
+            });
+        }
+
+        if crate::audio::audio_callback_profiling_enabled() {
+            MIXER_PROFILE.with(|cell| {
+                let (call_count, map) = &mut *cell.borrow_mut();
+                *call_count += 1;
+                if *call_count >= MIXER_PROFILE_INTERVAL {
+                    let mut entries: Vec<_> = map
+                        .iter()
+                        .map(|(id, t)| {
+                            (
+                                *id,
+                                t.count,
+                                if t.count > 0 { t.sum_us / t.count } else { 0 },
+                                t.max_us,
+                            )
+                        })
+                        .collect();
+                    entries.sort_by_key(|(id, _, _, _)| *id);
+                    *call_count = 0;
+                    map.clear();
+                    for (source_id, count, avg_us, max_us) in entries {
+                        info!(
+                            source_id,
+                            count,
+                            avg_us,
+                            max_us,
+                            "mixer per-source profile"
+                        );
+                    }
+                }
             });
         }
     }
