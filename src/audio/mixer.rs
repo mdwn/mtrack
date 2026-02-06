@@ -36,6 +36,7 @@ struct PerSourceTiming {
     count: u64,
     sum_us: u64,
     max_us: u64,
+    channels: u16,
 }
 
 thread_local! {
@@ -445,6 +446,7 @@ impl AudioMixer {
                         count: 0,
                         sum_us: 0,
                         max_us: 0,
+                        channels: source_channel_count as u16,
                     });
                     e.count += 1;
                     e.sum_us += us;
@@ -484,16 +486,18 @@ impl AudioMixer {
                                 t.count,
                                 if t.count > 0 { t.sum_us / t.count } else { 0 },
                                 t.max_us,
+                                t.channels,
                             )
                         })
                         .collect();
-                    entries.sort_by_key(|(id, _, _, _)| *id);
+                    entries.sort_by_key(|(id, _, _, _, _)| *id);
                     *call_count = 0;
                     map.clear();
-                    for (source_id, count, avg_us, max_us) in entries {
+                    for (source_id, count, avg_us, max_us, channels) in entries {
                         info!(
                             source_id,
                             count,
+                            channels,
                             avg_us,
                             max_us,
                             "mixer per-source profile"
