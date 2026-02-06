@@ -440,7 +440,10 @@ impl AudioMixer {
                         let buffers = Arc::clone(&buf_arc);
                         let finished = Arc::clone(&fin_arc);
                         for i in 0..n {
-                            buffers[i].lock().unwrap().resize(buf_size, 0.0);
+                            let mut buf = buffers[i].lock().unwrap();
+                            buf.resize(buf_size, 0.0);
+                            buf.fill(0.0); // resize doesn't overwrite when same size; must zero when reusing
+                            drop(buf);
                             *finished[i].lock().unwrap() = None;
                         }
                         sources_to_process
