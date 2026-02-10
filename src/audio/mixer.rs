@@ -23,9 +23,10 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 use tracing::debug;
 
-// Thread-local scratch for process_into_output so the audio callback never allocates.
+// Thread-local scratch for process_into_output. Size 128 avoids resize in the callback
+// for typical multichannel sources; >128 channels may still trigger a one-time resize.
 thread_local! {
-    static SOURCE_FRAME_SCRATCH: RefCell<Vec<f32>> = RefCell::new(vec![0.0; 64]);
+    static SOURCE_FRAME_SCRATCH: RefCell<Vec<f32>> = RefCell::new(vec![0.0; 128]);
 }
 
 /// Core audio mixing logic that's independent of any audio backend

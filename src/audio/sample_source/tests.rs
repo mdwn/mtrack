@@ -13,11 +13,16 @@
 //
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use crate::audio::sample_source::audio::AudioSampleSource;
     use crate::audio::sample_source::create_sample_source_from_file;
     use crate::audio::sample_source::memory::MemorySampleSource;
-    use crate::audio::sample_source::traits::{SampleSource, SampleSourceTestExt};
+    use crate::audio::sample_source::traits::{
+        ChannelMappedSampleSource, SampleSource, SampleSourceTestExt,
+    };
     use crate::audio::sample_source::transcoder::AudioTranscoder;
+    use crate::audio::sample_source::{BufferFillPool, BufferedSampleSource, ChannelMappedSource};
     use crate::audio::TargetFormat;
 
     // ---------------------------------------------------------------------
@@ -1893,6 +1898,33 @@ mod tests {
 
         // Clean up the env var so it doesn't affect other tests.
         std::env::remove_var("MTRACK_FORCE_DETECT_CHANNELS");
+    }
+
+    #[test]
+    fn test_buffered_sample_source_matches_inner_sequence() {
+        // Simple 1‑channel source with known samples, wrapped in ChannelMappedSource
+        let samples = vec![0.1_f32, 0.2_f32, 0.3_f32, 0.4_f32];
+        let memory = MemorySampleSource::new(samples.clone(), 1, 44100);
+        let channel_mappings = vec![vec!["test".to_string()]];
+
+        let inner: Box<dyn crate::audio::sample_source::ChannelMappedSampleSource + Send + Sync> =
+            Box::new(ChannelMappedSource::new(
+                Box::new(memory),
+                channel_mappings,
+                1,
+            ));
+
+        let pool = Arc::new(BufferFillPool::new(1).expect("failed to create BufferFillPool"));
+
+        // Use small device buffer size so capacity is also small; this exercises refill logic.
+        let mut buffered = BufferedSampleSource::new(inner, pool, 2);
+
+        let mut read = Vec::new();
+        while let Some(sample) = buffered.next_sample().unwrap() {
+            read.push(sample);
+        }
+
+        assert_eq!(read, samples);
     }
 
     #[test]

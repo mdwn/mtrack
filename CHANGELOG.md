@@ -34,6 +34,7 @@ The audio engine has been refactored for lower latency and stability:
 - Inline cleanup of finished sources during mixing (simpler, no separate cleanup pass)
 - Bounded source channel (capacity 64) to prevent unbounded memory growth
 - Precomputed channel mappings at sample load time (no allocations during trigger)
+- Song playback is buffered to reduce buffer underrun.
 
 ### Changed
 

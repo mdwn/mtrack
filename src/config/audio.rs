@@ -20,6 +20,21 @@ use crate::audio::SampleFormat;
 
 const DEFAULT_AUDIO_PLAYBACK_DELAY: Duration = Duration::ZERO;
 const DEFAULT_BUFFER_SIZE: usize = 1024;
+const DEFAULT_BUFFER_THREADS: usize = 2;
+
+/// How to choose the CPAL stream buffer size (period size). Affects latency vs underrun tolerance.
+#[derive(Deserialize, Clone, Debug)]
+#[serde(untagged)]
+pub enum StreamBufferSize {
+    /// Use the backend's default (may be high latency on some systems).
+    #[serde(rename = "default")]
+    Default,
+    /// Use the device's minimum supported period size (lowest latency, most jitter-sensitive).
+    #[serde(rename = "min")]
+    Min,
+    /// Use a fixed size in frames (same as buffer_size when not set).
+    Fixed(usize),
+}
 
 /// A YAML representation of the audio configuration.
 #[derive(Deserialize, Clone)]
@@ -41,6 +56,14 @@ pub struct Audio {
 
     /// Buffer size for decoded audio samples (default: 1024 samples per channel)
     buffer_size: Option<usize>,
+
+    /// CPAL stream buffer: "default" (backend default), "min" (lowest latency), or a number (frames).
+    /// When unset, uses buffer_size. Lower values = lower latency but more sensitive to callback jitter.
+    stream_buffer_size: Option<StreamBufferSize>,
+
+    /// Number of worker threads for buffered song sources.
+    /// Defaults to a small fixed value; must be >= 1.
+    buffer_threads: Option<usize>,
 }
 
 impl Audio {
@@ -53,6 +76,8 @@ impl Audio {
             sample_format: None,
             bits_per_sample: None,
             buffer_size: None,
+            stream_buffer_size: None,
+            buffer_threads: None,
         }
     }
 
@@ -90,5 +115,16 @@ impl Audio {
     /// Returns the buffer size for decoded audio samples (default: 1024 samples per channel)
     pub fn buffer_size(&self) -> usize {
         self.buffer_size.unwrap_or(DEFAULT_BUFFER_SIZE)
+    }
+
+    /// Returns the number of worker threads used for buffered song sources.
+    pub fn buffer_threads(&self) -> usize {
+        self.buffer_threads.unwrap_or(DEFAULT_BUFFER_THREADS).max(1)
+    }
+
+    /// Returns the stream buffer size choice for CPAL (default/min/fixed).
+    /// When None, the stream uses buffer_size() as a fixed frame count.
+    pub fn stream_buffer_size(&self) -> Option<StreamBufferSize> {
+        self.stream_buffer_size.clone()
     }
 }

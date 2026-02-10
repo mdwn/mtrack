@@ -12,6 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 pub mod audio;
+pub mod buffered;
 pub mod channel_mapped;
 pub mod error;
 pub mod factory;
@@ -23,6 +24,7 @@ pub mod transcoder;
 mod tests;
 
 // Re-exports for use by other modules
+pub use buffered::{BufferFillPool, BufferedSampleSource};
 pub use channel_mapped::create_channel_mapped_sample_source;
 pub use channel_mapped::ChannelMappedSource;
 pub use factory::create_sample_source_from_file;

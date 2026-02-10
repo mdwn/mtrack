@@ -21,6 +21,7 @@ use crate::songs::Song;
 use std::collections::HashMap;
 use std::sync::Barrier;
 
+pub mod context;
 pub mod cpal;
 pub mod format;
 pub mod mixer;
@@ -28,6 +29,7 @@ pub mod mock;
 pub mod sample_source;
 
 // Re-export the format types for backward compatibility
+pub use context::PlaybackContext;
 pub use format::{SampleFormat, TargetFormat};
 
 /// Global source ID counter shared by song playback and sample triggers so IDs are unique.
