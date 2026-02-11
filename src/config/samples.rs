@@ -155,11 +155,6 @@ impl SampleDefinition {
     pub fn file(&self) -> Option<&str> {
         self.file.as_deref()
     }
-
-    /// Gets the velocity configuration (test only).
-    pub fn velocity(&self) -> &VelocityConfig {
-        &self.velocity
-    }
 }
 
 /// Configuration for velocity handling.
@@ -211,26 +206,6 @@ impl VelocityConfig {
             layers,
         }
     }
-
-    /// Gets the velocity mode (test only).
-    pub fn mode(&self) -> &VelocityMode {
-        &self.mode
-    }
-
-    /// Gets the default velocity (test only).
-    pub fn default(&self) -> Option<u8> {
-        self.default
-    }
-
-    /// Gets whether to scale volume in layers mode (test only).
-    pub fn scale_enabled(&self) -> bool {
-        self.scale.unwrap_or(false)
-    }
-
-    /// Gets the velocity layers (test only).
-    pub fn layers(&self) -> &[VelocityLayer] {
-        &self.layers
-    }
 }
 
 /// Velocity handling mode.
@@ -261,16 +236,6 @@ impl VelocityLayer {
     /// Creates a new velocity layer (test only).
     pub fn new(range: [u8; 2], file: String) -> Self {
         Self { range, file }
-    }
-
-    /// Gets the velocity range (test only).
-    pub fn range(&self) -> [u8; 2] {
-        self.range
-    }
-
-    /// Gets the file for this layer (test only).
-    pub fn file(&self) -> &str {
-        &self.file
     }
 }
 
@@ -317,14 +282,6 @@ impl SampleTrigger {
     /// Gets the name of the sample to trigger.
     pub fn sample(&self) -> &str {
         &self.sample
-    }
-}
-
-#[cfg(test)]
-impl SampleTrigger {
-    /// Creates a new sample trigger (test only).
-    pub fn new(trigger: midi::Event, sample: String) -> Self {
-        Self { trigger, sample }
     }
 }
 

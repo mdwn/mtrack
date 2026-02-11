@@ -63,6 +63,34 @@ WantedBy=multi-user.target
 Alias=mtrack.service
 "#;
 
+/// Default thread priority on the [0; 100) scale when MTRACK_THREAD_PRIORITY is unset.
+/// On Linux (normal scheduling) this is roughly in the nice -8 to -10 range—higher than default 0 but below max.
+const DEFAULT_THREAD_PRIORITY: u8 = 70;
+
+/// Sets the current thread's priority for better audio scheduling (cross-platform).
+/// Uses the [0; 100) scale: higher value = higher priority.
+/// Default is 70 when MTRACK_THREAD_PRIORITY is unset; set to 0-99 to override.
+/// Fails silently if lacking permission. Use high values with care; they can starve other threads.
+fn apply_thread_priority() {
+    use thread_priority::{set_current_thread_priority, ThreadPriority, ThreadPriorityValue};
+
+    let priority = env::var("MTRACK_THREAD_PRIORITY")
+        .ok()
+        .and_then(|v| {
+            let n = v.parse::<u8>().ok()?;
+            (n < 100).then(|| ThreadPriorityValue::try_from(n).ok())?
+        })
+        .unwrap_or_else(|| ThreadPriorityValue::try_from(DEFAULT_THREAD_PRIORITY).unwrap());
+
+    match set_current_thread_priority(ThreadPriority::Crossplatform(priority)) {
+        Ok(()) => info!("Set thread priority for audio"),
+        Err(e) => tracing::warn!(
+            error = %e,
+            "Could not set thread priority (e.g. run as root or with CAP_SYS_NICE on Linux)"
+        ),
+    }
+}
+
 #[derive(Parser)]
 #[clap(
     author = "Michael Wilson",
@@ -361,6 +389,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
             player_path,
             playlist_path,
         } => {
+            apply_thread_priority();
             let player_path = &Path::new(&player_path);
             let player_config = config::Player::deserialize(player_path)?;
             let mut playlist_path = playlist_path.as_ref().map(PathBuf::from).or(player_config.playlist()).ok_or(

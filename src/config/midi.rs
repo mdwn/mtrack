@@ -204,19 +204,6 @@ pub struct NoteOff {
     velocity: u8,
 }
 
-#[cfg(test)]
-impl NoteOff {
-    /// Gets the channel (1-indexed).
-    pub fn channel(&self) -> u8 {
-        self.channel
-    }
-
-    /// Gets the key.
-    pub fn key(&self) -> u8 {
-        self.key
-    }
-}
-
 impl ToMidiEvent for NoteOff {
     fn to_midi_event(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
         Ok(LiveEvent::Midi {
@@ -240,19 +227,6 @@ pub struct NoteOn {
     /// Optional for trigger matching; defaults to 0.
     #[serde(default)]
     velocity: u8,
-}
-
-#[cfg(test)]
-impl NoteOn {
-    /// Gets the channel (1-indexed).
-    pub fn channel(&self) -> u8 {
-        self.channel
-    }
-
-    /// Gets the key.
-    pub fn key(&self) -> u8 {
-        self.key
-    }
 }
 
 impl ToMidiEvent for NoteOn {

@@ -20,20 +20,289 @@ use std::{
         Arc, Condvar, Mutex,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use thread_priority::{set_current_thread_priority, ThreadPriority, ThreadPriorityValue};
 use tracing::{error, info, span, Level};
+
+/// Default priority for the audio callback thread when MTRACK_THREAD_PRIORITY is unset.
+const DEFAULT_CALLBACK_THREAD_PRIORITY: u8 = 70;
+
+/// Reads MTRACK_THREAD_PRIORITY (0-99) once; used when building the callback so we don't touch env in the hot path.
+fn callback_thread_priority() -> ThreadPriorityValue {
+    std::env::var("MTRACK_THREAD_PRIORITY")
+        .ok()
+        .and_then(|v| {
+            let n = v.parse::<u8>().ok()?;
+            (n < 100).then(|| ThreadPriorityValue::try_from(n).ok())?
+        })
+        .unwrap_or_else(|| ThreadPriorityValue::try_from(DEFAULT_CALLBACK_THREAD_PRIORITY).unwrap())
+}
+
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|v| {
+            v == "1"
+                || v.eq_ignore_ascii_case("true")
+                || v.eq_ignore_ascii_case("yes")
+                || v.eq_ignore_ascii_case("on")
+        })
+        .unwrap_or(false)
+}
+
+/// Returns whether we should attempt RT (SCHED_FIFO) scheduling for the audio callback thread.
+/// Default: enabled. Advanced users can opt out with MTRACK_DISABLE_RT_AUDIO=1.
+fn rt_audio_enabled() -> bool {
+    if env_flag("MTRACK_DISABLE_RT_AUDIO") {
+        return false;
+    }
+    true
+}
+
+fn configure_audio_thread_priority(
+    priority: ThreadPriorityValue,
+    rt_audio: bool,
+    priority_set: &mut bool,
+) {
+    if *priority_set {
+        return;
+    }
+    let tp = ThreadPriority::Crossplatform(priority);
+    let _ = set_current_thread_priority(tp);
+
+    #[cfg(unix)]
+    if rt_audio {
+        use thread_priority::unix::{
+            set_thread_priority_and_policy, thread_native_id, RealtimeThreadSchedulePolicy,
+            ThreadSchedulePolicy,
+        };
+        let tid = thread_native_id();
+        match set_thread_priority_and_policy(
+            tid,
+            tp,
+            ThreadSchedulePolicy::Realtime(RealtimeThreadSchedulePolicy::Fifo),
+        ) {
+            Ok(()) => {
+                info!("Enabled RT SCHED_FIFO for audio callback thread");
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Failed to set RT SCHED_FIFO for audio callback thread"
+                );
+            }
+        }
+    }
+
+    *priority_set = true;
+}
+
+struct CallbackProfiler {
+    enabled: bool,
+    last_log: Instant,
+    count: u64,
+    sum_mix_us: u128,
+    max_mix_us: u64,
+    sum_convert_us: u128,
+    max_convert_us: u64,
+    last_cb: Option<Instant>,
+    sum_gap_us: u128,
+    gap_count: u64,
+    max_gap_us: u64,
+}
+
+impl CallbackProfiler {
+    fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            last_log: Instant::now(),
+            count: 0,
+            sum_mix_us: 0,
+            max_mix_us: 0,
+            sum_convert_us: 0,
+            max_convert_us: 0,
+            last_cb: None,
+            sum_gap_us: 0,
+            gap_count: 0,
+            max_gap_us: 0,
+        }
+    }
+
+    fn on_cb_start(&mut self) -> Option<Instant> {
+        if !self.enabled {
+            return None;
+        }
+        let now = Instant::now();
+        if let Some(last) = self.last_cb {
+            let gap_us = now.duration_since(last).as_micros() as u64;
+            self.sum_gap_us += gap_us as u128;
+            self.gap_count += 1;
+            if gap_us > self.max_gap_us {
+                self.max_gap_us = gap_us;
+            }
+        }
+        self.last_cb = Some(now);
+        Some(now)
+    }
+
+    fn on_mix_done(&mut self, start: Option<Instant>) {
+        if !self.enabled {
+            return;
+        }
+        let start = match start {
+            Some(s) => s,
+            None => return,
+        };
+        let mix_us = start.elapsed().as_micros() as u64;
+        self.count += 1;
+        self.sum_mix_us += mix_us as u128;
+        if mix_us > self.max_mix_us {
+            self.max_mix_us = mix_us;
+        }
+    }
+
+    fn on_convert_done(&mut self, start: Option<Instant>) {
+        if !self.enabled {
+            return;
+        }
+        let start = match start {
+            Some(s) => s,
+            None => return,
+        };
+        let convert_us = start.elapsed().as_micros() as u64;
+        self.sum_convert_us += convert_us as u128;
+        if convert_us > self.max_convert_us {
+            self.max_convert_us = convert_us;
+        }
+    }
+
+    fn maybe_log_float(&mut self) {
+        if !self.enabled {
+            return;
+        }
+        if self.last_log.elapsed().as_secs_f32() < 1.0 {
+            return;
+        }
+        let mix_avg_us = if self.count > 0 {
+            (self.sum_mix_us / self.count as u128) as u64
+        } else {
+            0
+        };
+        let cb_avg_gap_us = if self.gap_count > 0 {
+            (self.sum_gap_us / self.gap_count as u128) as u64
+        } else {
+            0
+        };
+        info!(
+            mix_avg_us,
+            mix_max_us = self.max_mix_us,
+            cb_avg_gap_us,
+            cb_max_gap_us = self.max_gap_us,
+            callbacks = self.count,
+            "audio profile: mix (float)"
+        );
+
+        self.last_log = Instant::now();
+        self.count = 0;
+        self.sum_mix_us = 0;
+        self.max_mix_us = 0;
+        self.sum_gap_us = 0;
+        self.gap_count = 0;
+        self.max_gap_us = 0;
+    }
+
+    fn maybe_log_int(&mut self) {
+        if !self.enabled {
+            return;
+        }
+        if self.last_log.elapsed().as_secs_f32() < 1.0 {
+            return;
+        }
+        let mix_avg_us = if self.count > 0 {
+            (self.sum_mix_us / self.count as u128) as u64
+        } else {
+            0
+        };
+        let convert_avg_us = if self.count > 0 {
+            (self.sum_convert_us / self.count as u128) as u64
+        } else {
+            0
+        };
+        let cb_avg_gap_us = if self.gap_count > 0 {
+            (self.sum_gap_us / self.gap_count as u128) as u64
+        } else {
+            0
+        };
+        info!(
+            mix_avg_us,
+            mix_max_us = self.max_mix_us,
+            convert_avg_us,
+            convert_max_us = self.max_convert_us,
+            cb_avg_gap_us,
+            cb_max_gap_us = self.max_gap_us,
+            callbacks = self.count,
+            "audio profile: mix/convert (int)"
+        );
+
+        self.last_log = Instant::now();
+        self.count = 0;
+        self.sum_mix_us = 0;
+        self.max_mix_us = 0;
+        self.sum_convert_us = 0;
+        self.max_convert_us = 0;
+        self.sum_gap_us = 0;
+        self.gap_count = 0;
+        self.max_gap_us = 0;
+    }
+}
 
 use crate::audio::mixer::{ActiveSource as MixerActiveSource, AudioMixer};
 use crate::{
     audio::{Device as AudioDevice, SampleFormat, TargetFormat},
     config,
+    config::StreamBufferSize,
     playsync::CancelHandle,
     songs::Song,
 };
 use std::sync::Barrier;
+
+/// Returns the minimum supported output buffer size (frames) for the device and format, if known.
+fn min_supported_buffer_size(
+    device: &cpal::Device,
+    target_format: &TargetFormat,
+    channels: u16,
+) -> Option<u32> {
+    use cpal::SupportedBufferSize;
+    let rate = target_format.sample_rate;
+    let want_cpal_format = match (target_format.sample_format, target_format.bits_per_sample) {
+        (SampleFormat::Float, _) => cpal::SampleFormat::F32,
+        (SampleFormat::Int, 16) => cpal::SampleFormat::I16,
+        (SampleFormat::Int, 32) => cpal::SampleFormat::I32,
+        _ => cpal::SampleFormat::I32,
+    };
+    let configs = device.supported_output_configs().ok()?;
+    let mut best_min = None::<u32>;
+    for range in configs {
+        if range.channels() != channels {
+            continue;
+        }
+        if range.sample_format() != want_cpal_format {
+            continue;
+        }
+        let (min_r, max_r) = (range.min_sample_rate(), range.max_sample_rate());
+        if rate < min_r || rate > max_r {
+            continue;
+        }
+        if let SupportedBufferSize::Range { min, max: _ } = range.buffer_size() {
+            let m = *min;
+            best_min = Some(best_min.map_or(m, |b| b.min(m)));
+        }
+    }
+    best_min
+}
 
 /// A small wrapper around a cpal::Device. Used for storing some extra
 /// data that makes multitrack playing more convenient.
@@ -87,7 +356,14 @@ fn create_direct_f32_callback(
     source_rx: crossbeam_channel::Receiver<MixerActiveSource>,
     num_channels: u16,
 ) -> impl FnMut(&mut [f32], &cpal::OutputCallbackInfo) + Send + 'static {
+    let callback_priority = callback_thread_priority();
+    let rt_audio = rt_audio_enabled();
+    let profile_audio = env_flag("MTRACK_PROFILE_AUDIO");
+    let mut profiler = CallbackProfiler::new(profile_audio);
+    let mut priority_set = false;
+
     move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+        configure_audio_thread_priority(callback_priority, rt_audio, &mut priority_set);
         // Process any pending new sources (non-blocking)
         while let Ok(new_source) = source_rx.try_recv() {
             mixer.add_source(new_source);
@@ -95,7 +371,10 @@ fn create_direct_f32_callback(
 
         // Mix directly into the output buffer (cleanup happens inline)
         let num_frames = data.len() / num_channels as usize;
+        let start = profiler.on_cb_start();
         mixer.process_into_output(data, num_frames);
+        profiler.on_mix_done(start);
+        profiler.maybe_log_float();
     }
 }
 
@@ -112,25 +391,46 @@ where
     f32: cpal::FromSample<T>,
 {
     let mut temp_buffer = vec![0.0f32; max_samples];
+    let callback_priority = callback_thread_priority();
+    let rt_audio = rt_audio_enabled();
+    let profile_audio = env_flag("MTRACK_PROFILE_AUDIO");
+    let mut profiler = CallbackProfiler::new(profile_audio);
+    let mut priority_set = false;
 
     move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+        configure_audio_thread_priority(callback_priority, rt_audio, &mut priority_set);
         // Process any pending new sources (non-blocking)
         while let Ok(new_source) = source_rx.try_recv() {
             mixer.add_source(new_source);
         }
 
-        // Pre-allocated for typical period size; resize only if backend gives a larger buffer (rare)
-        if temp_buffer.len() < data.len() {
-            temp_buffer.resize(data.len(), 0.0);
-        }
-        let temp_slice = &mut temp_buffer[..data.len()];
-        let num_frames = data.len() / num_channels as usize;
+        // Never allocate in the callback: clamp to pre-allocated size. If the backend
+        // ever sends a larger buffer, we mix only the first max_samples and zero the rest.
+        let n = std::cmp::min(data.len(), temp_buffer.len());
+        let temp_slice = &mut temp_buffer[..n];
+        let num_frames = n / num_channels as usize;
+        profiler.on_cb_start();
+        let start_mix = if profile_audio {
+            Some(Instant::now())
+        } else {
+            None
+        };
         mixer.process_into_output(temp_slice, num_frames);
-
-        // Convert to output format
-        for (out, &sample) in data.iter_mut().zip(temp_slice.iter()) {
+        profiler.on_mix_done(start_mix);
+        let start_convert = if profile_audio {
+            Some(Instant::now())
+        } else {
+            None
+        };
+        let zero = T::from_sample(0.0);
+        for (out, &sample) in data[..n].iter_mut().zip(temp_slice.iter()) {
             *out = T::from_sample(sample);
         }
+        if n < data.len() {
+            data[n..].fill(zero);
+        }
+        profiler.on_convert_done(start_convert);
+        profiler.maybe_log_int();
     }
 }
 
@@ -459,11 +759,32 @@ impl Device {
                 let mut output_manager =
                     OutputManager::new(device.max_channels, device.target_format.sample_rate)?;
 
-                // Start the output thread with configured buffer size
+                // Resolve stream buffer size for CPAL (default / min / fixed)
+                let output_buffer_size = match config.stream_buffer_size() {
+                    None => Some(config.buffer_size() as u32),
+                    Some(StreamBufferSize::Default) => None,
+                    Some(StreamBufferSize::Min) => {
+                        let min_size = min_supported_buffer_size(
+                            &device.device,
+                            &device.target_format,
+                            device.max_channels,
+                        );
+                        if let Some(s) = min_size {
+                            info!(
+                                stream_buffer_size = s,
+                                "Using minimum supported stream buffer size (low latency)"
+                            );
+                        }
+                        min_size.or_else(|| Some(config.buffer_size() as u32))
+                    }
+                    Some(StreamBufferSize::Fixed(n)) => Some(n as u32),
+                };
+
+                // Start the output thread with resolved buffer size
                 output_manager.start_output_thread(
                     device.device.clone(),
                     device.target_format.clone(),
-                    Some(config.buffer_size() as u32),
+                    output_buffer_size,
                 )?;
 
                 device.output_manager = Arc::new(output_manager);
@@ -528,13 +849,30 @@ impl AudioDevice for Device {
 
         spin_sleep::sleep(self.playback_delay);
 
-        // Create channel mapped sources for each track in the song, starting from start_time
-        let channel_mapped_sources = song.create_channel_mapped_sources_from(
-            start_time,
-            mappings,
+        // Build playback context (format, buffer size, shared pool) for source creation.
+        let buffer_threads = self.audio_config.buffer_threads();
+        let buffer_fill_pool =
+            match crate::audio::sample_source::BufferFillPool::new(buffer_threads) {
+                Ok(pool) => Some(Arc::new(pool)),
+                Err(e) => {
+                    error!(
+                        error = %e,
+                        threads = buffer_threads,
+                        "Failed to create BufferFillPool, falling back to unbuffered song sources"
+                    );
+                    None
+                }
+            };
+
+        let playback_context = crate::audio::PlaybackContext::new(
             self.target_format.clone(),
             self.audio_config.buffer_size(),
-        )?;
+            buffer_fill_pool,
+        );
+
+        // Create channel mapped sources for each track in the song, starting from start_time.
+        let channel_mapped_sources =
+            song.create_channel_mapped_sources_from(&playback_context, start_time, mappings)?;
 
         // Add all sources to the output manager
         if channel_mapped_sources.is_empty() {

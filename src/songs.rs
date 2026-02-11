@@ -402,17 +402,17 @@ impl Song {
     }
 
     /// Creates ChannelMappedSampleSource instances for each track in the song, starting from a specific time.
-    /// This is the new, simpler architecture that replaces SongSource.
+    /// Uses the given playback context for target format, buffer size, and optional buffered-source pool.
     pub fn create_channel_mapped_sources_from(
         &self,
+        context: &crate::audio::PlaybackContext,
         start_time: Duration,
         track_mappings: &HashMap<String, Vec<u16>>,
-        target_format: TargetFormat,
-        buffer_size: usize,
     ) -> Result<Vec<Box<dyn crate::audio::sample_source::ChannelMappedSampleSource>>, Box<dyn Error>>
     {
         use crate::audio::sample_source::create_channel_mapped_sample_source;
         use crate::audio::sample_source::create_sample_source_from_file;
+        use crate::audio::sample_source::BufferedSampleSource;
 
         let mut sources = Vec::new();
 
@@ -441,7 +441,7 @@ impl Song {
                 } else {
                     Some(start_time)
                 },
-                buffer_size,
+                context.buffer_size,
             )?;
 
             // Get the channel count from the source we just created
@@ -467,9 +467,19 @@ impl Song {
 
             let source = create_channel_mapped_sample_source(
                 sample_source,
-                target_format.clone(),
+                context.target_format.clone(),
                 channel_mappings,
             )?;
+            let source: Box<dyn crate::audio::sample_source::ChannelMappedSampleSource> =
+                if let Some(pool) = &context.buffer_fill_pool {
+                    Box::new(BufferedSampleSource::new(
+                        source,
+                        pool.clone(),
+                        context.buffer_size,
+                    ))
+                } else {
+                    source
+                };
 
             sources.push(source);
         }

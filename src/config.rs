@@ -28,7 +28,7 @@ mod statusevents;
 mod track;
 mod trackmappings;
 
-pub use self::audio::Audio;
+pub use self::audio::{Audio, StreamBufferSize};
 pub use self::controller::Controller;
 pub use self::controller::GrpcController;
 pub use self::controller::MidiController;

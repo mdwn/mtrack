@@ -91,29 +91,6 @@ impl Voice {
     }
 }
 
-#[cfg(test)]
-impl Voice {
-    /// Returns the voice ID (test only).
-    pub fn id(&self) -> u64 {
-        self.id
-    }
-
-    /// Returns the sample name (test only).
-    pub fn sample_name(&self) -> &str {
-        &self.sample_name
-    }
-
-    /// Returns the mixer source ID (test only).
-    pub fn mixer_source_id(&self) -> u64 {
-        self.mixer_source_id
-    }
-
-    /// Returns when this voice started (test only).
-    pub fn start_time(&self) -> Instant {
-        self.start_time
-    }
-}
-
 /// Manages active voices for sample playback.
 pub struct VoiceManager {
     /// Active voices.
@@ -247,20 +224,6 @@ impl VoiceManager {
         let handles: Vec<CancelHandle> = self.voices.iter().map(|v| v.cancel_handle()).collect();
         self.voices.clear();
         handles
-    }
-}
-
-#[cfg(test)]
-impl VoiceManager {
-    /// Removes voices by their mixer source IDs (test only).
-    pub fn remove_by_source_ids(&mut self, source_ids: &[u64]) {
-        self.voices
-            .retain(|v| !source_ids.contains(&v.mixer_source_id));
-    }
-
-    /// Returns all active voices (test only).
-    pub fn voices(&self) -> &[Voice] {
-        &self.voices
     }
 }
 
