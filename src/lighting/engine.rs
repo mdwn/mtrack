@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 
 use super::effects::*;
 use super::tempo::TempoMap;
-use tracing::info;
+use tracing::debug;
 
 /// The main effects engine that manages and processes lighting effects
 pub struct EffectEngine {
@@ -245,7 +245,7 @@ impl EffectEngine {
 
         // Log effect parameters
         let (effect_kind, effect_params) = Self::format_effect_for_logging(&effect);
-        info!(
+        debug!(
             effect_id = %effect.id,
             effect_kind,
             effect_params = %effect_params,
@@ -283,7 +283,7 @@ impl EffectEngine {
 
         // Log effect parameters
         let (effect_kind, effect_params) = Self::format_effect_for_logging(&effect);
-        info!(
+        debug!(
             effect_id = %effect.id,
             effect_kind,
             effect_params = %effect_params,
