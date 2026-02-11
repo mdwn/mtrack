@@ -59,16 +59,16 @@ impl super::Driver for Driver {
         let player = self.player.clone();
 
         tokio::spawn(async move {
-            let span = span!(Level::INFO, "gRPC Server");
-            let _enter = span.enter();
-
             let player = player.clone();
             let reflection_service = tonic_reflection::server::Builder::configure()
                 .register_encoded_file_descriptor_set(FILE_DESCRIPTOR_SET)
                 .build_v1()
                 .map_err(io::Error::other)?;
 
-            info!("Starting gRPC server");
+            {
+                let _enter = span!(Level::INFO, "gRPC Server").entered();
+                info!("Starting gRPC server");
+            }
 
             Server::builder()
                 .add_service(reflection_service)
