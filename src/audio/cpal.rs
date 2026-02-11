@@ -139,6 +139,15 @@ fn create_direct_f32_callback(
     num_channels: u16,
 ) -> impl FnMut(&mut [f32], &cpal::OutputCallbackInfo) + Send + 'static {
     let callback_priority = callback_thread_priority();
+    let rt_audio = std::env::var("MTRACK_RT_AUDIO")
+        .ok()
+        .map(|v| {
+            v == "1"
+                || v.eq_ignore_ascii_case("true")
+                || v.eq_ignore_ascii_case("yes")
+                || v.eq_ignore_ascii_case("on")
+        })
+        .unwrap_or(false);
     let profile_audio = std::env::var("MTRACK_PROFILE_AUDIO")
         .ok()
         .map(|v| {
@@ -163,7 +172,31 @@ fn create_direct_f32_callback(
 
     move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
         if !priority_set {
-            let _ = set_current_thread_priority(ThreadPriority::Crossplatform(callback_priority));
+            let tp = ThreadPriority::Crossplatform(callback_priority);
+            let _ = set_current_thread_priority(tp);
+            #[cfg(unix)]
+            if rt_audio {
+                use thread_priority::unix::{
+                    set_thread_priority_and_policy, thread_native_id, RealtimeThreadSchedulePolicy,
+                    ThreadSchedulePolicy,
+                };
+                let tid = thread_native_id();
+                match set_thread_priority_and_policy(
+                    tid,
+                    tp,
+                    ThreadSchedulePolicy::Realtime(RealtimeThreadSchedulePolicy::Fifo),
+                ) {
+                    Ok(()) => {
+                        info!("Enabled RT SCHED_FIFO for audio callback thread");
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "Failed to set RT SCHED_FIFO for audio callback thread"
+                        );
+                    }
+                }
+            }
             priority_set = true;
         }
         // Process any pending new sources (non-blocking)
@@ -244,6 +277,15 @@ where
 {
     let mut temp_buffer = vec![0.0f32; max_samples];
     let callback_priority = callback_thread_priority();
+    let rt_audio = std::env::var("MTRACK_RT_AUDIO")
+        .ok()
+        .map(|v| {
+            v == "1"
+                || v.eq_ignore_ascii_case("true")
+                || v.eq_ignore_ascii_case("yes")
+                || v.eq_ignore_ascii_case("on")
+        })
+        .unwrap_or(false);
 
     let profile_audio = std::env::var("MTRACK_PROFILE_AUDIO")
         .ok()
@@ -271,7 +313,31 @@ where
 
     move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
         if !priority_set {
-            let _ = set_current_thread_priority(ThreadPriority::Crossplatform(callback_priority));
+            let tp = ThreadPriority::Crossplatform(callback_priority);
+            let _ = set_current_thread_priority(tp);
+            #[cfg(unix)]
+            if rt_audio {
+                use thread_priority::unix::{
+                    set_thread_priority_and_policy, thread_native_id, RealtimeThreadSchedulePolicy,
+                    ThreadSchedulePolicy,
+                };
+                let tid = thread_native_id();
+                match set_thread_priority_and_policy(
+                    tid,
+                    tp,
+                    ThreadSchedulePolicy::Realtime(RealtimeThreadSchedulePolicy::Fifo),
+                ) {
+                    Ok(()) => {
+                        info!("Enabled RT SCHED_FIFO for audio callback thread");
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "Failed to set RT SCHED_FIFO for audio callback thread"
+                        );
+                    }
+                }
+            }
             priority_set = true;
         }
         // Process any pending new sources (non-blocking)
