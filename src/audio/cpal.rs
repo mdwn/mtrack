@@ -41,6 +41,224 @@ fn callback_thread_priority() -> ThreadPriorityValue {
         .unwrap_or_else(|| ThreadPriorityValue::try_from(DEFAULT_CALLBACK_THREAD_PRIORITY).unwrap())
 }
 
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|v| {
+            v == "1"
+                || v.eq_ignore_ascii_case("true")
+                || v.eq_ignore_ascii_case("yes")
+                || v.eq_ignore_ascii_case("on")
+        })
+        .unwrap_or(false)
+}
+
+/// Returns whether we should attempt RT (SCHED_FIFO) scheduling for the audio callback thread.
+/// Default: enabled. Advanced users can opt out with MTRACK_DISABLE_RT_AUDIO=1.
+fn rt_audio_enabled() -> bool {
+    if env_flag("MTRACK_DISABLE_RT_AUDIO") {
+        return false;
+    }
+    true
+}
+
+fn configure_audio_thread_priority(
+    priority: ThreadPriorityValue,
+    rt_audio: bool,
+    priority_set: &mut bool,
+) {
+    if *priority_set {
+        return;
+    }
+    let tp = ThreadPriority::Crossplatform(priority);
+    let _ = set_current_thread_priority(tp);
+
+    #[cfg(unix)]
+    if rt_audio {
+        use thread_priority::unix::{
+            set_thread_priority_and_policy, thread_native_id, RealtimeThreadSchedulePolicy,
+            ThreadSchedulePolicy,
+        };
+        let tid = thread_native_id();
+        match set_thread_priority_and_policy(
+            tid,
+            tp,
+            ThreadSchedulePolicy::Realtime(RealtimeThreadSchedulePolicy::Fifo),
+        ) {
+            Ok(()) => {
+                info!("Enabled RT SCHED_FIFO for audio callback thread");
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Failed to set RT SCHED_FIFO for audio callback thread"
+                );
+            }
+        }
+    }
+
+    *priority_set = true;
+}
+
+struct CallbackProfiler {
+    enabled: bool,
+    last_log: Instant,
+    count: u64,
+    sum_mix_us: u128,
+    max_mix_us: u64,
+    sum_convert_us: u128,
+    max_convert_us: u64,
+    last_cb: Option<Instant>,
+    sum_gap_us: u128,
+    gap_count: u64,
+    max_gap_us: u64,
+}
+
+impl CallbackProfiler {
+    fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            last_log: Instant::now(),
+            count: 0,
+            sum_mix_us: 0,
+            max_mix_us: 0,
+            sum_convert_us: 0,
+            max_convert_us: 0,
+            last_cb: None,
+            sum_gap_us: 0,
+            gap_count: 0,
+            max_gap_us: 0,
+        }
+    }
+
+    fn on_cb_start(&mut self) -> Option<Instant> {
+        if !self.enabled {
+            return None;
+        }
+        let now = Instant::now();
+        if let Some(last) = self.last_cb {
+            let gap_us = now.duration_since(last).as_micros() as u64;
+            self.sum_gap_us += gap_us as u128;
+            self.gap_count += 1;
+            if gap_us > self.max_gap_us {
+                self.max_gap_us = gap_us;
+            }
+        }
+        self.last_cb = Some(now);
+        Some(now)
+    }
+
+    fn on_mix_done(&mut self, start: Option<Instant>) {
+        if !self.enabled {
+            return;
+        }
+        let start = match start {
+            Some(s) => s,
+            None => return,
+        };
+        let mix_us = start.elapsed().as_micros() as u64;
+        self.count += 1;
+        self.sum_mix_us += mix_us as u128;
+        if mix_us > self.max_mix_us {
+            self.max_mix_us = mix_us;
+        }
+    }
+
+    fn on_convert_done(&mut self, start: Option<Instant>) {
+        if !self.enabled {
+            return;
+        }
+        let start = match start {
+            Some(s) => s,
+            None => return,
+        };
+        let convert_us = start.elapsed().as_micros() as u64;
+        self.sum_convert_us += convert_us as u128;
+        if convert_us > self.max_convert_us {
+            self.max_convert_us = convert_us;
+        }
+    }
+
+    fn maybe_log_float(&mut self) {
+        if !self.enabled {
+            return;
+        }
+        if self.last_log.elapsed().as_secs_f32() < 1.0 {
+            return;
+        }
+        let mix_avg_us = if self.count > 0 {
+            (self.sum_mix_us / self.count as u128) as u64
+        } else {
+            0
+        };
+        let cb_avg_gap_us = if self.gap_count > 0 {
+            (self.sum_gap_us / self.gap_count as u128) as u64
+        } else {
+            0
+        };
+        info!(
+            mix_avg_us,
+            mix_max_us = self.max_mix_us,
+            cb_avg_gap_us,
+            cb_max_gap_us = self.max_gap_us,
+            callbacks = self.count,
+            "audio profile: mix (float)"
+        );
+
+        self.last_log = Instant::now();
+        self.count = 0;
+        self.sum_mix_us = 0;
+        self.max_mix_us = 0;
+        self.sum_gap_us = 0;
+        self.gap_count = 0;
+        self.max_gap_us = 0;
+    }
+
+    fn maybe_log_int(&mut self) {
+        if !self.enabled {
+            return;
+        }
+        if self.last_log.elapsed().as_secs_f32() < 1.0 {
+            return;
+        }
+        let mix_avg_us = if self.count > 0 {
+            (self.sum_mix_us / self.count as u128) as u64
+        } else {
+            0
+        };
+        let convert_avg_us = if self.count > 0 {
+            (self.sum_convert_us / self.count as u128) as u64
+        } else {
+            0
+        };
+        let cb_avg_gap_us = if self.gap_count > 0 {
+            (self.sum_gap_us / self.gap_count as u128) as u64
+        } else {
+            0
+        };
+        info!(
+            mix_avg_us,
+            mix_max_us = self.max_mix_us,
+            convert_avg_us,
+            convert_max_us = self.max_convert_us,
+            cb_avg_gap_us,
+            cb_max_gap_us = self.max_gap_us,
+            callbacks = self.count,
+            "audio profile: mix/convert (int)"
+        );
+
+        self.last_log = Instant::now();
+        self.count = 0;
+        self.sum_mix_us = 0;
+        self.max_mix_us = 0;
+        self.sum_convert_us = 0;
+        self.max_convert_us = 0;
+        self.sum_gap_us = 0;
+        self.gap_count = 0;
+        self.max_gap_us = 0;
+    }
+}
+
 use crate::audio::mixer::{ActiveSource as MixerActiveSource, AudioMixer};
 use crate::{
     audio::{Device as AudioDevice, SampleFormat, TargetFormat},
@@ -139,66 +357,13 @@ fn create_direct_f32_callback(
     num_channels: u16,
 ) -> impl FnMut(&mut [f32], &cpal::OutputCallbackInfo) + Send + 'static {
     let callback_priority = callback_thread_priority();
-    let rt_audio = std::env::var("MTRACK_RT_AUDIO")
-        .ok()
-        .map(|v| {
-            v == "1"
-                || v.eq_ignore_ascii_case("true")
-                || v.eq_ignore_ascii_case("yes")
-                || v.eq_ignore_ascii_case("on")
-        })
-        .unwrap_or(false);
-    let profile_audio = std::env::var("MTRACK_PROFILE_AUDIO")
-        .ok()
-        .map(|v| {
-            v == "1"
-                || v.eq_ignore_ascii_case("true")
-                || v.eq_ignore_ascii_case("yes")
-                || v.eq_ignore_ascii_case("on")
-        })
-        .unwrap_or(false);
-
-    // Simple in-callback stats: average/max mix time and avg/max callback interval
-    // (jitter), logged about once per second.
-    let mut prof_last_log = Instant::now();
-    let mut prof_count: u64 = 0;
-    let mut prof_sum_mix_us: u128 = 0;
-    let mut prof_max_mix_us: u64 = 0;
-    let mut prof_last_cb: Option<Instant> = None;
-    let mut prof_sum_gap_us: u128 = 0;
-    let mut prof_gap_count: u64 = 0;
-    let mut prof_max_gap_us: u64 = 0;
+    let rt_audio = rt_audio_enabled();
+    let profile_audio = env_flag("MTRACK_PROFILE_AUDIO");
+    let mut profiler = CallbackProfiler::new(profile_audio);
     let mut priority_set = false;
 
     move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-        if !priority_set {
-            let tp = ThreadPriority::Crossplatform(callback_priority);
-            let _ = set_current_thread_priority(tp);
-            #[cfg(unix)]
-            if rt_audio {
-                use thread_priority::unix::{
-                    set_thread_priority_and_policy, thread_native_id, RealtimeThreadSchedulePolicy,
-                    ThreadSchedulePolicy,
-                };
-                let tid = thread_native_id();
-                match set_thread_priority_and_policy(
-                    tid,
-                    tp,
-                    ThreadSchedulePolicy::Realtime(RealtimeThreadSchedulePolicy::Fifo),
-                ) {
-                    Ok(()) => {
-                        info!("Enabled RT SCHED_FIFO for audio callback thread");
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            error = %e,
-                            "Failed to set RT SCHED_FIFO for audio callback thread"
-                        );
-                    }
-                }
-            }
-            priority_set = true;
-        }
+        configure_audio_thread_priority(callback_priority, rt_audio, &mut priority_set);
         // Process any pending new sources (non-blocking)
         while let Ok(new_source) = source_rx.try_recv() {
             mixer.add_source(new_source);
@@ -206,60 +371,10 @@ fn create_direct_f32_callback(
 
         // Mix directly into the output buffer (cleanup happens inline)
         let num_frames = data.len() / num_channels as usize;
-        if profile_audio {
-            let now = Instant::now();
-            if let Some(last) = prof_last_cb {
-                let gap_us = now.duration_since(last).as_micros() as u64;
-                prof_sum_gap_us += gap_us as u128;
-                prof_gap_count += 1;
-                if gap_us > prof_max_gap_us {
-                    prof_max_gap_us = gap_us;
-                }
-            }
-            prof_last_cb = Some(now);
-        }
-        let start = if profile_audio {
-            Some(Instant::now())
-        } else {
-            None
-        };
+        let start = profiler.on_cb_start();
         mixer.process_into_output(data, num_frames);
-        if profile_audio {
-            let start = start.unwrap();
-            let mix_us = start.elapsed().as_micros() as u64;
-            prof_count += 1;
-            prof_sum_mix_us += mix_us as u128;
-            if mix_us > prof_max_mix_us {
-                prof_max_mix_us = mix_us;
-            }
-            if prof_last_log.elapsed().as_secs_f32() >= 1.0 {
-                let avg = if prof_count > 0 {
-                    (prof_sum_mix_us / prof_count as u128) as u64
-                } else {
-                    0
-                };
-                let cb_avg_gap_us = if prof_gap_count > 0 {
-                    (prof_sum_gap_us / prof_gap_count as u128) as u64
-                } else {
-                    0
-                };
-                info!(
-                    mix_avg_us = avg,
-                    mix_max_us = prof_max_mix_us,
-                    cb_avg_gap_us,
-                    cb_max_gap_us = prof_max_gap_us,
-                    callbacks = prof_count,
-                    "audio profile: mix (float)"
-                );
-                prof_last_log = Instant::now();
-                prof_count = 0;
-                prof_sum_mix_us = 0;
-                prof_max_mix_us = 0;
-                prof_sum_gap_us = 0;
-                prof_gap_count = 0;
-                prof_max_gap_us = 0;
-            }
-        }
+        profiler.on_mix_done(start);
+        profiler.maybe_log_float();
     }
 }
 
@@ -277,69 +392,13 @@ where
 {
     let mut temp_buffer = vec![0.0f32; max_samples];
     let callback_priority = callback_thread_priority();
-    let rt_audio = std::env::var("MTRACK_RT_AUDIO")
-        .ok()
-        .map(|v| {
-            v == "1"
-                || v.eq_ignore_ascii_case("true")
-                || v.eq_ignore_ascii_case("yes")
-                || v.eq_ignore_ascii_case("on")
-        })
-        .unwrap_or(false);
-
-    let profile_audio = std::env::var("MTRACK_PROFILE_AUDIO")
-        .ok()
-        .map(|v| {
-            v == "1"
-                || v.eq_ignore_ascii_case("true")
-                || v.eq_ignore_ascii_case("yes")
-                || v.eq_ignore_ascii_case("on")
-        })
-        .unwrap_or(false);
-
-    // Simple in-callback stats: average/max mix/convert times and avg/max callback
-    // interval (jitter), logged about once per second.
-    let mut prof_last_log = Instant::now();
-    let mut prof_count: u64 = 0;
-    let mut prof_sum_mix_us: u128 = 0;
-    let mut prof_max_mix_us: u64 = 0;
-    let mut prof_sum_convert_us: u128 = 0;
-    let mut prof_max_convert_us: u64 = 0;
-    let mut prof_last_cb: Option<Instant> = None;
-    let mut prof_sum_gap_us: u128 = 0;
-    let mut prof_gap_count: u64 = 0;
-    let mut prof_max_gap_us: u64 = 0;
+    let rt_audio = rt_audio_enabled();
+    let profile_audio = env_flag("MTRACK_PROFILE_AUDIO");
+    let mut profiler = CallbackProfiler::new(profile_audio);
     let mut priority_set = false;
 
     move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
-        if !priority_set {
-            let tp = ThreadPriority::Crossplatform(callback_priority);
-            let _ = set_current_thread_priority(tp);
-            #[cfg(unix)]
-            if rt_audio {
-                use thread_priority::unix::{
-                    set_thread_priority_and_policy, thread_native_id, RealtimeThreadSchedulePolicy,
-                    ThreadSchedulePolicy,
-                };
-                let tid = thread_native_id();
-                match set_thread_priority_and_policy(
-                    tid,
-                    tp,
-                    ThreadSchedulePolicy::Realtime(RealtimeThreadSchedulePolicy::Fifo),
-                ) {
-                    Ok(()) => {
-                        info!("Enabled RT SCHED_FIFO for audio callback thread");
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            error = %e,
-                            "Failed to set RT SCHED_FIFO for audio callback thread"
-                        );
-                    }
-                }
-            }
-            priority_set = true;
-        }
+        configure_audio_thread_priority(callback_priority, rt_audio, &mut priority_set);
         // Process any pending new sources (non-blocking)
         while let Ok(new_source) = source_rx.try_recv() {
             mixer.add_source(new_source);
@@ -350,29 +409,14 @@ where
         let n = std::cmp::min(data.len(), temp_buffer.len());
         let temp_slice = &mut temp_buffer[..n];
         let num_frames = n / num_channels as usize;
-        if profile_audio {
-            let now = Instant::now();
-            if let Some(last) = prof_last_cb {
-                let gap_us = now.duration_since(last).as_micros() as u64;
-                prof_sum_gap_us += gap_us as u128;
-                prof_gap_count += 1;
-                if gap_us > prof_max_gap_us {
-                    prof_max_gap_us = gap_us;
-                }
-            }
-            prof_last_cb = Some(now);
-        }
+        profiler.on_cb_start();
         let start_mix = if profile_audio {
             Some(Instant::now())
         } else {
             None
         };
         mixer.process_into_output(temp_slice, num_frames);
-        let mix_us = if profile_audio {
-            start_mix.unwrap().elapsed().as_micros() as u64
-        } else {
-            0
-        };
+        profiler.on_mix_done(start_mix);
         let start_convert = if profile_audio {
             Some(Instant::now())
         } else {
@@ -385,58 +429,8 @@ where
         if n < data.len() {
             data[n..].fill(zero);
         }
-        let convert_us = if profile_audio {
-            start_convert.unwrap().elapsed().as_micros() as u64
-        } else {
-            0
-        };
-        if profile_audio {
-            prof_count += 1;
-            prof_sum_mix_us += mix_us as u128;
-            prof_sum_convert_us += convert_us as u128;
-            if mix_us > prof_max_mix_us {
-                prof_max_mix_us = mix_us;
-            }
-            if convert_us > prof_max_convert_us {
-                prof_max_convert_us = convert_us;
-            }
-            if prof_last_log.elapsed().as_secs_f32() >= 1.0 {
-                let avg_mix = if prof_count > 0 {
-                    (prof_sum_mix_us / prof_count as u128) as u64
-                } else {
-                    0
-                };
-                let avg_convert = if prof_count > 0 {
-                    (prof_sum_convert_us / prof_count as u128) as u64
-                } else {
-                    0
-                };
-                let cb_avg_gap_us = if prof_gap_count > 0 {
-                    (prof_sum_gap_us / prof_gap_count as u128) as u64
-                } else {
-                    0
-                };
-                info!(
-                    mix_avg_us = avg_mix,
-                    mix_max_us = prof_max_mix_us,
-                    convert_avg_us = avg_convert,
-                    convert_max_us = prof_max_convert_us,
-                    cb_avg_gap_us,
-                    cb_max_gap_us = prof_max_gap_us,
-                    callbacks = prof_count,
-                    "audio profile: mix/convert (int)"
-                );
-                prof_last_log = Instant::now();
-                prof_count = 0;
-                prof_sum_mix_us = 0;
-                prof_max_mix_us = 0;
-                prof_sum_convert_us = 0;
-                prof_max_convert_us = 0;
-                prof_sum_gap_us = 0;
-                prof_gap_count = 0;
-                prof_max_gap_us = 0;
-            }
-        }
+        profiler.on_convert_done(start_convert);
+        profiler.maybe_log_int();
     }
 }
 
