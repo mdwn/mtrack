@@ -12,6 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 use midly::live::LiveEvent;
+use parking_lot::RwLock;
 use std::{
     collections::HashMap,
     error::Error,
@@ -19,7 +20,7 @@ use std::{
     path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Barrier, RwLock,
+        Arc, Barrier,
     },
     thread,
     time::{Duration, SystemTime},
@@ -42,6 +43,18 @@ use crate::{
 struct PlayHandles {
     join: JoinHandle<()>,
     cancel: CancelHandle,
+}
+
+/// Groups the parameters needed for `play_files` to avoid excessive argument counts.
+struct PlaybackContext {
+    device: Arc<dyn audio::Device>,
+    mappings: Arc<HashMap<String, Vec<u16>>>,
+    midi_device: Option<Arc<dyn midi::Device>>,
+    dmx_engine: Option<Arc<dmx::engine::Engine>>,
+    song: Arc<Song>,
+    cancel_handle: CancelHandle,
+    play_tx: oneshot::Sender<Result<(), String>>,
+    start_time: Duration,
 }
 
 /// Plays back individual wav files as multichannel audio for the configured audio interface.
@@ -213,7 +226,7 @@ impl Player {
     /// Uses std::sync::RwLock for minimal latency (no async overhead).
     pub fn process_sample_trigger(&self, raw_event: &[u8]) {
         if let Some(ref sample_engine) = self.sample_engine {
-            let engine = sample_engine.read().unwrap();
+            let engine = sample_engine.read();
             engine.process_midi_event(raw_event);
         }
     }
@@ -227,7 +240,7 @@ impl Player {
             let samples_config = song.samples_config();
             if !samples_config.samples().is_empty() || !samples_config.sample_triggers().is_empty()
             {
-                let mut engine = sample_engine.write().unwrap();
+                let mut engine = sample_engine.write();
                 if let Err(e) = engine.load_song_config(samples_config, song.base_path()) {
                     warn!(
                         song = song.name(),
@@ -249,7 +262,7 @@ impl Player {
     /// Stops all triggered sample playback.
     pub fn stop_samples(&self) {
         if let Some(ref sample_engine) = self.sample_engine {
-            let engine = sample_engine.read().unwrap();
+            let engine = sample_engine.read();
             engine.stop_all();
         }
     }
@@ -374,23 +387,18 @@ impl Player {
         let (play_tx, play_rx) = oneshot::channel::<Result<(), String>>();
 
         let join_handle = {
-            let song = song.clone();
-            let device = self.device.clone();
-            let midi_device = self.midi_device.clone();
-            let dmx_engine = self.dmx_engine.clone();
-            let cancel_handle = cancel_handle.clone();
-            let mappings = self.mappings.clone();
+            let ctx = PlaybackContext {
+                device: self.device.clone(),
+                mappings: self.mappings.clone(),
+                midi_device: self.midi_device.clone(),
+                dmx_engine: self.dmx_engine.clone(),
+                song: song.clone(),
+                cancel_handle: cancel_handle.clone(),
+                play_tx,
+                start_time,
+            };
             tokio::task::spawn_blocking(move || {
-                Player::play_files(
-                    device,
-                    mappings,
-                    midi_device,
-                    dmx_engine,
-                    song,
-                    cancel_handle,
-                    play_tx,
-                    start_time,
-                );
+                Player::play_files(ctx);
             })
         };
         *join = Some(PlayHandles {
@@ -459,19 +467,17 @@ impl Player {
         Ok(Some(song))
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn play_files(
-        device: Arc<dyn audio::Device>,
-        mappings: Arc<HashMap<String, Vec<u16>>>,
-        midi_device: Option<Arc<dyn midi::Device>>,
-        dmx_engine: Option<Arc<dmx::engine::Engine>>,
-        song: Arc<Song>,
-        cancel_handle: CancelHandle,
-        play_tx: oneshot::Sender<Result<(), String>>,
-        start_time: Duration,
-    ) {
-        let song = song.clone();
-        let cancel_handle = cancel_handle.clone();
+    fn play_files(ctx: PlaybackContext) {
+        let PlaybackContext {
+            device,
+            mappings,
+            midi_device,
+            dmx_engine,
+            song,
+            cancel_handle,
+            play_tx,
+            start_time,
+        } = ctx;
 
         // Set up the play barrier, which will synchronize the three calls to play.
         let barrier = Arc::new(Barrier::new({
@@ -488,8 +494,8 @@ impl Player {
             num_barriers
         }));
 
-        let audio_outcome: Arc<std::sync::Mutex<Option<Result<(), String>>>> =
-            Arc::new(std::sync::Mutex::new(None));
+        let audio_outcome: Arc<parking_lot::Mutex<Option<Result<(), String>>>> =
+            Arc::new(parking_lot::Mutex::new(None));
 
         let audio_join_handle = {
             let device = device.clone();
@@ -509,7 +515,7 @@ impl Player {
                     );
                 }
                 let outcome = result.map_err(|e| e.to_string());
-                let mut guard = audio_outcome.lock().unwrap_or_else(|e| e.into_inner());
+                let mut guard = audio_outcome.lock();
                 *guard = Some(outcome);
             })
         };
@@ -572,17 +578,13 @@ impl Player {
             }
         }
 
-        let outcome = audio_outcome
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take()
-            .unwrap_or_else(|| {
-                warn!(
-                    "Audio thread did not set outcome (e.g. panicked before setting); \
-                     treating as success so playlist is not stuck"
-                );
-                Ok(())
-            });
+        let outcome = audio_outcome.lock().take().unwrap_or_else(|| {
+            warn!(
+                "Audio thread did not set outcome (e.g. panicked before setting); \
+                 treating as success so playlist is not stuck"
+            );
+            Ok(())
+        });
         if play_tx.send(outcome).is_err() {
             error!("Error while sending to finish channel (receiver dropped).")
         }
@@ -599,34 +601,33 @@ impl Player {
         }
     }
 
-    /// Next goes to the next entry in the playlist.
-    pub async fn next(&self) -> Arc<Song> {
+    /// Navigates the playlist using the given function, returning the current song
+    /// if the player is active.
+    async fn navigate<F>(&self, action: &str, nav_fn: F) -> Arc<Song>
+    where
+        F: FnOnce(Option<Arc<dyn midi::Device>>, Arc<Playlist>) -> Arc<Song>,
+    {
         if let Some(current) = self.if_playing_then_current_song().await {
             info!(
                 current_song = current.name(),
-                "Can't go to next, player is active."
+                "Can't go to {}, player is active.", action
             );
             return current;
         }
         let playlist = self.get_playlist();
-        let song = Player::next_and_emit(self.midi_device.clone(), playlist);
+        let song = nav_fn(self.midi_device.clone(), playlist);
         self.load_song_samples(&song);
         song
     }
 
+    /// Next goes to the next entry in the playlist.
+    pub async fn next(&self) -> Arc<Song> {
+        self.navigate("next", Player::next_and_emit).await
+    }
+
     /// Prev goes to the previous entry in the playlist.
     pub async fn prev(&self) -> Arc<Song> {
-        if let Some(current) = self.if_playing_then_current_song().await {
-            info!(
-                current_song = current.name(),
-                "Can't go to previous, player is active."
-            );
-            return current;
-        }
-        let playlist = self.get_playlist();
-        let song = Player::prev_and_emit(self.midi_device.clone(), playlist);
-        self.load_song_samples(&song);
-        song
+        self.navigate("previous", Player::prev_and_emit).await
     }
 
     /// Stop will stop a song if a song is playing.
@@ -681,34 +682,29 @@ impl Player {
         Some(song)
     }
 
-    /// Switch to the all songs playlist.
-    pub async fn switch_to_all_songs(&self) {
+    /// Switches the active playlist if the player is idle.
+    async fn switch_playlist(&self, use_all_songs: bool, label: &str) {
         if let Some(current) = self.if_playing_then_current_song().await {
             info!(
                 current_song = current.name(),
-                "Can't switch to all songs, player is active."
+                "Can't switch to {}, player is active.", label
             );
             return;
         }
 
-        self.use_all_songs.store(true, Ordering::Relaxed);
+        self.use_all_songs.store(use_all_songs, Ordering::Relaxed);
         let song = self.get_playlist().current();
         Player::emit_midi_event(self.midi_device.clone(), song.clone());
     }
 
+    /// Switch to the all songs playlist.
+    pub async fn switch_to_all_songs(&self) {
+        self.switch_playlist(true, "all songs").await;
+    }
+
     /// Switch to the regular playlist.
     pub async fn switch_to_playlist(&self) {
-        if let Some(current) = self.if_playing_then_current_song().await {
-            info!(
-                current_song = current.name(),
-                "Can't switch to playlist, player is active."
-            );
-            return;
-        }
-
-        self.use_all_songs.store(false, Ordering::Relaxed);
-        let song = self.get_playlist().current();
-        Player::emit_midi_event(self.midi_device.clone(), song.clone());
+        self.switch_playlist(false, "playlist").await;
     }
 
     /// Gets the current playlist used by the player.

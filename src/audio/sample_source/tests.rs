@@ -12,7 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 #[cfg(test)]
-mod tests {
+mod sample_source_tests {
     use std::sync::Arc;
 
     use crate::audio::sample_source::audio::AudioSampleSource;

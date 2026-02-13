@@ -595,7 +595,7 @@ fn test_inline_loop_measure_time_positions() {
     let show = &shows["Measure Loop"];
     let times: Vec<f64> = show.cues.iter().map(|c| c.time.as_secs_f64()).collect();
 
-    let expected = vec![0.0, 1.0, 2.0, 3.0];
+    let expected = [0.0, 1.0, 2.0, 3.0];
     for t in expected.iter() {
         assert!(
             times.iter().any(|&actual| (actual - t).abs() < 0.01),

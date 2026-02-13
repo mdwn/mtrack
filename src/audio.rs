@@ -27,6 +27,7 @@ pub mod format;
 pub mod mixer;
 pub mod mock;
 pub mod sample_source;
+mod thread_priority;
 
 // Re-export the format types for backward compatibility
 pub use context::PlaybackContext;

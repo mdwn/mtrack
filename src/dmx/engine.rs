@@ -12,6 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+use parking_lot::Mutex;
 use std::{
     collections::{HashMap, HashSet},
     error::Error,
@@ -19,7 +20,7 @@ use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver},
-        Arc, Barrier, Mutex,
+        Arc, Barrier,
     },
     thread::{self, JoinHandle},
     time::Duration,
@@ -195,18 +196,13 @@ impl Engine {
                     // Check if timeline has finished (all cues processed)
                     // and notify the waiting thread if so
                     if !engine.timeline_finished.load(Ordering::Relaxed) {
-                        let timeline = engine
-                            .current_song_timeline
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner());
+                        let timeline = engine.current_song_timeline.lock();
                         if let Some(ref tl) = *timeline {
                             if tl.is_finished() {
                                 engine.timeline_finished.store(true, Ordering::Relaxed);
                                 // Notify the cancel handle so wait() returns
-                                if let Some(ref cancel_handle) = *engine
-                                    .timeline_cancel_handle
-                                    .lock()
-                                    .unwrap_or_else(|e| e.into_inner())
+                                if let Some(ref cancel_handle) =
+                                    *engine.timeline_cancel_handle.lock()
                                 {
                                     cancel_handle.notify();
                                 }
@@ -379,17 +375,11 @@ impl Engine {
                 let timeline = LightingTimeline::new(all_shows);
                 // Set the tempo map on the effect engine if the timeline has one
                 if let Some(tempo_map) = timeline.tempo_map() {
-                    let mut effect_engine = dmx_engine
-                        .effect_engine
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner());
+                    let mut effect_engine = dmx_engine.effect_engine.lock();
                     effect_engine.set_tempo_map(Some(tempo_map.clone()));
                 }
                 {
-                    let mut current_timeline = dmx_engine
-                        .current_song_timeline
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner());
+                    let mut current_timeline = dmx_engine.current_song_timeline.lock();
                     *current_timeline = Some(timeline);
                 }
             }
@@ -521,10 +511,7 @@ impl Engine {
 
             // Store the cancel handle so the effects loop can notify when timeline finishes
             {
-                let mut handle = dmx_engine
-                    .timeline_cancel_handle
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
+                let mut handle = dmx_engine.timeline_cancel_handle.lock();
                 *handle = Some(cancel_handle.clone());
             }
 
@@ -662,7 +649,7 @@ impl Engine {
         // Update the effects engine with a 44Hz frame time (matching Universe TARGET_HZ)
         let dt = Duration::from_secs_f64(1.0 / 44.0);
         let song_time = self.get_song_time();
-        let mut effect_engine = self.effect_engine.lock().unwrap_or_else(|e| e.into_inner());
+        let mut effect_engine = self.effect_engine.lock();
         let commands = effect_engine.update(dt, Some(song_time))?;
 
         // Group commands by universe
@@ -693,7 +680,7 @@ impl Engine {
         &self,
         effect: crate::lighting::EffectInstance,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut effect_engine = self.effect_engine.lock().unwrap_or_else(|e| e.into_inner());
+        let mut effect_engine = self.effect_engine.lock();
         effect_engine.start_effect(effect)?;
         Ok(())
     }
@@ -701,9 +688,9 @@ impl Engine {
     /// Registers all fixtures from the current venue (thread-safe version)
     pub fn register_venue_fixtures_safe(&self) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(lighting_system) = &self.lighting_system {
-            let lighting_system = lighting_system.lock().unwrap_or_else(|e| e.into_inner());
+            let lighting_system = lighting_system.lock();
             let fixture_infos = lighting_system.get_current_venue_fixtures()?;
-            let mut effect_engine = self.effect_engine.lock().unwrap_or_else(|e| e.into_inner());
+            let mut effect_engine = self.effect_engine.lock();
 
             for fixture_info in fixture_infos {
                 effect_engine.register_fixture(fixture_info);
@@ -717,13 +704,8 @@ impl Engine {
         &self,
         song_time: std::time::Duration,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        use crate::lighting::parser::LayerCommandType;
-
         let timeline_update = {
-            let mut current_timeline = self
-                .current_song_timeline
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
+            let mut current_timeline = self.current_song_timeline.lock();
             if let Some(timeline) = current_timeline.as_mut() {
                 timeline.update(song_time)
             } else {
@@ -731,152 +713,19 @@ impl Engine {
             }
         };
 
-        // Process layer commands first (they affect subsequent effects)
-        if !timeline_update.layer_commands.is_empty() {
-            let mut effects_engine = self.effect_engine.lock().unwrap_or_else(|e| e.into_inner());
-            for cmd in &timeline_update.layer_commands {
-                match cmd.command_type {
-                    LayerCommandType::Clear => {
-                        if let Some(layer) = cmd.layer {
-                            effects_engine.clear_layer(layer);
-                        } else {
-                            effects_engine.clear_all_layers();
-                        }
-                    }
-                    LayerCommandType::Release => {
-                        if let Some(layer) = cmd.layer {
-                            if let Some(fade_time) = cmd.fade_time {
-                                effects_engine.release_layer_with_time(layer, Some(fade_time));
-                            } else {
-                                effects_engine.release_layer(layer);
-                            }
-                        }
-                    }
-                    LayerCommandType::Freeze => {
-                        if let Some(layer) = cmd.layer {
-                            effects_engine.freeze_layer(layer);
-                        }
-                    }
-                    LayerCommandType::Unfreeze => {
-                        if let Some(layer) = cmd.layer {
-                            effects_engine.unfreeze_layer(layer);
-                        }
-                    }
-                    LayerCommandType::Master => {
-                        if let Some(layer) = cmd.layer {
-                            if let Some(intensity) = cmd.intensity {
-                                effects_engine.set_layer_intensity_master(layer, intensity);
-                            }
-                            if let Some(speed) = cmd.speed {
-                                effects_engine.set_layer_speed_master(layer, speed);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Process stop sequence commands
-        if !timeline_update.stop_sequences.is_empty() {
-            let mut effects_engine = self.effect_engine.lock().unwrap_or_else(|e| e.into_inner());
-            for sequence_name in &timeline_update.stop_sequences {
-                effects_engine.stop_sequence(sequence_name);
-            }
-        }
-
-        // Start the effects in the effects engine, resolving groups to fixtures
-        // First handle effects with pre-calculated elapsed time (from seeking)
-        // IMPORTANT: Sort by cue_time to ensure effects are started in chronological order
-        // This ensures that earlier effects are started first, so later effects can properly
-        // conflict with and stop them (e.g., a Static effect at @1/4 should stop a ColorCycle at @1/1)
-        let mut effects_sorted: Vec<_> = timeline_update.effects_with_elapsed.values().collect();
-        effects_sorted.sort_by(|a, b| {
-            let cue_time_a = a.0.cue_time.unwrap_or(Duration::ZERO);
-            let cue_time_b = b.0.cue_time.unwrap_or(Duration::ZERO);
-            cue_time_a.cmp(&cue_time_b)
-        });
-
-        for (effect, elapsed_time) in effects_sorted {
-            // Resolve groups to fixtures if lighting system is available
-            if let Some(lighting_system) = &self.lighting_system {
-                let mut lighting_system = lighting_system.lock().unwrap_or_else(|e| e.into_inner());
-                let mut resolved_fixtures = Vec::new();
-
-                // Resolve each group to fixture names
-                for group_name in &effect.target_fixtures {
-                    let fixtures = lighting_system.resolve_logical_group_graceful(group_name);
-                    resolved_fixtures.extend(fixtures);
-                }
-
-                // Update the effect with resolved fixture names, preserving all properties
-                let mut resolved_effect = effect.clone();
-                resolved_effect.target_fixtures = resolved_fixtures;
-
-                let mut effect_engine =
-                    self.effect_engine.lock().unwrap_or_else(|e| e.into_inner());
-                if let Err(e) =
-                    effect_engine.start_effect_with_elapsed(resolved_effect, *elapsed_time)
-                {
-                    error!("Failed to start lighting effect with elapsed time: {}", e);
-                }
-            } else {
-                // No lighting system, just start the effect as-is
-                let mut effect_engine =
-                    self.effect_engine.lock().unwrap_or_else(|e| e.into_inner());
-                if let Err(e) =
-                    effect_engine.start_effect_with_elapsed(effect.clone(), *elapsed_time)
-                {
-                    error!("Failed to start lighting effect with elapsed time: {}", e);
-                }
-            }
-        }
-
-        // Then handle regular effects (from normal timeline updates)
-        if !timeline_update.effects.is_empty() {
-            for effect in timeline_update.effects {
-                // Resolve groups to fixtures if lighting system is available
-                if let Some(lighting_system) = &self.lighting_system {
-                    let mut lighting_system =
-                        lighting_system.lock().unwrap_or_else(|e| e.into_inner());
-                    let mut resolved_fixtures = Vec::new();
-
-                    // Resolve each group to fixture names
-                    for group_name in &effect.target_fixtures {
-                        let fixtures = lighting_system.resolve_logical_group_graceful(group_name);
-                        resolved_fixtures.extend(fixtures);
-                    }
-
-                    // Update the effect with resolved fixture names, preserving all properties
-                    let mut resolved_effect = effect.clone();
-                    resolved_effect.target_fixtures = resolved_fixtures;
-
-                    if let Err(e) = self.start_effect(resolved_effect) {
-                        error!("Failed to start lighting effect: {}", e);
-                    }
-                } else {
-                    // No lighting system, just start the effect as-is
-                    if let Err(e) = self.start_effect(effect) {
-                        error!("Failed to start lighting effect: {}", e);
-                    }
-                }
-            }
-        }
-        Ok(())
+        self.apply_timeline_update(timeline_update)
     }
 
     /// Starts the lighting timeline at a specific time
     pub fn start_lighting_timeline_at(&self, start_time: Duration) {
         // Clear effects from previous song before starting new timeline
         {
-            let mut effect_engine = self.effect_engine.lock().unwrap_or_else(|e| e.into_inner());
+            let mut effect_engine = self.effect_engine.lock();
             effect_engine.stop_all_effects();
         }
 
         let timeline_update = {
-            let mut current_timeline = self
-                .current_song_timeline
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
+            let mut current_timeline = self.current_song_timeline.lock();
             if let Some(timeline) = current_timeline.as_mut() {
                 if start_time == Duration::ZERO {
                     timeline.start();
@@ -908,7 +757,7 @@ impl Engine {
 
         // Process layer commands first (they affect subsequent effects)
         if !timeline_update.layer_commands.is_empty() {
-            let mut effects_engine = self.effect_engine.lock().unwrap_or_else(|e| e.into_inner());
+            let mut effects_engine = self.effect_engine.lock();
             for cmd in &timeline_update.layer_commands {
                 match cmd.command_type {
                     LayerCommandType::Clear => {
@@ -953,98 +802,59 @@ impl Engine {
 
         // Process stop sequence commands
         if !timeline_update.stop_sequences.is_empty() {
-            let mut effects_engine = self.effect_engine.lock().unwrap_or_else(|e| e.into_inner());
+            let mut effects_engine = self.effect_engine.lock();
             for sequence_name in &timeline_update.stop_sequences {
                 effects_engine.stop_sequence(sequence_name);
             }
         }
 
-        // Start the effects in the effects engine, resolving groups to fixtures
-        // First handle effects with pre-calculated elapsed time (from seeking)
-        // IMPORTANT: Sort by cue_time to ensure effects are started in chronological order
-        // This ensures that earlier effects are started first, so later effects can properly
-        // conflict with and stop them (e.g., a Static effect at @1/4 should stop a ColorCycle at @1/1)
+        // Start effects with pre-calculated elapsed time (from seeking)
+        // Sort by cue_time to ensure chronological order — later effects properly
+        // conflict with and stop earlier ones
         let mut effects_sorted: Vec<_> = timeline_update.effects_with_elapsed.values().collect();
-        effects_sorted.sort_by(|a, b| {
-            let cue_time_a = a.0.cue_time.unwrap_or(Duration::ZERO);
-            let cue_time_b = b.0.cue_time.unwrap_or(Duration::ZERO);
-            cue_time_a.cmp(&cue_time_b)
-        });
+        effects_sorted.sort_by_key(|(effect, _)| effect.cue_time.unwrap_or(Duration::ZERO));
 
         for (effect, elapsed_time) in effects_sorted {
-            // Resolve groups to fixtures if lighting system is available
-            if let Some(lighting_system) = &self.lighting_system {
-                let mut lighting_system = lighting_system.lock().unwrap_or_else(|e| e.into_inner());
-                let mut resolved_fixtures = Vec::new();
-
-                // Resolve each group to fixture names
-                for group_name in &effect.target_fixtures {
-                    let fixtures = lighting_system.resolve_logical_group_graceful(group_name);
-                    resolved_fixtures.extend(fixtures);
-                }
-
-                // Update the effect with resolved fixture names, preserving all properties
-                let mut resolved_effect = effect.clone();
-                resolved_effect.target_fixtures = resolved_fixtures;
-
-                let mut effect_engine =
-                    self.effect_engine.lock().unwrap_or_else(|e| e.into_inner());
-                if let Err(e) =
-                    effect_engine.start_effect_with_elapsed(resolved_effect, *elapsed_time)
-                {
-                    error!("Failed to start lighting effect with elapsed time: {}", e);
-                }
-            } else {
-                // No lighting system, just start the effect as-is
-                let mut effect_engine =
-                    self.effect_engine.lock().unwrap_or_else(|e| e.into_inner());
-                if let Err(e) =
-                    effect_engine.start_effect_with_elapsed(effect.clone(), *elapsed_time)
-                {
-                    error!("Failed to start lighting effect with elapsed time: {}", e);
-                }
+            let resolved = self.resolve_effect_groups(effect.clone());
+            let mut effect_engine = self.effect_engine.lock();
+            if let Err(e) = effect_engine.start_effect_with_elapsed(resolved, *elapsed_time) {
+                error!("Failed to start lighting effect with elapsed time: {}", e);
             }
         }
 
-        // Then handle regular effects (from normal timeline updates)
-        if !timeline_update.effects.is_empty() {
-            for effect in timeline_update.effects {
-                // Resolve groups to fixtures if lighting system is available
-                if let Some(lighting_system) = &self.lighting_system {
-                    let mut lighting_system =
-                        lighting_system.lock().unwrap_or_else(|e| e.into_inner());
-                    let mut resolved_fixtures = Vec::new();
-
-                    // Resolve each group to fixture names
-                    for group_name in &effect.target_fixtures {
-                        let fixtures = lighting_system.resolve_logical_group_graceful(group_name);
-                        resolved_fixtures.extend(fixtures);
-                    }
-
-                    // Update the effect with resolved fixture names, preserving all properties
-                    let mut resolved_effect = effect.clone();
-                    resolved_effect.target_fixtures = resolved_fixtures;
-
-                    if let Err(e) = self.start_effect(resolved_effect) {
-                        error!("Failed to start lighting effect: {}", e);
-                    }
-                } else {
-                    // No lighting system, just start the effect as-is
-                    if let Err(e) = self.start_effect(effect) {
-                        error!("Failed to start lighting effect: {}", e);
-                    }
-                }
+        // Handle regular effects (from normal timeline updates)
+        for effect in timeline_update.effects {
+            let resolved = self.resolve_effect_groups(effect);
+            if let Err(e) = self.start_effect(resolved) {
+                error!("Failed to start lighting effect: {}", e);
             }
         }
+
         Ok(())
+    }
+
+    /// Resolves group names in an effect's target_fixtures to actual fixture names
+    /// using the lighting system. If no lighting system is available, returns the
+    /// effect unchanged (groups are passed through as-is).
+    fn resolve_effect_groups(
+        &self,
+        mut effect: crate::lighting::EffectInstance,
+    ) -> crate::lighting::EffectInstance {
+        if let Some(lighting_system) = &self.lighting_system {
+            let mut lighting_system = lighting_system.lock();
+            let mut resolved_fixtures = Vec::new();
+            for group_name in &effect.target_fixtures {
+                let fixtures = lighting_system.resolve_logical_group_graceful(group_name);
+                resolved_fixtures.extend(fixtures);
+            }
+            effect.target_fixtures = resolved_fixtures;
+        }
+        effect
     }
 
     /// Stops the lighting timeline
     pub fn stop_lighting_timeline(&self) {
-        let mut current_timeline = self
-            .current_song_timeline
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut current_timeline = self.current_song_timeline.lock();
         if let Some(timeline) = current_timeline.as_mut() {
             timeline.stop();
         }
@@ -1057,34 +867,25 @@ impl Engine {
 
     /// Updates the current song time
     pub fn update_song_time(&self, song_time: Duration) {
-        let mut current_time = self
-            .current_song_time
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut current_time = self.current_song_time.lock();
         *current_time = song_time;
     }
 
     /// Gets the current song time
     pub fn get_song_time(&self) -> Duration {
-        let current_time = self
-            .current_song_time
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let current_time = self.current_song_time.lock();
         *current_time
     }
 
     /// Get a formatted string listing all active effects
     pub fn format_active_effects(&self) -> String {
-        let effect_engine = self.effect_engine.lock().unwrap_or_else(|e| e.into_inner());
+        let effect_engine = self.effect_engine.lock();
         effect_engine.format_active_effects()
     }
 
     /// Gets all cues from the current timeline with their times and indices
     pub fn get_timeline_cues(&self) -> Vec<(Duration, usize)> {
-        let timeline = self
-            .current_song_timeline
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let timeline = self.current_song_timeline.lock();
         if let Some(timeline) = timeline.as_ref() {
             timeline.cues()
         } else {
@@ -1120,7 +921,7 @@ impl Engine {
         loop {
             match receiver.recv() {
                 Ok(message) => {
-                    let mut client = client.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut client = client.lock();
                     if let Err(err) = client.send_dmx(message.universe, &message.buffer) {
                         error!("error sending DMX to OLA: {}", err.to_string())
                     }
@@ -1286,10 +1087,7 @@ mod test {
         };
 
         {
-            let mut effect_engine = engine
-                .effect_engine
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
+            let mut effect_engine = engine.effect_engine.lock();
             effect_engine.register_fixture(fixture_info);
         }
 
@@ -1417,10 +1215,7 @@ mod test {
         };
 
         {
-            let mut effect_engine = engine
-                .effect_engine
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
+            let mut effect_engine = engine.effect_engine.lock();
             effect_engine.register_fixture(fixture_info);
         }
 
@@ -1510,10 +1305,7 @@ mod test {
 
         // Register fixture through the effect engine
         {
-            let mut effect_engine = engine
-                .effect_engine
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
+            let mut effect_engine = engine.effect_engine.lock();
             effect_engine.register_fixture(fixture_info);
         } // Drop the lock here
 
@@ -1689,10 +1481,7 @@ mod test {
         )?;
 
         // Verify timeline was created (may be None if no lighting config)
-        let _timeline = engine
-            .current_song_timeline
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _timeline = engine.current_song_timeline.lock();
         // Timeline may be None if no lighting configuration is provided
         // This is acceptable behavior for the test
 
@@ -1703,8 +1492,8 @@ mod test {
     fn test_dsl_to_dmx_command_flow() -> Result<(), Box<dyn std::error::Error>> {
         use crate::dmx::ola_client::{MockOlaClient, OlaClient};
         use crate::lighting::{effects::EffectType, EffectInstance};
+        use parking_lot::Mutex;
         use std::collections::HashMap;
-        use std::sync::Mutex;
 
         // Create a mock OLA client to capture DMX commands
         let config = create_test_config();
@@ -1737,7 +1526,7 @@ mod test {
         let _ = engine.update_effects();
 
         // Verify that DMX commands were sent (if any)
-        let mock_client = mock_client.lock().unwrap_or_else(|e| e.into_inner());
+        let mock_client = mock_client.lock();
         let _message = mock_client.get_last_message();
 
         // DMX commands may or may not be generated depending on fixture registration
@@ -1821,8 +1610,8 @@ mod test {
     fn test_dmx_channel_numbering() -> Result<(), Box<dyn std::error::Error>> {
         use crate::dmx::ola_client::{MockOlaClient, OlaClient};
         use crate::lighting::effects::{EffectInstance, EffectType, FixtureInfo};
+        use parking_lot::Mutex;
         use std::collections::HashMap;
-        use std::sync::Mutex;
 
         // Create a mock OLA client to capture DMX commands
         let config = create_test_config();
@@ -1849,10 +1638,7 @@ mod test {
 
         // Register the fixture
         {
-            let mut effect_engine = engine
-                .effect_engine
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
+            let mut effect_engine = engine.effect_engine.lock();
             effect_engine.register_fixture(fixture_info);
         }
 

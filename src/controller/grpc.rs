@@ -88,19 +88,26 @@ struct PlayerServer {
     player: Arc<Player>,
 }
 
-#[tonic::async_trait]
-impl PlayerService for PlayerServer {
-    async fn play(&self, _: Request<PlayRequest>) -> Result<Response<PlayResponse>, Status> {
-        match self.player.play().await {
+impl PlayerServer {
+    /// Converts a play/play_from result into a gRPC response.
+    #[allow(clippy::result_large_err)]
+    fn play_response(
+        result: Result<Option<Arc<crate::songs::Song>>, Box<dyn Error>>,
+    ) -> Result<Response<PlayResponse>, Status> {
+        match result {
             Ok(Some(song)) => Ok(Response::new(PlayResponse {
                 song: Some(song.to_proto()?),
             })),
             Ok(None) => Err(Status::failed_precondition("song already playing")),
-            Err(e) => Err(Status::failed_precondition(format!(
-                "lighting show validation failed: {}",
-                e
-            ))),
+            Err(e) => Err(Status::failed_precondition(e.to_string())),
         }
+    }
+}
+
+#[tonic::async_trait]
+impl PlayerService for PlayerServer {
+    async fn play(&self, _: Request<PlayRequest>) -> Result<Response<PlayResponse>, Status> {
+        Self::play_response(self.player.play().await)
     }
 
     async fn play_from(
@@ -115,13 +122,7 @@ impl PlayerService for PlayerServer {
             .map_err(|e| Status::invalid_argument(format!("Invalid duration: {}", e)))?
             .unwrap_or(std::time::Duration::ZERO);
 
-        match self.player.play_from(start_time).await {
-            Ok(Some(song)) => Ok(Response::new(PlayResponse {
-                song: Some(song.to_proto()?),
-            })),
-            Ok(None) => Err(Status::failed_precondition("song already playing")),
-            Err(e) => Err(Status::invalid_argument(format!("Playback failed: {}", e))),
-        }
+        Self::play_response(self.player.play_from(start_time).await)
     }
 
     async fn previous(

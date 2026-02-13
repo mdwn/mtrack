@@ -256,11 +256,10 @@ fn test_static_effect_crossfade_comprehensive() {
 
     let commands = engine.update(Duration::from_millis(500), None).unwrap(); // 9.5s + 0.5s = 10s
     let red_cmd = commands.iter().find(|cmd| cmd.channel == 1);
-    if red_cmd.is_none() {
-        // Effect should have ended at 10s
-    } else {
-        assert_eq!(red_cmd.unwrap().value, 0); // 0% at end
+    if let Some(red_cmd) = red_cmd {
+        assert_eq!(red_cmd.value, 0); // 0% at end
     }
+    // Effect should have ended at 10s if red_cmd is None
 }
 #[test]
 fn test_color_cycle_effect_crossfade() {

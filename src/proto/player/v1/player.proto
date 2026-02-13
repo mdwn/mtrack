@@ -19,6 +19,9 @@ import "google/protobuf/duration.proto";
 
 // Song is a message that contains information about a song.
 message Song {
+    reserved 4;
+    reserved "is_transcoded";
+
     // Name is the name of the song.
     string name = 1;
     
@@ -27,9 +30,6 @@ message Song {
 
     // Tracks are the tracks available for the song.
     repeated string tracks = 3;
-
-    // IsTranscoded indicates if the song requires transcoding for playback.
-    bool is_transcoded = 4;
 }
 
 // PlayRequest is the message for requesting the player to play the current song.

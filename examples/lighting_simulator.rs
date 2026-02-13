@@ -124,7 +124,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let step = Duration::from_millis(args.step_ms);
     let end_time = args
         .end_time
-        .map(|t| Duration::from_secs_f64(t))
+        .map(Duration::from_secs_f64)
         .unwrap_or(Duration::from_secs_f64(1000.0)); // Default to 1000 seconds
 
     let mut current_time = start_time;

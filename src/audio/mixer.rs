@@ -13,12 +13,13 @@
 //
 // Core audio mixing logic that can be used by both CPAL and test implementations
 use crate::audio::sample_source::ChannelMappedSampleSource;
+use parking_lot::{Mutex, RwLock};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::Arc;
 #[cfg(test)]
 use std::time::Instant;
 use tracing::debug;
@@ -138,16 +139,16 @@ impl AudioMixer {
             Self::precompute_channel_mappings(source.source.as_ref(), &source.track_mappings);
         source.channel_mappings = channel_mappings;
 
-        let mut sources = self.active_sources.write().unwrap();
+        let mut sources = self.active_sources.write();
         sources.push(Arc::new(Mutex::new(source)));
     }
 
     /// Removes sources by ID
     pub fn remove_sources(&self, source_ids: Vec<u64>) {
         let source_ids_set: HashSet<u64> = source_ids.into_iter().collect();
-        let mut sources = self.active_sources.write().unwrap();
+        let mut sources = self.active_sources.write();
         sources.retain(|source| {
-            let source_guard = source.lock().unwrap();
+            let source_guard = source.lock();
             !source_ids_set.contains(&source_guard.id)
         });
     }
@@ -163,7 +164,7 @@ impl AudioMixer {
 
         // Get a snapshot of source references to process (minimize lock duration)
         let sources_to_process = {
-            let sources = self.active_sources.read().unwrap();
+            let sources = self.active_sources.read();
             sources.clone()
         };
 
@@ -173,7 +174,7 @@ impl AudioMixer {
 
         // Process each source without holding the lock
         for active_source_arc in sources_to_process {
-            let mut active_source = active_source_arc.lock().unwrap();
+            let mut active_source = active_source_arc.lock();
 
             if active_source.is_finished.load(Ordering::Relaxed)
                 || active_source.cancel_handle.is_cancelled()
@@ -226,9 +227,9 @@ impl AudioMixer {
 
         // Remove finished sources in a separate, quick write lock
         if !finished_source_ids.is_empty() {
-            let mut sources = self.active_sources.write().unwrap();
+            let mut sources = self.active_sources.write();
             sources.retain(|source| {
-                let source_guard = source.lock().unwrap();
+                let source_guard = source.lock();
                 !finished_source_ids.contains(&source_guard.id)
             });
         }
@@ -289,7 +290,7 @@ impl AudioMixer {
 
         // Get a snapshot of source references to process (minimize lock duration)
         let sources_to_process = {
-            let sources = self.active_sources.read().unwrap();
+            let sources = self.active_sources.read();
             sources.clone()
         };
 
@@ -297,7 +298,7 @@ impl AudioMixer {
 
         // Process each active source across all frames
         for active_source_arc in sources_to_process {
-            let mut active_source = active_source_arc.lock().unwrap();
+            let mut active_source = active_source_arc.lock();
 
             if active_source.is_finished.load(Ordering::Relaxed)
                 || active_source.cancel_handle.is_cancelled()
@@ -417,12 +418,12 @@ impl AudioMixer {
         if !finished_source_ids.is_empty() {
             debug!(
                 source_ids = ?finished_source_ids,
-                remaining_before = self.active_sources.read().unwrap().len(),
+                remaining_before = self.active_sources.read().len(),
                 "mixer: removing finished sources"
             );
-            let mut sources = self.active_sources.write().unwrap();
+            let mut sources = self.active_sources.write();
             sources.retain(|source| {
-                let source_guard = source.lock().unwrap();
+                let source_guard = source.lock();
                 !finished_source_ids.contains(&source_guard.id)
             });
         }

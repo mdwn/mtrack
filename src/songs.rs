@@ -32,6 +32,7 @@ use tracing::{debug, info, warn};
 use crate::audio::TargetFormat;
 use crate::config;
 use crate::proto::player;
+use crate::util::filename_display;
 
 const AUDIO_EXTENSIONS: &[&str] = &["wav", "mid"];
 
@@ -195,11 +196,7 @@ impl Song {
     /// Create a song from a directory without a configuration file
     fn initialize(song_directory: &PathBuf) -> Result<Self, Box<dyn Error>> {
         let song_files = fs::read_dir(song_directory)?;
-        let name = song_directory
-            .file_name()
-            .and_then(|file_name| file_name.to_str())
-            .unwrap_or("unreadable directory name")
-            .to_string();
+        let name = filename_display(song_directory).to_string();
 
         let mut light_shows = vec![];
         let mut midi_playback = None;
@@ -266,14 +263,10 @@ impl Song {
     pub fn get_config(&self) -> config::Song {
         let name = self.name();
         let midi_event = None;
-        let midi_file = self.midi_playback.as_ref().map(|midi_playback| {
-            midi_playback
-                .file
-                .file_name()
-                .and_then(|file_name| file_name.to_str())
-                .unwrap_or("unreadable file name")
-                .to_string()
-        });
+        let midi_file = self
+            .midi_playback
+            .as_ref()
+            .map(|midi_playback| filename_display(&midi_playback.file).to_string());
         let midi_playback = None;
         let light_shows = match &self.light_shows().len() {
             0 => None,
@@ -341,23 +334,23 @@ impl Song {
     }
 
     /// Gets the MIDI playback info.
-    pub fn midi_playback(&self) -> Option<MidiPlayback> {
-        self.midi_playback.clone()
+    pub fn midi_playback(&self) -> Option<&MidiPlayback> {
+        self.midi_playback.as_ref()
     }
 
     /// Gets the song light shows.
-    pub fn light_shows(&self) -> Vec<LightShow> {
-        self.light_shows.clone()
+    pub fn light_shows(&self) -> &[LightShow] {
+        &self.light_shows
     }
 
     /// Gets the DSL lighting shows.
-    pub fn dsl_lighting_shows(&self) -> &Vec<DslLightingShow> {
+    pub fn dsl_lighting_shows(&self) -> &[DslLightingShow] {
         &self.dsl_lighting_shows
     }
 
     /// Gets the song tracks.
-    pub fn tracks(&self) -> Vec<Track> {
-        self.tracks.clone()
+    pub fn tracks(&self) -> &[Track] {
+        &self.tracks
     }
 
     /// Checks if this song requires transcoding for the given target format
@@ -496,7 +489,6 @@ impl Song {
             name: self.name.to_string(),
             duration: Some(duration),
             tracks: self.tracks.iter().map(|track| track.name.clone()).collect(),
-            is_transcoded: false, // TODO: This should be calculated based on target format
         })
     }
 }
@@ -643,11 +635,7 @@ impl LightShow {
     pub fn get_config(&self) -> config::LightShow {
         config::LightShow::new(
             self.universe_name(),
-            self.dmx_file
-                .file_name()
-                .and_then(|file_name| file_name.to_str())
-                .unwrap_or("unreadable file name")
-                .to_string(),
+            filename_display(&self.dmx_file).to_string(),
             Some(self.midi_channels()),
         )
     }
@@ -718,7 +706,11 @@ impl Track {
             .and_then(|extension| extension.to_str())
             .unwrap_or("Unreadable file extension");
 
-        assert_eq!(extension, "wav", "Expected file name to end in '.wav'");
+        if extension != "wav" {
+            return Err(
+                format!("Expected file name to end in '.wav', got '.{}'", extension).into(),
+            );
+        }
         let track_name = stem.to_string();
         let source = create_sample_source_from_file(track_path, None, 1024).map_err(
             |e| -> Box<dyn Error> { format!("file {}: {}", track_path.display(), e).into() },
@@ -776,10 +768,7 @@ impl Track {
     pub fn get_config(&self) -> config::Track {
         config::Track::new(
             self.name().to_string(),
-            self.file
-                .file_name()
-                .and_then(|file_name| file_name.to_str())
-                .unwrap_or("unreadable file name"),
+            filename_display(&self.file),
             Some(self.file_channel),
         )
     }
@@ -810,7 +799,7 @@ impl Songs {
     }
 
     /// Gets a song from the song registry.
-    pub fn get(&self, name: &String) -> Result<Arc<Song>, Box<dyn Error>> {
+    pub fn get(&self, name: &str) -> Result<Arc<Song>, Box<dyn Error>> {
         match self.songs.get(name) {
             Some(song) => Ok(Arc::clone(song)),
             None => Err(format!("unable to find song {}", name).into()),
