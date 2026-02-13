@@ -58,6 +58,38 @@ EnvironmentFile=-/etc/default/mtrack
 ExecStart={{ CURRENT_EXECUTABLE }} start "$MTRACK_CONFIG"
 ExecReload=/bin/kill -HUP $MAINPID
 
+# User and group. Create with:
+#   sudo useradd --system --no-create-home --shell /usr/sbin/nologin mtrack
+#   sudo usermod -aG audio mtrack
+User=mtrack
+Group=mtrack
+SupplementaryGroups=audio
+
+# Allow setting thread/RT priority for real-time audio scheduling.
+AmbientCapabilities=CAP_SYS_NICE
+CapabilityBoundingSet=CAP_SYS_NICE
+
+# Filesystem restrictions. The entire filesystem is read-only, which is
+# sufficient since mtrack does not write to disk. /home is inaccessible.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+# Kernel restrictions.
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+
+# Additional hardening.
+NoNewPrivileges=true
+LockPersonality=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
 [Install]
 WantedBy=multi-user.target
 Alias=mtrack.service

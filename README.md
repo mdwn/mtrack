@@ -480,13 +480,27 @@ You can start `mtrack` as a process with `mtrack start /path/to/player.yaml`.
 
 ### mtrack on startup
 
-To have `mtrack` start when the system starts, you can run:
+To have `mtrack` start when the system starts, first create a dedicated system user for the service:
+
+```
+$ sudo useradd --system --no-create-home --shell /usr/sbin/nologin mtrack
+$ sudo usermod -aG audio mtrack
+```
+
+The `audio` group grants access to ALSA sound cards and MIDI devices. If your DMX USB adapter
+requires a specific group (e.g. `plugdev` or `dialout`), add that as well:
+
+```
+$ sudo usermod -aG plugdev mtrack
+```
+
+Next, generate and install the systemd service file:
 
 ```
 $ sudo mtrack systemd > /etc/systemd/system/mtrack.service
 ```
 
-Note that the service expects that `mtrack` is available at the location `/usr/local/bin/mtrack`. It also
+The service expects that `mtrack` is available at the location `/usr/local/bin/mtrack`. It also
 expects you to define your player configuration in `/etc/default/mtrack`. This file
 should contain one variable: `MTRACK_CONFIG`:
 
@@ -495,17 +509,70 @@ should contain one variable: `MTRACK_CONFIG`:
 MTRACK_CONFIG=/mnt/storage/mtrack.yaml
 ```
 
+Make sure the `mtrack` user can read your configuration and song files:
+
+```
+$ sudo chown -R mtrack:mtrack /mnt/storage
+```
+
 Once that's defined, you can start it with:
 
 ```
-$ systemctl start mtrack
+$ sudo systemctl daemon-reload
+$ sudo systemctl enable mtrack
+$ sudo systemctl start mtrack
 ```
 
 It will now be running and will restart when you reboot your machine. You'll be able to view the logs
 for `mtrack` by running:
 
 ```
-$ journalctl -u mtrack 
+$ journalctl -u mtrack
+```
+
+### Service hardening
+
+The generated systemd service includes security hardening that runs `mtrack` with minimal
+privileges. This is the recommended configuration for production deployments.
+
+**User isolation**: The service runs as the unprivileged `mtrack` user instead of root. The
+`audio` supplementary group provides access to ALSA and MIDI devices under `/dev/snd/`.
+
+**Real-time audio scheduling**: `AmbientCapabilities=CAP_SYS_NICE` allows the `mtrack` user
+to set elevated thread priorities and use `SCHED_FIFO` real-time scheduling for the audio
+callback thread, without requiring root. `CapabilityBoundingSet=CAP_SYS_NICE` ensures this
+is the only capability the process can ever acquire.
+
+**Filesystem restrictions**: `ProtectSystem=strict` makes the entire filesystem hierarchy
+read-only, which is sufficient since `mtrack` does not write to disk (logs are emitted to
+stdout/stderr and captured by journald). `ProtectHome=true` makes `/home`, `/root`, and
+`/run/user` completely inaccessible. `PrivateTmp=true` provides an isolated temporary
+directory.
+
+**Kernel restrictions**: The service cannot modify kernel tunables (`ProtectKernelTunables`),
+load kernel modules (`ProtectKernelModules`), access the kernel log buffer
+(`ProtectKernelLogs`), or modify control groups (`ProtectControlGroups`).
+
+**Additional hardening**: The service is further restricted with `NoNewPrivileges` (cannot
+gain new privileges via setuid/setgid binaries or filesystem capabilities),
+`MemoryDenyWriteExecute` (no writable-executable memory pages), `SystemCallArchitectures=native`
+(only native architecture syscalls), `LockPersonality` (cannot change execution domain),
+`RestrictNamespaces` (cannot create user/network/mount namespaces), and
+`RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX` (only IPv4, IPv6, and Unix socket access).
+
+**Troubleshooting**: If `mtrack` cannot access your audio or MIDI devices after setup, verify
+group membership with `groups mtrack` and check device permissions with
+`ls -la /dev/snd/`. If you encounter permission errors related to a specific restriction,
+you can override individual directives by creating a drop-in:
+
+```
+$ sudo systemctl edit mtrack
+```
+
+```ini
+# For example, to disable memory execution restrictions if a dependency requires it:
+[Service]
+MemoryDenyWriteExecute=false
 ```
 
 ### Supported MIDI events
