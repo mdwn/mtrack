@@ -44,7 +44,7 @@ impl OlaClient for RealOlaClient {
 /// Mock OLA client for testing
 #[cfg(test)]
 pub struct MockOlaClient {
-    pub sent_messages: std::sync::Arc<std::sync::Mutex<Vec<DmxMessage>>>,
+    pub sent_messages: std::sync::Arc<parking_lot::Mutex<Vec<DmxMessage>>>,
     pub should_fail: bool,
 }
 
@@ -56,44 +56,40 @@ pub struct DmxMessage {
 }
 
 #[cfg(test)]
+impl Default for MockOlaClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
 impl MockOlaClient {
     pub fn new() -> Self {
         Self {
-            sent_messages: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            sent_messages: std::sync::Arc::new(parking_lot::Mutex::new(Vec::new())),
             should_fail: false,
         }
     }
 
     /// Get the number of messages sent
     pub fn message_count(&self) -> usize {
-        self.sent_messages
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .len()
+        self.sent_messages.lock().len()
     }
 
     /// Get the last sent message
     pub fn get_last_message(&self) -> Option<DmxMessage> {
-        self.sent_messages
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .last()
-            .cloned()
+        self.sent_messages.lock().last().cloned()
     }
 
     /// Clear all sent messages
     pub fn clear_messages(&self) {
-        self.sent_messages
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clear();
+        self.sent_messages.lock().clear();
     }
 
     /// Get messages for a specific universe
     pub fn get_messages_for_universe(&self, universe: u32) -> Vec<DmxMessage> {
         self.sent_messages
             .lock()
-            .unwrap()
             .iter()
             .filter(|msg| msg.universe == universe)
             .cloned()
@@ -119,10 +115,7 @@ impl OlaClient for MockOlaClient {
             universe,
             buffer: buffer.clone(),
         };
-        self.sent_messages
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(message);
+        self.sent_messages.lock().push(message);
         Ok(())
     }
 }

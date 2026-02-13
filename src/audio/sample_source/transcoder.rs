@@ -12,10 +12,10 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 use crate::audio::TargetFormat;
+use parking_lot::Mutex;
 use rubato::{
     SincFixedIn, SincInterpolationParameters, SincInterpolationType, VecResampler, WindowFunction,
 };
-use std::sync::Mutex;
 
 use super::error::SampleSourceError;
 use super::traits::SampleSource;
@@ -242,7 +242,7 @@ where
 
                 // Get input_frames_next while holding the lock briefly
                 let input_frames_needed = {
-                    let r = resampler_mutex.lock().unwrap();
+                    let r = resampler_mutex.lock();
                     r.input_frames_next()
                 };
 
@@ -274,7 +274,7 @@ where
             }
 
             // 2. Process if we have enough input
-            let mut resampler = resampler_mutex.lock().unwrap();
+            let mut resampler = resampler_mutex.lock();
             let input_frames_needed = resampler.input_frames_next();
 
             if self.input_buffer.len() >= input_frames_needed {

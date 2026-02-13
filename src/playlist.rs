@@ -16,7 +16,8 @@ use tracing::{info, span, Level, Span};
 use crate::config;
 use crate::songs::{Song, Songs};
 use core::fmt;
-use std::sync::{Arc, RwLock};
+use parking_lot::RwLock;
+use std::sync::Arc;
 
 /// Typed error for playlist creation so callers can distinguish e.g. missing song in registry.
 #[derive(Debug, thiserror::Error)]
@@ -92,7 +93,7 @@ impl Playlist {
     pub fn next(&self) -> Arc<Song> {
         let _enter = self.span.enter();
 
-        let mut position = self.position.write().unwrap_or_else(|e| e.into_inner());
+        let mut position = self.position.write();
         if *position < self.songs.len() - 1 {
             *position += 1;
         }
@@ -114,7 +115,7 @@ impl Playlist {
     /// Move to the previous element of the playlist. If we're at the beginning of the playlist, the position
     /// will not decrement. The song at the current position will be returned.
     pub fn prev(&self) -> Arc<Song> {
-        let mut position = self.position.write().unwrap_or_else(|e| e.into_inner());
+        let mut position = self.position.write();
         if *position > 0 {
             *position -= 1;
         }
@@ -135,7 +136,7 @@ impl Playlist {
 
     /// Return the song at the current position of the playlist.
     pub fn current(&self) -> Arc<Song> {
-        let position = self.position.read().unwrap_or_else(|e| e.into_inner());
+        let position = self.position.read();
         Arc::clone(
             &self
                 .registry

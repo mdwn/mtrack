@@ -21,17 +21,39 @@ use super::midi::{self, ToMidiEvent};
 pub const DEFAULT_GRPC_PORT: u16 = 43234;
 pub const DEFAULT_OSC_PORT: u16 = 43235;
 
-const DEFAULT_OSC_PLAY: &str = "/mtrack/play";
-const DEFAULT_OSC_PREV: &str = "/mtrack/prev";
-const DEFAULT_OSC_NEXT: &str = "/mtrack/next";
-const DEFAULT_OSC_STOP: &str = "/mtrack/stop";
-const DEFAULT_OSC_ALL_SONGS: &str = "/mtrack/all_songs";
-const DEFAULT_OSC_PLAYLIST: &str = "/mtrack/playlist";
-const DEFAULT_OSC_STOP_SAMPLES: &str = "/mtrack/samples/stop";
-const DEFAULT_OSC_STATUS: &str = "/mtrack/status";
-const DEFAULT_OSC_PLAYLIST_CURRENT: &str = "/mtrack/playlist/current";
-const DEFAULT_OSC_PLAYLIST_CURRENT_SONG: &str = "/mtrack/playlist/current_song";
-const DEFAULT_OSC_PLAYLIST_CURRENT_SONG_ELAPSED: &str = "/mtrack/playlist/current_song/elapsed";
+fn default_osc_play() -> String {
+    "/mtrack/play".to_string()
+}
+fn default_osc_prev() -> String {
+    "/mtrack/prev".to_string()
+}
+fn default_osc_next() -> String {
+    "/mtrack/next".to_string()
+}
+fn default_osc_stop() -> String {
+    "/mtrack/stop".to_string()
+}
+fn default_osc_all_songs() -> String {
+    "/mtrack/all_songs".to_string()
+}
+fn default_osc_playlist() -> String {
+    "/mtrack/playlist".to_string()
+}
+fn default_osc_stop_samples() -> String {
+    "/mtrack/samples/stop".to_string()
+}
+fn default_osc_status() -> String {
+    "/mtrack/status".to_string()
+}
+fn default_osc_playlist_current() -> String {
+    "/mtrack/playlist/current".to_string()
+}
+fn default_osc_playlist_current_song() -> String {
+    "/mtrack/playlist/current_song".to_string()
+}
+fn default_osc_playlist_current_song_elapsed() -> String {
+    "/mtrack/playlist/current_song/elapsed".to_string()
+}
 
 /// Allows users to specify various controllers.
 #[derive(Deserialize, Clone)]
@@ -130,132 +152,141 @@ impl GrpcController {
 }
 
 /// The configuration for the multitrack player OSC server.
-#[derive(Clone, Default, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct OscController {
     /// The port to listen on.
-    port: Option<u16>,
+    #[serde(default = "default_osc_port")]
+    port: u16,
     /// The broadcast addresses including the port.
-    broadcast_addresses: Option<Vec<String>>,
+    #[serde(default)]
+    broadcast_addresses: Vec<String>,
     /// The OSC address to look for to play the current song in the playlist.
-    play: Option<String>,
+    #[serde(default = "default_osc_play")]
+    play: String,
     /// The OSC address to look for to move the playlist to the previous item.
-    prev: Option<String>,
+    #[serde(default = "default_osc_prev")]
+    prev: String,
     /// The OSC address to look for to move the playlist to the next item.
-    next: Option<String>,
+    #[serde(default = "default_osc_next")]
+    next: String,
     /// The OSC address to look for to stop playback.
-    stop: Option<String>,
+    #[serde(default = "default_osc_stop")]
+    stop: String,
     /// The OSC address to look for to switch from the current playlist to an all songs playlist.
-    all_songs: Option<String>,
+    #[serde(default = "default_osc_all_songs")]
+    all_songs: String,
     /// The OSC address to look for to switch back to the current playlist.
-    playlist: Option<String>,
+    #[serde(default = "default_osc_playlist")]
+    playlist: String,
     /// The OSC address to look for to stop all triggered samples.
-    stop_samples: Option<String>,
+    #[serde(default = "default_osc_stop_samples")]
+    stop_samples: String,
     /// The OSC address to broadcast to display the current player status.
-    status: Option<String>,
+    #[serde(default = "default_osc_status")]
+    status: String,
     /// The OSC address to broadcast the current playlist songs.
-    playlist_current: Option<String>,
+    #[serde(default = "default_osc_playlist_current")]
+    playlist_current: String,
     /// The OSC address to broadcast to display the current song on the playlist.
-    playlist_current_song: Option<String>,
+    #[serde(default = "default_osc_playlist_current_song")]
+    playlist_current_song: String,
     /// The OSC address to broadcast to display the current song elapsed duration.
-    playlist_current_song_elapsed: Option<String>,
+    #[serde(default = "default_osc_playlist_current_song_elapsed")]
+    playlist_current_song_elapsed: String,
+}
+
+fn default_osc_port() -> u16 {
+    DEFAULT_OSC_PORT
+}
+
+impl Default for OscController {
+    fn default() -> Self {
+        OscController {
+            port: DEFAULT_OSC_PORT,
+            broadcast_addresses: Vec::new(),
+            play: default_osc_play(),
+            prev: default_osc_prev(),
+            next: default_osc_next(),
+            stop: default_osc_stop(),
+            all_songs: default_osc_all_songs(),
+            playlist: default_osc_playlist(),
+            stop_samples: default_osc_stop_samples(),
+            status: default_osc_status(),
+            playlist_current: default_osc_playlist_current(),
+            playlist_current_song: default_osc_playlist_current_song(),
+            playlist_current_song_elapsed: default_osc_playlist_current_song_elapsed(),
+        }
+    }
 }
 
 impl OscController {
     #[cfg(test)]
     pub fn new() -> OscController {
-        OscController {
-            port: None,
-            broadcast_addresses: None,
-            play: None,
-            prev: None,
-            next: None,
-            stop: None,
-            all_songs: None,
-            playlist: None,
-            stop_samples: None,
-            status: None,
-            playlist_current: None,
-            playlist_current_song: None,
-            playlist_current_song_elapsed: None,
-        }
+        OscController::default()
     }
 
     /// Gets the port to listen on.
     pub fn port(&self) -> u16 {
-        self.port.unwrap_or(DEFAULT_OSC_PORT)
+        self.port
     }
 
     /// Gets the broadcast addresses to broadcast OSC status messages to.
-    pub fn broadcast_addresses(&self) -> Vec<String> {
-        self.broadcast_addresses.clone().unwrap_or_default()
+    pub fn broadcast_addresses(&self) -> &[String] {
+        &self.broadcast_addresses
     }
 
     /// Gets the play OSC address.
-    pub fn play(&self) -> String {
-        self.play.clone().unwrap_or(DEFAULT_OSC_PLAY.to_string())
+    pub fn play(&self) -> &str {
+        &self.play
     }
 
     /// Gets the prev OSC address.
-    pub fn prev(&self) -> String {
-        self.prev.clone().unwrap_or(DEFAULT_OSC_PREV.to_string())
+    pub fn prev(&self) -> &str {
+        &self.prev
     }
 
     /// Gets the next OSC address.
-    pub fn next(&self) -> String {
-        self.next.clone().unwrap_or(DEFAULT_OSC_NEXT.to_string())
+    pub fn next(&self) -> &str {
+        &self.next
     }
 
     /// Gets the stop OSC address.
-    pub fn stop(&self) -> String {
-        self.stop.clone().unwrap_or(DEFAULT_OSC_STOP.to_string())
+    pub fn stop(&self) -> &str {
+        &self.stop
     }
 
     /// Gets the all songs OSC address.
-    pub fn all_songs(&self) -> String {
-        self.all_songs
-            .clone()
-            .unwrap_or(DEFAULT_OSC_ALL_SONGS.to_string())
+    pub fn all_songs(&self) -> &str {
+        &self.all_songs
     }
 
     /// Gets the playlist OSC address.
-    pub fn playlist(&self) -> String {
-        self.playlist
-            .clone()
-            .unwrap_or(DEFAULT_OSC_PLAYLIST.to_string())
+    pub fn playlist(&self) -> &str {
+        &self.playlist
     }
 
     /// Gets the stop samples OSC address.
-    pub fn stop_samples(&self) -> String {
-        self.stop_samples
-            .clone()
-            .unwrap_or(DEFAULT_OSC_STOP_SAMPLES.to_string())
+    pub fn stop_samples(&self) -> &str {
+        &self.stop_samples
     }
 
     /// Gets the player status.
-    pub fn status(&self) -> String {
-        self.status
-            .clone()
-            .unwrap_or(DEFAULT_OSC_STATUS.to_string())
+    pub fn status(&self) -> &str {
+        &self.status
     }
 
     /// Gets the playlist current OSC address.
-    pub fn playlist_current(&self) -> String {
-        self.playlist_current
-            .clone()
-            .unwrap_or(DEFAULT_OSC_PLAYLIST_CURRENT.to_string())
+    pub fn playlist_current(&self) -> &str {
+        &self.playlist_current
     }
 
     /// Gets the playlist current song OSC address.
-    pub fn playlist_current_song(&self) -> String {
-        self.playlist_current_song
-            .clone()
-            .unwrap_or(DEFAULT_OSC_PLAYLIST_CURRENT_SONG.to_string())
+    pub fn playlist_current_song(&self) -> &str {
+        &self.playlist_current_song
     }
 
     /// Gets the playlist current song elapsed OSC address.
-    pub fn playlist_current_song_elapsed(&self) -> String {
-        self.playlist_current_song_elapsed
-            .clone()
-            .unwrap_or(DEFAULT_OSC_PLAYLIST_CURRENT_SONG_ELAPSED.to_string())
+    pub fn playlist_current_song_elapsed(&self) -> &str {
+        &self.playlist_current_song_elapsed
     }
 }

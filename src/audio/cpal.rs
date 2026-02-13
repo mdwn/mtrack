@@ -11,94 +11,25 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
+use parking_lot::{Condvar, Mutex};
 use std::{
     collections::HashMap,
     error::Error,
     fmt,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Condvar, Mutex,
+        Arc,
     },
     thread,
     time::{Duration, Instant},
 };
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use thread_priority::{set_current_thread_priority, ThreadPriority, ThreadPriorityValue};
 use tracing::{error, info, span, Level};
 
-/// Default priority for the audio callback thread when MTRACK_THREAD_PRIORITY is unset.
-const DEFAULT_CALLBACK_THREAD_PRIORITY: u8 = 70;
-
-/// Reads MTRACK_THREAD_PRIORITY (0-99) once; used when building the callback so we don't touch env in the hot path.
-fn callback_thread_priority() -> ThreadPriorityValue {
-    std::env::var("MTRACK_THREAD_PRIORITY")
-        .ok()
-        .and_then(|v| {
-            let n = v.parse::<u8>().ok()?;
-            (n < 100).then(|| ThreadPriorityValue::try_from(n).ok())?
-        })
-        .unwrap_or_else(|| ThreadPriorityValue::try_from(DEFAULT_CALLBACK_THREAD_PRIORITY).unwrap())
-}
-
-fn env_flag(name: &str) -> bool {
-    std::env::var(name)
-        .ok()
-        .map(|v| {
-            v == "1"
-                || v.eq_ignore_ascii_case("true")
-                || v.eq_ignore_ascii_case("yes")
-                || v.eq_ignore_ascii_case("on")
-        })
-        .unwrap_or(false)
-}
-
-/// Returns whether we should attempt RT (SCHED_FIFO) scheduling for the audio callback thread.
-/// Default: enabled. Advanced users can opt out with MTRACK_DISABLE_RT_AUDIO=1.
-fn rt_audio_enabled() -> bool {
-    if env_flag("MTRACK_DISABLE_RT_AUDIO") {
-        return false;
-    }
-    true
-}
-
-fn configure_audio_thread_priority(
-    priority: ThreadPriorityValue,
-    rt_audio: bool,
-    priority_set: &mut bool,
-) {
-    if *priority_set {
-        return;
-    }
-    let tp = ThreadPriority::Crossplatform(priority);
-    let _ = set_current_thread_priority(tp);
-
-    #[cfg(unix)]
-    if rt_audio {
-        use thread_priority::unix::{
-            set_thread_priority_and_policy, thread_native_id, RealtimeThreadSchedulePolicy,
-            ThreadSchedulePolicy,
-        };
-        let tid = thread_native_id();
-        match set_thread_priority_and_policy(
-            tid,
-            tp,
-            ThreadSchedulePolicy::Realtime(RealtimeThreadSchedulePolicy::Fifo),
-        ) {
-            Ok(()) => {
-                info!("Enabled RT SCHED_FIFO for audio callback thread");
-            }
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "Failed to set RT SCHED_FIFO for audio callback thread"
-                );
-            }
-        }
-    }
-
-    *priority_set = true;
-}
+use super::thread_priority::{
+    callback_thread_priority, configure_audio_thread_priority, env_flag, rt_audio_enabled,
+};
 
 struct CallbackProfiler {
     enabled: bool,
@@ -180,22 +111,11 @@ impl CallbackProfiler {
     }
 
     fn maybe_log_float(&mut self) {
-        if !self.enabled {
+        if !self.should_log() {
             return;
         }
-        if self.last_log.elapsed().as_secs_f32() < 1.0 {
-            return;
-        }
-        let mix_avg_us = if self.count > 0 {
-            (self.sum_mix_us / self.count as u128) as u64
-        } else {
-            0
-        };
-        let cb_avg_gap_us = if self.gap_count > 0 {
-            (self.sum_gap_us / self.gap_count as u128) as u64
-        } else {
-            0
-        };
+        let mix_avg_us = self.avg(self.sum_mix_us, self.count);
+        let cb_avg_gap_us = self.avg(self.sum_gap_us, self.gap_count);
         info!(
             mix_avg_us,
             mix_max_us = self.max_mix_us,
@@ -204,38 +124,16 @@ impl CallbackProfiler {
             callbacks = self.count,
             "audio profile: mix (float)"
         );
-
-        self.last_log = Instant::now();
-        self.count = 0;
-        self.sum_mix_us = 0;
-        self.max_mix_us = 0;
-        self.sum_gap_us = 0;
-        self.gap_count = 0;
-        self.max_gap_us = 0;
+        self.reset();
     }
 
     fn maybe_log_int(&mut self) {
-        if !self.enabled {
+        if !self.should_log() {
             return;
         }
-        if self.last_log.elapsed().as_secs_f32() < 1.0 {
-            return;
-        }
-        let mix_avg_us = if self.count > 0 {
-            (self.sum_mix_us / self.count as u128) as u64
-        } else {
-            0
-        };
-        let convert_avg_us = if self.count > 0 {
-            (self.sum_convert_us / self.count as u128) as u64
-        } else {
-            0
-        };
-        let cb_avg_gap_us = if self.gap_count > 0 {
-            (self.sum_gap_us / self.gap_count as u128) as u64
-        } else {
-            0
-        };
+        let mix_avg_us = self.avg(self.sum_mix_us, self.count);
+        let convert_avg_us = self.avg(self.sum_convert_us, self.count);
+        let cb_avg_gap_us = self.avg(self.sum_gap_us, self.gap_count);
         info!(
             mix_avg_us,
             mix_max_us = self.max_mix_us,
@@ -246,7 +144,22 @@ impl CallbackProfiler {
             callbacks = self.count,
             "audio profile: mix/convert (int)"
         );
+        self.reset();
+    }
 
+    fn should_log(&self) -> bool {
+        self.enabled && self.last_log.elapsed().as_secs_f32() >= 1.0
+    }
+
+    fn avg(&self, sum: u128, count: u64) -> u64 {
+        if count > 0 {
+            (sum / count as u128) as u64
+        } else {
+            0
+        }
+    }
+
+    fn reset(&mut self) {
         self.last_log = Instant::now();
         self.count = 0;
         self.sum_mix_us = 0;
@@ -437,17 +350,18 @@ where
 impl Drop for OutputManager {
     fn drop(&mut self) {
         // Stop all active sources when the output manager is dropped
-        if let Ok(active_sources) = self.mixer.get_active_sources().read() {
-            let source_ids: Vec<u64> = active_sources
-                .iter()
-                .map(|source| {
-                    let source_guard = source.lock().unwrap();
-                    source_guard.id
-                })
-                .collect();
-            if !source_ids.is_empty() {
-                self.mixer.remove_sources(source_ids);
-            }
+        let active_sources_arc = self.mixer.get_active_sources();
+        let active_sources = active_sources_arc.read();
+        let source_ids: Vec<u64> = active_sources
+            .iter()
+            .map(|source| {
+                let source_guard = source.lock();
+                source_guard.id
+            })
+            .collect();
+        drop(active_sources); // Release the read lock
+        if !source_ids.is_empty() {
+            self.mixer.remove_sources(source_ids);
         }
 
         // Close the channels to signal the audio callback to stop
@@ -534,7 +448,7 @@ impl OutputManager {
                         err
                     );
                     let (mutex, condvar) = &*notify;
-                    let mut guard = mutex.lock().unwrap();
+                    let mut guard = mutex.lock();
                     *guard = true;
                     condvar.notify_one();
                 };
@@ -574,7 +488,7 @@ impl OutputManager {
                                         err
                                     );
                                     let (mutex, condvar) = &*on_err;
-                                    let mut guard = mutex.lock().unwrap();
+                                    let mut guard = mutex.lock();
                                     *guard = true;
                                     condvar.notify_one();
                                 },
@@ -600,7 +514,7 @@ impl OutputManager {
                                         err
                                     );
                                     let (mutex, condvar) = &*on_err;
-                                    let mut guard = mutex.lock().unwrap();
+                                    let mut guard = mutex.lock();
                                     *guard = true;
                                     condvar.notify_one();
                                 },
@@ -636,9 +550,9 @@ impl OutputManager {
 
                         // Keep the stream alive; block until the error callback notifies us
                         let (mutex, condvar) = &*stream_error_notify;
-                        let mut guard = mutex.lock().unwrap();
+                        let mut guard = mutex.lock();
                         while !*guard {
-                            guard = condvar.wait(guard).unwrap();
+                            condvar.wait(&mut guard);
                         }
                         *guard = false;
                         drop(guard);

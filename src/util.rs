@@ -12,7 +12,15 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+use std::path::Path;
 use std::time::Duration;
+
+/// Extracts a displayable file name from a path, returning a fallback if the name is unreadable.
+pub fn filename_display(path: &Path) -> &str {
+    path.file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or("unreadable file name")
+}
 
 /// Outputs the given duration in a minutes:seconds format.
 pub fn duration_minutes_seconds(duration: Duration) -> String {

@@ -40,6 +40,9 @@ use std::sync::Barrier;
 
 use super::transform::{ControlChangeMapper, MidiTransformer, NoteMapper};
 
+/// Return type for `build_transformers`: DMX channel mappings and MIDI transformers per channel.
+type TransformerConfig = (HashMap<u8, String>, HashMap<u8, Vec<MidiTransformer>>);
+
 pub struct Device {
     name: String,
     playback_delay: Duration,
@@ -55,6 +58,21 @@ pub struct Device {
 /// before checking whether a thread is cancelled. Lowering this may result
 /// in more frequent CPU spinning.
 const MAX_TICK_SIZE_FOR_SLEEP: u32 = 200;
+
+impl Device {
+    fn new_default(name: String) -> Self {
+        Device {
+            name,
+            playback_delay: Duration::ZERO,
+            input_port: None,
+            output_port: None,
+            event_connection: Box::new(Mutex::new(None)),
+            midi_to_dmx_mappings: HashMap::new(),
+            dmx_engine: None,
+            dmx_midi_transformers: HashMap::new(),
+        }
+    }
+}
 
 impl super::Device for Device {
     fn watch_events(&self, sender: Sender<Vec<u8>>) -> Result<(), Box<dyn Error>> {
@@ -234,47 +252,31 @@ impl super::Device for Device {
                     cancel_handle.clone(),
                 );
                 let mut player = Player::new(seek_timer, seek_connection);
-
-                thread::spawn(move || {
-                    play_barrier.wait();
-
-                    if cancel_handle.is_cancelled() {
-                        finished.store(true, Ordering::Relaxed);
-                        cancel_handle.notify();
-                        return;
-                    }
-
-                    spin_sleep::sleep(playback_delay);
-
-                    // Play the sheet - events before start_time will be skipped by SeekConnection
-                    player.play(&midi_sheet.sheet);
-
-                    finished.store(true, Ordering::Relaxed);
-                    cancel_handle.notify();
-                })
+                spawn_playback_thread(
+                    play_barrier,
+                    cancel_handle.clone(),
+                    finished.clone(),
+                    playback_delay,
+                    midi_sheet,
+                    move |sheet| {
+                        player.play(sheet);
+                    },
+                )
             } else {
                 let mut player = Player::new(
                     CancelableTimer::new(midi_sheet.ticker, cancel_handle.clone()),
                     base_connection,
                 );
-
-                thread::spawn(move || {
-                    play_barrier.wait();
-
-                    if cancel_handle.is_cancelled() {
-                        finished.store(true, Ordering::Relaxed);
-                        cancel_handle.notify();
-                        return;
-                    }
-
-                    spin_sleep::sleep(playback_delay);
-
-                    // Play the sheet
-                    player.play(&midi_sheet.sheet);
-
-                    finished.store(true, Ordering::Relaxed);
-                    cancel_handle.notify();
-                })
+                spawn_playback_thread(
+                    play_barrier,
+                    cancel_handle.clone(),
+                    finished.clone(),
+                    playback_delay,
+                    midi_sheet,
+                    move |sheet| {
+                        player.play(sheet);
+                    },
+                )
             }
         };
 
@@ -371,21 +373,11 @@ fn list_midir_devices() -> Result<Vec<Device>, Box<dyn Error>> {
 
     for port in input_ports {
         let name = input.port_name(&port)?;
-        if !devices.contains_key(&name) {
-            devices.insert(
-                name.clone(),
-                Device {
-                    name: name.clone(),
-                    playback_delay: Duration::ZERO,
-                    input_port: Some(port),
-                    output_port: None,
-                    event_connection: Box::new(Mutex::new(None)),
-                    midi_to_dmx_mappings: HashMap::new(),
-                    dmx_engine: None,
-                    dmx_midi_transformers: HashMap::new(),
-                },
-            );
-        }
+        devices.entry(name.clone()).or_insert_with(|| {
+            let mut device = Device::new_default(name);
+            device.input_port = Some(port);
+            device
+        });
     }
 
     for port in output_ports {
@@ -395,19 +387,9 @@ fn list_midir_devices() -> Result<Vec<Device>, Box<dyn Error>> {
                 device.output_port = Some(port);
             }
             None => {
-                devices.insert(
-                    name.clone(),
-                    Device {
-                        name: name.clone(),
-                        playback_delay: Duration::ZERO,
-                        input_port: None,
-                        output_port: Some(port),
-                        event_connection: Box::new(Mutex::new(None)),
-                        midi_to_dmx_mappings: HashMap::new(),
-                        dmx_engine: None,
-                        dmx_midi_transformers: HashMap::new(),
-                    },
-                );
+                let mut device = Device::new_default(name.clone());
+                device.output_port = Some(port);
+                devices.insert(name, device);
             }
         }
     }
@@ -447,11 +429,26 @@ pub fn get(
         .into());
     }
 
-    let mut midi_to_dmx_mapping = HashMap::new();
+    let (midi_to_dmx_mappings, dmx_midi_transformers) = build_transformers(config)?;
+
+    let mut midi_device = matches.swap_remove(0);
+    midi_device.playback_delay = playback_delay;
+    midi_device.midi_to_dmx_mappings = midi_to_dmx_mappings;
+    midi_device.dmx_engine = dmx_engine;
+    midi_device.dmx_midi_transformers = dmx_midi_transformers;
+
+    // We've verified that there's only one element in the vector, so this should be safe.
+    Ok(midi_device)
+}
+
+/// Builds MIDI-to-DMX channel mappings and transformers from config.
+fn build_transformers(config: &config::Midi) -> Result<TransformerConfig, Box<dyn Error>> {
+    let mut midi_to_dmx_mappings = HashMap::new();
     let mut dmx_midi_transformers: HashMap<u8, Vec<MidiTransformer>> = HashMap::new();
+
     for midi_to_dmx in config.midi_to_dmx() {
         let midi_channel = midi_to_dmx.midi_channel()?.as_int();
-        midi_to_dmx_mapping.insert(midi_channel, midi_to_dmx.universe());
+        midi_to_dmx_mappings.insert(midi_channel, midi_to_dmx.universe());
 
         let mut transformers = Vec::new();
         for transformer in midi_to_dmx.transformers() {
@@ -479,21 +476,42 @@ pub fn get(
             })
         }
 
-        dmx_midi_transformers.entry(midi_channel).or_default();
-
-        if let Some(current_transformers) = dmx_midi_transformers.get_mut(&midi_channel) {
-            current_transformers.extend(transformers);
-        }
+        dmx_midi_transformers
+            .entry(midi_channel)
+            .or_default()
+            .extend(transformers);
     }
 
-    let mut midi_device = matches.swap_remove(0);
-    midi_device.playback_delay = playback_delay;
-    midi_device.midi_to_dmx_mappings = midi_to_dmx_mapping;
-    midi_device.dmx_engine = dmx_engine;
-    midi_device.dmx_midi_transformers = dmx_midi_transformers;
+    Ok((midi_to_dmx_mappings, dmx_midi_transformers))
+}
 
-    // We've verified that there's only one element in the vector, so this should be safe.
-    Ok(midi_device)
+/// Spawns a playback thread with standard barrier/cancel/finish lifecycle.
+fn spawn_playback_thread<F>(
+    play_barrier: Arc<Barrier>,
+    cancel_handle: CancelHandle,
+    finished: Arc<AtomicBool>,
+    playback_delay: Duration,
+    midi_sheet: crate::songs::MidiSheet,
+    mut play_fn: F,
+) -> thread::JoinHandle<()>
+where
+    F: FnMut(&nodi::Sheet) + Send + 'static,
+{
+    thread::spawn(move || {
+        play_barrier.wait();
+
+        if cancel_handle.is_cancelled() {
+            finished.store(true, Ordering::Relaxed);
+            cancel_handle.notify();
+            return;
+        }
+
+        spin_sleep::sleep(playback_delay);
+        play_fn(&midi_sheet.sheet);
+
+        finished.store(true, Ordering::Relaxed);
+        cancel_handle.notify();
+    })
 }
 
 /// CancelableTimer is a timer for the nodi player that allows cancelation.

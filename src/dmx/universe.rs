@@ -13,13 +13,13 @@
 //
 
 use ola::DmxBuffer;
+use parking_lot::RwLock;
 use spin_sleep;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
-use std::time::Instant;
-use std::{sync::RwLock, time::Duration};
+use std::time::{Duration, Instant};
 use tracing::error;
 
 use crate::config;
@@ -74,23 +74,17 @@ impl Universe {
 
     #[cfg(test)]
     pub fn get_dim_speed(&self) -> f64 {
-        *self
-            .global_dim_rate
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
+        *self.global_dim_rate.read()
     }
 
     #[cfg(test)]
     pub fn get_target_value(&self, channel_index: usize) -> f64 {
-        self.target.read().unwrap_or_else(|e| e.into_inner())[channel_index]
+        self.target.read()[channel_index]
     }
 
     /// Updates the dim speed.
     pub fn update_dim_speed(&self, dim_rate: Duration) {
-        let mut global_dim_rate = self
-            .global_dim_rate
-            .write()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut global_dim_rate = self.global_dim_rate.write();
         if dim_rate.is_zero() {
             *global_dim_rate = 1.0
         } else {
@@ -106,13 +100,9 @@ impl Universe {
             0 // Handle channel 0 case - map to index 0
         };
         let value = f64::from(value);
-        self.target.write().unwrap_or_else(|e| e.into_inner())[channel_index] = value;
-        self.rates.write().unwrap_or_else(|e| e.into_inner())[channel_index] = if dim {
-            (value - self.current.read().unwrap_or_else(|e| e.into_inner())[channel_index])
-                / *self
-                    .global_dim_rate
-                    .read()
-                    .unwrap_or_else(|e| e.into_inner())
+        self.target.write()[channel_index] = value;
+        self.rates.write()[channel_index] = if dim {
+            (value - self.current.read()[channel_index]) / *self.global_dim_rate.read()
         } else {
             0.0
         };
@@ -183,9 +173,9 @@ impl Universe {
         max_channels: &Arc<AtomicU16>,
         buffer: &mut DmxBuffer,
     ) -> bool {
-        let mut current = current.write().unwrap_or_else(|e| e.into_inner());
-        let rates = rates.read().unwrap_or_else(|e| e.into_inner());
-        let target = target.read().unwrap_or_else(|e| e.into_inner());
+        let mut current = current.write();
+        let rates = rates.read();
+        let target = target.read();
 
         let mut changed = false;
         for i in 0..usize::from(max_channels.load(Ordering::Relaxed)) {
@@ -538,7 +528,7 @@ mod test {
         // Should be around 150 (halfway between 200 and 100)
         let value = buffer.as_slice()[0];
         assert!(
-            value >= 148 && value <= 152,
+            (148..=152).contains(&value),
             "Expected ~150 when dimming down from 200 to 100, got {}",
             value
         );

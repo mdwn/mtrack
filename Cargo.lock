@@ -1155,6 +1155,7 @@ dependencies = [
  "nodi",
  "num_cpus",
  "ola",
+ "parking_lot",
  "pest",
  "pest_derive",
  "prost 0.13.5",

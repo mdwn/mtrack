@@ -11,7 +11,8 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc, Condvar, Mutex};
+use parking_lot::{Condvar, Mutex};
+use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc};
 
 /// Represents the current cancel state.
 #[derive(PartialEq)]
@@ -49,19 +50,15 @@ impl Default for CancelHandle {
 impl CancelHandle {
     /// Returns true if the device process has been cancelled.
     pub fn is_cancelled(&self) -> bool {
-        *self.cancelled.lock().unwrap_or_else(|e| e.into_inner()) == CancelState::Cancelled
+        *self.cancelled.lock() == CancelState::Cancelled
     }
 
     /// Waits for the cancel handle to be cancelled or for finished to be set to true.
     pub fn wait(&self, finished: Arc<AtomicBool>) {
-        let guard = self.cancelled.lock().unwrap_or_else(|e| e.into_inner());
-        let _guard = self
-            .condvar
-            .wait_while(guard, |cancelled| {
-                *cancelled == CancelState::Untouched && !finished.load(Ordering::Relaxed)
-            })
-            .unwrap_or_else(|e| e.into_inner());
-        drop(_guard);
+        let mut guard = self.cancelled.lock();
+        self.condvar.wait_while(&mut guard, |cancelled| {
+            *cancelled == CancelState::Untouched && !finished.load(Ordering::Relaxed)
+        });
     }
 
     /// Notifies the cancel handle to see if this the song has been cancelled or if the
@@ -72,7 +69,7 @@ impl CancelHandle {
 
     /// Cancel the device process.
     pub fn cancel(&self) {
-        let mut cancel_state = self.cancelled.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cancel_state = self.cancelled.lock();
         if *cancel_state == CancelState::Untouched {
             *cancel_state = CancelState::Cancelled;
             self.notify();
