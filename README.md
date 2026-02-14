@@ -478,6 +478,80 @@ track_mappings:
 
 You can start `mtrack` as a process with `mtrack start /path/to/player.yaml`.
 
+### Hardware profiles
+
+If you have multiple devices or run `mtrack` on multiple hosts sharing the same config file,
+you can use hardware profiles instead of the flat `audio:` / `midi:` / `dmx:` / `track_mappings:` sections.
+Each profile represents one complete host configuration with all subsystems. Profiles are filtered
+by hostname; the first match is used.
+
+```yaml
+# Unified profiles: each entry defines one complete host configuration
+profiles:
+  # Raspberry Pi A: Full setup with WING audio + MIDI + DMX
+  - hostname: raspberry-pi-a
+    device: "Behringer WING"
+    sample_rate: 48000
+    sample_format: int
+    bits_per_sample: 32
+    buffer_size: 1024
+    playback_delay: 500ms
+    track_mappings:
+      click: [1]
+      cue: [2]
+      backing-track-l: [3]
+      backing-track-r: [4]
+      keys: [5, 6]
+    midi:
+      device: "Behringer WING"
+      playback_delay: 500ms
+      midi_to_dmx:
+        - midi_channel: 15
+          universe: light-show
+    dmx:
+      dim_speed_modifier: 0.25
+      universes:
+        - universe: 1
+          name: light-show
+
+  # Raspberry Pi B: WING with different channels, MIDI required, no DMX
+  - hostname: raspberry-pi-b
+    device: "Behringer WING"
+    sample_rate: 48000
+    track_mappings:
+      click: [11]
+      cue: [12]
+      backing-track-l: [13]
+      backing-track-r: [14]
+      keys: [15, 16]
+    midi:
+      device: "USB MIDI Interface"
+      playback_delay: 200ms
+    # dmx omitted = optional for this host
+
+  # Fallback: minimal setup for any host (no MIDI/DMX)
+  - device: "Built-in Audio"
+    track_mappings:
+      click: [1]
+      backing-track-l: [1]
+      backing-track-r: [2]
+```
+
+**Subsystem semantics:**
+- **Audio** is always required (every profile must have audio config + track_mappings)
+- **MIDI** and **DMX** are optional:
+  - If present in a profile → required for that host (player waits/retries)
+  - If absent from a profile → optional for that host (player proceeds without it)
+
+Profiles with a `hostname` constraint only apply on hosts whose hostname matches. Profiles
+without a hostname constraint match any host. Set the `MTRACK_HOSTNAME` environment variable
+to override the system hostname (useful for testing or when the OS hostname differs from
+what you want).
+
+The existing flat format (`audio:` + `track_mappings:` + `midi:` + `dmx:`) continues to work
+unchanged. At startup, legacy fields are automatically normalized into a single profile,
+so all internal code paths use the same profile-based logic.
+
 ### mtrack on startup
 
 To have `mtrack` start when the system starts, first create a dedicated system user for the service:

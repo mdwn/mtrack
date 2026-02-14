@@ -98,15 +98,60 @@ impl Player {
         let span = span!(Level::INFO, "player");
         let _enter = span.enter();
 
-        let device = Self::wait_for_ok("audio device".to_string(), || {
-            audio::get_device(config.audio())
-        })?;
-        let dmx_engine = Self::wait_for_ok("dmx engine".to_string(), || {
-            dmx::create_engine(config.dmx(), base_path)
-        })?;
-        let midi_device = Self::wait_for_ok("midi device".to_string(), || {
-            midi::get_device(config.midi(), dmx_engine.clone())
-        })?;
+        let hostname = config::resolve_hostname();
+        info!(hostname = %hostname, "Resolved hostname for hardware profiles");
+
+        // Get the first matching profile
+        let profiles = config.profiles(&hostname);
+        let profile = profiles
+            .first()
+            .ok_or("No matching hardware profile found")?;
+
+        info!(
+            hostname = profile.hostname().unwrap_or("default"),
+            "Using hardware profile"
+        );
+
+        // Audio is always required
+        let audio_config = profile.audio_config();
+        let (device, mappings, resolved_audio) =
+            Self::wait_for_ok("audio device".to_string(), || {
+                match audio::get_device(Some(audio_config.audio().clone())) {
+                    Ok(device) => {
+                        info!(
+                            device = audio_config.audio().device(),
+                            "Audio device initialized"
+                        );
+                        Ok((
+                            device.clone(),
+                            audio_config.track_mappings().clone(),
+                            audio_config.audio().clone(),
+                        ))
+                    }
+                    Err(e) => Err(format!("audio device: {}", e)),
+                }
+            })?;
+
+        // DMX: if present in profile, required. If absent, optional.
+        let dmx_engine = if let Some(dmx_config) = profile.dmx() {
+            Self::wait_for_ok("dmx engine".to_string(), || {
+                dmx::create_engine(Some(dmx_config), base_path)
+            })?
+        } else {
+            info!("DMX not configured in profile; proceeding without DMX");
+            None
+        };
+
+        // MIDI: if present in profile, required. If absent, optional.
+        let midi_device = if let Some(midi_config) = profile.midi() {
+            Self::wait_for_ok("midi device".to_string(), || {
+                midi::get_device(Some(midi_config.clone()), dmx_engine.clone())
+            })?
+        } else {
+            info!("MIDI not configured in profile; proceeding without MIDI");
+            None
+        };
+
         let status_events = Self::wait_for_ok("status events".to_string(), || {
             StatusEvents::new(config.status_events())
         })?;
@@ -115,7 +160,7 @@ impl Player {
         let sample_engine = match (device.mixer(), device.source_sender()) {
             (Some(mixer), Some(source_tx)) => {
                 let max_voices = config.max_sample_voices();
-                let buffer_size = config.audio().map(|a| a.buffer_size()).unwrap_or(1024);
+                let buffer_size = resolved_audio.buffer_size();
                 let mut engine = SampleEngine::new(mixer, source_tx, max_voices, buffer_size);
 
                 // Load global samples config if available
@@ -139,7 +184,7 @@ impl Player {
 
         let player = Player {
             device,
-            mappings: Arc::new(config.track_mappings().clone()),
+            mappings: Arc::new(mappings),
             midi_device,
             dmx_engine,
             sample_engine,

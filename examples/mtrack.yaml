@@ -62,6 +62,9 @@ midi:
 
 # The DMX configuration for mtrack. This maps OLA universes to light show names defined within
 # song files.
+#
+# For multiple host configs with DMX, use the unified profiles format (see Hardware Profiles section below).
+
 dmx:
   # The DMX engine in mtrack has a dimming engine that can be issued using MIDI program change (PC) commands.
   # This modifier is multiplied by the value of the PC command to give a dimming duration, e.g.
@@ -282,6 +285,68 @@ track_mappings:
   keys:
   - 5
   - 6
+
+# --- Hardware Profiles (alternative to the audio/midi/dmx/track_mappings sections above) ---
+#
+# Use unified profiles when you need:
+#   - Multiple complete host configurations in one config file
+#   - Different track mappings per host (e.g., different Raspberry Pis sharing a config)
+#   - Per-host MIDI/DMX requirements (required on some hosts, optional on others)
+#
+# Profiles are filtered by hostname. The first match is used.
+# Set the MTRACK_HOSTNAME environment variable to override the system hostname.
+#
+# Subsystem semantics:
+#   - Audio: always required (every profile must have it)
+#   - MIDI/DMX: presence = required, absence = optional for that host
+#
+# profiles:
+#   # Raspberry Pi A: Full setup with audio + MIDI + DMX (all required)
+#   - hostname: raspberry-pi-a
+#     device: "Behringer WING"
+#     sample_rate: 48000
+#     sample_format: int
+#     bits_per_sample: 32
+#     buffer_size: 1024
+#     playback_delay: 500ms
+#     track_mappings:
+#       click: [1]
+#       cue: [2]
+#       backing-track-l: [3]
+#       backing-track-r: [4]
+#       keys: [5, 6]
+#     midi:
+#       device: "Behringer WING"
+#       playback_delay: 500ms
+#       midi_to_dmx:
+#         - midi_channel: 15
+#           universe: light-show
+#     dmx:
+#       dim_speed_modifier: 0.25
+#       universes:
+#         - universe: 1
+#           name: light-show
+#
+#   # Raspberry Pi B: Audio + MIDI required, DMX optional (omitted)
+#   - hostname: raspberry-pi-b
+#     device: "Behringer WING"
+#     sample_rate: 48000
+#     track_mappings:
+#       click: [11]
+#       cue: [12]
+#       backing-track-l: [13]
+#       backing-track-r: [14]
+#       keys: [15, 16]
+#     midi:
+#       device: "USB MIDI Interface"
+#       playback_delay: 200ms
+#
+#   # Fallback: minimal audio-only setup (MIDI/DMX optional)
+#   - device: "Built-in Audio"
+#     track_mappings:
+#       click: [1]
+#       backing-track-l: [1]
+#       backing-track-r: [2]
 
 # MIDI-triggered sample configuration.
 # Samples defined here are available globally and can be triggered via MIDI events.

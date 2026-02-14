@@ -68,6 +68,7 @@ impl Dmx {
     pub fn get_ola_port(&self) -> Option<u16> {
         self.ola_port
     }
+
     /// Gets the dimming speed modifier.
     pub fn dimming_speed_modifier(&self) -> f64 {
         self.dim_speed_modifier
