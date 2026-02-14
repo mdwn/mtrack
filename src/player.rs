@@ -380,6 +380,9 @@ impl Player {
             }
         }
 
+        // Warn about tracks with no mapping in the config.
+        crate::verify::warn_unmapped_tracks(&song, &self.mappings);
+
         let play_start_time = self.play_start_time.clone();
 
         let cancel_handle = CancelHandle::new();

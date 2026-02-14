@@ -26,6 +26,7 @@ mod songs;
 #[cfg(test)]
 mod testutil;
 mod util;
+mod verify;
 
 use crate::playlist::Playlist;
 use clap::{crate_version, Parser, Subcommand};
@@ -225,6 +226,14 @@ enum Commands {
         /// The host and port of the gRPC server.
         #[arg[short, long]]
         host_port: Option<String>,
+    },
+    /// Verifies songs in a repository against the player config.
+    Verify {
+        /// The path to the mtrack.yaml player config file.
+        config: String,
+        /// Only check specific categories (e.g., "track-mappings"). Runs all checks if omitted.
+        #[arg(long)]
+        check: Option<Vec<String>>,
     },
 }
 
@@ -546,6 +555,35 @@ async fn run() -> Result<(), Box<dyn Error>> {
         }
         Commands::VerifyLightShow { show_path, config } => {
             verify_light_show(&show_path, config.as_deref())?;
+        }
+        Commands::Verify { config, check } => {
+            let config_path = Path::new(&config);
+            let player_config = config::Player::deserialize(config_path)?;
+            let songs_path = player_config.songs(config_path);
+            let songs = songs::get_all_songs(&songs_path)?;
+
+            if songs.is_empty() {
+                println!("No songs found in {}.", songs_path.display());
+                return Ok(());
+            }
+
+            let run_all = check.is_none();
+            let checks: Vec<String> = check.unwrap_or_default();
+
+            let mut report = verify::VerificationReport::default();
+
+            // Track mapping checks.
+            if run_all || checks.iter().any(|c| c == "track-mappings") {
+                let track_report =
+                    verify::check_all_track_mappings(&songs, player_config.track_mappings());
+                report.merge(track_report);
+            }
+
+            verify::print_report(&report, &songs);
+
+            if report.has_errors() {
+                std::process::exit(1);
+            }
         }
         Commands::Cues { host_port } => {
             let mut client = connect(host_port).await?;

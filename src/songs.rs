@@ -532,6 +532,29 @@ impl Default for Song {
     }
 }
 
+impl Song {
+    /// Creates a Song with the given name and track names for use in tests.
+    /// Avoids the need for real audio files.
+    #[cfg(test)]
+    pub fn new_for_test(name: &str, track_names: &[&str]) -> Song {
+        Song {
+            name: name.to_string(),
+            tracks: track_names
+                .iter()
+                .map(|n| Track {
+                    name: n.to_string(),
+                    file: PathBuf::from("/dev/null"),
+                    file_channel: 1,
+                    sample_rate: 44100,
+                    sample_format: SampleFormat::Int,
+                    duration: Duration::ZERO,
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+}
+
 /// Midi playback configuration for the song.
 #[derive(Clone)]
 pub struct MidiPlayback {
