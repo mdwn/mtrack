@@ -26,6 +26,10 @@ samples stop at exactly the same sample the new one starts, eliminating gaps.
 
 The audio engine has been refactored for lower latency and stability:
 
+A warning is displayed when playing songs that have tracks that are not configured to
+be output in the current player configuration. This will not cause an error, but will be
+logged so that it's easier to diagnose a misconfiguration.
+
 - **Direct callback mode**: The CPAL callback now calls the mixer directly, eliminating the
   intermediate ring buffer. This follows the pattern used by professional audio systems
   (ASIO, CoreAudio, JACK) for lowest possible latency.

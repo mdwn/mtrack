@@ -27,3 +27,4 @@ pub mod songs;
 #[cfg(test)]
 pub mod testutil;
 pub mod util;
+pub mod verify;
