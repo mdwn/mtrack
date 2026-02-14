@@ -30,6 +30,25 @@ A warning is displayed when playing songs that have tracks that are not configur
 be output in the current player configuration. This will not cause an error, but will be
 logged so that it's easier to diagnose a misconfiguration.
 
+Hardware profiles allow multiple audio and MIDI device configurations in a single config
+file, with prioritized fallback and hostname-based filtering:
+
+- **Audio profiles** (`audio_profiles`): Define multiple audio devices with independent
+  track mappings. Profiles are tried in list order; the first available device wins.
+- **MIDI profiles** (`midi_profiles`): Define multiple MIDI devices with independent
+  configuration. Profiles are tried in list order.
+- **Hostname filtering**: Each profile can specify a `hostname` constraint so that
+  different hosts sharing the same config file use different devices and channel mappings.
+  Set the `MTRACK_HOSTNAME` environment variable to override the system hostname.
+- **`midi_optional`**: Defaults to `true`. When all MIDI profiles fail, the player
+  proceeds without MIDI instead of retrying forever. Set to `false` to require a MIDI
+  device.
+- **DMX hostname filtering** (`enabled_hostnames`): The `dmx:` section can specify a list
+  of hostnames on which DMX is enabled. Hosts not in the list skip DMX initialization
+  entirely. Omitting `enabled_hostnames` enables DMX on all hosts (existing behavior).
+- **Backwards compatible**: Existing configs using `audio:`, `midi:`, and `track_mappings:`
+  are automatically normalized into single-entry profiles at startup.
+
 - **Direct callback mode**: The CPAL callback now calls the mixer directly, eliminating the
   intermediate ring buffer. This follows the pattern used by professional audio systems
   (ASIO, CoreAudio, JACK) for lowest possible latency.

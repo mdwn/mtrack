@@ -234,6 +234,10 @@ enum Commands {
         /// Only check specific categories (e.g., "track-mappings"). Runs all checks if omitted.
         #[arg(long)]
         check: Option<Vec<String>>,
+        /// Hostname to verify against. When audio_profiles are used, this filters which profiles
+        /// to check. If omitted, all profiles are verified.
+        #[arg(long)]
+        hostname: Option<String>,
     },
 }
 
@@ -556,7 +560,11 @@ async fn run() -> Result<(), Box<dyn Error>> {
         Commands::VerifyLightShow { show_path, config } => {
             verify_light_show(&show_path, config.as_deref())?;
         }
-        Commands::Verify { config, check } => {
+        Commands::Verify {
+            config,
+            check,
+            hostname,
+        } => {
             let config_path = Path::new(&config);
             let player_config = config::Player::deserialize(config_path)?;
             let songs_path = player_config.songs(config_path);
@@ -574,9 +582,46 @@ async fn run() -> Result<(), Box<dyn Error>> {
 
             // Track mapping checks.
             if run_all || checks.iter().any(|c| c == "track-mappings") {
-                let track_report =
-                    verify::check_all_track_mappings(&songs, player_config.track_mappings());
-                report.merge(track_report);
+                let all_profiles = player_config.all_audio_profiles();
+
+                if all_profiles.len() > 1 {
+                    // Profile mode: verify each profile's track mappings.
+                    let profiles_to_check: Vec<&config::AudioProfile> = match &hostname {
+                        Some(h) => {
+                            let filtered = player_config.audio_configs(h);
+                            if filtered.is_empty() {
+                                eprintln!("Warning: no audio profiles match hostname '{}'", h);
+                            }
+                            filtered
+                        }
+                        None => all_profiles.iter().collect(),
+                    };
+
+                    for (i, profile) in profiles_to_check.iter().enumerate() {
+                        let label = match profile.hostname() {
+                            Some(h) => format!(
+                                "profile {} (hostname: {}, device: {})",
+                                i,
+                                h,
+                                profile.audio().device()
+                            ),
+                            None => format!(
+                                "profile {} (any host, device: {})",
+                                i,
+                                profile.audio().device()
+                            ),
+                        };
+                        println!("Checking track mappings for {}...", label);
+                        let track_report =
+                            verify::check_all_track_mappings(&songs, profile.track_mappings());
+                        report.merge(track_report);
+                    }
+                } else {
+                    // Single profile (legacy or single profile): verify as before.
+                    let track_report =
+                        verify::check_all_track_mappings(&songs, player_config.track_mappings());
+                    report.merge(track_report);
+                }
             }
 
             verify::print_report(&report, &songs);

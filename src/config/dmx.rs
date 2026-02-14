@@ -28,6 +28,11 @@ pub const DEFAULT_DMX_PLAYBACK_DELAY: Duration = Duration::ZERO;
 /// A YAML representation of the DMX configuration.
 #[derive(Deserialize, Clone)]
 pub struct Dmx {
+    /// When set, DMX is only enabled on hosts whose hostname appears in this list.
+    /// If absent or empty, DMX is enabled on all hosts.
+    #[serde(default)]
+    enabled_hostnames: Option<Vec<String>>,
+
     /// Controls the dim speed modifier. A modifier of 1.0 means a dim speed of 1 == 1.0 second.
     dim_speed_modifier: Option<f64>,
 
@@ -55,6 +60,7 @@ impl Dmx {
         lighting: Option<Lighting>,
     ) -> Dmx {
         Dmx {
+            enabled_hostnames: None,
             dim_speed_modifier,
             playback_delay,
             ola_port,
@@ -68,6 +74,11 @@ impl Dmx {
     pub fn get_ola_port(&self) -> Option<u16> {
         self.ola_port
     }
+    /// Returns the list of hostnames on which DMX is enabled, if set.
+    pub fn enabled_hostnames(&self) -> Option<&[String]> {
+        self.enabled_hostnames.as_deref()
+    }
+
     /// Gets the dimming speed modifier.
     pub fn dimming_speed_modifier(&self) -> f64 {
         self.dim_speed_modifier
@@ -141,5 +152,53 @@ mod tests {
         // Test with None
         let dmx = Dmx::new(None, None, None, vec![], None);
         assert_eq!(dmx.get_ola_port(), None);
+    }
+
+    #[test]
+    fn test_enabled_hostnames_absent() {
+        let dmx = Dmx::new(None, None, None, vec![], None);
+        assert!(dmx.enabled_hostnames().is_none());
+    }
+
+    #[test]
+    fn test_enabled_hostnames_deserialize() {
+        use config::{Config, File, FileFormat};
+
+        let yaml = r#"
+            enabled_hostnames:
+              - pi-a
+              - pi-b
+            universes: []
+        "#;
+
+        let dmx: Dmx = Config::builder()
+            .add_source(File::from_str(yaml, FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+
+        let hostnames = dmx.enabled_hostnames().unwrap();
+        assert_eq!(hostnames.len(), 2);
+        assert_eq!(hostnames[0], "pi-a");
+        assert_eq!(hostnames[1], "pi-b");
+    }
+
+    #[test]
+    fn test_enabled_hostnames_absent_deserialize() {
+        use config::{Config, File, FileFormat};
+
+        let yaml = r#"
+            universes: []
+        "#;
+
+        let dmx: Dmx = Config::builder()
+            .add_source(File::from_str(yaml, FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+
+        assert!(dmx.enabled_hostnames().is_none());
     }
 }

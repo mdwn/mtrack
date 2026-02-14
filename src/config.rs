@@ -15,6 +15,7 @@ mod audio;
 mod controller;
 mod dmx;
 mod error;
+mod hostname;
 pub mod lighting;
 #[cfg(test)]
 pub mod midi;
@@ -22,6 +23,7 @@ pub mod midi;
 mod midi;
 mod player;
 mod playlist;
+mod profile;
 pub mod samples;
 mod song;
 mod statusevents;
@@ -44,6 +46,8 @@ pub use self::midi::ToMidiEvent;
 pub use self::player::Player;
 pub use self::playlist::Playlist;
 // Sample types are exported for external configuration
+pub use self::hostname::resolve_hostname;
+pub use self::profile::{AudioProfile, MidiProfile};
 #[allow(unused_imports)]
 pub use self::samples::{
     NoteOffBehavior, RetriggerBehavior, SampleDefinition, SampleTrigger, SamplesConfig,

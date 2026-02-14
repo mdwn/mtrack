@@ -63,6 +63,10 @@ midi:
 # The DMX configuration for mtrack. This maps OLA universes to light show names defined within
 # song files.
 dmx:
+  # (Optional) When set, DMX is only enabled on hosts in this list. Omit to enable on all hosts.
+  # enabled_hostnames:
+  #   - raspberry-pi-a
+
   # The DMX engine in mtrack has a dimming engine that can be issued using MIDI program change (PC) commands.
   # This modifier is multiplied by the value of the PC command to give a dimming duration, e.g.
   # PC1 * 1.0 dim speed modifier = 1.0 second dim time
@@ -282,6 +286,69 @@ track_mappings:
   keys:
   - 5
   - 6
+
+# --- Hardware Profiles (alternative to the audio/midi/track_mappings sections above) ---
+#
+# Use audio_profiles and midi_profiles when you need:
+#   - Multiple hardware configurations in one config file
+#   - Different track mappings per host (e.g., different Raspberry Pis sharing a config)
+#   - Prioritized device fallback (try primary device, fall back to secondary)
+#
+# Profiles are tried in list order. The first profile whose hostname matches (or has no
+# hostname constraint) AND whose device is available will be used.
+#
+# Set the MTRACK_HOSTNAME environment variable to override the system hostname.
+#
+# audio_profiles:
+#   # Raspberry Pi A: Behringer WING with FOH channel mapping
+#   - hostname: raspberry-pi-a
+#     device: "Behringer WING"
+#     sample_rate: 48000
+#     sample_format: int
+#     bits_per_sample: 32
+#     buffer_size: 1024
+#     playback_delay: 500ms
+#     track_mappings:
+#       click: [1]
+#       cue: [2]
+#       backing-track-l: [3]
+#       backing-track-r: [4]
+#       keys: [5, 6]
+#
+#   # Raspberry Pi B: Same WING but different channel mapping (monitors)
+#   - hostname: raspberry-pi-b
+#     device: "Behringer WING"
+#     sample_rate: 48000
+#     track_mappings:
+#       click: [11]
+#       cue: [12]
+#       backing-track-l: [13]
+#       backing-track-r: [14]
+#       keys: [15, 16]
+#
+#   # Fallback: built-in audio on any host
+#   - device: "Built-in Audio"
+#     track_mappings:
+#       click: [1]
+#       backing-track-l: [1]
+#       backing-track-r: [2]
+#
+# midi_profiles:
+#   # Raspberry Pi A: WING MIDI with DMX routing
+#   - hostname: raspberry-pi-a
+#     device: "Behringer WING"
+#     playback_delay: 500ms
+#     midi_to_dmx:
+#       - midi_channel: 15
+#         universe: light-show
+#
+#   # Fallback: generic USB MIDI
+#   - device: "USB MIDI Interface"
+#     playback_delay: 200ms
+#
+# # When true (default), the player proceeds without MIDI if no device is available
+# # instead of retrying forever. Set to false to require a MIDI device.
+# midi_optional: true
 
 # MIDI-triggered sample configuration.
 # Samples defined here are available globally and can be triggered via MIDI events.
