@@ -109,6 +109,7 @@ impl Player {
 
         info!(
             hostname = profile.hostname().unwrap_or("default"),
+            device = profile.audio_config().audio().device(),
             "Using hardware profile"
         );
 

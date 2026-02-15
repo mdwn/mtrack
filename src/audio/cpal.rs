@@ -25,7 +25,7 @@ use std::{
 };
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use tracing::{error, info, span, Level};
+use tracing::{debug, error, info, span, Level};
 
 use super::thread_priority::{
     callback_thread_priority, configure_audio_thread_priority, env_flag, rt_audio_enabled,
@@ -656,9 +656,15 @@ impl Device {
     /// Gets the given cpal device.
     pub fn get(config: config::Audio) -> Result<Device, Box<dyn Error>> {
         let name = config.device();
+        debug!(
+            device_name = %name,
+            device_name_len = name.len(),
+            device_name_trimmed = %name.trim(),
+            "Searching for audio device"
+        );
         match Device::list_cpal_devices()?
             .into_iter()
-            .find(|device| device.name.trim() == name)
+            .find(|device| device.name.trim() == name.trim())
         {
             Some(mut device) => {
                 device.playback_delay = config.playback_delay()?;
