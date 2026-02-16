@@ -667,22 +667,19 @@ impl Device {
             available_devices = ?devices.iter().map(|d| &d.name).collect::<Vec<_>>(),
             "Available CPAL devices"
         );
-        match devices
-            .into_iter()
-            .find(|device| {
-                let device_trimmed = device.name.trim();
-                let name_trimmed = name.trim();
-                let matches = device_trimmed == name_trimmed;
-                debug!(
-                    device_name = %device.name,
-                    device_trimmed = %device_trimmed,
-                    looking_for = %name_trimmed,
-                    matches = matches,
-                    "Comparing device"
-                );
-                matches
-            })
-        {
+        match devices.into_iter().find(|device| {
+            let device_trimmed = device.name.trim();
+            let name_trimmed = name.trim();
+            let matches = device_trimmed == name_trimmed;
+            debug!(
+                device_name = %device.name,
+                device_trimmed = %device_trimmed,
+                looking_for = %name_trimmed,
+                matches = matches,
+                "Comparing device"
+            );
+            matches
+        }) {
             Some(mut device) => {
                 device.playback_delay = config.playback_delay()?;
 

@@ -33,8 +33,10 @@ pub fn resolve_hostname() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
+    #[serial]
     fn test_hostname_env_override() {
         // Save original value to restore later.
         let original = std::env::var("MTRACK_HOSTNAME").ok();
@@ -50,6 +52,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_hostname_empty_env_falls_back() {
         let original = std::env::var("MTRACK_HOSTNAME").ok();
 
