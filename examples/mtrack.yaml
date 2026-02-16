@@ -297,24 +297,26 @@ track_mappings:
 # Set the MTRACK_HOSTNAME environment variable to override the system hostname.
 #
 # Subsystem semantics:
-#   - Audio: always required (every profile must have it)
-#   - MIDI/DMX: presence = required, absence = optional for that host
+#   - All subsystems (audio, MIDI, DMX) are optional
+#   - Presence in a profile = required for that host (player waits/retries)
+#   - Absence from a profile = skipped for that host (player proceeds without it)
 #
 # profiles:
-#   # Raspberry Pi A: Full setup with audio + MIDI + DMX (all required)
+#   # Raspberry Pi A: Full setup with audio + MIDI + DMX
 #   - hostname: raspberry-pi-a
-#     device: "Behringer WING"
-#     sample_rate: 48000
-#     sample_format: int
-#     bits_per_sample: 32
-#     buffer_size: 1024
-#     playback_delay: 500ms
-#     track_mappings:
-#       click: [1]
-#       cue: [2]
-#       backing-track-l: [3]
-#       backing-track-r: [4]
-#       keys: [5, 6]
+#     audio:
+#       device: "Behringer WING"
+#       sample_rate: 48000
+#       sample_format: int
+#       bits_per_sample: 32
+#       buffer_size: 1024
+#       playback_delay: 500ms
+#       track_mappings:
+#         click: [1]
+#         cue: [2]
+#         backing-track-l: [3]
+#         backing-track-r: [4]
+#         keys: [5, 6]
 #     midi:
 #       device: "Behringer WING"
 #       playback_delay: 500ms
@@ -327,26 +329,35 @@ track_mappings:
 #         - universe: 1
 #           name: light-show
 #
-#   # Raspberry Pi B: Audio + MIDI required, DMX optional (omitted)
+#   # Raspberry Pi B: Audio + MIDI, no DMX
 #   - hostname: raspberry-pi-b
-#     device: "Behringer WING"
-#     sample_rate: 48000
-#     track_mappings:
-#       click: [11]
-#       cue: [12]
-#       backing-track-l: [13]
-#       backing-track-r: [14]
-#       keys: [15, 16]
+#     audio:
+#       device: "Behringer WING"
+#       sample_rate: 48000
+#       track_mappings:
+#         click: [11]
+#         cue: [12]
+#         backing-track-l: [13]
+#         backing-track-r: [14]
+#         keys: [15, 16]
 #     midi:
 #       device: "USB MIDI Interface"
 #       playback_delay: 200ms
 #
-#   # Fallback: minimal audio-only setup (MIDI/DMX optional)
-#   - device: "Built-in Audio"
-#     track_mappings:
-#       click: [1]
-#       backing-track-l: [1]
-#       backing-track-r: [2]
+#   # Lighting-only node: DMX only, no audio or MIDI
+#   - hostname: lighting-node
+#     dmx:
+#       universes:
+#         - universe: 1
+#           name: light-show
+#
+#   # Fallback: minimal audio-only setup
+#   - audio:
+#       device: "Built-in Audio"
+#       track_mappings:
+#         click: [1]
+#         backing-track-l: [1]
+#         backing-track-r: [2]
 
 # --- External Profiles Directory ---
 #

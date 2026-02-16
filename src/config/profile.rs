@@ -55,9 +55,8 @@ pub struct Profile {
     /// Optional hostname restriction.
     hostname: Option<String>,
 
-    /// Audio configuration (required).
-    #[serde(flatten)]
-    audio_config: AudioConfig,
+    /// Audio configuration (optional if absent from profile).
+    audio: Option<AudioConfig>,
 
     /// MIDI configuration (optional if absent from profile).
     midi: Option<Midi>,
@@ -70,13 +69,13 @@ impl Profile {
     /// Creates a new Profile.
     pub fn new(
         hostname: Option<String>,
-        audio_config: AudioConfig,
+        audio: Option<AudioConfig>,
         midi: Option<Midi>,
         dmx: Option<Dmx>,
     ) -> Self {
         Profile {
             hostname,
-            audio_config,
+            audio,
             midi,
             dmx,
         }
@@ -87,9 +86,9 @@ impl Profile {
         self.hostname.as_deref()
     }
 
-    /// Returns the audio configuration.
-    pub fn audio_config(&self) -> &AudioConfig {
-        &self.audio_config
+    /// Returns the audio configuration, if present.
+    pub fn audio_config(&self) -> Option<&AudioConfig> {
+        self.audio.as_ref()
     }
 
     /// Returns the MIDI configuration.
@@ -132,13 +131,14 @@ mod tests {
     fn test_profile_deserialize() {
         let yaml = r#"
             hostname: pi-a
-            device: mock-device
-            sample_rate: 48000
-            track_mappings:
-              drums:
-                - 1
-              synth:
-                - 2
+            audio:
+              device: mock-device
+              sample_rate: 48000
+              track_mappings:
+                drums:
+                  - 1
+                synth:
+                  - 2
             midi:
               device: mock-midi
             dmx:
@@ -155,18 +155,44 @@ mod tests {
             .unwrap();
 
         assert_eq!(profile.hostname(), Some("pi-a"));
-        assert_eq!(profile.audio_config().audio().device(), "mock-device");
-        assert_eq!(profile.audio_config().audio().sample_rate(), 48000);
+        let audio_config = profile.audio_config().unwrap();
+        assert_eq!(audio_config.audio().device(), "mock-device");
+        assert_eq!(audio_config.audio().sample_rate(), 48000);
         assert_eq!(
-            profile.audio_config().track_mappings().get("drums"),
+            audio_config.track_mappings().get("drums"),
             Some(&vec![1u16])
         );
         assert_eq!(
-            profile.audio_config().track_mappings().get("synth"),
+            audio_config.track_mappings().get("synth"),
             Some(&vec![2u16])
         );
         assert!(profile.midi().is_some());
         assert_eq!(profile.midi().unwrap().device(), "mock-midi");
+        assert!(profile.dmx().is_some());
+    }
+
+    #[test]
+    fn test_profile_without_audio() {
+        let yaml = r#"
+            hostname: lighting-node
+            midi:
+              device: mock-midi
+            dmx:
+              universes:
+                - universe: 1
+                  name: light-show
+        "#;
+
+        let profile: Profile = Config::builder()
+            .add_source(File::from_str(yaml, FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+
+        assert_eq!(profile.hostname(), Some("lighting-node"));
+        assert!(profile.audio_config().is_none());
+        assert!(profile.midi().is_some());
         assert!(profile.dmx().is_some());
     }
 
@@ -178,9 +204,10 @@ mod tests {
         let midi = Some(Midi::new("midi-device", None));
         let dmx = Some(Dmx::new(None, None, None, vec![], None));
 
-        let profile = Profile::new(Some("pi-a".to_string()), audio_config, midi, dmx);
+        let profile = Profile::new(Some("pi-a".to_string()), Some(audio_config), midi, dmx);
 
         assert_eq!(profile.hostname(), Some("pi-a"));
+        assert!(profile.audio_config().is_some());
         assert!(profile.midi().is_some());
         assert!(profile.dmx().is_some());
     }
@@ -191,9 +218,10 @@ mod tests {
         let track_mappings = HashMap::from([("drums".to_string(), vec![1])]);
         let audio_config = AudioConfig::new(audio, track_mappings);
 
-        let profile = Profile::new(None, audio_config, None, None);
+        let profile = Profile::new(None, Some(audio_config), None, None);
 
         assert_eq!(profile.hostname(), None);
+        assert!(profile.audio_config().is_some());
         assert!(profile.midi().is_none());
         assert!(profile.dmx().is_none());
     }
@@ -203,28 +231,28 @@ mod tests {
         let profiles = vec![
             Profile::new(
                 Some("pi-a".to_string()),
-                AudioConfig::new(
+                Some(AudioConfig::new(
                     Audio::new("device-a"),
                     HashMap::from([("drums".to_string(), vec![1])]),
-                ),
+                )),
                 None,
                 None,
             ),
             Profile::new(
                 Some("pi-b".to_string()),
-                AudioConfig::new(
+                Some(AudioConfig::new(
                     Audio::new("device-b"),
                     HashMap::from([("drums".to_string(), vec![11])]),
-                ),
+                )),
                 None,
                 None,
             ),
             Profile::new(
                 None,
-                AudioConfig::new(
+                Some(AudioConfig::new(
                     Audio::new("fallback"),
                     HashMap::from([("drums".to_string(), vec![1])]),
-                ),
+                )),
                 None,
                 None,
             ),
@@ -233,18 +261,33 @@ mod tests {
         // pi-a matches hostname-specific + wildcard
         let filtered = filter_by_hostname(&profiles, "pi-a", |p| p.hostname());
         assert_eq!(filtered.len(), 2);
-        assert_eq!(filtered[0].audio_config().audio().device(), "device-a");
-        assert_eq!(filtered[1].audio_config().audio().device(), "fallback");
+        assert_eq!(
+            filtered[0].audio_config().unwrap().audio().device(),
+            "device-a"
+        );
+        assert_eq!(
+            filtered[1].audio_config().unwrap().audio().device(),
+            "fallback"
+        );
 
         // pi-b matches hostname-specific + wildcard
         let filtered = filter_by_hostname(&profiles, "pi-b", |p| p.hostname());
         assert_eq!(filtered.len(), 2);
-        assert_eq!(filtered[0].audio_config().audio().device(), "device-b");
-        assert_eq!(filtered[1].audio_config().audio().device(), "fallback");
+        assert_eq!(
+            filtered[0].audio_config().unwrap().audio().device(),
+            "device-b"
+        );
+        assert_eq!(
+            filtered[1].audio_config().unwrap().audio().device(),
+            "fallback"
+        );
 
         // unknown host only matches wildcard
         let filtered = filter_by_hostname(&profiles, "pi-c", |p| p.hostname());
         assert_eq!(filtered.len(), 1);
-        assert_eq!(filtered[0].audio_config().audio().device(), "fallback");
+        assert_eq!(
+            filtered[0].audio_config().unwrap().audio().device(),
+            "fallback"
+        );
     }
 }

@@ -53,7 +53,7 @@ pub struct Player {
     /// The DMX configuration. (legacy)
     dmx: Option<Dmx>,
     /// Unified hardware profiles, tried in priority order.
-    /// Each profile contains audio (required), MIDI (optional), and DMX (optional) configs.
+    /// Each profile contains audio (optional), MIDI (optional), and DMX (optional) configs.
     profiles: Option<Vec<Profile>>,
     /// Directory of external profile YAML files, loaded and prepended before inline profiles.
     profiles_dir: Option<String>,
@@ -79,7 +79,7 @@ impl Player {
     #[cfg(test)]
     pub fn new(
         controllers: Vec<Controller>,
-        audio: Audio,
+        audio: Option<Audio>,
         midi: Option<Midi>,
         dmx: Option<Dmx>,
         track_mappings: HashMap<String, Vec<u16>>,
@@ -89,7 +89,7 @@ impl Player {
             controller: None,
             controllers: Some(controllers),
             audio_device: None,
-            audio: Some(audio),
+            audio,
             track_mappings: Some(TrackMappings { track_mappings }),
             midi_device: None,
             midi,
@@ -196,23 +196,25 @@ impl Player {
                 self.audio_device.as_ref().map(|d| Audio::new(d))
             };
 
-            if let Some(audio) = audio {
+            let audio_config = audio.map(|audio| {
                 let track_mappings = self
                     .track_mappings
                     .as_ref()
                     .map(|tm| tm.track_mappings.clone())
                     .unwrap_or_default();
+                AudioConfig::new(audio, track_mappings)
+            });
 
-                let audio_config = AudioConfig::new(audio, track_mappings);
+            let midi = if let Some(midi) = &self.midi {
+                Some(midi.clone())
+            } else {
+                self.midi_device.as_ref().map(|d| Midi::new(d, None))
+            };
 
-                let midi = if let Some(midi) = &self.midi {
-                    Some(midi.clone())
-                } else {
-                    self.midi_device.as_ref().map(|d| Midi::new(d, None))
-                };
+            let dmx = self.dmx.clone();
 
-                let dmx = self.dmx.clone();
-
+            // Create a profile if any subsystem is configured.
+            if audio_config.is_some() || midi.is_some() || dmx.is_some() {
                 let profile = Profile::new(None, audio_config, midi, dmx);
                 self.profiles = Some(vec![profile]);
             }
@@ -257,7 +259,7 @@ impl Player {
     pub fn audio(&self) -> Option<Audio> {
         if let Some(profiles) = &self.profiles {
             if let Some(first) = profiles.first() {
-                return Some(first.audio_config().audio().clone());
+                return first.audio_config().map(|ac| ac.audio().clone());
             }
         }
 
@@ -269,7 +271,9 @@ impl Player {
     pub fn track_mappings(&self) -> &HashMap<String, Vec<u16>> {
         if let Some(profiles) = &self.profiles {
             if let Some(first) = profiles.first() {
-                return first.audio_config().track_mappings();
+                if let Some(audio_config) = first.audio_config() {
+                    return audio_config.track_mappings();
+                }
             }
         }
 
@@ -401,14 +405,28 @@ midi:
         // Unified profiles should have been created from legacy fields.
         let profiles = player.all_profiles();
         assert_eq!(profiles.len(), 1);
-        assert_eq!(profiles[0].audio_config().audio().device(), "mock-device");
-        assert_eq!(profiles[0].audio_config().audio().sample_rate(), 48000);
         assert_eq!(
-            profiles[0].audio_config().track_mappings().get("click"),
+            profiles[0].audio_config().unwrap().audio().device(),
+            "mock-device"
+        );
+        assert_eq!(
+            profiles[0].audio_config().unwrap().audio().sample_rate(),
+            48000
+        );
+        assert_eq!(
+            profiles[0]
+                .audio_config()
+                .unwrap()
+                .track_mappings()
+                .get("click"),
             Some(&vec![1u16])
         );
         assert_eq!(
-            profiles[0].audio_config().track_mappings().get("cue"),
+            profiles[0]
+                .audio_config()
+                .unwrap()
+                .track_mappings()
+                .get("cue"),
             Some(&vec![2u16])
         );
         assert!(profiles[0].hostname().is_none());
@@ -434,9 +452,16 @@ track_mappings:
 
         let profiles = player.all_profiles();
         assert_eq!(profiles.len(), 1);
-        assert_eq!(profiles[0].audio_config().audio().device(), "mock-device");
         assert_eq!(
-            profiles[0].audio_config().track_mappings().get("drums"),
+            profiles[0].audio_config().unwrap().audio().device(),
+            "mock-device"
+        );
+        assert_eq!(
+            profiles[0]
+                .audio_config()
+                .unwrap()
+                .track_mappings()
+                .get("drums"),
             Some(&vec![1u16])
         );
     }
@@ -466,27 +491,30 @@ midi_device: mock-midi
 songs: songs
 profiles:
   - hostname: pi-a
-    device: mock-device-a
-    sample_rate: 48000
-    track_mappings:
-      drums: [1]
-      synth: [2]
+    audio:
+      device: mock-device-a
+      sample_rate: 48000
+      track_mappings:
+        drums: [1]
+        synth: [2]
     midi:
       device: mock-midi-a
   - hostname: pi-b
-    device: mock-device-b
-    track_mappings:
-      drums: [11]
-      synth: [12]
+    audio:
+      device: mock-device-b
+      track_mappings:
+        drums: [11]
+        synth: [12]
     midi:
       device: mock-midi-b
     dmx:
       universes:
         - universe: 1
           name: light-show
-  - device: mock-fallback
-    track_mappings:
-      drums: [1]
+  - audio:
+      device: mock-fallback
+      track_mappings:
+        drums: [1]
 "#,
         );
 
@@ -494,18 +522,30 @@ profiles:
         assert_eq!(profiles.len(), 3);
 
         assert_eq!(profiles[0].hostname(), Some("pi-a"));
-        assert_eq!(profiles[0].audio_config().audio().device(), "mock-device-a");
-        assert_eq!(profiles[0].audio_config().audio().sample_rate(), 48000);
+        assert_eq!(
+            profiles[0].audio_config().unwrap().audio().device(),
+            "mock-device-a"
+        );
+        assert_eq!(
+            profiles[0].audio_config().unwrap().audio().sample_rate(),
+            48000
+        );
         assert!(profiles[0].midi().is_some());
         assert!(profiles[0].dmx().is_none());
 
         assert_eq!(profiles[1].hostname(), Some("pi-b"));
-        assert_eq!(profiles[1].audio_config().audio().device(), "mock-device-b");
+        assert_eq!(
+            profiles[1].audio_config().unwrap().audio().device(),
+            "mock-device-b"
+        );
         assert!(profiles[1].midi().is_some());
         assert!(profiles[1].dmx().is_some());
 
         assert_eq!(profiles[2].hostname(), None);
-        assert_eq!(profiles[2].audio_config().audio().device(), "mock-fallback");
+        assert_eq!(
+            profiles[2].audio_config().unwrap().audio().device(),
+            "mock-fallback"
+        );
         assert!(profiles[2].midi().is_none());
         assert!(profiles[2].dmx().is_none());
     }
@@ -517,35 +557,53 @@ profiles:
 songs: songs
 profiles:
   - hostname: pi-a
-    device: mock-device-a
-    track_mappings:
-      drums: [1]
+    audio:
+      device: mock-device-a
+      track_mappings:
+        drums: [1]
   - hostname: pi-b
-    device: mock-device-b
-    track_mappings:
-      drums: [11]
-  - device: mock-fallback
-    track_mappings:
-      drums: [1]
+    audio:
+      device: mock-device-b
+      track_mappings:
+        drums: [11]
+  - audio:
+      device: mock-fallback
+      track_mappings:
+        drums: [1]
 "#,
         );
 
         // pi-a sees its own profile + the wildcard.
         let pi_a = player.profiles("pi-a");
         assert_eq!(pi_a.len(), 2);
-        assert_eq!(pi_a[0].audio_config().audio().device(), "mock-device-a");
-        assert_eq!(pi_a[1].audio_config().audio().device(), "mock-fallback");
+        assert_eq!(
+            pi_a[0].audio_config().unwrap().audio().device(),
+            "mock-device-a"
+        );
+        assert_eq!(
+            pi_a[1].audio_config().unwrap().audio().device(),
+            "mock-fallback"
+        );
 
         // pi-b sees its own profile + the wildcard.
         let pi_b = player.profiles("pi-b");
         assert_eq!(pi_b.len(), 2);
-        assert_eq!(pi_b[0].audio_config().audio().device(), "mock-device-b");
-        assert_eq!(pi_b[1].audio_config().audio().device(), "mock-fallback");
+        assert_eq!(
+            pi_b[0].audio_config().unwrap().audio().device(),
+            "mock-device-b"
+        );
+        assert_eq!(
+            pi_b[1].audio_config().unwrap().audio().device(),
+            "mock-fallback"
+        );
 
         // Unknown host only sees the wildcard.
         let unknown = player.profiles("pi-c");
         assert_eq!(unknown.len(), 1);
-        assert_eq!(unknown[0].audio_config().audio().device(), "mock-fallback");
+        assert_eq!(
+            unknown[0].audio_config().unwrap().audio().device(),
+            "mock-fallback"
+        );
     }
 
     #[test]
@@ -554,9 +612,10 @@ profiles:
             r#"
 songs: songs
 profiles:
-  - device: mock-device
-    track_mappings:
-      drums: [1]
+  - audio:
+      device: mock-device
+      track_mappings:
+        drums: [1]
 "#,
         );
 
@@ -576,9 +635,10 @@ audio:
 track_mappings:
   click: [99]
 profiles:
-  - device: profile-device
-    track_mappings:
-      click: [1]
+  - audio:
+      device: profile-device
+      track_mappings:
+        click: [1]
 "#,
         );
 
@@ -586,11 +646,15 @@ profiles:
         let profiles = player.all_profiles();
         assert_eq!(profiles.len(), 1);
         assert_eq!(
-            profiles[0].audio_config().audio().device(),
+            profiles[0].audio_config().unwrap().audio().device(),
             "profile-device"
         );
         assert_eq!(
-            profiles[0].audio_config().track_mappings().get("click"),
+            profiles[0]
+                .audio_config()
+                .unwrap()
+                .track_mappings()
+                .get("click"),
             Some(&vec![1u16])
         );
 
@@ -619,10 +683,11 @@ songs: songs
             r#"
 songs: songs
 profiles:
-  - device: mock-device
-    track_mappings:
-      drums: [1]
-      synth: [2]
+  - audio:
+      device: mock-device
+      track_mappings:
+        drums: [1]
+        synth: [2]
 "#,
         );
 
@@ -630,7 +695,11 @@ profiles:
         let profiles = player.all_profiles();
         assert_eq!(profiles.len(), 1);
         assert_eq!(
-            profiles[0].audio_config().track_mappings().get("drums"),
+            profiles[0]
+                .audio_config()
+                .unwrap()
+                .track_mappings()
+                .get("drums"),
             Some(&vec![1u16])
         );
 
@@ -645,29 +714,39 @@ profiles:
 songs: songs
 profiles:
   - hostname: pi-a
-    device: "Behringer WING"
-    track_mappings:
-      drums: [1]
-      synth: [2]
+    audio:
+      device: "Behringer WING"
+      track_mappings:
+        drums: [1]
+        synth: [2]
   - hostname: pi-b
-    device: "Behringer WING"
-    track_mappings:
-      drums: [11]
-      synth: [12]
+    audio:
+      device: "Behringer WING"
+      track_mappings:
+        drums: [11]
+        synth: [12]
 "#,
         );
 
         let pi_a = player.profiles("pi-a");
         assert_eq!(pi_a.len(), 1);
         assert_eq!(
-            pi_a[0].audio_config().track_mappings().get("drums"),
+            pi_a[0]
+                .audio_config()
+                .unwrap()
+                .track_mappings()
+                .get("drums"),
             Some(&vec![1u16])
         );
 
         let pi_b = player.profiles("pi-b");
         assert_eq!(pi_b.len(), 1);
         assert_eq!(
-            pi_b[0].audio_config().track_mappings().get("drums"),
+            pi_b[0]
+                .audio_config()
+                .unwrap()
+                .track_mappings()
+                .get("drums"),
             Some(&vec![11u16])
         );
 
@@ -715,7 +794,10 @@ dmx:
         // Should have been normalized into a single unified profile.
         let profiles = config.all_profiles();
         assert_eq!(profiles.len(), 1);
-        assert_eq!(profiles[0].audio_config().audio().device(), "UltraLite-mk5");
+        assert_eq!(
+            profiles[0].audio_config().unwrap().audio().device(),
+            "UltraLite-mk5"
+        );
         assert!(profiles[0].midi().is_some());
         assert!(profiles[0].dmx().is_some());
     }
@@ -741,21 +823,27 @@ dmx:
             write_profile(
                 &dir.join("profiles"),
                 "pi-a.yaml",
-                "hostname: pi-a\ndevice: device-a\ntrack_mappings:\n  drums: [1]\n",
+                "hostname: pi-a\naudio:\n  device: device-a\n  track_mappings:\n    drums: [1]\n",
             );
             write_profile(
                 &dir.join("profiles"),
                 "pi-b.yml",
-                "hostname: pi-b\ndevice: device-b\ntrack_mappings:\n  drums: [11]\n",
+                "hostname: pi-b\naudio:\n  device: device-b\n  track_mappings:\n    drums: [11]\n",
             );
         });
 
         let profiles = player.all_profiles();
         assert_eq!(profiles.len(), 2);
         assert_eq!(profiles[0].hostname(), Some("pi-a"));
-        assert_eq!(profiles[0].audio_config().audio().device(), "device-a");
+        assert_eq!(
+            profiles[0].audio_config().unwrap().audio().device(),
+            "device-a"
+        );
         assert_eq!(profiles[1].hostname(), Some("pi-b"));
-        assert_eq!(profiles[1].audio_config().audio().device(), "device-b");
+        assert_eq!(
+            profiles[1].audio_config().unwrap().audio().device(),
+            "device-b"
+        );
     }
 
     #[test]
@@ -765,16 +853,17 @@ dmx:
                 "songs: songs\n",
                 "profiles_dir: profiles/\n",
                 "profiles:\n",
-                "  - device: inline-fallback\n",
-                "    track_mappings:\n",
-                "      drums: [1]\n",
+                "  - audio:\n",
+                "      device: inline-fallback\n",
+                "      track_mappings:\n",
+                "        drums: [1]\n",
             ),
             |dir| {
                 std::fs::create_dir(dir.join("profiles")).unwrap();
                 write_profile(
                     &dir.join("profiles"),
                     "pi-a.yaml",
-                    "hostname: pi-a\ndevice: dir-device\ntrack_mappings:\n  drums: [1]\n",
+                    "hostname: pi-a\naudio:\n  device: dir-device\n  track_mappings:\n    drums: [1]\n",
                 );
             },
         );
@@ -782,11 +871,14 @@ dmx:
         let profiles = player.all_profiles();
         assert_eq!(profiles.len(), 2);
         // Directory profile comes first.
-        assert_eq!(profiles[0].audio_config().audio().device(), "dir-device");
+        assert_eq!(
+            profiles[0].audio_config().unwrap().audio().device(),
+            "dir-device"
+        );
         assert_eq!(profiles[0].hostname(), Some("pi-a"));
         // Inline profile comes second.
         assert_eq!(
-            profiles[1].audio_config().audio().device(),
+            profiles[1].audio_config().unwrap().audio().device(),
             "inline-fallback"
         );
         assert_eq!(profiles[1].hostname(), None);
@@ -799,9 +891,10 @@ dmx:
                 "songs: songs\n",
                 "profiles_dir: profiles/\n",
                 "profiles:\n",
-                "  - device: inline-device\n",
-                "    track_mappings:\n",
-                "      drums: [1]\n",
+                "  - audio:\n",
+                "      device: inline-device\n",
+                "      track_mappings:\n",
+                "        drums: [1]\n",
             ),
             |dir| {
                 std::fs::create_dir(dir.join("profiles")).unwrap();
@@ -811,7 +904,10 @@ dmx:
         // Only the inline profile should be present.
         let profiles = player.all_profiles();
         assert_eq!(profiles.len(), 1);
-        assert_eq!(profiles[0].audio_config().audio().device(), "inline-device");
+        assert_eq!(
+            profiles[0].audio_config().unwrap().audio().device(),
+            "inline-device"
+        );
     }
 
     #[test]
@@ -860,7 +956,7 @@ dmx:
             write_profile(
                 &dir.join("profiles"),
                 "pi-a.yaml",
-                "hostname: pi-a\ndevice: device-a\ntrack_mappings:\n  drums: [1]\n",
+                "hostname: pi-a\naudio:\n  device: device-a\n  track_mappings:\n    drums: [1]\n",
             );
             // These should be ignored.
             write_profile(&dir.join("profiles"), "notes.txt", "just some notes");
@@ -884,25 +980,34 @@ dmx:
             write_profile(
                 &dir.join("profiles"),
                 "03-fallback.yml",
-                "device: fallback\ntrack_mappings:\n  drums: [1]\n",
+                "audio:\n  device: fallback\n  track_mappings:\n    drums: [1]\n",
             );
             write_profile(
                 &dir.join("profiles"),
                 "01-pi-a.yaml",
-                "hostname: pi-a\ndevice: device-a\ntrack_mappings:\n  drums: [1]\n",
+                "hostname: pi-a\naudio:\n  device: device-a\n  track_mappings:\n    drums: [1]\n",
             );
             write_profile(
                 &dir.join("profiles"),
                 "02-pi-b.yaml",
-                "hostname: pi-b\ndevice: device-b\ntrack_mappings:\n  drums: [11]\n",
+                "hostname: pi-b\naudio:\n  device: device-b\n  track_mappings:\n    drums: [11]\n",
             );
         });
 
         let profiles = player.all_profiles();
         assert_eq!(profiles.len(), 3);
-        assert_eq!(profiles[0].audio_config().audio().device(), "device-a");
-        assert_eq!(profiles[1].audio_config().audio().device(), "device-b");
-        assert_eq!(profiles[2].audio_config().audio().device(), "fallback");
+        assert_eq!(
+            profiles[0].audio_config().unwrap().audio().device(),
+            "device-a"
+        );
+        assert_eq!(
+            profiles[1].audio_config().unwrap().audio().device(),
+            "device-b"
+        );
+        assert_eq!(
+            profiles[2].audio_config().unwrap().audio().device(),
+            "fallback"
+        );
     }
 
     #[test]
@@ -912,21 +1017,22 @@ dmx:
                 "songs: songs\n",
                 "profiles_dir: profiles/\n",
                 "profiles:\n",
-                "  - device: inline-fallback\n",
-                "    track_mappings:\n",
-                "      drums: [1]\n",
+                "  - audio:\n",
+                "      device: inline-fallback\n",
+                "      track_mappings:\n",
+                "        drums: [1]\n",
             ),
             |dir| {
                 std::fs::create_dir(dir.join("profiles")).unwrap();
                 write_profile(
                     &dir.join("profiles"),
                     "pi-a.yaml",
-                    "hostname: pi-a\ndevice: device-a\ntrack_mappings:\n  drums: [1]\n",
+                    "hostname: pi-a\naudio:\n  device: device-a\n  track_mappings:\n    drums: [1]\n",
                 );
                 write_profile(
                     &dir.join("profiles"),
                     "pi-b.yaml",
-                    "hostname: pi-b\ndevice: device-b\ntrack_mappings:\n  drums: [11]\n",
+                    "hostname: pi-b\naudio:\n  device: device-b\n  track_mappings:\n    drums: [11]\n",
                 );
             },
         );
@@ -934,20 +1040,26 @@ dmx:
         // pi-a sees its directory profile + inline fallback.
         let pi_a = player.profiles("pi-a");
         assert_eq!(pi_a.len(), 2);
-        assert_eq!(pi_a[0].audio_config().audio().device(), "device-a");
-        assert_eq!(pi_a[1].audio_config().audio().device(), "inline-fallback");
+        assert_eq!(pi_a[0].audio_config().unwrap().audio().device(), "device-a");
+        assert_eq!(
+            pi_a[1].audio_config().unwrap().audio().device(),
+            "inline-fallback"
+        );
 
         // pi-b sees its directory profile + inline fallback.
         let pi_b = player.profiles("pi-b");
         assert_eq!(pi_b.len(), 2);
-        assert_eq!(pi_b[0].audio_config().audio().device(), "device-b");
-        assert_eq!(pi_b[1].audio_config().audio().device(), "inline-fallback");
+        assert_eq!(pi_b[0].audio_config().unwrap().audio().device(), "device-b");
+        assert_eq!(
+            pi_b[1].audio_config().unwrap().audio().device(),
+            "inline-fallback"
+        );
 
         // Unknown host sees only inline fallback.
         let unknown = player.profiles("pi-c");
         assert_eq!(unknown.len(), 1);
         assert_eq!(
-            unknown[0].audio_config().audio().device(),
+            unknown[0].audio_config().unwrap().audio().device(),
             "inline-fallback"
         );
     }

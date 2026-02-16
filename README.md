@@ -490,18 +490,19 @@ by hostname; the first match is used.
 profiles:
   # Raspberry Pi A: Full setup with WING audio + MIDI + DMX
   - hostname: raspberry-pi-a
-    device: "Behringer WING"
-    sample_rate: 48000
-    sample_format: int
-    bits_per_sample: 32
-    buffer_size: 1024
-    playback_delay: 500ms
-    track_mappings:
-      click: [1]
-      cue: [2]
-      backing-track-l: [3]
-      backing-track-r: [4]
-      keys: [5, 6]
+    audio:
+      device: "Behringer WING"
+      sample_rate: 48000
+      sample_format: int
+      bits_per_sample: 32
+      buffer_size: 1024
+      playback_delay: 500ms
+      track_mappings:
+        click: [1]
+        cue: [2]
+        backing-track-l: [3]
+        backing-track-r: [4]
+        keys: [5, 6]
     midi:
       device: "Behringer WING"
       playback_delay: 500ms
@@ -516,32 +517,42 @@ profiles:
 
   # Raspberry Pi B: WING with different channels, MIDI required, no DMX
   - hostname: raspberry-pi-b
-    device: "Behringer WING"
-    sample_rate: 48000
-    track_mappings:
-      click: [11]
-      cue: [12]
-      backing-track-l: [13]
-      backing-track-r: [14]
-      keys: [15, 16]
+    audio:
+      device: "Behringer WING"
+      sample_rate: 48000
+      track_mappings:
+        click: [11]
+        cue: [12]
+        backing-track-l: [13]
+        backing-track-r: [14]
+        keys: [15, 16]
     midi:
       device: "USB MIDI Interface"
       playback_delay: 200ms
-    # dmx omitted = optional for this host
+    # dmx omitted = not used on this host
 
-  # Fallback: minimal setup for any host (no MIDI/DMX)
-  - device: "Built-in Audio"
-    track_mappings:
-      click: [1]
-      backing-track-l: [1]
-      backing-track-r: [2]
+  # Lighting-only node: DMX only, no audio or MIDI
+  - hostname: lighting-node
+    dmx:
+      universes:
+        - universe: 1
+          name: light-show
+
+  # Fallback: minimal audio setup for any host (no MIDI/DMX)
+  - audio:
+      device: "Built-in Audio"
+      track_mappings:
+        click: [1]
+        backing-track-l: [1]
+        backing-track-r: [2]
 ```
 
 **Subsystem semantics:**
-- **Audio** is always required (every profile must have audio config + track_mappings)
-- **MIDI** and **DMX** are optional:
-  - If present in a profile → required for that host (player waits/retries)
-  - If absent from a profile → optional for that host (player proceeds without it)
+- All three subsystems (**Audio**, **MIDI**, **DMX**) are optional:
+  - If present in a profile → required for that host (player waits/retries until device is found)
+  - If absent from a profile → skipped for that host (player proceeds without it)
+- A profile can define any combination of subsystems, enabling dedicated roles such as
+  lighting-only nodes, MIDI-only controllers, or full audio + MIDI + DMX setups.
 
 Profiles with a `hostname` constraint only apply on hosts whose hostname matches. Profiles
 without a hostname constraint match any host. Set the `MTRACK_HOSTNAME` environment variable
@@ -565,24 +576,26 @@ profiles_dir: profiles/
 # Directory profiles are prepended before inline profiles.
 profiles:
   # Fallback for any host not matched by a directory profile
-  - device: "Built-in Audio"
-    track_mappings:
-      click: [1]
-      backing-track-l: [1]
-      backing-track-r: [2]
+  - audio:
+      device: "Built-in Audio"
+      track_mappings:
+        click: [1]
+        backing-track-l: [1]
+        backing-track-r: [2]
 ```
 
 ```yaml
 # profiles/01-pi-a.yaml
 hostname: raspberry-pi-a
-device: "Behringer WING"
-sample_rate: 48000
-track_mappings:
-  click: [1]
-  cue: [2]
-  backing-track-l: [3]
-  backing-track-r: [4]
-  keys: [5, 6]
+audio:
+  device: "Behringer WING"
+  sample_rate: 48000
+  track_mappings:
+    click: [1]
+    cue: [2]
+    backing-track-l: [3]
+    backing-track-r: [4]
+    keys: [5, 6]
 midi:
   device: "Behringer WING"
 dmx:
