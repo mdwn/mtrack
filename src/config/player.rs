@@ -55,6 +55,8 @@ pub struct Player {
     /// Unified hardware profiles, tried in priority order.
     /// Each profile contains audio (required), MIDI (optional), and DMX (optional) configs.
     profiles: Option<Vec<Profile>>,
+    /// Directory of external profile YAML files, loaded and prepended before inline profiles.
+    profiles_dir: Option<String>,
     /// Events to emit to report status out via MIDI.
     status_events: Option<StatusEvents>,
     /// The path to the playlist.
@@ -93,6 +95,7 @@ impl Player {
             midi,
             dmx,
             profiles: None,
+            profiles_dir: None,
             status_events: None,
             playlist: None,
             songs: songs.to_string(),
@@ -112,8 +115,74 @@ impl Player {
             .add_source(File::from(path))
             .build()?
             .try_deserialize::<Player>()?;
+        player.load_profiles_dir(path)?;
         player.normalize();
         Ok(player)
+    }
+
+    /// Loads profiles from the profiles_dir, if configured.
+    /// Directory profiles are prepended before any inline profiles.
+    fn load_profiles_dir(&mut self, config_path: &Path) -> Result<(), ConfigError> {
+        let profiles_dir_str = match &self.profiles_dir {
+            Some(dir) => dir.clone(),
+            None => return Ok(()),
+        };
+
+        let dir_path = if Path::new(&profiles_dir_str).is_absolute() {
+            PathBuf::from(&profiles_dir_str)
+        } else {
+            let config_dir = config_path.parent().unwrap_or(Path::new("."));
+            config_dir.join(&profiles_dir_str)
+        };
+
+        let entries = std::fs::read_dir(&dir_path).map_err(|source| ConfigError::Io {
+            path: dir_path.clone(),
+            source,
+        })?;
+
+        let mut yaml_paths: Vec<PathBuf> = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|source| ConfigError::Io {
+                path: dir_path.clone(),
+                source,
+            })?;
+            let path = entry.path();
+            if path.is_file() {
+                if let Some(ext) = path.extension() {
+                    if ext == "yaml" || ext == "yml" {
+                        yaml_paths.push(path);
+                    }
+                }
+            }
+        }
+        yaml_paths.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+
+        let mut dir_profiles: Vec<Profile> = Vec::new();
+        for path in &yaml_paths {
+            let profile = Config::builder()
+                .add_source(File::from(path.as_path()))
+                .build()
+                .and_then(|c| c.try_deserialize::<Profile>())
+                .map_err(|source| ConfigError::ProfileParse {
+                    path: path.clone(),
+                    source,
+                })?;
+            dir_profiles.push(profile);
+        }
+
+        if !dir_profiles.is_empty() {
+            match &mut self.profiles {
+                Some(existing) => {
+                    dir_profiles.append(existing);
+                    *existing = dir_profiles;
+                }
+                None => {
+                    self.profiles = Some(dir_profiles);
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Normalizes legacy configuration fields into profiles.
@@ -649,5 +718,237 @@ dmx:
         assert_eq!(profiles[0].audio_config().audio().device(), "UltraLite-mk5");
         assert!(profiles[0].midi().is_some());
         assert!(profiles[0].dmx().is_some());
+    }
+
+    /// Helper to create a Player from a YAML string with an associated temp directory.
+    /// The `dir_setup` closure receives the temp dir path for creating profile files.
+    fn player_with_dir(yaml: &str, dir_setup: impl FnOnce(&Path)) -> Player {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("mtrack.yaml");
+        std::fs::write(&config_path, yaml).unwrap();
+        dir_setup(dir.path());
+        Player::deserialize(&config_path).expect("Failed to deserialize")
+    }
+
+    fn write_profile(dir: &Path, filename: &str, yaml: &str) {
+        std::fs::write(dir.join(filename), yaml).unwrap();
+    }
+
+    #[test]
+    fn test_profiles_dir_loads_profiles() {
+        let player = player_with_dir("songs: songs\nprofiles_dir: profiles/\n", |dir| {
+            std::fs::create_dir(dir.join("profiles")).unwrap();
+            write_profile(
+                &dir.join("profiles"),
+                "pi-a.yaml",
+                "hostname: pi-a\ndevice: device-a\ntrack_mappings:\n  drums: [1]\n",
+            );
+            write_profile(
+                &dir.join("profiles"),
+                "pi-b.yml",
+                "hostname: pi-b\ndevice: device-b\ntrack_mappings:\n  drums: [11]\n",
+            );
+        });
+
+        let profiles = player.all_profiles();
+        assert_eq!(profiles.len(), 2);
+        assert_eq!(profiles[0].hostname(), Some("pi-a"));
+        assert_eq!(profiles[0].audio_config().audio().device(), "device-a");
+        assert_eq!(profiles[1].hostname(), Some("pi-b"));
+        assert_eq!(profiles[1].audio_config().audio().device(), "device-b");
+    }
+
+    #[test]
+    fn test_profiles_dir_prepended_before_inline() {
+        let player = player_with_dir(
+            concat!(
+                "songs: songs\n",
+                "profiles_dir: profiles/\n",
+                "profiles:\n",
+                "  - device: inline-fallback\n",
+                "    track_mappings:\n",
+                "      drums: [1]\n",
+            ),
+            |dir| {
+                std::fs::create_dir(dir.join("profiles")).unwrap();
+                write_profile(
+                    &dir.join("profiles"),
+                    "pi-a.yaml",
+                    "hostname: pi-a\ndevice: dir-device\ntrack_mappings:\n  drums: [1]\n",
+                );
+            },
+        );
+
+        let profiles = player.all_profiles();
+        assert_eq!(profiles.len(), 2);
+        // Directory profile comes first.
+        assert_eq!(profiles[0].audio_config().audio().device(), "dir-device");
+        assert_eq!(profiles[0].hostname(), Some("pi-a"));
+        // Inline profile comes second.
+        assert_eq!(
+            profiles[1].audio_config().audio().device(),
+            "inline-fallback"
+        );
+        assert_eq!(profiles[1].hostname(), None);
+    }
+
+    #[test]
+    fn test_profiles_dir_empty_directory() {
+        let player = player_with_dir(
+            concat!(
+                "songs: songs\n",
+                "profiles_dir: profiles/\n",
+                "profiles:\n",
+                "  - device: inline-device\n",
+                "    track_mappings:\n",
+                "      drums: [1]\n",
+            ),
+            |dir| {
+                std::fs::create_dir(dir.join("profiles")).unwrap();
+            },
+        );
+
+        // Only the inline profile should be present.
+        let profiles = player.all_profiles();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].audio_config().audio().device(), "inline-device");
+    }
+
+    #[test]
+    fn test_profiles_dir_missing_directory_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("mtrack.yaml");
+        std::fs::write(&config_path, "songs: songs\nprofiles_dir: nonexistent/\n").unwrap();
+
+        match Player::deserialize(&config_path) {
+            Err(ConfigError::Io { path, .. }) => {
+                assert!(path.to_string_lossy().contains("nonexistent"));
+            }
+            Err(other) => panic!("expected ConfigError::Io, got: {other}"),
+            Ok(_) => panic!("expected error, got Ok"),
+        }
+    }
+
+    #[test]
+    fn test_profiles_dir_invalid_file_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("mtrack.yaml");
+        std::fs::write(&config_path, "songs: songs\nprofiles_dir: profiles/\n").unwrap();
+        std::fs::create_dir(dir.path().join("profiles")).unwrap();
+        write_profile(
+            &dir.path().join("profiles"),
+            "bad.yaml",
+            "this is not valid profile yaml: [[[",
+        );
+
+        match Player::deserialize(&config_path) {
+            Err(ConfigError::ProfileParse { path, .. }) => {
+                assert!(
+                    path.to_string_lossy().contains("bad.yaml"),
+                    "should mention filename: {path:?}"
+                );
+            }
+            Err(other) => panic!("expected ConfigError::ProfileParse, got: {other}"),
+            Ok(_) => panic!("expected error, got Ok"),
+        }
+    }
+
+    #[test]
+    fn test_profiles_dir_ignores_non_yaml_files() {
+        let player = player_with_dir("songs: songs\nprofiles_dir: profiles/\n", |dir| {
+            std::fs::create_dir(dir.join("profiles")).unwrap();
+            write_profile(
+                &dir.join("profiles"),
+                "pi-a.yaml",
+                "hostname: pi-a\ndevice: device-a\ntrack_mappings:\n  drums: [1]\n",
+            );
+            // These should be ignored.
+            write_profile(&dir.join("profiles"), "notes.txt", "just some notes");
+            write_profile(
+                &dir.join("profiles"),
+                "data.json",
+                r#"{"not": "a profile"}"#,
+            );
+        });
+
+        let profiles = player.all_profiles();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].hostname(), Some("pi-a"));
+    }
+
+    #[test]
+    fn test_profiles_dir_sorts_by_filename() {
+        let player = player_with_dir("songs: songs\nprofiles_dir: profiles/\n", |dir| {
+            std::fs::create_dir(dir.join("profiles")).unwrap();
+            // Write in reverse order to verify sorting.
+            write_profile(
+                &dir.join("profiles"),
+                "03-fallback.yml",
+                "device: fallback\ntrack_mappings:\n  drums: [1]\n",
+            );
+            write_profile(
+                &dir.join("profiles"),
+                "01-pi-a.yaml",
+                "hostname: pi-a\ndevice: device-a\ntrack_mappings:\n  drums: [1]\n",
+            );
+            write_profile(
+                &dir.join("profiles"),
+                "02-pi-b.yaml",
+                "hostname: pi-b\ndevice: device-b\ntrack_mappings:\n  drums: [11]\n",
+            );
+        });
+
+        let profiles = player.all_profiles();
+        assert_eq!(profiles.len(), 3);
+        assert_eq!(profiles[0].audio_config().audio().device(), "device-a");
+        assert_eq!(profiles[1].audio_config().audio().device(), "device-b");
+        assert_eq!(profiles[2].audio_config().audio().device(), "fallback");
+    }
+
+    #[test]
+    fn test_profiles_dir_with_hostname_filtering() {
+        let player = player_with_dir(
+            concat!(
+                "songs: songs\n",
+                "profiles_dir: profiles/\n",
+                "profiles:\n",
+                "  - device: inline-fallback\n",
+                "    track_mappings:\n",
+                "      drums: [1]\n",
+            ),
+            |dir| {
+                std::fs::create_dir(dir.join("profiles")).unwrap();
+                write_profile(
+                    &dir.join("profiles"),
+                    "pi-a.yaml",
+                    "hostname: pi-a\ndevice: device-a\ntrack_mappings:\n  drums: [1]\n",
+                );
+                write_profile(
+                    &dir.join("profiles"),
+                    "pi-b.yaml",
+                    "hostname: pi-b\ndevice: device-b\ntrack_mappings:\n  drums: [11]\n",
+                );
+            },
+        );
+
+        // pi-a sees its directory profile + inline fallback.
+        let pi_a = player.profiles("pi-a");
+        assert_eq!(pi_a.len(), 2);
+        assert_eq!(pi_a[0].audio_config().audio().device(), "device-a");
+        assert_eq!(pi_a[1].audio_config().audio().device(), "inline-fallback");
+
+        // pi-b sees its directory profile + inline fallback.
+        let pi_b = player.profiles("pi-b");
+        assert_eq!(pi_b.len(), 2);
+        assert_eq!(pi_b[0].audio_config().audio().device(), "device-b");
+        assert_eq!(pi_b[1].audio_config().audio().device(), "inline-fallback");
+
+        // Unknown host sees only inline fallback.
+        let unknown = player.profiles("pi-c");
+        assert_eq!(unknown.len(), 1);
+        assert_eq!(
+            unknown[0].audio_config().audio().device(),
+            "inline-fallback"
+        );
     }
 }

@@ -348,6 +348,18 @@ track_mappings:
 #       backing-track-l: [1]
 #       backing-track-r: [2]
 
+# --- External Profiles Directory ---
+#
+# Load profiles from individual YAML files in a directory. Each file defines
+# one Profile (same format as inline profile entries above).
+#
+# profiles_dir: profiles/
+#
+# Files are sorted by filename. Use numeric prefixes to control priority:
+#   profiles/01-pi-a.yaml, profiles/02-pi-b.yaml, profiles/99-fallback.yaml
+#
+# Directory profiles are prepended before inline profiles.
+
 # MIDI-triggered sample configuration.
 # Samples defined here are available globally and can be triggered via MIDI events.
 # Per-song sample overrides can be defined in individual song configuration files.

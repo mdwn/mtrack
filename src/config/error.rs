@@ -12,10 +12,24 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+use std::path::PathBuf;
+
 /// Typed error for config load/parse failures so callers can distinguish
 /// e.g. file-not-found from parse errors without string matching.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     #[error("Config load/parse error: {0}")]
     Load(#[from] config::ConfigError),
+
+    #[error("IO error reading {path}: {source}")]
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+
+    #[error("Failed to parse profile from {path}: {source}")]
+    ProfileParse {
+        path: PathBuf,
+        source: config::ConfigError,
+    },
 }
