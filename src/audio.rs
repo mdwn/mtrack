@@ -37,7 +37,7 @@ pub use format::{SampleFormat, TargetFormat};
 static SOURCE_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// Returns the next unique source ID for the mixer. Used by both song play_from and sample engine.
-pub(crate) fn next_source_id() -> u64 {
+pub fn next_source_id() -> u64 {
     SOURCE_ID_COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 

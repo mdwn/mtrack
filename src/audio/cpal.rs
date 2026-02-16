@@ -116,7 +116,7 @@ impl CallbackProfiler {
         }
         let mix_avg_us = self.avg(self.sum_mix_us, self.count);
         let cb_avg_gap_us = self.avg(self.sum_gap_us, self.gap_count);
-        info!(
+        debug!(
             mix_avg_us,
             mix_max_us = self.max_mix_us,
             cb_avg_gap_us,
@@ -134,7 +134,7 @@ impl CallbackProfiler {
         let mix_avg_us = self.avg(self.sum_mix_us, self.count);
         let convert_avg_us = self.avg(self.sum_convert_us, self.count);
         let cb_avg_gap_us = self.avg(self.sum_gap_us, self.gap_count);
-        info!(
+        debug!(
             mix_avg_us,
             mix_max_us = self.max_mix_us,
             convert_avg_us,
@@ -248,6 +248,8 @@ struct OutputManager {
     source_rx: crossbeam_channel::Receiver<MixerActiveSource>,
     /// Handle to the output thread (keeps it alive).
     output_thread: Option<thread::JoinHandle<()>>,
+    /// Shared shutdown signal: set to true and notify condvar to stop the output thread.
+    shutdown_notify: Arc<(Mutex<bool>, Condvar)>,
 }
 
 impl fmt::Display for Device {
@@ -364,10 +366,12 @@ impl Drop for OutputManager {
             self.mixer.remove_sources(source_ids);
         }
 
-        // Close the channels to signal the audio callback to stop
-        // Note: The channels will be automatically dropped when the struct is dropped
+        // Signal the output thread to shut down and wake it from the condvar wait.
+        let (mutex, condvar) = &*self.shutdown_notify;
+        *mutex.lock() = true;
+        condvar.notify_all();
 
-        // Wait for threads to finish
+        // Wait for the output thread to finish
         if let Some(thread) = self.output_thread.take() {
             let _ = thread.join();
         }
@@ -390,6 +394,7 @@ impl OutputManager {
             source_tx,
             source_rx,
             output_thread: None,
+            shutdown_notify: Arc::new((Mutex::new(false), Condvar::new())),
         };
 
         Ok(manager)
@@ -418,6 +423,9 @@ impl OutputManager {
         // Notify the output thread when the CPAL error callback runs (e.g. ALSA POLLERR).
         // The output thread blocks on the condvar and recreates the stream on notification.
         let stream_error_notify = Arc::new((Mutex::new(false), Condvar::new()));
+
+        // Shared shutdown signal so drop can wake the output thread.
+        let shutdown = self.shutdown_notify.clone();
 
         // Use a barrier to ensure the first stream is created before we return
         let barrier = Arc::new(Barrier::new(2));
@@ -548,14 +556,27 @@ impl OutputManager {
                             info!("CPAL output stream recovered after backend error");
                         }
 
-                        // Keep the stream alive; block until the error callback notifies us
-                        let (mutex, condvar) = &*stream_error_notify;
-                        let mut guard = mutex.lock();
-                        while !*guard {
-                            condvar.wait(&mut guard);
+                        // Keep the stream alive; block until either:
+                        // - the error callback notifies us (recreate stream), or
+                        // - the shutdown signal is set (exit thread).
+                        let (err_mutex, err_condvar) = &*stream_error_notify;
+                        let (shut_mutex, _) = &*shutdown;
+                        loop {
+                            // Check shutdown first
+                            if *shut_mutex.lock() {
+                                drop(stream);
+                                return;
+                            }
+                            // Check error
+                            let mut err_guard = err_mutex.lock();
+                            if *err_guard {
+                                *err_guard = false;
+                                break;
+                            }
+                            // Wait on error condvar with a timeout so we can
+                            // periodically re-check the shutdown flag.
+                            err_condvar.wait_for(&mut err_guard, Duration::from_millis(100));
                         }
-                        *guard = false;
-                        drop(guard);
 
                         // Drop the stream so we can create a new one
                         drop(stream);

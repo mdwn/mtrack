@@ -16,6 +16,7 @@ pub mod buffered;
 pub mod channel_mapped;
 pub mod error;
 pub mod factory;
+pub mod looping;
 pub mod memory;
 pub mod traits;
 pub mod transcoder;
@@ -28,5 +29,7 @@ pub use buffered::{BufferFillPool, BufferedSampleSource};
 pub use channel_mapped::create_channel_mapped_sample_source;
 pub use channel_mapped::ChannelMappedSource;
 pub use factory::create_sample_source_from_file;
+#[allow(unused_imports)]
+pub use looping::LoopingSampleSource;
 pub use memory::MemorySampleSource;
 pub use traits::ChannelMappedSampleSource;

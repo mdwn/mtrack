@@ -552,6 +552,48 @@ The existing flat format (`audio:` + `track_mappings:` + `midi:` + `dmx:`) conti
 unchanged. At startup, legacy fields are automatically normalized into a single profile,
 so all internal code paths use the same profile-based logic.
 
+#### External profiles directory
+
+Instead of defining all profiles inline, you can load them from individual YAML files in a
+directory. Each file defines one profile using the same format as inline profile entries.
+
+```yaml
+# Load profiles from a directory (path relative to this config file)
+profiles_dir: profiles/
+
+# Inline profiles still work alongside directory profiles.
+# Directory profiles are prepended before inline profiles.
+profiles:
+  # Fallback for any host not matched by a directory profile
+  - device: "Built-in Audio"
+    track_mappings:
+      click: [1]
+      backing-track-l: [1]
+      backing-track-r: [2]
+```
+
+```yaml
+# profiles/01-pi-a.yaml
+hostname: raspberry-pi-a
+device: "Behringer WING"
+sample_rate: 48000
+track_mappings:
+  click: [1]
+  cue: [2]
+  backing-track-l: [3]
+  backing-track-r: [4]
+  keys: [5, 6]
+midi:
+  device: "Behringer WING"
+dmx:
+  universes:
+    - universe: 1
+      name: light-show
+```
+
+Files are sorted by filename for deterministic ordering. Use numeric prefixes
+(e.g., `01-pi-a.yaml`, `02-pi-b.yaml`, `99-fallback.yaml`) to control priority.
+
 ### mtrack on startup
 
 To have `mtrack` start when the system starts, first create a dedicated system user for the service:

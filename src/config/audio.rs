@@ -127,4 +127,39 @@ impl Audio {
     pub fn stream_buffer_size(&self) -> Option<StreamBufferSize> {
         self.stream_buffer_size.clone()
     }
+
+    /// Sets the target sample rate.
+    #[allow(dead_code)]
+    pub fn with_sample_rate(mut self, sample_rate: u32) -> Self {
+        self.sample_rate = Some(sample_rate);
+        self
+    }
+
+    /// Sets the buffer size for decoded audio samples.
+    #[allow(dead_code)]
+    pub fn with_buffer_size(mut self, buffer_size: usize) -> Self {
+        self.buffer_size = Some(buffer_size);
+        self
+    }
+
+    /// Sets the target sample format ("float" or "int").
+    #[allow(dead_code)]
+    pub fn with_sample_format(mut self, format: &str) -> Self {
+        self.sample_format = Some(format.to_string());
+        self
+    }
+
+    /// Sets the target bits per sample.
+    #[allow(dead_code)]
+    pub fn with_bits_per_sample(mut self, bits: u16) -> Self {
+        self.bits_per_sample = Some(bits);
+        self
+    }
+
+    /// Sets the CPAL stream buffer size.
+    #[allow(dead_code)]
+    pub fn with_stream_buffer_size(mut self, sbs: StreamBufferSize) -> Self {
+        self.stream_buffer_size = Some(sbs);
+        self
+    }
 }
