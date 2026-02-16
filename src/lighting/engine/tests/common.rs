@@ -23,12 +23,12 @@ pub(crate) fn create_test_fixture(name: &str, universe: u16, address: u16) -> Fi
     channels.insert("white".to_string(), 5);
     channels.insert("strobe".to_string(), 6);
 
-    FixtureInfo {
-        name: name.to_string(),
+    FixtureInfo::new(
+        name.to_string(),
         universe,
         address,
-        fixture_type: "RGBW_Strobe".to_string(),
+        "RGBW_Strobe".to_string(),
         channels,
-        max_strobe_frequency: Some(20.0), // Default test fixture max strobe
-    }
+        Some(20.0),
+    )
 }

@@ -25,14 +25,14 @@ fn test_validate_fixture_capabilities_rgb_missing_red() {
     channels.insert("green".to_string(), 2);
     channels.insert("blue".to_string(), 3);
 
-    let fixture = FixtureInfo {
-        name: "rgb_fixture".to_string(),
-        universe: 1,
-        address: 1,
-        fixture_type: "RGB".to_string(),
+    let fixture = FixtureInfo::new(
+        "rgb_fixture".to_string(),
+        1,
+        1,
+        "RGB".to_string(),
         channels,
-        max_strobe_frequency: None,
-    };
+        None,
+    );
 
     // Should warn but not fail
     engine.register_fixture(fixture);
@@ -47,14 +47,14 @@ fn test_validate_fixture_capabilities_rgb_missing_green() {
     channels.insert("red".to_string(), 1);
     channels.insert("blue".to_string(), 3);
 
-    let fixture = FixtureInfo {
-        name: "rgb_fixture".to_string(),
-        universe: 1,
-        address: 1,
-        fixture_type: "RGB".to_string(),
+    let fixture = FixtureInfo::new(
+        "rgb_fixture".to_string(),
+        1,
+        1,
+        "RGB".to_string(),
         channels,
-        max_strobe_frequency: None,
-    };
+        None,
+    );
 
     engine.register_fixture(fixture);
 }
@@ -67,14 +67,14 @@ fn test_validate_fixture_capabilities_rgb_missing_blue() {
     channels.insert("red".to_string(), 1);
     channels.insert("green".to_string(), 2);
 
-    let fixture = FixtureInfo {
-        name: "rgb_fixture".to_string(),
-        universe: 1,
-        address: 1,
-        fixture_type: "RGB".to_string(),
+    let fixture = FixtureInfo::new(
+        "rgb_fixture".to_string(),
+        1,
+        1,
+        "RGB".to_string(),
         channels,
-        max_strobe_frequency: None,
-    };
+        None,
+    );
 
     engine.register_fixture(fixture);
 }
@@ -86,14 +86,14 @@ fn test_validate_fixture_capabilities_strobe_missing() {
     let mut channels = HashMap::new();
     channels.insert("dimmer".to_string(), 1);
 
-    let fixture = FixtureInfo {
-        name: "strobe_fixture".to_string(),
-        universe: 1,
-        address: 1,
-        fixture_type: "Strobe".to_string(),
+    let fixture = FixtureInfo::new(
+        "strobe_fixture".to_string(),
+        1,
+        1,
+        "Strobe".to_string(),
         channels,
-        max_strobe_frequency: None,
-    };
+        None,
+    );
 
     engine.register_fixture(fixture);
 }
@@ -106,14 +106,14 @@ fn test_validate_fixture_capabilities_moving_head_missing_pan() {
     channels.insert("tilt".to_string(), 2);
     channels.insert("dimmer".to_string(), 3);
 
-    let fixture = FixtureInfo {
-        name: "moving_head".to_string(),
-        universe: 1,
-        address: 1,
-        fixture_type: "MovingHead".to_string(),
+    let fixture = FixtureInfo::new(
+        "moving_head".to_string(),
+        1,
+        1,
+        "MovingHead".to_string(),
         channels,
-        max_strobe_frequency: None,
-    };
+        None,
+    );
 
     engine.register_fixture(fixture);
 }
@@ -126,14 +126,14 @@ fn test_validate_fixture_capabilities_moving_head_missing_tilt() {
     channels.insert("pan".to_string(), 1);
     channels.insert("dimmer".to_string(), 3);
 
-    let fixture = FixtureInfo {
-        name: "moving_head".to_string(),
-        universe: 1,
-        address: 1,
-        fixture_type: "MovingHead".to_string(),
+    let fixture = FixtureInfo::new(
+        "moving_head".to_string(),
+        1,
+        1,
+        "MovingHead".to_string(),
         channels,
-        max_strobe_frequency: None,
-    };
+        None,
+    );
 
     engine.register_fixture(fixture);
 }
@@ -384,14 +384,14 @@ fn test_validate_effect_compatibility_color_cycle_no_rgb() {
     channels.insert("dimmer".to_string(), 1);
     // No RGB channels
 
-    let fixture = FixtureInfo {
-        name: "dimmer_only".to_string(),
-        universe: 1,
-        address: 1,
-        fixture_type: "Dimmer".to_string(),
+    let fixture = FixtureInfo::new(
+        "dimmer_only".to_string(),
+        1,
+        1,
+        "Dimmer".to_string(),
         channels,
-        max_strobe_frequency: None,
-    };
+        None,
+    );
     engine.register_fixture(fixture);
 
     let colors = vec![Color::new(255, 0, 0)];
@@ -425,14 +425,14 @@ fn test_validate_effect_compatibility_rainbow_no_rgb() {
     let mut channels = HashMap::new();
     channels.insert("dimmer".to_string(), 1);
 
-    let fixture = FixtureInfo {
-        name: "dimmer_only".to_string(),
-        universe: 1,
-        address: 1,
-        fixture_type: "Dimmer".to_string(),
+    let fixture = FixtureInfo::new(
+        "dimmer_only".to_string(),
+        1,
+        1,
+        "Dimmer".to_string(),
         channels,
-        max_strobe_frequency: None,
-    };
+        None,
+    );
     engine.register_fixture(fixture);
 
     let effect = EffectInstance::new(

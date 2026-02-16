@@ -82,14 +82,14 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         fixture_registry.insert(
             name.clone(),
-            FixtureInfo {
-                name: name.clone(),
-                universe: 1,
-                address: address - 5,
-                fixture_type: "RGBW".to_string(),
+            FixtureInfo::new(
+                name.clone(),
+                1,
+                address - 5,
+                "RGBW".to_string(),
                 channels,
-                max_strobe_frequency: None,
-            },
+                None,
+            ),
         );
     }
 

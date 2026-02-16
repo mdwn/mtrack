@@ -62,6 +62,8 @@ pub struct Engine {
     lighting_system: Option<Arc<Mutex<LightingSystem>>>,
     /// Lighting configuration for validation
     lighting_config: Option<config::Lighting>,
+    /// Handle for the persistent effects loop thread
+    effects_loop_handle: Mutex<Option<JoinHandle<()>>>,
     /// Current song timeline (thread-safe access for effects loop)
     current_song_timeline: Arc<Mutex<Option<LightingTimeline>>>,
     /// Current song time (thread-safe access for effects loop)
@@ -148,6 +150,7 @@ impl Engine {
             client_handle: Some(client_handle),
             join_handles,
             effect_engine,
+            effects_loop_handle: Mutex::new(None),
             lighting_system,
             lighting_config: lighting_config.cloned(),
             current_song_timeline,
@@ -220,9 +223,9 @@ impl Engine {
             }
         });
 
-        // The handle is forgotten so the thread runs detached.
-        // It will stop when the Engine is dropped (weak upgrade fails).
-        std::mem::forget(handle);
+        // Store the handle so it can be joined on drop.
+        // The thread will stop when the Engine is dropped (weak upgrade fails).
+        *engine.effects_loop_handle.lock() = Some(handle);
     }
 
     #[cfg(test)]
@@ -939,6 +942,13 @@ impl Drop for Engine {
         // We still cancel the handle for any other consumers.
         self.cancel_handle.cancel();
 
+        // Join the effects loop thread (it will exit since the weak ref can no longer upgrade)
+        if let Some(handle) = self.effects_loop_handle.lock().take() {
+            if handle.join().is_err() {
+                error!("Error joining effects loop handle");
+            }
+        }
+
         self.join_handles.drain(..).for_each(|join_handle| {
             if join_handle.join().is_err() {
                 error!("Error joining handle");
@@ -959,7 +969,7 @@ impl Drop for Engine {
     }
 }
 
-/// DMXConnection is a nodi connection that can be cancelled and will poutput to a
+/// DMXConnection is a nodi connection that can be cancelled and will output to a
 /// DMX interface.
 struct DMXConnection {
     cancel_handle: CancelHandle,
@@ -1070,20 +1080,20 @@ mod test {
         let (engine, _cancel_handle) = create_engine()?;
 
         // Register a fixture with the effects engine
-        let fixture_info = crate::lighting::effects::FixtureInfo {
-            name: "test_fixture".to_string(),
-            universe: 1,
-            address: 1,
-            fixture_type: "RGBW_Par".to_string(),
-            channels: {
-                let mut channels = std::collections::HashMap::new();
-                channels.insert("dimmer".to_string(), 1);
-                channels.insert("red".to_string(), 2);
-                channels.insert("green".to_string(), 3);
-                channels.insert("blue".to_string(), 4);
-                channels
-            },
-            max_strobe_frequency: None, // RGBW_Par doesn't have strobe
+        let fixture_info = {
+            let mut channels = std::collections::HashMap::new();
+            channels.insert("dimmer".to_string(), 1);
+            channels.insert("red".to_string(), 2);
+            channels.insert("green".to_string(), 3);
+            channels.insert("blue".to_string(), 4);
+            crate::lighting::effects::FixtureInfo::new(
+                "test_fixture".to_string(),
+                1,
+                1,
+                "RGBW_Par".to_string(),
+                channels,
+                None,
+            )
         };
 
         {
@@ -1198,20 +1208,20 @@ mod test {
         let (engine, _cancel_handle) = create_engine()?;
 
         // Register a fixture
-        let fixture_info = crate::lighting::effects::FixtureInfo {
-            name: "test_fixture".to_string(),
-            universe: 1,
-            address: 1,
-            fixture_type: "RGBW_Par".to_string(),
-            channels: {
-                let mut channels = std::collections::HashMap::new();
-                channels.insert("dimmer".to_string(), 1);
-                channels.insert("red".to_string(), 2);
-                channels.insert("green".to_string(), 3);
-                channels.insert("blue".to_string(), 4);
-                channels
-            },
-            max_strobe_frequency: None, // RGBW_Par doesn't have strobe
+        let fixture_info = {
+            let mut channels = std::collections::HashMap::new();
+            channels.insert("dimmer".to_string(), 1);
+            channels.insert("red".to_string(), 2);
+            channels.insert("green".to_string(), 3);
+            channels.insert("blue".to_string(), 4);
+            crate::lighting::effects::FixtureInfo::new(
+                "test_fixture".to_string(),
+                1,
+                1,
+                "RGBW_Par".to_string(),
+                channels,
+                None,
+            )
         };
 
         {
@@ -1294,14 +1304,14 @@ mod test {
         channels.insert("green".to_string(), 3);
         channels.insert("blue".to_string(), 4);
 
-        let fixture_info = crate::lighting::effects::FixtureInfo {
-            name: "test_fixture".to_string(),
-            universe: 1,
-            address: 1,
-            fixture_type: "RGB".to_string(),
+        let fixture_info = crate::lighting::effects::FixtureInfo::new(
+            "test_fixture".to_string(),
+            1,
+            1,
+            "RGB".to_string(),
             channels,
-            max_strobe_frequency: None, // RGB doesn't have strobe
-        };
+            None,
+        );
 
         // Register fixture through the effect engine
         {
@@ -1627,14 +1637,14 @@ mod test {
         channels.insert("blue".to_string(), 3); // Channel 3
         channels.insert("dimmer".to_string(), 4); // Channel 4
 
-        let fixture_info = FixtureInfo {
-            name: "test_fixture".to_string(),
-            universe: 1,
-            address: 10, // DMX address 10
-            fixture_type: "RGB_Par".to_string(),
+        let fixture_info = FixtureInfo::new(
+            "test_fixture".to_string(),
+            1,
+            10,
+            "RGB_Par".to_string(),
             channels,
-            max_strobe_frequency: None, // RGB_Par doesn't have strobe
-        };
+            None,
+        );
 
         // Register the fixture
         {

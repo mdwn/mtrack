@@ -149,15 +149,6 @@ pub(crate) fn parse_duration_string(
         let num = num_str.parse::<f64>()?;
         if let Some(tm) = tempo_map {
             let time = at_time.unwrap_or(Duration::ZERO);
-            // Only debug for 30measures
-            if num == 30.0 {
-                eprintln!(
-                    "[parse-duration-string] measures={} at_time={:.6}s offset_secs={:.6}",
-                    num,
-                    time.as_secs_f64(),
-                    offset_secs
-                );
-            }
             Ok(tm.measures_to_duration(num, time, offset_secs))
         } else {
             Err("Measure-based durations require a tempo section".into())
@@ -218,70 +209,8 @@ pub(crate) fn parse_color_string(value: &str) -> Option<Color> {
         }
         None
     } else {
-        // Named color
-        match clean_value.to_lowercase().as_str() {
-            "red" => Some(Color {
-                r: 255,
-                g: 0,
-                b: 0,
-                w: None,
-            }),
-            "green" => Some(Color {
-                r: 0,
-                g: 255,
-                b: 0,
-                w: None,
-            }),
-            "blue" => Some(Color {
-                r: 0,
-                g: 0,
-                b: 255,
-                w: None,
-            }),
-            "white" => Some(Color {
-                r: 255,
-                g: 255,
-                b: 255,
-                w: None,
-            }),
-            "black" => Some(Color {
-                r: 0,
-                g: 0,
-                b: 0,
-                w: None,
-            }),
-            "yellow" => Some(Color {
-                r: 255,
-                g: 255,
-                b: 0,
-                w: None,
-            }),
-            "cyan" => Some(Color {
-                r: 0,
-                g: 255,
-                b: 255,
-                w: None,
-            }),
-            "magenta" => Some(Color {
-                r: 255,
-                g: 0,
-                b: 255,
-                w: None,
-            }),
-            "orange" => Some(Color {
-                r: 255,
-                g: 165,
-                b: 0,
-                w: None,
-            }),
-            "purple" => Some(Color {
-                r: 128,
-                g: 0,
-                b: 128,
-                w: None,
-            }),
-            _ => None,
-        }
+        // Named color — delegate to the canonical Color::from_name
+        Color::from_name(clean_value).ok()
     }
 }
 

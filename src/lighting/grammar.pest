@@ -159,7 +159,7 @@ step_content = { step_param ~ ("," ~ step_param)* }
 
 step_param = { parameter_name ~ ":" ~ parameter_value }
 
-transition_parameter = { "snap" | "fade" | "crossfade" | "wipe" }
+transition_parameter = { "snap" | "fade" | "crossfade" }
 
 layer_parameter = { "background" | "midground" | "foreground" }
 

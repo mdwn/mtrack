@@ -172,11 +172,7 @@ impl EffectEngine {
             .iter()
             .filter(|(_, existing_effect)| {
                 existing_effect.enabled
-                    && layers::should_effects_conflict(
-                        existing_effect,
-                        new_effect,
-                        &self.fixture_registry,
-                    )
+                    && layers::should_effects_conflict(existing_effect, new_effect)
             })
             .map(|(id, _)| id.clone())
             .collect();
@@ -263,7 +259,7 @@ impl EffectEngine {
         self.preserve_conflicting_permanent_effects(&effect)?;
 
         // Stop any conflicting effects
-        layers::stop_conflicting_effects(&mut self.active_effects, &effect, &self.fixture_registry);
+        layers::stop_conflicting_effects(&mut self.active_effects, &effect);
 
         // Set the start time to the current engine time
         effect.start_time = Some(self.current_time);
@@ -302,7 +298,7 @@ impl EffectEngine {
         self.preserve_conflicting_permanent_effects(&effect)?;
 
         // Stop any conflicting effects
-        layers::stop_conflicting_effects(&mut self.active_effects, &effect, &self.fixture_registry);
+        layers::stop_conflicting_effects(&mut self.active_effects, &effect);
 
         // Set the start time to be in the past by the elapsed amount
         effect.start_time = Some(
@@ -581,12 +577,8 @@ impl EffectEngine {
                         }
                     } else {
                         // Temporary effects complete and end — remove per-layer multipliers for this effect's layer
-                        // Pre-compute layer suffix keys to avoid repeated formatting
-                        let (dimmer_key, pulse_key) = match effect.layer {
-                            EffectLayer::Background => ("_dimmer_mult_bg", "_pulse_mult_bg"),
-                            EffectLayer::Midground => ("_dimmer_mult_mid", "_pulse_mult_mid"),
-                            EffectLayer::Foreground => ("_dimmer_mult_fg", "_pulse_mult_fg"),
-                        };
+                        let dimmer_key = multiplier_key("dimmer", effect.layer);
+                        let pulse_key = multiplier_key("pulse", effect.layer);
 
                         for (fixture_name, _final_state) in final_states {
                             if self.fixture_registry.contains_key(&fixture_name) {
@@ -594,16 +586,16 @@ impl EffectEngine {
                                 if let Some(current_state) =
                                     current_fixture_states.get_mut(&fixture_name)
                                 {
-                                    current_state.channels.remove(dimmer_key);
-                                    current_state.channels.remove(pulse_key);
+                                    current_state.channels.remove(&dimmer_key);
+                                    current_state.channels.remove(&pulse_key);
                                 }
 
                                 // Also remove from persisted fixture_states
                                 if let Some(persisted_state) =
                                     self.fixture_states.get_mut(&fixture_name)
                                 {
-                                    persisted_state.channels.remove(dimmer_key);
-                                    persisted_state.channels.remove(pulse_key);
+                                    persisted_state.channels.remove(&dimmer_key);
+                                    persisted_state.channels.remove(&pulse_key);
                                 }
                             }
                         }

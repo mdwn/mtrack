@@ -29,9 +29,10 @@ impl TimeSignature {
         }
     }
 
-    /// Get beats per measure
+    /// Get beats per measure, normalized to quarter-note beats.
+    /// For example, 4/4 returns 4.0, 6/8 returns 3.0 (six eighth-notes = three quarter-notes).
     pub fn beats_per_measure(&self) -> f64 {
-        self.numerator as f64
+        self.numerator as f64 * 4.0 / self.denominator as f64
     }
 }
 
@@ -112,13 +113,22 @@ impl TransitionCurve {
                 let b = (old_bpm + (new_bpm - old_bpm) * elapsed / total_duration) / 60.0;
                 let c = -beats;
 
-                let discriminant = b * b - 4.0 * a * c;
-                if discriminant >= 0.0 {
-                    Some((-b + discriminant.sqrt()) / (2.0 * a))
+                if a.abs() < f64::EPSILON {
+                    // Linear case (constant BPM): b * dt = beats
+                    if b.abs() < f64::EPSILON {
+                        None // Zero BPM — cannot solve
+                    } else {
+                        Some(-c / b)
+                    }
                 } else {
-                    // Fallback to average BPM
-                    let current_bpm = old_bpm + (new_bpm - old_bpm) * elapsed / total_duration;
-                    Some(beats * 60.0 / ((current_bpm + new_bpm) / 2.0))
+                    let discriminant = b * b - 4.0 * a * c;
+                    if discriminant >= 0.0 {
+                        Some((-b + discriminant.sqrt()) / (2.0 * a))
+                    } else {
+                        // Fallback to average BPM
+                        let current_bpm = old_bpm + (new_bpm - old_bpm) * elapsed / total_duration;
+                        Some(beats * 60.0 / ((current_bpm + new_bpm) / 2.0))
+                    }
                 }
             }
         }
@@ -902,14 +912,74 @@ impl TempoMap {
         at_time: Duration,
         offset_secs: f64,
     ) -> Duration {
-        let initial_time_sig = self.time_signature_at_time(at_time, offset_secs);
-        let initial_beats = measures * initial_time_sig.beats_per_measure();
+        // Integrate through time signature changes to compute total beats
+        let offset_duration = Duration::from_secs_f64(offset_secs);
+        let mut remaining_measures = measures;
+        let mut current_time = at_time;
+        let mut current_bpm = self.bpm_at_time(at_time, offset_secs);
+        let mut current_ts = self.time_signature_at_time(at_time, offset_secs);
+        let mut total_duration = Duration::ZERO;
 
-        // Convert measures to beats, then use beats_to_duration
-        // Note: This is approximate if time signature changes during the duration
-        // A more accurate implementation would integrate through time signature changes
-        // but for now, we use the initial time signature
-        self.beats_to_duration(initial_beats, at_time, offset_secs)
+        // Collect time-signature changes that occur after at_time
+        let mut ts_changes: Vec<(Duration, TimeSignature, f64)> = Vec::new();
+        for change in &self.changes {
+            if let Some(change_time) = change.position.absolute_time() {
+                let shifted = change_time + offset_duration;
+                if shifted > at_time {
+                    if let Some(new_ts) = change.time_signature {
+                        let new_bpm = change.bpm.unwrap_or(self.bpm_at_time(shifted, offset_secs));
+                        ts_changes.push((shifted, new_ts, new_bpm));
+                    } else if let Some(new_bpm) = change.bpm {
+                        // Tempo-only change — still need to track for bpm updates
+                        let ts_at = self.time_signature_at_time(shifted, offset_secs);
+                        ts_changes.push((shifted, ts_at, new_bpm));
+                    }
+                }
+            }
+        }
+        ts_changes.sort_by_key(|(t, _, _)| *t);
+
+        for (change_time, new_ts, new_bpm) in &ts_changes {
+            if remaining_measures <= 0.0 {
+                break;
+            }
+
+            // How many measures fit between current_time and change_time at current tempo/ts?
+            let beats_per_measure = current_ts.beats_per_measure();
+            let segment_secs = change_time.saturating_sub(current_time).as_secs_f64();
+            let segment_beats = segment_secs * current_bpm / 60.0;
+            let segment_measures = if beats_per_measure > 0.0 {
+                segment_beats / beats_per_measure
+            } else {
+                0.0
+            };
+
+            if remaining_measures <= segment_measures {
+                // All remaining measures fit in this segment
+                let beats_needed = remaining_measures * beats_per_measure;
+                let time_needed = Duration::from_secs_f64(beats_needed * 60.0 / current_bpm);
+                total_duration += time_needed;
+                remaining_measures = 0.0;
+                break;
+            }
+
+            // Consume this segment
+            remaining_measures -= segment_measures;
+            total_duration += change_time.saturating_sub(current_time);
+            current_time = *change_time;
+            current_ts = *new_ts;
+            current_bpm = *new_bpm;
+        }
+
+        // Remaining measures after all changes
+        if remaining_measures > 0.0 {
+            let beats_per_measure = current_ts.beats_per_measure();
+            let beats_needed = remaining_measures * beats_per_measure;
+            let time_needed = Duration::from_secs_f64(beats_needed * 60.0 / current_bpm);
+            total_duration += time_needed;
+        }
+
+        total_duration
     }
 
     /// Calculate duration for N playback measures

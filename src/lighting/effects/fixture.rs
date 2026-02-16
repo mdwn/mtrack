@@ -28,6 +28,25 @@ fn layer_suffix(layer: EffectLayer) -> &'static str {
     }
 }
 
+/// Build a multiplier channel key (e.g. "_dimmer_mult_bg", "_pulse_mult_fg")
+#[inline]
+pub fn multiplier_key(prefix: &str, layer: EffectLayer) -> String {
+    format!("_{}_mult{}", prefix, layer_suffix(layer))
+}
+
+/// Insert RGB channel states into a result map
+fn insert_rgb(
+    result: &mut HashMap<String, ChannelState>,
+    value: f64,
+    layer: EffectLayer,
+    blend_mode: BlendMode,
+) {
+    let state = ChannelState::new(value, layer, blend_mode);
+    result.insert("red".to_string(), state);
+    result.insert("green".to_string(), state);
+    result.insert("blue".to_string(), state);
+}
+
 /// Bitwise flags for fixture capabilities
 /// This allows for fast bitwise operations instead of HashSet lookups
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -173,15 +192,17 @@ impl FixtureProfile {
     /// 1. Dedicated channels when available (better performance and control)
     /// 2. Color-preserving methods for RGB operations
     /// 3. Fallback strategies for basic functionality
-    pub fn for_fixture(fixture: &FixtureInfo) -> Self {
-        let capabilities = fixture.capabilities();
+    pub fn for_fixture(fixture: &FixtureInfo) -> &FixtureProfile {
+        fixture.profile()
+    }
 
-        // Determine strategies based on fixture capabilities
-        let brightness_strategy = Self::determine_brightness_strategy(&capabilities);
-        let color_strategy = Self::determine_color_strategy(&capabilities);
-        let strobe_strategy = Self::determine_strobe_strategy(&capabilities);
-        let pulse_strategy = Self::determine_pulse_strategy(&capabilities);
-        let chase_strategy = Self::determine_chase_strategy(&capabilities);
+    /// Create a fixture profile from pre-computed capabilities
+    pub(super) fn from_capabilities(capabilities: &FixtureCapabilities) -> Self {
+        let brightness_strategy = Self::determine_brightness_strategy(capabilities);
+        let color_strategy = Self::determine_color_strategy(capabilities);
+        let strobe_strategy = Self::determine_strobe_strategy(capabilities);
+        let pulse_strategy = Self::determine_pulse_strategy(capabilities);
+        let chase_strategy = Self::determine_chase_strategy(capabilities);
 
         FixtureProfile {
             brightness_strategy,
@@ -245,6 +266,31 @@ impl FixtureProfile {
         }
     }
 
+    /// Apply a dimmer-or-multiplier value, using the given strategy.
+    /// Shared logic for brightness, pulse, and similar effects that either use a
+    /// dedicated dimmer channel or an RGB multiplier channel.
+    fn apply_dimmer_or_multiplier(
+        strategy_uses_dimmer: bool,
+        multiplier_prefix: &str,
+        value: f64,
+        layer: EffectLayer,
+        blend_mode: BlendMode,
+    ) -> HashMap<String, ChannelState> {
+        let mut result = HashMap::new();
+        if strategy_uses_dimmer {
+            result.insert(
+                "dimmer".to_string(),
+                ChannelState::new(value, layer, blend_mode),
+            );
+        } else {
+            result.insert(
+                multiplier_key(multiplier_prefix, layer),
+                ChannelState::new(value, layer, BlendMode::Multiply),
+            );
+        }
+        result
+    }
+
     /// Apply brightness control using the fixture's strategy
     pub fn apply_brightness(
         &self,
@@ -252,28 +298,13 @@ impl FixtureProfile {
         layer: EffectLayer,
         blend_mode: BlendMode,
     ) -> HashMap<String, ChannelState> {
-        let mut result = HashMap::new();
-
-        // The conceptual dimmer effect should behave identically regardless of fixture type
-        // The fixture type only determines the implementation strategy, not the behavior
-        match self.brightness_strategy {
-            BrightnessStrategy::DedicatedDimmer => {
-                // For fixtures with dedicated dimmer channels, always use the dimmer channel
-                // The blend mode controls how it interacts with other effects
-                result.insert(
-                    "dimmer".to_string(),
-                    ChannelState::new(level, layer, blend_mode),
-                );
-            }
-            BrightnessStrategy::RgbMultiplication => {
-                // For RGB-only fixtures, always use RGB multiplication
-                // This ensures consistent behavior regardless of blend mode
-                let key = format!("_dimmer_mult{}", layer_suffix(layer));
-                result.insert(key, ChannelState::new(level, layer, BlendMode::Multiply));
-            }
-        }
-
-        result
+        Self::apply_dimmer_or_multiplier(
+            self.brightness_strategy == BrightnessStrategy::DedicatedDimmer,
+            "dimmer",
+            level,
+            layer,
+            blend_mode,
+        )
     }
 
     /// Apply color control using the fixture's strategy
@@ -352,10 +383,7 @@ impl FixtureProfile {
                         blend_mode
                     };
 
-                    let channel_state = ChannelState::new(value, layer, effective_blend_mode);
-                    result.insert("red".to_string(), channel_state);
-                    result.insert("green".to_string(), channel_state);
-                    result.insert("blue".to_string(), channel_state);
+                    insert_rgb(&mut result, value, layer, effective_blend_mode);
                 }
             }
             StrobeStrategy::BrightnessStrobing => {
@@ -383,28 +411,13 @@ impl FixtureProfile {
         layer: EffectLayer,
         blend_mode: BlendMode,
     ) -> HashMap<String, ChannelState> {
-        let mut result = HashMap::new();
-
-        match self.pulse_strategy {
-            PulseStrategy::DedicatedDimmer => {
-                // Use dedicated dimmer channel
-                result.insert(
-                    "dimmer".to_string(),
-                    ChannelState::new(pulse_value, layer, blend_mode),
-                );
-            }
-            PulseStrategy::RgbMultiplication => {
-                // Use RGB multiplication (preserves color)
-                // Store as multiplier for blending system to apply to existing channels
-                let key = format!("_pulse_mult{}", layer_suffix(layer));
-                result.insert(
-                    key,
-                    ChannelState::new(pulse_value, layer, BlendMode::Multiply),
-                );
-            }
-        }
-
-        result
+        Self::apply_dimmer_or_multiplier(
+            self.pulse_strategy == PulseStrategy::DedicatedDimmer,
+            "pulse",
+            pulse_value,
+            layer,
+            blend_mode,
+        )
     }
 
     /// Apply chase control using the fixture's strategy
@@ -417,26 +430,14 @@ impl FixtureProfile {
         let mut result = HashMap::new();
 
         match self.chase_strategy {
-            ChaseStrategy::DedicatedDimmer => {
-                // Use dedicated dimmer channel
+            ChaseStrategy::DedicatedDimmer | ChaseStrategy::BrightnessControl => {
                 result.insert(
                     "dimmer".to_string(),
                     ChannelState::new(chase_value, layer, blend_mode),
                 );
             }
             ChaseStrategy::RgbChannels => {
-                // Use RGB channels directly - set all to same value for white chase
-                let channel_state = ChannelState::new(chase_value, layer, blend_mode);
-                result.insert("red".to_string(), channel_state);
-                result.insert("green".to_string(), channel_state);
-                result.insert("blue".to_string(), channel_state);
-            }
-            ChaseStrategy::BrightnessControl => {
-                // Use brightness control (fallback)
-                result.insert(
-                    "dimmer".to_string(),
-                    ChannelState::new(chase_value, layer, blend_mode),
-                );
+                insert_rgb(&mut result, chase_value, layer, blend_mode);
             }
         }
 
@@ -453,55 +454,82 @@ pub struct FixtureInfo {
     pub fixture_type: String,
     pub channels: HashMap<String, u16>,
     pub max_strobe_frequency: Option<f64>, // Maximum strobe frequency in Hz
+    /// Cached capabilities derived from channels (computed once at construction)
+    cached_capabilities: FixtureCapabilities,
+    /// Cached fixture profile (computed once at construction)
+    cached_profile: FixtureProfile,
 }
 
 impl FixtureInfo {
+    /// Create a new FixtureInfo, computing and caching capabilities and profile.
+    pub fn new(
+        name: String,
+        universe: u16,
+        address: u16,
+        fixture_type: String,
+        channels: HashMap<String, u16>,
+        max_strobe_frequency: Option<f64>,
+    ) -> Self {
+        let capabilities = Self::derive_capabilities(&channels);
+        let profile = FixtureProfile::from_capabilities(&capabilities);
+        Self {
+            name,
+            universe,
+            address,
+            fixture_type,
+            channels,
+            max_strobe_frequency,
+            cached_capabilities: capabilities,
+            cached_profile: profile,
+        }
+    }
+
     /// Derive fixture capabilities from available channels
-    pub fn capabilities(&self) -> FixtureCapabilities {
+    fn derive_capabilities(channels: &HashMap<String, u16>) -> FixtureCapabilities {
         let mut capabilities = FixtureCapabilities::NONE;
 
         // Check for RGB color capability (requires all three)
-        if self.channels.contains_key("red")
-            && self.channels.contains_key("green")
-            && self.channels.contains_key("blue")
+        if channels.contains_key("red")
+            && channels.contains_key("green")
+            && channels.contains_key("blue")
         {
             capabilities = capabilities.with(FixtureCapabilities::RGB_COLOR);
         }
 
         // Single-channel capabilities
-        if self.channels.contains_key("white") {
+        if channels.contains_key("white") {
             capabilities = capabilities.with(FixtureCapabilities::WHITE_COLOR);
         }
-        if self.channels.contains_key("dimmer") {
+        if channels.contains_key("dimmer") {
             capabilities = capabilities.with(FixtureCapabilities::DIMMING);
         }
-        if self.channels.contains_key("strobe") {
+        if channels.contains_key("strobe") {
             capabilities = capabilities.with(FixtureCapabilities::STROBING);
         }
-        if self.channels.contains_key("pan") {
+        if channels.contains_key("pan") {
             capabilities = capabilities.with(FixtureCapabilities::PANNING);
         }
-        if self.channels.contains_key("tilt") {
+        if channels.contains_key("tilt") {
             capabilities = capabilities.with(FixtureCapabilities::TILTING);
         }
-        if self.channels.contains_key("zoom") {
+        if channels.contains_key("zoom") {
             capabilities = capabilities.with(FixtureCapabilities::ZOOMING);
         }
-        if self.channels.contains_key("focus") {
+        if channels.contains_key("focus") {
             capabilities = capabilities.with(FixtureCapabilities::FOCUSING);
         }
-        if self.channels.contains_key("gobo") {
+        if channels.contains_key("gobo") {
             capabilities = capabilities.with(FixtureCapabilities::GOBO);
         }
 
         // Multi-channel capabilities
-        if self.channels.contains_key("ct") || self.channels.contains_key("color_temp") {
+        if channels.contains_key("ct") || channels.contains_key("color_temp") {
             capabilities = capabilities.with(FixtureCapabilities::COLOR_TEMPERATURE);
         }
 
-        if self.channels.contains_key("effects")
-            || self.channels.contains_key("prism")
-            || self.channels.contains_key("frost")
+        if channels.contains_key("effects")
+            || channels.contains_key("prism")
+            || channels.contains_key("frost")
         {
             capabilities = capabilities.with(FixtureCapabilities::EFFECTS);
         }
@@ -509,9 +537,22 @@ impl FixtureInfo {
         capabilities
     }
 
+    /// Get cached capabilities
+    #[cfg(test)]
+    #[inline]
+    pub fn capabilities(&self) -> FixtureCapabilities {
+        self.cached_capabilities
+    }
+
     /// Check if the fixture has a specific capability
     #[inline]
     pub fn has_capability(&self, capability: FixtureCapabilities) -> bool {
-        self.capabilities().contains(capability)
+        self.cached_capabilities.contains(capability)
+    }
+
+    /// Get the cached fixture profile
+    #[inline]
+    pub fn profile(&self) -> &FixtureProfile {
+        &self.cached_profile
     }
 }

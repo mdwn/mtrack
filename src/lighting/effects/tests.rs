@@ -44,14 +44,14 @@ fn test_fixture_capabilities() {
     rgb_channels.insert("blue".to_string(), 3);
     rgb_channels.insert("dimmer".to_string(), 4);
 
-    let rgb_fixture = FixtureInfo {
-        name: "RGB Fixture".to_string(),
-        universe: 1,
-        address: 1,
-        fixture_type: "RGB_Par".to_string(),
-        channels: rgb_channels,
-        max_strobe_frequency: None, // RGB_Par doesn't have strobe
-    };
+    let rgb_fixture = FixtureInfo::new(
+        "RGB Fixture".to_string(),
+        1,
+        1,
+        "RGB_Par".to_string(),
+        rgb_channels,
+        None, // RGB_Par doesn't have strobe
+    );
 
     assert!(rgb_fixture.has_capability(FixtureCapabilities::RGB_COLOR));
     assert!(rgb_fixture.has_capability(FixtureCapabilities::DIMMING));
@@ -62,14 +62,14 @@ fn test_fixture_capabilities() {
     strobe_channels.insert("strobe".to_string(), 1);
     strobe_channels.insert("dimmer".to_string(), 2);
 
-    let strobe_fixture = FixtureInfo {
-        name: "Strobe Fixture".to_string(),
-        universe: 1,
-        address: 5,
-        fixture_type: "Strobe".to_string(),
-        channels: strobe_channels,
-        max_strobe_frequency: Some(20.0), // Test strobe fixture max frequency
-    };
+    let strobe_fixture = FixtureInfo::new(
+        "Strobe Fixture".to_string(),
+        1,
+        5,
+        "Strobe".to_string(),
+        strobe_channels,
+        Some(20.0), // Test strobe fixture max frequency
+    );
 
     assert!(strobe_fixture.has_capability(FixtureCapabilities::STROBING));
     assert!(strobe_fixture.has_capability(FixtureCapabilities::DIMMING));
@@ -105,14 +105,14 @@ fn test_capabilities_performance() {
     channels.insert("pan".to_string(), 6);
     channels.insert("tilt".to_string(), 7);
 
-    let fixture = FixtureInfo {
-        name: "Multi-Capability Fixture".to_string(),
-        universe: 1,
-        address: 1,
-        fixture_type: "Moving_Head".to_string(),
+    let fixture = FixtureInfo::new(
+        "Multi-Capability Fixture".to_string(),
+        1,
+        1,
+        "Moving_Head".to_string(),
         channels,
-        max_strobe_frequency: Some(15.0), // Moving head max strobe frequency
-    };
+        Some(15.0), // Moving head max strobe frequency
+    );
 
     let capabilities = fixture.capabilities();
 

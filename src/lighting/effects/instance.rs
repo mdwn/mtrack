@@ -154,17 +154,9 @@ impl EffectInstance {
                 1.0
             } else if elapsed < total_end + eps {
                 // Fade out phase (100% to 0%)
-                if down_time.is_zero() {
-                    0.0
-                } else {
-                    let fade_out_elapsed = elapsed.saturating_sub(hold_end);
-                    let t = if down_time.is_zero() {
-                        1.0
-                    } else {
-                        (fade_out_elapsed.as_secs_f64() / down_time.as_secs_f64()).clamp(0.0, 1.0)
-                    };
-                    1.0 - t
-                }
+                let fade_out_elapsed = elapsed.saturating_sub(hold_end);
+                let t = (fade_out_elapsed.as_secs_f64() / down_time.as_secs_f64()).clamp(0.0, 1.0);
+                1.0 - t
             } else {
                 // Effect has ended
                 0.0
@@ -235,7 +227,7 @@ impl EffectInstance {
     /// This prefers value-based completion when applicable (e.g., dimmer hitting end level).
     pub fn has_reached_terminal_state(&self, elapsed: Duration) -> bool {
         let eps = Duration::from_micros(1);
-        let value_eps = 0.0; // require exact target value for termination
+        let value_eps = 1e-9; // small epsilon for floating-point comparison
         match &self.effect_type {
             EffectType::Dimmer {
                 duration,

@@ -135,14 +135,14 @@ fn test_multiple_effects_simultaneous() {
         channels.insert("blue".to_string(), 3);
         channels.insert("strobe".to_string(), 4);
 
-        let fixture = FixtureInfo {
-            name: format!("fixture_{}", i),
-            universe: 1,
-            address: (i - 1) * 4 + 1, // Each fixture takes 4 channels
+        let fixture = FixtureInfo::new(
+            format!("fixture_{}", i),
+            1,
+            (i - 1) * 4 + 1, // Each fixture takes 4 channels
+            "Astera-PixelBrick".to_string(),
             channels,
-            fixture_type: "Astera-PixelBrick".to_string(),
-            max_strobe_frequency: Some(25.0), // Astera-PixelBrick max strobe frequency
-        };
+            Some(25.0), // Astera-PixelBrick max strobe frequency
+        );
 
         engine.register_fixture(fixture);
     }
@@ -320,14 +320,14 @@ fn test_astera_pixelblock_real_behavior() {
     channels.insert("strobe".to_string(), 4);
     // NO dimmer channel!
 
-    let fixture = FixtureInfo {
-        name: "front_wash".to_string(),
-        universe: 1,
-        address: 1,
+    let fixture = FixtureInfo::new(
+        "front_wash".to_string(),
+        1,
+        1,
+        "Astera-PixelBrick".to_string(),
         channels,
-        fixture_type: "Astera-PixelBrick".to_string(),
-        max_strobe_frequency: Some(20.0), // Test fixture with strobe
-    };
+        Some(20.0), // Test fixture with strobe
+    );
 
     println!("Fixture capabilities: {:?}", fixture.capabilities());
     println!(
@@ -458,14 +458,14 @@ fn test_permanent_vs_temporary_effects() {
     channels.insert("green".to_string(), 3);
     channels.insert("blue".to_string(), 4);
 
-    let fixture = FixtureInfo {
-        name: "test_fixture".to_string(),
-        universe: 1,
-        address: 1,
-        fixture_type: "Dimmer".to_string(),
+    let fixture = FixtureInfo::new(
+        "test_fixture".to_string(),
+        1,
+        1,
+        "Dimmer".to_string(),
         channels,
-        max_strobe_frequency: None,
-    };
+        None,
+    );
 
     engine.register_fixture(fixture);
 
@@ -570,14 +570,14 @@ fn test_grandma_style_fade_out() {
     front_wash_channels.insert("green".to_string(), 3);
     front_wash_channels.insert("blue".to_string(), 4);
 
-    let front_wash = FixtureInfo {
-        name: "front_wash".to_string(),
-        universe: 1,
-        address: 1,
-        fixture_type: "Dimmer".to_string(),
-        channels: front_wash_channels,
-        max_strobe_frequency: None,
-    };
+    let front_wash = FixtureInfo::new(
+        "front_wash".to_string(),
+        1,
+        1,
+        "Dimmer".to_string(),
+        front_wash_channels,
+        None,
+    );
 
     engine.register_fixture(front_wash);
 
@@ -743,14 +743,14 @@ fn test_real_layering_show_file() {
     channels.insert("blue".to_string(), 3);
     channels.insert("strobe".to_string(), 4);
 
-    let fixture = FixtureInfo {
-        name: "front_wash".to_string(),
-        universe: 1,
-        address: 1,
+    let fixture = FixtureInfo::new(
+        "front_wash".to_string(),
+        1,
+        1,
+        "Astera-PixelBrick".to_string(),
         channels,
-        fixture_type: "Astera-PixelBrick".to_string(),
-        max_strobe_frequency: Some(20.0), // Test fixture with strobe
-    };
+        Some(20.0), // Test fixture with strobe
+    );
 
     let mut engine = EffectEngine::new();
     engine.register_fixture(fixture);
@@ -762,14 +762,14 @@ fn test_real_layering_show_file() {
     back_channels.insert("blue".to_string(), 3);
     back_channels.insert("strobe".to_string(), 4);
 
-    let back_fixture = FixtureInfo {
-        name: "back_wash".to_string(),
-        universe: 1,
-        address: 5, // Different address
-        channels: back_channels,
-        fixture_type: "Astera-PixelBrick".to_string(),
-        max_strobe_frequency: Some(20.0), // Test fixture with strobe
-    };
+    let back_fixture = FixtureInfo::new(
+        "back_wash".to_string(),
+        1,
+        5, // Different address
+        "Astera-PixelBrick".to_string(),
+        back_channels,
+        Some(20.0), // Test fixture with strobe
+    );
     engine.register_fixture(back_fixture);
 
     // Convert DSL effects to EffectInstances and start them
@@ -868,14 +868,14 @@ fn test_layering_show_effect_execution() {
     channels.insert("blue".to_string(), 3);
     channels.insert("strobe".to_string(), 4);
 
-    let fixture = FixtureInfo {
-        name: "front_wash".to_string(),
-        universe: 1,
-        address: 1,
+    let fixture = FixtureInfo::new(
+        "front_wash".to_string(),
+        1,
+        1,
+        "Astera-PixelBrick".to_string(),
         channels,
-        fixture_type: "Astera-PixelBrick".to_string(),
-        max_strobe_frequency: Some(20.0), // Test fixture with strobe
-    };
+        Some(20.0), // Test fixture with strobe
+    );
 
     let mut engine = EffectEngine::new();
     engine.register_fixture(fixture);
@@ -887,14 +887,14 @@ fn test_layering_show_effect_execution() {
     back_channels.insert("blue".to_string(), 3);
     back_channels.insert("strobe".to_string(), 4);
 
-    let back_fixture = FixtureInfo {
-        name: "back_wash".to_string(),
-        universe: 1,
-        address: 5, // Different address
-        channels: back_channels,
-        fixture_type: "Astera-PixelBrick".to_string(),
-        max_strobe_frequency: Some(20.0), // Test fixture with strobe
-    };
+    let back_fixture = FixtureInfo::new(
+        "back_wash".to_string(),
+        1,
+        5, // Different address
+        "Astera-PixelBrick".to_string(),
+        back_channels,
+        Some(20.0), // Test fixture with strobe
+    );
     engine.register_fixture(back_fixture);
 
     // Convert DSL effects to EffectInstances and start them
@@ -973,14 +973,14 @@ fn test_custom_rgb_dimming() {
     channels.insert("green".to_string(), 2);
     channels.insert("blue".to_string(), 3);
 
-    let fixture = FixtureInfo {
-        name: "rgb_fixture".to_string(),
-        universe: 1,
-        address: 1,
-        fixture_type: "RGB_Par".to_string(),
+    let fixture = FixtureInfo::new(
+        "rgb_fixture".to_string(),
+        1,
+        1,
+        "RGB_Par".to_string(),
         channels,
-        max_strobe_frequency: Some(20.0), // Test fixture with strobe
-    };
+        Some(20.0), // Test fixture with strobe
+    );
 
     let mut engine = EffectEngine::new();
     engine.register_fixture(fixture.clone());
@@ -1142,14 +1142,14 @@ fn test_software_strobing_rgb_only_fixture() {
     channels.insert("blue".to_string(), 3);
     // No strobe or dimmer channels!
 
-    let fixture = FixtureInfo {
-        name: "rgb_only_fixture".to_string(),
-        universe: 1,
-        address: 1,
+    let fixture = FixtureInfo::new(
+        "rgb_only_fixture".to_string(),
+        1,
+        1,
+        "RGB_Par".to_string(),
         channels,
-        fixture_type: "RGB_Par".to_string(),
-        max_strobe_frequency: None, // No strobe capability
-    };
+        None, // No strobe capability
+    );
     engine.register_fixture(fixture);
 
     // Create strobe effect - should use software strobing
@@ -1213,14 +1213,14 @@ fn test_software_strobing_with_layering() {
     channels.insert("green".to_string(), 2);
     channels.insert("blue".to_string(), 3);
 
-    let fixture = FixtureInfo {
-        name: "rgb_fixture".to_string(),
-        universe: 1,
-        address: 1,
+    let fixture = FixtureInfo::new(
+        "rgb_fixture".to_string(),
+        1,
+        1,
+        "RGB_Par".to_string(),
         channels,
-        fixture_type: "RGB_Par".to_string(),
-        max_strobe_frequency: None, // No strobe capability
-    };
+        None, // No strobe capability
+    );
     engine.register_fixture(fixture);
 
     // Create static blue effect (background layer)
@@ -1288,14 +1288,14 @@ fn test_software_strobing_simple() {
     channels.insert("green".to_string(), 2);
     channels.insert("blue".to_string(), 3);
 
-    let fixture = FixtureInfo {
-        name: "rgb_fixture".to_string(),
-        universe: 1,
-        address: 1,
+    let fixture = FixtureInfo::new(
+        "rgb_fixture".to_string(),
+        1,
+        1,
+        "RGB_Par".to_string(),
         channels,
-        fixture_type: "RGB_Par".to_string(),
-        max_strobe_frequency: None, // No strobe capability
-    };
+        None, // No strobe capability
+    );
     engine.register_fixture(fixture);
 
     // Create strobe effect only (no other effects)
@@ -1344,14 +1344,14 @@ fn test_software_strobing_frequency_zero() {
     channels.insert("green".to_string(), 2);
     channels.insert("blue".to_string(), 3);
 
-    let fixture = FixtureInfo {
-        name: "rgb_fixture".to_string(),
-        universe: 1,
-        address: 1,
+    let fixture = FixtureInfo::new(
+        "rgb_fixture".to_string(),
+        1,
+        1,
+        "RGB_Par".to_string(),
         channels,
-        fixture_type: "RGB_Par".to_string(),
-        max_strobe_frequency: None,
-    };
+        None,
+    );
     engine.register_fixture(fixture);
 
     // Create static blue effect
@@ -1411,23 +1411,23 @@ fn test_full_layering_show_sequence_with_replace() {
     channels.insert("green".to_string(), 3);
     channels.insert("blue".to_string(), 4);
 
-    let front_wash = FixtureInfo {
-        name: "front_wash".to_string(),
-        universe: 1,
-        address: 1,
-        fixture_type: "Dimmer".to_string(),
-        channels: channels.clone(),
-        max_strobe_frequency: Some(10.0),
-    };
+    let front_wash = FixtureInfo::new(
+        "front_wash".to_string(),
+        1,
+        1,
+        "Dimmer".to_string(),
+        channels.clone(),
+        Some(10.0),
+    );
 
-    let back_wash = FixtureInfo {
-        name: "back_wash".to_string(),
-        universe: 1,
-        address: 5,
-        fixture_type: "Dimmer".to_string(),
-        channels: channels.clone(),
-        max_strobe_frequency: Some(10.0),
-    };
+    let back_wash = FixtureInfo::new(
+        "back_wash".to_string(),
+        1,
+        5,
+        "Dimmer".to_string(),
+        channels.clone(),
+        Some(10.0),
+    );
 
     engine.register_fixture(front_wash);
     engine.register_fixture(back_wash);
@@ -1647,23 +1647,23 @@ fn test_complex_multi_layer_multi_effect_scenarios() {
     channels.insert("blue".to_string(), 3);
     channels.insert("strobe".to_string(), 4);
 
-    let fixture1 = FixtureInfo {
-        name: "fixture1".to_string(),
-        universe: 1,
-        address: 1,
-        channels: channels.clone(),
-        fixture_type: "RGB_Par".to_string(),
-        max_strobe_frequency: Some(20.0),
-    };
+    let fixture1 = FixtureInfo::new(
+        "fixture1".to_string(),
+        1,
+        1,
+        "RGB_Par".to_string(),
+        channels.clone(),
+        Some(20.0),
+    );
 
-    let fixture2 = FixtureInfo {
-        name: "fixture2".to_string(),
-        universe: 1,
-        address: 2,
-        channels: channels.clone(),
-        fixture_type: "RGB_Par".to_string(),
-        max_strobe_frequency: Some(20.0),
-    };
+    let fixture2 = FixtureInfo::new(
+        "fixture2".to_string(),
+        1,
+        2,
+        "RGB_Par".to_string(),
+        channels.clone(),
+        Some(20.0),
+    );
 
     engine.register_fixture(fixture1);
     engine.register_fixture(fixture2);

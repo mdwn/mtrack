@@ -116,14 +116,14 @@ fn test_blend_mode_loss_debug() {
     channels.insert("blue".to_string(), 3);
     channels.insert("strobe".to_string(), 4);
 
-    let fixture = FixtureInfo {
-        name: "front_wash".to_string(),
-        universe: 1,
-        address: 1,
+    let fixture = FixtureInfo::new(
+        "front_wash".to_string(),
+        1,
+        1,
+        "Astera-PixelBrick".to_string(),
         channels,
-        fixture_type: "Astera-PixelBrick".to_string(),
-        max_strobe_frequency: Some(20.0), // Test fixture with strobe
-    };
+        Some(20.0),
+    );
 
     engine.register_fixture(fixture);
 
@@ -237,14 +237,14 @@ fn test_timeline_blend_mode_loss() {
     channels.insert("blue".to_string(), 3);
     channels.insert("strobe".to_string(), 4);
 
-    let fixture = FixtureInfo {
-        name: "front_wash".to_string(),
-        universe: 1,
-        address: 1,
+    let fixture = FixtureInfo::new(
+        "front_wash".to_string(),
+        1,
+        1,
+        "Astera-PixelBrick".to_string(),
         channels,
-        fixture_type: "Astera-PixelBrick".to_string(),
-        max_strobe_frequency: Some(20.0), // Test fixture with strobe
-    };
+        Some(20.0),
+    );
 
     engine.register_fixture(fixture);
 
@@ -301,14 +301,14 @@ fn test_blend_mode_compatibility_matrix() {
     channels.insert("green".to_string(), 2);
     channels.insert("blue".to_string(), 3);
 
-    let fixture = FixtureInfo {
-        name: "test_fixture".to_string(),
-        universe: 1,
-        address: 1,
+    let fixture = FixtureInfo::new(
+        "test_fixture".to_string(),
+        1,
+        1,
+        "RGB_Par".to_string(),
         channels,
-        fixture_type: "RGB_Par".to_string(),
-        max_strobe_frequency: Some(20.0),
-    };
+        Some(20.0),
+    );
     engine.register_fixture(fixture);
 
     // Test Replace mode conflicts with everything

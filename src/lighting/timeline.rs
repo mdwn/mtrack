@@ -16,7 +16,11 @@ use crate::lighting::{
     parser::{Cue, Effect, LayerCommand, LightShow},
     EffectInstance,
 };
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+
+/// Global atomic counter for generating unique, deterministic effect IDs.
+static EFFECT_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Result of processing timeline cues
 #[derive(Debug, Clone, Default)]
@@ -119,27 +123,26 @@ impl LightingTimeline {
 
             // For effects, only include ones that would still be active at start_time
             for effect in &cue.effects {
-                if let Some(effect_instance) = Self::create_effect_instance(effect, cue.time) {
-                    // Check if this effect would still be active at start_time
-                    let effect_start_time = cue.time;
-                    let elapsed_at_start = start_time.saturating_sub(effect_start_time);
+                let effect_instance = Self::create_effect_instance(effect, cue.time);
+                // Check if this effect would still be active at start_time
+                let effect_start_time = cue.time;
+                let elapsed_at_start = start_time.saturating_sub(effect_start_time);
 
-                    // Get the effect's total duration
-                    let should_include = if let Some(duration) = effect_instance.total_duration() {
-                        // Timed effect - only include if it would still be running
-                        elapsed_at_start < duration
-                    } else {
-                        // Perpetual effect - always include if it was triggered before start_time
-                        true
-                    };
+                // Get the effect's total duration
+                let should_include = if let Some(duration) = effect_instance.total_duration() {
+                    // Timed effect - only include if it would still be running
+                    elapsed_at_start < duration
+                } else {
+                    // Perpetual effect - always include if it was triggered before start_time
+                    true
+                };
 
-                    if should_include {
-                        // Store the elapsed time in a map so we can start the effect at the correct point
-                        result.effects_with_elapsed.insert(
-                            effect_instance.id.clone(),
-                            (effect_instance, elapsed_at_start),
-                        );
-                    }
+                if should_include {
+                    // Store the elapsed time in a map so we can start the effect at the correct point
+                    result.effects_with_elapsed.insert(
+                        effect_instance.id.clone(),
+                        (effect_instance, elapsed_at_start),
+                    );
                 }
             }
         }
@@ -192,9 +195,8 @@ impl LightingTimeline {
             if cue.time <= song_time {
                 // This cue should trigger - process effects
                 for effect in &cue.effects {
-                    if let Some(effect_instance) = Self::create_effect_instance(effect, cue.time) {
-                        result.effects.push(effect_instance);
-                    }
+                    let effect_instance = Self::create_effect_instance(effect, cue.time);
+                    result.effects.push(effect_instance);
                 }
                 // Process layer commands
                 result.layer_commands.extend(cue.layer_commands.clone());
@@ -220,29 +222,14 @@ impl LightingTimeline {
             .collect()
     }
 
-    /// Creates an EffectInstance from a DSL Effect
-    /// cue_time is the song time when this effect was supposed to start (for deterministic randomness)
-    pub fn create_effect_instance(effect: &Effect, cue_time: Duration) -> Option<EffectInstance> {
-        // Create base effect instance using the DSL EffectType directly with timing
-        // Include sequence name in ID if this effect came from a sequence
-        // Use SystemTime for IDs to keep them unique, but use cue_time for randomness seeds
+    /// Creates an EffectInstance from a DSL Effect.
+    /// cue_time is the song time when this effect was supposed to start (for deterministic randomness).
+    pub fn create_effect_instance(effect: &Effect, cue_time: Duration) -> EffectInstance {
+        let id = EFFECT_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
         let effect_id = if let Some(ref seq_name) = effect.sequence_name {
-            format!(
-                "seq_{}_effect_{}",
-                seq_name,
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos()
-            )
+            format!("seq_{}_effect_{}", seq_name, id)
         } else {
-            format!(
-                "song_effect_{}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos()
-            )
+            format!("song_effect_{}", id)
         };
 
         let mut effect_instance = EffectInstance::new(
@@ -265,7 +252,7 @@ impl LightingTimeline {
             effect_instance.blend_mode = blend_mode;
         }
 
-        Some(effect_instance)
+        effect_instance
     }
 }
 

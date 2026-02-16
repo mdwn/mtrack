@@ -115,7 +115,7 @@ fn parse_fixture_type_definition(pair: Pair<Rule>) -> Result<FixtureType, Box<dy
                     &mut channels,
                     &mut special_cases,
                     &mut max_strobe_frequency,
-                );
+                )?;
             }
             _ => {}
         }
@@ -131,14 +131,23 @@ fn parse_fixture_content(
     channels: &mut HashMap<String, u16>,
     special_cases: &mut Vec<String>,
     max_strobe_frequency: &mut Option<f64>,
-) {
+) -> Result<(), Box<dyn Error>> {
     for content_pair in pair.into_inner() {
         match content_pair.as_rule() {
             Rule::channel_map => {
                 *channels = parse_channel_mappings(content_pair);
             }
             Rule::max_strobe_frequency => {
-                *max_strobe_frequency = Some(content_pair.as_str().trim().parse().unwrap_or(0.0));
+                // Drill into inner pairs to find the number_value
+                for inner in content_pair.into_inner() {
+                    if inner.as_rule() == Rule::number_value {
+                        let freq: f64 =
+                            inner.as_str().trim().parse().map_err(|e| {
+                                format!("Invalid max_strobe_frequency value: {}", e)
+                            })?;
+                        *max_strobe_frequency = Some(freq);
+                    }
+                }
             }
             Rule::special_cases => {
                 *special_cases = parse_special_case_list(content_pair);
@@ -146,6 +155,7 @@ fn parse_fixture_content(
             _ => {}
         }
     }
+    Ok(())
 }
 
 fn parse_channel_mappings(pair: Pair<Rule>) -> HashMap<String, u16> {
@@ -234,7 +244,7 @@ fn parse_venue_content(
 pub(crate) fn parse_fixture_definition(pair: Pair<Rule>) -> Result<Fixture, Box<dyn Error>> {
     let mut name = String::new();
     let mut fixture_type = String::new();
-    let mut universe = 0u32;
+    let mut universe = 0u16;
     let mut start_channel = 0u16;
     let mut tags = Vec::new();
 

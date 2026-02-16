@@ -29,14 +29,14 @@ fn test_sophisticated_conflict_resolution() {
     channels.insert("green".to_string(), 2);
     channels.insert("blue".to_string(), 3);
 
-    let fixture = FixtureInfo {
-        name: "test_fixture".to_string(),
-        universe: 1,
-        address: 1,
+    let fixture = FixtureInfo::new(
+        "test_fixture".to_string(),
+        1,
+        1,
+        "RGB_Par".to_string(),
         channels,
-        fixture_type: "RGB_Par".to_string(),
-        max_strobe_frequency: Some(20.0),
-    };
+        Some(20.0),
+    );
     engine.register_fixture(fixture);
 
     // Test 1: Effects in different layers should not conflict
@@ -148,23 +148,23 @@ fn test_priority_based_conflict_resolution() {
     channels.insert("green".to_string(), 2);
     channels.insert("blue".to_string(), 3);
 
-    let fixture1 = FixtureInfo {
-        name: "fixture1".to_string(),
-        universe: 1,
-        address: 1,
-        channels: channels.clone(),
-        fixture_type: "RGB_Par".to_string(),
-        max_strobe_frequency: Some(20.0),
-    };
+    let fixture1 = FixtureInfo::new(
+        "fixture1".to_string(),
+        1,
+        1,
+        "RGB_Par".to_string(),
+        channels.clone(),
+        Some(20.0),
+    );
 
-    let fixture2 = FixtureInfo {
-        name: "fixture2".to_string(),
-        universe: 1,
-        address: 2,
-        channels: channels.clone(),
-        fixture_type: "RGB_Par".to_string(),
-        max_strobe_frequency: Some(20.0),
-    };
+    let fixture2 = FixtureInfo::new(
+        "fixture2".to_string(),
+        1,
+        2,
+        "RGB_Par".to_string(),
+        channels.clone(),
+        Some(20.0),
+    );
 
     engine.register_fixture(fixture1);
     engine.register_fixture(fixture2);
@@ -288,14 +288,14 @@ fn test_effect_type_conflict_combinations() {
     channels.insert("strobe".to_string(), 4);
     // No dimmer channel - Chase should work with RGB channels
 
-    let fixture = FixtureInfo {
-        name: "test_fixture".to_string(),
-        universe: 1,
-        address: 1,
+    let fixture = FixtureInfo::new(
+        "test_fixture".to_string(),
+        1,
+        1,
+        "RGB_Par".to_string(),
         channels,
-        fixture_type: "RGB_Par".to_string(),
-        max_strobe_frequency: Some(20.0),
-    };
+        Some(20.0),
+    );
     engine.register_fixture(fixture);
 
     // Test Static vs ColorCycle conflict
@@ -495,14 +495,14 @@ fn test_disabled_effects_not_participating_in_conflicts() {
     channels.insert("green".to_string(), 2);
     channels.insert("blue".to_string(), 3);
 
-    let fixture = FixtureInfo {
-        name: "test_fixture".to_string(),
-        universe: 1,
-        address: 1,
+    let fixture = FixtureInfo::new(
+        "test_fixture".to_string(),
+        1,
+        1,
+        "RGB_Par".to_string(),
         channels,
-        fixture_type: "RGB_Par".to_string(),
-        max_strobe_frequency: Some(20.0),
-    };
+        Some(20.0),
+    );
     engine.register_fixture(fixture);
 
     // Create a disabled effect
@@ -586,23 +586,23 @@ fn test_fixture_overlap_without_conflicts() {
     channels.insert("green".to_string(), 2);
     channels.insert("blue".to_string(), 3);
 
-    let fixture1 = FixtureInfo {
-        name: "fixture1".to_string(),
-        universe: 1,
-        address: 1,
-        channels: channels.clone(),
-        fixture_type: "RGB_Par".to_string(),
-        max_strobe_frequency: Some(20.0),
-    };
+    let fixture1 = FixtureInfo::new(
+        "fixture1".to_string(),
+        1,
+        1,
+        "RGB_Par".to_string(),
+        channels.clone(),
+        Some(20.0),
+    );
 
-    let fixture2 = FixtureInfo {
-        name: "fixture2".to_string(),
-        universe: 1,
-        address: 2,
-        channels: channels.clone(),
-        fixture_type: "RGB_Par".to_string(),
-        max_strobe_frequency: Some(20.0),
-    };
+    let fixture2 = FixtureInfo::new(
+        "fixture2".to_string(),
+        1,
+        2,
+        "RGB_Par".to_string(),
+        channels.clone(),
+        Some(20.0),
+    );
 
     engine.register_fixture(fixture1);
     engine.register_fixture(fixture2);
@@ -697,23 +697,23 @@ fn test_channel_conflict_detection_behavior() {
     channels.insert("green".to_string(), 2);
     channels.insert("blue".to_string(), 3);
 
-    let fixture1 = FixtureInfo {
-        name: "fixture1".to_string(),
-        universe: 1,
-        address: 1,
-        channels: channels.clone(),
-        fixture_type: "RGB_Par".to_string(),
-        max_strobe_frequency: Some(20.0),
-    };
+    let fixture1 = FixtureInfo::new(
+        "fixture1".to_string(),
+        1,
+        1,
+        "RGB_Par".to_string(),
+        channels.clone(),
+        Some(20.0),
+    );
 
-    let fixture2 = FixtureInfo {
-        name: "fixture2".to_string(),
-        universe: 1,
-        address: 2,
-        channels: channels.clone(),
-        fixture_type: "RGB_Par".to_string(),
-        max_strobe_frequency: Some(20.0),
-    };
+    let fixture2 = FixtureInfo::new(
+        "fixture2".to_string(),
+        1,
+        2,
+        "RGB_Par".to_string(),
+        channels.clone(),
+        Some(20.0),
+    );
 
     engine.register_fixture(fixture1);
     engine.register_fixture(fixture2);

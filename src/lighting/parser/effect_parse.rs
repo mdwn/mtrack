@@ -17,8 +17,8 @@ use std::error::Error;
 use std::time::Duration;
 
 use super::super::effects::{
-    BlendMode, ChaseDirection, ChasePattern, CycleDirection, CycleTransition, DimmerCurve,
-    EffectLayer, EffectType,
+    BlendMode, ChaseDirection, ChasePattern, Color, CycleDirection, CycleTransition, DimmerCurve,
+    EffectLayer, EffectType, TempoAwareFrequency, TempoAwareSpeed,
 };
 use super::super::tempo::TempoMap;
 use super::grammar::Rule;
@@ -30,7 +30,7 @@ use super::utils::{
 use pest::iterators::Pair;
 
 /// Helper to convert color to normalized RGB parameters
-fn color_to_normalized_params(color: &super::super::effects::Color) -> (f64, f64, f64) {
+fn color_to_normalized_params(color: &Color) -> (f64, f64, f64) {
     (
         color.r as f64 / 255.0,
         color.g as f64 / 255.0,
@@ -98,25 +98,25 @@ pub(crate) fn parse_effect_definition(
                     },
                     "cycle" => EffectType::ColorCycle {
                         colors: Vec::new(),
-                        speed: super::super::effects::TempoAwareSpeed::Fixed(1.0),
+                        speed: TempoAwareSpeed::Fixed(1.0),
                         direction: CycleDirection::Forward,
-                        transition: super::super::effects::CycleTransition::Snap,
+                        transition: CycleTransition::Snap,
                     },
                     "strobe" => EffectType::Strobe {
-                        frequency: super::super::effects::TempoAwareFrequency::Fixed(8.0),
+                        frequency: TempoAwareFrequency::Fixed(8.0),
                         duration: None,
                     },
                     "pulse" => EffectType::Pulse {
                         base_level: 0.5,
                         pulse_amplitude: 0.5,
-                        frequency: super::super::effects::TempoAwareFrequency::Fixed(1.0),
+                        frequency: TempoAwareFrequency::Fixed(1.0),
                         duration: None,
                     },
                     "chase" => EffectType::Chase {
                         pattern: ChasePattern::Linear,
-                        speed: super::super::effects::TempoAwareSpeed::Fixed(1.0),
+                        speed: TempoAwareSpeed::Fixed(1.0),
                         direction: ChaseDirection::LeftToRight,
-                        transition: super::super::effects::CycleTransition::Snap,
+                        transition: CycleTransition::Snap,
                     },
                     "dimmer" => EffectType::Dimmer {
                         start_level: 0.0,
@@ -125,7 +125,7 @@ pub(crate) fn parse_effect_definition(
                         curve: DimmerCurve::Linear,
                     },
                     "rainbow" => EffectType::Rainbow {
-                        speed: super::super::effects::TempoAwareSpeed::Fixed(1.0),
+                        speed: TempoAwareSpeed::Fixed(1.0),
                         saturation: 1.0,
                         brightness: 1.0,
                     },
@@ -232,10 +232,11 @@ pub(crate) fn parse_effect_definition(
                                 hold_time = Some(duration);
                             }
                             "down_time" => {
-                                let duration = parse_duration_string(
+                                // Use score-space time consistent with up_time
+                                let duration = parse_duration_in_score_space(
                                     value.as_str(),
                                     tempo_map,
-                                    Some(cue_time),
+                                    cue_time,
                                     offset_secs,
                                 )?;
                                 down_time = Some(duration);
@@ -344,18 +345,24 @@ pub(crate) fn apply_parameters_to_effect_type(
                         }
                     },
                     "direction" => {
-                        *direction = match value.as_str() {
+                        *direction = match clean_string_value(value).as_str() {
                             "forward" => CycleDirection::Forward,
                             "backward" => CycleDirection::Backward,
                             "pingpong" => CycleDirection::PingPong,
-                            _ => CycleDirection::Forward,
+                            other => return Err(format!("Invalid cycle direction: '{}' (expected: forward, backward, pingpong)", other).into()),
                         };
                     }
                     "transition" => {
-                        *transition = match value.as_str() {
+                        *transition = match clean_string_value(value).as_str() {
                             "snap" => CycleTransition::Snap,
-                            "fade" => CycleTransition::Fade,
-                            _ => CycleTransition::Snap,
+                            "fade" | "crossfade" => CycleTransition::Fade,
+                            other => {
+                                return Err(format!(
+                                    "Invalid transition: '{}' (expected: snap, fade, crossfade)",
+                                    other
+                                )
+                                .into())
+                            }
                         };
                     }
                     _ => {}
@@ -435,7 +442,13 @@ pub(crate) fn apply_parameters_to_effect_type(
                             "linear" => ChasePattern::Linear,
                             "snake" => ChasePattern::Snake,
                             "random" => ChasePattern::Random,
-                            _ => ChasePattern::Linear, // Default to Linear if pattern doesn't match
+                            other => {
+                                return Err(format!(
+                                    "Invalid chase pattern: '{}' (expected: linear, snake, random)",
+                                    other
+                                )
+                                .into())
+                            }
                         };
                     }
                     "speed" => match parse_speed_string(value, tempo_map) {
@@ -452,14 +465,20 @@ pub(crate) fn apply_parameters_to_effect_type(
                             "bottom_to_top" => ChaseDirection::BottomToTop,
                             "clockwise" => ChaseDirection::Clockwise,
                             "counter_clockwise" => ChaseDirection::CounterClockwise,
-                            _ => ChaseDirection::LeftToRight,
+                            other => return Err(format!("Invalid chase direction: '{}' (expected: left_to_right, right_to_left, top_to_bottom, bottom_to_top, clockwise, counter_clockwise)", other).into()),
                         };
                     }
                     "transition" => {
-                        *transition = match value.as_str() {
+                        *transition = match clean_string_value(value).as_str() {
                             "snap" => CycleTransition::Snap,
-                            "fade" => CycleTransition::Fade,
-                            _ => CycleTransition::Snap,
+                            "fade" | "crossfade" => CycleTransition::Fade,
+                            other => {
+                                return Err(format!(
+                                    "Invalid transition: '{}' (expected: snap, fade, crossfade)",
+                                    other
+                                )
+                                .into())
+                            }
                         };
                     }
                     _ => {}
@@ -496,7 +515,7 @@ pub(crate) fn apply_parameters_to_effect_type(
                             "logarithmic" => DimmerCurve::Logarithmic,
                             "sine" => DimmerCurve::Sine,
                             "cosine" => DimmerCurve::Cosine,
-                            _ => DimmerCurve::Linear,
+                            other => return Err(format!("Invalid dimmer curve: '{}' (expected: linear, exponential, logarithmic, sine, cosine)", other).into()),
                         };
                     }
                     _ => {}

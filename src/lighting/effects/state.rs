@@ -101,6 +101,13 @@ impl FixtureState {
         }
     }
 
+    /// Create a FixtureState from an iterator of channel name/state pairs.
+    pub fn from_channels(channels: impl IntoIterator<Item = (String, ChannelState)>) -> Self {
+        Self {
+            channels: channels.into_iter().collect(),
+        }
+    }
+
     /// Set a channel value
     pub fn set_channel(&mut self, channel_name: String, state: ChannelState) {
         self.channels.insert(channel_name, state);
