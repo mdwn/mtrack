@@ -26,6 +26,7 @@ use std::thread;
 #[cfg(not(test))]
 use std::time::Duration;
 use std::{error::Error, path::Path, sync::Arc};
+use tracing::info;
 
 /// Gets a device with the given name.
 pub fn create_engine(
@@ -76,6 +77,11 @@ pub fn create_engine(
     };
 
     let engine = Arc::new(Engine::new(config, lighting_config, base_path, ola_client)?);
+
+    info!(
+        lighting = lighting_config.is_some(),
+        "DMX engine initialized"
+    );
 
     // Start the persistent effects loop
     Engine::start_persistent_effects_loop(engine.clone());
