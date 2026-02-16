@@ -47,8 +47,8 @@ struct PlayHandles {
 
 /// Groups the parameters needed for `play_files` to avoid excessive argument counts.
 struct PlaybackContext {
-    device: Arc<dyn audio::Device>,
-    mappings: Arc<HashMap<String, Vec<u16>>>,
+    device: Option<Arc<dyn audio::Device>>,
+    mappings: Option<Arc<HashMap<String, Vec<u16>>>>,
     midi_device: Option<Arc<dyn midi::Device>>,
     dmx_engine: Option<Arc<dmx::engine::Engine>>,
     song: Arc<Song>,
@@ -60,10 +60,10 @@ struct PlaybackContext {
 /// Plays back individual wav files as multichannel audio for the configured audio interface.
 #[derive(Clone)]
 pub struct Player {
-    /// The device to play audio through.
-    device: Arc<dyn audio::Device>,
-    /// Mappings of tracks to output channels.
-    mappings: Arc<HashMap<String, Vec<u16>>>,
+    /// The device to play audio through (optional if absent from profile).
+    device: Option<Arc<dyn audio::Device>>,
+    /// Mappings of tracks to output channels (optional if no audio configured).
+    mappings: Option<Arc<HashMap<String, Vec<u16>>>>,
     /// The MIDI device to play MIDI back through.
     midi_device: Option<Arc<dyn midi::Device>>,
     /// The DMX engine to use.
@@ -109,29 +109,38 @@ impl Player {
 
         info!(
             hostname = profile.hostname().unwrap_or("default"),
-            device = profile.audio_config().audio().device(),
+            device = profile
+                .audio_config()
+                .map(|ac| ac.audio().device())
+                .unwrap_or("none"),
             "Using hardware profile"
         );
 
-        // Audio is always required
-        let audio_config = profile.audio_config();
-        let (device, mappings, resolved_audio) =
-            Self::wait_for_ok("audio device".to_string(), || {
-                match audio::get_device(Some(audio_config.audio().clone())) {
-                    Ok(device) => {
-                        info!(
-                            device = audio_config.audio().device(),
-                            "Audio device initialized"
-                        );
-                        Ok((
-                            device.clone(),
-                            audio_config.track_mappings().clone(),
-                            audio_config.audio().clone(),
-                        ))
+        // Audio: if present in profile, required. If absent, optional.
+        let (device, mappings, resolved_audio) = if let Some(audio_config) = profile.audio_config()
+        {
+            let (device, mappings, resolved_audio) =
+                Self::wait_for_ok("audio device".to_string(), || {
+                    match audio::get_device(Some(audio_config.audio().clone())) {
+                        Ok(device) => {
+                            info!(
+                                device = audio_config.audio().device(),
+                                "Audio device initialized"
+                            );
+                            Ok((
+                                device.clone(),
+                                audio_config.track_mappings().clone(),
+                                audio_config.audio().clone(),
+                            ))
+                        }
+                        Err(e) => Err(format!("audio device: {}", e)),
                     }
-                    Err(e) => Err(format!("audio device: {}", e)),
-                }
-            })?;
+                })?;
+            (Some(device), Some(mappings), Some(resolved_audio))
+        } else {
+            info!("Audio not configured in profile; proceeding without audio");
+            (None, None, None)
+        };
 
         // DMX: if present in profile, required. If absent, optional.
         let dmx_engine = if let Some(dmx_config) = profile.dmx() {
@@ -158,10 +167,16 @@ impl Player {
         })?;
 
         // Initialize the sample engine if the audio device supports it
-        let sample_engine = match (device.mixer(), device.source_sender()) {
-            (Some(mixer), Some(source_tx)) => {
+        let sample_engine = match device
+            .as_ref()
+            .and_then(|d| d.mixer().and_then(|m| d.source_sender().map(|s| (m, s))))
+        {
+            Some((mixer, source_tx)) => {
                 let max_voices = config.max_sample_voices();
-                let buffer_size = resolved_audio.buffer_size();
+                let buffer_size = resolved_audio
+                    .as_ref()
+                    .map(|a| a.buffer_size())
+                    .unwrap_or(1024);
                 let mut engine = SampleEngine::new(mixer, source_tx, max_voices, buffer_size);
 
                 // Load global samples config if available
@@ -185,7 +200,7 @@ impl Player {
 
         let player = Player {
             device,
-            mappings: Arc::new(mappings),
+            mappings: mappings.map(Arc::new),
             midi_device,
             dmx_engine,
             sample_engine,
@@ -258,7 +273,7 @@ impl Player {
 
     /// Gets the audio device currently in use by the player.
     #[cfg(test)]
-    pub fn audio_device(&self) -> Arc<dyn audio::Device> {
+    pub fn audio_device(&self) -> Option<Arc<dyn audio::Device>> {
         self.device.clone()
     }
 
@@ -427,7 +442,9 @@ impl Player {
         }
 
         // Warn about tracks with no mapping in the config.
-        crate::verify::warn_unmapped_tracks(&song, &self.mappings);
+        if let Some(ref mappings) = self.mappings {
+            crate::verify::warn_unmapped_tracks(&song, mappings);
+        }
 
         let play_start_time = self.play_start_time.clone();
 
@@ -528,32 +545,46 @@ impl Player {
             start_time,
         } = ctx;
 
-        // Set up the play barrier, which will synchronize the three calls to play.
-        let barrier = Arc::new(Barrier::new({
-            let mut num_barriers = 1;
-            if song.midi_playback().is_some() && midi_device.is_some() {
-                num_barriers += 1;
+        // Set up the play barrier, which will synchronize the subsystem threads.
+        let has_audio = device.is_some();
+        let mut num_barriers = 0;
+        if has_audio {
+            num_barriers += 1;
+        }
+        if song.midi_playback().is_some() && midi_device.is_some() {
+            num_barriers += 1;
+        }
+        if !song.light_shows().is_empty() && dmx_engine.is_some() {
+            num_barriers += song.light_shows().len();
+        }
+        if !song.dsl_lighting_shows().is_empty() && dmx_engine.is_some() {
+            num_barriers += 1; // One barrier for the lighting timeline
+        }
+
+        // If no subsystems are active, signal success immediately and return.
+        if num_barriers == 0 {
+            info!(
+                song = song.name(),
+                "No playback subsystems active for this song; completing immediately"
+            );
+            if play_tx.send(Ok(())).is_err() {
+                error!("Error while sending to finish channel (receiver dropped).");
             }
-            if !song.light_shows().is_empty() && dmx_engine.is_some() {
-                num_barriers += song.light_shows().len();
-            }
-            if !song.dsl_lighting_shows().is_empty() && dmx_engine.is_some() {
-                num_barriers += 1; // One barrier for the lighting timeline
-            }
-            num_barriers
-        }));
+            return;
+        }
+
+        let barrier = Arc::new(Barrier::new(num_barriers));
 
         let audio_outcome: Arc<parking_lot::Mutex<Option<Result<(), String>>>> =
             Arc::new(parking_lot::Mutex::new(None));
 
-        let audio_join_handle = {
-            let device = device.clone();
+        let audio_join_handle = if let (Some(device), Some(mappings)) = (device, mappings) {
             let song = song.clone();
             let barrier = barrier.clone();
             let cancel_handle = cancel_handle.clone();
             let audio_outcome = audio_outcome.clone();
 
-            thread::spawn(move || {
+            Some(thread::spawn(move || {
                 let song_name = song.name().to_string();
                 let result = device.play_from(song, &mappings, cancel_handle, barrier, start_time);
                 if let Err(ref e) = result {
@@ -566,7 +597,9 @@ impl Player {
                 let outcome = result.map_err(|e| e.to_string());
                 let mut guard = audio_outcome.lock();
                 *guard = Some(outcome);
-            })
+            }))
+        } else {
+            None
         };
 
         let dmx_join_handle = dmx_engine.map(|dmx_engine| {
@@ -611,8 +644,10 @@ impl Player {
             None
         };
 
-        if let Err(e) = audio_join_handle.join() {
-            error!("Error waiting for audio to stop playing: {:?}", e)
+        if let Some(audio_join_handle) = audio_join_handle {
+            if let Err(e) = audio_join_handle.join() {
+                error!("Error waiting for audio to stop playing: {:?}", e)
+            }
         }
 
         if let Some(dmx_join_handle) = dmx_join_handle {
@@ -627,13 +662,17 @@ impl Player {
             }
         }
 
-        let outcome = audio_outcome.lock().take().unwrap_or_else(|| {
-            warn!(
-                "Audio thread did not set outcome (e.g. panicked before setting); \
-                 treating as success so playlist is not stuck"
-            );
+        let outcome = if has_audio {
+            audio_outcome.lock().take().unwrap_or_else(|| {
+                warn!(
+                    "Audio thread did not set outcome (e.g. panicked before setting); \
+                     treating as success so playlist is not stuck"
+                );
+                Ok(())
+            })
+        } else {
             Ok(())
-        });
+        };
         if play_tx.send(outcome).is_err() {
             error!("Error while sending to finish channel (receiver dropped).")
         }
@@ -858,7 +897,7 @@ mod test {
             )?,
             &config::Player::new(
                 vec![],
-                config::Audio::new("mock-device"),
+                Some(config::Audio::new("mock-device")),
                 Some(config::Midi::new("mock-midi-device", None)),
                 None,
                 HashMap::new(),
@@ -866,7 +905,9 @@ mod test {
             ),
             None,
         )?;
-        let binding = player.audio_device();
+        let binding = player
+            .audio_device()
+            .expect("audio device should be present");
         let device = binding.to_mock()?;
         let midi_device = player
             .midi_device()
@@ -1039,7 +1080,7 @@ mod test {
             playlist,
             &config::Player::new(
                 vec![],
-                config::Audio::new("mock-device"),
+                Some(config::Audio::new("mock-device")),
                 Some(config::Midi::new("mock-midi-device", None)),
                 Some(dmx_config),
                 HashMap::new(),
@@ -1138,7 +1179,7 @@ mod test {
             playlist,
             &config::Player::new(
                 vec![],
-                config::Audio::new("mock-device"),
+                Some(config::Audio::new("mock-device")),
                 Some(config::Midi::new("mock-midi-device", None)),
                 Some(dmx_config),
                 HashMap::new(),
@@ -1238,7 +1279,7 @@ mod test {
             playlist,
             &config::Player::new(
                 vec![],
-                config::Audio::new("mock-device"),
+                Some(config::Audio::new("mock-device")),
                 Some(config::Midi::new("mock-midi-device", None)),
                 Some(dmx_config),
                 HashMap::new(),
@@ -1338,7 +1379,7 @@ mod test {
             playlist,
             &config::Player::new(
                 vec![],
-                config::Audio::new("mock-device"),
+                Some(config::Audio::new("mock-device")),
                 Some(config::Midi::new("mock-midi-device", None)),
                 Some(dmx_config),
                 HashMap::new(),

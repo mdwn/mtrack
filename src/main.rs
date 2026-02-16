@@ -598,24 +598,29 @@ async fn run() -> Result<(), Box<dyn Error>> {
                     };
 
                     for (i, profile) in profiles_to_check.iter().enumerate() {
+                        let audio_config = match profile.audio_config() {
+                            Some(ac) => ac,
+                            None => {
+                                println!("Skipping profile {} (no audio configured)", i);
+                                continue;
+                            }
+                        };
                         let label = match profile.hostname() {
                             Some(h) => format!(
                                 "profile {} (hostname: {}, device: {})",
                                 i,
                                 h,
-                                profile.audio_config().audio().device()
+                                audio_config.audio().device()
                             ),
                             None => format!(
                                 "profile {} (any host, device: {})",
                                 i,
-                                profile.audio_config().audio().device()
+                                audio_config.audio().device()
                             ),
                         };
                         println!("Checking track mappings for {}...", label);
-                        let track_report = verify::check_all_track_mappings(
-                            &songs,
-                            profile.audio_config().track_mappings(),
-                        );
+                        let track_report =
+                            verify::check_all_track_mappings(&songs, audio_config.track_mappings());
                         report.merge(track_report);
                     }
                 } else {

@@ -184,7 +184,7 @@ mod test {
             )?,
             &config::Player::new(
                 vec![],
-                config::Audio::new("mock-device"),
+                Some(config::Audio::new("mock-device")),
                 Some(config::Midi::new("mock-midi-device", None)),
                 None,
                 HashMap::new(),
@@ -193,7 +193,9 @@ mod test {
             None,
         )?);
         let playlist = player.get_playlist();
-        let binding = player.audio_device();
+        let binding = player
+            .audio_device()
+            .expect("audio device should be present");
         let device = binding.to_mock()?;
         let binding = player.midi_device().expect("MIDI device not found");
         let midi_device = binding.to_mock()?;

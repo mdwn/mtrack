@@ -33,13 +33,15 @@ logged so that it's easier to diagnose a misconfiguration.
 Hardware profiles allow multiple complete host configurations in a single config file:
 
 - **Unified profiles** (`profiles`): Define complete per-host configurations in a single list.
-  Each profile specifies audio (required), MIDI (optional), and DMX (optional) for one host.
-  Subsystem presence in profile = required, absence = optional. No global `*_optional` flags.
+  Each profile specifies audio (optional), MIDI (optional), and DMX (optional) for one host.
+  All three subsystems are optional — a profile can define any combination (e.g. MIDI-only,
+  DMX-only, audio + MIDI, etc.). Subsystem presence in profile = required, absence = skipped.
 - **Hostname filtering**: Each profile can optionally specify a `hostname` constraint so that
   different hosts sharing the same config file use different devices and channel mappings.
   Set the `MTRACK_HOSTNAME` environment variable to override the system hostname.
-- **Per-host optionality**: MIDI and DMX can be required on some hosts (present in profile)
-  and optional on others (absent from profile), enabling flexible multi-host setups.
+- **Per-host optionality**: All subsystems (audio, MIDI, DMX) can be required on some hosts
+  (present in profile) and optional on others (absent from profile), enabling flexible
+  multi-host setups such as dedicated lighting-only or MIDI-only nodes.
 - **External profiles directory** (`profiles_dir`): Load profiles from individual YAML files in a
   directory instead of (or in addition to) defining them inline. Each file defines one profile.
   Files are sorted by filename for deterministic ordering. Directory profiles are prepended

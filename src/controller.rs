@@ -182,7 +182,7 @@ mod test {
             )?,
             &config::Player::new(
                 vec![],
-                config::Audio::new("mock-device"),
+                Some(config::Audio::new("mock-device")),
                 None,
                 None,
                 HashMap::new(),
@@ -191,7 +191,9 @@ mod test {
             None,
         )?);
         let playlist = player.get_playlist();
-        let binding = player.audio_device();
+        let binding = player
+            .audio_device()
+            .expect("audio device should be present");
         let device = binding.to_mock()?;
 
         let driver = Arc::new(TestDriver::new(player.clone(), TestEvent::Unset));
