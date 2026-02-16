@@ -30,14 +30,14 @@ mod tests {
         channels.insert("green".to_string(), 2);
         channels.insert("blue".to_string(), 3);
 
-        FixtureInfo {
-            name: name.to_string(),
+        FixtureInfo::new(
+            name.to_string(),
             universe,
             address,
-            fixture_type: "RGB_Par".to_string(),
+            "RGB_Par".to_string(),
             channels,
-            max_strobe_frequency: None,
-        }
+            None,
+        )
     }
 
     /// Create an RGB+dimmer fixture (has dedicated dimmer channel)
@@ -48,14 +48,14 @@ mod tests {
         channels.insert("green".to_string(), 3);
         channels.insert("blue".to_string(), 4);
 
-        FixtureInfo {
-            name: name.to_string(),
+        FixtureInfo::new(
+            name.to_string(),
             universe,
             address,
-            fixture_type: "RGB_Dimmer_Par".to_string(),
+            "RGB_Dimmer_Par".to_string(),
             channels,
-            max_strobe_frequency: None,
-        }
+            None,
+        )
     }
 
     /// Create a dimmer-only fixture (no RGB channels)
@@ -63,14 +63,14 @@ mod tests {
         let mut channels = HashMap::new();
         channels.insert("dimmer".to_string(), 1);
 
-        FixtureInfo {
-            name: name.to_string(),
+        FixtureInfo::new(
+            name.to_string(),
             universe,
             address,
-            fixture_type: "Dimmer".to_string(),
+            "Dimmer".to_string(),
             channels,
-            max_strobe_frequency: None,
-        }
+            None,
+        )
     }
 
     /// Test that dimmer effects produce consistent visual results across fixture types

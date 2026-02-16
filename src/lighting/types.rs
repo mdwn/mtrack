@@ -67,7 +67,7 @@ pub struct Fixture {
     fixture_type: String,
 
     /// The universe.
-    universe: u32,
+    universe: u16,
 
     /// The start channel.
     start_channel: u16,
@@ -81,7 +81,7 @@ impl Fixture {
     pub fn new(
         name: String,
         fixture_type: String,
-        universe: u32,
+        universe: u16,
         start_channel: u16,
         tags: Vec<String>,
     ) -> Fixture {
@@ -105,7 +105,7 @@ impl Fixture {
     }
 
     /// Gets the universe.
-    pub fn universe(&self) -> u32 {
+    pub fn universe(&self) -> u16 {
         self.universe
     }
 
@@ -115,7 +115,7 @@ impl Fixture {
     }
 
     /// Gets the tags on this fixture.
-    pub fn tags(&self) -> &Vec<String> {
+    pub fn tags(&self) -> &[String] {
         &self.tags
     }
 }
@@ -142,7 +142,7 @@ impl Group {
     }
 
     /// Gets the fixtures.
-    pub fn fixtures(&self) -> &Vec<String> {
+    pub fn fixtures(&self) -> &[String] {
         &self.fixtures
     }
 }

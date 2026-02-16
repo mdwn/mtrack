@@ -77,14 +77,14 @@ fn test_freeze_unfreeze_layer() {
     channels.insert("red".to_string(), 1);
     channels.insert("green".to_string(), 2);
     channels.insert("blue".to_string(), 3);
-    let fixture = FixtureInfo {
-        name: "rgb_fixture".to_string(),
-        universe: 1,
-        address: 1,
-        fixture_type: "RGB".to_string(),
+    let fixture = FixtureInfo::new(
+        "rgb_fixture".to_string(),
+        1,
+        1,
+        "RGB".to_string(),
         channels,
-        max_strobe_frequency: None,
-    };
+        None,
+    );
     engine.register_fixture(fixture);
 
     // Start a rainbow effect - it cycles through colors over time
@@ -180,14 +180,14 @@ fn test_release_frozen_layer_maintains_animation_continuity() {
     channels.insert("red".to_string(), 1);
     channels.insert("green".to_string(), 2);
     channels.insert("blue".to_string(), 3);
-    let fixture = FixtureInfo {
-        name: "rgb_fixture".to_string(),
-        universe: 1,
-        address: 1,
-        fixture_type: "RGB".to_string(),
+    let fixture = FixtureInfo::new(
+        "rgb_fixture".to_string(),
+        1,
+        1,
+        "RGB".to_string(),
         channels,
-        max_strobe_frequency: None,
-    };
+        None,
+    );
     engine.register_fixture(fixture);
 
     // Start a rainbow effect - it cycles through colors over time

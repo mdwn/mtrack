@@ -31,14 +31,14 @@ fn test_chase_pattern_linear_left_to_right() {
         channels.insert("green".to_string(), 3);
         channels.insert("blue".to_string(), 4);
 
-        let fixture = FixtureInfo {
-            name: format!("fixture_{}", i),
-            universe: 1,
-            address: (i - 1) * 4 + 1,
+        let fixture = FixtureInfo::new(
+            format!("fixture_{}", i),
+            1,
+            (i - 1) * 4 + 1,
+            "RGB_Par".to_string(),
             channels,
-            fixture_type: "RGB_Par".to_string(),
-            max_strobe_frequency: Some(20.0),
-        };
+            Some(20.0),
+        );
         engine.register_fixture(fixture);
     }
 
@@ -100,14 +100,14 @@ fn test_chase_pattern_linear_right_to_left() {
         channels.insert("green".to_string(), 3);
         channels.insert("blue".to_string(), 4);
 
-        let fixture = FixtureInfo {
-            name: format!("fixture_{}", i),
-            universe: 1,
-            address: (i - 1) * 4 + 1,
+        let fixture = FixtureInfo::new(
+            format!("fixture_{}", i),
+            1,
+            (i - 1) * 4 + 1,
+            "RGB_Par".to_string(),
             channels,
-            fixture_type: "RGB_Par".to_string(),
-            max_strobe_frequency: Some(20.0),
-        };
+            Some(20.0),
+        );
         engine.register_fixture(fixture);
     }
 
@@ -164,14 +164,14 @@ fn test_chase_pattern_snake() {
         channels.insert("green".to_string(), 3);
         channels.insert("blue".to_string(), 4);
 
-        let fixture = FixtureInfo {
-            name: format!("fixture_{}", i),
-            universe: 1,
-            address: (i - 1) * 4 + 1,
+        let fixture = FixtureInfo::new(
+            format!("fixture_{}", i),
+            1,
+            (i - 1) * 4 + 1,
+            "RGB_Par".to_string(),
             channels,
-            fixture_type: "RGB_Par".to_string(),
-            max_strobe_frequency: Some(20.0),
-        };
+            Some(20.0),
+        );
         engine.register_fixture(fixture);
     }
 
@@ -246,14 +246,14 @@ fn test_chase_pattern_random() {
         channels.insert("green".to_string(), 3);
         channels.insert("blue".to_string(), 4);
 
-        let fixture = FixtureInfo {
-            name: format!("fixture_{}", i),
-            universe: 1,
-            address: (i - 1) * 4 + 1,
+        let fixture = FixtureInfo::new(
+            format!("fixture_{}", i),
+            1,
+            (i - 1) * 4 + 1,
+            "RGB_Par".to_string(),
             channels,
-            fixture_type: "RGB_Par".to_string(),
-            max_strobe_frequency: Some(20.0),
-        };
+            Some(20.0),
+        );
         engine.register_fixture(fixture);
     }
 
@@ -305,14 +305,14 @@ fn test_chase_direction_vertical() {
         channels.insert("green".to_string(), 3);
         channels.insert("blue".to_string(), 4);
 
-        let fixture = FixtureInfo {
-            name: format!("fixture_{}", i),
-            universe: 1,
-            address: (i - 1) * 4 + 1,
+        let fixture = FixtureInfo::new(
+            format!("fixture_{}", i),
+            1,
+            (i - 1) * 4 + 1,
+            "RGB_Par".to_string(),
             channels,
-            fixture_type: "RGB_Par".to_string(),
-            max_strobe_frequency: Some(20.0),
-        };
+            Some(20.0),
+        );
         engine.register_fixture(fixture);
     }
 
@@ -354,14 +354,14 @@ fn test_chase_direction_circular() {
         channels.insert("green".to_string(), 3);
         channels.insert("blue".to_string(), 4);
 
-        let fixture = FixtureInfo {
-            name: format!("fixture_{}", i),
-            universe: 1,
-            address: (i - 1) * 4 + 1,
+        let fixture = FixtureInfo::new(
+            format!("fixture_{}", i),
+            1,
+            (i - 1) * 4 + 1,
+            "RGB_Par".to_string(),
             channels,
-            fixture_type: "RGB_Par".to_string(),
-            max_strobe_frequency: Some(20.0),
-        };
+            Some(20.0),
+        );
         engine.register_fixture(fixture);
     }
 
@@ -403,14 +403,14 @@ fn test_chase_speed_variations() {
         channels.insert("green".to_string(), 3);
         channels.insert("blue".to_string(), 4);
 
-        let fixture = FixtureInfo {
-            name: format!("fixture_{}", i),
-            universe: 1,
-            address: (i - 1) * 4 + 1,
+        let fixture = FixtureInfo::new(
+            format!("fixture_{}", i),
+            1,
+            (i - 1) * 4 + 1,
+            "RGB_Par".to_string(),
             channels,
-            fixture_type: "RGB_Par".to_string(),
-            max_strobe_frequency: Some(20.0),
-        };
+            Some(20.0),
+        );
         engine.register_fixture(fixture);
     }
 
@@ -460,14 +460,14 @@ fn test_chase_single_fixture() {
     channels.insert("green".to_string(), 3);
     channels.insert("blue".to_string(), 4);
 
-    let fixture = FixtureInfo {
-        name: "single_fixture".to_string(),
-        universe: 1,
-        address: 1,
+    let fixture = FixtureInfo::new(
+        "single_fixture".to_string(),
+        1,
+        1,
+        "RGB_Par".to_string(),
         channels,
-        fixture_type: "RGB_Par".to_string(),
-        max_strobe_frequency: Some(20.0),
-    };
+        Some(20.0),
+    );
     engine.register_fixture(fixture);
 
     let chase_effect = create_effect_with_layering(
@@ -507,14 +507,14 @@ fn test_chase_rgb_only_fixtures() {
         channels.insert("blue".to_string(), 3);
         // No dimmer channel!
 
-        let fixture = FixtureInfo {
-            name: format!("rgb_fixture_{}", i),
-            universe: 1,
-            address: (i - 1) * 3 + 1,
+        let fixture = FixtureInfo::new(
+            format!("rgb_fixture_{}", i),
+            1,
+            (i - 1) * 3 + 1,
+            "RGB_Par".to_string(),
             channels,
-            fixture_type: "RGB_Par".to_string(),
-            max_strobe_frequency: None,
-        };
+            None,
+        );
         engine.register_fixture(fixture);
     }
 
@@ -565,14 +565,14 @@ fn test_chase_effect_crossfade() {
     for i in 1..=4 {
         let mut channels = HashMap::new();
         channels.insert("dimmer".to_string(), i);
-        let fixture = FixtureInfo {
-            name: format!("fixture_{}", i),
-            universe: 1,
-            address: i,
+        let fixture = FixtureInfo::new(
+            format!("fixture_{}", i),
+            1,
+            i,
+            "Dimmer".to_string(),
             channels,
-            fixture_type: "Dimmer".to_string(),
-            max_strobe_frequency: None,
-        };
+            None,
+        );
         engine.register_fixture(fixture);
     }
 
@@ -639,14 +639,14 @@ fn test_random_chase_pattern_visibility() {
         channels.insert("red".to_string(), 1);
         channels.insert("green".to_string(), 2);
         channels.insert("blue".to_string(), 3);
-        let fixture = FixtureInfo {
-            name: format!("Brick{}", i),
-            universe: 1,
-            address: (i - 1) * 4 + 1,
-            fixture_type: "Astera-PixelBrick".to_string(),
+        let fixture = FixtureInfo::new(
+            format!("Brick{}", i),
+            1,
+            (i - 1) * 4 + 1,
+            "Astera-PixelBrick".to_string(),
             channels,
-            max_strobe_frequency: Some(25.0),
-        };
+            Some(25.0),
+        );
         engine.register_fixture(fixture);
     }
 

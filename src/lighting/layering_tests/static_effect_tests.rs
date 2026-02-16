@@ -33,14 +33,14 @@ fn test_static_replace_blend_mode() {
     channels.insert("blue".to_string(), 3);
     channels.insert("strobe".to_string(), 4);
 
-    let fixture = FixtureInfo {
-        name: "front_wash".to_string(),
-        universe: 1,
-        address: 1,
+    let fixture = FixtureInfo::new(
+        "front_wash".to_string(),
+        1,
+        1,
+        "Astera-PixelBrick".to_string(),
         channels,
-        fixture_type: "Astera-PixelBrick".to_string(),
-        max_strobe_frequency: Some(20.0), // Test fixture with strobe
-    };
+        Some(20.0), // Test fixture with strobe
+    );
 
     let mut engine = EffectEngine::new();
     engine.register_fixture(fixture);
@@ -52,14 +52,14 @@ fn test_static_replace_blend_mode() {
     back_channels.insert("blue".to_string(), 3);
     back_channels.insert("strobe".to_string(), 4);
 
-    let back_fixture = FixtureInfo {
-        name: "back_wash".to_string(),
-        universe: 1,
-        address: 5, // Different address
-        channels: back_channels,
-        fixture_type: "Astera-PixelBrick".to_string(),
-        max_strobe_frequency: Some(20.0), // Test fixture with strobe
-    };
+    let back_fixture = FixtureInfo::new(
+        "back_wash".to_string(),
+        1,
+        5, // Different address
+        "Astera-PixelBrick".to_string(),
+        back_channels,
+        Some(20.0), // Test fixture with strobe
+    );
     engine.register_fixture(back_fixture);
 
     // Test static effect with replace blend mode (like in your DSL)
@@ -116,14 +116,14 @@ fn test_static_effect_timing() {
     channels.insert("green".to_string(), 2);
     channels.insert("blue".to_string(), 3);
 
-    let fixture = FixtureInfo {
-        name: "test_fixture".to_string(),
-        universe: 1,
-        address: 1,
-        fixture_type: "RGB_Par".to_string(),
+    let fixture = FixtureInfo::new(
+        "test_fixture".to_string(),
+        1,
+        1,
+        "RGB_Par".to_string(),
         channels,
-        max_strobe_frequency: None,
-    };
+        None,
+    );
 
     engine.register_fixture(fixture);
 
@@ -268,14 +268,14 @@ fn test_static_effect_with_up_time() {
     channels.insert("green".to_string(), 3);
     channels.insert("blue".to_string(), 4);
 
-    let fixture = FixtureInfo {
-        name: "test_fixture".to_string(),
-        universe: 1,
-        address: 1,
-        fixture_type: "RGB_Par".to_string(),
+    let fixture = FixtureInfo::new(
+        "test_fixture".to_string(),
+        1,
+        1,
+        "RGB_Par".to_string(),
         channels,
-        max_strobe_frequency: None,
-    };
+        None,
+    );
 
     engine.register_fixture(fixture);
 
@@ -419,14 +419,14 @@ fn test_static_effect_with_down_time() {
     channels.insert("green".to_string(), 3);
     channels.insert("blue".to_string(), 4);
 
-    let fixture = FixtureInfo {
-        name: "test_fixture".to_string(),
-        universe: 1,
-        address: 1,
-        fixture_type: "RGB_Par".to_string(),
+    let fixture = FixtureInfo::new(
+        "test_fixture".to_string(),
+        1,
+        1,
+        "RGB_Par".to_string(),
         channels,
-        max_strobe_frequency: None,
-    };
+        None,
+    );
 
     engine.register_fixture(fixture);
 
@@ -678,14 +678,14 @@ fn test_static_effect_fade_out() {
     channels.insert("green".to_string(), 3);
     channels.insert("blue".to_string(), 4);
 
-    let fixture = FixtureInfo {
-        name: "test_fixture".to_string(),
-        universe: 1,
-        address: 1,
-        fixture_type: "Dimmer".to_string(),
+    let fixture = FixtureInfo::new(
+        "test_fixture".to_string(),
+        1,
+        1,
+        "Dimmer".to_string(),
         channels,
-        max_strobe_frequency: None,
-    };
+        None,
+    );
 
     engine.register_fixture(fixture);
 

@@ -469,14 +469,14 @@ fn test_freeze_unfreeze_multiple_effects_same_layer() {
     channels.insert("red".to_string(), 1);
     channels.insert("green".to_string(), 2);
     channels.insert("blue".to_string(), 3);
-    let rgb_fixture = FixtureInfo {
-        name: "rgb_fixture".to_string(),
-        universe: 1,
-        address: 1,
-        fixture_type: "RGB".to_string(),
+    let rgb_fixture = FixtureInfo::new(
+        "rgb_fixture".to_string(),
+        1,
+        1,
+        "RGB".to_string(),
         channels,
-        max_strobe_frequency: None,
-    };
+        None,
+    );
     engine.register_fixture(rgb_fixture);
 
     // Start multiple effects on the same layer

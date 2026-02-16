@@ -27,14 +27,14 @@ mod tests {
         channels.insert("red".to_string(), base_address);
         channels.insert("green".to_string(), base_address + 1);
         channels.insert("blue".to_string(), base_address + 2);
-        let fixture = FixtureInfo {
-            name: name.to_string(),
-            universe: 1,
-            address: base_address,
+        let fixture = FixtureInfo::new(
+            name.to_string(),
+            1,
+            base_address,
+            "RGB_Par".to_string(),
             channels,
-            fixture_type: "RGB_Par".to_string(),
-            max_strobe_frequency: None,
-        };
+            None,
+        );
         engine.register_fixture(fixture);
     }
 
@@ -44,14 +44,14 @@ mod tests {
         channels.insert("red".to_string(), base_address + 1);
         channels.insert("green".to_string(), base_address + 2);
         channels.insert("blue".to_string(), base_address + 3);
-        let fixture = FixtureInfo {
-            name: name.to_string(),
-            universe: 1,
-            address: base_address,
+        let fixture = FixtureInfo::new(
+            name.to_string(),
+            1,
+            base_address,
+            "RGB_Par_Dimmer".to_string(),
             channels,
-            fixture_type: "RGB_Par_Dimmer".to_string(),
-            max_strobe_frequency: None,
-        };
+            None,
+        );
         engine.register_fixture(fixture);
     }
 

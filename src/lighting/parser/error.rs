@@ -71,8 +71,8 @@ pub(crate) fn analyze_parsing_failure(content: &str) -> String {
             ));
         }
 
-        // Check for common typos
-        if trimmed.contains("shows") && !trimmed.contains("show") {
+        // Check for common typos — "shows" without the singular keyword "show " or "show\""
+        if trimmed.contains("shows") && !trimmed.contains("show ") && !trimmed.contains("show\"") {
             suggestions.push(format!(
                 "Line {}: Did you mean 'show' instead of 'shows'?",
                 line_num

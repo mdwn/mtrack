@@ -23,14 +23,14 @@ pub fn create_test_fixture(name: &str, universe: u16, address: u16) -> FixtureIn
     channels.insert("blue".to_string(), 3);
     channels.insert("strobe".to_string(), 4); // Add strobe channel
 
-    FixtureInfo {
-        name: name.to_string(),
+    FixtureInfo::new(
+        name.to_string(),
         universe,
         address,
-        fixture_type: "RGB_Par".to_string(),
+        "RGB_Par".to_string(),
         channels,
-        max_strobe_frequency: Some(20.0), // Test fixture with strobe
-    }
+        Some(20.0),
+    )
 }
 
 // Helper function to create EffectInstance with layering

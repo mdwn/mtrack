@@ -26,7 +26,9 @@ mod tests;
 // Re-export public items
 pub use color::Color;
 pub use error::EffectError;
-pub use fixture::{FixtureCapabilities, FixtureInfo, FixtureProfile, StrobeStrategy};
+pub use fixture::{
+    multiplier_key, FixtureCapabilities, FixtureInfo, FixtureProfile, StrobeStrategy,
+};
 pub use instance::EffectInstance;
 pub use state::{is_multiplier_channel, ChannelState, DmxCommand, FixtureState};
 pub use tempo_aware::{TempoAwareFrequency, TempoAwareSpeed};

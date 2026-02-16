@@ -37,8 +37,6 @@ pub struct LightingSystem {
     /// Inline fixtures.
     inline_fixtures: HashMap<String, String>,
 
-    /// Inline groups.
-
     /// Logical groups with role-based constraints.
     logical_groups: HashMap<String, LogicalGroup>,
 
@@ -262,7 +260,7 @@ impl LightingSystem {
 
                 // Try legacy group system as final fallback
                 if let Ok(legacy_group) = self.get_group(group_name) {
-                    return legacy_group.fixtures().clone();
+                    return legacy_group.fixtures().to_vec();
                 }
                 Vec::new()
             }
@@ -288,14 +286,14 @@ impl LightingSystem {
                 .get(fixture.fixture_type())
                 .ok_or_else(|| format!("Fixture type '{}' not found", fixture.fixture_type()))?;
 
-            let fixture_info = crate::lighting::effects::FixtureInfo {
-                name: name.clone(),
-                universe: fixture.universe() as u16,
-                address: fixture.start_channel(),
-                fixture_type: fixture.fixture_type().to_string(),
-                channels: fixture_type.channels().clone(),
-                max_strobe_frequency: fixture_type.max_strobe_frequency(),
-            };
+            let fixture_info = crate::lighting::effects::FixtureInfo::new(
+                name.clone(),
+                fixture.universe(),
+                fixture.start_channel(),
+                fixture.fixture_type().to_string(),
+                fixture_type.channels().clone(),
+                fixture_type.max_strobe_frequency(),
+            );
 
             fixture_infos.push(fixture_info);
         }

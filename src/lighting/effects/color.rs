@@ -41,7 +41,6 @@ impl Color {
         Ok(Color { r, g, b, w: None })
     }
 
-    #[cfg(test)]
     pub fn from_name(name: &str) -> Result<Self, Box<dyn std::error::Error>> {
         match name.to_lowercase().as_str() {
             "red" => Ok(Color {

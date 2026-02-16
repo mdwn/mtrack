@@ -30,14 +30,14 @@ fn test_strobe_boundary_at_duty_cycle_transition() {
     channels.insert("green".to_string(), 3);
     channels.insert("blue".to_string(), 4);
 
-    let fixture = FixtureInfo {
-        name: "test_fixture".to_string(),
-        universe: 1,
-        address: 1,
-        fixture_type: "RGB".to_string(),
+    let fixture = FixtureInfo::new(
+        "test_fixture".to_string(),
+        1,
+        1,
+        "RGB".to_string(),
         channels,
-        max_strobe_frequency: None, // No hardware strobe
-    };
+        None,
+    );
     engine.register_fixture(fixture);
 
     // 2 Hz strobe = 500ms period, so 50% duty cycle transition at 250ms

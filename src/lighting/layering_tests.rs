@@ -46,14 +46,14 @@ mod layering_behavior_tests {
         channels.insert("red".to_string(), 1);
         channels.insert("green".to_string(), 2);
         channels.insert("blue".to_string(), 3);
-        FixtureInfo {
-            name: name.to_string(),
+        FixtureInfo::new(
+            name.to_string(),
             universe,
             address,
-            fixture_type: "Astera-PixelBrick".to_string(),
+            "Astera-PixelBrick".to_string(),
             channels,
-            max_strobe_frequency: Some(25.0),
-        }
+            Some(25.0),
+        )
     }
 
     #[test]
@@ -562,14 +562,14 @@ mod layering_show_regression {
         channels.insert("red".to_string(), 1);
         channels.insert("green".to_string(), 2);
         channels.insert("blue".to_string(), 3);
-        FixtureInfo {
-            name: name.to_string(),
+        FixtureInfo::new(
+            name.to_string(),
             universe,
             address,
-            fixture_type: "Astera-PixelBrick".to_string(),
+            "Astera-PixelBrick".to_string(),
             channels,
-            max_strobe_frequency: Some(25.0),
-        }
+            Some(25.0),
+        )
     }
 
     #[test]

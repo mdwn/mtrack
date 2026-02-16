@@ -199,14 +199,14 @@ fn test_static_effect_crossfade_comprehensive() {
     channels.insert("red".to_string(), 1);
     channels.insert("green".to_string(), 2);
     channels.insert("blue".to_string(), 3);
-    let fixture = FixtureInfo {
-        name: "test_fixture".to_string(),
-        universe: 1,
-        address: 1,
+    let fixture = FixtureInfo::new(
+        "test_fixture".to_string(),
+        1,
+        1,
+        "RGB_Par".to_string(),
         channels,
-        fixture_type: "RGB_Par".to_string(),
-        max_strobe_frequency: None,
-    };
+        None,
+    );
     engine.register_fixture(fixture);
 
     // Create static effect with crossfades
@@ -270,14 +270,14 @@ fn test_color_cycle_effect_crossfade() {
     channels.insert("red".to_string(), 1);
     channels.insert("green".to_string(), 2);
     channels.insert("blue".to_string(), 3);
-    let fixture = FixtureInfo {
-        name: "test_fixture".to_string(),
-        universe: 1,
-        address: 1,
+    let fixture = FixtureInfo::new(
+        "test_fixture".to_string(),
+        1,
+        1,
+        "RGB_Par".to_string(),
         channels,
-        fixture_type: "RGB_Par".to_string(),
-        max_strobe_frequency: None,
-    };
+        None,
+    );
     engine.register_fixture(fixture);
 
     // Create color cycle effect with crossfades
@@ -345,14 +345,14 @@ fn test_pulse_effect_crossfade() {
     channels.insert("red".to_string(), 1);
     channels.insert("green".to_string(), 2);
     channels.insert("blue".to_string(), 3);
-    let fixture = FixtureInfo {
-        name: "test_fixture".to_string(),
-        universe: 1,
-        address: 1,
+    let fixture = FixtureInfo::new(
+        "test_fixture".to_string(),
+        1,
+        1,
+        "RGB_Par".to_string(),
         channels,
-        fixture_type: "RGB_Par".to_string(),
-        max_strobe_frequency: None,
-    };
+        None,
+    );
     engine.register_fixture(fixture);
 
     // Create pulse effect with crossfades
@@ -405,14 +405,14 @@ fn test_rainbow_effect_crossfade() {
     channels.insert("red".to_string(), 1);
     channels.insert("green".to_string(), 2);
     channels.insert("blue".to_string(), 3);
-    let fixture = FixtureInfo {
-        name: "test_fixture".to_string(),
-        universe: 1,
-        address: 1,
+    let fixture = FixtureInfo::new(
+        "test_fixture".to_string(),
+        1,
+        1,
+        "RGB_Par".to_string(),
         channels,
-        fixture_type: "RGB_Par".to_string(),
-        max_strobe_frequency: None,
-    };
+        None,
+    );
     engine.register_fixture(fixture);
 
     // Create rainbow effect with crossfades
@@ -480,23 +480,18 @@ fn test_dsl_crossfade_integration() {
     channels.insert("green".to_string(), 2);
     channels.insert("blue".to_string(), 3);
 
-    let fixture = FixtureInfo {
-        name: "front_wash".to_string(),
-        universe: 1,
-        address: 1,
+    let fixture = FixtureInfo::new(
+        "front_wash".to_string(),
+        1,
+        1,
+        "RGB_Par".to_string(),
         channels,
-        fixture_type: "RGB_Par".to_string(),
-        max_strobe_frequency: Some(20.0),
-    };
+        Some(20.0),
+    );
     engine.register_fixture(fixture);
 
     // Create EffectInstance from DSL Effect
     let effect_instance = LightingTimeline::create_effect_instance(effect, show.cues[0].time);
-    assert!(
-        effect_instance.is_some(),
-        "Failed to create EffectInstance from DSL Effect"
-    );
-    let effect_instance = effect_instance.unwrap();
     assert_eq!(effect_instance.up_time, Some(Duration::from_secs(2)));
     assert_eq!(effect_instance.down_time, Some(Duration::from_secs(1)));
 
@@ -545,14 +540,14 @@ fn test_static_effect_crossfade() {
     channels.insert("green".to_string(), 2);
     channels.insert("blue".to_string(), 3);
 
-    let fixture = FixtureInfo {
-        name: "test_fixture".to_string(),
-        universe: 1,
-        address: 1,
+    let fixture = FixtureInfo::new(
+        "test_fixture".to_string(),
+        1,
+        1,
+        "RGB_Par".to_string(),
         channels,
-        fixture_type: "RGB_Par".to_string(),
-        max_strobe_frequency: Some(20.0),
-    };
+        Some(20.0),
+    );
     engine.register_fixture(fixture);
 
     // Create a static blue effect with 1 second fade in

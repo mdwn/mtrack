@@ -79,14 +79,14 @@ fn test_strobe_effect_crossfade() {
     // Create a test fixture with strobe capability
     let mut channels = HashMap::new();
     channels.insert("strobe".to_string(), 1);
-    let fixture = FixtureInfo {
-        name: "test_fixture".to_string(),
-        universe: 1,
-        address: 1,
+    let fixture = FixtureInfo::new(
+        "test_fixture".to_string(),
+        1,
+        1,
+        "Strobe".to_string(),
         channels,
-        fixture_type: "Strobe".to_string(),
-        max_strobe_frequency: Some(20.0),
-    };
+        Some(20.0),
+    );
     engine.register_fixture(fixture);
 
     // Create strobe effect with crossfades

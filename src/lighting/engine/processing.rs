@@ -18,6 +18,47 @@ use std::time::Duration;
 use super::super::effects::*;
 use super::super::tempo::TempoMap;
 
+/// Build fixture states by applying a callback to each target fixture's profile.
+///
+/// This extracts the common pattern of iterating target fixtures, looking up each
+/// fixture in the registry, getting its profile, and collecting channel commands
+/// into fixture states.
+fn build_fixture_states(
+    fixture_registry: &HashMap<String, FixtureInfo>,
+    effect: &EffectInstance,
+    mut apply_fn: impl FnMut(&FixtureProfile) -> HashMap<String, ChannelState>,
+) -> HashMap<String, FixtureState> {
+    let mut fixture_states = HashMap::new();
+    for fixture_name in &effect.target_fixtures {
+        if let Some(fixture) = fixture_registry.get(fixture_name) {
+            let profile = FixtureProfile::for_fixture(fixture);
+            let channel_commands = apply_fn(profile);
+            fixture_states.insert(
+                fixture_name.clone(),
+                FixtureState::from_channels(channel_commands),
+            );
+        }
+    }
+    fixture_states
+}
+
+/// Like `build_fixture_states`, but gives the callback access to the FixtureInfo too.
+fn build_fixture_states_with_info(
+    fixture_registry: &HashMap<String, FixtureInfo>,
+    effect: &EffectInstance,
+    mut apply_fn: impl FnMut(&FixtureInfo, &FixtureProfile) -> FixtureState,
+) -> HashMap<String, FixtureState> {
+    let mut fixture_states = HashMap::new();
+    for fixture_name in &effect.target_fixtures {
+        if let Some(fixture) = fixture_registry.get(fixture_name) {
+            let profile = FixtureProfile::for_fixture(fixture);
+            let fixture_state = apply_fn(fixture, profile);
+            fixture_states.insert(fixture_name.clone(), fixture_state);
+        }
+    }
+    fixture_states
+}
+
 /// Calculate cycle progress (0.0 to 1.0) for a given elapsed time and cycle period
 #[inline]
 fn cycle_progress(elapsed: Duration, cycle_period: f64) -> f64 {
@@ -205,32 +246,20 @@ fn apply_static_effect(
     // Calculate crossfade multiplier
     let crossfade_multiplier = effect.calculate_crossfade_multiplier(elapsed);
 
-    let mut fixture_states = HashMap::new();
-
-    for fixture_name in &effect.target_fixtures {
-        if let Some(fixture) = fixture_registry.get(fixture_name) {
-            let mut fixture_state = FixtureState::new();
-
-            // For static effects, we apply parameters directly
-            // The fixture profile system is more useful for dynamic effects
-
-            for (param_name, value) in parameters {
-                // Apply crossfade multiplier to the value
-                let faded_value = *value * crossfade_multiplier;
-
-                // For static effects, apply parameters directly if the channel exists
-                // The fixture profile system is more useful for dynamic effects that need
-                // to adapt their behavior based on fixture capabilities
-                if fixture.channels.contains_key(param_name) {
-                    let channel_state =
-                        ChannelState::new(faded_value, effect.layer, effect.blend_mode);
-                    fixture_state.set_channel(param_name.clone(), channel_state);
-                }
-            }
-
-            fixture_states.insert(fixture_name.clone(), fixture_state);
-        }
-    }
+    let fixture_states =
+        build_fixture_states_with_info(fixture_registry, effect, |fixture, _profile| {
+            let channels = parameters
+                .iter()
+                .filter(|(param_name, _)| fixture.channels.contains_key(*param_name))
+                .map(|(param_name, value)| {
+                    let faded_value = *value * crossfade_multiplier;
+                    (
+                        param_name.clone(),
+                        ChannelState::new(faded_value, effect.layer, effect.blend_mode),
+                    )
+                });
+            FixtureState::from_channels(channels)
+        });
 
     Ok(Some(fixture_states))
 }
@@ -255,20 +284,13 @@ fn apply_color_cycle(
     // Guard against zero/negative speed - treat as "stopped" at first color
     if speed <= 0.0 {
         let color = colors[0];
-        let mut fixture_states = HashMap::new();
-        for fixture_name in &effect.target_fixtures {
-            if let Some(fixture) = fixture_registry.get(fixture_name) {
-                let profile = FixtureProfile::for_fixture(fixture);
-                let channel_commands = profile.apply_color(color, effect.layer, effect.blend_mode);
-
-                let mut fixture_state = FixtureState::new();
-                for (channel_name, mut channel_state) in channel_commands {
-                    channel_state.value *= crossfade_multiplier;
-                    fixture_state.set_channel(channel_name, channel_state);
-                }
-                fixture_states.insert(fixture_name.clone(), fixture_state);
+        let fixture_states = build_fixture_states(fixture_registry, effect, |profile| {
+            let mut commands = profile.apply_color(color, effect.layer, effect.blend_mode);
+            for state in commands.values_mut() {
+                state.value *= crossfade_multiplier;
             }
-        }
+            commands
+        });
         return Ok(Some(fixture_states));
     }
 
@@ -292,26 +314,13 @@ fn apply_color_cycle(
             colors[color_index % colors.len()]
         }
     };
-    let mut fixture_states = HashMap::new();
-
-    for fixture_name in &effect.target_fixtures {
-        if let Some(fixture) = fixture_registry.get(fixture_name) {
-            let mut fixture_state = FixtureState::new();
-
-            // Use fixture profile to determine how to apply color
-            let profile = FixtureProfile::for_fixture(fixture);
-            let channel_commands = profile.apply_color(color, effect.layer, effect.blend_mode);
-
-            // Apply the channel commands from the profile with crossfade multiplier
-            for (channel_name, mut channel_state) in channel_commands {
-                // Apply crossfade multiplier to the color value
-                channel_state.value *= crossfade_multiplier;
-                fixture_state.set_channel(channel_name, channel_state);
-            }
-
-            fixture_states.insert(fixture_name.clone(), fixture_state);
+    let fixture_states = build_fixture_states(fixture_registry, effect, |profile| {
+        let mut commands = profile.apply_color(color, effect.layer, effect.blend_mode);
+        for state in commands.values_mut() {
+            state.value *= crossfade_multiplier;
         }
-    }
+        commands
+    });
 
     Ok(Some(fixture_states))
 }
@@ -326,14 +335,11 @@ fn apply_strobe(
     // Calculate crossfade multiplier
     let crossfade_multiplier = effect.calculate_crossfade_multiplier(elapsed);
 
-    let mut fixture_states = HashMap::new();
-
-    for fixture_name in &effect.target_fixtures {
-        if let Some(fixture) = fixture_registry.get(fixture_name) {
-            let mut fixture_state = FixtureState::new();
-
+    let fixture_states =
+        build_fixture_states_with_info(fixture_registry, effect, |fixture, profile| {
             if frequency == 0.0 {
                 // Frequency 0 means strobe is disabled
+                let mut fixture_state = FixtureState::new();
                 if fixture.has_capability(FixtureCapabilities::STROBING) {
                     // Hardware strobe: just disable the strobe channel
                     fixture_state.set_channel(
@@ -343,10 +349,8 @@ fn apply_strobe(
                 }
                 // Software strobe: when frequency=0, don't set any channels
                 // This allows parent layers/effects to take over control
+                fixture_state
             } else {
-                // Use fixture profile to determine how to apply strobe control
-                let profile = FixtureProfile::for_fixture(fixture);
-
                 // Calculate strobe parameters based on strategy
                 let (normalized_frequency, strobe_value) =
                     if profile.strobe_strategy == StrobeStrategy::DedicatedChannel {
@@ -369,16 +373,9 @@ fn apply_strobe(
                     crossfade_multiplier,
                     strobe_value,
                 );
-
-                // Apply the channel commands from the profile
-                for (channel_name, channel_state) in channel_commands {
-                    fixture_state.set_channel(channel_name, channel_state);
-                }
+                FixtureState::from_channels(channel_commands)
             }
-
-            fixture_states.insert(fixture_name.clone(), fixture_state);
-        }
-    }
+        });
 
     Ok(Some(fixture_states))
 }
@@ -417,8 +414,8 @@ fn apply_dimmer(
                 (1.0 - ((linear_progress * std::f64::consts::PI).cos())) / 2.0
             }
             DimmerCurve::Cosine => {
-                // Smooth ease-in using cosine
-                1.0 - (1.0 - linear_progress).powi(2)
+                // Smooth ease-in using cosine: starts slow, ends fast
+                1.0 - (linear_progress * std::f64::consts::FRAC_PI_2).cos()
             }
         };
 
@@ -426,20 +423,9 @@ fn apply_dimmer(
     };
 
     // Apply dimmer to all fixtures
-    let mut fixture_states = HashMap::new();
-    for fixture_name in &effect.target_fixtures {
-        if let Some(fixture) = fixture_registry.get(fixture_name) {
-            let profile = FixtureProfile::for_fixture(fixture);
-            let channel_commands =
-                profile.apply_brightness(dimmer_value, effect.layer, effect.blend_mode);
-
-            let mut fixture_state = FixtureState::new();
-            for (channel_name, channel_state) in channel_commands {
-                fixture_state.set_channel(channel_name, channel_state);
-            }
-            fixture_states.insert(fixture_name.clone(), fixture_state);
-        }
-    }
+    let fixture_states = build_fixture_states(fixture_registry, effect, |profile| {
+        profile.apply_brightness(dimmer_value, effect.layer, effect.blend_mode)
+    });
 
     Ok(Some(fixture_states))
 }
@@ -462,15 +448,14 @@ fn apply_chase(
         let mut fixture_states = HashMap::new();
         for (i, fixture_name) in effect.target_fixtures.iter().enumerate() {
             if let Some(fixture) = fixture_registry.get(fixture_name) {
-                let mut fixture_state = FixtureState::new();
                 let chase_value = if i == 0 { crossfade_multiplier } else { 0.0 };
                 let profile = FixtureProfile::for_fixture(fixture);
                 let channel_commands =
                     profile.apply_chase(chase_value, effect.layer, effect.blend_mode);
-                for (channel_name, channel_state) in channel_commands {
-                    fixture_state.set_channel(channel_name, channel_state);
-                }
-                fixture_states.insert(fixture_name.clone(), fixture_state);
+                fixture_states.insert(
+                    fixture_name.clone(),
+                    FixtureState::from_channels(channel_commands),
+                );
             }
         }
         return Ok(Some(fixture_states));
@@ -509,8 +494,6 @@ fn apply_chase(
 
     for (i, fixture_name) in effect.target_fixtures.iter().enumerate() {
         if let Some(fixture) = fixture_registry.get(fixture_name) {
-            let mut fixture_state = FixtureState::new();
-
             let chase_value = match transition {
                 CycleTransition::Snap => {
                     // Binary on/off: fixture is either fully on or fully off
@@ -579,13 +562,10 @@ fn apply_chase(
             let profile = FixtureProfile::for_fixture(fixture);
             let channel_commands =
                 profile.apply_chase(chase_value, effect.layer, effect.blend_mode);
-
-            // Apply the channel commands from the profile
-            for (channel_name, channel_state) in channel_commands {
-                fixture_state.set_channel(channel_name, channel_state);
-            }
-
-            fixture_states.insert(fixture_name.clone(), fixture_state);
+            fixture_states.insert(
+                fixture_name.clone(),
+                FixtureState::from_channels(channel_commands),
+            );
         }
     }
 
@@ -703,26 +683,13 @@ fn apply_rainbow(
     let hue = (elapsed.as_secs_f64() * speed * 360.0) % 360.0;
     let color = Color::from_hsv(hue, saturation, brightness);
 
-    let mut fixture_states = HashMap::new();
-
-    for fixture_name in &effect.target_fixtures {
-        if let Some(fixture) = fixture_registry.get(fixture_name) {
-            let mut fixture_state = FixtureState::new();
-
-            // Use fixture profile to determine how to apply color
-            let profile = FixtureProfile::for_fixture(fixture);
-            let channel_commands = profile.apply_color(color, effect.layer, effect.blend_mode);
-
-            // Apply the channel commands from the profile with crossfade multiplier
-            for (channel_name, mut channel_state) in channel_commands {
-                // Apply crossfade multiplier to the color value
-                channel_state.value *= crossfade_multiplier;
-                fixture_state.set_channel(channel_name, channel_state);
-            }
-
-            fixture_states.insert(fixture_name.clone(), fixture_state);
+    let fixture_states = build_fixture_states(fixture_registry, effect, |profile| {
+        let mut commands = profile.apply_color(color, effect.layer, effect.blend_mode);
+        for state in commands.values_mut() {
+            state.value *= crossfade_multiplier;
         }
-    }
+        commands
+    });
 
     Ok(Some(fixture_states))
 }
@@ -745,20 +712,9 @@ fn apply_pulse(
         (base_level + pulse_amplitude * (pulse_phase.sin() * 0.5 + 0.5)) * crossfade_multiplier;
 
     // Apply pulse to all fixtures
-    let mut fixture_states = HashMap::new();
-    for fixture_name in &effect.target_fixtures {
-        if let Some(fixture) = fixture_registry.get(fixture_name) {
-            let profile = FixtureProfile::for_fixture(fixture);
-            let channel_commands =
-                profile.apply_pulse(pulse_value, effect.layer, effect.blend_mode);
-
-            let mut fixture_state = FixtureState::new();
-            for (channel_name, channel_state) in channel_commands {
-                fixture_state.set_channel(channel_name, channel_state);
-            }
-            fixture_states.insert(fixture_name.clone(), fixture_state);
-        }
-    }
+    let fixture_states = build_fixture_states(fixture_registry, effect, |profile| {
+        profile.apply_pulse(pulse_value, effect.layer, effect.blend_mode)
+    });
 
     Ok(Some(fixture_states))
 }

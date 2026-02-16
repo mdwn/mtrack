@@ -21,7 +21,6 @@ use super::super::effects::{BlendMode, EffectInstance, EffectLayer, EffectType};
 pub(crate) fn stop_conflicting_effects(
     active_effects: &mut HashMap<String, EffectInstance>,
     new_effect: &EffectInstance,
-    fixture_registry: &HashMap<String, super::super::effects::FixtureInfo>,
 ) {
     let mut to_remove = Vec::new();
 
@@ -32,7 +31,7 @@ pub(crate) fn stop_conflicting_effects(
         }
 
         // Check if effects should conflict based on sophisticated rules
-        if should_effects_conflict(effect, new_effect, fixture_registry) {
+        if should_effects_conflict(effect, new_effect) {
             to_remove.push(effect_id.clone());
         }
     }
@@ -43,15 +42,12 @@ pub(crate) fn stop_conflicting_effects(
 }
 
 /// Determine if two effects should conflict based on sophisticated rules
-pub(crate) fn should_effects_conflict(
-    existing: &EffectInstance,
-    new: &EffectInstance,
-    _fixture_registry: &HashMap<String, super::super::effects::FixtureInfo>,
-) -> bool {
+pub(crate) fn should_effects_conflict(existing: &EffectInstance, new: &EffectInstance) -> bool {
     // 1. Layer-based conflict resolution
-    // Effects in different layers generally don't conflict unless they have channel conflicts
+    // Effects in different layers don't conflict — the layering system
+    // is designed to allow effects in different layers to coexist and blend
     if existing.layer != new.layer {
-        return have_channel_conflicts(existing, new);
+        return false;
     }
 
     // 2. Priority-based conflict resolution within the same layer
@@ -69,14 +65,6 @@ fn have_fixture_overlap(existing: &EffectInstance, new: &EffectInstance) -> bool
         .target_fixtures
         .iter()
         .any(|fixture| new.target_fixtures.contains(fixture))
-}
-
-/// Check if effects have channel-level conflicts
-fn have_channel_conflicts(_existing: &EffectInstance, _new: &EffectInstance) -> bool {
-    // Effects in different layers should generally not conflict
-    // The layering system is designed to allow effects in different layers
-    // to coexist and blend together
-    false
 }
 
 /// Determine conflicts based on effect types and blend modes
@@ -136,22 +124,14 @@ pub(crate) fn clear_layer(
     frozen_layers: &mut HashMap<EffectLayer, Instant>,
     layer: EffectLayer,
 ) {
-    // Collect effect IDs on this layer BEFORE removing them
-    let effects_on_layer: Vec<String> = active_effects
-        .iter()
-        .filter(|(_, effect)| effect.layer == layer)
-        .map(|(id, _)| id.clone())
-        .collect();
-
-    // Remove all effects on this layer
+    // Remove matching effects from releasing_effects before removing from active_effects,
+    // since we need active_effects to know which IDs are on this layer
+    releasing_effects.retain(|id, _| {
+        active_effects
+            .get(id)
+            .is_none_or(|effect| effect.layer != layer)
+    });
     active_effects.retain(|_, effect| effect.layer != layer);
-
-    // Also remove any releasing effects that were on this layer
-    for id in effects_on_layer {
-        releasing_effects.remove(&id);
-    }
-
-    // Unfreeze the layer if it was frozen
     frozen_layers.remove(&layer);
 }
 
@@ -161,18 +141,8 @@ pub(crate) fn clear_all_layers(
     releasing_effects: &mut HashMap<String, (Duration, Instant)>,
     frozen_layers: &mut HashMap<EffectLayer, Instant>,
 ) {
-    // Collect all effect IDs BEFORE removing them
-    let all_effect_ids: Vec<String> = active_effects.keys().cloned().collect();
-
-    // Remove all effects
     active_effects.clear();
-
-    // Remove all releasing effects
-    for id in all_effect_ids {
-        releasing_effects.remove(&id);
-    }
-
-    // Unfreeze all layers
+    releasing_effects.clear();
     frozen_layers.clear();
 }
 
