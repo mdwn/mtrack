@@ -40,6 +40,10 @@ Hardware profiles allow multiple complete host configurations in a single config
   Set the `MTRACK_HOSTNAME` environment variable to override the system hostname.
 - **Per-host optionality**: MIDI and DMX can be required on some hosts (present in profile)
   and optional on others (absent from profile), enabling flexible multi-host setups.
+- **External profiles directory** (`profiles_dir`): Load profiles from individual YAML files in a
+  directory instead of (or in addition to) defining them inline. Each file defines one profile.
+  Files are sorted by filename for deterministic ordering. Directory profiles are prepended
+  before inline profiles, making them useful for host-specific configs with inline fallbacks.
 - **Backwards compatible**: Existing configs using `audio:`, `midi:`, `dmx:`, and `track_mappings:`
   are automatically normalized into a single profile at startup.
 
@@ -52,19 +56,25 @@ Hardware profiles allow multiple complete host configurations in a single config
 - Bounded source channel (capacity 64) to prevent unbounded memory growth
 - Precomputed channel mappings at sample load time (no allocations during trigger)
 - Song playback is buffered to reduce buffer underrun.
+- **Audio stress test** (`examples/audio_stress`): A standalone stress test binary for
+  verifying real-time audio performance against real hardware. Sweeps buffer sizes, sample
+  rates, and formats; ramps source counts; and churns source creation/destruction. Reports
+  pass/fail based on callback budget headroom. Useful for validating hardware configurations
+  before live use.
 
 ### Changed
 
-Updated cpal from 0.15.3 to 0.17.1 for improved ALSA handling.
-(breaking) This may have changed device names. Please run mtrack devices to see if you need to update yours.
-
-Switched from hound to Symphonia, which supports a great deal more formats than just wav.
-We now support flac, ogg, vorbis, mp3, alac, aac, and anything else Symphonia supports.
+- **cpal 0.15.3 to 0.17.1**: Updated for improved ALSA handling. (Breaking) Device names
+  may have changed. Run `mtrack devices` to check.
+- **Symphonia replaces hound**: Supports flac, ogg, vorbis, mp3, alac, aac, and anything
+  else Symphonia supports, not just wav.
 
 ### Fixed
 
-Fixed a bug where stopping too fast after playing could produce a hang. This is unlikely to
-have happened in a live scenario.
+- **Stop during playback**: Fixed a bug where stopping too fast after playing could produce
+  a hang. This is unlikely to have happened in a live scenario.
+- **Clean device shutdown**: The CPAL output stream now shuts down promptly when the device
+  is dropped, fixing a bug where the stream thread would block indefinitely on join.
 
 ## [0.7.0]
 
