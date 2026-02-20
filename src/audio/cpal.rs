@@ -363,7 +363,7 @@ impl Drop for OutputManager {
             .collect();
         drop(active_sources); // Release the read lock
         if !source_ids.is_empty() {
-            self.mixer.remove_sources(source_ids);
+            self.mixer.remove_sources(&source_ids);
         }
 
         // Signal the output thread to shut down and wake it from the condvar wait.

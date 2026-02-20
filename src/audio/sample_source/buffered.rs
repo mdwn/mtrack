@@ -275,8 +275,8 @@ impl BufferedSampleSource {
 impl ChannelMappedSampleSource for BufferedSampleSource {
     fn next_sample(&mut self) -> Result<Option<f32>, SampleSourceError> {
         let channels = self.channels as usize;
-        let mut frame = vec![0.0f32; channels];
-        match self.next_frame(&mut frame[..])? {
+        let mut frame = [0.0f32; 64];
+        match self.next_frame(&mut frame[..channels])? {
             Some(count) if count > 0 => Ok(Some(frame[0])),
             _ => Ok(None),
         }
@@ -335,6 +335,81 @@ impl ChannelMappedSampleSource for BufferedSampleSource {
         }
 
         Ok(Some(channels))
+    }
+
+    fn read_frames(
+        &mut self,
+        output: &mut [f32],
+        max_frames: usize,
+    ) -> Result<usize, SampleSourceError> {
+        let channels = self.channels as usize;
+        let mut frames_read = 0;
+        let mut maybe_spawn_refill = false;
+        let mut need_direct_reads = false;
+
+        {
+            let mut state = self.buffer.state.lock().unwrap();
+
+            let available = state.len_frames.min(max_frames);
+            if available > 0 {
+                let read_start = state.read_index;
+                let read_end = read_start + available;
+
+                if read_end <= self.capacity_frames {
+                    // Contiguous region — single copy
+                    let src_start = read_start * channels;
+                    let src_end = read_end * channels;
+                    output[..available * channels].copy_from_slice(&state.data[src_start..src_end]);
+                } else {
+                    // Wrap-around — two copies
+                    let first_part = self.capacity_frames - read_start;
+                    let first_samples = first_part * channels;
+                    let src_start = read_start * channels;
+                    output[..first_samples]
+                        .copy_from_slice(&state.data[src_start..src_start + first_samples]);
+
+                    let second_samples = (available - first_part) * channels;
+                    output[first_samples..first_samples + second_samples]
+                        .copy_from_slice(&state.data[..second_samples]);
+                }
+
+                state.read_index = (read_start + available) % self.capacity_frames;
+                state.len_frames -= available;
+                frames_read = available;
+            }
+
+            if !state.finished && state.len_frames <= self.refill_threshold_frames {
+                maybe_spawn_refill = true;
+            }
+
+            // If we still need frames and the buffer is empty, fall back to direct reads
+            if frames_read < max_frames && state.len_frames == 0 && !state.finished {
+                need_direct_reads = true;
+            }
+        }
+
+        // Underrun fallback: read directly from the inner source
+        if need_direct_reads {
+            let mut inner = self.inner.lock().unwrap();
+            while frames_read < max_frames {
+                let offset = frames_read * channels;
+                match inner.next_frame(&mut output[offset..offset + channels]) {
+                    Ok(Some(_)) => frames_read += 1,
+                    Ok(None) | Err(_) => {
+                        let mut state = self.buffer.state.lock().unwrap();
+                        state.finished = true;
+                        self.finished_flag.store(true, Ordering::Relaxed);
+                        break;
+                    }
+                }
+            }
+        }
+
+        if maybe_spawn_refill {
+            self.spawn_refill_if_needed();
+        }
+
+        Ok(frames_read)
     }
 
     fn channel_mappings(&self) -> &Vec<Vec<String>> {

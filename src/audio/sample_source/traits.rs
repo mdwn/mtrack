@@ -99,6 +99,27 @@ pub trait ChannelMappedSampleSource: Send + Sync {
         Ok(Some(channel_count))
     }
 
+    /// Read multiple frames in a batch, writing interleaved samples into `output`.
+    /// Returns the number of frames successfully read. Fewer than `max_frames`
+    /// means the source is finished (or an error occurred on a frame boundary).
+    /// `output` must have room for at least `max_frames * source_channel_count()` samples.
+    fn read_frames(
+        &mut self,
+        output: &mut [f32],
+        max_frames: usize,
+    ) -> Result<usize, SampleSourceError> {
+        let channel_count = self.source_channel_count() as usize;
+        let mut frames_read = 0;
+        for frame_idx in 0..max_frames {
+            let offset = frame_idx * channel_count;
+            match self.next_frame(&mut output[offset..offset + channel_count])? {
+                Some(_) => frames_read += 1,
+                None => break,
+            }
+        }
+        Ok(frames_read)
+    }
+
     /// Get the channel mappings for this source
     /// Returns a Vec where each element corresponds to a source channel
     /// Each Vec<String> contains the labels that source channel maps to

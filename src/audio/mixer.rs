@@ -15,7 +15,7 @@
 use crate::audio::sample_source::ChannelMappedSampleSource;
 use parking_lot::{Mutex, RwLock};
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -24,10 +24,12 @@ use std::sync::Arc;
 use std::time::Instant;
 use tracing::debug;
 
-// Thread-local scratch for process_into_output. Size 128 avoids resize in the callback
-// for typical multichannel sources; >128 channels may still trigger a one-time resize.
+// Thread-local scratch buffers for process_into_output.
+// BATCH_READ_SCRATCH: 8192 samples covers 512 frames * 16 channels; resized if needed.
+// SOURCES_SCRATCH: reuses the Vec across callbacks to avoid per-callback heap allocation.
 thread_local! {
-    static SOURCE_FRAME_SCRATCH: RefCell<Vec<f32>> = RefCell::new(vec![0.0; 128]);
+    static BATCH_READ_SCRATCH: RefCell<Vec<f32>> = RefCell::new(vec![0.0; 8192]);
+    static SOURCES_SCRATCH: RefCell<Vec<Arc<Mutex<ActiveSource>>>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Core audio mixing logic that's independent of any audio backend
@@ -144,12 +146,11 @@ impl AudioMixer {
     }
 
     /// Removes sources by ID
-    pub fn remove_sources(&self, source_ids: Vec<u64>) {
-        let source_ids_set: HashSet<u64> = source_ids.into_iter().collect();
+    pub fn remove_sources(&self, source_ids: &[u64]) {
         let mut sources = self.active_sources.write();
         sources.retain(|source| {
             let source_guard = source.lock();
-            !source_ids_set.contains(&source_guard.id)
+            !source_ids.contains(&source_guard.id)
         });
     }
 
@@ -168,7 +169,7 @@ impl AudioMixer {
             sources.clone()
         };
 
-        let mut finished_source_ids = HashSet::new();
+        let mut finished_source_ids = Vec::new();
         // Reusable scratch buffer for source frames (max 64 channels should cover most cases)
         let mut source_frame_buffer = vec![0.0f32; 64];
 
@@ -179,7 +180,7 @@ impl AudioMixer {
             if active_source.is_finished.load(Ordering::Relaxed)
                 || active_source.cancel_handle.is_cancelled()
             {
-                finished_source_ids.insert(active_source.id);
+                finished_source_ids.push(active_source.id);
                 continue;
             }
 
@@ -216,22 +217,18 @@ impl AudioMixer {
                 }
                 Ok(None) => {
                     active_source.is_finished.store(true, Ordering::Relaxed);
-                    finished_source_ids.insert(active_source.id);
+                    finished_source_ids.push(active_source.id);
                 }
                 Err(_) => {
                     active_source.is_finished.store(true, Ordering::Relaxed);
-                    finished_source_ids.insert(active_source.id);
+                    finished_source_ids.push(active_source.id);
                 }
             }
         }
 
         // Remove finished sources in a separate, quick write lock
         if !finished_source_ids.is_empty() {
-            let mut sources = self.active_sources.write();
-            sources.retain(|source| {
-                let source_guard = source.lock();
-                !finished_source_ids.contains(&source_guard.id)
-            });
+            self.remove_sources(&finished_source_ids);
         }
 
         // Update performance statistics (test only)
@@ -288,16 +285,21 @@ impl AudioMixer {
         // Clear the buffer once
         output.fill(0.0);
 
-        // Get a snapshot of source references to process (minimize lock duration)
-        let sources_to_process = {
-            let sources = self.active_sources.read();
-            sources.clone()
-        };
+        // Take the scratch Vec (reuses capacity across callbacks, avoids heap alloc)
+        let mut sources_to_process =
+            SOURCES_SCRATCH.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
+        sources_to_process.clear();
 
-        let mut finished_source_ids = HashSet::new();
+        // Fill from active_sources (quick read lock)
+        {
+            let sources = self.active_sources.read();
+            sources_to_process.extend(sources.iter().cloned());
+        }
+
+        let mut finished_source_ids: Vec<u64> = Vec::new();
 
         // Process each active source across all frames
-        for active_source_arc in sources_to_process {
+        for active_source_arc in sources_to_process.iter() {
             let mut active_source = active_source_arc.lock();
 
             if active_source.is_finished.load(Ordering::Relaxed)
@@ -312,7 +314,7 @@ impl AudioMixer {
                     },
                     "mixer: source marked finished (skip)"
                 );
-                finished_source_ids.insert(active_source.id);
+                finished_source_ids.push(active_source.id);
                 continue;
             }
 
@@ -327,7 +329,7 @@ impl AudioMixer {
                         "mixer: source marked finished (cancel_at_sample reached)"
                     );
                     active_source.is_finished.store(true, Ordering::Relaxed);
-                    finished_source_ids.insert(active_source.id);
+                    finished_source_ids.push(active_source.id);
                     continue;
                 }
             }
@@ -365,46 +367,53 @@ impl AudioMixer {
             };
 
             let source_channel_count = active_source.cached_source_channel_count as usize;
-            SOURCE_FRAME_SCRATCH.with(|cell| {
+            let frames_needed = end_frame - start_frame;
+
+            BATCH_READ_SCRATCH.with(|cell| {
                 let mut buf = cell.borrow_mut();
-                if buf.len() < source_channel_count {
-                    buf.resize(source_channel_count, 0.0);
+                let batch_samples = frames_needed * source_channel_count;
+                if buf.len() < batch_samples {
+                    buf.resize(batch_samples, 0.0);
                 }
-                let sbuf = &mut buf[..source_channel_count];
-                for frame_index in start_frame..end_frame {
-                    match active_source.source.next_frame(sbuf) {
-                        Ok(Some(_count)) => {
-                            for (source_channel, &sample) in sbuf.iter().enumerate() {
+                let batch_buf = &mut buf[..batch_samples];
+
+                match active_source.source.read_frames(batch_buf, frames_needed) {
+                    Ok(frames_got) => {
+                        for frame_idx in 0..frames_got {
+                            let src_offset = frame_idx * source_channel_count;
+                            let dst_base = (start_frame + frame_idx) * channels;
+                            for (source_channel, &sample) in batch_buf
+                                [src_offset..src_offset + source_channel_count]
+                                .iter()
+                                .enumerate()
+                            {
                                 if let Some(output_channels) =
                                     active_source.channel_mappings.get(source_channel)
                                 {
-                                    let base = frame_index * channels;
                                     for &output_index in output_channels {
                                         if output_index < channels {
-                                            output[base + output_index] += sample;
+                                            output[dst_base + output_index] += sample;
                                         }
                                     }
                                 }
                             }
                         }
-                        Ok(None) => {
+                        if frames_got < frames_needed {
                             debug!(
                                 source_id = active_source.id,
-                                "mixer: source marked finished (next_frame returned None)"
+                                "mixer: source marked finished (read_frames returned fewer frames)"
                             );
                             active_source.is_finished.store(true, Ordering::Relaxed);
-                            finished_source_ids.insert(active_source.id);
-                            break;
+                            finished_source_ids.push(active_source.id);
                         }
-                        Err(_) => {
-                            debug!(
-                                source_id = active_source.id,
-                                "mixer: source marked finished (next_frame error)"
-                            );
-                            active_source.is_finished.store(true, Ordering::Relaxed);
-                            finished_source_ids.insert(active_source.id);
-                            break;
-                        }
+                    }
+                    Err(_) => {
+                        debug!(
+                            source_id = active_source.id,
+                            "mixer: source marked finished (read_frames error)"
+                        );
+                        active_source.is_finished.store(true, Ordering::Relaxed);
+                        finished_source_ids.push(active_source.id);
                     }
                 }
             });
@@ -421,12 +430,14 @@ impl AudioMixer {
                 remaining_before = self.active_sources.read().len(),
                 "mixer: removing finished sources"
             );
-            let mut sources = self.active_sources.write();
-            sources.retain(|source| {
-                let source_guard = source.lock();
-                !finished_source_ids.contains(&source_guard.id)
-            });
+            self.remove_sources(&finished_source_ids);
         }
+
+        // Put back the scratch Vec for reuse (drop Arc refs first)
+        sources_to_process.clear();
+        SOURCES_SCRATCH.with(|cell| {
+            *cell.borrow_mut() = sources_to_process;
+        });
     }
 
     /// Gets the number of output channels

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0]
+
 ### Added
 
 MIDI-triggered sample playback has been added. Samples can be configured globally or per-song
@@ -25,6 +27,9 @@ latency with zero jitter. At 256 sample buffer size (44.1kHz), latency is approx
 samples stop at exactly the same sample the new one starts, eliminating gaps.
 
 The audio engine has been refactored for lower latency and stability:
+
+Audio is now fully optional. mtrack can run as a pure MIDI or DMX player without any
+audio device configured. This enables dedicated lighting-only or MIDI-only nodes.
 
 A warning is displayed when playing songs that have tracks that are not configured to
 be output in the current player configuration. This will not cause an error, but will be
@@ -70,6 +75,12 @@ Hardware profiles allow multiple complete host configurations in a single config
   may have changed. Run `mtrack devices` to check.
 - **Symphonia replaces hound**: Supports flac, ogg, vorbis, mp3, alac, aac, and anything
   else Symphonia supports, not just wav.
+- **Security**: mtrack now supports running as a dedicated `mtrack` user instead of root
+  via systemd, with updated service definitions and documentation.
+- **Error handling**: Improved error reporting and panic aversion across the player, DMX
+  engine, sample loader, and playlist handling.
+- **Lighting cleanup**: A pass of cleanup on the lighting system, improving code quality
+  across the effect engine, parser, timeline, and layering.
 
 ### Fixed
 
@@ -77,6 +88,7 @@ Hardware profiles allow multiple complete host configurations in a single config
   a hang. This is unlikely to have happened in a live scenario.
 - **Clean device shutdown**: The CPAL output stream now shuts down promptly when the device
   is dropped, fixing a bug where the stream thread would block indefinitely on join.
+- **Lighting bug fixes**: Fixed bugs in the lighting system discovered during cleanup.
 
 ## [0.7.0]
 
