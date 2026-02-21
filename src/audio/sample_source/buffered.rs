@@ -101,7 +101,7 @@ impl BufferedSampleSource {
         device_buffer_frames: usize,
     ) -> Self {
         let channels = inner.source_channel_count() as usize;
-        let capacity_frames = cmp::max(device_buffer_frames * 4, device_buffer_frames.max(1));
+        let capacity_frames = (device_buffer_frames * 4).max(1);
         let warmup_min_frames = device_buffer_frames.max(1);
         let refill_threshold_frames = capacity_frames / 2;
 

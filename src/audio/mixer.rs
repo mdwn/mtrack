@@ -145,7 +145,10 @@ impl AudioMixer {
         sources.push(Arc::new(Mutex::new(source)));
     }
 
-    /// Removes sources by ID
+    /// Removes sources by ID.
+    /// Note: `source_ids.contains()` is O(M) per retained source, making this
+    /// O(N * M) overall. This is fine for typical counts (< 32 sources) but would
+    /// need a HashSet if source counts ever grow significantly.
     pub fn remove_sources(&self, source_ids: &[u64]) {
         let mut sources = self.active_sources.write();
         sources.retain(|source| {
@@ -368,6 +371,8 @@ impl AudioMixer {
 
             // cancel_at_sample can be set by another thread to a value before
             // start_at_sample, making end_frame < start_frame. Skip gracefully.
+            // The source stays alive for one extra callback; on the next callback
+            // the early cancel_at_sample check (above) will fire and remove it.
             if end_frame <= start_frame {
                 continue;
             }
@@ -375,6 +380,11 @@ impl AudioMixer {
             let source_channel_count = active_source.cached_source_channel_count as usize;
             let frames_needed = end_frame - start_frame;
 
+            // Safety invariant: BATCH_READ_SCRATCH is reused across source iterations
+            // without clearing. This is safe because we only read back
+            // `frames_got * source_channel_count` samples from the buffer, and
+            // `read_frames` is required to write exactly that many samples.
+            // Stale data beyond that range is never accessed.
             BATCH_READ_SCRATCH.with(|cell| {
                 let mut buf = cell.borrow_mut();
                 let batch_samples = frames_needed * source_channel_count;
@@ -679,5 +689,284 @@ mod tests {
         for &sample in &output {
             assert_eq!(sample, 0.0);
         }
+
+        // The source lingers for one callback (skipped via `continue`), then on
+        // the next callback the early cancel_at_sample check removes it.
+        let mut output2 = vec![0.0f32; 512 * 2];
+        mixer.process_into_output(&mut output2, 512);
+        for &sample in &output2 {
+            assert_eq!(sample, 0.0);
+        }
+        // After two callbacks the source should be cleaned up.
+        assert_eq!(mixer.active_sources.read().len(), 0);
+    }
+
+    #[test]
+    fn test_process_into_output_basic() {
+        // Verify that process_into_output produces the same audio as process_frames
+        // for a start-aligned source (no scheduling).
+        let mixer = AudioMixer::new(2, 44100);
+
+        let samples = vec![0.5, 0.8, 0.3, 0.6]; // 4 frames of 1 channel
+        let source = create_test_source(samples, 1, vec![vec!["test".to_string()]]);
+
+        let active_source = ActiveSource {
+            id: 1,
+            source,
+            track_mappings: {
+                let mut map = HashMap::new();
+                map.insert("test".to_string(), vec![1]);
+                map
+            },
+            channel_mappings: Vec::new(),
+            cached_source_channel_count: 1,
+            is_finished: Arc::new(AtomicBool::new(false)),
+            cancel_handle: CancelHandle::new(),
+            start_at_sample: None,
+            cancel_at_sample: None,
+        };
+
+        mixer.add_source(active_source);
+
+        let mut output = vec![0.0f32; 4 * 2]; // 4 frames * 2 channels
+        mixer.process_into_output(&mut output, 4);
+
+        assert_eq!(output[0], 0.5); // Frame 0, Ch 0
+        assert_eq!(output[1], 0.0); // Frame 0, Ch 1 (unmapped)
+        assert_eq!(output[2], 0.8); // Frame 1, Ch 0
+        assert_eq!(output[3], 0.0); // Frame 1, Ch 1
+        assert_eq!(output[4], 0.3); // Frame 2, Ch 0
+        assert_eq!(output[5], 0.0); // Frame 2, Ch 1
+        assert_eq!(output[6], 0.6); // Frame 3, Ch 0
+        assert_eq!(output[7], 0.0); // Frame 3, Ch 1
+    }
+
+    #[test]
+    fn test_process_into_output_start_at_sample_mid_buffer() {
+        // Source starts partway through the buffer (start_at_sample > current_sample).
+        let mixer = AudioMixer::new(2, 44100);
+
+        // 4 frames of 1 channel; source should start at frame index 2 in the buffer.
+        let samples = vec![0.1, 0.2, 0.3, 0.4];
+        let source = create_test_source(samples, 1, vec![vec!["test".to_string()]]);
+
+        let active_source = ActiveSource {
+            id: 1,
+            source,
+            track_mappings: {
+                let mut map = HashMap::new();
+                map.insert("test".to_string(), vec![1]);
+                map
+            },
+            channel_mappings: Vec::new(),
+            cached_source_channel_count: 1,
+            is_finished: Arc::new(AtomicBool::new(false)),
+            cancel_handle: CancelHandle::new(),
+            start_at_sample: Some(2), // Start at sample 2
+            cancel_at_sample: None,
+        };
+
+        mixer.add_source(active_source);
+
+        // Buffer covers samples 0..4 (4 frames). Source starts at sample 2.
+        let mut output = vec![0.0f32; 4 * 2];
+        mixer.process_into_output(&mut output, 4);
+
+        // Frames 0-1 should be silence, frames 2-3 should have source audio.
+        assert_eq!(output[0], 0.0); // Frame 0, Ch 0 (before start)
+        assert_eq!(output[1], 0.0); // Frame 0, Ch 1
+        assert_eq!(output[2], 0.0); // Frame 1, Ch 0 (before start)
+        assert_eq!(output[3], 0.0); // Frame 1, Ch 1
+        assert_eq!(output[4], 0.1); // Frame 2, Ch 0 (source starts)
+        assert_eq!(output[5], 0.0); // Frame 2, Ch 1
+        assert_eq!(output[6], 0.2); // Frame 3, Ch 0
+        assert_eq!(output[7], 0.0); // Frame 3, Ch 1
+    }
+
+    #[test]
+    fn test_process_into_output_cancel_at_sample_mid_buffer() {
+        // Source is cancelled partway through the buffer.
+        let mixer = AudioMixer::new(2, 44100);
+
+        let samples = vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8];
+        let source = create_test_source(samples, 1, vec![vec!["test".to_string()]]);
+
+        let cancel_at = Arc::new(AtomicU64::new(3)); // Cancel at sample 3
+        let active_source = ActiveSource {
+            id: 1,
+            source,
+            track_mappings: {
+                let mut map = HashMap::new();
+                map.insert("test".to_string(), vec![1]);
+                map
+            },
+            channel_mappings: Vec::new(),
+            cached_source_channel_count: 1,
+            is_finished: Arc::new(AtomicBool::new(false)),
+            cancel_handle: CancelHandle::new(),
+            start_at_sample: None,
+            cancel_at_sample: Some(cancel_at),
+        };
+
+        mixer.add_source(active_source);
+
+        // Buffer covers samples 0..8. Source plays frames 0..3 then stops.
+        let mut output = vec![0.0f32; 8 * 2];
+        mixer.process_into_output(&mut output, 8);
+
+        // Frames 0-2 should have audio, frames 3-7 should be silence.
+        assert_eq!(output[0], 0.1); // Frame 0
+        assert_eq!(output[2], 0.2); // Frame 1
+        assert_eq!(output[4], 0.3); // Frame 2
+        assert_eq!(output[6], 0.0); // Frame 3 (after cancel)
+        assert_eq!(output[8], 0.0); // Frame 4
+        assert_eq!(output[10], 0.0); // Frame 5
+    }
+
+    #[test]
+    fn test_process_into_output_source_finishes_before_buffer_end() {
+        // Source has fewer frames than the buffer size.
+        let mixer = AudioMixer::new(2, 44100);
+
+        let samples = vec![0.7, 0.9]; // Only 2 frames of 1 channel
+        let source = create_test_source(samples, 1, vec![vec!["test".to_string()]]);
+
+        let active_source = ActiveSource {
+            id: 1,
+            source,
+            track_mappings: {
+                let mut map = HashMap::new();
+                map.insert("test".to_string(), vec![1]);
+                map
+            },
+            channel_mappings: Vec::new(),
+            cached_source_channel_count: 1,
+            is_finished: Arc::new(AtomicBool::new(false)),
+            cancel_handle: CancelHandle::new(),
+            start_at_sample: None,
+            cancel_at_sample: None,
+        };
+
+        mixer.add_source(active_source);
+
+        // Request 8 frames but source only has 2.
+        let mut output = vec![0.0f32; 8 * 2];
+        mixer.process_into_output(&mut output, 8);
+
+        // Frames 0-1 should have audio, the rest should be silence.
+        assert_eq!(output[0], 0.7); // Frame 0, Ch 0
+        assert_eq!(output[1], 0.0); // Frame 0, Ch 1
+        assert_eq!(output[2], 0.9); // Frame 1, Ch 0
+        assert_eq!(output[3], 0.0); // Frame 1, Ch 1
+        for i in 4..16 {
+            assert_eq!(output[i], 0.0, "output[{i}] should be silence");
+        }
+
+        // Source should have been marked finished and cleaned up.
+        assert_eq!(mixer.active_sources.read().len(), 0);
+    }
+
+    #[test]
+    fn test_process_into_output_multiple_sources() {
+        // Two sources mixed together through process_into_output.
+        let mixer = AudioMixer::new(2, 44100);
+
+        let source1 = create_test_source(
+            vec![0.5, 0.3],
+            2,
+            vec![vec!["ch0".to_string()], vec!["ch1".to_string()]],
+        );
+        let source2 = create_test_source(
+            vec![0.2, 0.1],
+            2,
+            vec![vec!["ch0".to_string()], vec!["ch1".to_string()]],
+        );
+
+        let active_source1 = ActiveSource {
+            id: 1,
+            source: source1,
+            track_mappings: {
+                let mut map = HashMap::new();
+                map.insert("ch0".to_string(), vec![1]);
+                map.insert("ch1".to_string(), vec![2]);
+                map
+            },
+            channel_mappings: Vec::new(),
+            cached_source_channel_count: 2,
+            is_finished: Arc::new(AtomicBool::new(false)),
+            cancel_handle: CancelHandle::new(),
+            start_at_sample: None,
+            cancel_at_sample: None,
+        };
+
+        let active_source2 = ActiveSource {
+            id: 2,
+            source: source2,
+            track_mappings: {
+                let mut map = HashMap::new();
+                map.insert("ch0".to_string(), vec![1]);
+                map.insert("ch1".to_string(), vec![2]);
+                map
+            },
+            channel_mappings: Vec::new(),
+            cached_source_channel_count: 2,
+            is_finished: Arc::new(AtomicBool::new(false)),
+            cancel_handle: CancelHandle::new(),
+            start_at_sample: None,
+            cancel_at_sample: None,
+        };
+
+        mixer.add_source(active_source1);
+        mixer.add_source(active_source2);
+
+        let mut output = vec![0.0f32; 2]; // 1 frame * 2 channels
+        mixer.process_into_output(&mut output, 1);
+
+        assert!((output[0] - 0.7).abs() < 1e-6); // 0.5 + 0.2
+        assert!((output[1] - 0.4).abs() < 1e-6); // 0.3 + 0.1
+    }
+
+    #[test]
+    fn test_process_into_output_start_and_cancel_mid_buffer() {
+        // Source starts and stops within the same buffer.
+        let mixer = AudioMixer::new(2, 44100);
+
+        let samples = vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8];
+        let source = create_test_source(samples, 1, vec![vec!["test".to_string()]]);
+
+        let cancel_at = Arc::new(AtomicU64::new(6)); // Cancel at sample 6
+        let active_source = ActiveSource {
+            id: 1,
+            source,
+            track_mappings: {
+                let mut map = HashMap::new();
+                map.insert("test".to_string(), vec![1]);
+                map
+            },
+            channel_mappings: Vec::new(),
+            cached_source_channel_count: 1,
+            is_finished: Arc::new(AtomicBool::new(false)),
+            cancel_handle: CancelHandle::new(),
+            start_at_sample: Some(2), // Start at sample 2
+            cancel_at_sample: Some(cancel_at),
+        };
+
+        mixer.add_source(active_source);
+
+        // Buffer covers samples 0..8. Source plays frames 2..6.
+        let mut output = vec![0.0f32; 8 * 2];
+        mixer.process_into_output(&mut output, 8);
+
+        // Frames 0-1: silence (before start)
+        assert_eq!(output[0], 0.0);
+        assert_eq!(output[2], 0.0);
+        // Frames 2-5: audio (4 frames from the source)
+        assert_eq!(output[4], 0.1); // Frame 2: first source frame
+        assert_eq!(output[6], 0.2); // Frame 3
+        assert_eq!(output[8], 0.3); // Frame 4
+        assert_eq!(output[10], 0.4); // Frame 5
+                                     // Frames 6-7: silence (after cancel)
+        assert_eq!(output[12], 0.0);
+        assert_eq!(output[14], 0.0);
     }
 }

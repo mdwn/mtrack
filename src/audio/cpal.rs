@@ -324,19 +324,10 @@ where
         let n = std::cmp::min(data.len(), temp_buffer.len());
         let temp_slice = &mut temp_buffer[..n];
         let num_frames = n / num_channels as usize;
-        profiler.on_cb_start();
-        let start_mix = if profile_audio {
-            Some(Instant::now())
-        } else {
-            None
-        };
+        let start = profiler.on_cb_start();
         mixer.process_into_output(temp_slice, num_frames);
-        profiler.on_mix_done(start_mix);
-        let start_convert = if profile_audio {
-            Some(Instant::now())
-        } else {
-            None
-        };
+        profiler.on_mix_done(start);
+        let start_convert = start.map(|_| Instant::now());
         let zero = T::from_sample(0.0);
         for (out, &sample) in data[..n].iter_mut().zip(temp_slice.iter()) {
             *out = T::from_sample(sample);
