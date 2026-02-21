@@ -33,10 +33,12 @@ use tracing::{error, info, span, warn, Level, Span};
 
 use crate::samples::SampleEngine;
 use crate::songs::Songs;
+use crate::trigger::TriggerEngine;
 use crate::{
     audio, config, dmx, midi,
     playlist::{self, Playlist},
     playsync::CancelHandle,
+    samples,
     songs::Song,
 };
 
@@ -70,6 +72,10 @@ pub struct Player {
     dmx_engine: Option<Arc<dmx::engine::Engine>>,
     /// The sample engine for MIDI-triggered samples.
     sample_engine: Option<Arc<RwLock<SampleEngine>>>,
+    /// The audio trigger engine for piezo triggers.
+    /// Held to keep the engine (and its cpal stream + forwarding thread) alive.
+    #[allow(dead_code)]
+    trigger_engine: Option<Arc<TriggerEngine>>,
     /// The playlist to use.
     playlist: Arc<Playlist>,
     /// The all songs playlist.
@@ -119,23 +125,22 @@ impl Player {
         // Audio: if present in profile, required. If absent, optional.
         let (device, mappings, resolved_audio) = if let Some(audio_config) = profile.audio_config()
         {
-            let (device, mappings, resolved_audio) =
-                Self::wait_for_ok("audio device".to_string(), || {
-                    match audio::get_device(Some(audio_config.audio().clone())) {
-                        Ok(device) => {
-                            info!(
-                                device = audio_config.audio().device(),
-                                "Audio device initialized"
-                            );
-                            Ok((
-                                device.clone(),
-                                audio_config.track_mappings().clone(),
-                                audio_config.audio().clone(),
-                            ))
-                        }
-                        Err(e) => Err(format!("audio device: {}", e)),
+            let (device, mappings, resolved_audio) = Self::wait_for_ok("audio device", || {
+                match audio::get_device(Some(audio_config.audio().clone())) {
+                    Ok(device) => {
+                        info!(
+                            device = audio_config.audio().device(),
+                            "Audio device initialized"
+                        );
+                        Ok((
+                            device.clone(),
+                            audio_config.track_mappings().clone(),
+                            audio_config.audio().clone(),
+                        ))
                     }
-                })?;
+                    Err(e) => Err(format!("audio device: {}", e)),
+                }
+            })?;
             (Some(device), Some(mappings), Some(resolved_audio))
         } else {
             info!("Audio not configured in profile; proceeding without audio");
@@ -144,7 +149,7 @@ impl Player {
 
         // DMX: if present in profile, required. If absent, optional.
         let dmx_engine = if let Some(dmx_config) = profile.dmx() {
-            Self::wait_for_ok("dmx engine".to_string(), || {
+            Self::wait_for_ok("dmx engine", || {
                 dmx::create_engine(Some(dmx_config), base_path)
             })?
         } else {
@@ -154,7 +159,7 @@ impl Player {
 
         // MIDI: if present in profile, required. If absent, optional.
         let midi_device = if let Some(midi_config) = profile.midi() {
-            Self::wait_for_ok("midi device".to_string(), || {
+            Self::wait_for_ok("midi device", || {
                 midi::get_device(Some(midi_config.clone()), dmx_engine.clone())
             })?
         } else {
@@ -162,7 +167,7 @@ impl Player {
             None
         };
 
-        let status_events = Self::wait_for_ok("status events".to_string(), || {
+        let status_events = Self::wait_for_ok("status events", || {
             StatusEvents::new(config.status_events())
         })?;
 
@@ -177,12 +182,18 @@ impl Player {
                     .as_ref()
                     .map(|a| a.buffer_size())
                     .unwrap_or(1024);
-                let mut engine = SampleEngine::new(mixer, source_tx, max_voices, buffer_size);
+                let track_mappings = mappings.as_ref().cloned().unwrap_or_default();
+                let mut engine =
+                    SampleEngine::new(mixer, source_tx, max_voices, buffer_size, track_mappings);
 
                 // Load global samples config if available
                 if let Some(base_path) = base_path {
                     match config.samples_config(base_path) {
-                        Ok(samples_config) => {
+                        Ok(mut samples_config) => {
+                            // Add MIDI triggers from profile's trigger config
+                            if let Some(trigger_config) = profile.trigger() {
+                                samples_config.add_triggers(trigger_config.midi_triggers());
+                            }
                             if let Err(e) = engine.load_global_config(&samples_config, base_path) {
                                 warn!(error = %e, "Failed to load global samples config");
                             }
@@ -198,12 +209,64 @@ impl Player {
             _ => None,
         };
 
+        // Initialize the trigger engine if configured and sample engine is available.
+        // Unlike audio/MIDI devices, triggers are non-essential — fail immediately
+        // rather than retrying indefinitely.
+        let trigger_engine = if let (Some(trigger_config), Some(ref sample_engine)) = (
+            profile.trigger().filter(|t| t.has_audio_inputs()),
+            &sample_engine,
+        ) {
+            match TriggerEngine::new(trigger_config) {
+                Ok(engine) => {
+                    let engine: Arc<TriggerEngine> = Arc::new(engine);
+
+                    // Spawn a forwarding thread: reads TriggerActions and dispatches
+                    // to the sample engine. When the TriggerEngine drops, the sender
+                    // closes and the receiver returns Err, ending the thread.
+                    let receiver = engine.subscribe();
+                    let se = sample_engine.clone();
+                    thread::Builder::new()
+                        .name("trigger-fwd".to_string())
+                        .spawn(move || {
+                            let result =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    while let Ok(action) = receiver.recv() {
+                                        match action {
+                                            samples::TriggerAction::Trigger(event) => {
+                                                let engine = se.read();
+                                                engine.trigger(&event);
+                                            }
+                                            samples::TriggerAction::Release { group } => {
+                                                let engine = se.read();
+                                                engine.release(&group);
+                                            }
+                                        }
+                                    }
+                                }));
+                            if result.is_err() {
+                                error!("Trigger forwarding thread panicked");
+                            }
+                            info!("Trigger forwarding thread exiting");
+                        })?;
+
+                    Some(engine)
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to initialize trigger engine, continuing without triggers");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         let player = Player {
             device,
             mappings: mappings.map(Arc::new),
             midi_device,
             dmx_engine,
             sample_engine,
+            trigger_engine,
             playlist,
             all_songs: playlist::from_songs(songs)?,
             use_all_songs: Arc::new(AtomicBool::new(false)),
@@ -238,7 +301,7 @@ impl Player {
     /// Wait for constructor function to return an Ok(result) variant.
     /// Respects MTRACK_DEVICE_RETRY_LIMIT: if set to N, tries at most N times then returns
     /// the last error. If unset or 0, retries indefinitely (original behavior).
-    fn wait_for_ok<T, E, F>(name: String, constructor: F) -> Result<T, Box<dyn Error>>
+    fn wait_for_ok<T, E, F>(name: &str, constructor: F) -> Result<T, Box<dyn Error>>
     where
         E: Display + Into<Box<dyn Error>>,
         F: Fn() -> Result<T, E>,

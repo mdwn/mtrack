@@ -14,30 +14,34 @@
 
 //! Voice management for polyphonic sample playback.
 //!
-//! Handles voice allocation, stealing, and note-off behavior.
+//! Handles voice allocation, stealing, and release group behavior.
+//! Voice management is source-agnostic — it works with any trigger source
+//! (MIDI, audio triggers, etc.) via generic release groups.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 use tracing::{debug, warn};
 
-use crate::config::samples::{NoteOffBehavior, RetriggerBehavior};
+use crate::config::samples::{ReleaseBehavior, RetriggerBehavior};
 use crate::playsync::CancelHandle;
 
 /// Global voice ID counter.
 static NEXT_VOICE_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Represents an active voice playing a sample.
-pub struct Voice {
+pub(super) struct Voice {
     /// Unique ID for this voice.
     id: u64,
     /// The sample name being played.
     sample_name: String,
-    /// The MIDI note that triggered this voice (for Note Off matching).
-    trigger_note: Option<u8>,
-    /// The MIDI channel that triggered this voice (for Note Off matching).
-    trigger_channel: Option<u8>,
+    /// Optional release group for voice management (e.g. "midi:10:36", "kick").
+    /// Voices in the same release group can be released together.
+    release_group: Option<String>,
+    /// What to do when this voice's release group is released.
+    release_behavior: ReleaseBehavior,
     /// When this voice started playing.
     start_time: Instant,
     /// The audio source ID in the mixer (used for testing/debugging).
@@ -46,53 +50,53 @@ pub struct Voice {
     /// Cancel handle for stopping this voice without lock contention.
     cancel_handle: CancelHandle,
     /// Scheduled sample at which this voice should stop (for sample-accurate cuts).
-    cancel_at_sample: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    cancel_at_sample: Arc<AtomicU64>,
+    /// Shared flag set by the mixer when the audio source finishes playing.
+    is_finished: Arc<AtomicBool>,
 }
 
 impl Voice {
     /// Creates a new voice.
-    pub fn new(
+    pub(super) fn new(
         sample_name: String,
-        trigger_note: Option<u8>,
-        trigger_channel: Option<u8>,
+        release_group: Option<String>,
+        release_behavior: ReleaseBehavior,
         mixer_source_id: u64,
         cancel_handle: CancelHandle,
-        cancel_at_sample: std::sync::Arc<std::sync::atomic::AtomicU64>,
+        cancel_at_sample: Arc<AtomicU64>,
+        is_finished: Arc<AtomicBool>,
     ) -> Self {
         Self {
-            id: NEXT_VOICE_ID.fetch_add(1, Ordering::SeqCst),
+            id: NEXT_VOICE_ID.fetch_add(1, Ordering::Relaxed),
             sample_name,
-            trigger_note,
-            trigger_channel,
+            release_group,
+            release_behavior,
             start_time: Instant::now(),
             mixer_source_id,
             cancel_handle,
             cancel_at_sample,
+            is_finished,
         }
     }
 
-    /// Checks if this voice matches a Note Off event.
-    pub fn matches_note_off(&self, note: u8, channel: u8) -> bool {
-        match (self.trigger_note, self.trigger_channel) {
-            (Some(n), Some(c)) => n == note && c == channel,
-            (Some(n), None) => n == note,
-            _ => false,
-        }
+    /// Checks if this voice belongs to the given release group.
+    fn matches_release(&self, group: &str) -> bool {
+        self.release_group.as_deref() == Some(group)
     }
 
     /// Returns a clone of this voice's cancel handle.
-    pub fn cancel_handle(&self) -> CancelHandle {
+    fn cancel_handle(&self) -> CancelHandle {
         self.cancel_handle.clone()
     }
 
     /// Returns a clone of this voice's cancel_at_sample.
-    pub fn cancel_at_sample(&self) -> std::sync::Arc<std::sync::atomic::AtomicU64> {
+    fn cancel_at_sample(&self) -> Arc<AtomicU64> {
         self.cancel_at_sample.clone()
     }
 }
 
 /// Manages active voices for sample playback.
-pub struct VoiceManager {
+pub(super) struct VoiceManager {
     /// Active voices.
     voices: Vec<Voice>,
     /// Global maximum voices limit.
@@ -103,7 +107,7 @@ pub struct VoiceManager {
 
 impl VoiceManager {
     /// Creates a new voice manager.
-    pub fn new(max_voices: u32) -> Self {
+    pub(super) fn new(max_voices: u32) -> Self {
         Self {
             voices: Vec::new(),
             max_voices,
@@ -112,18 +116,28 @@ impl VoiceManager {
     }
 
     /// Sets the per-sample voice limit.
-    pub fn set_sample_limit(&mut self, sample_name: &str, limit: u32) {
+    pub(super) fn set_sample_limit(&mut self, sample_name: &str, limit: u32) {
         self.sample_limits.insert(sample_name.to_string(), limit);
+    }
+
+    /// Removes voices whose audio source has finished playing in the mixer.
+    /// This prevents PlayToCompletion voices from accumulating indefinitely.
+    fn sweep_finished(&mut self) {
+        self.voices
+            .retain(|v| !v.is_finished.load(Ordering::Relaxed));
     }
 
     /// Adds a new voice, potentially stealing old voices if limits are exceeded.
     /// Returns the cancel_at_sample Arcs for any voices that should be stopped.
     /// The caller can set these to schedule the stop at a specific sample time.
-    pub fn add_voice(
+    pub(super) fn add_voice(
         &mut self,
         voice: Voice,
         retrigger: RetriggerBehavior,
-    ) -> Vec<std::sync::Arc<std::sync::atomic::AtomicU64>> {
+    ) -> Vec<Arc<AtomicU64>> {
+        // Sweep finished voices before checking limits.
+        self.sweep_finished();
+
         let mut voices_to_stop = Vec::new();
 
         // Handle retrigger behavior
@@ -184,43 +198,42 @@ impl VoiceManager {
         voices_to_stop
     }
 
-    /// Handles a Note Off event for the specified note and channel.
+    /// Releases voices matching the given release group.
+    /// Each voice's own ReleaseBehavior determines whether it is stopped.
     /// Returns the cancel handles for voices that should be stopped or faded.
-    pub fn handle_note_off(
-        &mut self,
-        note: u8,
-        channel: u8,
-        behavior: NoteOffBehavior,
-    ) -> Vec<CancelHandle> {
+    pub(super) fn release(&mut self, group: &str) -> Vec<CancelHandle> {
         let mut to_stop = Vec::new();
 
-        match behavior {
-            NoteOffBehavior::PlayToCompletion => {
-                // Do nothing - let the sample play to completion
-            }
-            NoteOffBehavior::Stop | NoteOffBehavior::Fade => {
-                // Find and remove matching voices
-                // Note: Fade currently behaves like Stop (immediate stop, no fade-out)
-                for v in self.voices.iter() {
-                    if v.matches_note_off(note, channel) {
+        for v in self.voices.iter() {
+            if v.matches_release(group) {
+                match v.release_behavior {
+                    ReleaseBehavior::PlayToCompletion => {
+                        // Let this voice play to completion
+                    }
+                    ReleaseBehavior::Stop | ReleaseBehavior::Fade => {
+                        // Note: Fade currently behaves like Stop (immediate stop, no fade-out)
                         to_stop.push(v.cancel_handle());
                     }
                 }
-                self.voices.retain(|v| !v.matches_note_off(note, channel));
             }
         }
+
+        // Remove only the voices that were stopped (not PlayToCompletion ones)
+        self.voices.retain(|v| {
+            !v.matches_release(group) || v.release_behavior == ReleaseBehavior::PlayToCompletion
+        });
 
         to_stop
     }
 
     /// Returns the current number of active voices.
-    pub fn active_count(&self) -> usize {
+    pub(super) fn active_count(&self) -> usize {
         self.voices.len()
     }
 
     /// Clears all voices.
     /// Returns the cancel handles for all voices that should be stopped.
-    pub fn clear(&mut self) -> Vec<CancelHandle> {
+    pub(super) fn clear(&mut self) -> Vec<CancelHandle> {
         let handles: Vec<CancelHandle> = self.voices.iter().map(|v| v.cancel_handle()).collect();
         self.voices.clear();
         handles
@@ -240,43 +253,52 @@ impl std::fmt::Debug for VoiceManager {
 mod tests {
     use super::*;
 
-    fn make_voice(sample: &str, note: Option<u8>, channel: Option<u8>, id: u64) -> Voice {
+    fn make_voice(sample: &str, release_group: Option<&str>, id: u64) -> Voice {
+        make_voice_with_behavior(sample, release_group, id, ReleaseBehavior::Stop)
+    }
+
+    fn make_voice_with_behavior(
+        sample: &str,
+        release_group: Option<&str>,
+        id: u64,
+        release_behavior: ReleaseBehavior,
+    ) -> Voice {
         Voice::new(
             sample.to_string(),
-            note,
-            channel,
+            release_group.map(|s| s.to_string()),
+            release_behavior,
             id,
             CancelHandle::new(),
-            std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            Arc::new(AtomicU64::new(0)),
+            Arc::new(AtomicBool::new(false)),
         )
     }
 
     #[test]
-    fn test_voice_note_off_matching() {
-        let voice = make_voice("test", Some(60), Some(10), 1);
+    fn test_voice_release_matching() {
+        let voice = make_voice("test", Some("midi:10:60"), 1);
 
-        assert!(voice.matches_note_off(60, 10));
-        assert!(!voice.matches_note_off(61, 10));
-        assert!(!voice.matches_note_off(60, 11));
+        assert!(voice.matches_release("midi:10:60"));
+        assert!(!voice.matches_release("midi:10:61"));
+        assert!(!voice.matches_release("midi:11:60"));
 
-        // Voice without channel should match any channel
-        let voice2 = make_voice("test", Some(60), None, 2);
-        assert!(voice2.matches_note_off(60, 10));
-        assert!(voice2.matches_note_off(60, 5));
-        assert!(!voice2.matches_note_off(61, 10));
+        // Voice without release group matches nothing
+        let voice2 = make_voice("test", None, 2);
+        assert!(!voice2.matches_release("midi:10:60"));
+        assert!(!voice2.matches_release("anything"));
     }
 
     #[test]
     fn test_voice_manager_cut_retrigger() {
         let mut manager = VoiceManager::new(32);
 
-        let voice1 = make_voice("kick", Some(36), Some(10), 1);
+        let voice1 = make_voice("kick", Some("midi:10:36"), 1);
         let stopped = manager.add_voice(voice1, RetriggerBehavior::Cut);
         assert!(stopped.is_empty());
         assert_eq!(manager.active_count(), 1);
 
         // Add another voice for the same sample - should cut the previous
-        let voice2 = make_voice("kick", Some(36), Some(10), 2);
+        let voice2 = make_voice("kick", Some("midi:10:36"), 2);
         let stopped = manager.add_voice(voice2, RetriggerBehavior::Cut);
         assert_eq!(stopped.len(), 1); // One voice should be stopped
         assert_eq!(manager.active_count(), 1);
@@ -289,14 +311,14 @@ mod tests {
 
         // Add 4 voices - should all be allowed
         for i in 1..=4 {
-            let voice = make_voice("snare", Some(38), Some(10), i);
+            let voice = make_voice("snare", Some("midi:10:38"), i);
             let stopped = manager.add_voice(voice, RetriggerBehavior::Polyphonic);
             assert!(stopped.is_empty());
         }
         assert_eq!(manager.active_count(), 4);
 
         // Add 5th voice - should steal oldest
-        let voice5 = make_voice("snare", Some(38), Some(10), 5);
+        let voice5 = make_voice("snare", Some("midi:10:38"), 5);
         let stopped = manager.add_voice(voice5, RetriggerBehavior::Polyphonic);
         assert_eq!(stopped.len(), 1); // Voice 1 was oldest
         assert_eq!(manager.active_count(), 4);
@@ -307,43 +329,82 @@ mod tests {
         let mut manager = VoiceManager::new(3);
 
         for i in 1..=3 {
-            let voice = make_voice(&format!("sample{}", i), Some(36), Some(10), i);
+            let voice = make_voice(&format!("sample{}", i), Some("midi:10:36"), i);
             let stopped = manager.add_voice(voice, RetriggerBehavior::Polyphonic);
             assert!(stopped.is_empty());
         }
 
         // Add 4th voice - should steal oldest globally
-        let voice4 = make_voice("sample4", Some(36), Some(10), 4);
+        let voice4 = make_voice("sample4", Some("midi:10:36"), 4);
         let stopped = manager.add_voice(voice4, RetriggerBehavior::Polyphonic);
         assert_eq!(stopped.len(), 1);
         assert_eq!(manager.active_count(), 3);
     }
 
     #[test]
-    fn test_note_off_stop() {
+    fn test_release_stop() {
         let mut manager = VoiceManager::new(32);
 
-        let voice1 = make_voice("kick", Some(36), Some(10), 1);
-        let voice2 = make_voice("snare", Some(38), Some(10), 2);
+        let voice1 = make_voice("kick", Some("midi:10:36"), 1);
+        let voice2 = make_voice("snare", Some("midi:10:38"), 2);
         manager.add_voice(voice1, RetriggerBehavior::Polyphonic);
         manager.add_voice(voice2, RetriggerBehavior::Polyphonic);
 
-        // Note Off for kick should stop only the kick
-        let stopped = manager.handle_note_off(36, 10, NoteOffBehavior::Stop);
+        // Release for kick group should stop only the kick
+        let stopped = manager.release("midi:10:36");
         assert_eq!(stopped.len(), 1);
         assert_eq!(manager.active_count(), 1);
     }
 
     #[test]
-    fn test_note_off_play_to_completion() {
+    fn test_release_play_to_completion() {
         let mut manager = VoiceManager::new(32);
 
-        let voice = make_voice("kick", Some(36), Some(10), 1);
+        let voice = make_voice_with_behavior(
+            "kick",
+            Some("midi:10:36"),
+            1,
+            ReleaseBehavior::PlayToCompletion,
+        );
         manager.add_voice(voice, RetriggerBehavior::Polyphonic);
 
-        // Note Off with PlayToCompletion should not stop anything
-        let stopped = manager.handle_note_off(36, 10, NoteOffBehavior::PlayToCompletion);
+        // Voice with PlayToCompletion should not be stopped on release
+        let stopped = manager.release("midi:10:36");
         assert!(stopped.is_empty());
         assert_eq!(manager.active_count(), 1);
+    }
+
+    #[test]
+    fn test_release_custom_group() {
+        let mut manager = VoiceManager::new(32);
+
+        let voice1 = make_voice("cymbal", Some("cymbal"), 1);
+        let voice2 = make_voice("cymbal", Some("cymbal"), 2);
+        let voice3 = make_voice("kick", Some("kick"), 3);
+        manager.add_voice(voice1, RetriggerBehavior::Polyphonic);
+        manager.add_voice(voice2, RetriggerBehavior::Polyphonic);
+        manager.add_voice(voice3, RetriggerBehavior::Polyphonic);
+
+        // Release cymbal group should stop both cymbal voices
+        let stopped = manager.release("cymbal");
+        assert_eq!(stopped.len(), 2);
+        assert_eq!(manager.active_count(), 1);
+    }
+
+    #[test]
+    fn test_release_mixed_behaviors_in_same_group() {
+        let mut manager = VoiceManager::new(32);
+
+        // Two voices in the same group with different ReleaseBehaviors
+        let voice1 =
+            make_voice_with_behavior("ride", Some("cymbal"), 1, ReleaseBehavior::PlayToCompletion);
+        let voice2 = make_voice_with_behavior("hi-hat", Some("cymbal"), 2, ReleaseBehavior::Stop);
+        manager.add_voice(voice1, RetriggerBehavior::Polyphonic);
+        manager.add_voice(voice2, RetriggerBehavior::Polyphonic);
+
+        // Release should only stop the hi-hat (Stop), not the ride (PlayToCompletion)
+        let stopped = manager.release("cymbal");
+        assert_eq!(stopped.len(), 1);
+        assert_eq!(manager.active_count(), 1); // ride still playing
     }
 }

@@ -29,6 +29,7 @@ mod song;
 mod statusevents;
 mod track;
 mod trackmappings;
+pub mod trigger;
 
 pub use self::audio::{Audio, StreamBufferSize};
 pub use self::controller::Controller;
@@ -50,7 +51,7 @@ pub use self::hostname::resolve_hostname;
 pub use self::profile::Profile;
 #[allow(unused_imports)]
 pub use self::samples::{
-    NoteOffBehavior, RetriggerBehavior, SampleDefinition, SampleTrigger, SamplesConfig,
+    ReleaseBehavior, RetriggerBehavior, SampleDefinition, SampleTrigger, SamplesConfig,
     VelocityConfig, VelocityLayer, VelocityMode,
 };
 pub use self::song::{LightShow, LightingShow, MidiPlayback, Song};

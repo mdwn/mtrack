@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`output_track` for samples**: Sample definitions now support an `output_track` field that
+  references a track mapping name from the active hardware profile's `track_mappings`. This allows
+  a single sample definition to work across different hardware profiles with different channel
+  assignments. The existing `output_channels` field continues to work unchanged. If both are set,
+  `output_track` takes precedence.
+
+- **Audio trigger input**: Piezoelectric drum triggers (or any transient audio signal) can now
+  trigger sample playback via a standard audio interface input. Configure per-channel threshold,
+  scan window, retrigger lockout, gain, and velocity curve (linear, logarithmic, or fixed).
+  Trigger inputs can fire samples or release voice groups (e.g. cymbal choke). No MIDI hardware
+  required — plug piezos directly into any cpal-supported audio interface.
+
+- **Unified trigger config with `kind` discriminator**: Audio and MIDI trigger inputs now coexist
+  in a single `trigger.inputs` list using a `kind` field (`audio` or `midi`). MIDI triggers
+  defined this way replace the top-level `sample_triggers` section. The `device` field is now
+  optional (only required when audio inputs are present). Legacy `sample_triggers` are
+  automatically converted to `kind: midi` trigger inputs at startup.
+
+### Changed
+
+- **`note_off` renamed to `release_behavior`**: The sample configuration field `note_off` has been
+  renamed to `release_behavior` to better reflect its source-agnostic purpose. The old `note_off`
+  key is still accepted for backwards compatibility.
+
 ## [0.8.0] - 2026-02-20
 
 ### Added

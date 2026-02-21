@@ -12,21 +12,18 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-pub mod audio;
-pub mod calibrate;
-pub mod config;
-pub mod controller;
-pub mod dmx;
-pub mod lighting;
-pub mod midi;
-pub mod player;
-pub mod playlist;
-pub mod playsync;
-pub mod proto;
-pub mod samples;
-pub mod songs;
-#[cfg(test)]
-pub mod testutil;
-pub mod trigger;
-pub mod util;
-pub mod verify;
+//! Audio trigger detection for piezo drum triggers.
+//!
+//! Captures audio input via cpal, detects transient hits using per-channel
+//! state machines, and produces source-agnostic `TriggerAction` events.
+
+mod detector;
+mod engine;
+mod filter;
+
+pub use engine::TriggerEngine;
+
+/// Converts milliseconds to samples, rounding up.
+fn ms_to_samples(ms: u32, sample_rate: u32) -> u32 {
+    ((ms as f64) * (sample_rate as f64) / 1000.0).ceil() as u32
+}

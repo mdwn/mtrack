@@ -12,6 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 mod audio;
+mod calibrate;
 mod cli;
 mod config;
 mod controller;
@@ -26,6 +27,7 @@ mod samples;
 mod songs;
 #[cfg(test)]
 mod testutil;
+mod trigger;
 mod util;
 mod verify;
 

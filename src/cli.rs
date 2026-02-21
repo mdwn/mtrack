@@ -173,6 +173,23 @@ enum Commands {
         #[arg[short, long]]
         host_port: Option<String>,
     },
+    /// Auto-calibrate trigger detection parameters from a connected audio input device.
+    CalibrateTriggers {
+        /// Audio input device name (as shown by `mtrack devices`).
+        device: String,
+        /// Sample rate override.
+        #[arg(long)]
+        sample_rate: Option<u32>,
+        /// Noise floor measurement duration in seconds.
+        #[arg(long, default_value = "3")]
+        duration: f32,
+        /// Sample format override: "int" or "float".
+        #[arg(long)]
+        sample_format: Option<String>,
+        /// Bits per sample override: 16 or 32.
+        #[arg(long)]
+        bits_per_sample: Option<u16>,
+    },
     /// Verifies songs in a repository against the player config.
     Verify {
         /// The path to the mtrack.yaml player config file.
@@ -236,6 +253,19 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
                 )
             )
         }
+        Commands::CalibrateTriggers {
+            device,
+            sample_rate,
+            duration,
+            sample_format,
+            bits_per_sample,
+        } => local::calibrate_triggers(
+            &device,
+            sample_rate,
+            duration,
+            sample_format,
+            bits_per_sample,
+        )?,
         Commands::VerifyLightShow { show_path, config } => {
             local::verify_light_show(&show_path, config.as_deref())?
         }
