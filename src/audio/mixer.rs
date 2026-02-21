@@ -366,6 +366,12 @@ impl AudioMixer {
                 num_frames
             };
 
+            // cancel_at_sample can be set by another thread to a value before
+            // start_at_sample, making end_frame < start_frame. Skip gracefully.
+            if end_frame <= start_frame {
+                continue;
+            }
+
             let source_channel_count = active_source.cached_source_channel_count as usize;
             let frames_needed = end_frame - start_frame;
 
@@ -629,6 +635,49 @@ mod tests {
         }
         for frame in frames.iter().take(64).skip(34) {
             assert_eq!(*frame, 0.0);
+        }
+    }
+
+    #[test]
+    fn test_cancel_before_start_does_not_panic() {
+        // Regression: when cancel_at_sample < start_at_sample, the subtraction
+        // end_frame - start_frame would underflow. The mixer must handle this
+        // gracefully (produce silence, no panic).
+        let mixer = AudioMixer::new(2, 44100);
+
+        let samples = vec![0.5; 1024]; // plenty of audio
+        let source = create_test_source(samples, 1, vec![vec!["test".to_string()]]);
+
+        // start_at_sample=400, cancel_at_sample=200 — cancel comes before start
+        let cancel_at = Arc::new(AtomicU64::new(200));
+        let active_source = ActiveSource {
+            id: 1,
+            source,
+            track_mappings: {
+                let mut map = HashMap::new();
+                map.insert("test".to_string(), vec![1]);
+                map
+            },
+            channel_mappings: Vec::new(),
+            cached_source_channel_count: 1,
+            is_finished: Arc::new(AtomicBool::new(false)),
+            cancel_handle: CancelHandle::new(),
+            start_at_sample: Some(400),
+            cancel_at_sample: Some(cancel_at),
+        };
+
+        mixer.add_source(active_source);
+
+        // Process a buffer that spans both cancel and start points.
+        // current_sample starts at 0, buffer covers samples 0..512.
+        // end_frame = (200 - 0) = 200, start_frame = (400 - 0) = 400.
+        // Without the fix this would panic on 200 - 400.
+        let mut output = vec![0.0f32; 512 * 2];
+        mixer.process_into_output(&mut output, 512);
+
+        // Source should have produced silence (skipped entirely)
+        for &sample in &output {
+            assert_eq!(sample, 0.0);
         }
     }
 }
