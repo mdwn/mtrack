@@ -275,8 +275,8 @@ impl BufferedSampleSource {
 impl ChannelMappedSampleSource for BufferedSampleSource {
     fn next_sample(&mut self) -> Result<Option<f32>, SampleSourceError> {
         let channels = self.channels as usize;
-        let mut frame = [0.0f32; 64];
-        match self.next_frame(&mut frame[..channels])? {
+        let mut frame = vec![0.0f32; channels];
+        match self.next_frame(&mut frame)? {
             Some(count) if count > 0 => Ok(Some(frame[0])),
             _ => Ok(None),
         }
@@ -343,9 +343,14 @@ impl ChannelMappedSampleSource for BufferedSampleSource {
         max_frames: usize,
     ) -> Result<usize, SampleSourceError> {
         let channels = self.channels as usize;
+        debug_assert!(
+            output.len() >= max_frames * channels,
+            "read_frames: output buffer too small ({} < {})",
+            output.len(),
+            max_frames * channels,
+        );
         let mut frames_read = 0;
         let mut maybe_spawn_refill = false;
-        let mut need_direct_reads = false;
 
         {
             let mut state = self.buffer.state.lock().unwrap();
@@ -382,24 +387,21 @@ impl ChannelMappedSampleSource for BufferedSampleSource {
                 maybe_spawn_refill = true;
             }
 
-            // If we still need frames and the buffer is empty, fall back to direct reads
+            // Underrun fallback: read directly from the inner source while
+            // holding the state lock. This matches next_frame's lock ordering
+            // and prevents the refill thread from writing frames that would
+            // be played out of chronological order.
             if frames_read < max_frames && state.len_frames == 0 && !state.finished {
-                need_direct_reads = true;
-            }
-        }
-
-        // Underrun fallback: read directly from the inner source
-        if need_direct_reads {
-            let mut inner = self.inner.lock().unwrap();
-            while frames_read < max_frames {
-                let offset = frames_read * channels;
-                match inner.next_frame(&mut output[offset..offset + channels]) {
-                    Ok(Some(_)) => frames_read += 1,
-                    Ok(None) | Err(_) => {
-                        let mut state = self.buffer.state.lock().unwrap();
-                        state.finished = true;
-                        self.finished_flag.store(true, Ordering::Relaxed);
-                        break;
+                let mut inner = self.inner.lock().unwrap();
+                while frames_read < max_frames {
+                    let offset = frames_read * channels;
+                    match inner.next_frame(&mut output[offset..offset + channels]) {
+                        Ok(Some(_)) => frames_read += 1,
+                        Ok(None) | Err(_) => {
+                            state.finished = true;
+                            self.finished_flag.store(true, Ordering::Relaxed);
+                            break;
+                        }
                     }
                 }
             }

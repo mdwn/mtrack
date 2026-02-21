@@ -109,6 +109,12 @@ pub trait ChannelMappedSampleSource: Send + Sync {
         max_frames: usize,
     ) -> Result<usize, SampleSourceError> {
         let channel_count = self.source_channel_count() as usize;
+        debug_assert!(
+            output.len() >= max_frames * channel_count,
+            "read_frames: output buffer too small ({} < {})",
+            output.len(),
+            max_frames * channel_count,
+        );
         let mut frames_read = 0;
         for frame_idx in 0..max_frames {
             let offset = frame_idx * channel_count;
