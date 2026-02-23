@@ -30,15 +30,21 @@ pub struct SampleDefinition {
     file: Option<String>,
 
     /// The output channels to route this sample to (1-indexed).
+    #[serde(default)]
     output_channels: Vec<u16>,
+
+    /// A track mapping name to resolve output channels from the profile's track_mappings.
+    /// Mutually exclusive with output_channels; if both are set, output_track takes precedence.
+    #[serde(default)]
+    output_track: Option<String>,
 
     /// Velocity handling configuration.
     #[serde(default)]
     velocity: VelocityConfig,
 
-    /// Behavior when a Note Off event is received.
-    #[serde(default)]
-    note_off: NoteOffBehavior,
+    /// Behavior when the voice is released (e.g. Note Off, trigger release).
+    #[serde(default, alias = "note_off")]
+    release_behavior: ReleaseBehavior,
 
     /// Behavior when the sample is retriggered while still playing.
     #[serde(default)]
@@ -48,7 +54,7 @@ pub struct SampleDefinition {
     /// If not set, only the global limit applies.
     max_voices: Option<u32>,
 
-    /// Fade time in milliseconds for note_off: fade behavior.
+    /// Fade time in milliseconds for release_behavior: fade.
     #[serde(default = "default_fade_time_ms")]
     fade_time_ms: u32,
 }
@@ -63,9 +69,14 @@ impl SampleDefinition {
         &self.output_channels
     }
 
-    /// Gets the note-off behavior.
-    pub fn note_off(&self) -> NoteOffBehavior {
-        self.note_off
+    /// Gets the output track name for profile-based routing.
+    pub fn output_track(&self) -> Option<&str> {
+        self.output_track.as_deref()
+    }
+
+    /// Gets the release behavior.
+    pub fn release_behavior(&self) -> ReleaseBehavior {
+        self.release_behavior
     }
 
     /// Gets the retrigger behavior.
@@ -135,7 +146,7 @@ impl SampleDefinition {
         file: Option<String>,
         output_channels: Vec<u16>,
         velocity: VelocityConfig,
-        note_off: NoteOffBehavior,
+        release_behavior: ReleaseBehavior,
         retrigger: RetriggerBehavior,
         max_voices: Option<u32>,
         fade_time_ms: u32,
@@ -143,8 +154,32 @@ impl SampleDefinition {
         Self {
             file,
             output_channels,
+            output_track: None,
             velocity,
-            note_off,
+            release_behavior,
+            retrigger,
+            max_voices,
+            fade_time_ms,
+        }
+    }
+
+    /// Creates a new sample definition with output_track (test only).
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_output_track(
+        file: Option<String>,
+        output_track: &str,
+        velocity: VelocityConfig,
+        release_behavior: ReleaseBehavior,
+        retrigger: RetriggerBehavior,
+        max_voices: Option<u32>,
+        fade_time_ms: u32,
+    ) -> Self {
+        Self {
+            file,
+            output_channels: Vec::new(),
+            output_track: Some(output_track.to_string()),
+            velocity,
+            release_behavior,
             retrigger,
             max_voices,
             fade_time_ms,
@@ -239,16 +274,16 @@ impl VelocityLayer {
     }
 }
 
-/// Behavior when a Note Off event is received for a playing sample.
+/// Behavior when a voice is released (e.g. Note Off, trigger release).
 #[derive(Deserialize, Clone, Copy, Serialize, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum NoteOffBehavior {
-    /// Let the sample play to completion, ignoring Note Off.
+pub enum ReleaseBehavior {
+    /// Let the sample play to completion, ignoring the release.
     #[default]
     PlayToCompletion,
-    /// Immediately stop the sample on Note Off.
+    /// Immediately stop the sample on release.
     Stop,
-    /// Fade out the sample over a short duration on Note Off.
+    /// Fade out the sample over a short duration on release.
     Fade,
 }
 
@@ -274,6 +309,11 @@ pub struct SampleTrigger {
 }
 
 impl SampleTrigger {
+    /// Creates a new SampleTrigger.
+    pub fn new(trigger: midi::Event, sample: String) -> Self {
+        Self { trigger, sample }
+    }
+
     /// Gets the MIDI event that triggers the sample.
     pub fn trigger(&self) -> &midi::Event {
         &self.trigger
@@ -329,6 +369,15 @@ impl SamplesConfig {
         &self.sample_triggers
     }
 
+    /// Adds MIDI triggers, replacing any existing triggers with the same MIDI event.
+    pub fn add_triggers(&mut self, triggers: Vec<SampleTrigger>) {
+        for trigger in triggers {
+            self.sample_triggers
+                .retain(|t| t.trigger != trigger.trigger);
+            self.sample_triggers.push(trigger);
+        }
+    }
+
     /// Merges another config into this one. The other config's values override.
     pub fn merge(&mut self, other: SamplesConfig) {
         // Merge sample definitions (other overrides)
@@ -349,6 +398,8 @@ impl SamplesConfig {
 
 #[cfg(test)]
 mod tests {
+    use config::{Config, File, FileFormat};
+
     use super::*;
 
     #[test]
@@ -357,7 +408,7 @@ mod tests {
             Some("test.wav".to_string()),
             vec![1, 2],
             VelocityConfig::ignore(Some(100)),
-            NoteOffBehavior::PlayToCompletion,
+            ReleaseBehavior::PlayToCompletion,
             RetriggerBehavior::Cut,
             None,
             50,
@@ -378,7 +429,7 @@ mod tests {
             Some("test.wav".to_string()),
             vec![1, 2],
             VelocityConfig::scale(),
-            NoteOffBehavior::PlayToCompletion,
+            ReleaseBehavior::PlayToCompletion,
             RetriggerBehavior::Cut,
             None,
             50,
@@ -404,7 +455,7 @@ mod tests {
             None,
             vec![1, 2],
             VelocityConfig::with_layers(layers, false),
-            NoteOffBehavior::PlayToCompletion,
+            ReleaseBehavior::PlayToCompletion,
             RetriggerBehavior::Polyphonic,
             Some(4),
             50,
@@ -432,7 +483,7 @@ mod tests {
             None,
             vec![1, 2],
             VelocityConfig::with_layers(layers, true), // Scale enabled
-            NoteOffBehavior::PlayToCompletion,
+            ReleaseBehavior::PlayToCompletion,
             RetriggerBehavior::Polyphonic,
             None,
             50,
@@ -458,7 +509,7 @@ mod tests {
             Some("default.wav".to_string()),
             vec![1, 2],
             VelocityConfig::with_layers(layers, false),
-            NoteOffBehavior::PlayToCompletion,
+            ReleaseBehavior::PlayToCompletion,
             RetriggerBehavior::Cut,
             None,
             50,
@@ -481,7 +532,7 @@ mod tests {
                         Some("kick1.wav".to_string()),
                         vec![1],
                         VelocityConfig::ignore(None),
-                        NoteOffBehavior::PlayToCompletion,
+                        ReleaseBehavior::PlayToCompletion,
                         RetriggerBehavior::Cut,
                         None,
                         50,
@@ -493,7 +544,7 @@ mod tests {
                         Some("snare1.wav".to_string()),
                         vec![2],
                         VelocityConfig::ignore(None),
-                        NoteOffBehavior::PlayToCompletion,
+                        ReleaseBehavior::PlayToCompletion,
                         RetriggerBehavior::Cut,
                         None,
                         50,
@@ -511,7 +562,7 @@ mod tests {
                     Some("kick2.wav".to_string()), // Override kick
                     vec![1, 2],
                     VelocityConfig::scale(),
-                    NoteOffBehavior::Stop,
+                    ReleaseBehavior::Stop,
                     RetriggerBehavior::Polyphonic,
                     Some(4),
                     100,
@@ -533,5 +584,101 @@ mod tests {
             config1.samples.get("snare").unwrap().file(),
             Some("snare1.wav")
         );
+    }
+
+    #[test]
+    fn test_release_behavior_yaml_keys() {
+        // The new "release_behavior" key should work
+        let yaml = r#"
+            samples:
+              kick:
+                file: kick.wav
+                output_channels: [1]
+                release_behavior: stop
+        "#;
+        let config: SamplesConfig = Config::builder()
+            .add_source(File::from_str(yaml, FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+        assert_eq!(
+            config.samples.get("kick").unwrap().release_behavior(),
+            ReleaseBehavior::Stop,
+        );
+
+        // The legacy "note_off" key should also work
+        let yaml = r#"
+            samples:
+              kick:
+                file: kick.wav
+                output_channels: [1]
+                note_off: fade
+        "#;
+        let config: SamplesConfig = Config::builder()
+            .add_source(File::from_str(yaml, FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+        assert_eq!(
+            config.samples.get("kick").unwrap().release_behavior(),
+            ReleaseBehavior::Fade,
+        );
+    }
+
+    #[test]
+    fn test_output_track_deserialization() {
+        // output_track should deserialize correctly
+        let yaml = r#"
+            samples:
+              kick:
+                file: kick.wav
+                output_track: kick-out
+        "#;
+        let config: SamplesConfig = Config::builder()
+            .add_source(File::from_str(yaml, FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+        let kick = config.samples.get("kick").unwrap();
+        assert_eq!(kick.output_track(), Some("kick-out"));
+        assert!(kick.output_channels().is_empty());
+
+        // output_channels without output_track should still work
+        let yaml = r#"
+            samples:
+              snare:
+                file: snare.wav
+                output_channels: [3, 4]
+        "#;
+        let config: SamplesConfig = Config::builder()
+            .add_source(File::from_str(yaml, FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+        let snare = config.samples.get("snare").unwrap();
+        assert_eq!(snare.output_track(), None);
+        assert_eq!(snare.output_channels(), &[3, 4]);
+
+        // Both set: output_track should be present, output_channels also present
+        let yaml = r#"
+            samples:
+              both:
+                file: both.wav
+                output_track: both-out
+                output_channels: [5, 6]
+        "#;
+        let config: SamplesConfig = Config::builder()
+            .add_source(File::from_str(yaml, FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+        let both = config.samples.get("both").unwrap();
+        assert_eq!(both.output_track(), Some("both-out"));
+        assert_eq!(both.output_channels(), &[5, 6]);
     }
 }

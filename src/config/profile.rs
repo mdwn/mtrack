@@ -18,6 +18,7 @@ use serde::Deserialize;
 use super::audio::Audio;
 use super::dmx::Dmx;
 use super::midi::Midi;
+use super::trigger::TriggerConfig;
 
 /// Audio configuration with track mappings.
 #[derive(Deserialize, Clone)]
@@ -63,6 +64,9 @@ pub struct Profile {
 
     /// DMX configuration (optional if absent from profile).
     dmx: Option<Dmx>,
+
+    /// Audio trigger configuration (optional).
+    trigger: Option<TriggerConfig>,
 }
 
 impl Profile {
@@ -78,6 +82,7 @@ impl Profile {
             audio,
             midi,
             dmx,
+            trigger: None,
         }
     }
 
@@ -99,6 +104,16 @@ impl Profile {
     /// Returns the DMX configuration.
     pub fn dmx(&self) -> Option<&Dmx> {
         self.dmx.as_ref()
+    }
+
+    /// Returns the trigger configuration, if present.
+    pub fn trigger(&self) -> Option<&TriggerConfig> {
+        self.trigger.as_ref()
+    }
+
+    /// Sets the trigger configuration (used during legacy config normalization).
+    pub(super) fn set_trigger(&mut self, trigger: Option<TriggerConfig>) {
+        self.trigger = trigger;
     }
 }
 

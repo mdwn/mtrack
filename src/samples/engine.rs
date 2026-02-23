@@ -14,20 +14,23 @@
 
 //! Main sample engine that coordinates trigger matching, sample loading, and playback.
 
-use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::error::Error;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 
 use midly::live::LiveEvent;
 use midly::MidiMessage;
+use parking_lot::RwLock;
 use tracing::{debug, error, info, warn};
 
 use super::loader::{LoadedSample, SampleLoader};
+use super::trigger::TriggerEvent;
 use super::voice::{Voice, VoiceManager};
 use crate::audio;
 use crate::audio::sample_source::ChannelMappedSource;
-use crate::config::samples::{NoteOffBehavior, SampleDefinition, SampleTrigger, SamplesConfig};
+use crate::config::samples::{ReleaseBehavior, SampleDefinition, SampleTrigger, SamplesConfig};
 use crate::config::ToMidiEvent;
 use crate::playsync::CancelHandle;
 
@@ -51,6 +54,16 @@ struct ActiveSample {
     base_path: PathBuf,
 }
 
+/// Data prepared for sample playback, produced by `prepare_sample`.
+struct PreparedSample {
+    source_id: u64,
+    channel_mapped: Box<ChannelMappedSource>,
+    track_mappings: HashMap<String, Vec<u16>>,
+    channel_count: u16,
+    retrigger: crate::config::samples::RetriggerBehavior,
+    release_behavior: ReleaseBehavior,
+}
+
 /// A trigger definition with pre-converted MIDI event for matching.
 struct ActiveTrigger {
     /// The MIDI event to match (as LiveEvent for efficient comparison).
@@ -72,22 +85,25 @@ pub struct SampleEngine {
     /// Channel for adding sources without lock contention.
     source_tx: crate::audio::SourceSender,
     /// Reference to mixer for sample scheduling.
-    mixer: std::sync::Arc<crate::audio::mixer::AudioMixer>,
+    mixer: Arc<crate::audio::mixer::AudioMixer>,
     /// Fixed delay in samples for consistent trigger latency.
     fixed_delay_samples: u64,
+    /// Track mappings from the active profile, for resolving output_track names.
+    profile_track_mappings: HashMap<String, Vec<u16>>,
 }
 
 impl SampleEngine {
     /// Creates a new sample engine.
     ///
     /// The `buffer_size` is used to calculate the minimum fixed delay for consistent
-    /// trigger latency. The delay is set to 2x the buffer size to ensure samples are
+    /// trigger latency. The delay is set to 1x the buffer size to ensure samples are
     /// always scheduled ahead of the current mixing position.
     pub fn new(
-        mixer: std::sync::Arc<crate::audio::mixer::AudioMixer>,
+        mixer: Arc<crate::audio::mixer::AudioMixer>,
         source_tx: crate::audio::SourceSender,
         max_voices: u32,
         buffer_size: usize,
+        profile_track_mappings: HashMap<String, Vec<u16>>,
     ) -> Self {
         let sample_rate = mixer.sample_rate();
         // Fixed delay of 1x buffer size ensures the sample is scheduled ahead of current mixing
@@ -102,6 +118,7 @@ impl SampleEngine {
             source_tx,
             mixer,
             fixed_delay_samples,
+            profile_track_mappings,
         }
     }
 
@@ -180,23 +197,56 @@ impl SampleEngine {
 
         // Precompute channel labels and track mappings for each loaded file
         // This avoids string formatting and HashMap allocation on every trigger
-        let output_channels = definition.output_channels();
         let loaded_files: HashMap<PathBuf, PrecomputedSampleData> = raw_loaded_files
             .into_iter()
             .map(|(path, loaded)| {
-                let channel_labels: Vec<Vec<String>> = (0..loaded.channel_count())
-                    .map(|_| {
-                        output_channels
+                let (channel_labels, track_mappings) =
+                    if let Some(track_name) = definition.output_track() {
+                        // Resolve output_track through the profile's track_mappings
+                        match self.profile_track_mappings.get(track_name) {
+                            Some(channels) => {
+                                let labels = (0..loaded.channel_count())
+                                    .map(|_| vec![track_name.to_string()])
+                                    .collect();
+                                let mut map = HashMap::new();
+                                map.insert(track_name.to_string(), channels.clone());
+                                (labels, map)
+                            }
+                            None => {
+                                warn!(
+                                sample = name,
+                                track = track_name,
+                                "output_track not found in track_mappings, sample will be silent"
+                            );
+                                (
+                                    (0..loaded.channel_count()).map(|_| Vec::new()).collect(),
+                                    HashMap::new(),
+                                )
+                            }
+                        }
+                    } else if !definition.output_channels().is_empty() {
+                        // Existing synthetic __sample_out_{ch} approach
+                        let output_channels = definition.output_channels();
+                        let labels = (0..loaded.channel_count())
+                            .map(|_| {
+                                output_channels
+                                    .iter()
+                                    .map(|ch| format!("__sample_out_{}", ch))
+                                    .collect()
+                            })
+                            .collect();
+                        let map = output_channels
                             .iter()
-                            .map(|ch| format!("__sample_out_{}", ch))
-                            .collect()
-                    })
-                    .collect();
-
-                let track_mappings: HashMap<String, Vec<u16>> = output_channels
-                    .iter()
-                    .map(|ch| (format!("__sample_out_{}", ch), vec![*ch]))
-                    .collect();
+                            .map(|ch| (format!("__sample_out_{}", ch), vec![*ch]))
+                            .collect();
+                        (labels, map)
+                    } else {
+                        warn!(sample = name, "No output routing configured for sample");
+                        (
+                            (0..loaded.channel_count()).map(|_| Vec::new()).collect(),
+                            HashMap::new(),
+                        )
+                    };
 
                 (
                     path,
@@ -244,6 +294,143 @@ impl SampleEngine {
         Ok(())
     }
 
+    /// Triggers a sample by name using a source-agnostic TriggerEvent.
+    /// This is the common entry point for all trigger sources (MIDI, audio triggers, etc.).
+    pub fn trigger(&self, event: &TriggerEvent) {
+        let prepared = match self.prepare_sample(&event.sample_name, event.velocity) {
+            Some(p) => p,
+            None => return,
+        };
+
+        let source_cancel_handle = CancelHandle::new();
+        let source_cancel_at_sample = Arc::new(AtomicU64::new(0));
+        let is_finished = Arc::new(AtomicBool::new(false));
+
+        let voice = Voice::new(
+            event.sample_name.clone(),
+            event.release_group.clone(),
+            prepared.release_behavior,
+            prepared.source_id,
+            source_cancel_handle.clone(),
+            source_cancel_at_sample.clone(),
+            is_finished.clone(),
+        );
+
+        let start_at_sample = self.mixer.current_sample() + self.fixed_delay_samples;
+
+        let to_stop = {
+            let mut vm = self.voice_manager.write();
+            vm.add_voice(voice, prepared.retrigger)
+        };
+
+        for cancel_at in to_stop {
+            cancel_at.store(start_at_sample, Ordering::Relaxed);
+        }
+
+        let active_source = crate::audio::mixer::ActiveSource {
+            id: prepared.source_id,
+            source: prepared.channel_mapped,
+            track_mappings: prepared.track_mappings,
+            channel_mappings: Vec::new(),
+            cached_source_channel_count: prepared.channel_count,
+            is_finished,
+            cancel_handle: source_cancel_handle,
+            start_at_sample: Some(start_at_sample),
+            cancel_at_sample: Some(source_cancel_at_sample),
+        };
+
+        if let Err(e) = self.source_tx.send(active_source) {
+            error!(error = %e, "Failed to send sample to mixer");
+        }
+
+        debug!(
+            sample = event.sample_name.as_str(),
+            velocity = event.velocity,
+            source_id = prepared.source_id,
+            "Sample triggered"
+        );
+    }
+
+    /// Releases all voices in the named release group.
+    /// Each voice's own ReleaseBehavior (stored at trigger time) determines
+    /// whether it is stopped or allowed to play to completion.
+    pub fn release(&self, group: &str) {
+        let to_stop = {
+            let mut vm = self.voice_manager.write();
+            vm.release(group)
+        };
+
+        let stopped_count = to_stop.len();
+        if !to_stop.is_empty() {
+            for handle in to_stop {
+                handle.cancel();
+            }
+            debug!(group, stopped = stopped_count, "Release handled");
+        }
+    }
+
+    /// Prepares a sample for playback: looks up the definition, resolves the file
+    /// for the given velocity, and creates the audio source. Returns None if the
+    /// sample cannot be prepared (not found, no file for velocity, etc.).
+    fn prepare_sample(&self, sample_name: &str, velocity: u8) -> Option<PreparedSample> {
+        let sample = match self.samples.get(sample_name) {
+            Some(s) => s,
+            None => {
+                warn!(sample = sample_name, "Sample not found");
+                return None;
+            }
+        };
+
+        let (file_path, volume) = match sample.definition.file_for_velocity(velocity) {
+            Some((file, vol)) => {
+                let path = if Path::new(file).is_absolute() {
+                    PathBuf::from(file)
+                } else {
+                    sample.base_path.join(file)
+                };
+                (path, vol)
+            }
+            None => {
+                warn!(
+                    sample = sample_name,
+                    velocity, "No sample file for velocity"
+                );
+                return None;
+            }
+        };
+
+        let precomputed = match sample.loaded_files.get(&file_path) {
+            Some(p) => p,
+            None => {
+                error!(
+                    sample = sample_name,
+                    path = ?file_path,
+                    "Sample file not loaded"
+                );
+                return None;
+            }
+        };
+
+        let source = precomputed.loaded.create_source(volume);
+        let source_id = audio::next_source_id();
+
+        let channel_mapped = ChannelMappedSource::new(
+            Box::new(source),
+            precomputed.channel_labels.clone(),
+            precomputed.loaded.channel_count(),
+        );
+        let track_mappings = precomputed.track_mappings.clone();
+
+        Some(PreparedSample {
+            source_id,
+            channel_mapped: Box::new(channel_mapped),
+            track_mappings,
+            channel_count: precomputed.loaded.channel_count(),
+            retrigger: sample.definition.retrigger(),
+            release_behavior: sample.definition.release_behavior(),
+        })
+    }
+
     /// Processes an incoming MIDI event.
     /// This is the main entry point called when MIDI data is received.
     pub fn process_midi_event(&self, raw_event: &[u8]) {
@@ -259,21 +446,38 @@ impl SampleEngine {
         if let LiveEvent::Midi { channel, message } = &event {
             match message {
                 MidiMessage::NoteOff { key, .. } => {
-                    self.handle_note_off(u8::from(*key), u8::from(*channel) + 1);
+                    let group = Self::midi_release_group(u8::from(*channel) + 1, u8::from(*key));
+                    self.release(&group);
                 }
                 MidiMessage::NoteOn { key, vel } if u8::from(*vel) == 0 => {
                     // Note On with velocity 0 is equivalent to Note Off
-                    self.handle_note_off(u8::from(*key), u8::from(*channel) + 1);
+                    let group = Self::midi_release_group(u8::from(*channel) + 1, u8::from(*key));
+                    self.release(&group);
                 }
                 _ => {}
             }
         }
 
+        // NoteOn with velocity 0 was already handled as a release above — skip trigger matching
+        let is_note_off_as_note_on = matches!(
+            &event,
+            LiveEvent::Midi { message: MidiMessage::NoteOn { vel, .. }, .. }
+            if u8::from(*vel) == 0
+        );
+
         // Check against triggers (hot path - minimal overhead)
         for trigger in &self.triggers {
-            if self.matches_trigger(&event, &trigger.midi_event) {
+            if !is_note_off_as_note_on && self.matches_trigger(&event, &trigger.midi_event) {
                 let velocity = self.extract_velocity(&event);
-                self.trigger_sample(&trigger.sample_name, velocity, &event);
+                let release_group = self
+                    .extract_note_channel(&event)
+                    .map(|(note, channel)| Self::midi_release_group(channel, note));
+                let trigger_event = TriggerEvent {
+                    sample_name: trigger.sample_name.clone(),
+                    velocity,
+                    release_group,
+                };
+                self.trigger(&trigger_event);
             }
         }
     }
@@ -351,6 +555,11 @@ impl SampleEngine {
         }
     }
 
+    /// Builds a release group string for a MIDI note event.
+    fn midi_release_group(channel_1indexed: u8, note: u8) -> String {
+        format!("midi:{}:{}", channel_1indexed, note)
+    }
+
     /// Extracts note and channel from a MIDI event for Note Off matching.
     fn extract_note_channel(&self, event: &LiveEvent) -> Option<(u8, u8)> {
         match event {
@@ -362,159 +571,12 @@ impl SampleEngine {
         }
     }
 
-    /// Triggers a sample by name with the given velocity.
-    fn trigger_sample(&self, sample_name: &str, velocity: u8, event: &LiveEvent) {
-        let sample = match self.samples.get(sample_name) {
-            Some(s) => s,
-            None => {
-                warn!(sample = sample_name, "Sample not found");
-                return;
-            }
-        };
-
-        // Get the file to play based on velocity
-        let (file_path, volume) = match sample.definition.file_for_velocity(velocity) {
-            Some((file, vol)) => {
-                let path = if Path::new(file).is_absolute() {
-                    PathBuf::from(file)
-                } else {
-                    sample.base_path.join(file)
-                };
-                (path, vol)
-            }
-            None => {
-                warn!(
-                    sample = sample_name,
-                    velocity, "No sample file for velocity"
-                );
-                return;
-            }
-        };
-
-        // Get the precomputed sample data
-        let precomputed = match sample.loaded_files.get(&file_path) {
-            Some(p) => p,
-            None => {
-                error!(
-                    sample = sample_name,
-                    path = ?file_path,
-                    "Sample file not loaded"
-                );
-                return;
-            }
-        };
-
-        // Create a new source for playback
-        let source = precomputed.loaded.create_source(volume);
-        let source_id = audio::next_source_id();
-
-        // Use precomputed channel labels and track mappings (no allocations!)
-        let channel_mapped = ChannelMappedSource::new(
-            Box::new(source),
-            precomputed.channel_labels.clone(),
-            precomputed.loaded.channel_count(),
-        );
-        let track_mappings = precomputed.track_mappings.clone();
-
-        // Extract note/channel for Note Off tracking
-        let (trigger_note, trigger_channel) = self
-            .extract_note_channel(event)
-            .map(|(n, c)| (Some(n), Some(c)))
-            .unwrap_or((None, None));
-
-        // Create a per-source cancel handle and scheduled cancel time for lock-free voice stopping
-        let source_cancel_handle = CancelHandle::new();
-        let source_cancel_at_sample = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)); // 0 = no scheduled cancel
-
-        // Create voice entry with its own cancel handle and scheduled cancel time
-        let voice = Voice::new(
-            sample_name.to_string(),
-            trigger_note,
-            trigger_channel,
-            source_id,
-            source_cancel_handle.clone(),
-            source_cancel_at_sample.clone(),
-        );
-
-        // Schedule the source to start at a fixed delay from now for consistent latency
-        let start_at_sample = self.mixer.current_sample() + self.fixed_delay_samples;
-
-        // Acquire voice manager lock BEFORE adding to mixer to prevent race conditions
-        // with concurrent triggers for the same sample (important for cut/monophonic mode)
-        let mut vm = self.voice_manager.write();
-        let to_stop = vm.add_voice(voice, sample.definition.retrigger());
-
-        // Schedule old voices to stop at the same time the new one starts (sample-accurate cut)
-        for cancel_at in to_stop {
-            cancel_at.store(start_at_sample, std::sync::atomic::Ordering::Relaxed);
-        }
-
-        // Add the new source via channel (audio callback receives and adds it)
-        let active_source = crate::audio::mixer::ActiveSource {
-            id: source_id,
-            source: Box::new(channel_mapped),
-            track_mappings,
-            channel_mappings: Vec::new(), // Will be computed by mixer
-            cached_source_channel_count: precomputed.loaded.channel_count(),
-            is_finished: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            cancel_handle: source_cancel_handle.clone(),
-            start_at_sample: Some(start_at_sample),
-            cancel_at_sample: Some(source_cancel_at_sample.clone()),
-        };
-
-        // Send via channel - audio callback handles addition to mixer
-        if let Err(e) = self.source_tx.send(active_source) {
-            error!(error = %e, "Failed to send sample to mixer");
-        }
-        drop(vm);
-
-        debug!(
-            sample = sample_name,
-            velocity, volume, source_id, "Sample triggered"
-        );
-    }
-
-    /// Handles a Note Off event.
-    fn handle_note_off(&self, note: u8, channel: u8) {
-        // Find all samples that might have Note Off behavior
-        // and check their voices
-        let sample_behaviors: Vec<_> = self
-            .samples
-            .iter()
-            .map(|(name, s)| (name.clone(), s.definition.note_off()))
-            .collect();
-
-        for (name, behavior) in sample_behaviors {
-            if behavior == NoteOffBehavior::PlayToCompletion {
-                continue;
-            }
-
-            let mut vm = self.voice_manager.write();
-            let to_stop = vm.handle_note_off(note, channel, behavior);
-            drop(vm);
-
-            let stopped_count = to_stop.len();
-            if !to_stop.is_empty() {
-                // Cancel voices via their handles (lock-free, no mixer write lock needed)
-                for handle in to_stop {
-                    handle.cancel();
-                }
-                debug!(
-                    sample = name,
-                    note,
-                    channel,
-                    stopped = stopped_count,
-                    "Note Off handled"
-                );
-            }
-        }
-    }
-
     /// Stops all sample playback.
     pub fn stop_all(&self) {
-        let mut vm = self.voice_manager.write();
-        let to_stop = vm.clear();
-        drop(vm);
+        let to_stop = {
+            let mut vm = self.voice_manager.write();
+            vm.clear()
+        };
 
         // Cancel all voices via their handles (lock-free)
         let stopped_count = to_stop.len();
@@ -554,8 +616,8 @@ mod tests {
     use super::*;
     use crate::audio::mixer::AudioMixer;
 
-    fn create_test_mixer_and_sender() -> (std::sync::Arc<AudioMixer>, crate::audio::SourceSender) {
-        let mixer = std::sync::Arc::new(AudioMixer::new(2, 44100));
+    fn create_test_mixer_and_sender() -> (Arc<AudioMixer>, crate::audio::SourceSender) {
+        let mixer = Arc::new(AudioMixer::new(2, 44100));
         let (tx, _rx) = crossbeam_channel::unbounded();
         (mixer, tx)
     }
@@ -563,7 +625,7 @@ mod tests {
     #[test]
     fn test_engine_creation() {
         let (mixer, source_tx) = create_test_mixer_and_sender();
-        let engine = SampleEngine::new(mixer, source_tx, 32, 256);
+        let engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
 
         assert_eq!(engine.active_voice_count(), 0);
         assert_eq!(engine.samples.len(), 0);
@@ -573,7 +635,7 @@ mod tests {
     #[test]
     fn test_velocity_extraction() {
         let (mixer, source_tx) = create_test_mixer_and_sender();
-        let engine = SampleEngine::new(mixer, source_tx, 32, 256);
+        let engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
 
         // Note On
         let note_on = LiveEvent::Midi {
@@ -599,7 +661,7 @@ mod tests {
     #[test]
     fn test_trigger_matching() {
         let (mixer, source_tx) = create_test_mixer_and_sender();
-        let engine = SampleEngine::new(mixer, source_tx, 32, 256);
+        let engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
 
         let trigger = LiveEvent::Midi {
             channel: 9.into(), // Channel 10 (0-indexed)
@@ -639,5 +701,105 @@ mod tests {
         assert!(engine.matches_trigger(&event1, &trigger));
         assert!(!engine.matches_trigger(&event2, &trigger));
         assert!(!engine.matches_trigger(&event3, &trigger));
+    }
+
+    #[test]
+    fn test_output_track_resolves_through_track_mappings() {
+        let (mixer, source_tx) = create_test_mixer_and_sender();
+        let mut track_mappings = HashMap::new();
+        track_mappings.insert("kick-out".to_string(), vec![3, 4]);
+        let mut engine = SampleEngine::new(mixer, source_tx, 32, 256, track_mappings);
+
+        let definition = SampleDefinition::new_with_output_track(
+            Some("1Channel44.1k.wav".to_string()),
+            "kick-out",
+            crate::config::samples::VelocityConfig::ignore(None),
+            ReleaseBehavior::PlayToCompletion,
+            crate::config::samples::RetriggerBehavior::Cut,
+            None,
+            50,
+        );
+        let base_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
+        engine.load_sample("kick", &definition, &base_path).unwrap();
+
+        let sample = engine.samples.get("kick").unwrap();
+        let file_path = base_path.join("1Channel44.1k.wav");
+        let precomputed = sample.loaded_files.get(&file_path).unwrap();
+
+        // Channel labels should reference the track name, not synthetic __sample_out_
+        assert_eq!(precomputed.channel_labels.len(), 1); // mono file
+        assert_eq!(precomputed.channel_labels[0], vec!["kick-out".to_string()]);
+
+        // Track mappings should map the track name to the resolved channels
+        assert_eq!(
+            precomputed.track_mappings.get("kick-out"),
+            Some(&vec![3u16, 4])
+        );
+    }
+
+    #[test]
+    fn test_output_track_not_found_in_track_mappings() {
+        let (mixer, source_tx) = create_test_mixer_and_sender();
+        let mut engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
+
+        let definition = SampleDefinition::new_with_output_track(
+            Some("1Channel44.1k.wav".to_string()),
+            "nonexistent-track",
+            crate::config::samples::VelocityConfig::ignore(None),
+            ReleaseBehavior::PlayToCompletion,
+            crate::config::samples::RetriggerBehavior::Cut,
+            None,
+            50,
+        );
+        let base_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
+        engine.load_sample("kick", &definition, &base_path).unwrap();
+
+        let sample = engine.samples.get("kick").unwrap();
+        let file_path = base_path.join("1Channel44.1k.wav");
+        let precomputed = sample.loaded_files.get(&file_path).unwrap();
+
+        // With missing track, labels should be empty and no track mappings
+        assert_eq!(precomputed.channel_labels.len(), 1); // mono file
+        assert!(precomputed.channel_labels[0].is_empty());
+        assert!(precomputed.track_mappings.is_empty());
+    }
+
+    #[test]
+    fn test_output_channels_still_works() {
+        let (mixer, source_tx) = create_test_mixer_and_sender();
+        let mut engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
+
+        let definition = SampleDefinition::new(
+            Some("1Channel44.1k.wav".to_string()),
+            vec![5, 6],
+            crate::config::samples::VelocityConfig::ignore(None),
+            ReleaseBehavior::PlayToCompletion,
+            crate::config::samples::RetriggerBehavior::Cut,
+            None,
+            50,
+        );
+        let base_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
+        engine
+            .load_sample("snare", &definition, &base_path)
+            .unwrap();
+
+        let sample = engine.samples.get("snare").unwrap();
+        let file_path = base_path.join("1Channel44.1k.wav");
+        let precomputed = sample.loaded_files.get(&file_path).unwrap();
+
+        // Should use synthetic __sample_out_ labels
+        assert_eq!(precomputed.channel_labels.len(), 1); // mono file
+        assert!(precomputed.channel_labels[0].contains(&"__sample_out_5".to_string()));
+        assert!(precomputed.channel_labels[0].contains(&"__sample_out_6".to_string()));
+
+        // Track mappings should map synthetic names to channels
+        assert_eq!(
+            precomputed.track_mappings.get("__sample_out_5"),
+            Some(&vec![5u16])
+        );
+        assert_eq!(
+            precomputed.track_mappings.get("__sample_out_6"),
+            Some(&vec![6u16])
+        );
     }
 }

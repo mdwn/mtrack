@@ -12,17 +12,22 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+use std::collections::HashSet;
+use std::error::Error;
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
+use std::sync::Arc;
+
+use tracing::info;
+
+use crate::audio::format::SampleFormat;
+use crate::calibrate;
 use crate::config;
 use crate::lighting::parser::parse_light_shows;
 use crate::lighting::validation::validate_groups;
 use crate::playlist::Playlist;
 use crate::songs;
 use crate::verify;
-use std::collections::HashSet;
-use std::error::Error;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use tracing::info;
 
 /// Default thread priority on the [0; 100) scale when MTRACK_THREAD_PRIORITY is unset.
 /// On Linux (normal scheduling) this is roughly in the nice -8 to -10 range—higher than default 0 but below max.
@@ -142,6 +147,31 @@ pub async fn start(player_path: &str, playlist_path: Option<String>) -> Result<(
         .join()
         .await?;
     Ok(())
+}
+
+pub fn calibrate_triggers(
+    device: &str,
+    sample_rate: Option<u32>,
+    duration: f32,
+    sample_format: Option<String>,
+    bits_per_sample: Option<u16>,
+) -> Result<(), Box<dyn Error>> {
+    if duration <= 0.0 || !duration.is_finite() {
+        return Err("--duration must be a positive finite number".into());
+    }
+
+    let fmt = sample_format
+        .as_deref()
+        .map(SampleFormat::from_str)
+        .transpose()?;
+
+    calibrate::run(calibrate::CalibrationConfig {
+        device_name: device.to_string(),
+        sample_rate,
+        noise_floor_duration_secs: duration,
+        sample_format: fmt,
+        bits_per_sample,
+    })
 }
 
 pub fn verify_light_show(show_path: &str, config_path: Option<&str>) -> Result<(), Box<dyn Error>> {

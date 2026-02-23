@@ -12,22 +12,19 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-//! MIDI-triggered sample playback system.
+//! Sample playback system with source-agnostic triggering.
 //!
 //! This module provides:
 //! - Sample loading and caching (in-memory for zero-latency playback)
 //! - MIDI event to sample trigger matching
+//! - Source-agnostic trigger/release via TriggerEvent and TriggerAction
 //! - Voice management with polyphony limits
 //! - Integration with the audio mixer
 
 mod engine;
 mod loader;
+mod trigger;
 mod voice;
 
 pub use engine::SampleEngine;
-
-// These types are exported for potential external use and testing
-#[allow(unused_imports)]
-pub use loader::{LoadedSample, SampleLoader};
-#[allow(unused_imports)]
-pub use voice::{Voice, VoiceManager};
+pub use trigger::{TriggerAction, TriggerEvent};

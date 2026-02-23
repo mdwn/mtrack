@@ -351,6 +351,51 @@ track_mappings:
 #         - universe: 1
 #           name: light-show
 #
+#   # Drum trigger node: audio output + trigger input
+#   - hostname: drum-pi
+#     audio:
+#       device: "UltraLite-mk5"
+#       track_mappings:
+#         kick: [3, 4]
+#         cymbal: [3, 4]
+#     trigger:
+#       device: "UltraLite-mk5"
+#       sample_rate: 44100
+#       # sample_format: int
+#       # bits_per_sample: 16
+#       # buffer_size: 256
+#       # crosstalk_window_ms: 4
+#       # crosstalk_threshold: 3.0
+#       inputs:
+#         - kind: audio
+#           channel: 1
+#           sample: "kick"
+#           threshold: 0.1
+#           retrigger_time_ms: 30
+#           scan_time_ms: 5
+#           gain: 1.0
+#           velocity_curve: linear
+#           release_group: "kick"
+#           # highpass_freq: 80.0
+#           # dynamic_threshold_decay_ms: 50
+#         - kind: audio
+#           channel: 3
+#           sample: "cymbal"
+#           threshold: 0.08
+#           velocity_curve: logarithmic
+#           release_group: "cymbal"
+#         - kind: audio
+#           channel: 4
+#           action: release
+#           release_group: "cymbal"
+#           threshold: 0.05
+#         - kind: midi
+#           event:
+#             type: note_on
+#             channel: 10
+#             key: 60
+#           sample: kick
+#
 #   # Fallback: minimal audio-only setup
 #   - audio:
 #       device: "Built-in Audio"
@@ -380,12 +425,18 @@ samples:
     # The audio file to play. Path is relative to this config file.
     file: songs/a-really-cool-song/click.wav
     # Output channels to route this sample to (1-indexed).
+    # Use output_channels for fixed channel numbers:
     output_channels: [3, 4]
+    # Or use output_track to reference a track mapping name from the active profile's
+    # track_mappings. This allows the same sample definition to work across different
+    # hardware profiles with different channel assignments:
+    # output_track: "kick-out"
+    # If both are set, output_track takes precedence.
     # Velocity handling mode: ignore, scale, or layers.
     velocity:
       mode: scale
     # Behavior on Note Off: play_to_completion, stop, or fade.
-    note_off: play_to_completion
+    release_behavior: play_to_completion
     # Behavior when retriggered while playing: cut or polyphonic.
     retrigger: cut
     # Maximum concurrent voices for this sample (optional).
@@ -398,7 +449,7 @@ samples:
       mode: ignore
       # Default velocity when mode is ignore (0-127).
       default: 100
-    note_off: play_to_completion
+    release_behavior: play_to_completion
     retrigger: polyphonic
     max_voices: 8
 
@@ -416,10 +467,11 @@ samples:
         file: songs/sound-check/click.wav
       - range: [101, 127]
         file: songs/a-really-fast-one/click.wav
-    note_off: play_to_completion
+    release_behavior: play_to_completion
     retrigger: polyphonic
 
 # Sample triggers map MIDI events to sample names defined above.
+# Legacy top-level form (converted to trigger config MIDI inputs at startup):
 sample_triggers:
   # Trigger the "kick" sample on MIDI Note C3 (note 60) on channel 10.
 - trigger:
@@ -444,3 +496,103 @@ sample_triggers:
 
 # Maximum number of concurrent sample voices globally. Defaults to 32.
 max_sample_voices: 32
+
+# --- Trigger Configuration ---
+#
+# Unified trigger system supporting both audio and MIDI inputs.
+# Each input requires a `kind` field: "audio" or "midi".
+#
+# trigger:
+#   # Device is required when audio inputs are configured.
+#   device: "UltraLite-mk5"
+#   sample_rate: 44100
+#   inputs:
+#     # Audio trigger input (piezo drum trigger)
+#     - kind: audio
+#       channel: 1
+#       sample: "kick"
+#       threshold: 0.1
+#       retrigger_time_ms: 30
+#       scan_time_ms: 5
+#       gain: 1.0
+#       velocity_curve: linear
+#       release_group: "kick"
+#
+#     # MIDI trigger input (replaces sample_triggers)
+#     - kind: midi
+#       event:
+#         type: note_on
+#         channel: 10
+#         key: 60
+#       sample: kick
+#
+#     # MIDI-only config (no device needed)
+#     # trigger:
+#     #   inputs:
+#     #     - kind: midi
+#     #       event:
+#     #         type: note_on
+#     #         channel: 10
+#     #         key: 60
+#     #       sample: kick
+
+# --- Audio Trigger Input (legacy top-level form) ---
+#
+# Trigger sample playback from audio input signals (e.g. piezoelectric drum triggers).
+# Uses the same sample engine as MIDI triggers — all sample features work identically.
+#
+# This can also be placed inside a hardware profile (see the "drum-pi" example in the
+# Hardware Profiles section above). The top-level form here is normalized into a profile
+# at startup.
+#
+# trigger:
+#   # The audio input device name. Run `mtrack devices` to see available devices.
+#   # Only required when audio inputs are configured.
+#   device: "UltraLite-mk5"
+#
+#   # (Optional) Sample rate for the input stream. Defaults to 44100.
+#   sample_rate: 44100
+#
+#   # (Optional) Sample format for the input stream: "int" or "float". Defaults to device native.
+#   sample_format: int
+#
+#   # (Optional) Bits per sample: 16 or 32. Defaults to device native.
+#   bits_per_sample: 16
+#
+#   # (Optional) Stream buffer size in frames. Defaults to device default.
+#   buffer_size: 256
+#
+#   # (Optional) Signal conditioning: crosstalk suppression across channels.
+#   # When any channel fires, other channels' thresholds are temporarily raised.
+#   # crosstalk_window_ms: 4     # Suppression window in ms after any channel fires
+#   # crosstalk_threshold: 3.0   # Threshold multiplier during suppression window
+#
+#   # Per-channel input configuration. Each input requires a `kind` field.
+#   inputs:
+#     # Trigger the "kick" sample on input channel 1.
+#     - kind: audio
+#       channel: 1
+#       sample: "kick"
+#       threshold: 0.1           # Amplitude threshold (0.0-1.0)
+#       retrigger_time_ms: 30    # Lockout period after trigger fires
+#       scan_time_ms: 5          # Peak detection window after threshold crossing
+#       gain: 1.0                # Input gain multiplier
+#       velocity_curve: linear   # linear | logarithmic | fixed
+#       release_group: "kick"    # Voice release group name
+#       # highpass_freq: 80.0                # High-pass filter cutoff in Hz (rejects rumble)
+#       # dynamic_threshold_decay_ms: 50     # Adaptive threshold decay time in ms (rejects ringing)
+#
+#     # Trigger a cymbal sample on input channel 3.
+#     - kind: audio
+#       channel: 3
+#       sample: "cymbal"
+#       threshold: 0.08
+#       velocity_curve: logarithmic
+#       release_group: "cymbal"
+#
+#     # Cymbal choke — releases all voices in the "cymbal" group.
+#     - kind: audio
+#       channel: 4
+#       action: release
+#       release_group: "cymbal"
+#       threshold: 0.05

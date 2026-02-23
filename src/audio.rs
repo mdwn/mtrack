@@ -71,6 +71,38 @@ pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {
     fn to_mock(&self) -> Result<Arc<mock::Device>, Box<dyn Error>>;
 }
 
+/// Finds a cpal input device by name, searching all available hosts.
+pub(crate) fn find_input_device(name: &str) -> Result<::cpal::Device, Box<dyn Error>> {
+    use ::cpal::traits::{DeviceTrait, HostTrait};
+
+    for host_id in ::cpal::available_hosts() {
+        let host = ::cpal::host_from_id(host_id)?;
+        let devices = match host.input_devices() {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!(
+                    host = host_id.name(),
+                    error = %e,
+                    "Failed to list input devices for host"
+                );
+                continue;
+            }
+        };
+
+        for device in devices {
+            let device_id = match device.id() {
+                Ok(id) => id.to_string(),
+                Err(_) => continue,
+            };
+            if device_id.trim() == name.trim() {
+                return Ok(device);
+            }
+        }
+    }
+
+    Err(format!("No input device found with name '{}'", name).into())
+}
+
 /// Lists devices known to cpal.
 pub fn list_devices() -> Result<Vec<Box<dyn Device>>, Box<dyn Error>> {
     cpal::Device::list()

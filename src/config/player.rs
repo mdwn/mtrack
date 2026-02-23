@@ -19,6 +19,7 @@ use super::profile::{filter_by_hostname, AudioConfig, Profile};
 use super::samples::{SampleDefinition, SampleTrigger, SamplesConfig, DEFAULT_MAX_SAMPLE_VOICES};
 use super::statusevents::StatusEvents;
 use super::trackmappings::TrackMappings;
+use super::trigger::{MidiTriggerInput, TriggerConfig, TriggerInput};
 use config::{Config, File};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -27,7 +28,7 @@ use std::sync::LazyLock;
 
 use super::error::ConfigError;
 use std::error::Error;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 /// Empty track mappings used as a fallback reference.
 static EMPTY_TRACK_MAPPINGS: LazyLock<HashMap<String, Vec<u16>>> = LazyLock::new(HashMap::new);
@@ -52,6 +53,8 @@ pub struct Player {
     midi: Option<Midi>,
     /// The DMX configuration. (legacy)
     dmx: Option<Dmx>,
+    /// Audio trigger configuration. (legacy, now in profiles)
+    trigger: Option<TriggerConfig>,
     /// Unified hardware profiles, tried in priority order.
     /// Each profile contains audio (optional), MIDI (optional), and DMX (optional) configs.
     profiles: Option<Vec<Profile>>,
@@ -94,6 +97,7 @@ impl Player {
             midi_device: None,
             midi,
             dmx,
+            trigger: None,
             profiles: None,
             profiles_dir: None,
             status_events: None,
@@ -188,36 +192,71 @@ impl Player {
     /// Normalizes legacy configuration fields into profiles.
     /// After normalization, `profiles` is the source of truth.
     fn normalize(&mut self) {
-        if self.profiles.is_none() {
-            // Build a single profile from legacy fields
-            let audio = if let Some(audio) = &self.audio {
-                Some(audio.clone())
-            } else {
-                self.audio_device.as_ref().map(|d| Audio::new(d))
-            };
-
-            let audio_config = audio.map(|audio| {
-                let track_mappings = self
-                    .track_mappings
-                    .as_ref()
-                    .map(|tm| tm.track_mappings.clone())
-                    .unwrap_or_default();
-                AudioConfig::new(audio, track_mappings)
-            });
-
-            let midi = if let Some(midi) = &self.midi {
-                Some(midi.clone())
-            } else {
-                self.midi_device.as_ref().map(|d| Midi::new(d, None))
-            };
-
-            let dmx = self.dmx.clone();
-
-            // Create a profile if any subsystem is configured.
-            if audio_config.is_some() || midi.is_some() || dmx.is_some() {
-                let profile = Profile::new(None, audio_config, midi, dmx);
-                self.profiles = Some(vec![profile]);
+        if self.profiles.is_some() {
+            // Warn about legacy fields that will be ignored.
+            if self.audio.is_some() || self.audio_device.is_some() {
+                warn!("top-level 'audio'/'audio_device' ignored when 'profiles' is present");
             }
+            if self.midi.is_some() || self.midi_device.is_some() {
+                warn!("top-level 'midi'/'midi_device' ignored when 'profiles' is present");
+            }
+            if self.dmx.is_some() {
+                warn!("top-level 'dmx' ignored when 'profiles' is present");
+            }
+            if self.trigger.is_some() {
+                warn!("top-level 'trigger' ignored when 'profiles' is present");
+            }
+            if self.track_mappings.is_some() {
+                warn!("top-level 'track_mappings' ignored when 'profiles' is present");
+            }
+            if !self.sample_triggers.is_empty() {
+                warn!("top-level 'sample_triggers' ignored when 'profiles' is present");
+            }
+            return;
+        }
+
+        // Build a single profile from legacy fields.
+        let audio = if let Some(audio) = &self.audio {
+            Some(audio.clone())
+        } else {
+            self.audio_device.as_ref().map(|d| Audio::new(d))
+        };
+
+        let audio_config = audio.map(|audio| {
+            let track_mappings = self
+                .track_mappings
+                .as_ref()
+                .map(|tm| tm.track_mappings.clone())
+                .unwrap_or_default();
+            AudioConfig::new(audio, track_mappings)
+        });
+
+        let midi = if let Some(midi) = &self.midi {
+            Some(midi.clone())
+        } else {
+            self.midi_device.as_ref().map(|d| Midi::new(d, None))
+        };
+
+        let dmx = self.dmx.clone();
+        let mut trigger = self.trigger.clone();
+
+        // Convert legacy sample_triggers → TriggerInput::Midi entries
+        if !self.sample_triggers.is_empty() {
+            let trigger_config =
+                trigger.get_or_insert_with(|| TriggerConfig::new_midi_only(vec![]));
+            for st in &self.sample_triggers {
+                trigger_config.add_input(TriggerInput::Midi(MidiTriggerInput::new(
+                    st.trigger().clone(),
+                    st.sample().to_string(),
+                )));
+            }
+        }
+
+        // Create a profile if any subsystem is configured.
+        if audio_config.is_some() || midi.is_some() || dmx.is_some() || trigger.is_some() {
+            let mut profile = Profile::new(None, audio_config, midi, dmx);
+            profile.set_trigger(trigger);
+            self.profiles = Some(vec![profile]);
         }
     }
 
@@ -336,7 +375,7 @@ impl Player {
     pub fn samples_config(&self, player_path: &Path) -> Result<SamplesConfig, Box<dyn Error>> {
         let mut config = SamplesConfig::new(
             self.samples.clone(),
-            self.sample_triggers.clone(),
+            Vec::new(),
             self.max_sample_voices.unwrap_or(DEFAULT_MAX_SAMPLE_VOICES),
         );
 
@@ -777,6 +816,64 @@ dmx:
         assert_eq!(profiles.len(), 1);
         assert!(profiles[0].dmx().is_some());
         assert_eq!(profiles[0].dmx().unwrap().dimming_speed_modifier(), 0.25);
+    }
+
+    #[test]
+    fn test_trigger_only_normalizes_into_profile() {
+        let player = player_from_yaml(
+            r#"
+songs: songs
+trigger:
+  device: "UltraLite-mk5"
+  inputs:
+    - kind: audio
+      channel: 1
+      sample: "kick"
+"#,
+        );
+
+        let profiles = player.all_profiles();
+        assert_eq!(profiles.len(), 1);
+        assert!(profiles[0].audio_config().is_none());
+        assert!(profiles[0].midi().is_none());
+        assert!(profiles[0].dmx().is_none());
+        assert!(profiles[0].trigger().is_some());
+        assert_eq!(
+            profiles[0].trigger().unwrap().device(),
+            Some("UltraLite-mk5")
+        );
+    }
+
+    #[test]
+    fn test_trigger_with_audio_normalizes_into_profile() {
+        let player = player_from_yaml(
+            r#"
+songs: songs
+audio:
+  device: mock-device
+track_mappings:
+  click: [1]
+trigger:
+  device: "UltraLite-mk5"
+  inputs:
+    - kind: audio
+      channel: 1
+      sample: "kick"
+"#,
+        );
+
+        let profiles = player.all_profiles();
+        assert_eq!(profiles.len(), 1);
+        assert!(profiles[0].audio_config().is_some());
+        assert!(profiles[0].trigger().is_some());
+        assert_eq!(
+            profiles[0].audio_config().unwrap().audio().device(),
+            "mock-device"
+        );
+        assert_eq!(
+            profiles[0].trigger().unwrap().device(),
+            Some("UltraLite-mk5")
+        );
     }
 
     #[test]
