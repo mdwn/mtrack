@@ -25,6 +25,8 @@ mod color_cycle_tests;
 #[cfg(test)]
 mod dimmer_tests;
 #[cfg(test)]
+mod direct_value_tests;
+#[cfg(test)]
 mod effect_management_tests;
 #[cfg(test)]
 mod formatting_tests;

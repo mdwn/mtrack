@@ -464,6 +464,31 @@ show "Test Show" {
             assert_eq!(effect.sequence_name, Some("simple_sequence".to_string()));
         }
     }
+
+    // First iteration's first cue should NOT have stop_sequences
+    assert!(
+        show.cues[0].stop_sequences.is_empty(),
+        "First iteration should not stop anything"
+    );
+
+    // Second iteration's first cue should stop "simple_sequence"
+    assert_eq!(
+        show.cues[2].stop_sequences,
+        vec!["simple_sequence".to_string()],
+        "Second iteration should stop previous iteration's effects"
+    );
+
+    // Third iteration's first cue should stop "simple_sequence"
+    assert_eq!(
+        show.cues[4].stop_sequences,
+        vec!["simple_sequence".to_string()],
+        "Third iteration should stop previous iteration's effects"
+    );
+
+    // Non-first cues in each iteration should NOT have stop_sequences
+    assert!(show.cues[1].stop_sequences.is_empty());
+    assert!(show.cues[3].stop_sequences.is_empty());
+    assert!(show.cues[5].stop_sequences.is_empty());
 }
 
 #[test]
@@ -906,5 +931,161 @@ show "Test Show" {
         error.to_string().contains("Circular sequence reference"),
         "Error should mention circular reference: {}",
         error
+    );
+}
+
+#[test]
+fn test_sequence_tempo_rescaling_at_expansion() {
+    // A sequence parsed at the global base tempo (110 BPM) should have its cue
+    // times rescaled when expanded at a point where the tempo is 160 BPM.
+    //
+    // The sequence has two cues: @1/1 (beat 0) and @1/2 (beat 1).
+    // At 110 BPM, @1/2 is at 0.545s. At 160 BPM, @1/2 should be at 0.375s.
+    //
+    // The sequence is 1 beat long (perpetual effects, duration = last_cue - first_cue).
+    // At 110 BPM that's 0.545s. At 160 BPM it should be 0.375s per iteration.
+    //
+    // We expand the sequence 4 times starting at measure 5 (after a tempo change
+    // at measure 3 from 110 to 160 BPM).
+    let content = r#"
+tempo {
+    bpm: 110
+    time_signature: 4/4
+    changes: [
+        @3/1 { bpm: 160 }
+    ]
+}
+
+sequence "test_seq" {
+    @1/1
+    front_wash: static, color: "red"
+
+    @1/2
+    front_wash: static, color: "blue"
+}
+
+show "Test Show" {
+    @5/1
+    sequence "test_seq", loop: 4
+}
+"#;
+
+    let result = parse_light_shows(content);
+    assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+
+    let shows = result.unwrap();
+    let show = shows.get("Test Show").unwrap();
+
+    // Should have 8 cues (2 cues per iteration x 4 iterations)
+    assert_eq!(show.cues.len(), 8);
+
+    // At 110 BPM, 4/4 time:
+    //   Measure 1: beat 0, time 0.0s
+    //   Measure 2: beat 4, time 4*60/110 = 2.1818s
+    //   Measure 3: beat 8, time 8*60/110 = 4.3636s  (tempo changes to 160 here)
+    //   Measure 4: 4.3636 + 4*60/160 = 4.3636 + 1.5 = 5.8636s
+    //   Measure 5: 5.8636 + 4*60/160 = 5.8636 + 1.5 = 7.3636s
+    let expected_base_time = 8.0 * 60.0 / 110.0 + 8.0 * 60.0 / 160.0;
+    let base_time = show.cues[0].time.as_secs_f64();
+    assert!(
+        (base_time - expected_base_time).abs() < 0.001,
+        "First cue should be at measure 5 ({:.4}s), got {:.4}s",
+        expected_base_time,
+        base_time
+    );
+
+    // The sequence was parsed at 110 BPM. Its internal cue relative times:
+    //   @1/1 = 0.0s (0 beats), @1/2 = 0.5454s (1 beat)
+    //   duration = 1 beat (0.5454s at 110 BPM)
+    //
+    // When expanded at measure 5 (160 BPM), each beat = 60/160 = 0.375s.
+    // So iteration spacing = 1 beat = 0.375s, and cue offsets within
+    // each iteration are also rescaled to 160 BPM.
+    let beat_at_160 = 60.0 / 160.0; // 0.375s
+
+    // Check iteration spacing: first cue of each iteration
+    for i in 0..4 {
+        let cue_time = show.cues[i * 2].time.as_secs_f64();
+        let expected = expected_base_time + i as f64 * beat_at_160;
+        assert!(
+            (cue_time - expected).abs() < 0.001,
+            "Iteration {} first cue should be at {:.4}s, got {:.4}s",
+            i,
+            expected,
+            cue_time
+        );
+    }
+
+    // Check the second cue in each iteration (1 beat later at 160 BPM)
+    for i in 0..4 {
+        let cue_time = show.cues[i * 2 + 1].time.as_secs_f64();
+        let expected = expected_base_time + i as f64 * beat_at_160 + beat_at_160;
+        assert!(
+            (cue_time - expected).abs() < 0.001,
+            "Iteration {} second cue should be at {:.4}s, got {:.4}s",
+            i,
+            expected,
+            cue_time
+        );
+    }
+}
+
+#[test]
+fn test_sequence_tempo_rescaling_same_tempo() {
+    // When the expansion tempo matches the sequence's parse tempo, cue times
+    // should be unchanged (no rescaling effect).
+    let content = r#"
+tempo {
+    bpm: 120
+    time_signature: 4/4
+}
+
+sequence "same_tempo_seq" {
+    @1/1
+    front_wash: static, color: "red"
+
+    @1/3
+    front_wash: static, color: "green"
+
+    @2/1
+    front_wash: static, color: "blue"
+}
+
+show "Test Show" {
+    @5/1
+    sequence "same_tempo_seq"
+}
+"#;
+
+    let result = parse_light_shows(content);
+    assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+
+    let shows = result.unwrap();
+    let show = shows.get("Test Show").unwrap();
+
+    assert_eq!(show.cues.len(), 3);
+
+    // At 120 BPM, measure 5 starts at 4 measures * 4 beats * 60/120 = 8.0s
+    // Sequence cues relative: @1/1 = 0.0s, @1/3 = 1.0s (2 beats), @2/1 = 2.0s (4 beats)
+    // Since expansion tempo (120 BPM) matches sequence parse tempo (120 BPM),
+    // the rescaled times should match the original relative times.
+    let base = 8.0;
+    assert!(
+        (show.cues[0].time.as_secs_f64() - base).abs() < 0.001,
+        "First cue at {:.4}s, expected {:.4}s",
+        show.cues[0].time.as_secs_f64(),
+        base
+    );
+    assert!(
+        (show.cues[1].time.as_secs_f64() - (base + 1.0)).abs() < 0.001,
+        "Second cue at {:.4}s, expected {:.4}s",
+        show.cues[1].time.as_secs_f64(),
+        base + 1.0
+    );
+    assert!(
+        (show.cues[2].time.as_secs_f64() - (base + 2.0)).abs() < 0.001,
+        "Third cue at {:.4}s, expected {:.4}s",
+        show.cues[2].time.as_secs_f64(),
+        base + 2.0
     );
 }

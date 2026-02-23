@@ -9,17 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`output_track` for samples**: Sample definitions now support an `output_track` field that
-  references a track mapping name from the active hardware profile's `track_mappings`. This allows
-  a single sample definition to work across different hardware profiles with different channel
-  assignments. The existing `output_channels` field continues to work unchanged. If both are set,
-  `output_track` takes precedence.
-
 - **Audio trigger input**: Piezoelectric drum triggers (or any transient audio signal) can now
   trigger sample playback via a standard audio interface input. Configure per-channel threshold,
   scan window, retrigger lockout, gain, and velocity curve (linear, logarithmic, or fixed).
   Trigger inputs can fire samples or release voice groups (e.g. cymbal choke). No MIDI hardware
-  required — plug piezos directly into any cpal-supported audio interface.
+  required — plug piezos directly into any cpal-supported audio interface. Advanced options
+  include a high-pass filter (`highpass_freq`) to reject stage rumble and bass bleed, dynamic
+  threshold decay (`dynamic_threshold_decay_ms`) that raises the threshold after a hit to reject
+  ringing, and crosstalk suppression (`crosstalk_window_ms` / `crosstalk_threshold`) to prevent
+  a single hit from firing multiple channels.
 
 - **Unified trigger config with `kind` discriminator**: Audio and MIDI trigger inputs now coexist
   in a single `trigger.inputs` list using a `kind` field (`audio` or `midi`). MIDI triggers
@@ -27,11 +25,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   optional (only required when audio inputs are present). Legacy `sample_triggers` are
   automatically converted to `kind: midi` trigger inputs at startup.
 
+- **Trigger config in profiles**: The `trigger` section can now be placed inside a hardware
+  profile, alongside `audio`, `midi`, and `dmx`. This allows different hosts to use different
+  trigger configurations. Top-level `trigger` is still supported and automatically normalized
+  into the profile.
+
+- **`calibrate-triggers` CLI command**: A new `mtrack calibrate-triggers <device>` command
+  measures the noise floor and hit characteristics of a connected audio input device, then
+  generates a ready-to-paste YAML trigger configuration with calibrated thresholds, scan windows,
+  retrigger lockout times, and optional high-pass filter settings.
+
+- **`output_track` for samples**: Sample definitions now support an `output_track` field that
+  references a track mapping name from the active hardware profile's `track_mappings`. This allows
+  a single sample definition to work across different hardware profiles with different channel
+  assignments. The existing `output_channels` field continues to work unchanged. If both are set,
+  `output_track` takes precedence.
+
+- **Lighting simulator**: A new web-based UI for visualizing lighting effects in real-time without
+  physical DMX hardware. Start with `mtrack start --simulator` (optionally `--simulator-port`).
+  The simulator shows per-fixture color/strobe state, processes layer commands, and supports
+  hot-reload of `.light` DSL files during playback. When the OLA daemon is unavailable, the DMX
+  engine falls back to a null client so the effects engine can still run.
+
+- **Legacy MIDI-to-DMX integration with effect engine**: Legacy MIDI light shows now feed their
+  interpolated DMX values into the DSL effect engine via a lockless atomic store
+  (`LegacyDmxStore`). This allows MIDI-driven fixtures to appear in the lighting simulator and
+  coexist with DSL effects on the same universes. DSL effects take priority over legacy values.
+
+- **Fixture strobe frequency range**: Fixture type definitions now support `min_strobe_frequency`
+  and `strobe_dmx_offset` fields, allowing accurate strobe DMX calculation for fixtures whose
+  strobe channel starts above DMX value 0 (e.g. Astera PixelBrick: offset 7, range 0.4–25 Hz).
+
 ### Changed
+
+- **Strobe DMX normalization uses period-linear interpolation**: Strobe frequency-to-DMX mapping
+  now interpolates in period-space (1/frequency) rather than frequency-space, matching how most
+  LED fixtures actually scale their strobe channel. This produces significantly higher DMX values
+  for high strobe frequencies (e.g. 10 Hz on a PixelBrick now sends DMX 248 instead of 103).
+
+- **Sequence tempo rescaling**: Sequences referenced from shows with different tempos now have
+  their cue timing correctly rescaled from the sequence's internal BPM to the expansion-point
+  tempo. Previously, sequences always played at their own BPM regardless of the calling context.
 
 - **`note_off` renamed to `release_behavior`**: The sample configuration field `note_off` has been
   renamed to `release_behavior` to better reflect its source-agnostic purpose. The old `note_off`
   key is still accepted for backwards compatibility.
+
+- **Legacy field warnings**: When `profiles` is present in the player config, any top-level
+  `audio`, `midi`, `dmx`, `trigger`, `track_mappings`, or `sample_triggers` fields now produce
+  a warning that they are being ignored, making misconfiguration easier to diagnose.
+
+### Fixed
+
+- **Looped sequence effects compounding**: Fixed a bug where effects in looped lighting sequences
+  would accumulate across iterations (e.g. multiply chases compounding). Each loop iteration now
+  stops the previous iteration's effects before starting its own.
+
+- **Lighting simulator layer commands**: The lighting simulator now processes layer commands
+  (clear, release, freeze, unfreeze, master) and sequence stop commands, matching the behavior of
+  the player's DMX engine.
+
+- **Seeking past layer clears**: When using play-from to seek into a song, layer `clear()`
+  commands in the timeline history now correctly purge effects that were started before the clear.
+  Previously, seeking would accumulate all perpetual effects from the entire history, ignoring
+  intermediate clears.
+
+- **OLA connection resilience**: The OLA client now supports automatic reconnection after
+  connection failures, with backoff retry logic. A single failed DMX send no longer drops the
+  entire connection. The DMX engine also avoids inadvertently starting the OLA daemon.
+
+- **Stale lighting state between songs**: Fixed a bug where DSL songs without tempo blocks would
+  inherit stale tempo maps from previous songs. Tempo maps, timelines, and legacy MIDI values are
+  now properly cleared on song transitions.
 
 ## [0.8.0] - 2026-02-20
 

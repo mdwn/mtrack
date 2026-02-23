@@ -24,6 +24,7 @@ pub mod playlist;
 pub mod playsync;
 pub mod proto;
 pub mod samples;
+pub mod simulator;
 pub mod songs;
 #[cfg(test)]
 pub mod testutil;

@@ -24,6 +24,7 @@ mod playlist;
 mod playsync;
 mod proto;
 mod samples;
+mod simulator;
 mod songs;
 #[cfg(test)]
 mod testutil;

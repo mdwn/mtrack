@@ -13,9 +13,10 @@
 //
 
 use crate::lighting::{
-    parser::{Cue, Effect, LayerCommand, LightShow},
+    parser::{Cue, Effect, LayerCommand, LayerCommandType, LightShow},
     EffectInstance,
 };
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -48,6 +49,8 @@ pub struct LightingTimeline {
     is_playing: bool,
     /// Tempo map for tempo-aware effects (from the first show that has one)
     tempo_map: Option<crate::lighting::tempo::TempoMap>,
+    /// Sequences that have been stopped — future cues from these sequences are suppressed
+    stopped_sequences: HashSet<String>,
 }
 
 impl LightingTimeline {
@@ -79,6 +82,7 @@ impl LightingTimeline {
             next_cue_index: 0,
             is_playing: false,
             tempo_map: None,
+            stopped_sequences: HashSet::new(),
         };
         timeline.sort_cues();
         timeline
@@ -99,6 +103,7 @@ impl LightingTimeline {
         self.is_playing = true;
         self.current_time = Duration::ZERO;
         self.next_cue_index = 0;
+        self.stopped_sequences.clear();
     }
 
     /// Starts the timeline at a specific time (for seeking)
@@ -106,6 +111,7 @@ impl LightingTimeline {
     pub fn start_at(&mut self, start_time: Duration) -> TimelineUpdate {
         self.is_playing = true;
         self.current_time = start_time;
+        self.stopped_sequences.clear();
         self.next_cue_index = self.find_cue_index_at(start_time);
 
         // Process all cues before start_time to ensure deterministic state
@@ -115,14 +121,52 @@ impl LightingTimeline {
         for i in 0..self.next_cue_index {
             let cue = &self.cues[i];
 
+            // Process start_sequences first: clear stopped status for new invocations
+            for seq_name in &cue.start_sequences {
+                self.stopped_sequences.remove(seq_name);
+            }
+
             // Apply all layer commands from historical cues
             result.layer_commands.extend(cue.layer_commands.clone());
 
-            // Process stop sequence commands
+            // Simulate clear commands: purge effects that would have been stopped
+            // so we only start effects that are actually active at the seek point
+            for cmd in &cue.layer_commands {
+                if cmd.command_type == LayerCommandType::Clear {
+                    if let Some(layer) = cmd.layer {
+                        result
+                            .effects_with_elapsed
+                            .retain(|_, (effect, _)| effect.layer != layer);
+                    } else {
+                        result.effects_with_elapsed.clear();
+                    }
+                }
+            }
+
+            // Track stop sequence commands with the same heuristic as update():
+            // iteration-boundary stops (cue has effects from the same sequence)
+            // only go to the engine, not the timeline's stopped set.
+            let cue_sequence_names: HashSet<&String> = cue
+                .effects
+                .iter()
+                .filter_map(|e| e.sequence_name.as_ref())
+                .collect();
+            for seq_name in &cue.stop_sequences {
+                if !cue_sequence_names.contains(seq_name) {
+                    self.stopped_sequences.insert(seq_name.clone());
+                }
+            }
             result.stop_sequences.extend(cue.stop_sequences.clone());
 
             // For effects, only include ones that would still be active at start_time
             for effect in &cue.effects {
+                // Skip effects from stopped sequences
+                if let Some(ref seq_name) = effect.sequence_name {
+                    if self.stopped_sequences.contains(seq_name) {
+                        continue;
+                    }
+                }
+
                 let effect_instance = Self::create_effect_instance(effect, cue.time);
                 // Check if this effect would still be active at start_time
                 let effect_start_time = cue.time;
@@ -172,6 +216,7 @@ impl LightingTimeline {
         self.is_playing = false;
         self.current_time = Duration::ZERO;
         self.next_cue_index = 0;
+        self.stopped_sequences.clear();
     }
 
     /// Returns true if all cues have been processed (including empty timelines)
@@ -193,14 +238,40 @@ impl LightingTimeline {
             let cue = &self.cues[self.next_cue_index];
 
             if cue.time <= song_time {
-                // This cue should trigger - process effects
+                // Process start_sequences first: clear stopped status for new invocations
+                for seq_name in &cue.start_sequences {
+                    self.stopped_sequences.remove(seq_name);
+                }
+
+                // Process effects, skipping those from stopped sequences
                 for effect in &cue.effects {
+                    if let Some(ref seq_name) = effect.sequence_name {
+                        if self.stopped_sequences.contains(seq_name) {
+                            continue;
+                        }
+                    }
                     let effect_instance = Self::create_effect_instance(effect, cue.time);
                     result.effects.push(effect_instance);
                 }
                 // Process layer commands
                 result.layer_commands.extend(cue.layer_commands.clone());
-                // Process stop sequence commands
+
+                // Track stop sequence commands. Use a heuristic to distinguish
+                // iteration-boundary stops (engine cleanup only) from explicit
+                // "stop sequence" commands (timeline suppression + engine cleanup).
+                // If the cue has both stop_sequences for X and effects from X,
+                // it's an iteration boundary — only pass to engine, don't suppress.
+                let cue_sequence_names: HashSet<&String> = cue
+                    .effects
+                    .iter()
+                    .filter_map(|e| e.sequence_name.as_ref())
+                    .collect();
+                for seq_name in &cue.stop_sequences {
+                    if !cue_sequence_names.contains(seq_name) {
+                        // Explicit stop — suppress future cues from this sequence
+                        self.stopped_sequences.insert(seq_name.clone());
+                    }
+                }
                 result.stop_sequences.extend(cue.stop_sequences.clone());
 
                 self.next_cue_index += 1;
@@ -310,6 +381,7 @@ mod tests {
         };
         let cues = vec![Cue {
             stop_sequences: vec![],
+            start_sequences: vec![],
             time: Duration::from_millis(0),
             effects: vec![effect],
             layer_commands: vec![],
@@ -354,6 +426,7 @@ mod tests {
 
         let cues = vec![Cue {
             stop_sequences: vec![],
+            start_sequences: vec![],
             time: Duration::from_millis(0),
             effects: vec![effect],
             layer_commands: vec![],
@@ -396,18 +469,21 @@ mod tests {
                 effects: vec![effect.clone()],
                 layer_commands: vec![],
                 stop_sequences: vec![],
+                start_sequences: vec![],
             },
             Cue {
                 time: Duration::from_millis(5000),
                 effects: vec![effect.clone()],
                 layer_commands: vec![],
                 stop_sequences: vec![],
+                start_sequences: vec![],
             },
             Cue {
                 time: Duration::from_millis(0),
                 effects: vec![effect],
                 layer_commands: vec![],
                 stop_sequences: vec![],
+                start_sequences: vec![],
             },
         ];
 
@@ -455,12 +531,14 @@ mod tests {
                 effects: vec![effect.clone()],
                 layer_commands: vec![],
                 stop_sequences: vec![],
+                start_sequences: vec![],
             },
             Cue {
                 time: Duration::from_millis(5000),
                 effects: vec![effect],
                 layer_commands: vec![],
                 stop_sequences: vec![],
+                start_sequences: vec![],
             },
         ];
 
@@ -511,12 +589,14 @@ mod tests {
                 effects: vec![effect1],
                 layer_commands: vec![],
                 stop_sequences: vec![],
+                start_sequences: vec![],
             },
             Cue {
                 time: Duration::from_secs(2),
                 effects: vec![effect2],
                 layer_commands: vec![],
                 stop_sequences: vec![],
+                start_sequences: vec![],
             },
         ];
 
@@ -558,6 +638,7 @@ mod tests {
                     speed: None,
                 }],
                 stop_sequences: vec![],
+                start_sequences: vec![],
             },
             Cue {
                 time: Duration::from_secs(1),
@@ -570,6 +651,7 @@ mod tests {
                     speed: None,
                 }],
                 stop_sequences: vec![],
+                start_sequences: vec![],
             },
             Cue {
                 time: Duration::from_secs(2),
@@ -582,6 +664,7 @@ mod tests {
                     speed: Some(2.0),
                 }],
                 stop_sequences: vec![],
+                start_sequences: vec![],
             },
         ];
 
@@ -646,6 +729,7 @@ mod tests {
 
         let cues = vec![Cue {
             stop_sequences: vec![],
+            start_sequences: vec![],
             time: Duration::from_secs(0),
             effects: vec![effect],
             layer_commands: vec![LayerCommand {
@@ -695,18 +779,21 @@ mod tests {
                 effects: vec![effect.clone()],
                 layer_commands: vec![],
                 stop_sequences: vec![],
+                start_sequences: vec![],
             },
             Cue {
                 time: Duration::from_secs(5),
                 effects: vec![effect.clone()],
                 layer_commands: vec![],
                 stop_sequences: vec![],
+                start_sequences: vec![],
             },
             Cue {
                 time: Duration::from_secs(10),
                 effects: vec![effect],
                 layer_commands: vec![],
                 stop_sequences: vec![],
+                start_sequences: vec![],
             },
         ];
 
@@ -750,18 +837,21 @@ mod tests {
                 effects: vec![effect.clone()],
                 layer_commands: vec![],
                 stop_sequences: vec![],
+                start_sequences: vec![],
             },
             Cue {
                 time: Duration::from_secs(5),
                 effects: vec![effect.clone()],
                 layer_commands: vec![],
                 stop_sequences: vec![],
+                start_sequences: vec![],
             },
             Cue {
                 time: Duration::from_secs(10),
                 effects: vec![effect],
                 layer_commands: vec![],
                 stop_sequences: vec![],
+                start_sequences: vec![],
             },
         ];
 
@@ -811,18 +901,21 @@ mod tests {
                 effects: vec![effect.clone()],
                 layer_commands: vec![],
                 stop_sequences: vec![],
+                start_sequences: vec![],
             },
             Cue {
                 time: Duration::from_secs(5),
                 effects: vec![effect.clone()],
                 layer_commands: vec![],
                 stop_sequences: vec![],
+                start_sequences: vec![],
             },
             Cue {
                 time: Duration::from_secs(10),
                 effects: vec![effect],
                 layer_commands: vec![],
                 stop_sequences: vec![],
+                start_sequences: vec![],
             },
         ];
 
@@ -834,5 +927,174 @@ mod tests {
         assert_eq!(cue_list[0], (Duration::from_secs(0), 0));
         assert_eq!(cue_list[1], (Duration::from_secs(5), 1));
         assert_eq!(cue_list[2], (Duration::from_secs(10), 2));
+    }
+
+    #[test]
+    fn test_start_at_clears_purge_old_effects() {
+        // Verify that seeking past a clear() command does NOT include
+        // effects from before the clear in the historical update.
+        use crate::lighting::effects::EffectLayer;
+        use crate::lighting::parser::{Cue, LayerCommand, LayerCommandType};
+
+        let bg_effect = Effect {
+            sequence_name: None,
+            groups: vec!["test_group".to_string()],
+            effect_type: EffectType::Static {
+                parameters: HashMap::new(),
+                duration: None,
+            },
+            layer: Some(EffectLayer::Background),
+            blend_mode: None,
+            up_time: None,
+            hold_time: None,
+            down_time: None,
+        };
+
+        let fg_effect = Effect {
+            sequence_name: None,
+            groups: vec!["test_group".to_string()],
+            effect_type: EffectType::Static {
+                parameters: HashMap::new(),
+                duration: None,
+            },
+            layer: Some(EffectLayer::Foreground),
+            blend_mode: None,
+            up_time: None,
+            hold_time: None,
+            down_time: None,
+        };
+
+        let cues = vec![
+            // @0s: start perpetual effects on bg and fg
+            Cue {
+                time: Duration::from_secs(0),
+                effects: vec![bg_effect.clone(), fg_effect.clone()],
+                layer_commands: vec![],
+                stop_sequences: vec![],
+                start_sequences: vec![],
+            },
+            // @5s: clear foreground only
+            Cue {
+                time: Duration::from_secs(5),
+                effects: vec![],
+                layer_commands: vec![LayerCommand {
+                    command_type: LayerCommandType::Clear,
+                    layer: Some(EffectLayer::Foreground),
+                    fade_time: None,
+                    intensity: None,
+                    speed: None,
+                }],
+                stop_sequences: vec![],
+                start_sequences: vec![],
+            },
+            // @10s: start a new fg effect
+            Cue {
+                time: Duration::from_secs(10),
+                effects: vec![fg_effect],
+                layer_commands: vec![],
+                stop_sequences: vec![],
+                start_sequences: vec![],
+            },
+        ];
+
+        let mut timeline = LightingTimeline::new_with_cues(cues);
+
+        // Seek to 12s — past the clear at 5s and the new effect at 10s
+        let update = timeline.start_at(Duration::from_secs(12));
+
+        // Should have 2 effects: the bg from @0s and the new fg from @10s
+        // The old fg from @0s should have been purged by the clear at @5s
+        assert_eq!(
+            update.effects_with_elapsed.len(),
+            2,
+            "Should have 2 effects (bg from @0s + new fg from @10s), got {}: {:?}",
+            update.effects_with_elapsed.len(),
+            update
+                .effects_with_elapsed
+                .values()
+                .map(|(e, _)| &e.id)
+                .collect::<Vec<_>>()
+        );
+
+        // Verify the bg effect is present with 12s elapsed
+        let bg = update
+            .effects_with_elapsed
+            .values()
+            .find(|(e, _)| e.layer == EffectLayer::Background);
+        assert!(bg.is_some(), "Background effect should be present");
+        assert_eq!(bg.unwrap().1, Duration::from_secs(12));
+
+        // Verify the new fg effect is present with 2s elapsed (started at @10s)
+        let fg = update
+            .effects_with_elapsed
+            .values()
+            .find(|(e, _)| e.layer == EffectLayer::Foreground);
+        assert!(fg.is_some(), "Foreground effect should be present");
+        assert_eq!(fg.unwrap().1, Duration::from_secs(2));
+    }
+
+    #[test]
+    fn test_start_at_clear_all_purges_all_effects() {
+        // Verify that seeking past a clear() (all layers) purges everything
+        use crate::lighting::parser::{Cue, LayerCommand, LayerCommandType};
+
+        let effect = Effect {
+            sequence_name: None,
+            groups: vec!["test_group".to_string()],
+            effect_type: EffectType::Static {
+                parameters: HashMap::new(),
+                duration: None,
+            },
+            layer: None,
+            blend_mode: None,
+            up_time: None,
+            hold_time: None,
+            down_time: None,
+        };
+
+        let cues = vec![
+            // @0s: start effects
+            Cue {
+                time: Duration::from_secs(0),
+                effects: vec![effect.clone(), effect.clone()],
+                layer_commands: vec![],
+                stop_sequences: vec![],
+                start_sequences: vec![],
+            },
+            // @5s: clear all layers
+            Cue {
+                time: Duration::from_secs(5),
+                effects: vec![],
+                layer_commands: vec![LayerCommand {
+                    command_type: LayerCommandType::Clear,
+                    layer: None,
+                    fade_time: None,
+                    intensity: None,
+                    speed: None,
+                }],
+                stop_sequences: vec![],
+                start_sequences: vec![],
+            },
+            // @10s: start one new effect
+            Cue {
+                time: Duration::from_secs(10),
+                effects: vec![effect],
+                layer_commands: vec![],
+                stop_sequences: vec![],
+                start_sequences: vec![],
+            },
+        ];
+
+        let mut timeline = LightingTimeline::new_with_cues(cues);
+
+        let update = timeline.start_at(Duration::from_secs(12));
+
+        // Only the effect from @10s should survive (the 2 from @0s were cleared at @5s)
+        assert_eq!(
+            update.effects_with_elapsed.len(),
+            1,
+            "Should have 1 effect after clear-all, got {}",
+            update.effects_with_elapsed.len()
+        );
     }
 }

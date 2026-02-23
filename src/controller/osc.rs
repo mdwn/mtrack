@@ -413,6 +413,7 @@ mod test {
                 "assets/songs",
             ),
             None,
+            false,
         )?);
         let binding = player
             .audio_device()
@@ -576,6 +577,7 @@ mod test {
                 "assets/songs",
             ),
             None,
+            false,
         )?);
 
         // Test the client tracking by directly testing the handle_udp_comms logic
@@ -697,6 +699,7 @@ mod test {
                 "assets/songs",
             ),
             None,
+            false,
         )?);
 
         // Create test UDP sockets

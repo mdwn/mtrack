@@ -453,7 +453,9 @@ pub struct FixtureInfo {
     pub address: u16,
     pub fixture_type: String,
     pub channels: HashMap<String, u16>,
-    pub max_strobe_frequency: Option<f64>, // Maximum strobe frequency in Hz
+    pub max_strobe_frequency: Option<f64>,
+    pub min_strobe_frequency: Option<f64>,
+    pub strobe_dmx_offset: Option<u8>,
     /// Cached capabilities derived from channels (computed once at construction)
     cached_capabilities: FixtureCapabilities,
     /// Cached fixture profile (computed once at construction)
@@ -479,6 +481,8 @@ impl FixtureInfo {
             fixture_type,
             channels,
             max_strobe_frequency,
+            min_strobe_frequency: None,
+            strobe_dmx_offset: None,
             cached_capabilities: capabilities,
             cached_profile: profile,
         }

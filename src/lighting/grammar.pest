@@ -224,13 +224,17 @@ fixture_type = { "fixture_type" ~ fixture_type_name ~ "{" ~ fixture_type_content
 
 fixture_type_name = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 
-fixture_type_content = { 
-    (channels | channel_map | max_strobe_frequency | special_cases)* 
+fixture_type_content = {
+    (channels | channel_map | max_strobe_frequency | min_strobe_frequency | strobe_dmx_offset | special_cases)*
 }
 
 channels = { "channels" ~ ":" ~ number_value }
 
 max_strobe_frequency = { "max_strobe_frequency" ~ ":" ~ number_value }
+
+min_strobe_frequency = { "min_strobe_frequency" ~ ":" ~ number_value }
+
+strobe_dmx_offset = { "strobe_dmx_offset" ~ ":" ~ number_value }
 
 channel_map = { "channel_map" ~ ":" ~ "{" ~ channel_mapping_list ~ "}" }
 

@@ -310,6 +310,7 @@ mod test {
                 "assets/songs",
             ),
             None,
+            false,
         )?);
         let binding = player
             .audio_device()

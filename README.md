@@ -478,6 +478,29 @@ track_mappings:
 
 You can start `mtrack` as a process with `mtrack start /path/to/player.yaml`.
 
+### Lighting simulator
+
+`mtrack` includes a web-based lighting simulator for previewing and designing light shows without
+physical DMX hardware. The simulator visualizes per-fixture color and strobe state in real time,
+processes all layer commands, and supports hot-reload of `.light` DSL files during playback.
+
+Start with the `--simulator` flag:
+
+```
+$ mtrack start /path/to/player.yaml --simulator
+```
+
+The simulator web UI is available at `http://localhost:8080` by default. Use `--simulator-port` to
+change the port:
+
+```
+$ mtrack start /path/to/player.yaml --simulator --simulator-port 9090
+```
+
+When the OLA daemon is unavailable, the DMX engine falls back to a null client so the effects
+engine can still run. This allows dedicated lighting design environments without any physical DMX
+hardware or OLA installation.
+
 ### Hardware profiles
 
 If you have multiple devices or run `mtrack` on multiple hosts sharing the same config file,
@@ -1333,6 +1356,20 @@ fixture_type "RGBW_Par" {
   special_cases: ["RGB", "Dimmer"]
 }
 
+# RGB + Strobe fixture (e.g. Astera PixelBrick in 4-channel RGBS mode)
+fixture_type "Astera-PixelBrick" {
+  channels: 4
+  channel_map: {
+    "red": 1,
+    "green": 2,
+    "blue": 3,
+    "strobe": 4
+  }
+  max_strobe_frequency: 25.0
+  min_strobe_frequency: 0.4
+  strobe_dmx_offset: 7
+}
+
 # Moving Head fixture type definition
 fixture_type "MovingHead" {
   channels: 16
@@ -1357,6 +1394,22 @@ fixture_type "MovingHead" {
   special_cases: ["MovingHead", "Spot", "Dimmer", "Strobe"]
 }
 ```
+
+**Strobe frequency range:**
+
+Fixtures with a dedicated strobe channel can specify their supported frequency range and DMX
+offset. This is important because many LED fixtures map the DMX strobe channel linearly to
+*period* (1/frequency) rather than frequency, so a simple linear frequency-to-DMX mapping
+produces incorrect results. `mtrack` uses period-linear interpolation to match this behavior.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `max_strobe_frequency` | 20.0 | Maximum strobe frequency in Hz |
+| `min_strobe_frequency` | 0.0 | Minimum strobe frequency in Hz |
+| `strobe_dmx_offset` | 0 | First DMX value where variable strobe begins (values below this are typically "off" or reserved) |
+
+For example, the Astera PixelBrick's strobe channel uses DMX values 7–255 for 0.4–25 Hz. At
+10 Hz, `mtrack` sends DMX 248 (period-linear), not 103 (frequency-linear).
 
 #### Venue Definitions (`lighting/venues/`)
 

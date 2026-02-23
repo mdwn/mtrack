@@ -95,11 +95,16 @@ pub struct Player {
 
 impl Player {
     /// Creates a new player.
+    ///
+    /// When `simulator_mode` is true, the DMX engine will fall back to a no-op OLA client
+    /// if the OLA daemon is unavailable, allowing the lighting simulator to run without
+    /// physical hardware.
     pub fn new(
         songs: Arc<Songs>,
         playlist: Arc<Playlist>,
         config: &config::Player,
         base_path: Option<&Path>,
+        simulator_mode: bool,
     ) -> Result<Player, Box<dyn Error>> {
         let span = span!(Level::INFO, "player");
         let _enter = span.enter();
@@ -148,10 +153,17 @@ impl Player {
         };
 
         // DMX: if present in profile, required. If absent, optional.
+        // In simulator mode, fall back to a null OLA client if OLA is unavailable.
         let dmx_engine = if let Some(dmx_config) = profile.dmx() {
-            Self::wait_for_ok("dmx engine", || {
-                dmx::create_engine(Some(dmx_config), base_path)
-            })?
+            if simulator_mode {
+                Self::wait_for_ok("dmx engine", || {
+                    dmx::create_engine_for_simulator(Some(dmx_config), base_path)
+                })?
+            } else {
+                Self::wait_for_ok("dmx engine", || {
+                    dmx::create_engine(Some(dmx_config), base_path)
+                })?
+            }
         } else {
             info!("DMX not configured in profile; proceeding without DMX");
             None
@@ -403,6 +415,18 @@ impl Player {
             dmx_engine.get_timeline_cues()
         } else {
             Vec::new()
+        }
+    }
+
+    /// Returns handles needed by the lighting simulator, or None if no DMX engine is configured.
+    pub fn simulator_handles(&self) -> Option<dmx::engine::SimulatorHandles> {
+        self.dmx_engine.as_ref().map(|e| e.simulator_handles())
+    }
+
+    /// Passes the simulator broadcast channel to the DmxEngine for file watcher hot-reload.
+    pub fn set_simulator_broadcast_tx(&self, tx: tokio::sync::broadcast::Sender<String>) {
+        if let Some(ref engine) = self.dmx_engine {
+            engine.set_simulator_broadcast_tx(tx);
         }
     }
 
@@ -967,6 +991,7 @@ mod test {
                 "assets/songs",
             ),
             None,
+            false,
         )?;
         let binding = player
             .audio_device()
@@ -1150,6 +1175,7 @@ mod test {
                 temp_path.to_str().unwrap(),
             ),
             Some(temp_path),
+            false,
         )?;
 
         // Try to play the song - it should fail due to invalid lighting show
@@ -1249,6 +1275,7 @@ mod test {
                 temp_path.to_str().unwrap(),
             ),
             Some(temp_path),
+            false,
         )?;
 
         // Test validation directly through the DMX engine to avoid starting playback
@@ -1349,6 +1376,7 @@ mod test {
                 temp_path.to_str().unwrap(),
             ),
             Some(temp_path),
+            false,
         )?;
 
         // Try to play the song - it should succeed even without lighting shows
@@ -1449,6 +1477,7 @@ mod test {
                 temp_path.to_str().unwrap(),
             ),
             Some(temp_path),
+            false,
         )?;
 
         // Try to play the song - it should fail due to invalid lighting show groups

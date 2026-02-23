@@ -28,6 +28,9 @@ pub struct LightShow {
 #[derive(Debug, Clone)]
 pub struct Sequence {
     pub cues: Vec<Cue>,
+    /// The effective BPM used when parsing this sequence's internal cue timing.
+    /// Used to rescale cue times when the sequence is expanded at a different tempo.
+    pub bpm: f64,
 }
 
 impl Sequence {
@@ -91,6 +94,7 @@ pub struct Cue {
     pub effects: Vec<Effect>,
     pub layer_commands: Vec<LayerCommand>,
     pub stop_sequences: Vec<String>, // Names of sequences to stop at this cue time
+    pub start_sequences: Vec<String>, // Names of sequences starting fresh at this cue time
 }
 
 #[derive(Debug, Clone)]

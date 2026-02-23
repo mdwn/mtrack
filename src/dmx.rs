@@ -13,6 +13,7 @@
 //
 
 pub mod engine;
+pub mod legacy_store;
 pub mod ola_client;
 pub mod universe;
 
@@ -28,10 +29,28 @@ use std::time::Duration;
 use std::{error::Error, path::Path, sync::Arc};
 use tracing::info;
 
-/// Gets a device with the given name.
+/// Creates a DMX engine, connecting to the OLA daemon for output.
 pub fn create_engine(
     config: Option<&config::Dmx>,
     base_path: Option<&Path>,
+) -> Result<Option<Arc<Engine>>, Box<dyn Error>> {
+    create_engine_inner(config, base_path, false)
+}
+
+/// Creates a DMX engine for simulator use. Falls back to a no-op OLA client
+/// if the OLA daemon is unavailable, so the lighting/effects engine can still
+/// run without physical hardware.
+pub fn create_engine_for_simulator(
+    config: Option<&config::Dmx>,
+    base_path: Option<&Path>,
+) -> Result<Option<Arc<Engine>>, Box<dyn Error>> {
+    create_engine_inner(config, base_path, true)
+}
+
+fn create_engine_inner(
+    config: Option<&config::Dmx>,
+    base_path: Option<&Path>,
+    allow_null_client: bool,
 ) -> Result<Option<Arc<Engine>>, Box<dyn Error>> {
     let config = match config {
         Some(config) => config,
@@ -44,13 +63,16 @@ pub fn create_engine(
     // Build a real OLA client and construct the engine
     // In test mode, use a mock client to avoid hanging on OLA connection
     #[cfg(test)]
-    let ola_client = OlaClientFactory::create_mock_client_unconditional();
+    let ola_client = {
+        let _ = allow_null_client; // Only used in non-test builds
+        OlaClientFactory::create_mock_client_unconditional()
+    };
 
     #[cfg(not(test))]
     let ola_client = {
         let ola_client_config = StreamingClientConfig {
             server_port: config.ola_port(),
-            ..Default::default()
+            auto_start: false,
         };
         // Retry connecting to OLA a few times with backoff
         let mut last_err: Option<Box<dyn Error>> = None;
@@ -71,7 +93,14 @@ pub fn create_engine(
         }
         match (found, last_err) {
             (Some(client), _) => client,
-            (None, Some(e)) => return Err(e),
+            (None, Some(e)) => {
+                if allow_null_client {
+                    info!("OLA not available, using null DMX client (simulator-only mode)");
+                    Box::new(ola_client::NullOlaClient) as Box<dyn ola_client::OlaClient>
+                } else {
+                    return Err(e);
+                }
+            }
             (None, None) => unreachable!(),
         }
     };

@@ -191,6 +191,7 @@ mod test {
                 "assets/songs",
             ),
             None,
+            false,
         )?);
         let playlist = player.get_playlist();
         let binding = player

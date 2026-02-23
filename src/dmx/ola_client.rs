@@ -18,18 +18,25 @@ use std::error::Error;
 pub trait OlaClient: Send + Sync {
     /// Send DMX data to a universe
     fn send_dmx(&mut self, universe: u32, buffer: &ola::DmxBuffer) -> Result<(), Box<dyn Error>>;
+
+    /// Attempt to re-establish the connection after a failure
+    fn reconnect(&mut self) -> Result<(), Box<dyn Error>>;
 }
 
 /// Real OLA client implementation
 #[cfg(not(test))]
 pub struct RealOlaClient {
     client: ola::StreamingClient<std::net::TcpStream>,
+    config: ola::client::StreamingClientConfig,
 }
 
 #[cfg(not(test))]
 impl RealOlaClient {
-    pub fn new(client: ola::StreamingClient<std::net::TcpStream>) -> Self {
-        Self { client }
+    pub fn new(
+        client: ola::StreamingClient<std::net::TcpStream>,
+        config: ola::client::StreamingClientConfig,
+    ) -> Self {
+        Self { client, config }
     }
 }
 
@@ -37,6 +44,11 @@ impl RealOlaClient {
 impl OlaClient for RealOlaClient {
     fn send_dmx(&mut self, universe: u32, buffer: &ola::DmxBuffer) -> Result<(), Box<dyn Error>> {
         self.client.send_dmx(universe, buffer)?;
+        Ok(())
+    }
+
+    fn reconnect(&mut self) -> Result<(), Box<dyn Error>> {
+        self.client = ola::connect_with_config(self.config.clone())?;
         Ok(())
     }
 }
@@ -118,6 +130,29 @@ impl OlaClient for MockOlaClient {
         self.sent_messages.lock().push(message);
         Ok(())
     }
+
+    fn reconnect(&mut self) -> Result<(), Box<dyn Error>> {
+        if self.should_fail {
+            return Err("Mock OLA client reconnect failure".into());
+        }
+        Ok(())
+    }
+}
+
+/// No-op OLA client that discards DMX data. Used when the simulator is running
+/// without a physical OLA daemon.
+#[cfg(not(test))]
+pub struct NullOlaClient;
+
+#[cfg(not(test))]
+impl OlaClient for NullOlaClient {
+    fn send_dmx(&mut self, _universe: u32, _buffer: &ola::DmxBuffer) -> Result<(), Box<dyn Error>> {
+        Ok(())
+    }
+
+    fn reconnect(&mut self) -> Result<(), Box<dyn Error>> {
+        Ok(())
+    }
 }
 
 /// Factory for creating OLA clients
@@ -129,8 +164,8 @@ impl OlaClientFactory {
     pub fn create_real_client(
         config: ola::client::StreamingClientConfig,
     ) -> Result<Box<dyn OlaClient>, Box<dyn Error>> {
-        let client = ola::connect_with_config(config)?;
-        Ok(Box::new(RealOlaClient::new(client)))
+        let client = ola::connect_with_config(config.clone())?;
+        Ok(Box::new(RealOlaClient::new(client, config)))
     }
 
     /// Create a mock OLA client for testing
