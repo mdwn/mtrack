@@ -368,7 +368,11 @@ fn apply_strobe(
                         let min_period = 1.0 / max_freq;
                         let desired_period = 1.0 / frequency.clamp(min_freq, max_freq);
                         let period_range = max_period - min_period;
-                        let period_fraction = (max_period - desired_period) / period_range;
+                        let period_fraction = if period_range.abs() < f64::EPSILON {
+                            1.0
+                        } else {
+                            (max_period - desired_period) / period_range
+                        };
                         (min_normalized + period_fraction * (1.0 - min_normalized)).clamp(0.0, 1.0)
                     } else {
                         (frequency / max_freq).min(1.0)

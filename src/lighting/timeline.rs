@@ -143,20 +143,16 @@ impl LightingTimeline {
                 }
             }
 
-            // Track stop sequence commands with the same heuristic as update():
-            // iteration-boundary stops (cue has effects from the same sequence)
-            // only go to the engine, not the timeline's stopped set.
-            let cue_sequence_names: HashSet<&String> = cue
-                .effects
-                .iter()
-                .filter_map(|e| e.sequence_name.as_ref())
-                .collect();
+            process_stop_sequences(&mut self.stopped_sequences, cue, &mut result);
+
+            // Purge already-accumulated effects from stopped sequences,
+            // mirroring what EffectEngine::stop_sequence() does at runtime.
             for seq_name in &cue.stop_sequences {
-                if !cue_sequence_names.contains(seq_name) {
-                    self.stopped_sequences.insert(seq_name.clone());
-                }
+                let prefix = format!("seq_{}_", seq_name);
+                result
+                    .effects_with_elapsed
+                    .retain(|id, _| !id.starts_with(&prefix));
             }
-            result.stop_sequences.extend(cue.stop_sequences.clone());
 
             // For effects, only include ones that would still be active at start_time
             for effect in &cue.effects {
@@ -194,21 +190,12 @@ impl LightingTimeline {
         result
     }
 
-    /// Finds the index of the first cue that should trigger at or after the given time
+    /// Finds the index of the first cue that should trigger at or after the given time.
+    /// Uses `partition_point` to handle duplicate cue times correctly —
+    /// `binary_search` may land on any duplicate, but `partition_point`
+    /// always returns the first cue with `time >= target`.
     fn find_cue_index_at(&self, time: Duration) -> usize {
-        // Binary search to find the right cue index
-        // We want the first cue that is >= time
-        match self.cues.binary_search_by_key(&time, |cue| cue.time) {
-            Ok(index) => {
-                // Exact match - this cue should trigger
-                index
-            }
-            Err(index) => {
-                // No exact match - index is where we would insert
-                // This is the first cue >= time
-                index
-            }
-        }
+        self.cues.partition_point(|cue| cue.time < time)
     }
 
     /// Stops the timeline
@@ -256,23 +243,7 @@ impl LightingTimeline {
                 // Process layer commands
                 result.layer_commands.extend(cue.layer_commands.clone());
 
-                // Track stop sequence commands. Use a heuristic to distinguish
-                // iteration-boundary stops (engine cleanup only) from explicit
-                // "stop sequence" commands (timeline suppression + engine cleanup).
-                // If the cue has both stop_sequences for X and effects from X,
-                // it's an iteration boundary — only pass to engine, don't suppress.
-                let cue_sequence_names: HashSet<&String> = cue
-                    .effects
-                    .iter()
-                    .filter_map(|e| e.sequence_name.as_ref())
-                    .collect();
-                for seq_name in &cue.stop_sequences {
-                    if !cue_sequence_names.contains(seq_name) {
-                        // Explicit stop — suppress future cues from this sequence
-                        self.stopped_sequences.insert(seq_name.clone());
-                    }
-                }
-                result.stop_sequences.extend(cue.stop_sequences.clone());
+                process_stop_sequences(&mut self.stopped_sequences, cue, &mut result);
 
                 self.next_cue_index += 1;
             } else {
@@ -325,6 +296,27 @@ impl LightingTimeline {
 
         effect_instance
     }
+}
+
+/// Process stop_sequences for a cue: iteration-boundary stops (where the cue
+/// also starts effects from the same sequence) only go to the engine, while
+/// explicit stops also suppress future cues from that sequence.
+fn process_stop_sequences(
+    stopped_sequences: &mut HashSet<String>,
+    cue: &crate::lighting::parser::Cue,
+    result: &mut TimelineUpdate,
+) {
+    let cue_sequence_names: HashSet<&String> = cue
+        .effects
+        .iter()
+        .filter_map(|e| e.sequence_name.as_ref())
+        .collect();
+    for seq_name in &cue.stop_sequences {
+        if !cue_sequence_names.contains(seq_name) {
+            stopped_sequences.insert(seq_name.clone());
+        }
+    }
+    result.stop_sequences.extend(cue.stop_sequences.clone());
 }
 
 #[cfg(test)]
@@ -1096,5 +1088,136 @@ mod tests {
             "Should have 1 effect after clear-all, got {}",
             update.effects_with_elapsed.len()
         );
+    }
+
+    #[test]
+    fn test_start_at_stopped_sequences_suppresses_future_effects() {
+        // Verify that seeking past a stop_sequence command suppresses
+        // effects from that sequence at and after the stop point.
+        use crate::lighting::parser::Cue;
+
+        let seq_effect = |seq: &str| Effect {
+            sequence_name: Some(seq.to_string()),
+            groups: vec!["test_group".to_string()],
+            effect_type: EffectType::Static {
+                parameters: HashMap::new(),
+                duration: None,
+            },
+            layer: None,
+            blend_mode: None,
+            up_time: None,
+            hold_time: None,
+            down_time: None,
+        };
+
+        let cues = vec![
+            // @0s: start effects from sequence A and B
+            Cue {
+                time: Duration::from_secs(0),
+                effects: vec![seq_effect("seqA"), seq_effect("seqB")],
+                layer_commands: vec![],
+                stop_sequences: vec![],
+                start_sequences: vec![],
+            },
+            // @5s: explicitly stop sequence A (no new effects from A in this cue)
+            Cue {
+                time: Duration::from_secs(5),
+                effects: vec![],
+                layer_commands: vec![],
+                stop_sequences: vec!["seqA".to_string()],
+                start_sequences: vec![],
+            },
+            // @8s: new effect from sequence A — should be suppressed
+            Cue {
+                time: Duration::from_secs(8),
+                effects: vec![seq_effect("seqA")],
+                layer_commands: vec![],
+                stop_sequences: vec![],
+                start_sequences: vec![],
+            },
+        ];
+
+        let mut timeline = LightingTimeline::new_with_cues(cues);
+
+        // Seek to 10s — past the stop at 5s and the suppressed effect at 8s
+        let update = timeline.start_at(Duration::from_secs(10));
+
+        // Should have 1 effect: seqB from @0s (seqA was stopped at @5s, so
+        // both the @0s seqA effect and the @8s seqA effect are excluded)
+        let seq_names: Vec<_> = update
+            .effects_with_elapsed
+            .values()
+            .filter_map(|(e, _)| e.id.split("_effect_").next())
+            .collect();
+        assert_eq!(
+            update.effects_with_elapsed.len(),
+            1,
+            "Should have 1 effect (seqB only), got {}: {:?}",
+            update.effects_with_elapsed.len(),
+            seq_names
+        );
+        // The surviving effect should be from seqB
+        let surviving = update.effects_with_elapsed.values().next().unwrap();
+        assert!(
+            surviving.0.id.starts_with("seq_seqB_"),
+            "Surviving effect should be from seqB, got: {}",
+            surviving.0.id
+        );
+    }
+
+    #[test]
+    fn test_start_at_iteration_boundary_does_not_suppress() {
+        // Verify that iteration-boundary stops (stop + start in same cue)
+        // do NOT suppress the sequence — only explicit stops do.
+        use crate::lighting::parser::Cue;
+
+        let seq_effect = |seq: &str| Effect {
+            sequence_name: Some(seq.to_string()),
+            groups: vec!["test_group".to_string()],
+            effect_type: EffectType::Static {
+                parameters: HashMap::new(),
+                duration: None,
+            },
+            layer: None,
+            blend_mode: None,
+            up_time: None,
+            hold_time: None,
+            down_time: None,
+        };
+
+        let cues = vec![
+            // @0s: start effects from seqA (iteration 1)
+            Cue {
+                time: Duration::from_secs(0),
+                effects: vec![seq_effect("seqA")],
+                layer_commands: vec![],
+                stop_sequences: vec![],
+                start_sequences: vec!["seqA".to_string()],
+            },
+            // @5s: iteration boundary — stop old seqA, start new seqA effects
+            Cue {
+                time: Duration::from_secs(5),
+                effects: vec![seq_effect("seqA")],
+                layer_commands: vec![],
+                stop_sequences: vec!["seqA".to_string()],
+                start_sequences: vec!["seqA".to_string()],
+            },
+        ];
+
+        let mut timeline = LightingTimeline::new_with_cues(cues);
+
+        // Seek to 7s — past the iteration boundary at 5s
+        let update = timeline.start_at(Duration::from_secs(7));
+
+        // Should have 1 effect: the seqA from @5s (iteration boundary didn't suppress)
+        assert_eq!(
+            update.effects_with_elapsed.len(),
+            1,
+            "Should have 1 effect (seqA iteration 2), got {}",
+            update.effects_with_elapsed.len()
+        );
+        let surviving = update.effects_with_elapsed.values().next().unwrap();
+        assert!(surviving.0.id.starts_with("seq_seqA_"));
+        assert_eq!(surviving.1, Duration::from_secs(2)); // 7s - 5s = 2s elapsed
     }
 }

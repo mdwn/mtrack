@@ -26,6 +26,15 @@ use crate::lighting::EffectEngine;
 /// Runs at 20Hz, sampling fixture states from the effect engine and broadcasting JSON.
 pub async fn sampler_loop(effect_engine: Arc<Mutex<EffectEngine>>, tx: broadcast::Sender<String>) {
     let mut interval = time::interval(Duration::from_millis(50));
+    // Cache the dimmer map — fixture registry doesn't change at runtime
+    let has_dimmer_map: HashMap<String, bool> = {
+        let engine = effect_engine.lock();
+        engine
+            .get_fixture_registry()
+            .iter()
+            .map(|(name, info)| (name.clone(), info.channels.contains_key("dimmer")))
+            .collect()
+    };
     loop {
         interval.tick().await;
 
@@ -34,17 +43,11 @@ pub async fn sampler_loop(effect_engine: Arc<Mutex<EffectEngine>>, tx: broadcast
             continue;
         }
 
-        let (fixture_states, active_effects, has_dimmer_map) = {
+        let (fixture_states, active_effects) = {
             let engine = effect_engine.lock();
             let states = engine.get_fixture_states();
             let effects: Vec<String> = engine.get_active_effects().keys().cloned().collect();
-            // Build a map of fixture name → has_dedicated_dimmer for correct RGB multiplier logic
-            let dimmer_map: HashMap<String, bool> = engine
-                .get_fixture_registry()
-                .iter()
-                .map(|(name, info)| (name.clone(), info.channels.contains_key("dimmer")))
-                .collect();
-            (states, effects, dimmer_map)
+            (states, effects)
         };
 
         let fixtures_json = fixture_states_to_json(&fixture_states, &has_dimmer_map);
@@ -62,9 +65,8 @@ pub async fn sampler_loop(effect_engine: Arc<Mutex<EffectEngine>>, tx: broadcast
 
 /// Converts a map of fixture states into JSON with RGB values (0-255 scale).
 ///
-/// Mirrors the multiplier logic from `FixtureState::to_dmx_commands`:
-/// - RGB-only fixtures (no dedicated dimmer): apply combined multiplier to RGB
-/// - Fixtures with a dimmer channel: leave RGB at face value
+/// Uses `FixtureState::effective_channel_value` for RGB multiplier logic,
+/// keeping the simulator in sync with the DMX output path.
 fn fixture_states_to_json(
     states: &HashMap<String, FixtureState>,
     has_dimmer_map: &HashMap<String, bool>,
@@ -75,41 +77,14 @@ fn fixture_states_to_json(
         let mut channels = serde_json::Map::new();
         let has_dedicated_dimmer = has_dimmer_map.get(name).copied().unwrap_or(false);
 
-        // Collect per-layer multipliers
-        let read = |k: &str| state.channels.get(k).map(|c| c.value).unwrap_or(1.0);
-        let dimmer_mult =
-            read("_dimmer_mult_bg") * read("_dimmer_mult_mid") * read("_dimmer_mult_fg");
-        let pulse_mult = read("_pulse_mult_bg") * read("_pulse_mult_mid") * read("_pulse_mult_fg");
-        let combined_multiplier = (dimmer_mult * pulse_mult).clamp(0.0, 1.0);
-
-        // Foreground-only multiplier (for Replace blend mode handling)
-        let fg_multiplier = (read("_dimmer_mult_fg") * read("_pulse_mult_fg")).clamp(0.0, 1.0);
-
         for (channel_name, channel_state) in &state.channels {
             // Skip internal multiplier channels
             if is_multiplier_channel(channel_name) {
                 continue;
             }
 
-            let mut value = channel_state.value;
-
-            // Only apply multipliers to RGB channels on fixtures without a dedicated dimmer
-            // This matches the logic in FixtureState::to_dmx_commands
-            if !has_dedicated_dimmer
-                && (channel_name == "red" || channel_name == "green" || channel_name == "blue")
-            {
-                use crate::lighting::effects::{BlendMode, EffectLayer};
-                let effective_multiplier = if channel_state.layer == EffectLayer::Foreground
-                    && channel_state.blend_mode == BlendMode::Replace
-                {
-                    fg_multiplier
-                } else {
-                    combined_multiplier
-                };
-                if effective_multiplier != 1.0 {
-                    value = (value * effective_multiplier).clamp(0.0, 1.0);
-                }
-            }
+            let value =
+                state.effective_channel_value(channel_name, channel_state, has_dedicated_dimmer);
 
             // Convert to 0-255 scale
             let dmx_value = (value * 255.0) as u8;

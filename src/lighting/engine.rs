@@ -60,7 +60,8 @@ pub struct EffectEngine {
     /// song position if the engine starts before the song.
     last_song_time: Option<Duration>,
     /// Reverse map from (universe_id, dmx_channel) to (fixture_name, channel_name).
-    /// Built during register_fixture() so legacy MIDI writes can be mapped back to fixtures.
+    /// Only built during tests for validation; not needed in production.
+    #[cfg(test)]
     dmx_to_fixture_map: HashMap<(u16, u16), (String, String)>,
     /// Reference to the legacy DMX store for reading interpolated values each frame.
     legacy_store: Option<Arc<parking_lot::RwLock<LegacyDmxStore>>>,
@@ -96,6 +97,7 @@ impl EffectEngine {
             releasing_effects: HashMap::new(),
             last_merged_states: HashMap::new(),
             last_song_time: None,
+            #[cfg(test)]
             dmx_to_fixture_map: HashMap::new(),
             legacy_store: None,
             cached_commands: Vec::new(),
@@ -264,7 +266,8 @@ impl EffectEngine {
             );
         }
 
-        // Build reverse map entries: (universe, dmx_channel) → (fixture_name, channel_name)
+        // Build reverse map entries for test validation
+        #[cfg(test)]
         for (channel_name, &offset) in &fixture.channels {
             let dmx_channel = fixture.address + offset - 1;
             self.dmx_to_fixture_map.insert(
@@ -414,19 +417,19 @@ impl EffectEngine {
                                 channel: dmx_channel,
                                 value: dmx_value,
                             });
+                            // Update merged state for simulator visibility.
+                            self.last_merged_states
+                                .entry(fixture_name.clone())
+                                .or_default()
+                                .set_channel(
+                                    channel_name.clone(),
+                                    ChannelState::new(
+                                        normalized_value,
+                                        EffectLayer::Background,
+                                        BlendMode::Replace,
+                                    ),
+                                );
                         }
-                        // Update merged state for simulator visibility.
-                        self.last_merged_states
-                            .entry(fixture_name.clone())
-                            .or_default()
-                            .set_channel(
-                                channel_name.clone(),
-                                ChannelState::new(
-                                    normalized_value,
-                                    EffectLayer::Background,
-                                    BlendMode::Replace,
-                                ),
-                            );
                     }
                 }
             }
@@ -886,7 +889,9 @@ impl EffectEngine {
         self.fixture_states.clear();
         self.channel_locks.clear();
         self.last_merged_states.clear();
-        // Clear legacy MIDI values so they don't bleed into the next song
+        // Clear legacy MIDI values so they don't bleed into the next song.
+        // Uses a read lock because LegacyDmxStore uses interior mutability
+        // (atomics) — no write lock needed.
         if let Some(ref store) = self.legacy_store {
             store.read().clear();
         }
@@ -1107,6 +1112,49 @@ impl EffectEngine {
     /// Get the speed master for a layer (defaults to 1.0)
     pub fn get_layer_speed_master(&self, layer: EffectLayer) -> f64 {
         *self.layer_speed_masters.get(&layer).unwrap_or(&1.0)
+    }
+
+    /// Dispatch a single layer command to the appropriate engine method.
+    pub fn apply_layer_command(&mut self, cmd: &crate::lighting::parser::LayerCommand) {
+        use crate::lighting::parser::LayerCommandType;
+        match cmd.command_type {
+            LayerCommandType::Clear => {
+                if let Some(layer) = cmd.layer {
+                    self.clear_layer(layer);
+                } else {
+                    self.clear_all_layers();
+                }
+            }
+            LayerCommandType::Release => {
+                if let Some(layer) = cmd.layer {
+                    if let Some(fade_time) = cmd.fade_time {
+                        self.release_layer_with_time(layer, Some(fade_time));
+                    } else {
+                        self.release_layer(layer);
+                    }
+                }
+            }
+            LayerCommandType::Freeze => {
+                if let Some(layer) = cmd.layer {
+                    self.freeze_layer(layer);
+                }
+            }
+            LayerCommandType::Unfreeze => {
+                if let Some(layer) = cmd.layer {
+                    self.unfreeze_layer(layer);
+                }
+            }
+            LayerCommandType::Master => {
+                if let Some(layer) = cmd.layer {
+                    if let Some(intensity) = cmd.intensity {
+                        self.set_layer_intensity_master(layer, intensity);
+                    }
+                    if let Some(speed) = cmd.speed {
+                        self.set_layer_speed_master(layer, speed);
+                    }
+                }
+            }
+        }
     }
 
     /// Get the number of active effects

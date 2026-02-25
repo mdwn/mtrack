@@ -41,6 +41,7 @@ impl Default for SimulatorConfig {
 pub struct SimulatorHandle {
     _shutdown_tx: tokio::sync::oneshot::Sender<()>,
     sampler_handle: tokio::task::JoinHandle<()>,
+    server_handle: tokio::task::JoinHandle<()>,
     /// The broadcast channel sender, exposed so the DmxEngine can pass it to the file watcher.
     pub broadcast_tx: broadcast::Sender<String>,
 }
@@ -48,6 +49,7 @@ pub struct SimulatorHandle {
 impl Drop for SimulatorHandle {
     fn drop(&mut self) {
         self.sampler_handle.abort();
+        self.server_handle.abort();
     }
 }
 
@@ -75,7 +77,7 @@ pub async fn start(
     // Spawn the HTTP/WS server
     let port = config.port;
     info!(port, "Starting lighting simulator");
-    tokio::spawn(server::run(
+    let server_handle = tokio::spawn(server::run(
         broadcast_tx.clone(),
         metadata_json,
         port,
@@ -85,6 +87,7 @@ pub async fn start(
     Ok(SimulatorHandle {
         _shutdown_tx: shutdown_tx,
         sampler_handle,
+        server_handle,
         broadcast_tx,
     })
 }

@@ -526,19 +526,22 @@ impl Engine {
         let has_dmx_sheets = !dmx_midi_sheets.is_empty();
         let mut join_handles: Vec<JoinHandle<()>> = dmx_midi_sheets
             .into_iter()
-            .map(|(universe_name, light_show_info)| {
+            .filter_map(|(universe_name, light_show_info)| {
                 let dmx_midi_sheet = light_show_info.0;
                 let midi_channels = HashSet::from_iter(light_show_info.1);
                 let cancel_handle = cancel_handle.clone();
                 let dmx_engine = dmx_engine.clone();
                 // Resolve universe ID once here, avoiding per-event String clone + HashMap lookup.
-                let universe_id = *dmx_engine
-                    .universe_name_to_id
-                    .get(&universe_name)
-                    .unwrap_or(&0);
+                let universe_id = match dmx_engine.universe_name_to_id.get(&universe_name) {
+                    Some(&id) => id,
+                    None => {
+                        warn!(universe = %universe_name, "Unknown universe name in light show, skipping");
+                        return None;
+                    }
+                };
                 let play_barrier = play_barrier.clone();
 
-                thread::spawn(move || {
+                Some(thread::spawn(move || {
                     play_barrier.wait();
 
                     if cancel_handle.is_cancelled() {
@@ -570,7 +573,7 @@ impl Engine {
 
                     player.play(&dmx_midi_sheet.sheet);
                     play_finished.store(true, std::sync::atomic::Ordering::Relaxed);
-                })
+                }))
             })
             .collect();
 
@@ -714,7 +717,7 @@ impl Engine {
         let rate = if dimming_duration.is_zero() {
             1.0
         } else {
-            dimming_duration.as_secs_f64() * 44.0
+            dimming_duration.as_secs_f64() * super::universe::TARGET_HZ
         };
         self.legacy_store.read().set_dim_rate(universe_id, rate);
     }
@@ -738,8 +741,8 @@ impl Engine {
 
     /// Updates the effects engine and applies any generated commands to universes
     pub fn update_effects(&self) -> Result<(), Box<dyn std::error::Error>> {
-        // Update the effects engine with a 44Hz frame time (matching Universe TARGET_HZ)
-        let dt = Duration::from_secs_f64(1.0 / 44.0);
+        // Update the effects engine with a frame time matching Universe TARGET_HZ
+        let dt = Duration::from_secs_f64(1.0 / super::universe::TARGET_HZ);
         let song_time = self.get_song_time();
         let mut effect_engine = self.effect_engine.lock();
         let commands = effect_engine.update(dt, Some(song_time))?;
@@ -833,6 +836,10 @@ impl Engine {
             let mut effect_engine = self.effect_engine.lock();
             effect_engine.stop_all_effects();
         }
+        // Clear effect deduplication caches so the new song's first frame is applied
+        for universe in self.universes.values() {
+            universe.clear_effect_cache();
+        }
 
         let timeline_update = {
             let mut current_timeline = self.current_song_timeline.lock();
@@ -863,50 +870,11 @@ impl Engine {
         &self,
         timeline_update: crate::lighting::timeline::TimelineUpdate,
     ) -> Result<(), Box<dyn Error>> {
-        use crate::lighting::parser::LayerCommandType;
-
         // Process layer commands first (they affect subsequent effects)
         if !timeline_update.layer_commands.is_empty() {
             let mut effects_engine = self.effect_engine.lock();
             for cmd in &timeline_update.layer_commands {
-                match cmd.command_type {
-                    LayerCommandType::Clear => {
-                        if let Some(layer) = cmd.layer {
-                            effects_engine.clear_layer(layer);
-                        } else {
-                            effects_engine.clear_all_layers();
-                        }
-                    }
-                    LayerCommandType::Release => {
-                        if let Some(layer) = cmd.layer {
-                            if let Some(fade_time) = cmd.fade_time {
-                                effects_engine.release_layer_with_time(layer, Some(fade_time));
-                            } else {
-                                effects_engine.release_layer(layer);
-                            }
-                        }
-                    }
-                    LayerCommandType::Freeze => {
-                        if let Some(layer) = cmd.layer {
-                            effects_engine.freeze_layer(layer);
-                        }
-                    }
-                    LayerCommandType::Unfreeze => {
-                        if let Some(layer) = cmd.layer {
-                            effects_engine.unfreeze_layer(layer);
-                        }
-                    }
-                    LayerCommandType::Master => {
-                        if let Some(layer) = cmd.layer {
-                            if let Some(intensity) = cmd.intensity {
-                                effects_engine.set_layer_intensity_master(layer, intensity);
-                            }
-                            if let Some(speed) = cmd.speed {
-                                effects_engine.set_layer_speed_master(layer, speed);
-                            }
-                        }
-                    }
-                }
+                effects_engine.apply_layer_command(cmd);
             }
         }
 

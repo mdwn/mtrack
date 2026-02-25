@@ -134,8 +134,10 @@ impl LegacyDmxStore {
                 store_f64(&slot.rate, 0.0); // instant
             }
 
-            slot.active.store(true, Ordering::Relaxed);
-            self.generation.fetch_add(1, Ordering::Relaxed);
+            // Release: ensures target/rate writes are visible to readers
+            // that Acquire on active or generation.
+            slot.active.store(true, Ordering::Release);
+            self.generation.fetch_add(1, Ordering::Release);
         }
     }
 
@@ -153,7 +155,8 @@ impl LegacyDmxStore {
         let mut any_changed = false;
         let mut still_interpolating = false;
         for slot in &self.slots {
-            if !slot.active.load(Ordering::Relaxed) {
+            // Acquire: pairs with Release in write() to see latest target/rate.
+            if !slot.active.load(Ordering::Acquire) {
                 continue;
             }
             let current = load_f64(&slot.current);
@@ -179,7 +182,9 @@ impl LegacyDmxStore {
         self.interpolating
             .store(still_interpolating, Ordering::Relaxed);
         if any_changed {
-            self.generation.fetch_add(1, Ordering::Relaxed);
+            // Release: ensures updated current values are visible to readers
+            // that Acquire on generation.
+            self.generation.fetch_add(1, Ordering::Release);
         }
         any_changed
     }
@@ -187,7 +192,9 @@ impl LegacyDmxStore {
     /// Returns the current generation counter.
     /// Used by EffectEngine to detect when recomputation can be skipped.
     pub fn generation(&self) -> u32 {
-        self.generation.load(Ordering::Relaxed)
+        // Acquire: pairs with Release in write()/tick()/clear() to see
+        // all slot data that was written before the generation bump.
+        self.generation.load(Ordering::Acquire)
     }
 
     /// Returns true if any slot has been written to.
@@ -199,7 +206,8 @@ impl LegacyDmxStore {
     /// Iterates over active slots, yielding (slot_index, normalized_value 0.0–1.0).
     pub fn iter_active(&self) -> impl Iterator<Item = (usize, f64)> + '_ {
         self.slots.iter().enumerate().filter_map(|(i, slot)| {
-            if slot.active.load(Ordering::Relaxed) {
+            // Acquire: pairs with Release in write() to see latest slot data.
+            if slot.active.load(Ordering::Acquire) {
                 let current = load_f64(&slot.current);
                 Some((i, current / 255.0))
             } else {
@@ -221,12 +229,13 @@ impl LegacyDmxStore {
     /// Resets all slots to inactive (called on song transition).
     pub fn clear(&self) {
         for slot in &self.slots {
-            slot.active.store(false, Ordering::Relaxed);
             store_f64(&slot.current, 0.0);
             store_f64(&slot.target, 0.0);
             store_f64(&slot.rate, 0.0);
+            // Release: ensures zeroed values are visible before active is seen as false.
+            slot.active.store(false, Ordering::Release);
         }
-        self.generation.fetch_add(1, Ordering::Relaxed);
+        self.generation.fetch_add(1, Ordering::Release);
     }
 }
 

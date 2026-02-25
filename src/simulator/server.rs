@@ -56,7 +56,7 @@ pub async fn run(
         .route("/ws", get(ws_handler))
         .with_state(state);
 
-    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     info!("Lighting simulator listening on http://{}", addr);
 
     let listener = match tokio::net::TcpListener::bind(addr).await {

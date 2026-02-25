@@ -158,14 +158,7 @@ fn reload_timeline(
     // Get current song time
     let song_time = { *current_song_time.lock() };
 
-    // Set tempo map on effect engine
-    {
-        let mut engine = effect_engine.lock();
-        engine.set_tempo_map(new_timeline.tempo_map().cloned());
-        engine.stop_all_effects();
-    }
-
-    // Start the new timeline at the current position
+    // Calculate the timeline update before acquiring the engine lock.
     let timeline_update = if song_time > Duration::ZERO {
         new_timeline.start_at(song_time)
     } else {
@@ -173,102 +166,59 @@ fn reload_timeline(
         crate::lighting::timeline::TimelineUpdate::default()
     };
 
-    // Swap in the new timeline
+    // Pre-resolve group names while the engine lock is NOT held
+    // to avoid deadlocking with the lighting system lock.
+    let resolved_effects_with_elapsed: Vec<_> = {
+        let mut sorted: Vec<_> = timeline_update.effects_with_elapsed.values().collect();
+        sorted.sort_by_key(|(effect, _)| effect.cue_time.unwrap_or(Duration::ZERO));
+        sorted
+            .into_iter()
+            .map(|(effect, elapsed)| {
+                (
+                    resolve_effect_groups(lighting_system, effect.clone()),
+                    *elapsed,
+                )
+            })
+            .collect()
+    };
+    let mut resolved_effects: Vec<_> = timeline_update.effects;
+    resolved_effects.sort_by_key(|e| if e.id.starts_with("seq_") { 0 } else { 1 });
+    let resolved_effects: Vec<_> = resolved_effects
+        .into_iter()
+        .map(|e| resolve_effect_groups(lighting_system, e))
+        .collect();
+
+    // Atomically stop + apply the new state under a single lock to prevent
+    // the sampler loop from seeing an intermediate empty state (flash).
     {
-        let mut current = current_song_timeline.lock();
-        *current = Some(new_timeline);
-    }
-
-    // Apply historical state from the timeline update
-    if song_time > Duration::ZERO {
-        apply_timeline_update_to_engine(effect_engine, lighting_system, timeline_update)?;
-    }
-
-    Ok(())
-}
-
-/// Applies a timeline update to the effect engine (mirrors DmxEngine::apply_timeline_update).
-fn apply_timeline_update_to_engine(
-    effect_engine: &Arc<Mutex<EffectEngine>>,
-    lighting_system: Option<&Arc<Mutex<LightingSystem>>>,
-    timeline_update: crate::lighting::timeline::TimelineUpdate,
-) -> Result<(), Box<dyn std::error::Error>> {
-    use crate::lighting::parser::LayerCommandType;
-
-    // Process layer commands
-    if !timeline_update.layer_commands.is_empty() {
         let mut engine = effect_engine.lock();
-        for cmd in &timeline_update.layer_commands {
-            match cmd.command_type {
-                LayerCommandType::Clear => {
-                    if let Some(layer) = cmd.layer {
-                        engine.clear_layer(layer);
-                    } else {
-                        engine.clear_all_layers();
-                    }
+        engine.set_tempo_map(new_timeline.tempo_map().cloned());
+        engine.stop_all_effects();
+
+        if song_time > Duration::ZERO {
+            for cmd in &timeline_update.layer_commands {
+                engine.apply_layer_command(cmd);
+            }
+            for seq_name in &timeline_update.stop_sequences {
+                engine.stop_sequence(seq_name);
+            }
+            for (effect, elapsed_time) in resolved_effects_with_elapsed {
+                if let Err(e) = engine.start_effect_with_elapsed(effect, elapsed_time) {
+                    error!("Failed to start lighting effect with elapsed time: {}", e);
                 }
-                LayerCommandType::Release => {
-                    if let Some(layer) = cmd.layer {
-                        if let Some(fade_time) = cmd.fade_time {
-                            engine.release_layer_with_time(layer, Some(fade_time));
-                        } else {
-                            engine.release_layer(layer);
-                        }
-                    }
-                }
-                LayerCommandType::Freeze => {
-                    if let Some(layer) = cmd.layer {
-                        engine.freeze_layer(layer);
-                    }
-                }
-                LayerCommandType::Unfreeze => {
-                    if let Some(layer) = cmd.layer {
-                        engine.unfreeze_layer(layer);
-                    }
-                }
-                LayerCommandType::Master => {
-                    if let Some(layer) = cmd.layer {
-                        if let Some(intensity) = cmd.intensity {
-                            engine.set_layer_intensity_master(layer, intensity);
-                        }
-                        if let Some(speed) = cmd.speed {
-                            engine.set_layer_speed_master(layer, speed);
-                        }
-                    }
-                }
+            }
+        }
+        for effect in resolved_effects {
+            if let Err(e) = engine.start_effect(effect) {
+                error!("Failed to start lighting effect: {}", e);
             }
         }
     }
 
-    // Process stop sequences
-    if !timeline_update.stop_sequences.is_empty() {
-        let mut engine = effect_engine.lock();
-        for sequence_name in &timeline_update.stop_sequences {
-            engine.stop_sequence(sequence_name);
-        }
-    }
-
-    // Start effects with elapsed time
-    let mut effects_sorted: Vec<_> = timeline_update.effects_with_elapsed.values().collect();
-    effects_sorted.sort_by_key(|(effect, _)| effect.cue_time.unwrap_or(Duration::ZERO));
-
-    for (effect, elapsed_time) in effects_sorted {
-        let resolved = resolve_effect_groups(lighting_system, effect.clone());
-        let mut engine = effect_engine.lock();
-        if let Err(e) = engine.start_effect_with_elapsed(resolved, *elapsed_time) {
-            error!("Failed to start lighting effect with elapsed time: {}", e);
-        }
-    }
-
-    // Start regular effects
-    let mut effects = timeline_update.effects;
-    effects.sort_by_key(|e| if e.id.starts_with("seq_") { 0 } else { 1 });
-    for effect in effects {
-        let resolved = resolve_effect_groups(lighting_system, effect);
-        let mut engine = effect_engine.lock();
-        if let Err(e) = engine.start_effect(resolved) {
-            error!("Failed to start lighting effect: {}", e);
-        }
+    // Swap in the new timeline
+    {
+        let mut current = current_song_timeline.lock();
+        *current = Some(new_timeline);
     }
 
     Ok(())

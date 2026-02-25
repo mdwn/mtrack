@@ -117,7 +117,7 @@ pub fn parse_light_shows(content: &str) -> Result<HashMap<String, LightShow>, Bo
             .as_ref()
             .or(global_tempo.as_ref())
             .map(|tm| tm.initial_bpm)
-            .unwrap_or(120.0);
+            .unwrap_or(crate::lighting::tempo::DEFAULT_BPM);
         let sequence = Sequence {
             cues: Vec::new(),
             bpm: effective_bpm,

@@ -31,7 +31,7 @@ use super::engine::DmxMessage;
 const UNIVERSE_SIZE: usize = 512;
 
 /// The target number of updates per second.
-const TARGET_HZ: f64 = 44.0;
+pub(crate) const TARGET_HZ: f64 = 44.0;
 
 /// A DMX universe.
 pub(crate) struct Universe {
@@ -119,6 +119,12 @@ impl Universe {
                     }
                     None
                 });
+    }
+
+    /// Clears the effect deduplication cache so the next batch is applied unconditionally.
+    /// Call this between songs to avoid stale state.
+    pub fn clear_effect_cache(&self) {
+        self.last_effect_values.write().fill(0);
     }
 
     /// Updates the universe with effect commands (bypasses dimming).
