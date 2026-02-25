@@ -24,6 +24,7 @@ mod playlist;
 mod playsync;
 mod proto;
 mod samples;
+#[cfg(feature = "simulator")]
 mod simulator;
 mod songs;
 #[cfg(test)]

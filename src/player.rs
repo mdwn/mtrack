@@ -419,11 +419,13 @@ impl Player {
     }
 
     /// Returns handles needed by the lighting simulator, or None if no DMX engine is configured.
+    #[cfg(feature = "simulator")]
     pub fn simulator_handles(&self) -> Option<dmx::engine::SimulatorHandles> {
         self.dmx_engine.as_ref().map(|e| e.simulator_handles())
     }
 
     /// Passes the simulator broadcast channel to the DmxEngine for file watcher hot-reload.
+    #[cfg(feature = "simulator")]
     pub fn set_simulator_broadcast_tx(&self, tx: tokio::sync::broadcast::Sender<String>) {
         if let Some(ref engine) = self.dmx_engine {
             engine.set_simulator_broadcast_tx(tx);

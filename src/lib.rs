@@ -24,6 +24,7 @@ pub mod playlist;
 pub mod playsync;
 pub mod proto;
 pub mod samples;
+#[cfg(feature = "simulator")]
 pub mod simulator;
 pub mod songs;
 #[cfg(test)]

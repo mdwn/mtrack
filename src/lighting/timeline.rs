@@ -127,7 +127,7 @@ impl LightingTimeline {
             }
 
             // Apply all layer commands from historical cues
-            result.layer_commands.extend(cue.layer_commands.clone());
+            result.layer_commands.extend(cue.layer_commands.iter().cloned());
 
             // Simulate clear commands: purge effects that would have been stopped
             // so we only start effects that are actually active at the seek point
@@ -241,7 +241,7 @@ impl LightingTimeline {
                     result.effects.push(effect_instance);
                 }
                 // Process layer commands
-                result.layer_commands.extend(cue.layer_commands.clone());
+                result.layer_commands.extend(cue.layer_commands.iter().cloned());
 
                 process_stop_sequences(&mut self.stopped_sequences, cue, &mut result);
 
@@ -316,7 +316,7 @@ fn process_stop_sequences(
             stopped_sequences.insert(seq_name.clone());
         }
     }
-    result.stop_sequences.extend(cue.stop_sequences.clone());
+    result.stop_sequences.extend(cue.stop_sequences.iter().cloned());
 }
 
 #[cfg(test)]

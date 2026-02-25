@@ -110,9 +110,11 @@ enum Commands {
         /// The path to the playlist. Must be specified if the playlist is not specified in the player config.
         playlist_path: Option<String>,
         /// Enable the lighting simulator web UI.
+        #[cfg(feature = "simulator")]
         #[arg(long)]
         simulator: bool,
         /// Port for the lighting simulator (default: 8080).
+        #[cfg(feature = "simulator")]
         #[arg(long, default_value = "8080")]
         simulator_port: u16,
     },
@@ -236,9 +238,12 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
         Commands::Start {
             player_path,
             playlist_path,
+            #[cfg(feature = "simulator")]
             simulator,
+            #[cfg(feature = "simulator")]
             simulator_port,
         } => {
+            #[cfg(feature = "simulator")]
             let sim_config = if simulator {
                 Some(crate::simulator::SimulatorConfig {
                     port: simulator_port,
@@ -246,6 +251,8 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
             } else {
                 None
             };
+            #[cfg(not(feature = "simulator"))]
+            let sim_config = None;
             local::start(&player_path, playlist_path, sim_config).await?
         }
         Commands::Play { host_port, from } => remote::play(host_port, from).await?,

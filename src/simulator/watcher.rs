@@ -188,11 +188,21 @@ fn reload_timeline(
         .map(|e| resolve_effect_groups(lighting_system, e))
         .collect();
 
+    // Extract tempo map before moving new_timeline into the lock.
+    let tempo_map = new_timeline.tempo_map().cloned();
+
+    // Swap the timeline first, so the main effects loop won't generate
+    // updates from the old timeline while the engine has new state.
+    {
+        let mut current = current_song_timeline.lock();
+        *current = Some(new_timeline);
+    }
+
     // Atomically stop + apply the new state under a single lock to prevent
     // the sampler loop from seeing an intermediate empty state (flash).
     {
         let mut engine = effect_engine.lock();
-        engine.set_tempo_map(new_timeline.tempo_map().cloned());
+        engine.set_tempo_map(tempo_map);
         engine.stop_all_effects();
 
         if song_time > Duration::ZERO {
@@ -213,12 +223,6 @@ fn reload_timeline(
                 error!("Failed to start lighting effect: {}", e);
             }
         }
-    }
-
-    // Swap in the new timeline
-    {
-        let mut current = current_song_timeline.lock();
-        *current = Some(new_timeline);
     }
 
     Ok(())

@@ -110,7 +110,8 @@ pub fn playlist(repository_path: &str, playlist_path: &str) -> Result<(), Box<dy
 pub async fn start(
     player_path: &str,
     playlist_path: Option<String>,
-    simulator_config: Option<crate::simulator::SimulatorConfig>,
+    #[cfg(feature = "simulator")] simulator_config: Option<crate::simulator::SimulatorConfig>,
+    #[cfg(not(feature = "simulator"))] _simulator_config: Option<()>,
 ) -> Result<(), Box<dyn Error>> {
     apply_thread_priority();
     let player_path = &Path::new(player_path);
@@ -141,15 +142,21 @@ pub async fn start(
         songs.clone(),
     )?;
 
+    #[cfg(feature = "simulator")]
+    let simulator_mode = simulator_config.is_some();
+    #[cfg(not(feature = "simulator"))]
+    let simulator_mode = false;
+
     let player = Arc::new(crate::player::Player::new(
         songs,
         playlist,
         &player_config,
         player_path.parent(),
-        simulator_config.is_some(),
+        simulator_mode,
     )?);
 
     // Start the lighting simulator if configured
+    #[cfg(feature = "simulator")]
     let _simulator_handle = if let Some(sim_config) = simulator_config {
         if let Some(handles) = player.simulator_handles() {
             match crate::simulator::start(

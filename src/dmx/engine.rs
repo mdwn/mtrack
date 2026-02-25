@@ -74,8 +74,10 @@ pub struct Engine {
     /// Cancel handle for notifying when timeline finishes
     timeline_cancel_handle: Arc<Mutex<Option<CancelHandle>>>,
     /// Broadcast sender from the simulator (if running), used to start the file watcher per-song
+    #[cfg(feature = "simulator")]
     simulator_broadcast_tx: Mutex<Option<tokio::sync::broadcast::Sender<String>>>,
     /// Handle to the current file watcher (dropped/replaced per-song)
+    #[cfg(feature = "simulator")]
     watcher_handle: Mutex<Option<crate::simulator::watcher::WatcherHandle>>,
     /// Lockless store for legacy MIDI DMX values with built-in interpolation.
     /// RwLock protects structural changes (register_slot); hot-path reads
@@ -91,6 +93,7 @@ pub(super) struct DmxMessage {
 }
 
 /// Shared handles exposed to the simulator for reading state.
+#[cfg(feature = "simulator")]
 pub struct SimulatorHandles {
     pub effect_engine: Arc<Mutex<EffectEngine>>,
     pub lighting_system: Option<Arc<Mutex<LightingSystem>>>,
@@ -174,7 +177,9 @@ impl Engine {
             current_song_time,
             timeline_finished,
             timeline_cancel_handle,
+            #[cfg(feature = "simulator")]
             simulator_broadcast_tx: Mutex::new(None),
+            #[cfg(feature = "simulator")]
             watcher_handle: Mutex::new(None),
             legacy_store,
         })
@@ -434,6 +439,7 @@ impl Engine {
         dmx_engine.timeline_finished.store(false, Ordering::Relaxed);
 
         // Start file watcher for hot-reload if simulator is running
+        #[cfg(feature = "simulator")]
         {
             let broadcast_tx = dmx_engine.simulator_broadcast_tx.lock();
             if let Some(tx) = broadcast_tx.as_ref() {
@@ -962,11 +968,13 @@ impl Engine {
     }
 
     /// Sets the simulator broadcast channel so the file watcher can send reload notifications.
+    #[cfg(feature = "simulator")]
     pub fn set_simulator_broadcast_tx(&self, tx: tokio::sync::broadcast::Sender<String>) {
         *self.simulator_broadcast_tx.lock() = Some(tx);
     }
 
     /// Returns shared handles for the simulator to read state from.
+    #[cfg(feature = "simulator")]
     pub fn simulator_handles(&self) -> SimulatorHandles {
         SimulatorHandles {
             effect_engine: self.effect_engine.clone(),
