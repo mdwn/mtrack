@@ -1,0 +1,520 @@
+<!-- *     * Copyright (C) 2026 Michael Wilson <mike@mdwn.dev>
+     *
+     * This program is free software: you can redistribute it and/or modify it under
+     * the terms of the GNU General Public License as published by the Free Software
+     * Foundation, version 3.
+     *
+     * This program is distributed in the hope that it will be useful, but WITHOUT
+     * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+     * FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+     *
+     * You should have received a copy of the GNU General Public License along with
+     * this program. If not, see <https://www.gnu.org/licenses/>.
+     *
+     * -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>mtrack Lighting Simulator</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    background: #111;
+    color: #ccc;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+    overflow: hidden;
+    height: 100vh;
+}
+#container {
+    display: flex;
+    height: 100vh;
+}
+#viewport {
+    flex: 1;
+    position: relative;
+}
+canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+#sidebar {
+    width: 260px;
+    background: #1a1a1a;
+    border-left: 1px solid #333;
+    padding: 12px;
+    overflow-y: auto;
+    font-size: 12px;
+}
+#sidebar h2 {
+    font-size: 14px;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 8px;
+}
+#sidebar h3 {
+    font-size: 11px;
+    color: #666;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin: 12px 0 4px 0;
+}
+.status-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 0;
+    border-bottom: 1px solid #333;
+    margin-bottom: 8px;
+}
+.status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #555;
+}
+.status-dot.connected { background: #4a4; }
+.status-dot.disconnected { background: #a44; }
+#effect-list {
+    list-style: none;
+}
+#effect-list li {
+    padding: 3px 0;
+    color: #aaa;
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+#fixture-list {
+    list-style: none;
+}
+#fixture-list li {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 0;
+    font-size: 11px;
+}
+.fixture-swatch {
+    width: 12px;
+    height: 12px;
+    border-radius: 2px;
+    border: 1px solid #444;
+    flex-shrink: 0;
+}
+.fixture-name {
+    color: #aaa;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+#reload-indicator {
+    position: fixed;
+    top: 10px;
+    right: 280px;
+    background: #2a2;
+    color: #fff;
+    padding: 4px 12px;
+    border-radius: 4px;
+    font-size: 12px;
+    opacity: 0;
+    transition: opacity 0.3s;
+    pointer-events: none;
+}
+#reload-indicator.error {
+    background: #a22;
+}
+#reload-indicator.show {
+    opacity: 1;
+}
+</style>
+</head>
+<body>
+<div id="container">
+    <div id="viewport">
+        <canvas id="canvas"></canvas>
+    </div>
+    <div id="sidebar">
+        <div class="status-bar">
+            <div id="status-dot" class="status-dot disconnected"></div>
+            <span id="status-text">Disconnected</span>
+        </div>
+        <h2>Fixtures</h2>
+        <ul id="fixture-list"></ul>
+        <h3>Active Effects</h3>
+        <ul id="effect-list">
+            <li>No effects</li>
+        </ul>
+    </div>
+</div>
+<div id="reload-indicator">Reloaded</div>
+
+<script>
+(function() {
+    "use strict";
+
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d");
+    const statusDot = document.getElementById("status-dot");
+    const statusText = document.getElementById("status-text");
+    const effectList = document.getElementById("effect-list");
+    const fixtureList = document.getElementById("fixture-list");
+    const reloadIndicator = document.getElementById("reload-indicator");
+
+    // State
+    let fixtures = {};       // name -> { tags, type }
+    let fixtureStates = {};  // name -> { red, green, blue, dimmer, strobe, ... }
+    let activeEffects = [];
+    let connected = false;
+    let ws = null;
+    let layoutPositions = {}; // name -> { x, y }
+    let manualPositions = {}; // name -> { x, y } — user-dragged overrides
+
+    // Drag state
+    let dragFixture = null;   // name of fixture being dragged
+    let dragOffsetX = 0;
+    let dragOffsetY = 0;
+
+    // Layout constants
+    const FIXTURE_RADIUS = 22;
+    const GLOW_RADIUS = 50;
+    const PADDING = 60;
+
+    let prevCanvasW = 0;
+    let prevCanvasH = 0;
+
+    function resizeCanvas() {
+        const dpr = window.devicePixelRatio || 1;
+        const newW = canvas.clientWidth;
+        const newH = canvas.clientHeight;
+        canvas.width = newW * dpr;
+        canvas.height = newH * dpr;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+        // Scale manual positions proportionally on resize
+        if (prevCanvasW > 0 && prevCanvasH > 0) {
+            const sx = newW / prevCanvasW;
+            const sy = newH / prevCanvasH;
+            for (const name in manualPositions) {
+                manualPositions[name].x *= sx;
+                manualPositions[name].y *= sy;
+            }
+        }
+        prevCanvasW = newW;
+        prevCanvasH = newH;
+
+        computeLayout();
+    }
+
+    function computeLayout() {
+        const names = Object.keys(fixtures);
+        if (names.length === 0) return;
+
+        const w = canvas.clientWidth;
+        const h = canvas.clientHeight;
+
+        // Group fixtures by position tags
+        const groups = { left: [], right: [], front: [], back: [], mid: [], other: [] };
+        for (const name of names) {
+            const tags = fixtures[name].tags || [];
+            let placed = false;
+            for (const tag of tags) {
+                const key = tag.toLowerCase();
+                if (groups[key] !== undefined) {
+                    groups[key].push(name);
+                    placed = true;
+                    break;
+                }
+            }
+            if (!placed) groups.other.push(name);
+        }
+
+        // Merge "other" into "front" for simplicity
+        groups.front = groups.front.concat(groups.other);
+
+        // Layout regions — inset from the stage box edges for tighter grouping
+        const inset = PADDING + 40;
+        const regions = {
+            left:  { x: inset,             y: h * 0.25, dx: 0,  dy: (h * 0.5) },
+            right: { x: w - inset,         y: h * 0.25, dx: 0,  dy: (h * 0.5) },
+            back:  { x: w * 0.25,          y: inset,    dx: (w * 0.5), dy: 0 },
+            front: { x: w * 0.25,          y: h - inset, dx: (w * 0.5), dy: 0 },
+            mid:   { x: w * 0.35,          y: h * 0.4, dx: (w * 0.3), dy: (h * 0.2) },
+        };
+
+        for (const [groupName, region] of Object.entries(regions)) {
+            const group = groups[groupName];
+            if (!group || group.length === 0) continue;
+            const count = group.length;
+            for (let i = 0; i < count; i++) {
+                const name = group[i];
+                // Don't overwrite user-dragged positions
+                if (manualPositions[name]) {
+                    layoutPositions[name] = manualPositions[name];
+                } else {
+                    const t = count === 1 ? 0.5 : i / (count - 1);
+                    layoutPositions[name] = {
+                        x: region.x + region.dx * t,
+                        y: region.y + region.dy * t,
+                    };
+                }
+            }
+        }
+    }
+
+    function draw() {
+        const w = canvas.clientWidth;
+        const h = canvas.clientHeight;
+        ctx.clearRect(0, 0, w, h);
+
+        // Draw stage outline (fill before stroke so border renders on top)
+        ctx.fillStyle = "#1a1a1a";
+        ctx.fillRect(PADDING - 20, PADDING - 20, w - 2 * PADDING + 40, h - 2 * PADDING + 40);
+        ctx.strokeStyle = "#333";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(PADDING - 20, PADDING - 20, w - 2 * PADDING + 40, h - 2 * PADDING + 40);
+
+        // Draw "STAGE" label
+        ctx.fillStyle = "#333";
+        ctx.font = "11px monospace";
+        ctx.textAlign = "center";
+        ctx.fillText("STAGE", w / 2, PADDING - 6);
+
+        for (const name of Object.keys(fixtures)) {
+            const pos = layoutPositions[name];
+            if (!pos) continue;
+
+            const state = fixtureStates[name] || {};
+            const r = state.red || 0;
+            const g = state.green || 0;
+            const b = state.blue || 0;
+            const dimmer = state.dimmer !== undefined ? state.dimmer : 255;
+            const strobe = state.strobe || 0;
+
+            // Apply dimmer as brightness multiplier
+            const brightness = dimmer / 255;
+            const fr = Math.round(r * brightness);
+            const fg = Math.round(g * brightness);
+            const fb = Math.round(b * brightness);
+
+            // Strobe flash effect: blink if strobe > 0
+            let strobeVisible = true;
+            if (strobe > 10) {
+                // Strobe frequency proportional to strobe value
+                const freq = 2 + (strobe / 255) * 18; // 2-20 Hz
+                const phase = (Date.now() / 1000) * freq;
+                strobeVisible = Math.sin(phase * Math.PI * 2) > 0;
+            }
+
+            const intensity = (fr + fg + fb) / (3 * 255);
+            const finalR = strobeVisible ? fr : 0;
+            const finalG = strobeVisible ? fg : 0;
+            const finalB = strobeVisible ? fb : 0;
+
+            // Draw glow
+            if (intensity > 0.02 && strobeVisible) {
+                const gradient = ctx.createRadialGradient(
+                    pos.x, pos.y, FIXTURE_RADIUS,
+                    pos.x, pos.y, GLOW_RADIUS
+                );
+                gradient.addColorStop(0, `rgba(${finalR},${finalG},${finalB},${intensity * 0.5})`);
+                gradient.addColorStop(1, "rgba(0,0,0,0)");
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(pos.x, pos.y, GLOW_RADIUS, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // Draw fixture body
+            ctx.fillStyle = `rgb(${finalR},${finalG},${finalB})`;
+            ctx.strokeStyle = "#555";
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.arc(pos.x, pos.y, FIXTURE_RADIUS, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+
+            // Draw fixture name
+            ctx.fillStyle = "#888";
+            ctx.font = "10px monospace";
+            ctx.textAlign = "center";
+            ctx.fillText(name, pos.x, pos.y + FIXTURE_RADIUS + 14);
+        }
+
+        requestAnimationFrame(draw);
+    }
+
+    function updateSidebar() {
+        // Effects list
+        if (activeEffects.length === 0) {
+            effectList.innerHTML = "<li>No effects</li>";
+        } else {
+            effectList.innerHTML = activeEffects
+                .map(e => `<li>${escapeHtml(e)}</li>`)
+                .join("");
+        }
+
+        // Fixture list with color swatches
+        fixtureList.innerHTML = "";
+        for (const name of Object.keys(fixtures).sort()) {
+            const state = fixtureStates[name] || {};
+            const r = state.red || 0;
+            const g = state.green || 0;
+            const b = state.blue || 0;
+            const li = document.createElement("li");
+            li.innerHTML = `<span class="fixture-swatch" style="background:rgb(${r},${g},${b})"></span><span class="fixture-name">${escapeHtml(name)}</span>`;
+            fixtureList.appendChild(li);
+        }
+    }
+
+    function escapeHtml(str) {
+        const div = document.createElement("div");
+        div.textContent = str;
+        return div.innerHTML;
+    }
+
+    function showReloadIndicator(isError, message) {
+        reloadIndicator.textContent = isError ? `Error: ${message}` : "Reloaded";
+        reloadIndicator.className = isError ? "error show" : "show";
+        setTimeout(() => { reloadIndicator.className = ""; }, 2000);
+    }
+
+    function setConnected(state) {
+        connected = state;
+        statusDot.className = "status-dot " + (state ? "connected" : "disconnected");
+        statusText.textContent = state ? "Connected" : "Disconnected";
+    }
+
+    let reconnectTimer = null;
+
+    function connect() {
+        // Prevent stacking reconnections
+        if (reconnectTimer !== null) {
+            clearTimeout(reconnectTimer);
+            reconnectTimer = null;
+        }
+
+        if (ws) {
+            ws.onclose = null;
+            ws.onerror = null;
+            ws.close();
+            ws = null;
+        }
+
+        const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+        const url = `${protocol}//${location.host}/ws`;
+
+        ws = new WebSocket(url);
+
+        ws.onopen = function() {
+            setConnected(true);
+        };
+
+        ws.onclose = function() {
+            setConnected(false);
+            // Reconnect after 2 seconds (guarded against stacking)
+            reconnectTimer = setTimeout(connect, 2000);
+        };
+
+        ws.onerror = function() {
+            ws.close();
+        };
+
+        ws.onmessage = function(event) {
+            try {
+                const msg = JSON.parse(event.data);
+                switch (msg.type) {
+                    case "metadata":
+                        fixtures = msg.fixtures || {};
+                        computeLayout();
+                        updateSidebar();
+                        break;
+                    case "state":
+                        fixtureStates = msg.fixtures || {};
+                        activeEffects = msg.active_effects || [];
+                        updateSidebar();
+                        break;
+                    case "reload":
+                        showReloadIndicator(
+                            msg.status === "error",
+                            msg.error || ""
+                        );
+                        break;
+                }
+            } catch (e) {
+                console.error("Failed to parse message:", e);
+            }
+        };
+    }
+
+    // Hit-test: find the fixture under (cx, cy) in CSS coordinates
+    function fixtureAt(cx, cy) {
+        for (const name of Object.keys(layoutPositions)) {
+            const pos = layoutPositions[name];
+            const dx = cx - pos.x;
+            const dy = cy - pos.y;
+            if (dx * dx + dy * dy <= FIXTURE_RADIUS * FIXTURE_RADIUS) {
+                return name;
+            }
+        }
+        return null;
+    }
+
+    // Convert mouse event to canvas CSS coordinates
+    function canvasCoords(e) {
+        const rect = canvas.getBoundingClientRect();
+        return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    }
+
+    canvas.addEventListener("mousedown", function(e) {
+        const pt = canvasCoords(e);
+        const name = fixtureAt(pt.x, pt.y);
+        if (name) {
+            dragFixture = name;
+            dragOffsetX = pt.x - layoutPositions[name].x;
+            dragOffsetY = pt.y - layoutPositions[name].y;
+            canvas.style.cursor = "grabbing";
+            e.preventDefault();
+        }
+    });
+
+    canvas.addEventListener("mousemove", function(e) {
+        const pt = canvasCoords(e);
+        if (dragFixture) {
+            const newX = pt.x - dragOffsetX;
+            const newY = pt.y - dragOffsetY;
+            layoutPositions[dragFixture] = { x: newX, y: newY };
+            manualPositions[dragFixture] = { x: newX, y: newY };
+        } else {
+            // Show grab cursor when hovering over a fixture
+            canvas.style.cursor = fixtureAt(pt.x, pt.y) ? "grab" : "default";
+        }
+    });
+
+    canvas.addEventListener("mouseup", function() {
+        if (dragFixture) {
+            dragFixture = null;
+            canvas.style.cursor = "grab";
+        }
+    });
+
+    canvas.addEventListener("mouseleave", function() {
+        if (dragFixture) {
+            dragFixture = null;
+            canvas.style.cursor = "default";
+        }
+    });
+
+    // Init
+    window.addEventListener("resize", resizeCanvas);
+    resizeCanvas();
+    connect();
+    requestAnimationFrame(draw);
+})();
+</script>
+</body>
+</html>

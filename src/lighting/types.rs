@@ -25,6 +25,12 @@ pub struct FixtureType {
 
     /// Maximum strobe frequency in Hz (if supported).
     pub max_strobe_frequency: Option<f64>,
+
+    /// Minimum strobe frequency in Hz (bottom of variable strobe range).
+    pub min_strobe_frequency: Option<f64>,
+
+    /// First DMX value where variable strobe begins.
+    pub strobe_dmx_offset: Option<u8>,
 }
 
 impl FixtureType {
@@ -37,7 +43,9 @@ impl FixtureType {
         FixtureType {
             name,
             channels,
-            max_strobe_frequency: None, // Default to no strobe support
+            max_strobe_frequency: None,
+            min_strobe_frequency: None,
+            strobe_dmx_offset: None,
         }
     }
 
@@ -54,6 +62,16 @@ impl FixtureType {
     /// Gets the maximum strobe frequency.
     pub fn max_strobe_frequency(&self) -> Option<f64> {
         self.max_strobe_frequency
+    }
+
+    /// Gets the minimum strobe frequency.
+    pub fn min_strobe_frequency(&self) -> Option<f64> {
+        self.min_strobe_frequency
+    }
+
+    /// Gets the strobe DMX offset.
+    pub fn strobe_dmx_offset(&self) -> Option<u8> {
+        self.strobe_dmx_offset
     }
 }
 

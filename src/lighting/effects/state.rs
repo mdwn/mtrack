@@ -135,44 +135,49 @@ impl FixtureState {
         }
     }
 
+    /// Compute the effective value for a channel, applying RGB multipliers
+    /// for fixtures without a dedicated dimmer.
+    pub fn effective_channel_value(
+        &self,
+        channel_name: &str,
+        state: &ChannelState,
+        has_dedicated_dimmer: bool,
+    ) -> f64 {
+        let mut value = state.value;
+        if !has_dedicated_dimmer
+            && (channel_name == "red" || channel_name == "green" || channel_name == "blue")
+        {
+            let read = |k: &str| self.channels.get(k).map(|c| c.value).unwrap_or(1.0);
+            let dimmer_mult =
+                read("_dimmer_mult_bg") * read("_dimmer_mult_mid") * read("_dimmer_mult_fg");
+            let pulse_mult =
+                read("_pulse_mult_bg") * read("_pulse_mult_mid") * read("_pulse_mult_fg");
+            let combined_multiplier = (dimmer_mult * pulse_mult).clamp(0.0, 1.0);
+            let fg_multiplier = (read("_dimmer_mult_fg") * read("_pulse_mult_fg")).clamp(0.0, 1.0);
+
+            let effective_multiplier = if state.layer == EffectLayer::Foreground
+                && state.blend_mode == BlendMode::Replace
+            {
+                fg_multiplier
+            } else {
+                combined_multiplier
+            };
+            if effective_multiplier != 1.0 {
+                value = (value * effective_multiplier).clamp(0.0, 1.0);
+            }
+        }
+        value
+    }
+
     /// Convert to DMX commands
     pub fn to_dmx_commands(&self, fixture_info: &FixtureInfo) -> Vec<DmxCommand> {
         let mut commands = Vec::new();
-
-        // Apply per-layer multipliers for RGB-only fixtures at emission time
-        // Combine multipliers from all layers
-        let read = |k: &str| self.channels.get(k).map(|c| c.value).unwrap_or(1.0);
-
-        // Calculate combined multipliers across all layers
-        let dimmer_mult =
-            read("_dimmer_mult_bg") * read("_dimmer_mult_mid") * read("_dimmer_mult_fg");
-        let pulse_mult = read("_pulse_mult_bg") * read("_pulse_mult_mid") * read("_pulse_mult_fg");
-        let combined_multiplier = (dimmer_mult * pulse_mult).clamp(0.0, 1.0);
-
-        // Foreground multiplier (for Replace blend mode handling)
-        let fg_multiplier = (read("_dimmer_mult_fg") * read("_pulse_mult_fg")).clamp(0.0, 1.0);
         let has_dedicated_dimmer = fixture_info.channels.contains_key("dimmer");
 
         for (channel_name, state) in &self.channels {
             if let Some(&channel_offset) = fixture_info.channels.get(channel_name) {
                 let dmx_channel = fixture_info.address + channel_offset - 1;
-                let mut value = state.value;
-                // If this is an RGB-only fixture, multiply RGB outputs by persisted multipliers
-                // except when this channel is a Replace (e.g., foreground Replace should not be dim-scaled)
-                if !has_dedicated_dimmer
-                    && (channel_name == "red" || channel_name == "green" || channel_name == "blue")
-                {
-                    let effective_multiplier = if state.layer == EffectLayer::Foreground
-                        && state.blend_mode == BlendMode::Replace
-                    {
-                        fg_multiplier
-                    } else {
-                        combined_multiplier
-                    };
-                    if effective_multiplier != 1.0 {
-                        value = (value * effective_multiplier).clamp(0.0, 1.0);
-                    }
-                }
+                let value = self.effective_channel_value(channel_name, state, has_dedicated_dimmer);
                 let dmx_value = (value * 255.0) as u8;
 
                 commands.push(DmxCommand {
@@ -180,12 +185,8 @@ impl FixtureState {
                     channel: dmx_channel,
                     value: dmx_value,
                 });
-
-                // DMX channel calculation: fixture_addr + channel_offset - 1
             }
         }
-
-        // Generated DMX commands for fixture
 
         commands
     }

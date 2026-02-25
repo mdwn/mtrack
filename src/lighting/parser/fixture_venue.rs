@@ -103,6 +103,8 @@ fn parse_fixture_type_definition(pair: Pair<Rule>) -> Result<FixtureType, Box<dy
     let mut channels = HashMap::new();
     let mut special_cases = Vec::new();
     let mut max_strobe_frequency = None;
+    let mut min_strobe_frequency = None;
+    let mut strobe_dmx_offset = None;
 
     for pair in pair.into_inner() {
         match pair.as_rule() {
@@ -115,6 +117,8 @@ fn parse_fixture_type_definition(pair: Pair<Rule>) -> Result<FixtureType, Box<dy
                     &mut channels,
                     &mut special_cases,
                     &mut max_strobe_frequency,
+                    &mut min_strobe_frequency,
+                    &mut strobe_dmx_offset,
                 )?;
             }
             _ => {}
@@ -123,6 +127,8 @@ fn parse_fixture_type_definition(pair: Pair<Rule>) -> Result<FixtureType, Box<dy
 
     let mut fixture_type = FixtureType::new(name, channels, special_cases);
     fixture_type.max_strobe_frequency = max_strobe_frequency;
+    fixture_type.min_strobe_frequency = min_strobe_frequency;
+    fixture_type.strobe_dmx_offset = strobe_dmx_offset;
     Ok(fixture_type)
 }
 
@@ -131,6 +137,8 @@ fn parse_fixture_content(
     channels: &mut HashMap<String, u16>,
     special_cases: &mut Vec<String>,
     max_strobe_frequency: &mut Option<f64>,
+    min_strobe_frequency: &mut Option<f64>,
+    strobe_dmx_offset: &mut Option<u8>,
 ) -> Result<(), Box<dyn Error>> {
     for content_pair in pair.into_inner() {
         match content_pair.as_rule() {
@@ -138,7 +146,6 @@ fn parse_fixture_content(
                 *channels = parse_channel_mappings(content_pair);
             }
             Rule::max_strobe_frequency => {
-                // Drill into inner pairs to find the number_value
                 for inner in content_pair.into_inner() {
                     if inner.as_rule() == Rule::number_value {
                         let freq: f64 =
@@ -146,6 +153,29 @@ fn parse_fixture_content(
                                 format!("Invalid max_strobe_frequency value: {}", e)
                             })?;
                         *max_strobe_frequency = Some(freq);
+                    }
+                }
+            }
+            Rule::min_strobe_frequency => {
+                for inner in content_pair.into_inner() {
+                    if inner.as_rule() == Rule::number_value {
+                        let freq: f64 =
+                            inner.as_str().trim().parse().map_err(|e| {
+                                format!("Invalid min_strobe_frequency value: {}", e)
+                            })?;
+                        *min_strobe_frequency = Some(freq);
+                    }
+                }
+            }
+            Rule::strobe_dmx_offset => {
+                for inner in content_pair.into_inner() {
+                    if inner.as_rule() == Rule::number_value {
+                        let offset: u8 = inner
+                            .as_str()
+                            .trim()
+                            .parse()
+                            .map_err(|e| format!("Invalid strobe_dmx_offset value: {}", e))?;
+                        *strobe_dmx_offset = Some(offset);
                     }
                 }
             }

@@ -176,9 +176,15 @@ impl LightingSystem {
         Ok(())
     }
 
-    /// Gets the current venue.
+    /// Gets the current venue name.
     pub fn current_venue(&self) -> Option<&str> {
         self.current_venue.as_deref()
+    }
+
+    /// Gets the current venue object (with fixtures and groups).
+    pub fn get_current_venue(&self) -> Option<&crate::lighting::types::Venue> {
+        let venue_name = self.current_venue.as_deref()?;
+        self.venues.get(venue_name)
     }
 
     /// Gets a group by name from the current venue.
@@ -286,7 +292,7 @@ impl LightingSystem {
                 .get(fixture.fixture_type())
                 .ok_or_else(|| format!("Fixture type '{}' not found", fixture.fixture_type()))?;
 
-            let fixture_info = crate::lighting::effects::FixtureInfo::new(
+            let mut fixture_info = crate::lighting::effects::FixtureInfo::new(
                 name.clone(),
                 fixture.universe(),
                 fixture.start_channel(),
@@ -294,6 +300,8 @@ impl LightingSystem {
                 fixture_type.channels().clone(),
                 fixture_type.max_strobe_frequency(),
             );
+            fixture_info.min_strobe_frequency = fixture_type.min_strobe_frequency();
+            fixture_info.strobe_dmx_offset = fixture_type.strobe_dmx_offset();
 
             fixture_infos.push(fixture_info);
         }

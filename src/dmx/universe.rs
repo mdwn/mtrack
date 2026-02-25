@@ -31,7 +31,7 @@ use super::engine::DmxMessage;
 const UNIVERSE_SIZE: usize = 512;
 
 /// The target number of updates per second.
-const TARGET_HZ: f64 = 44.0;
+pub(crate) const TARGET_HZ: f64 = 44.0;
 
 /// A DMX universe.
 pub(crate) struct Universe {
@@ -51,6 +51,9 @@ pub(crate) struct Universe {
     cancel_handle: CancelHandle,
     /// Used to send data to the OLA client thread.
     ola_sender: Sender<DmxMessage>,
+    /// Last values written by effect commands. Used to skip redundant writes
+    /// so the Universe thread doesn't re-send unchanged buffers to OLA.
+    last_effect_values: RwLock<Vec<u8>>,
 }
 
 impl Universe {
@@ -69,6 +72,7 @@ impl Universe {
             config,
             cancel_handle,
             ola_sender,
+            last_effect_values: RwLock::new(vec![0; UNIVERSE_SIZE]),
         }
     }
 
@@ -117,10 +121,43 @@ impl Universe {
                 });
     }
 
-    /// Updates the universe with effect commands (bypasses dimming for immediate effect)
+    /// Clears the effect deduplication cache so the next batch is applied unconditionally.
+    /// Call this between songs to avoid stale state.
+    pub fn clear_effect_cache(&self) {
+        self.last_effect_values.write().fill(0);
+    }
+
+    /// Updates the universe with effect commands (bypasses dimming).
+    /// Acquires locks once for the entire batch rather than per-command,
+    /// and deduplicates against last frame to avoid redundant OLA sends.
     pub fn update_effect_commands(&self, commands: Vec<(u16, u8)>) {
+        let mut last = self.last_effect_values.write();
+        let mut target = self.target.write();
+        let mut rates = self.rates.write();
+
         for (channel, value) in commands {
-            self.update_channel_data(channel, value, false); // No dimming for effects
+            let idx = if channel > 0 {
+                usize::from(channel - 1)
+            } else {
+                0
+            };
+            if last[idx] != value {
+                last[idx] = value;
+                target[idx] = f64::from(value);
+                rates[idx] = 0.0; // instant (no dimming for effect commands)
+
+                let _ = self.max_channels.fetch_update(
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                    |current_channel| {
+                        if channel >= current_channel {
+                            Some(channel + 1)
+                        } else {
+                            None
+                        }
+                    },
+                );
+            }
         }
     }
 

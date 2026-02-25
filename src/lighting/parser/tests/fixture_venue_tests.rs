@@ -42,6 +42,30 @@ fn test_parse_fixture_type() {
 }
 
 #[test]
+fn test_parse_fixture_type_with_strobe_range() {
+    let content = r#"fixture_type "Astera-PixelBrick" {
+        channels: 4
+        channel_map: {
+            "red": 1,
+            "green": 2,
+            "blue": 3,
+            "strobe": 4
+        }
+        max_strobe_frequency: 25.0
+        min_strobe_frequency: 0.4
+        strobe_dmx_offset: 7
+    }"#;
+
+    let result = parse_fixture_types(content).unwrap();
+    assert_eq!(result.len(), 1);
+
+    let fixture_type = result.get("Astera-PixelBrick").unwrap();
+    assert_eq!(fixture_type.max_strobe_frequency(), Some(25.0));
+    assert_eq!(fixture_type.min_strobe_frequency(), Some(0.4));
+    assert_eq!(fixture_type.strobe_dmx_offset(), Some(7));
+}
+
+#[test]
 fn test_t_parse_venue() {
     let content = r#"venue "Club Venue" { }"#;
 

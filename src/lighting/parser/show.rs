@@ -112,8 +112,16 @@ pub fn parse_light_shows(content: &str) -> Result<HashMap<String, LightShow>, Bo
     }
 
     // Insert all sequences into the map (with empty cues for now)
-    for (name, _tempo_map, _) in &unexpanded_sequences {
-        let sequence = Sequence { cues: Vec::new() };
+    for (name, tempo_map_seq, _) in &unexpanded_sequences {
+        let effective_bpm = tempo_map_seq
+            .as_ref()
+            .or(global_tempo.as_ref())
+            .map(|tm| tm.initial_bpm)
+            .unwrap_or(crate::lighting::tempo::DEFAULT_BPM);
+        let sequence = Sequence {
+            cues: Vec::new(),
+            bpm: effective_bpm,
+        };
         sequences.insert(name.clone(), sequence);
     }
 
@@ -859,13 +867,16 @@ fn parse_offset_command(pair: Pair<Rule>) -> Result<u32, Box<dyn Error>> {
 /// Expand an unexpanded sequence cue, resolving all nested sequence references
 fn expand_unexpanded_sequence_cue(
     unexpanded: UnexpandedSequenceCue,
-    _tempo_map: &Option<TempoMap>,
+    tempo_map: &Option<TempoMap>,
     sequences: &HashMap<String, Sequence>,
     recursion_stack: &mut Vec<String>,
 ) -> Result<Vec<Cue>, Box<dyn Error>> {
     // If there are sequence references, expand them
     if !unexpanded.sequence_references.is_empty() {
         let mut expanded_cues = Vec::new();
+
+        // Get the outer sequence's BPM from the tempo context for rescaling
+        let outer_bpm = tempo_map.as_ref().map(|tm| tm.initial_bpm);
 
         // Expand each sequence reference
         for (seq_name, loop_param) in unexpanded.sequence_references {
@@ -894,8 +905,19 @@ fn expand_unexpanded_sequence_cue(
                 .into());
             }
 
-            // Calculate sequence duration
-            let sequence_duration = calculate_sequence_duration(sequence);
+            // Calculate sequence duration at the sequence's internal BPM
+            let sequence_duration_internal = calculate_sequence_duration(sequence);
+
+            // Rescale sequence duration from the inner sequence's BPM to the outer
+            // sequence's BPM. Convert to beats at the inner BPM, then back to seconds
+            // at the outer BPM.
+            let seq_bpm = sequence.bpm;
+            let duration_beats = sequence_duration_internal.as_secs_f64() * (seq_bpm / 60.0);
+            let sequence_duration = if let Some(o_bpm) = outer_bpm {
+                Duration::from_secs_f64(duration_beats * 60.0 / o_bpm)
+            } else {
+                sequence_duration_internal
+            };
 
             // Determine how many times to loop
             let loop_count = determine_loop_count(loop_param)?;
@@ -908,11 +930,34 @@ fn expand_unexpanded_sequence_cue(
             for iteration in 0..loop_count {
                 let iter_offset = iteration_offset(unexpanded.time, sequence_duration, iteration);
 
-                for seq_cue in &sequence.cues {
+                for (cue_index, seq_cue) in sequence.cues.iter().enumerate() {
                     let mut expanded_cue = seq_cue.clone();
-                    // Convert absolute sequence cue time to relative, then add to iteration offset
+                    // Convert absolute sequence cue time to relative (at inner BPM),
+                    // then rescale to the outer BPM.
                     let rel_time = relative_time(seq_cue.time, sequence_base_time);
-                    expanded_cue.time = iter_offset + rel_time;
+                    let rescaled_rel_time = if let Some(o_bpm) = outer_bpm {
+                        let rel_beats = rel_time.as_secs_f64() * (seq_bpm / 60.0);
+                        Duration::from_secs_f64(rel_beats * 60.0 / o_bpm)
+                    } else {
+                        rel_time
+                    };
+                    expanded_cue.time = iter_offset + rescaled_rel_time;
+
+                    // For loop iterations > 0, stop the previous iteration's effects
+                    // at the start of each new iteration. This prevents effects from
+                    // accumulating across iterations (e.g., multiply chases compounding).
+                    if iteration > 0 && cue_index == 0 {
+                        expanded_cue.stop_sequences.push(seq_name.clone());
+                    }
+
+                    // Mark the first cue of the first iteration as a sequence start.
+                    // This tells the timeline to clear any prior "stopped" status for
+                    // this sequence, allowing new invocations to fire after a previous
+                    // invocation was explicitly stopped.
+                    if iteration == 0 && cue_index == 0 {
+                        expanded_cue.start_sequences.push(seq_name.clone());
+                    }
+
                     // Mark all effects in this cue as belonging to the referenced sequence
                     for effect in &mut expanded_cue.effects {
                         if effect.sequence_name.is_none() {
@@ -935,6 +980,7 @@ fn expand_unexpanded_sequence_cue(
                     effects: unexpanded.effects,
                     layer_commands: unexpanded.layer_commands,
                     stop_sequences: unexpanded.stop_sequences,
+                    start_sequences: vec![],
                 });
             } else {
                 expanded_cues[0].effects.extend(unexpanded.effects);
@@ -960,6 +1006,7 @@ fn expand_unexpanded_sequence_cue(
         effects: unexpanded.effects,
         layer_commands: unexpanded.layer_commands,
         stop_sequences: unexpanded.stop_sequences,
+        start_sequences: vec![],
     }])
 }
 
@@ -1312,6 +1359,7 @@ fn parse_cue_definition(
                 effects: effects.clone(),
                 layer_commands: layer_commands.clone(),
                 stop_sequences: stop_sequences.clone(),
+                start_sequences: vec![],
             });
             base_cue_index = Some(expanded_cues.len() - 1);
         }
@@ -1331,6 +1379,9 @@ fn parse_cue_definition(
                         expanded_cues[base_idx]
                             .stop_sequences
                             .extend(loop_cue.stop_sequences);
+                        expanded_cues[base_idx]
+                            .start_sequences
+                            .extend(loop_cue.start_sequences);
                         continue;
                     }
                 }
@@ -1346,8 +1397,19 @@ fn parse_cue_definition(
                 .get(&seq_name)
                 .ok_or_else(|| format!("Sequence '{}' not found", seq_name))?;
 
-            // Calculate sequence duration
-            let sequence_duration = calculate_sequence_duration(sequence);
+            // Calculate sequence duration at the sequence's internal BPM
+            let sequence_duration_internal = calculate_sequence_duration(sequence);
+
+            // Rescale sequence duration from the sequence's BPM to the expansion-point tempo.
+            // Convert duration to beats at the sequence's BPM, then convert beats to
+            // duration at the expansion point's tempo using the tempo map.
+            let seq_bpm = sequence.bpm;
+            let duration_beats = sequence_duration_internal.as_secs_f64() * (seq_bpm / 60.0);
+            let sequence_duration = if let Some(ref tm) = tempo_map {
+                tm.beats_to_duration(duration_beats, abs_time, applied_offset_secs)
+            } else {
+                sequence_duration_internal
+            };
 
             // Determine how many times to loop
             let loop_count = determine_loop_count(loop_param)?;
@@ -1355,13 +1417,44 @@ fn parse_cue_definition(
             // Expand the sequence the specified number of times
             let sequence_base_time = get_sequence_base_time(sequence);
             for iteration in 0..loop_count {
-                let iter_offset = iteration_offset(abs_time, sequence_duration, iteration);
+                // Total beats elapsed at the start of this iteration
+                let iter_total_beats = duration_beats * iteration as f64;
 
-                for seq_cue in &sequence.cues {
+                for (cue_index, seq_cue) in sequence.cues.iter().enumerate() {
                     let mut expanded_cue = seq_cue.clone();
-                    // Convert absolute sequence cue time to relative, then add to iteration offset
+                    // Convert absolute sequence cue time to relative (in seconds at seq BPM),
+                    // then rescale to beats and convert to duration at expansion tempo.
                     let rel_time = relative_time(seq_cue.time, sequence_base_time);
-                    expanded_cue.time = iter_offset + rel_time;
+                    let rel_beats = rel_time.as_secs_f64() * (seq_bpm / 60.0);
+                    let rescaled_rel_time = if let Some(ref tm) = tempo_map {
+                        tm.beats_to_duration(
+                            iter_total_beats + rel_beats,
+                            abs_time,
+                            applied_offset_secs,
+                        )
+                    } else {
+                        Duration::from_secs_f64(
+                            iteration as f64 * sequence_duration.as_secs_f64()
+                                + rel_time.as_secs_f64(),
+                        )
+                    };
+                    expanded_cue.time = abs_time + rescaled_rel_time;
+
+                    // For loop iterations > 0, stop the previous iteration's effects
+                    // at the start of each new iteration. This prevents effects from
+                    // accumulating across iterations (e.g., multiply chases compounding).
+                    if iteration > 0 && cue_index == 0 {
+                        expanded_cue.stop_sequences.push(seq_name.clone());
+                    }
+
+                    // Mark the first cue of the first iteration as a sequence start.
+                    // This tells the timeline to clear any prior "stopped" status for
+                    // this sequence, allowing new invocations to fire after a previous
+                    // invocation was explicitly stopped.
+                    if iteration == 0 && cue_index == 0 {
+                        expanded_cue.start_sequences.push(seq_name.clone());
+                    }
+
                     // Mark all effects in this cue as belonging to this sequence
                     for effect in &mut expanded_cue.effects {
                         effect.sequence_name = Some(seq_name.clone());
@@ -1376,6 +1469,9 @@ fn parse_cue_definition(
                             expanded_cues[base_idx]
                                 .stop_sequences
                                 .extend(expanded_cue.stop_sequences);
+                            expanded_cues[base_idx]
+                                .start_sequences
+                                .extend(expanded_cue.start_sequences);
                             continue;
                         }
                     }
@@ -1439,6 +1535,7 @@ fn parse_cue_definition(
             effects,
             layer_commands,
             stop_sequences,
+            start_sequences: vec![],
         }],
         new_offset,
         Some(cumulative_measure_offset_seq),

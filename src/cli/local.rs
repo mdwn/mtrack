@@ -107,7 +107,12 @@ pub fn playlist(repository_path: &str, playlist_path: &str) -> Result<(), Box<dy
     Ok(())
 }
 
-pub async fn start(player_path: &str, playlist_path: Option<String>) -> Result<(), Box<dyn Error>> {
+pub async fn start(
+    player_path: &str,
+    playlist_path: Option<String>,
+    #[cfg(feature = "simulator")] simulator_config: Option<crate::simulator::SimulatorConfig>,
+    #[cfg(not(feature = "simulator"))] _simulator_config: Option<()>,
+) -> Result<(), Box<dyn Error>> {
     apply_thread_priority();
     let player_path = &Path::new(player_path);
     let player_config = config::Player::deserialize(player_path)?;
@@ -137,12 +142,49 @@ pub async fn start(player_path: &str, playlist_path: Option<String>) -> Result<(
         songs.clone(),
     )?;
 
+    #[cfg(feature = "simulator")]
+    let simulator_mode = simulator_config.is_some();
+    #[cfg(not(feature = "simulator"))]
+    let simulator_mode = false;
+
     let player = Arc::new(crate::player::Player::new(
         songs,
         playlist,
         &player_config,
         player_path.parent(),
+        simulator_mode,
     )?);
+
+    // Start the lighting simulator if configured
+    #[cfg(feature = "simulator")]
+    let _simulator_handle = if let Some(sim_config) = simulator_config {
+        if let Some(handles) = player.simulator_handles() {
+            match crate::simulator::start(
+                sim_config,
+                handles.effect_engine,
+                handles.lighting_system,
+            )
+            .await
+            {
+                Ok(handle) => {
+                    // Pass the broadcast channel to the DmxEngine so it can start the
+                    // file watcher per-song for hot-reload of .light files.
+                    player.set_simulator_broadcast_tx(handle.broadcast_tx.clone());
+                    Some(handle)
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to start lighting simulator: {}", e);
+                    None
+                }
+            }
+        } else {
+            tracing::warn!("No DMX engine available for lighting simulator");
+            None
+        }
+    } else {
+        None
+    };
+
     crate::controller::Controller::new(player_config.controllers(), player)?
         .join()
         .await?;

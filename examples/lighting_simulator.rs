@@ -18,8 +18,8 @@ extern crate mtrack;
 use mtrack::lighting::{
     effects::{EffectInstance, FixtureInfo},
     engine::EffectEngine,
-    parser::{parse_light_shows, LightShow},
-    timeline::LightingTimeline,
+    parser::{parse_light_shows, LayerCommandType, LightShow},
+    timeline::{LightingTimeline, TimelineUpdate},
 };
 use std::collections::HashMap;
 use std::error::Error;
@@ -113,6 +113,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let start_time = Duration::from_secs_f64(args.start_time);
     let mut timeline_update = timeline.start_at(start_time);
 
+    // Process layer commands from historical cues (e.g., clear() calls)
+    apply_layer_commands(&mut effect_engine, &timeline_update);
+
     // Start effects that should be active at start_time
     for (effect, elapsed_time) in timeline_update.effects_with_elapsed.values() {
         if let Err(e) = effect_engine.start_effect_with_elapsed(effect.clone(), *elapsed_time) {
@@ -141,8 +144,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         // Update timeline
         timeline_update = timeline.update(current_time);
 
-        // Start new effects
-        for effect in &timeline_update.effects {
+        // Process layer commands (clear, release, etc.) before starting new effects
+        apply_layer_commands(&mut effect_engine, &timeline_update);
+
+        // Start new effects (sequence effects first so show effects win conflicts)
+        let mut effects = timeline_update.effects.clone();
+        effects.sort_by_key(|e| if e.id.starts_with("seq_") { 0 } else { 1 });
+        for effect in &effects {
             if !args.events_only {
                 println!(
                     "[{:.3}s] Starting effect: {} (cue_time={:.3}s, hold_time={:?})",
@@ -235,6 +243,52 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("Timeline finished: {}", timeline.is_finished());
 
     Ok(())
+}
+
+fn apply_layer_commands(effect_engine: &mut EffectEngine, timeline_update: &TimelineUpdate) {
+    for cmd in &timeline_update.layer_commands {
+        match cmd.command_type {
+            LayerCommandType::Clear => {
+                if let Some(layer) = cmd.layer {
+                    effect_engine.clear_layer(layer);
+                } else {
+                    effect_engine.clear_all_layers();
+                }
+            }
+            LayerCommandType::Release => {
+                if let Some(layer) = cmd.layer {
+                    if let Some(fade_time) = cmd.fade_time {
+                        effect_engine.release_layer_with_time(layer, Some(fade_time));
+                    } else {
+                        effect_engine.release_layer(layer);
+                    }
+                }
+            }
+            LayerCommandType::Freeze => {
+                if let Some(layer) = cmd.layer {
+                    effect_engine.freeze_layer(layer);
+                }
+            }
+            LayerCommandType::Unfreeze => {
+                if let Some(layer) = cmd.layer {
+                    effect_engine.unfreeze_layer(layer);
+                }
+            }
+            LayerCommandType::Master => {
+                if let Some(layer) = cmd.layer {
+                    if let Some(intensity) = cmd.intensity {
+                        effect_engine.set_layer_intensity_master(layer, intensity);
+                    }
+                    if let Some(speed) = cmd.speed {
+                        effect_engine.set_layer_speed_master(layer, speed);
+                    }
+                }
+            }
+        }
+    }
+    for sequence_name in &timeline_update.stop_sequences {
+        effect_engine.stop_sequence(sequence_name);
+    }
 }
 
 fn collect_fixture_names(shows: &std::collections::HashMap<String, LightShow>) -> Vec<String> {

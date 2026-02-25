@@ -34,9 +34,9 @@ fn measures_to_duration_secs(
         let duration = tm.measures_to_duration(measures, at_time, 0.0);
         duration.as_secs_f64()
     } else {
-        // Fallback: assume 120 BPM, 4/4 time
+        // Fallback: assume default BPM, 4/4 time
         let beats = measures * 4.0;
-        beats * 60.0 / 120.0
+        beats * 60.0 / crate::lighting::tempo::DEFAULT_BPM
     }
 }
 
@@ -50,8 +50,8 @@ fn beats_to_duration_secs(
         let duration = tm.beats_to_duration(beats, at_time, 0.0);
         duration.as_secs_f64()
     } else {
-        // Fallback: assume 120 BPM
-        beats * 60.0 / 120.0
+        // Fallback: assume default BPM
+        beats * 60.0 / crate::lighting::tempo::DEFAULT_BPM
     }
 }
 

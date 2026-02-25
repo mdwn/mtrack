@@ -26,11 +26,12 @@ use std::{
     time::Duration,
 };
 
+use super::legacy_store::LegacyDmxStore;
 use super::ola_client::OlaClient;
 use midly::num::u7;
 use nodi::{Connection, Player};
 use ola::DmxBuffer;
-use tracing::{debug, error, info, span, Level};
+use tracing::{debug, error, info, span, warn, Level};
 
 use crate::{
     config,
@@ -72,6 +73,16 @@ pub struct Engine {
     timeline_finished: Arc<AtomicBool>,
     /// Cancel handle for notifying when timeline finishes
     timeline_cancel_handle: Arc<Mutex<Option<CancelHandle>>>,
+    /// Broadcast sender from the simulator (if running), used to start the file watcher per-song
+    #[cfg(feature = "simulator")]
+    simulator_broadcast_tx: Mutex<Option<tokio::sync::broadcast::Sender<String>>>,
+    /// Handle to the current file watcher (dropped/replaced per-song)
+    #[cfg(feature = "simulator")]
+    watcher_handle: Mutex<Option<crate::simulator::watcher::WatcherHandle>>,
+    /// Lockless store for legacy MIDI DMX values with built-in interpolation.
+    /// RwLock protects structural changes (register_slot); hot-path reads
+    /// (write/tick/iter_active) take a cheap read lock while atomics handle data.
+    legacy_store: Arc<parking_lot::RwLock<LegacyDmxStore>>,
 }
 
 /// DmxMessage is a message that can be passed around between senders and receivers.
@@ -79,6 +90,13 @@ pub struct Engine {
 pub(super) struct DmxMessage {
     pub universe: u32,
     pub buffer: DmxBuffer,
+}
+
+/// Shared handles exposed to the simulator for reading state.
+#[cfg(feature = "simulator")]
+pub struct SimulatorHandles {
+    pub effect_engine: Arc<Mutex<EffectEngine>>,
+    pub lighting_system: Option<Arc<Mutex<LightingSystem>>>,
 }
 
 impl Engine {
@@ -141,6 +159,8 @@ impl Engine {
         let timeline_finished = Arc::new(AtomicBool::new(false));
         let timeline_cancel_handle: Arc<Mutex<Option<CancelHandle>>> = Arc::new(Mutex::new(None));
 
+        let legacy_store = Arc::new(parking_lot::RwLock::new(LegacyDmxStore::new()));
+
         Ok(Engine {
             dimming_speed_modifier: config.dimming_speed_modifier(),
             playback_delay: config.playback_delay()?,
@@ -157,6 +177,11 @@ impl Engine {
             current_song_time,
             timeline_finished,
             timeline_cancel_handle,
+            #[cfg(feature = "simulator")]
+            simulator_broadcast_tx: Mutex::new(None),
+            #[cfg(feature = "simulator")]
+            watcher_handle: Mutex::new(None),
+            legacy_store,
         })
     }
 
@@ -185,6 +210,9 @@ impl Engine {
                 let dt = now.duration_since(last_update);
 
                 if dt >= target_frame_time {
+                    // Tick the legacy store to interpolate dimming values
+                    engine.legacy_store.read().tick();
+
                     // Update effects engine and apply to universes
                     if let Err(e) = engine.update_effects() {
                         error!("Error updating effects: {}", e);
@@ -376,15 +404,27 @@ impl Engine {
 
             if !all_shows.is_empty() {
                 let timeline = LightingTimeline::new(all_shows);
-                // Set the tempo map on the effect engine if the timeline has one
-                if let Some(tempo_map) = timeline.tempo_map() {
+                // Set or clear the tempo map — a song without a tempo block must not
+                // inherit one from the previous song.
+                {
                     let mut effect_engine = dmx_engine.effect_engine.lock();
-                    effect_engine.set_tempo_map(Some(tempo_map.clone()));
+                    effect_engine.set_tempo_map(timeline.tempo_map().cloned());
                 }
                 {
                     let mut current_timeline = dmx_engine.current_song_timeline.lock();
                     *current_timeline = Some(timeline);
                 }
+            }
+        } else {
+            // Clear lighting state from previous song so legacy songs
+            // don't inherit a stale tempo map or timeline.
+            {
+                let mut effect_engine = dmx_engine.effect_engine.lock();
+                effect_engine.set_tempo_map(None);
+            }
+            {
+                let mut current_timeline = dmx_engine.current_song_timeline.lock();
+                *current_timeline = None;
             }
         }
 
@@ -397,6 +437,36 @@ impl Engine {
 
         // Reset timeline finished flag for new song
         dmx_engine.timeline_finished.store(false, Ordering::Relaxed);
+
+        // Start file watcher for hot-reload if simulator is running
+        #[cfg(feature = "simulator")]
+        {
+            let broadcast_tx = dmx_engine.simulator_broadcast_tx.lock();
+            if let Some(tx) = broadcast_tx.as_ref() {
+                let file_paths: Vec<std::path::PathBuf> = dsl_lighting_shows
+                    .iter()
+                    .map(|s| s.file_path().to_path_buf())
+                    .collect();
+                if !file_paths.is_empty() {
+                    match crate::simulator::watcher::start_watching(
+                        file_paths,
+                        dmx_engine.effect_engine.clone(),
+                        dmx_engine.current_song_timeline.clone(),
+                        dmx_engine.current_song_time.clone(),
+                        dmx_engine.lighting_system.clone(),
+                        dmx_engine.lighting_config.clone(),
+                        tx.clone(),
+                    ) {
+                        Ok(handle) => {
+                            *dmx_engine.watcher_handle.lock() = Some(handle);
+                        }
+                        Err(e) => {
+                            warn!("Failed to start light show file watcher: {}", e);
+                        }
+                    }
+                }
+            }
+        }
 
         // Start song time tracking (per-song, tracks elapsed time)
         let song_time_tracker = Self::start_song_time_tracker_from(
@@ -462,15 +532,22 @@ impl Engine {
         let has_dmx_sheets = !dmx_midi_sheets.is_empty();
         let mut join_handles: Vec<JoinHandle<()>> = dmx_midi_sheets
             .into_iter()
-            .map(|(universe_name, light_show_info)| {
+            .filter_map(|(universe_name, light_show_info)| {
                 let dmx_midi_sheet = light_show_info.0;
                 let midi_channels = HashSet::from_iter(light_show_info.1);
                 let cancel_handle = cancel_handle.clone();
                 let dmx_engine = dmx_engine.clone();
-                let universe_name = universe_name.clone();
+                // Resolve universe ID once here, avoiding per-event String clone + HashMap lookup.
+                let universe_id = match dmx_engine.universe_name_to_id.get(&universe_name) {
+                    Some(&id) => id,
+                    None => {
+                        warn!(universe = %universe_name, "Unknown universe name in light show, skipping");
+                        return None;
+                    }
+                };
                 let play_barrier = play_barrier.clone();
 
-                thread::spawn(move || {
+                Some(thread::spawn(move || {
                     play_barrier.wait();
 
                     if cancel_handle.is_cancelled() {
@@ -479,7 +556,7 @@ impl Engine {
 
                     let connection = DMXConnection {
                         cancel_handle: cancel_handle.clone(),
-                        universe_name,
+                        universe_id,
                         midi_channels,
                         dmx_engine,
                     };
@@ -502,7 +579,7 @@ impl Engine {
 
                     player.play(&dmx_midi_sheet.sheet);
                     play_finished.store(true, std::sync::atomic::Ordering::Relaxed);
-                })
+                }))
             })
             .collect();
 
@@ -581,26 +658,34 @@ impl Engine {
         Ok(())
     }
 
-    /// Handles an incoming MIDI event.
+    /// Handles an incoming MIDI event (by universe name).
     pub fn handle_midi_event(&self, universe_name: String, midi_message: midly::MidiMessage) {
+        if let Some(&universe_id) = self.universe_name_to_id.get(&universe_name) {
+            self.handle_midi_event_by_id(universe_id, midi_message);
+        }
+    }
+
+    /// Handles an incoming MIDI event (by universe ID).
+    /// Avoids the name→ID HashMap lookup when the caller already knows the ID.
+    fn handle_midi_event_by_id(&self, universe_id: u16, midi_message: midly::MidiMessage) {
         match midi_message {
             midly::MidiMessage::NoteOn { key, vel } => {
-                self.handle_key_velocity(universe_name, key, vel);
+                self.handle_key_velocity_by_id(universe_id, key, vel);
             }
             midly::MidiMessage::NoteOff { key, vel } => {
-                self.handle_key_velocity(universe_name, key, vel);
+                self.handle_key_velocity_by_id(universe_id, key, vel);
             }
             midly::MidiMessage::ProgramChange { program } => {
-                self.update_dimming(
-                    universe_name,
+                self.update_dimming_by_id(
+                    universe_id,
                     Duration::from_secs_f64(
                         f64::from(program.as_int()) * self.dimming_speed_modifier,
                     ),
                 );
             }
             midly::MidiMessage::Controller { controller, value } => {
-                self.update_universe(
-                    universe_name,
+                self.update_universe_by_id(
+                    universe_id,
                     (controller.as_int() + 1).into(), // Convert from 0-based MIDI to 1-based DMX
                     value.as_int() * 2,
                     false,
@@ -616,9 +701,9 @@ impl Engine {
     }
 
     /// Handles MIDI events that use a key and velocity.
-    fn handle_key_velocity(&self, universe_name: String, key: u7, velocity: u7) {
-        self.update_universe(
-            universe_name,
+    fn handle_key_velocity_by_id(&self, universe_id: u16, key: u7, velocity: u7) {
+        self.update_universe_by_id(
+            universe_id,
             (key.as_int() + 1).into(), // Convert from 0-based MIDI to 1-based DMX
             velocity.as_int() * 2,
             true,
@@ -626,31 +711,44 @@ impl Engine {
     }
 
     // Updates the current dimming speed.
-    fn update_dimming(&self, universe_name: String, dimming_duration: Duration) {
+    fn update_dimming_by_id(&self, universe_id: u16, dimming_duration: Duration) {
         debug!(
             dimming = dimming_duration.as_secs_f64(),
             "Dimming speed updated"
         );
-        if let Some(&universe_id) = self.universe_name_to_id.get(&universe_name) {
-            if let Some(universe) = self.universes.get(&universe_id) {
-                universe.update_dim_speed(dimming_duration)
-            }
+        if let Some(universe) = self.universes.get(&universe_id) {
+            universe.update_dim_speed(dimming_duration);
         }
+        // Mirror dim rate to legacy store
+        let rate = if dimming_duration.is_zero() {
+            1.0
+        } else {
+            dimming_duration.as_secs_f64() * super::universe::TARGET_HZ
+        };
+        self.legacy_store.read().set_dim_rate(universe_id, rate);
     }
 
-    /// Updates the given universe.
-    fn update_universe(&self, universe_name: String, channel: u16, value: u8, dim: bool) {
-        if let Some(&universe_id) = self.universe_name_to_id.get(&universe_name) {
+    /// Updates the given universe by ID.
+    /// Mapped channels (those with registered fixtures) go through the lockless
+    /// LegacyDmxStore for interpolation and EffectEngine injection. Unmapped
+    /// channels go directly to the Universe for backward compatibility.
+    fn update_universe_by_id(&self, universe_id: u16, channel: u16, value: u8, dim: bool) {
+        let store = self.legacy_store.read();
+        if store.lookup(universe_id, channel).is_some() {
+            // Mapped channel → lockless store (interpolation + EffectEngine injection)
+            store.write(universe_id, channel, value, dim);
+        } else {
+            // Unmapped channel → direct to Universe (backward compat)
             if let Some(universe) = self.universes.get(&universe_id) {
-                universe.update_channel_data(channel, value, dim)
+                universe.update_channel_data(channel, value, dim);
             }
         }
     }
 
     /// Updates the effects engine and applies any generated commands to universes
     pub fn update_effects(&self) -> Result<(), Box<dyn std::error::Error>> {
-        // Update the effects engine with a 44Hz frame time (matching Universe TARGET_HZ)
-        let dt = Duration::from_secs_f64(1.0 / 44.0);
+        // Update the effects engine with a frame time matching Universe TARGET_HZ
+        let dt = Duration::from_secs_f64(1.0 / super::universe::TARGET_HZ);
         let song_time = self.get_song_time();
         let mut effect_engine = self.effect_engine.lock();
         let commands = effect_engine.update(dt, Some(song_time))?;
@@ -694,6 +792,24 @@ impl Engine {
             let lighting_system = lighting_system.lock();
             let fixture_infos = lighting_system.get_current_venue_fixtures()?;
             let mut effect_engine = self.effect_engine.lock();
+            let mut legacy_store = self.legacy_store.write();
+
+            for fixture_info in &fixture_infos {
+                // Register slots in the legacy store for each fixture channel
+                for (channel_name, &offset) in &fixture_info.channels {
+                    let dmx_channel = fixture_info.address + offset - 1;
+                    legacy_store.register_slot(
+                        fixture_info.universe,
+                        dmx_channel,
+                        &fixture_info.name,
+                        channel_name,
+                    );
+                }
+                legacy_store.register_universe(fixture_info.universe);
+            }
+
+            // Set the legacy store reference on the EffectEngine
+            effect_engine.set_legacy_store(self.legacy_store.clone());
 
             for fixture_info in fixture_infos {
                 effect_engine.register_fixture(fixture_info);
@@ -726,6 +842,10 @@ impl Engine {
             let mut effect_engine = self.effect_engine.lock();
             effect_engine.stop_all_effects();
         }
+        // Clear effect deduplication caches so the new song's first frame is applied
+        for universe in self.universes.values() {
+            universe.clear_effect_cache();
+        }
 
         let timeline_update = {
             let mut current_timeline = self.current_song_timeline.lock();
@@ -756,50 +876,11 @@ impl Engine {
         &self,
         timeline_update: crate::lighting::timeline::TimelineUpdate,
     ) -> Result<(), Box<dyn Error>> {
-        use crate::lighting::parser::LayerCommandType;
-
         // Process layer commands first (they affect subsequent effects)
         if !timeline_update.layer_commands.is_empty() {
             let mut effects_engine = self.effect_engine.lock();
             for cmd in &timeline_update.layer_commands {
-                match cmd.command_type {
-                    LayerCommandType::Clear => {
-                        if let Some(layer) = cmd.layer {
-                            effects_engine.clear_layer(layer);
-                        } else {
-                            effects_engine.clear_all_layers();
-                        }
-                    }
-                    LayerCommandType::Release => {
-                        if let Some(layer) = cmd.layer {
-                            if let Some(fade_time) = cmd.fade_time {
-                                effects_engine.release_layer_with_time(layer, Some(fade_time));
-                            } else {
-                                effects_engine.release_layer(layer);
-                            }
-                        }
-                    }
-                    LayerCommandType::Freeze => {
-                        if let Some(layer) = cmd.layer {
-                            effects_engine.freeze_layer(layer);
-                        }
-                    }
-                    LayerCommandType::Unfreeze => {
-                        if let Some(layer) = cmd.layer {
-                            effects_engine.unfreeze_layer(layer);
-                        }
-                    }
-                    LayerCommandType::Master => {
-                        if let Some(layer) = cmd.layer {
-                            if let Some(intensity) = cmd.intensity {
-                                effects_engine.set_layer_intensity_master(layer, intensity);
-                            }
-                            if let Some(speed) = cmd.speed {
-                                effects_engine.set_layer_speed_master(layer, speed);
-                            }
-                        }
-                    }
-                }
+                effects_engine.apply_layer_command(cmd);
             }
         }
 
@@ -825,8 +906,14 @@ impl Engine {
             }
         }
 
-        // Handle regular effects (from normal timeline updates)
-        for effect in timeline_update.effects {
+        // Handle regular effects (from normal timeline updates).
+        // Sort so sequence effects start before song effects. When a sequence's
+        // last cue (timing anchor) fires at the same time as the next show cue,
+        // starting sequence effects first ensures show-level effects win any
+        // Replace-blend conflicts via the conflict resolution in start_effect().
+        let mut effects = timeline_update.effects;
+        effects.sort_by_key(|e| if e.id.starts_with("seq_") { 0 } else { 1 });
+        for effect in effects {
             let resolved = self.resolve_effect_groups(effect);
             if let Err(e) = self.start_effect(resolved) {
                 error!("Failed to start lighting effect: {}", e);
@@ -880,6 +967,21 @@ impl Engine {
         *current_time
     }
 
+    /// Sets the simulator broadcast channel so the file watcher can send reload notifications.
+    #[cfg(feature = "simulator")]
+    pub fn set_simulator_broadcast_tx(&self, tx: tokio::sync::broadcast::Sender<String>) {
+        *self.simulator_broadcast_tx.lock() = Some(tx);
+    }
+
+    /// Returns shared handles for the simulator to read state from.
+    #[cfg(feature = "simulator")]
+    pub fn simulator_handles(&self) -> SimulatorHandles {
+        SimulatorHandles {
+            effect_engine: self.effect_engine.clone(),
+            lighting_system: self.lighting_system.clone(),
+        }
+    }
+
     /// Get a formatted string listing all active effects
     pub fn format_active_effects(&self) -> String {
         let effect_engine = self.effect_engine.lock();
@@ -920,13 +1022,45 @@ impl Engine {
     }
 
     /// Sends messages to OLA using the injected client.
+    /// Handles connection failures by attempting to reconnect with backoff.
     fn ola_thread(client: Arc<Mutex<Box<dyn OlaClient>>>, receiver: Receiver<DmxMessage>) {
+        let mut disconnected = false;
+        let mut last_reconnect_attempt = std::time::Instant::now();
+        let reconnect_interval = Duration::from_secs(5);
+
         loop {
             match receiver.recv() {
                 Ok(message) => {
-                    let mut client = client.lock();
-                    if let Err(err) = client.send_dmx(message.universe, &message.buffer) {
-                        error!("error sending DMX to OLA: {}", err.to_string())
+                    if disconnected {
+                        // While disconnected, attempt to reconnect periodically.
+                        // Messages are dropped until the connection is restored.
+                        let now = std::time::Instant::now();
+                        if now.duration_since(last_reconnect_attempt) >= reconnect_interval {
+                            last_reconnect_attempt = now;
+                            let mut client = client.lock();
+                            match client.reconnect() {
+                                Ok(()) => {
+                                    info!("Reconnected to OLA");
+                                    disconnected = false;
+                                    if let Err(err) =
+                                        client.send_dmx(message.universe, &message.buffer)
+                                    {
+                                        error!("Lost connection to OLA: {}", err);
+                                        disconnected = true;
+                                    }
+                                }
+                                Err(err) => {
+                                    warn!("Failed to reconnect to OLA: {}", err);
+                                }
+                            }
+                        }
+                    } else {
+                        let mut client = client.lock();
+                        if let Err(err) = client.send_dmx(message.universe, &message.buffer) {
+                            error!("Lost connection to OLA: {}", err);
+                            disconnected = true;
+                            last_reconnect_attempt = std::time::Instant::now();
+                        }
                     }
                 }
                 Err(_) => return,
@@ -973,7 +1107,8 @@ impl Drop for Engine {
 /// DMX interface.
 struct DMXConnection {
     cancel_handle: CancelHandle,
-    universe_name: String,
+    /// Pre-resolved universe ID to avoid String clone + HashMap lookup per MIDI event.
+    universe_id: u16,
     midi_channels: HashSet<u8>,
     dmx_engine: Arc<Engine>,
 }
@@ -986,7 +1121,7 @@ impl Connection for DMXConnection {
 
         if self.midi_channels.is_empty() || self.midi_channels.contains(&event.channel.as_int()) {
             self.dmx_engine
-                .handle_midi_event(self.universe_name.clone(), event.message);
+                .handle_midi_event_by_id(self.universe_id, event.message);
         }
 
         true
@@ -1042,7 +1177,7 @@ mod test {
 
         let mut connection = DMXConnection {
             cancel_handle: cancel_handle.clone(),
-            universe_name: "universe1".to_string(),
+            universe_id: 5, // matches create_engine() universe
             midi_channels: HashSet::new(),
             dmx_engine: engine.clone(),
         };
@@ -1346,7 +1481,7 @@ mod test {
         midi_channels.insert(5);
         let mut connection = DMXConnection {
             cancel_handle: cancel_handle.clone(),
-            universe_name: "universe1".to_string(),
+            universe_id: 5, // matches create_engine() universe
             midi_channels,
             dmx_engine: engine.clone(),
         };
@@ -1687,6 +1822,294 @@ mod test {
         // We can't directly access the universe's channel data in the test,
         // but we can verify that the effect was processed without errors
         // The key fix is that we're no longer double-subtracting 1 from channel numbers
+
+        Ok(())
+    }
+
+    /// Helper: seed the engine with a tempo map and timeline to simulate a DSL song
+    /// having been played previously.
+    fn seed_lighting_state(engine: &Engine) {
+        use crate::lighting::tempo::{TempoMap, TimeSignature};
+        use crate::lighting::timeline::LightingTimeline;
+
+        let tempo_map = TempoMap::new(
+            std::time::Duration::ZERO,
+            120.0,
+            TimeSignature::new(4, 4),
+            vec![],
+        );
+        {
+            let mut effect_engine = engine.effect_engine.lock();
+            effect_engine.set_tempo_map(Some(tempo_map));
+        }
+        {
+            let mut timeline = engine.current_song_timeline.lock();
+            *timeline = Some(LightingTimeline::new_with_cues(vec![]));
+        }
+    }
+
+    /// Helper: assert that the tempo map and timeline are both cleared.
+    fn assert_lighting_state_cleared(engine: &Engine) {
+        let effect_engine = engine.effect_engine.lock();
+        assert!(
+            !effect_engine.has_tempo_map(),
+            "tempo map should be cleared"
+        );
+        let timeline = engine.current_song_timeline.lock();
+        assert!(timeline.is_none(), "timeline should be cleared");
+    }
+
+    #[test]
+    fn test_dsl_song_clears_previous_tempo_map() -> Result<(), Box<dyn std::error::Error>> {
+        // A DSL song without a tempo block must not inherit the tempo map from
+        // a previously-played DSL song that had one.
+        let (engine, cancel_handle) = create_engine()?;
+        seed_lighting_state(&engine);
+
+        // Create a minimal DSL file without a tempo block
+        let tmp_dir = tempfile::tempdir()?;
+        let dsl_path = tmp_dir.path().join("no_tempo.dsl");
+        std::fs::write(
+            &dsl_path,
+            r#"show "no_tempo" {
+    @00:00.000
+    front_wash: static color: "blue", dimmer: 100%
+}"#,
+        )?;
+
+        let song_config = crate::config::Song::new(
+            "DSL No Tempo",
+            None,
+            None,
+            None,
+            None,
+            Some(vec![crate::config::LightingShow::new(
+                dsl_path.to_string_lossy().into_owned(),
+            )]),
+            vec![],
+            std::collections::HashMap::new(),
+            Vec::new(),
+        );
+        let song = Arc::new(crate::songs::Song::new(tmp_dir.path(), &song_config)?);
+        let play_barrier = Arc::new(Barrier::new(1));
+
+        // Cancel before play so the DSL-only blocking path exits immediately.
+        // The state management is synchronous and runs before any threading.
+        cancel_handle.cancel();
+
+        Engine::play(
+            engine.clone(),
+            song,
+            cancel_handle,
+            play_barrier,
+            std::time::Duration::ZERO,
+        )?;
+
+        // The tempo map should have been cleared (not inherited from the seeded state).
+        let effect_engine = engine.effect_engine.lock();
+        assert!(
+            !effect_engine.has_tempo_map(),
+            "DSL song without tempo block should clear previous tempo map"
+        );
+        // The timeline should be replaced (not None — the DSL song provides one).
+        let timeline = engine.current_song_timeline.lock();
+        assert!(
+            timeline.is_some(),
+            "DSL song should have set its own timeline"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_legacy_song_clears_dsl_state() -> Result<(), Box<dyn std::error::Error>> {
+        // After a DSL song, a legacy song (MIDI-based light shows) must clear the
+        // tempo map and timeline left behind.
+        let (engine, cancel_handle) = create_engine()?;
+        seed_lighting_state(&engine);
+
+        // Create a legacy song with a MIDI-based light show pointing to a
+        // non-matching universe so the (empty) MIDI file is never parsed.
+        let assets_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets");
+        let song_config = crate::config::Song::new(
+            "Legacy Song",
+            None,
+            None,
+            None,
+            Some(vec![crate::config::LightShow::new(
+                "nonexistent_universe".to_string(),
+                "song.mid".to_string(),
+                None,
+            )]),
+            None, // No DSL lighting
+            vec![],
+            std::collections::HashMap::new(),
+            Vec::new(),
+        );
+        let song = Arc::new(crate::songs::Song::new(&assets_path, &song_config)?);
+        let play_barrier = Arc::new(Barrier::new(1));
+
+        Engine::play(
+            engine.clone(),
+            song,
+            cancel_handle,
+            play_barrier,
+            std::time::Duration::ZERO,
+        )?;
+
+        assert_lighting_state_cleared(&engine);
+        Ok(())
+    }
+
+    #[test]
+    fn test_legacy_midi_mirrors_to_effect_engine() -> Result<(), Box<dyn Error>> {
+        let (engine, _cancel_handle) = create_engine()?;
+
+        // Register a fixture: universe 5 (matching create_engine), address 1
+        let mut channels = std::collections::HashMap::new();
+        channels.insert("dimmer".to_string(), 1);
+        channels.insert("red".to_string(), 2);
+        channels.insert("green".to_string(), 3);
+        channels.insert("blue".to_string(), 4);
+
+        let fixture_info = crate::lighting::effects::FixtureInfo::new(
+            "test_fixture".to_string(),
+            5, // matches universe ID in create_engine
+            1, // address
+            "RGBW_Par".to_string(),
+            channels,
+            None,
+        );
+
+        // Register slots in the legacy store
+        {
+            let mut store = engine.legacy_store.write();
+            store.register_slot(5, 1, "test_fixture", "dimmer");
+            store.register_slot(5, 2, "test_fixture", "red");
+            store.register_slot(5, 3, "test_fixture", "green");
+            store.register_slot(5, 4, "test_fixture", "blue");
+            store.register_universe(5);
+        }
+
+        {
+            let mut effect_engine = engine.effect_engine.lock();
+            effect_engine.set_legacy_store(engine.legacy_store.clone());
+            effect_engine.register_fixture(fixture_info);
+        }
+
+        // Send a legacy MIDI NoteOn: key=0 → DMX channel 1 (dimmer), vel=127 → value=254
+        engine.handle_midi_event(
+            "universe1".to_string(),
+            midly::MidiMessage::NoteOn {
+                key: 0.into(),
+                vel: 127.into(),
+            },
+        );
+
+        // Tick the store to interpolate (instant since NoteOn uses dim=true but
+        // default dim_rate=1.0 so rate calculation produces a single-tick transition)
+        engine.legacy_store.read().tick();
+
+        // Verify the EffectEngine has the value after update
+        {
+            let mut effect_engine = engine.effect_engine.lock();
+            let _commands = effect_engine
+                .update(std::time::Duration::from_millis(23), None)
+                .unwrap();
+            let states = effect_engine.get_fixture_states();
+            let fixture_state = states
+                .get("test_fixture")
+                .expect("test_fixture should have state in EffectEngine");
+            let dimmer = fixture_state
+                .channels
+                .get("dimmer")
+                .expect("dimmer channel should be present");
+            // 254 / 255.0 ≈ 0.996
+            assert!(
+                (dimmer.value - 254.0 / 255.0).abs() < 0.01,
+                "dimmer should be ~0.996, got {}",
+                dimmer.value
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_legacy_midi_unmapped_channel_no_mirror() -> Result<(), Box<dyn Error>> {
+        let (engine, _cancel_handle) = create_engine()?;
+
+        // Register a fixture with a small channel range (address 1, 4 channels)
+        let mut channels = std::collections::HashMap::new();
+        channels.insert("dimmer".to_string(), 1);
+        channels.insert("red".to_string(), 2);
+        channels.insert("green".to_string(), 3);
+        channels.insert("blue".to_string(), 4);
+
+        let fixture_info = crate::lighting::effects::FixtureInfo::new(
+            "test_fixture".to_string(),
+            5,
+            1,
+            "RGBW_Par".to_string(),
+            channels,
+            None,
+        );
+
+        // Register slots for channels 1-4 in the legacy store
+        {
+            let mut store = engine.legacy_store.write();
+            store.register_slot(5, 1, "test_fixture", "dimmer");
+            store.register_slot(5, 2, "test_fixture", "red");
+            store.register_slot(5, 3, "test_fixture", "green");
+            store.register_slot(5, 4, "test_fixture", "blue");
+            store.register_universe(5);
+        }
+
+        {
+            let mut effect_engine = engine.effect_engine.lock();
+            effect_engine.set_legacy_store(engine.legacy_store.clone());
+            effect_engine.register_fixture(fixture_info);
+        }
+
+        // Send a MIDI event to channel 10 (not mapped to any fixture)
+        engine.handle_midi_event(
+            "universe1".to_string(),
+            midly::MidiMessage::NoteOn {
+                key: 9.into(), // key+1=10
+                vel: 100.into(),
+            },
+        );
+
+        // Universe should get the write (unmapped channels go directly to Universe)
+        let universe = engine.get_universe(5).unwrap();
+        assert_eq!(
+            universe.get_target_value(9),
+            200.0,
+            "Universe should have received the unmapped write"
+        );
+
+        // Tick and update
+        engine.legacy_store.read().tick();
+
+        // EffectEngine should NOT have any state for this unmapped channel
+        {
+            let mut effect_engine = engine.effect_engine.lock();
+            let _commands = effect_engine
+                .update(std::time::Duration::from_millis(23), None)
+                .unwrap();
+            let states = effect_engine.get_fixture_states();
+            // test_fixture should not have a channel at offset 10
+            if let Some(fixture_state) = states.get("test_fixture") {
+                // Only the mapped channels (dimmer, red, green, blue) should ever appear
+                for channel_name in fixture_state.channels.keys() {
+                    assert!(
+                        ["dimmer", "red", "green", "blue"].contains(&channel_name.as_str()),
+                        "unexpected channel '{}' in fixture state",
+                        channel_name
+                    );
+                }
+            }
+        }
 
         Ok(())
     }

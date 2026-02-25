@@ -166,27 +166,6 @@ impl TriggerConfig {
     }
 }
 
-#[cfg(test)]
-impl TriggerConfig {
-    /// Creates a new TriggerConfig (test only).
-    pub(crate) fn new(
-        device: Option<&str>,
-        sample_rate: Option<u32>,
-        inputs: Vec<TriggerInput>,
-    ) -> Self {
-        Self {
-            device: device.map(|d| d.to_string()),
-            sample_rate,
-            sample_format: None,
-            bits_per_sample: None,
-            buffer_size: None,
-            inputs,
-            crosstalk_window_ms: None,
-            crosstalk_threshold: None,
-        }
-    }
-}
-
 /// A trigger input, discriminated by `kind`.
 #[derive(Deserialize, Clone, Debug)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -334,49 +313,6 @@ impl AudioTriggerInput {
     /// Returns the noise floor EMA decay time in ms.
     pub fn noise_floor_decay_ms(&self) -> u32 {
         self.noise_floor_decay_ms
-    }
-}
-
-#[cfg(test)]
-impl AudioTriggerInput {
-    /// Creates a new trigger input for a sample trigger (test only).
-    pub(crate) fn new_trigger(channel: u16, sample: &str, release_group: Option<&str>) -> Self {
-        Self {
-            channel,
-            sample: Some(sample.to_string()),
-            threshold: default_threshold(),
-            retrigger_time_ms: default_retrigger_time_ms(),
-            scan_time_ms: default_scan_time_ms(),
-            gain: default_gain(),
-            velocity_curve: VelocityCurve::default(),
-            fixed_velocity: default_fixed_velocity(),
-            release_group: release_group.map(|s| s.to_string()),
-            action: TriggerInputAction::Trigger,
-            highpass_freq: None,
-            dynamic_threshold_decay_ms: None,
-            noise_floor_sensitivity: None,
-            noise_floor_decay_ms: default_noise_floor_decay_ms(),
-        }
-    }
-
-    /// Creates a new trigger input for a release action (test only).
-    pub(crate) fn new_release(channel: u16, release_group: &str) -> Self {
-        Self {
-            channel,
-            sample: None,
-            threshold: 0.05,
-            retrigger_time_ms: default_retrigger_time_ms(),
-            scan_time_ms: default_scan_time_ms(),
-            gain: default_gain(),
-            velocity_curve: VelocityCurve::default(),
-            fixed_velocity: default_fixed_velocity(),
-            release_group: Some(release_group.to_string()),
-            action: TriggerInputAction::Release,
-            highpass_freq: None,
-            dynamic_threshold_decay_ms: None,
-            noise_floor_sensitivity: None,
-            noise_floor_decay_ms: default_noise_floor_decay_ms(),
-        }
     }
 }
 

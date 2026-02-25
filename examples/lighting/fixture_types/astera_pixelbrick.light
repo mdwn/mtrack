@@ -11,4 +11,6 @@ fixture_type "Astera-PixelBrick" {
     "strobe": 4
   }
   max_strobe_frequency: 25.0
+  min_strobe_frequency: 0.4
+  strobe_dmx_offset: 7
 }

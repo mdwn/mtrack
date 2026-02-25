@@ -352,19 +352,39 @@ fn apply_strobe(
                 fixture_state
             } else {
                 // Calculate strobe parameters based on strategy
-                let (normalized_frequency, strobe_value) =
-                    if profile.strobe_strategy == StrobeStrategy::DedicatedChannel {
-                        // Hardware strobe: normalize frequency to 0-1 range
-                        let max_freq = fixture.max_strobe_frequency.unwrap_or(20.0);
-                        let normalized = (frequency / max_freq).min(1.0);
-                        (normalized, None)
+                let (normalized_frequency, strobe_value) = if profile.strobe_strategy
+                    == StrobeStrategy::DedicatedChannel
+                {
+                    // Hardware strobe: normalize frequency to 0-1 range,
+                    // accounting for DMX offset and minimum frequency
+                    let max_freq = fixture.max_strobe_frequency.unwrap_or(20.0);
+                    let min_freq = fixture.min_strobe_frequency.unwrap_or(0.0);
+                    let dmx_offset = fixture.strobe_dmx_offset.unwrap_or(0);
+                    let min_normalized = dmx_offset as f64 / 255.0;
+                    let normalized = if max_freq > 0.0 && min_freq > 0.0 && dmx_offset > 0 {
+                        // Interpolate in period-space: many fixtures map DMX linearly
+                        // to strobe period (1/freq), not frequency directly.
+                        let max_period = 1.0 / min_freq;
+                        let min_period = 1.0 / max_freq;
+                        let desired_period = 1.0 / frequency.clamp(min_freq, max_freq);
+                        let period_range = max_period - min_period;
+                        let period_fraction = if period_range.abs() < f64::EPSILON {
+                            1.0
+                        } else {
+                            (max_period - desired_period) / period_range
+                        };
+                        (min_normalized + period_fraction * (1.0 - min_normalized)).clamp(0.0, 1.0)
                     } else {
-                        // Software strobe: calculate on/off value
-                        let strobe_period = 1.0 / frequency;
-                        let strobe_phase = cycle_progress(elapsed, strobe_period);
-                        let is_strobe_on = strobe_phase < 0.5; // 50% duty cycle
-                        (frequency, Some(if is_strobe_on { 1.0 } else { 0.0 }))
+                        (frequency / max_freq).min(1.0)
                     };
+                    (normalized, None)
+                } else {
+                    // Software strobe: calculate on/off value
+                    let strobe_period = 1.0 / frequency;
+                    let strobe_phase = cycle_progress(elapsed, strobe_period);
+                    let is_strobe_on = strobe_phase < 0.5; // 50% duty cycle
+                    (frequency, Some(if is_strobe_on { 1.0 } else { 0.0 }))
+                };
 
                 let channel_commands = profile.apply_strobe(
                     normalized_frequency,

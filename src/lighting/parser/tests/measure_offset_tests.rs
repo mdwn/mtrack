@@ -849,3 +849,114 @@ show "Test" {
         "Sixth cue should be at 34.0s (measure 18, after repeat)"
     );
 }
+
+#[test]
+fn test_esaweg_strobe_cue_generation() {
+    // Verify that the Esaweg show's @236/1 strobe cue is generated with
+    // the correct time and effect parameters. Uses the same tempo structure
+    // and offset as the real show, but only the cues near the strobe.
+    let content = r##"tempo {
+    bpm: 110
+    time_signature: 4/4
+    changes: [
+        @30/1 { bpm: 160 },
+        @136/1 { bpm: 110 },
+        @188/1 { bpm: 160 }
+    ]
+}
+
+show "Esaweg" {
+    @1/1
+    offset 1 measures
+
+    @221/1
+    clear()
+    all_wash: static, color: "#FF4400", layer: background, blend_mode: replace
+
+    @228/1
+    all_wash: pulse, frequency: 3, layer: foreground, blend_mode: overlay
+
+    @236/1
+    all_wash: strobe, frequency: 10, layer: foreground, blend_mode: overlay
+
+    @236/4.75
+    clear()
+    all_wash: static, color: "black", layer: background, blend_mode: replace
+}"##;
+
+    let shows = parse_light_shows(content).expect("Should parse Esaweg show");
+    let show = shows.get("Esaweg").expect("Should have Esaweg show");
+
+    // Find the cue that has a strobe effect
+    let strobe_cue = show.cues.iter().find(|cue| {
+        cue.effects.iter().any(|e| {
+            matches!(
+                e.effect_type,
+                crate::lighting::effects::EffectType::Strobe { .. }
+            )
+        })
+    });
+    assert!(
+        strobe_cue.is_some(),
+        "Should have a cue with a strobe effect"
+    );
+    let strobe_cue = strobe_cue.unwrap();
+
+    // Verify the strobe effect parameters
+    let strobe_effect = strobe_cue
+        .effects
+        .iter()
+        .find(|e| {
+            matches!(
+                e.effect_type,
+                crate::lighting::effects::EffectType::Strobe { .. }
+            )
+        })
+        .unwrap();
+
+    assert_eq!(strobe_effect.groups, vec!["all_wash"]);
+    assert_eq!(
+        strobe_effect.layer,
+        Some(crate::lighting::effects::EffectLayer::Foreground)
+    );
+    assert_eq!(
+        strobe_effect.blend_mode,
+        Some(crate::lighting::effects::BlendMode::Overlay)
+    );
+
+    // Verify frequency is 10Hz
+    if let crate::lighting::effects::EffectType::Strobe { frequency, .. } =
+        &strobe_effect.effect_type
+    {
+        let hz = frequency.to_hz(None, Duration::ZERO);
+        assert!(
+            (hz - 10.0).abs() < 0.001,
+            "Strobe frequency should be 10Hz, got {}",
+            hz
+        );
+    }
+
+    // Verify the strobe cue time is reasonable.
+    // @236/1 with 1 measure offset and the given tempo changes should be around 409.9s.
+    let strobe_time = strobe_cue.time.as_secs_f64();
+    assert!(
+        strobe_time > 400.0 && strobe_time < 420.0,
+        "Strobe cue time should be around 409.9s, got {}",
+        strobe_time
+    );
+
+    // Also verify the final cue (@236/4.75) exists and comes after the strobe
+    let final_cue = show.cues.last().unwrap();
+    assert!(
+        final_cue.time > strobe_cue.time,
+        "Final cue should come after strobe cue"
+    );
+
+    // The window between strobe and final cue should be about 1.4s (3.75 beats at 160 BPM)
+    let window = (final_cue.time - strobe_cue.time).as_secs_f64();
+    assert!(
+        (window - 1.40625).abs() < 0.01,
+        "Strobe window should be ~1.4s, got {}",
+        window
+    );
+}
