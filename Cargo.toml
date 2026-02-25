@@ -28,6 +28,7 @@ simulator = [
     "dep:notify-debouncer-mini",
     "dep:futures-util",
 ]
+quanta = ["dep:quanta"]
 
 [dependencies]
 clap = { version = "4.5.23", features = ["cargo", "derive"] }
@@ -77,6 +78,9 @@ rust-embed = { version = "8", optional = true }
 notify = { version = "6", optional = true }
 notify-debouncer-mini = { version = "0.4", optional = true }
 futures-util = { version = "0.3", optional = true }
+
+# High-performance timer using TSC (optional, significant speedup on ARM64)
+quanta = { version = "0.12", optional = true }
 
 [dev-dependencies]
 tempfile = "3.14.0"

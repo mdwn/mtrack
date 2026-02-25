@@ -23,6 +23,7 @@ use crate::audio::sample_source::create_sample_source_from_file;
 use crate::audio::SampleFormat;
 use midly::live::LiveEvent;
 use midly::{Format, Smf};
+#[cfg(not(feature = "quanta"))]
 use nodi::timers::Ticker;
 use nodi::Sheet;
 // Removed unused ringbuf imports after migration to Crossbeam channels
@@ -599,6 +600,9 @@ fn parse_midi(midi_file: &PathBuf) -> Result<MidiSheet, Box<dyn Error>> {
         .map_err(|e| format!("Failed to read MIDI file {}: {}", midi_file.display(), e))?;
     let smf = Smf::parse(&buf)
         .map_err(|e| format!("Failed to parse MIDI file {}: {}", midi_file.display(), e))?;
+    #[cfg(feature = "quanta")]
+    let ticker = crate::midi::quanta_ticker::QuantaTicker::try_from(smf.header.timing)?;
+    #[cfg(not(feature = "quanta"))]
     let ticker = Ticker::try_from(smf.header.timing)?;
 
     let midi_sheet = MidiSheet {
@@ -799,6 +803,9 @@ impl Track {
 
 /// Contains a parsed timer and MIDI sheet for playback.
 pub struct MidiSheet {
+    #[cfg(feature = "quanta")]
+    pub ticker: crate::midi::quanta_ticker::QuantaTicker,
+    #[cfg(not(feature = "quanta"))]
     pub ticker: Ticker,
     pub sheet: Sheet,
 }
