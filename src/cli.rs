@@ -117,6 +117,10 @@ enum Commands {
         #[cfg(feature = "simulator")]
         #[arg(long, default_value = "8080")]
         simulator_port: u16,
+        /// Bind address for the lighting simulator (default: 127.0.0.1).
+        #[cfg(feature = "simulator")]
+        #[arg(long, default_value = "127.0.0.1")]
+        simulator_address: String,
     },
     /// Plays the current song in the playlist.
     Play {
@@ -242,11 +246,14 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
             simulator,
             #[cfg(feature = "simulator")]
             simulator_port,
+            #[cfg(feature = "simulator")]
+            simulator_address,
         } => {
             #[cfg(feature = "simulator")]
             let sim_config = if simulator {
                 Some(crate::simulator::SimulatorConfig {
                     port: simulator_port,
+                    address: simulator_address,
                 })
             } else {
                 None

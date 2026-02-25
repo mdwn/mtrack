@@ -27,11 +27,15 @@ use crate::lighting::EffectEngine;
 #[derive(Debug, Clone)]
 pub struct SimulatorConfig {
     pub port: u16,
+    pub address: String,
 }
 
 impl Default for SimulatorConfig {
     fn default() -> Self {
-        Self { port: 8080 }
+        Self {
+            port: 8080,
+            address: "127.0.0.1".to_string(),
+        }
     }
 }
 
@@ -76,10 +80,12 @@ pub async fn start(
 
     // Spawn the HTTP/WS server
     let port = config.port;
-    info!(port, "Starting lighting simulator");
+    let address = config.address;
+    info!(port, %address, "Starting lighting simulator");
     let server_handle = tokio::spawn(server::run(
         broadcast_tx.clone(),
         metadata_json,
+        address,
         port,
         shutdown_rx,
     ));

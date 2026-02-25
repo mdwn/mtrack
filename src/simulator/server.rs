@@ -43,6 +43,7 @@ struct AppState {
 pub async fn run(
     broadcast_tx: broadcast::Sender<String>,
     metadata_json: String,
+    address: String,
     port: u16,
     shutdown_rx: tokio::sync::oneshot::Receiver<()>,
 ) {
@@ -56,7 +57,14 @@ pub async fn run(
         .route("/ws", get(ws_handler))
         .with_state(state);
 
-    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let ip: std::net::IpAddr = match address.parse() {
+        Ok(ip) => ip,
+        Err(e) => {
+            error!("Invalid simulator address '{}': {}", address, e);
+            return;
+        }
+    };
+    let addr = std::net::SocketAddr::from((ip, port));
     info!("Lighting simulator listening on http://{}", addr);
 
     let listener = match tokio::net::TcpListener::bind(addr).await {
