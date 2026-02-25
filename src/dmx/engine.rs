@@ -29,7 +29,6 @@ use std::{
 use super::legacy_store::LegacyDmxStore;
 use super::ola_client::OlaClient;
 use midly::num::u7;
-use nodi::{Connection, Player};
 use ola::DmxBuffer;
 use tracing::{debug, error, info, span, warn, Level};
 
@@ -39,7 +38,7 @@ use crate::{
         system::LightingSystem, timeline::LightingTimeline, validation::validate_light_shows,
         EffectEngine,
     },
-    midi,
+    midi::playback::PrecomputedMidi,
     playsync::CancelHandle,
     songs::{MidiSheet, Song},
 };
@@ -50,6 +49,7 @@ use super::universe::Universe;
 /// universe(s) that should be sent to our DMX interface(s).
 pub struct Engine {
     dimming_speed_modifier: f64,
+    /// How long to wait before starting legacy MIDI DMX playback.
     playback_delay: Duration,
     universes: HashMap<u16, Universe>,
     /// Mapping from universe names to IDs for legacy MIDI system
@@ -83,6 +83,16 @@ pub struct Engine {
     /// RwLock protects structural changes (register_slot); hot-path reads
     /// (write/tick/iter_active) take a cheap read lock while atomics handle data.
     legacy_store: Arc<parking_lot::RwLock<LegacyDmxStore>>,
+    /// Active legacy MIDI playbacks dispatched from the effects loop.
+    legacy_midi_playbacks: Mutex<Vec<LegacyMidiPlayback>>,
+}
+
+/// A legacy MIDI light show being played back from the effects loop.
+struct LegacyMidiPlayback {
+    precomputed: PrecomputedMidi,
+    cursor: usize,
+    universe_id: u16,
+    midi_channels: HashSet<u8>,
 }
 
 /// DmxMessage is a message that can be passed around between senders and receivers.
@@ -156,7 +166,7 @@ impl Engine {
         let current_song_timeline: Arc<Mutex<Option<LightingTimeline>>> =
             Arc::new(Mutex::new(None));
         let current_song_time = Arc::new(Mutex::new(Duration::ZERO));
-        let timeline_finished = Arc::new(AtomicBool::new(false));
+        let timeline_finished = Arc::new(AtomicBool::new(true));
         let timeline_cancel_handle: Arc<Mutex<Option<CancelHandle>>> = Arc::new(Mutex::new(None));
 
         let legacy_store = Arc::new(parking_lot::RwLock::new(LegacyDmxStore::new()));
@@ -182,6 +192,7 @@ impl Engine {
             #[cfg(feature = "simulator")]
             watcher_handle: Mutex::new(None),
             legacy_store,
+            legacy_midi_playbacks: Mutex::new(Vec::new()),
         })
     }
 
@@ -213,6 +224,9 @@ impl Engine {
                     // Tick the legacy store to interpolate dimming values
                     engine.legacy_store.read().tick();
 
+                    // Advance legacy MIDI playback cursors and dispatch events
+                    engine.advance_legacy_midi_playbacks();
+
                     // Update effects engine and apply to universes
                     if let Err(e) = engine.update_effects() {
                         error!("Error updating effects: {}", e);
@@ -224,19 +238,20 @@ impl Engine {
                         error!("Error updating song lighting: {}", e);
                     }
 
-                    // Check if timeline has finished (all cues processed)
+                    // Check if all lighting has finished (DSL timeline cues + legacy MIDI playbacks)
                     // and notify the waiting thread if so
                     if !engine.timeline_finished.load(Ordering::Relaxed) {
-                        let timeline = engine.current_song_timeline.lock();
-                        if let Some(ref tl) = *timeline {
-                            if tl.is_finished() {
-                                engine.timeline_finished.store(true, Ordering::Relaxed);
-                                // Notify the cancel handle so wait() returns
-                                if let Some(ref cancel_handle) =
-                                    *engine.timeline_cancel_handle.lock()
-                                {
-                                    cancel_handle.notify();
-                                }
+                        let timeline_done = {
+                            let timeline = engine.current_song_timeline.lock();
+                            timeline.as_ref().is_none_or(|tl| tl.is_finished())
+                        };
+                        let legacy_done = engine.legacy_playbacks_finished();
+
+                        if timeline_done && legacy_done {
+                            engine.timeline_finished.store(true, Ordering::Relaxed);
+                            // Notify the cancel handle so wait() returns
+                            if let Some(ref cancel_handle) = *engine.timeline_cancel_handle.lock() {
+                                cancel_handle.notify();
                             }
                         }
                     }
@@ -435,9 +450,6 @@ impl Engine {
         // Start the lighting timeline at the specified time
         dmx_engine.start_lighting_timeline_at(start_time);
 
-        // Reset timeline finished flag for new song
-        dmx_engine.timeline_finished.store(false, Ordering::Relaxed);
-
         // Start file watcher for hot-reload if simulator is running
         #[cfg(feature = "simulator")]
         {
@@ -468,19 +480,9 @@ impl Engine {
             }
         }
 
-        // Start song time tracking (per-song, tracks elapsed time)
-        let song_time_tracker = Self::start_song_time_tracker_from(
-            dmx_engine.clone(),
-            cancel_handle.clone(),
-            start_time,
-        );
-
         // Note: Effects loop is now persistent and started in Engine::new()
 
-        let (universe_ids, playback_delay): (HashSet<u16>, Duration) = (
-            dmx_engine.universes.keys().cloned().collect(),
-            dmx_engine.playback_delay,
-        );
+        let universe_ids: HashSet<u16> = dmx_engine.universes.keys().cloned().collect();
 
         let mut dmx_midi_sheets: HashMap<String, (MidiSheet, Vec<u8>)> = HashMap::new();
         let mut empty_barrier_counter = 0;
@@ -529,76 +531,85 @@ impl Engine {
             return Ok(());
         }
 
-        let has_dmx_sheets = !dmx_midi_sheets.is_empty();
-        let mut join_handles: Vec<JoinHandle<()>> = dmx_midi_sheets
-            .into_iter()
-            .filter_map(|(universe_name, light_show_info)| {
-                let dmx_midi_sheet = light_show_info.0;
-                let midi_channels = HashSet::from_iter(light_show_info.1);
-                let cancel_handle = cancel_handle.clone();
-                let dmx_engine = dmx_engine.clone();
-                // Resolve universe ID once here, avoiding per-event String clone + HashMap lookup.
-                let universe_id = match dmx_engine.universe_name_to_id.get(&universe_name) {
+        // Build legacy MIDI playbacks and store them for effects-loop dispatch.
+        // This must happen BEFORE resetting timeline_finished to avoid a race where
+        // the effects loop sees empty playbacks + no timeline and sets finished=true.
+        {
+            let mut playbacks = dmx_engine.legacy_midi_playbacks.lock();
+            playbacks.clear();
+            for (universe_name, light_show_info) in &dmx_midi_sheets {
+                let midi_channels = HashSet::from_iter(light_show_info.1.clone());
+                let universe_id = match dmx_engine.universe_name_to_id.get(universe_name) {
                     Some(&id) => id,
-                    None => {
-                        warn!(universe = %universe_name, "Unknown universe name in light show, skipping");
-                        return None;
-                    }
+                    None => continue,
                 };
+                // Seek cursor past start_time
+                let events = light_show_info.0.precomputed.events();
+                let cursor = events.partition_point(|e| e.time < start_time);
+                playbacks.push(LegacyMidiPlayback {
+                    precomputed: PrecomputedMidi::from_events(events),
+                    cursor,
+                    universe_id,
+                    midi_channels,
+                });
+            }
+        }
+
+        // Reset timeline finished flag for new song AFTER populating playbacks.
+        // This must be set to false before starting the song time tracker, since the
+        // tracker exits when timeline_finished is true.
+        dmx_engine.timeline_finished.store(false, Ordering::Relaxed);
+
+        // Start song time tracking (per-song, tracks elapsed time).
+        // Must start AFTER timeline_finished is reset, otherwise the tracker
+        // sees true from the previous song and exits immediately.
+        let song_time_tracker = Self::start_song_time_tracker_from(
+            dmx_engine.clone(),
+            cancel_handle.clone(),
+            start_time,
+        );
+
+        let has_dmx_sheets = !dmx_midi_sheets.is_empty();
+
+        // Store the cancel handle so the effects loop can notify when everything finishes
+        {
+            let mut handle = dmx_engine.timeline_cancel_handle.lock();
+            *handle = Some(cancel_handle.clone());
+        }
+
+        // Spawn barrier threads for legacy sheets. Each thread consumes one barrier
+        // slot (matching the count in player.rs) and blocks until playback finishes.
+        // The first thread waits for completion; the rest just wait on the barrier.
+        let mut first_legacy = true;
+        let mut join_handles: Vec<JoinHandle<()>> = dmx_midi_sheets
+            .keys()
+            .map(|_| {
                 let play_barrier = play_barrier.clone();
-
-                Some(thread::spawn(move || {
-                    play_barrier.wait();
-
-                    if cancel_handle.is_cancelled() {
-                        return;
-                    }
-
-                    let connection = DMXConnection {
-                        cancel_handle: cancel_handle.clone(),
-                        universe_id,
-                        midi_channels,
-                        dmx_engine,
-                    };
-                    let mut player = Player::new(
-                        midi::midir::CancelableTimer::new(
-                            dmx_midi_sheet.ticker,
-                            cancel_handle.clone(),
-                        ),
-                        connection,
-                    );
-
-                    let play_finished = Arc::new(AtomicBool::new(false));
-
-                    spin_sleep::sleep(playback_delay);
-
-                    // Check again before playing
-                    if cancel_handle.is_cancelled() {
-                        return;
-                    }
-
-                    player.play(&dmx_midi_sheet.sheet);
-                    play_finished.store(true, std::sync::atomic::Ordering::Relaxed);
-                }))
+                if first_legacy {
+                    first_legacy = false;
+                    let cancel_handle = cancel_handle.clone();
+                    let timeline_finished = dmx_engine.timeline_finished.clone();
+                    thread::spawn(move || {
+                        play_barrier.wait();
+                        cancel_handle.wait(timeline_finished);
+                    })
+                } else {
+                    thread::spawn(move || {
+                        play_barrier.wait();
+                    })
+                }
             })
             .collect();
 
-        // If we only have new lighting shows (no old light shows), we still need to wait on the barrier
+        // If we only have DSL lighting shows (no legacy light shows), we still need
+        // one thread to wait on the barrier and block until the timeline finishes.
         if !has_dmx_sheets && has_lighting {
-            let play_barrier = play_barrier.clone();
-            let cancel_handle = cancel_handle.clone();
+            let cancel_handle_clone = cancel_handle.clone();
             let timeline_finished = dmx_engine.timeline_finished.clone();
-
-            // Store the cancel handle so the effects loop can notify when timeline finishes
-            {
-                let mut handle = dmx_engine.timeline_cancel_handle.lock();
-                *handle = Some(cancel_handle.clone());
-            }
-
+            let play_barrier_clone = play_barrier.clone();
             join_handles.push(thread::spawn(move || {
-                play_barrier.wait();
-
-                cancel_handle.wait(timeline_finished);
+                play_barrier_clone.wait();
+                cancel_handle_clone.wait(timeline_finished);
             }));
         }
 
@@ -653,9 +664,40 @@ impl Engine {
         // Stop the lighting timeline for this song, but effects continue processing
         dmx_engine.stop_lighting_timeline();
 
+        // Clear legacy MIDI playbacks
+        dmx_engine.legacy_midi_playbacks.lock().clear();
+
         info!("DMX playback stopped.");
 
         Ok(())
+    }
+
+    /// Advances all legacy MIDI playback cursors to the current song time,
+    /// dispatching events via handle_midi_event_by_id.
+    fn advance_legacy_midi_playbacks(&self) {
+        let song_time = match self.get_song_time().checked_sub(self.playback_delay) {
+            Some(t) => t,
+            None => return, // Still within the playback delay period
+        };
+        let mut playbacks = self.legacy_midi_playbacks.lock();
+        for playback in playbacks.iter_mut() {
+            let events = playback.precomputed.events();
+            while playback.cursor < events.len() && events[playback.cursor].time <= song_time {
+                let event = &events[playback.cursor];
+                if playback.midi_channels.is_empty()
+                    || playback.midi_channels.contains(&event.channel)
+                {
+                    self.handle_midi_event_by_id(playback.universe_id, event.message);
+                }
+                playback.cursor += 1;
+            }
+        }
+    }
+
+    /// Returns true if all legacy MIDI playbacks have finished.
+    fn legacy_playbacks_finished(&self) -> bool {
+        let playbacks = self.legacy_midi_playbacks.lock();
+        playbacks.iter().all(|p| p.cursor >= p.precomputed.len())
     }
 
     /// Handles an incoming MIDI event (by universe name).
@@ -1103,31 +1145,6 @@ impl Drop for Engine {
     }
 }
 
-/// DMXConnection is a nodi connection that can be cancelled and will output to a
-/// DMX interface.
-struct DMXConnection {
-    cancel_handle: CancelHandle,
-    /// Pre-resolved universe ID to avoid String clone + HashMap lookup per MIDI event.
-    universe_id: u16,
-    midi_channels: HashSet<u8>,
-    dmx_engine: Arc<Engine>,
-}
-
-impl Connection for DMXConnection {
-    fn play(&mut self, event: nodi::MidiEvent) -> bool {
-        if self.cancel_handle.is_cancelled() {
-            return false;
-        };
-
-        if self.midi_channels.is_empty() || self.midi_channels.contains(&event.channel.as_int()) {
-            self.dmx_engine
-                .handle_midi_event_by_id(self.universe_id, event.message);
-        }
-
-        true
-    }
-}
-
 #[cfg(test)]
 mod test {
     use std::{
@@ -1138,12 +1155,11 @@ mod test {
     };
 
     use midly::num::u7;
-    use nodi::{Connection, MidiEvent};
 
     use crate::playsync::CancelHandle;
     use std::sync::Barrier;
 
-    use super::{config, DMXConnection, Engine};
+    use super::{config, Engine};
     use crate::dmx::ola_client::OlaClientFactory;
     use crate::lighting::effects::EffectType;
 
@@ -1172,40 +1188,22 @@ mod test {
     }
 
     #[test]
-    fn test_connection_cancel() -> Result<(), Box<dyn Error>> {
-        let (engine, cancel_handle) = create_engine()?;
-
-        let mut connection = DMXConnection {
-            cancel_handle: cancel_handle.clone(),
-            universe_id: 5, // matches create_engine() universe
-            midi_channels: HashSet::new(),
-            dmx_engine: engine.clone(),
-        };
+    fn test_handle_midi_event_by_id() -> Result<(), Box<dyn Error>> {
+        let (engine, _cancel_handle) = create_engine()?;
 
         // Verify the default dim speed value.
         assert_eq!(engine.get_universe(5).unwrap().get_dim_speed(), 1.0);
 
-        // No cancellation.
-        assert!(connection.play(MidiEvent {
-            channel: 5.into(),
-            message: midly::MidiMessage::ProgramChange {
-                program: u7::new(1u8)
-            }
-        }));
+        // Send a ProgramChange event to update dimming.
+        engine.handle_midi_event_by_id(
+            5,
+            midly::MidiMessage::ProgramChange {
+                program: u7::new(1u8),
+            },
+        );
 
         // Verify that the universe got our command.
         assert_eq!(engine.get_universe(5).unwrap().get_dim_speed(), 44.0);
-
-        cancel_handle.cancel();
-
-        // Cancellation.
-        assert!(!connection.play(MidiEvent {
-            channel: 5.into(),
-            message: midly::MidiMessage::NoteOn {
-                key: 0.into(),
-                vel: 0.into(),
-            },
-        }));
 
         Ok(())
     }
@@ -1474,39 +1472,53 @@ mod test {
     }
 
     #[test]
-    fn test_connection_midi_inclusion() -> Result<(), Box<dyn Error>> {
-        let (engine, cancel_handle) = create_engine()?;
-
-        let mut midi_channels: HashSet<u8> = HashSet::new();
-        midi_channels.insert(5);
-        let mut connection = DMXConnection {
-            cancel_handle: cancel_handle.clone(),
-            universe_id: 5, // matches create_engine() universe
-            midi_channels,
-            dmx_engine: engine.clone(),
-        };
+    fn test_legacy_midi_channel_filtering() -> Result<(), Box<dyn Error>> {
+        let (engine, _cancel_handle) = create_engine()?;
 
         assert_eq!(engine.get_universe(5).unwrap().get_dim_speed(), 1.0);
 
-        // Valid MIDI channel.
-        assert!(connection.play(MidiEvent {
-            channel: 5.into(),
-            message: midly::MidiMessage::ProgramChange {
-                program: u7::new(1u8)
-            }
-        }));
+        // Send a ProgramChange directly — handle_midi_event_by_id always accepts.
+        engine.handle_midi_event_by_id(
+            5,
+            midly::MidiMessage::ProgramChange {
+                program: u7::new(1u8),
+            },
+        );
 
         assert_eq!(engine.get_universe(5).unwrap().get_dim_speed(), 44.0);
 
-        // This will be excluded.
-        assert!(connection.play(MidiEvent {
-            channel: 6.into(),
+        // Verify channel filtering via legacy playback dispatch.
+        // Build a playback with channel filter = {5}.
+        use crate::midi::playback::{PrecomputedMidi, TimedMidiEvent};
+        let events = vec![TimedMidiEvent {
+            time: std::time::Duration::ZERO,
+            channel: 6, // excluded
             message: midly::MidiMessage::ProgramChange {
-                program: u7::new(0u8)
-            }
-        }));
+                program: u7::new(0u8),
+            },
+        }];
+        let precomputed = PrecomputedMidi::from_events(&events);
+        let mut midi_channels = HashSet::new();
+        midi_channels.insert(5);
+        {
+            let mut playbacks = engine.legacy_midi_playbacks.lock();
+            playbacks.push(super::LegacyMidiPlayback {
+                precomputed,
+                cursor: 0,
+                universe_id: 5,
+                midi_channels,
+            });
+        }
 
+        // Advance playbacks — channel 6 should be excluded
+        engine.update_song_time(std::time::Duration::from_secs(1));
+        engine.advance_legacy_midi_playbacks();
+
+        // Dim speed should still be 44.0, not reset to 0.0
         assert_eq!(engine.get_universe(5).unwrap().get_dim_speed(), 44.0);
+
+        // Cleanup
+        engine.legacy_midi_playbacks.lock().clear();
 
         Ok(())
     }

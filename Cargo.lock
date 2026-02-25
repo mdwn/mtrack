@@ -1316,7 +1316,6 @@ dependencies = [
  "hound",
  "midir",
  "midly",
- "nodi",
  "notify",
  "notify-debouncer-mini",
  "num_cpus",
@@ -1390,16 +1389,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee6cda3051665f1fb8d9e08fc35c96d5a244fb1be711a03b71118828afc9a873"
 dependencies = [
  "jni-sys",
-]
-
-[[package]]
-name = "nodi"
-version = "1.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c239c2e3375e623350d34298cdeee95ea102111d69ffc1d8335cf417dc346b70"
-dependencies = [
- "midir",
- "midly",
 ]
 
 [[package]]

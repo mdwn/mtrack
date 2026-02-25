@@ -39,7 +39,6 @@ duration-string = "0.5.2"
 symphonia = { version = "0.5", features = ["all"] }
 midir = "0.10.1"
 midly = "0.5.3"
-nodi = { version = "1.0.3", features = ["hybrid-sleep", "midir"] }
 ola = "0.1.0"
 prost = "0.13.4"
 prost-types = "0.13.4"

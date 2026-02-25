@@ -12,7 +12,6 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 use std::{
-    cmp::min,
     collections::{HashMap, HashSet},
     error::Error,
     fmt, mem,
@@ -26,7 +25,6 @@ use std::{
 
 use midir::{MidiInput, MidiInputConnection, MidiInputPort, MidiOutput, MidiOutputPort};
 use midly::live::LiveEvent;
-use nodi::{Connection, Player, Timer};
 use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, info, span, warn, Level};
 
@@ -53,11 +51,6 @@ pub struct Device {
     dmx_engine: Option<Arc<dmx::engine::Engine>>,
     dmx_midi_transformers: HashMap<u8, Vec<MidiTransformer>>,
 }
-
-/// This is the maximum amount of ticks that the MIDI player can sleep for
-/// before checking whether a thread is cancelled. Lowering this may result
-/// in more frequent CPU spinning.
-const MAX_TICK_SIZE_FOR_SLEEP: u32 = 200;
 
 impl Device {
     fn new_default(name: String) -> Self {
@@ -228,56 +221,34 @@ impl super::Device for Device {
 
         let finished = Arc::new(AtomicBool::new(false));
         let playback_delay = self.playback_delay;
+        let mut connection = output.connect(output_port, "mtrack player")?;
+
         let join_handle = {
             let cancel_handle = cancel_handle.clone();
             let finished = finished.clone();
 
-            // Wrap the midir connection in a cancel connection so that we can stop playback.
-            let midir_connection = output.connect(output_port, "mtrack player")?;
-            let base_connection = ExcludeConnection {
-                connection: midir_connection,
-                cancel_handle: cancel_handle.clone(),
-                exclude_midi_channels,
-            };
+            thread::spawn(move || {
+                play_barrier.wait();
 
-            // If we need to seek, create wrappers that track elapsed time and skip early events
-            if start_time > Duration::ZERO {
-                let elapsed_time = Arc::new(Mutex::new(Duration::ZERO));
-                let seek_connection =
-                    SeekConnection::new(base_connection, start_time, elapsed_time.clone());
-                let seek_timer = SeekTimer::new(
-                    CancelableTimer::new(midi_sheet.ticker, cancel_handle.clone()),
-                    elapsed_time,
+                if cancel_handle.is_cancelled() {
+                    finished.store(true, Ordering::Relaxed);
+                    cancel_handle.notify();
+                    return;
+                }
+
+                spin_sleep::sleep(playback_delay);
+
+                play_precomputed(
+                    &midi_sheet.precomputed,
                     start_time,
-                    cancel_handle.clone(),
+                    &mut connection,
+                    &cancel_handle,
+                    &exclude_midi_channels,
                 );
-                let mut player = Player::new(seek_timer, seek_connection);
-                spawn_playback_thread(
-                    play_barrier,
-                    cancel_handle.clone(),
-                    finished.clone(),
-                    playback_delay,
-                    midi_sheet,
-                    move |sheet| {
-                        player.play(sheet);
-                    },
-                )
-            } else {
-                let mut player = Player::new(
-                    CancelableTimer::new(midi_sheet.ticker, cancel_handle.clone()),
-                    base_connection,
-                );
-                spawn_playback_thread(
-                    play_barrier,
-                    cancel_handle.clone(),
-                    finished.clone(),
-                    playback_delay,
-                    midi_sheet,
-                    move |sheet| {
-                        player.play(sheet);
-                    },
-                )
-            }
+
+                finished.store(true, Ordering::Relaxed);
+                cancel_handle.notify();
+            })
         };
 
         cancel_handle.wait(finished);
@@ -321,7 +292,6 @@ impl super::Device for Device {
             "Emitting event."
         );
 
-        // Choosing 8 here because that's what nodi does.
         let mut buf: Vec<u8> = Vec::with_capacity(8);
         event.write(&mut buf)?;
         let mut connection = output.connect(output_port, "mtrack player")?;
@@ -485,223 +455,43 @@ fn build_transformers(config: &config::Midi) -> Result<TransformerConfig, Box<dy
     Ok((midi_to_dmx_mappings, dmx_midi_transformers))
 }
 
-/// Spawns a playback thread with standard barrier/cancel/finish lifecycle.
-fn spawn_playback_thread<F>(
-    play_barrier: Arc<Barrier>,
-    cancel_handle: CancelHandle,
-    finished: Arc<AtomicBool>,
-    playback_delay: Duration,
-    midi_sheet: crate::songs::MidiSheet,
-    mut play_fn: F,
-) -> thread::JoinHandle<()>
-where
-    F: FnMut(&nodi::Sheet) + Send + 'static,
-{
-    thread::spawn(move || {
-        play_barrier.wait();
+/// Plays pre-computed MIDI events through a hardware connection.
+/// Sleeps between events using spin_sleep for precision without busy-waiting.
+fn play_precomputed(
+    precomputed: &super::playback::PrecomputedMidi,
+    start_time: Duration,
+    connection: &mut midir::MidiOutputConnection,
+    cancel_handle: &CancelHandle,
+    exclude_channels: &HashSet<u8>,
+) {
+    let events = precomputed.events_from(start_time);
+    let wall_start = std::time::Instant::now();
+    let mut buf = Vec::with_capacity(8);
 
+    for event in events {
         if cancel_handle.is_cancelled() {
-            finished.store(true, Ordering::Relaxed);
-            cancel_handle.notify();
             return;
         }
 
-        spin_sleep::sleep(playback_delay);
-        play_fn(&midi_sheet.sheet);
-
-        finished.store(true, Ordering::Relaxed);
-        cancel_handle.notify();
-    })
-}
-
-/// CancelableTimer is a timer for the nodi player that allows cancelation.
-pub(crate) struct CancelableTimer<T: Timer> {
-    timer: T,
-    cancel_handle: CancelHandle,
-}
-
-impl<T: Timer> CancelableTimer<T> {
-    pub fn new(timer: T, cancel_handle: CancelHandle) -> CancelableTimer<T> {
-        CancelableTimer {
-            timer,
-            cancel_handle,
+        let target_wall = event.time - start_time;
+        let elapsed = wall_start.elapsed();
+        if target_wall > elapsed {
+            spin_sleep::sleep(target_wall - elapsed);
         }
-    }
-}
-
-impl<T: Timer> Timer for CancelableTimer<T> {
-    fn sleep_duration(&mut self, n_ticks: u32) -> std::time::Duration {
-        self.timer.sleep_duration(n_ticks)
-    }
-
-    fn change_tempo(&mut self, tempo: u32) {
-        self.timer.change_tempo(tempo);
-    }
-
-    fn sleep(&mut self, n_ticks: u32) {
-        // Sleep in chunks of MAX_TICK_SIZE_FOR_SLEEP or less.
-        let mut remaining_ticks = n_ticks;
-        loop {
-            let num_ticks = min(remaining_ticks, MAX_TICK_SIZE_FOR_SLEEP);
-            self.timer.sleep(num_ticks);
-            if remaining_ticks == num_ticks {
-                return;
-            }
-            remaining_ticks -= MAX_TICK_SIZE_FOR_SLEEP;
-
-            // Make sure we react to cancellation.
-            if self.cancel_handle.is_cancelled() {
-                return;
-            }
-        }
-    }
-}
-
-/// SeekTimer tracks elapsed MIDI time by accumulating sleep durations
-/// and skips actual sleeps before start_time is reached
-struct SeekTimer<T: Timer> {
-    timer: T,
-    elapsed_time: Arc<Mutex<Duration>>,
-    start_time: Duration,
-    cancel_handle: CancelHandle,
-}
-
-impl<T: Timer> SeekTimer<T> {
-    fn new(
-        timer: T,
-        elapsed_time: Arc<Mutex<Duration>>,
-        start_time: Duration,
-        cancel_handle: CancelHandle,
-    ) -> Self {
-        Self {
-            timer,
-            elapsed_time,
-            start_time,
-            cancel_handle,
-        }
-    }
-}
-
-impl<T: Timer> Timer for SeekTimer<T> {
-    fn sleep_duration(&mut self, n_ticks: u32) -> Duration {
-        // Don't update elapsed time here - sleep_duration may be called without sleeping
-        self.timer.sleep_duration(n_ticks)
-    }
-
-    fn change_tempo(&mut self, tempo: u32) {
-        self.timer.change_tempo(tempo);
-    }
-
-    fn sleep(&mut self, n_ticks: u32) {
-        // Check for cancellation first - if cancelled, don't sleep at all
-        if self.cancel_handle.is_cancelled() {
+        if cancel_handle.is_cancelled() {
             return;
         }
 
-        // Get the duration before sleeping so we can track elapsed time
-        let duration = self.timer.sleep_duration(n_ticks);
-
-        // Calculate elapsed time after this sleep and determine if/how much to sleep
-        let (should_sleep, sleep_ticks) = {
-            let mut elapsed = self.elapsed_time.lock().unwrap();
-            let elapsed_before = *elapsed;
-            let elapsed_after = elapsed_before + duration;
-
-            if elapsed_after < self.start_time {
-                // We haven't reached start_time yet, skip the sleep entirely
-                // Update elapsed time to reflect that we've "skipped" through this duration
-                *elapsed = elapsed_after;
-                (false, 0)
-            } else if elapsed_before >= self.start_time {
-                // We've already passed start_time, sleep the full duration
-                *elapsed = elapsed_after;
-                (true, n_ticks)
-            } else {
-                // We're in the middle of a gap that spans start_time
-                // Calculate partial sleep: from start_time to elapsed_after
-                let partial_duration = elapsed_after - self.start_time;
-
-                // Calculate what fraction of ticks this represents
-                // Use floating point for precision, then round
-                // Handle zero duration case to avoid division by zero
-                let sleep_ticks = if duration.is_zero() {
-                    // If duration is zero, we can't calculate a fraction, so sleep all ticks
-                    n_ticks
-                } else {
-                    let fraction = partial_duration.as_secs_f64() / duration.as_secs_f64();
-                    let partial_ticks = (n_ticks as f64 * fraction).round() as u32;
-                    // Ensure we don't sleep more than the original ticks
-                    min(partial_ticks, n_ticks)
-                };
-
-                // Calculate what fraction of ticks to sleep
-                // We update elapsed_time to elapsed_after (the MIDI timeline position)
-                // even though we only sleep a partial amount. This is correct because
-                // elapsed_time tracks MIDI timeline position, not wall-clock time.
-                *elapsed = elapsed_after;
-                (true, sleep_ticks)
-            }
+        if !exclude_channels.is_empty() && exclude_channels.contains(&event.channel) {
+            continue;
+        }
+        let live_event = midly::live::LiveEvent::Midi {
+            channel: event.channel.into(),
+            message: event.message,
         };
-
-        // Sleep the calculated amount (if any)
-        // Note: CancelableTimer::sleep() will also check for cancellation during the sleep
-        if should_sleep && sleep_ticks > 0 {
-            self.timer.sleep(sleep_ticks);
-        }
-    }
-}
-
-/// SeekConnection skips events before start_time by checking elapsed MIDI time
-struct SeekConnection<C: Connection> {
-    connection: C,
-    start_time: Duration,
-    elapsed_time: Arc<Mutex<Duration>>,
-}
-
-impl<C: Connection> SeekConnection<C> {
-    fn new(connection: C, start_time: Duration, elapsed_time: Arc<Mutex<Duration>>) -> Self {
-        Self {
-            connection,
-            start_time,
-            elapsed_time,
-        }
-    }
-}
-
-impl<C: Connection> Connection for SeekConnection<C> {
-    fn play(&mut self, event: nodi::MidiEvent) -> bool {
-        // Check if we've reached start_time
-        let elapsed = self.elapsed_time.lock().unwrap();
-        if *elapsed < self.start_time {
-            // Skip this event - we haven't reached start_time yet
-            return true; // Continue processing but don't send the event
-        }
-        drop(elapsed);
-
-        // We've reached start_time, forward the event
-        self.connection.play(event)
-    }
-}
-
-/// ExcludeConnection is a nodi connection that can be cancelled and will exclude the given MIDI channels..
-struct ExcludeConnection<C: Connection> {
-    connection: C,
-    cancel_handle: CancelHandle,
-    exclude_midi_channels: HashSet<u8>,
-}
-
-impl<C: Connection> Connection for ExcludeConnection<C> {
-    fn play(&mut self, event: nodi::MidiEvent) -> bool {
-        if self.cancel_handle.is_cancelled() {
-            return false;
-        };
-
-        if self.exclude_midi_channels.is_empty()
-            || !self.exclude_midi_channels.contains(&event.channel.as_int())
-        {
-            self.connection.play(event)
-        } else {
-            true
+        buf.clear();
+        if live_event.write_std(&mut buf).is_ok() {
+            let _ = connection.send(&buf);
         }
     }
 }
