@@ -25,8 +25,6 @@ use crate::{config, dmx::engine::Engine, playsync::CancelHandle, songs::Song};
 
 pub(crate) mod midir;
 mod mock;
-#[cfg(feature = "quanta")]
-pub(crate) mod quanta_ticker;
 mod transform;
 
 /// A MIDI device that can play MIDI files and listen for inputs.
