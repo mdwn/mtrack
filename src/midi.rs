@@ -25,6 +25,7 @@ use crate::{config, dmx::engine::Engine, playsync::CancelHandle, songs::Song};
 
 pub(crate) mod midir;
 mod mock;
+pub(crate) mod playback;
 mod transform;
 
 /// A MIDI device that can play MIDI files and listen for inputs.

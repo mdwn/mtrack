@@ -22,10 +22,7 @@ use std::{cmp, fmt};
 use crate::audio::sample_source::create_sample_source_from_file;
 use crate::audio::SampleFormat;
 use midly::live::LiveEvent;
-use midly::{Format, Smf};
-use nodi::timers::Ticker;
-use nodi::Sheet;
-// Removed unused ringbuf imports after migration to Crossbeam channels
+use midly::Smf;
 
 use tracing::{debug, info, warn};
 
@@ -599,16 +596,16 @@ fn parse_midi(midi_file: &PathBuf) -> Result<MidiSheet, Box<dyn Error>> {
         .map_err(|e| format!("Failed to read MIDI file {}: {}", midi_file.display(), e))?;
     let smf = Smf::parse(&buf)
         .map_err(|e| format!("Failed to parse MIDI file {}: {}", midi_file.display(), e))?;
-    let ticker = Ticker::try_from(smf.header.timing)?;
-
-    let midi_sheet = MidiSheet {
-        ticker,
-        sheet: match smf.header.format {
-            Format::SingleTrack | Format::Sequential => Sheet::sequential(&smf.tracks),
-            Format::Parallel => Sheet::parallel(&smf.tracks),
-        },
+    let ticks_per_beat = match smf.header.timing {
+        midly::Timing::Metrical(tpb) => tpb.as_int(),
+        _ => return Err("timecode-based MIDI timing not supported".into()),
     };
-    Ok(midi_sheet)
+    let precomputed = crate::midi::playback::PrecomputedMidi::from_tracks(
+        &smf.tracks,
+        ticks_per_beat,
+        smf.header.format,
+    );
+    Ok(MidiSheet { precomputed })
 }
 
 /// A light show for the song.
@@ -797,10 +794,9 @@ impl Track {
     }
 }
 
-/// Contains a parsed timer and MIDI sheet for playback.
+/// Contains a pre-computed MIDI timeline for playback.
 pub struct MidiSheet {
-    pub ticker: Ticker,
-    pub sheet: Sheet,
+    pub(crate) precomputed: crate::midi::playback::PrecomputedMidi,
 }
 
 /// A registry of songs for use by the multitrack player.
