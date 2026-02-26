@@ -38,8 +38,8 @@ pub trait SampleSource: Send + Sync {
     fn duration(&self) -> Option<std::time::Duration>;
 }
 
-/// Blanket implementation for Box<dyn SampleSource>
-/// This allows Box<dyn SampleSource> to be used directly with generic functions
+/// Blanket implementation for `Box<dyn SampleSource>`
+/// This allows `Box<dyn SampleSource>` to be used directly with generic functions
 /// that require S: SampleSource, eliminating the need for wrapper types.
 impl SampleSource for Box<dyn SampleSource> {
     fn next_sample(&mut self) -> Result<Option<f32>, SampleSourceError> {
@@ -131,7 +131,7 @@ pub trait ChannelMappedSampleSource: Send + Sync {
 
     /// Get the channel mappings for this source
     /// Returns a Vec where each element corresponds to a source channel
-    /// Each Vec<String> contains the labels that source channel maps to
+    /// Each `Vec<String>` contains the labels that source channel maps to
     /// Empty Vec means that source channel is not mapped to any output
     fn channel_mappings(&self) -> &Vec<Vec<String>>;
 
