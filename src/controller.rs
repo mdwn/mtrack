@@ -11,13 +11,12 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
+use crate::config;
+use crate::player::Player;
 use std::error::Error;
 use std::io;
 use std::sync::Arc;
 use tokio::task::JoinHandle;
-
-use crate::config;
-use crate::player::Player;
 
 mod grpc;
 mod midi;

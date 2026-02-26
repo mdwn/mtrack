@@ -194,8 +194,13 @@ pub async fn start(
         None
     };
 
-    let controller =
-        crate::controller::Controller::new(player_config.controllers(), player.clone())?;
+    let hostname = config::resolve_hostname();
+    let controllers = player_config
+        .profiles(&hostname)
+        .first()
+        .map(|p| p.controllers().to_vec())
+        .unwrap_or_default();
+    let controller = crate::controller::Controller::new(controllers, player.clone())?;
 
     if tui_mode {
         crate::tui::run(player, controller, state_rx).await?;

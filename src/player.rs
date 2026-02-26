@@ -153,9 +153,10 @@ impl Player {
         };
 
         // DMX: if present in profile, required. If absent, optional.
-        // In simulator mode, fall back to a null OLA client if OLA is unavailable.
+        // Fall back to a null OLA client when in simulator mode or when null_client is set.
         let dmx_engine = if let Some(dmx_config) = profile.dmx() {
-            if simulator_mode {
+            let allow_null = simulator_mode || dmx_config.null_client();
+            if allow_null {
                 Self::wait_for_ok("dmx engine", || {
                     dmx::create_engine_for_simulator(Some(dmx_config), base_path)
                 })?

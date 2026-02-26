@@ -69,7 +69,10 @@ fn create_engine_inner(
     };
 
     #[cfg(not(test))]
-    let ola_client = {
+    let ola_client = if config.null_client() {
+        info!("null_client enabled, skipping OLA connection");
+        Box::new(ola_client::NullOlaClient) as Box<dyn ola_client::OlaClient>
+    } else {
         let ola_client_config = StreamingClientConfig {
             server_port: config.ola_port(),
             auto_start: false,
@@ -95,7 +98,7 @@ fn create_engine_inner(
             (Some(client), _) => client,
             (None, Some(e)) => {
                 if allow_null_client {
-                    info!("OLA not available, using null DMX client (simulator-only mode)");
+                    info!("OLA not available, using null DMX client");
                     Box::new(ola_client::NullOlaClient) as Box<dyn ola_client::OlaClient>
                 } else {
                     return Err(e);

@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use serde::Deserialize;
 
 use super::audio::Audio;
+use super::controller::Controller;
 use super::dmx::Dmx;
 use super::midi::Midi;
 use super::trigger::TriggerConfig;
@@ -67,6 +68,10 @@ pub struct Profile {
 
     /// Audio trigger configuration (optional).
     trigger: Option<TriggerConfig>,
+
+    /// Controllers associated with this profile.
+    #[serde(default)]
+    controllers: Vec<Controller>,
 }
 
 impl Profile {
@@ -83,6 +88,7 @@ impl Profile {
             midi,
             dmx,
             trigger: None,
+            controllers: Vec::new(),
         }
     }
 
@@ -114,6 +120,16 @@ impl Profile {
     /// Sets the trigger configuration (used during legacy config normalization).
     pub(super) fn set_trigger(&mut self, trigger: Option<TriggerConfig>) {
         self.trigger = trigger;
+    }
+
+    /// Returns the controllers associated with this profile.
+    pub fn controllers(&self) -> &[Controller] {
+        &self.controllers
+    }
+
+    /// Sets the controllers (used during legacy config normalization).
+    pub(super) fn set_controllers(&mut self, controllers: Vec<Controller>) {
+        self.controllers = controllers;
     }
 }
 
@@ -160,6 +176,10 @@ mod tests {
               universes:
                 - universe: 1
                   name: light-show
+            controllers:
+              - kind: grpc
+                port: 43234
+              - kind: osc
         "#;
 
         let profile: Profile = Config::builder()
@@ -184,6 +204,7 @@ mod tests {
         assert!(profile.midi().is_some());
         assert_eq!(profile.midi().unwrap().device(), "mock-midi");
         assert!(profile.dmx().is_some());
+        assert_eq!(profile.controllers().len(), 2);
     }
 
     #[test]
