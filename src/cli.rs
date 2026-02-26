@@ -109,6 +109,9 @@ enum Commands {
         player_path: String,
         /// The path to the playlist. Must be specified if the playlist is not specified in the player config.
         playlist_path: Option<String>,
+        /// Disable the terminal UI even when running interactively.
+        #[arg(long)]
+        no_tui: bool,
         /// Enable the lighting simulator web UI.
         #[cfg(feature = "simulator")]
         #[arg(long)]
@@ -228,7 +231,7 @@ fn print_device_list<T: Display>(devices: Vec<T>, empty_msg: &str) {
     }
 }
 
-pub async fn run() -> Result<(), Box<dyn Error>> {
+pub async fn run(tui_mode: bool) -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
 
     match cli.command {
@@ -242,6 +245,7 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
         Commands::Start {
             player_path,
             playlist_path,
+            no_tui,
             #[cfg(feature = "simulator")]
             simulator,
             #[cfg(feature = "simulator")]
@@ -260,7 +264,8 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
             };
             #[cfg(not(feature = "simulator"))]
             let sim_config = None;
-            local::start(&player_path, playlist_path, sim_config).await?
+            let effective_tui = tui_mode && !no_tui;
+            local::start(&player_path, playlist_path, sim_config, effective_tui).await?
         }
         Commands::Play { host_port, from } => remote::play(host_port, from).await?,
         Commands::Previous { host_port } => remote::previous(host_port).await?,

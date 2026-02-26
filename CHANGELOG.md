@@ -62,6 +62,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reduce CPU usage on low-power hardware like the Raspberry Pi when source and output sample
   rates differ. Set `resampler: fft` in the audio config to enable it.
 
+- **Terminal UI (TUI)**: When `mtrack start` is run from an interactive terminal, it now
+  launches a full-screen terminal UI built with ratatui/crossterm. The TUI shows the playlist,
+  now-playing status with a progress bar, real-time fixture colors from the lighting engine,
+  active effects, and an inline log panel. Keyboard shortcuts provide play/stop, prev/next,
+  playlist switching, and quit. When stdin is not a TTY (e.g. systemd, pipes), mtrack runs in
+  headless mode as before. Use `--no-tui` to force headless mode from an interactive terminal.
+  All configured controllers (gRPC, OSC, MIDI) continue to run alongside the TUI.
+
 ### Changed
 
 - **Custom MIDI playback engine replaces nodi**: The `nodi` dependency has been removed and replaced
@@ -87,6 +95,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Legacy field warnings**: When `profiles` is present in the player config, any top-level
   `audio`, `midi`, `dmx`, `trigger`, `track_mappings`, or `sample_triggers` fields now produce
   a warning that they are being ignored, making misconfiguration easier to diagnose.
+
+- **Shared state sampler**: Lighting fixture state and active effect information are now
+  broadcast via a `watch` channel from a shared 20 Hz sampler (`state.rs`). Both the TUI and
+  the lighting simulator subscribe to the same channel, replacing the simulator's previous
+  dedicated polling. This reduces lock contention on the effect engine.
 
 ### Fixed
 

@@ -236,7 +236,20 @@ impl super::Device for Device {
                     return;
                 }
 
-                spin_sleep::sleep(playback_delay);
+                // Sleep the playback delay in small increments so we can
+                // respond to cancellation promptly.
+                {
+                    let start = std::time::Instant::now();
+                    while start.elapsed() < playback_delay {
+                        if cancel_handle.is_cancelled() {
+                            finished.store(true, Ordering::Relaxed);
+                            cancel_handle.notify();
+                            return;
+                        }
+                        let remaining = playback_delay.saturating_sub(start.elapsed());
+                        spin_sleep::sleep(remaining.min(Duration::from_millis(50)));
+                    }
+                }
 
                 play_precomputed(
                     &midi_sheet.precomputed,

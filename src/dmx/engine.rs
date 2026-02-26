@@ -105,7 +105,6 @@ pub(super) struct DmxMessage {
 /// Shared handles exposed to the simulator for reading state.
 #[cfg(feature = "simulator")]
 pub struct SimulatorHandles {
-    pub effect_engine: Arc<Mutex<EffectEngine>>,
     pub lighting_system: Option<Arc<Mutex<LightingSystem>>>,
 }
 
@@ -1025,9 +1024,13 @@ impl Engine {
     #[cfg(feature = "simulator")]
     pub fn simulator_handles(&self) -> SimulatorHandles {
         SimulatorHandles {
-            effect_engine: self.effect_engine.clone(),
             lighting_system: self.lighting_system.clone(),
         }
+    }
+
+    /// Returns the effect engine.
+    pub fn effect_engine(&self) -> Arc<Mutex<EffectEngine>> {
+        self.effect_engine.clone()
     }
 
     /// Get a formatted string listing all active effects

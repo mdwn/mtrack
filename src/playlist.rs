@@ -83,6 +83,11 @@ impl Playlist {
         &self.name
     }
 
+    /// Returns the current position in the playlist (0-indexed).
+    pub fn position(&self) -> usize {
+        *self.position.read()
+    }
+
     /// Returns the list of songs in the playlist.
     pub fn songs(&self) -> &Vec<String> {
         &self.songs

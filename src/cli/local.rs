@@ -112,6 +112,7 @@ pub async fn start(
     playlist_path: Option<String>,
     #[cfg(feature = "simulator")] simulator_config: Option<crate::simulator::SimulatorConfig>,
     #[cfg(not(feature = "simulator"))] _simulator_config: Option<()>,
+    tui_mode: bool,
 ) -> Result<(), Box<dyn Error>> {
     apply_thread_priority();
     let player_path = &Path::new(player_path);
@@ -155,16 +156,24 @@ pub async fn start(
         simulator_mode,
     )?);
 
+    // Start the shared state sampler if a DMX engine (with effect engine) is present.
+    // Both the TUI and the simulator subscribe to this channel.
+    let (state_rx, _sampler_handle) = if let Some(effect_engine) = player.effect_engine() {
+        let (rx, handle) = crate::state::start_sampler(effect_engine);
+        (rx, Some(handle))
+    } else {
+        let (_, rx) = tokio::sync::watch::channel(std::sync::Arc::new(
+            crate::state::StateSnapshot::default(),
+        ));
+        (rx, None)
+    };
+
     // Start the lighting simulator if configured
     #[cfg(feature = "simulator")]
     let _simulator_handle = if let Some(sim_config) = simulator_config {
         if let Some(handles) = player.simulator_handles() {
-            match crate::simulator::start(
-                sim_config,
-                handles.effect_engine,
-                handles.lighting_system,
-            )
-            .await
+            match crate::simulator::start(sim_config, state_rx.clone(), handles.lighting_system)
+                .await
             {
                 Ok(handle) => {
                     // Pass the broadcast channel to the DmxEngine so it can start the
@@ -185,9 +194,15 @@ pub async fn start(
         None
     };
 
-    crate::controller::Controller::new(player_config.controllers(), player)?
-        .join()
-        .await?;
+    let controller =
+        crate::controller::Controller::new(player_config.controllers(), player.clone())?;
+
+    if tui_mode {
+        crate::tui::run(player, controller, state_rx).await?;
+    } else {
+        controller.join().await?;
+    }
+
     Ok(())
 }
 

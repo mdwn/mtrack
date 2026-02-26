@@ -27,22 +27,41 @@ mod samples;
 #[cfg(feature = "simulator")]
 mod simulator;
 mod songs;
+mod state;
 #[cfg(test)]
 mod testutil;
 mod trigger;
+mod tui;
 mod util;
 mod verify;
 
 #[tokio::main]
 async fn main() {
+    use std::io::IsTerminal;
+
+    let tui_mode = std::io::stdin().is_terminal() && !std::env::args().any(|a| a == "--no-tui");
+
     // Initialize tracing with a filter that sets default logging to off, with mtrack at info level.
     // This prevents noisy INFO messages from symphonia crates (which are suppressed by the default "off").
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("off,mtrack=info"));
 
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    if tui_mode {
+        // In TUI mode, route tracing output to an in-TUI log panel
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
 
-    if let Err(e) = cli::run().await {
+        let tui_layer = tui::logging::init_tui_logging(1000);
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(tui_layer)
+            .init();
+    } else {
+        // Headless mode: log to stderr as before
+        tracing_subscriber::fmt().with_env_filter(filter).init();
+    }
+
+    if let Err(e) = cli::run(tui_mode).await {
         eprintln!("Error: {}", e);
         std::process::exit(1);
     }

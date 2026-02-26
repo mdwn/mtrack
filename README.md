@@ -787,6 +787,44 @@ There are more that can be implemented, but these are just the ones that came to
 If you'd like to add any particular ones, please file an issue. Otherwise I'll add them in as they
 strike me.
 
+## Terminal UI (TUI)
+
+When `mtrack start` is run from an interactive terminal (TTY), it automatically launches a
+terminal-based user interface built with [ratatui](https://ratatui.rs/). The TUI provides a
+complete view of the player state without requiring any external clients:
+
+- **Playlist panel**: Shows the current playlist with the selected song highlighted.
+- **Now Playing panel**: Displays the current song name, a progress bar with elapsed/total
+  time, and the track listing.
+- **Fixtures panel**: Shows real-time fixture colors from the lighting engine (when DMX is
+  configured).
+- **Active Effects panel**: Lists currently running lighting effects.
+- **Log panel**: Displays tracing output (INFO/WARN/ERROR) inline, color-coded by severity.
+- **Key hints bar**: Shows available keyboard shortcuts.
+
+### Keyboard controls
+
+| Key | Action |
+|-----|--------|
+| `Space` / `Enter` | Play / Stop |
+| `←` / `→` or `p` / `n` | Previous / Next song |
+| `a` | Switch to all songs |
+| `l` | Switch to playlist |
+| `q` / `Esc` | Quit |
+
+### Headless mode
+
+When stdin is not a TTY (e.g. running under systemd, in a pipe, or via SSH without a
+terminal), `mtrack` runs in headless mode with log output to stderr, exactly as before.
+You can also force headless mode from an interactive terminal with the `--no-tui` flag:
+
+```
+$ mtrack start /path/to/player.yaml --no-tui
+```
+
+The TUI runs alongside all configured controllers (gRPC, OSC, MIDI), so you can use the
+keyboard and remote control simultaneously.
+
 ## gRPC Control
 
 The player can now be controlled using gRPC calls. The definition for the service can be found
