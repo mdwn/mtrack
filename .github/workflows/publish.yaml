@@ -35,4 +35,5 @@ jobs:
       - name: Create release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create --notes '${{ steps.extract-release-notes.outputs.release_notes }}' --title ${{ github.ref_name }} ${{ github.ref_name }}
+          RELEASE_NOTES: ${{ steps.extract-release-notes.outputs.release_notes }}
+        run: gh release create --notes "$RELEASE_NOTES" --title "${{ github.ref_name }}" "${{ github.ref_name }}"
