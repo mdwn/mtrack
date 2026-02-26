@@ -87,6 +87,9 @@ impl PrecomputedMidi {
                 PrecomputedMidi { events: all_events }
             }
             Format::Sequential => {
+                // Each track is processed independently with inline tempo handling only.
+                // Format 2 is rare; if a sequential file has conductor-style tempo tracks,
+                // they won't cross-apply to other tracks (each track is self-contained).
                 let mut all_events = Vec::new();
                 let mut cumulative_offset = Duration::ZERO;
                 for track in tracks {
@@ -163,12 +166,16 @@ impl PrecomputedMidi {
                 // Remaining ticks at current tempo
                 elapsed_micros += remaining_ticks as f64 * micros_per_tick;
             } else {
-                // No external tempo map — handle inline tempo changes
-                // For single-track (Format 0) or sequential tracks
+                // No external tempo map — handle inline tempo changes.
+                // For single-track (Format 0) or sequential tracks.
+                // Per the MIDI spec, the delta is timed at the *current* tempo.
+                // A tempo change at the same tick as a note applies to the *next* delta,
+                // not retroactively. This is correct: we accumulate time first, then
+                // update the tempo for subsequent events.
                 let ticks_since_last = tick_position - last_tick;
                 elapsed_micros += ticks_since_last as f64 * micros_per_tick;
 
-                // Check for inline tempo change
+                // Update tempo for subsequent deltas
                 if let TrackEventKind::Meta(MetaMessage::Tempo(tempo)) = event.kind {
                     micros_per_tick = tempo.as_int() as f64 / tpb;
                 }
@@ -179,7 +186,7 @@ impl PrecomputedMidi {
             // Emit MIDI events (skip meta events)
             if let TrackEventKind::Midi { channel, message } = event.kind {
                 events.push(TimedMidiEvent {
-                    time: Duration::from_micros(elapsed_micros as u64),
+                    time: Duration::from_micros(elapsed_micros.round() as u64),
                     channel: channel.as_int(),
                     message,
                 });
@@ -188,15 +195,18 @@ impl PrecomputedMidi {
 
         TrackResult {
             events,
-            total_duration: Duration::from_micros(elapsed_micros as u64),
+            total_duration: Duration::from_micros(elapsed_micros.round() as u64),
         }
     }
 
-    /// Creates a PrecomputedMidi from a slice of events (cloning them).
-    pub fn from_events(events: &[TimedMidiEvent]) -> Self {
-        PrecomputedMidi {
-            events: events.to_vec(),
-        }
+    /// Creates a PrecomputedMidi by taking ownership of a Vec of events.
+    pub fn from_events(events: Vec<TimedMidiEvent>) -> Self {
+        PrecomputedMidi { events }
+    }
+
+    /// Consumes self and returns the underlying event Vec.
+    pub fn into_events(self) -> Vec<TimedMidiEvent> {
+        self.events
     }
 
     /// Returns the slice of events starting from the first event at or after `start_time`.
@@ -211,7 +221,7 @@ impl PrecomputedMidi {
     }
 
     /// Returns true if there are no events.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.events.is_empty()
     }

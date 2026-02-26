@@ -531,20 +531,23 @@ impl Engine {
             return Ok(());
         }
 
+        let has_dmx_sheets = !dmx_midi_sheets.is_empty();
+
         // Build legacy MIDI playbacks and store them for effects-loop dispatch.
+        // Drain the map to take ownership of MidiSheets (avoids cloning event vecs).
         // This must happen BEFORE resetting timeline_finished to avoid a race where
         // the effects loop sees empty playbacks + no timeline and sets finished=true.
         {
             let mut playbacks = dmx_engine.legacy_midi_playbacks.lock();
             playbacks.clear();
-            for (universe_name, light_show_info) in &dmx_midi_sheets {
-                let midi_channels = HashSet::from_iter(light_show_info.1.clone());
-                let universe_id = match dmx_engine.universe_name_to_id.get(universe_name) {
+            for (universe_name, (midi_sheet, channels)) in dmx_midi_sheets.drain() {
+                let midi_channels = HashSet::from_iter(channels);
+                let universe_id = match dmx_engine.universe_name_to_id.get(&universe_name) {
                     Some(&id) => id,
                     None => continue,
                 };
+                let events = midi_sheet.precomputed.into_events();
                 // Seek cursor past start_time
-                let events = light_show_info.0.precomputed.events();
                 let cursor = events.partition_point(|e| e.time < start_time);
                 playbacks.push(LegacyMidiPlayback {
                     precomputed: PrecomputedMidi::from_events(events),
@@ -569,20 +572,23 @@ impl Engine {
             start_time,
         );
 
-        let has_dmx_sheets = !dmx_midi_sheets.is_empty();
-
         // Store the cancel handle so the effects loop can notify when everything finishes
         {
             let mut handle = dmx_engine.timeline_cancel_handle.lock();
             *handle = Some(cancel_handle.clone());
         }
 
-        // Spawn barrier threads for legacy sheets. Each thread consumes one barrier
-        // slot (matching the count in player.rs) and blocks until playback finishes.
-        // The first thread waits for completion; the rest just wait on the barrier.
+        // Spawn barrier threads for legacy light shows. player.rs allocates
+        // song.light_shows().len() barrier slots for legacy shows, and +1 for DSL lighting.
+        // We must spawn exactly that many threads here:
+        //   - has_dmx_sheets count threads for matched legacy shows
+        //   - empty_barrier_counter threads for unmatched legacy shows
+        //   - 1 thread for DSL-only (if no legacy shows but has DSL lighting)
+        // The first legacy thread also waits for timeline completion; the rest
+        // just satisfy the barrier count and exit.
+        let num_legacy_playbacks = dmx_engine.legacy_midi_playbacks.lock().len();
         let mut first_legacy = true;
-        let mut join_handles: Vec<JoinHandle<()>> = dmx_midi_sheets
-            .keys()
+        let mut join_handles: Vec<JoinHandle<()>> = (0..num_legacy_playbacks)
             .map(|_| {
                 let play_barrier = play_barrier.clone();
                 if first_legacy {
@@ -1497,7 +1503,7 @@ mod test {
                 program: u7::new(0u8),
             },
         }];
-        let precomputed = PrecomputedMidi::from_events(&events);
+        let precomputed = PrecomputedMidi::from_events(events);
         let mut midi_channels = HashSet::new();
         midi_channels.insert(5);
         {

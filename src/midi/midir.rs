@@ -491,7 +491,9 @@ fn play_precomputed(
         };
         buf.clear();
         if live_event.write_std(&mut buf).is_ok() {
-            let _ = connection.send(&buf);
+            if let Err(e) = connection.send(&buf) {
+                debug!("MIDI send failed: {:?}", e);
+            }
         }
     }
 }
