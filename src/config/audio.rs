@@ -22,6 +22,17 @@ const DEFAULT_AUDIO_PLAYBACK_DELAY: Duration = Duration::ZERO;
 const DEFAULT_BUFFER_SIZE: usize = 1024;
 const DEFAULT_BUFFER_THREADS: usize = 2;
 
+/// Which resampling algorithm to use when source and output sample rates differ.
+#[derive(Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ResamplerType {
+    /// High-quality sinc interpolation (lower latency, higher CPU). This is the default.
+    #[default]
+    Sinc,
+    /// FFT-based resampling (considerably faster for fixed-ratio resampling).
+    Fft,
+}
+
 /// How to choose the CPAL stream buffer size (period size). Affects latency vs underrun tolerance.
 #[derive(Deserialize, Clone, Debug)]
 #[serde(untagged)]
@@ -64,6 +75,9 @@ pub struct Audio {
     /// Number of worker threads for buffered song sources.
     /// Defaults to a small fixed value; must be >= 1.
     buffer_threads: Option<usize>,
+
+    /// Resampling algorithm: "sinc" (default, high quality) or "fft" (faster on low-power hardware).
+    resampler: Option<ResamplerType>,
 }
 
 impl Audio {
@@ -78,6 +92,7 @@ impl Audio {
             buffer_size: None,
             stream_buffer_size: None,
             buffer_threads: None,
+            resampler: None,
         }
     }
 
@@ -128,6 +143,11 @@ impl Audio {
         self.stream_buffer_size.clone()
     }
 
+    /// Returns the resampling algorithm to use (default: Sinc).
+    pub fn resampler(&self) -> ResamplerType {
+        self.resampler.unwrap_or_default()
+    }
+
     /// Sets the target sample rate.
     #[allow(dead_code)]
     pub fn with_sample_rate(mut self, sample_rate: u32) -> Self {
@@ -160,6 +180,13 @@ impl Audio {
     #[allow(dead_code)]
     pub fn with_stream_buffer_size(mut self, sbs: StreamBufferSize) -> Self {
         self.stream_buffer_size = Some(sbs);
+        self
+    }
+
+    /// Sets the resampling algorithm.
+    #[allow(dead_code)]
+    pub fn with_resampler(mut self, resampler: ResamplerType) -> Self {
+        self.resampler = Some(resampler);
         self
     }
 }

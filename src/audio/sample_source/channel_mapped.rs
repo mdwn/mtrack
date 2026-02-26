@@ -12,6 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 use crate::audio::TargetFormat;
+use crate::config::ResamplerType;
 
 use super::error::SampleSourceError;
 use super::traits::{ChannelMappedSampleSource, SampleSource};
@@ -58,6 +59,7 @@ pub fn create_channel_mapped_sample_source(
     source: Box<dyn SampleSource>,
     target_format: TargetFormat,
     channel_mappings: Vec<Vec<String>>,
+    resampler_type: ResamplerType,
 ) -> Result<Box<dyn ChannelMappedSampleSource>, SampleSourceError> {
     let source_format = TargetFormat::new(
         source.sample_rate(),
@@ -73,8 +75,13 @@ pub fn create_channel_mapped_sample_source(
     let channel_count = source.channel_count();
     let sample_source: Box<dyn SampleSource> = if needs_transcoding {
         // Box<dyn SampleSource> now implements SampleSource directly, so we can use it with AudioTranscoder
-        let transcoder =
-            AudioTranscoder::new(source, &source_format, &target_format, channel_count)?;
+        let transcoder = AudioTranscoder::new(
+            source,
+            &source_format,
+            &target_format,
+            channel_count,
+            resampler_type,
+        )?;
         Box::new(transcoder)
     } else {
         source

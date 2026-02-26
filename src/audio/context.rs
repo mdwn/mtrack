@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 use crate::audio::format::TargetFormat;
 use crate::audio::sample_source::BufferFillPool;
+use crate::config::ResamplerType;
 
 /// Context passed into playback and source-creation paths so they can
 /// obtain target format, buffer size, and shared resources (e.g. buffer
@@ -34,6 +35,8 @@ pub struct PlaybackContext {
     /// Shared pool for prefilling BufferedSampleSource. If None, sources
     /// are not wrapped in BufferedSampleSource.
     pub buffer_fill_pool: Option<Arc<BufferFillPool>>,
+    /// Which resampling algorithm to use when sample rates differ.
+    pub resampler_type: ResamplerType,
 }
 
 impl PlaybackContext {
@@ -42,11 +45,13 @@ impl PlaybackContext {
         target_format: TargetFormat,
         buffer_size: usize,
         buffer_fill_pool: Option<Arc<BufferFillPool>>,
+        resampler_type: ResamplerType,
     ) -> Self {
         Self {
             target_format,
             buffer_size,
             buffer_fill_pool,
+            resampler_type,
         }
     }
 }

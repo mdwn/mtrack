@@ -278,6 +278,11 @@ audio:
   # (Optional) The bits per sample (bit depth) to use for the audio device. Defaults to 32.
   bits_per_sample: 32
 
+  # (Optional) Resampling algorithm used when source and output sample rates differ.
+  # "sinc" (default): High-quality sinc interpolation, higher CPU usage.
+  # "fft": FFT-based resampling, considerably faster on low-power hardware (e.g. Raspberry Pi).
+  # resampler: fft
+
   # (Optional) Once a song is started, mtrack will wait this amount before triggering the audio playback.
   playback_delay: 500ms
 
