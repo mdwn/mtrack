@@ -212,6 +212,9 @@ impl Player {
             if !self.sample_triggers.is_empty() {
                 warn!("top-level 'sample_triggers' ignored when 'profiles' is present");
             }
+            if self.controller.is_some() || self.controllers.is_some() {
+                warn!("top-level 'controller'/'controllers' ignored when 'profiles' is present");
+            }
             return;
         }
 
@@ -252,16 +255,25 @@ impl Player {
             }
         }
 
+        // Collect controllers from legacy top-level fields.
+        let controllers = self.collect_controllers();
+
         // Create a profile if any subsystem is configured.
-        if audio_config.is_some() || midi.is_some() || dmx.is_some() || trigger.is_some() {
+        if audio_config.is_some()
+            || midi.is_some()
+            || dmx.is_some()
+            || trigger.is_some()
+            || !controllers.is_empty()
+        {
             let mut profile = Profile::new(None, audio_config, midi, dmx);
             profile.set_trigger(trigger);
+            profile.set_controllers(controllers);
             self.profiles = Some(vec![profile]);
         }
     }
 
-    /// Gets the controllers configuration.
-    pub fn controllers(&self) -> Vec<Controller> {
+    /// Collects controllers from legacy top-level fields.
+    fn collect_controllers(&self) -> Vec<Controller> {
         if let Some(controllers) = &self.controllers {
             return controllers.clone();
         } else if let Some(controller) = &self.controller {
@@ -270,6 +282,19 @@ impl Player {
             }
 
             return vec![controller.clone()];
+        }
+
+        vec![]
+    }
+
+    /// Gets the controllers configuration from the first profile.
+    /// Kept for backward compatibility in tests.
+    #[cfg(test)]
+    pub fn controllers(&self) -> Vec<Controller> {
+        if let Some(profiles) = &self.profiles {
+            if let Some(first) = profiles.first() {
+                return first.controllers().to_vec();
+            }
         }
 
         vec![]
@@ -874,6 +899,66 @@ trigger:
             profiles[0].trigger().unwrap().device(),
             Some("UltraLite-mk5")
         );
+    }
+
+    #[test]
+    fn test_legacy_controllers_normalize_into_profile() {
+        let player = player_from_yaml(
+            r#"
+songs: songs
+audio:
+  device: mock-device
+track_mappings:
+  click: [1]
+controllers:
+  - kind: grpc
+    port: 43234
+  - kind: osc
+"#,
+        );
+
+        let profiles = player.all_profiles();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].controllers().len(), 2);
+        assert_eq!(player.controllers().len(), 2);
+    }
+
+    #[test]
+    fn test_controllers_only_normalize_into_profile() {
+        let player = player_from_yaml(
+            r#"
+songs: songs
+controllers:
+  - kind: grpc
+"#,
+        );
+
+        let profiles = player.all_profiles();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].controllers().len(), 1);
+    }
+
+    #[test]
+    fn test_profile_controllers_not_overridden_by_legacy() {
+        let player = player_from_yaml(
+            r#"
+songs: songs
+controllers:
+  - kind: grpc
+profiles:
+  - audio:
+      device: mock-device
+      track_mappings:
+        drums: [1]
+    controllers:
+      - kind: osc
+"#,
+        );
+
+        // Profile controllers should be used, not legacy.
+        let profiles = player.all_profiles();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].controllers().len(), 1);
     }
 
     #[test]

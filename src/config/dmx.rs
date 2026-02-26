@@ -42,6 +42,11 @@ pub struct Dmx {
 
     /// The lighting configuration.
     lighting: Option<Lighting>,
+
+    /// When true, use a no-op OLA client if the OLA daemon is unavailable.
+    /// Allows the effects engine to run (e.g. for TUI display) without OLA.
+    #[serde(default)]
+    null_client: bool,
 }
 
 impl Dmx {
@@ -60,6 +65,7 @@ impl Dmx {
             ola_port,
             universes,
             lighting,
+            null_client: false,
         }
     }
 
@@ -98,6 +104,11 @@ impl Dmx {
     /// Gets the lighting configuration.
     pub fn lighting(&self) -> Option<&Lighting> {
         self.lighting.as_ref()
+    }
+
+    /// Whether to fall back to a no-op OLA client when OLA is unavailable.
+    pub fn null_client(&self) -> bool {
+        self.null_client
     }
 }
 
