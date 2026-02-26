@@ -814,6 +814,7 @@ impl AudioDevice for Device {
             self.target_format.clone(),
             self.audio_config.buffer_size(),
             buffer_fill_pool,
+            self.audio_config.resampler(),
         );
 
         // Create channel mapped sources for each track in the song, starting from start_time.

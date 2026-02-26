@@ -459,6 +459,7 @@ impl Song {
                 sample_source,
                 context.target_format.clone(),
                 channel_mappings,
+                context.resampler_type,
             )?;
             let source: Box<dyn crate::audio::sample_source::ChannelMappedSampleSource> =
                 if let Some(pool) = &context.buffer_fill_pool {

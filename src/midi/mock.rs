@@ -117,9 +117,12 @@ impl super::Device for Device {
 
     /// Stops watching events.
     fn stop_watch_events(&self) {
-        self.closed.store(true, Ordering::Relaxed);
-        // Wait for watcher thread to move to next loop iteration.
-        self.barrier.wait();
+        // Only signal the barrier if we're the first caller. A second call
+        // (e.g. from the monitor task after the event thread has exited)
+        // would deadlock because the other barrier party is gone.
+        if !self.closed.swap(true, Ordering::Relaxed) {
+            self.barrier.wait();
+        }
     }
 
     /// Plays the given song through the MIDI interface, starting from a specific time.

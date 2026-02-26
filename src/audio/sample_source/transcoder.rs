@@ -12,18 +12,16 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 use crate::audio::TargetFormat;
+use crate::config::ResamplerType;
 use parking_lot::Mutex;
 use rubato::{
-    SincFixedIn, SincInterpolationParameters, SincInterpolationType, VecResampler, WindowFunction,
+    FftFixedIn, SincFixedIn, SincInterpolationParameters, SincInterpolationType, VecResampler,
+    WindowFunction,
 };
+use tracing::info;
 
 use super::error::SampleSourceError;
 use super::traits::SampleSource;
-
-// Import VecResampler trait to bring methods into scope for method resolution
-// The `as _` prevents the "unused import" warning while still bringing trait methods into scope
-#[allow(unused_imports)]
-use rubato::VecResampler as _;
 
 // Resampling configuration constants
 /// Input block size for the sinc resampler.
@@ -107,8 +105,8 @@ impl OutputFifo {
 /// - Return samples from output FIFO one at a time
 pub struct AudioTranscoder<S: SampleSource> {
     source: S,
-    /// Sinc resampler wrapped in Mutex for Sync (contains non-Sync internals)
-    pub resampler: Option<Mutex<SincFixedIn<f32>>>,
+    /// Resampler wrapped in Mutex for Sync (contains non-Sync internals)
+    pub resampler: Option<Mutex<Box<dyn VecResampler<f32>>>>,
     pub source_rate: u32,
     pub target_rate: u32,
     target_bits_per_sample: u16,
@@ -176,34 +174,63 @@ where
         source_format: &TargetFormat,
         target_format: &TargetFormat,
         channels: u16,
+        resampler_type: ResamplerType,
     ) -> Result<Self, SampleSourceError> {
         let needs_resampling = source_format.sample_rate != target_format.sample_rate;
 
         let (resampler, output_scratch) = if needs_resampling {
-            // Use sinc resampling for lower latency and high quality.
-            let sinc_params = SincInterpolationParameters {
-                sinc_len: 256,
-                f_cutoff: 0.95,
-                oversampling_factor: 128,
-                interpolation: SincInterpolationType::Linear,
-                window: WindowFunction::BlackmanHarris2,
-            };
             let resample_ratio =
                 target_format.sample_rate as f64 / source_format.sample_rate as f64;
+            let num_channels = channels as usize;
 
-            let r = SincFixedIn::<f32>::new(
-                resample_ratio,
-                1.0, // max_resample_ratio_relative: no dynamic changes
-                sinc_params,
-                INPUT_BLOCK_SIZE,
-                channels as usize,
-            )
-            .map_err(|_e| {
-                SampleSourceError::ResamplingFailed(
-                    source_format.sample_rate,
-                    target_format.sample_rate,
-                )
-            })?;
+            let r: Box<dyn VecResampler<f32>> = match resampler_type {
+                ResamplerType::Sinc => {
+                    let sinc_params = SincInterpolationParameters {
+                        sinc_len: 256,
+                        f_cutoff: 0.95,
+                        oversampling_factor: 128,
+                        interpolation: SincInterpolationType::Linear,
+                        window: WindowFunction::BlackmanHarris2,
+                    };
+                    Box::new(
+                        SincFixedIn::<f32>::new(
+                            resample_ratio,
+                            1.0,
+                            sinc_params,
+                            INPUT_BLOCK_SIZE,
+                            num_channels,
+                        )
+                        .map_err(|_e| {
+                            SampleSourceError::ResamplingFailed(
+                                source_format.sample_rate,
+                                target_format.sample_rate,
+                            )
+                        })?,
+                    )
+                }
+                ResamplerType::Fft => Box::new(
+                    FftFixedIn::<f32>::new(
+                        source_format.sample_rate as usize,
+                        target_format.sample_rate as usize,
+                        INPUT_BLOCK_SIZE,
+                        2,
+                        num_channels,
+                    )
+                    .map_err(|_e| {
+                        SampleSourceError::ResamplingFailed(
+                            source_format.sample_rate,
+                            target_format.sample_rate,
+                        )
+                    })?,
+                ),
+            };
+
+            info!(
+                resampler = ?resampler_type,
+                from = source_format.sample_rate,
+                to = target_format.sample_rate,
+                "Resampling audio",
+            );
 
             let scratch = r.output_buffer_allocate(true);
             (Some(Mutex::new(r)), scratch)

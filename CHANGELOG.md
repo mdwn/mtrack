@@ -56,7 +56,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `strobe_dmx_offset` fields, allowing accurate strobe DMX calculation for fixtures whose
   strobe channel starts above DMX value 0 (e.g. Astera PixelBrick: offset 7, range 0.4–25 Hz).
 
+- **Configurable FFT resampling**: A new `resampler` option in the audio configuration allows
+  choosing between `sinc` (default, high-quality sinc interpolation) and `fft` (FFT-based
+  resampling, considerably faster for fixed-ratio resampling). The FFT mode can significantly
+  reduce CPU usage on low-power hardware like the Raspberry Pi when source and output sample
+  rates differ. Set `resampler: fft` in the audio config to enable it.
+
 ### Changed
+
+- **Custom MIDI playback engine replaces nodi**: The `nodi` dependency has been removed and replaced
+  with a bespoke MIDI playback engine built on `midly`. MIDI events are pre-computed into absolute-
+  timestamped event streams in a single pass, with wall-clock timing via `spin_sleep` for precise
+  hardware MIDI output. Legacy MIDI-to-DMX light shows are now driven from the effects loop using
+  cursor-based playback rather than spawning separate threads with nodi players, reducing thread
+  count and improving timing consistency.
 
 - **Strobe DMX normalization uses period-linear interpolation**: Strobe frequency-to-DMX mapping
   now interpolates in period-space (1/frequency) rather than frequency-space, matching how most
@@ -97,6 +110,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Stale lighting state between songs**: Fixed a bug where DSL songs without tempo blocks would
   inherit stale tempo maps from previous songs. Tempo maps, timelines, and legacy MIDI values are
   now properly cleared on song transitions.
+
+- **DMX timeline completion race**: Fixed a race condition where the effects loop could mark the
+  timeline as finished before the first song had set up its lighting state. The `timeline_finished`
+  flag now initializes to `true` and is only reset when a song begins, preventing premature
+  completion signals.
 
 ## [0.8.0] - 2026-02-20
 

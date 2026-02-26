@@ -24,6 +24,7 @@ mod sample_source_tests {
     use crate::audio::sample_source::transcoder::AudioTranscoder;
     use crate::audio::sample_source::{BufferFillPool, BufferedSampleSource, ChannelMappedSource};
     use crate::audio::TargetFormat;
+    use crate::config::ResamplerType;
 
     // ---------------------------------------------------------------------
     // Scaling helpers – direct unit tests for all integer formats
@@ -179,7 +180,13 @@ mod sample_source_tests {
 
         // Create a mock source for testing
         let mock_source = MemorySampleSource::new(vec![0.1, 0.2, 0.3, 0.4, 0.5], 1, 44100);
-        match AudioTranscoder::new(mock_source, &source_format, &target_format, 1) {
+        match AudioTranscoder::new(
+            mock_source,
+            &source_format,
+            &target_format,
+            1,
+            ResamplerType::Sinc,
+        ) {
             Ok(mut converter) => {
                 // Test resampling by getting samples from the converter
                 let mut output_samples = Vec::with_capacity(100);
@@ -240,7 +247,13 @@ mod sample_source_tests {
 
             // Create a mock source for testing
             let mock_source = MemorySampleSource::new(vec![0.1, 0.2, 0.3], 1, 44100);
-            let converter = AudioTranscoder::new(mock_source, &source_format, &target_format, 1);
+            let converter = AudioTranscoder::new(
+                mock_source,
+                &source_format,
+                &target_format,
+                1,
+                ResamplerType::Sinc,
+            );
 
             if source_rate == target_rate {
                 // Should not need resampling
@@ -273,7 +286,13 @@ mod sample_source_tests {
 
         // Create a mock source for testing
         let mock_source = MemorySampleSource::new(vec![1.0, 2.0, 3.0, 4.0, 5.0], 1, 44100);
-        match AudioTranscoder::new(mock_source, &source_format, &target_format, 1) {
+        match AudioTranscoder::new(
+            mock_source,
+            &source_format,
+            &target_format,
+            1,
+            ResamplerType::Sinc,
+        ) {
             Ok(mut converter) => {
                 // Test with a simple input to understand the behavior
                 let mut sample_count = 0;
@@ -308,7 +327,13 @@ mod sample_source_tests {
 
             // Create a mock source for testing
             let mock_source = MemorySampleSource::new(vec![0.1, 0.2, 0.3], 1, 44100);
-            let converter = AudioTranscoder::new(mock_source, &source_format, &target_format, 1);
+            let converter = AudioTranscoder::new(
+                mock_source,
+                &source_format,
+                &target_format,
+                1,
+                ResamplerType::Sinc,
+            );
 
             match converter {
                 Ok(converter) => {
@@ -335,8 +360,14 @@ mod sample_source_tests {
             TargetFormat::new(44100, crate::audio::SampleFormat::Float, 32).unwrap();
         // Create a mock source for testing
         let mock_source = MemorySampleSource::new(vec![0.1, 0.2, 0.3, 0.4, 0.5], 1, 44100);
-        let mut converter =
-            AudioTranscoder::new(mock_source, &source_format, &target_format, 1).unwrap();
+        let mut converter = AudioTranscoder::new(
+            mock_source,
+            &source_format,
+            &target_format,
+            1,
+            ResamplerType::Sinc,
+        )
+        .unwrap();
 
         // Should not need resampling
         // Transcoding is now handled internally by AudioSampleSource
@@ -383,7 +414,13 @@ mod sample_source_tests {
 
         // Create a mock source with the sine wave
         let mock_source = MemorySampleSource::new(input_samples, 1, 44100);
-        match AudioTranscoder::new(mock_source, &source_format, &target_format, 1) {
+        match AudioTranscoder::new(
+            mock_source,
+            &source_format,
+            &target_format,
+            1,
+            ResamplerType::Sinc,
+        ) {
             Ok(mut converter) => {
                 // Test resampling by getting samples from the converter
                 let mut output_samples = Vec::with_capacity(200);
@@ -468,8 +505,14 @@ mod sample_source_tests {
 
         // First resampling: 44.1kHz -> 48kHz
         let source_1 = MemorySampleSource::new(original_samples.clone(), 1, 44100);
-        let mut converter_1 =
-            AudioTranscoder::new(source_1, &source_format_1, &target_format_1, 1).unwrap();
+        let mut converter_1 = AudioTranscoder::new(
+            source_1,
+            &source_format_1,
+            &target_format_1,
+            1,
+            ResamplerType::Sinc,
+        )
+        .unwrap();
 
         let mut intermediate_samples = Vec::with_capacity(num_samples);
         loop {
@@ -483,8 +526,14 @@ mod sample_source_tests {
         // Second resampling: 48kHz -> 44.1kHz
         let intermediate_len = intermediate_samples.len();
         let source_2 = MemorySampleSource::new(intermediate_samples, 1, intermediate_rate);
-        let mut converter_2 =
-            AudioTranscoder::new(source_2, &source_format_2, &target_format_2, 1).unwrap();
+        let mut converter_2 = AudioTranscoder::new(
+            source_2,
+            &source_format_2,
+            &target_format_2,
+            1,
+            ResamplerType::Sinc,
+        )
+        .unwrap();
 
         let mut final_samples = Vec::with_capacity(intermediate_len);
         loop {
@@ -540,8 +589,14 @@ mod sample_source_tests {
         input_samples[50] = 1.0; // Impulse at sample 50
 
         let source = MemorySampleSource::new(input_samples, 1, 44100);
-        let mut converter =
-            AudioTranscoder::new(source, &source_format, &target_format, 1).unwrap();
+        let mut converter = AudioTranscoder::new(
+            source,
+            &source_format,
+            &target_format,
+            1,
+            ResamplerType::Sinc,
+        )
+        .unwrap();
 
         let mut output_samples = Vec::new();
         loop {
@@ -583,8 +638,14 @@ mod sample_source_tests {
         }
 
         let source = MemorySampleSource::new(input_samples.clone(), 1, 44100);
-        let mut converter =
-            AudioTranscoder::new(source, &source_format, &target_format, 1).unwrap();
+        let mut converter = AudioTranscoder::new(
+            source,
+            &source_format,
+            &target_format,
+            1,
+            ResamplerType::Sinc,
+        )
+        .unwrap();
 
         let mut output_samples = Vec::new();
         loop {
@@ -653,8 +714,14 @@ mod sample_source_tests {
         }
 
         let source = MemorySampleSource::new(input_samples, 1, 44100);
-        let mut converter =
-            AudioTranscoder::new(source, &source_format, &target_format, channels).unwrap();
+        let mut converter = AudioTranscoder::new(
+            source,
+            &source_format,
+            &target_format,
+            channels,
+            ResamplerType::Sinc,
+        )
+        .unwrap();
 
         let mut output_samples = Vec::new();
         loop {
@@ -714,8 +781,14 @@ mod sample_source_tests {
             TargetFormat::new(44100, crate::audio::SampleFormat::Float, 32).unwrap();
 
         let source = MemorySampleSource::new(vec![], 1, 44100);
-        let mut converter =
-            AudioTranscoder::new(source, &source_format, &target_format, 1).unwrap();
+        let mut converter = AudioTranscoder::new(
+            source,
+            &source_format,
+            &target_format,
+            1,
+            ResamplerType::Sinc,
+        )
+        .unwrap();
 
         // Empty input should return None immediately
         assert!(matches!(converter.next_sample(), Ok(None)));
@@ -730,8 +803,14 @@ mod sample_source_tests {
             TargetFormat::new(44100, crate::audio::SampleFormat::Float, 32).unwrap();
 
         let source = MemorySampleSource::new(vec![0.5], 1, 44100);
-        let mut converter =
-            AudioTranscoder::new(source, &source_format, &target_format, 1).unwrap();
+        let mut converter = AudioTranscoder::new(
+            source,
+            &source_format,
+            &target_format,
+            1,
+            ResamplerType::Sinc,
+        )
+        .unwrap();
 
         let mut output_samples = Vec::new();
         loop {
@@ -776,8 +855,14 @@ mod sample_source_tests {
             }
 
             let source = MemorySampleSource::new(input_samples, 1, 44100);
-            let mut converter =
-                AudioTranscoder::new(source, &source_format, &target_format, 1).unwrap();
+            let mut converter = AudioTranscoder::new(
+                source,
+                &source_format,
+                &target_format,
+                1,
+                ResamplerType::Sinc,
+            )
+            .unwrap();
 
             let mut output_samples = Vec::new();
             let mut sample_count = 0;
@@ -838,8 +923,14 @@ mod sample_source_tests {
         }
 
         let source = MemorySampleSource::new(input_samples, 1, 44100);
-        let mut converter =
-            AudioTranscoder::new(source, &source_format, &target_format, 1).unwrap();
+        let mut converter = AudioTranscoder::new(
+            source,
+            &source_format,
+            &target_format,
+            1,
+            ResamplerType::Sinc,
+        )
+        .unwrap();
 
         let mut output_samples = Vec::new();
         let mut sample_count = 0;
@@ -894,8 +985,14 @@ mod sample_source_tests {
         }
 
         let source = MemorySampleSource::new(input_samples, 1, 44100);
-        let mut converter =
-            AudioTranscoder::new(source, &source_format, &target_format, 1).unwrap();
+        let mut converter = AudioTranscoder::new(
+            source,
+            &source_format,
+            &target_format,
+            1,
+            ResamplerType::Sinc,
+        )
+        .unwrap();
 
         let mut output_samples = Vec::new();
         loop {
@@ -937,8 +1034,14 @@ mod sample_source_tests {
 
         for values in test_values {
             let source = MemorySampleSource::new(values, 1, 44100);
-            let mut converter =
-                AudioTranscoder::new(source, &source_format, &target_format, 1).unwrap();
+            let mut converter = AudioTranscoder::new(
+                source,
+                &source_format,
+                &target_format,
+                1,
+                ResamplerType::Sinc,
+            )
+            .unwrap();
 
             let mut output_samples = Vec::new();
             let mut sample_count = 0;
@@ -988,8 +1091,14 @@ mod sample_source_tests {
         }
 
         let source = MemorySampleSource::new(input_samples, 1, 44100);
-        let mut converter =
-            AudioTranscoder::new(source, &source_format, &target_format, 1).unwrap();
+        let mut converter = AudioTranscoder::new(
+            source,
+            &source_format,
+            &target_format,
+            1,
+            ResamplerType::Sinc,
+        )
+        .unwrap();
 
         let mut output_samples = Vec::new();
         loop {
@@ -1038,8 +1147,14 @@ mod sample_source_tests {
 
         // Resample once: 48kHz -> 44.1kHz
         let source = MemorySampleSource::new(original_samples.clone(), 1, 44100);
-        let mut converter =
-            AudioTranscoder::new(source, &source_format, &target_format, 1).unwrap();
+        let mut converter = AudioTranscoder::new(
+            source,
+            &source_format,
+            &target_format,
+            1,
+            ResamplerType::Sinc,
+        )
+        .unwrap();
 
         let mut output_samples = Vec::with_capacity(num_samples);
         loop {
@@ -1087,8 +1202,14 @@ mod sample_source_tests {
 
         // First resampling: 48kHz -> 44.1kHz
         let source_1 = MemorySampleSource::new(original_samples.clone(), 1, 44100);
-        let mut converter_1 =
-            AudioTranscoder::new(source_1, &source_format, &target_format, 1).unwrap();
+        let mut converter_1 = AudioTranscoder::new(
+            source_1,
+            &source_format,
+            &target_format,
+            1,
+            ResamplerType::Sinc,
+        )
+        .unwrap();
 
         let mut intermediate_samples = Vec::with_capacity(num_samples);
         loop {
@@ -1101,8 +1222,14 @@ mod sample_source_tests {
 
         // Second resampling: 44.1kHz -> 48kHz (roundtrip)
         let source_2 = MemorySampleSource::new(intermediate_samples, 1, 44100);
-        let mut converter_2 =
-            AudioTranscoder::new(source_2, &target_format, &back_format, 1).unwrap();
+        let mut converter_2 = AudioTranscoder::new(
+            source_2,
+            &target_format,
+            &back_format,
+            1,
+            ResamplerType::Sinc,
+        )
+        .unwrap();
 
         let mut final_samples = Vec::with_capacity(original_samples.len());
         loop {
@@ -1161,8 +1288,14 @@ mod sample_source_tests {
 
             // Resample
             let source = MemorySampleSource::new(input_samples.clone(), 1, source_rate);
-            let mut converter =
-                AudioTranscoder::new(source, &source_format, &target_format, 1).unwrap();
+            let mut converter = AudioTranscoder::new(
+                source,
+                &source_format,
+                &target_format,
+                1,
+                ResamplerType::Sinc,
+            )
+            .unwrap();
 
             let mut output_samples = Vec::with_capacity(num_samples);
             loop {
@@ -1217,8 +1350,14 @@ mod sample_source_tests {
 
         // First resampling: 48kHz -> 44.1kHz
         let source_1 = MemorySampleSource::new(input_samples.clone(), 1, 44100);
-        let mut converter_1 =
-            AudioTranscoder::new(source_1, &source_format, &target_format, 2).unwrap();
+        let mut converter_1 = AudioTranscoder::new(
+            source_1,
+            &source_format,
+            &target_format,
+            2,
+            ResamplerType::Sinc,
+        )
+        .unwrap();
 
         let mut intermediate_samples = Vec::with_capacity(input_samples.len());
         loop {
@@ -1232,8 +1371,14 @@ mod sample_source_tests {
         // Second resampling: 44.1kHz -> 48kHz (roundtrip for fair comparison)
         let back_format = TargetFormat::new(48000, crate::audio::SampleFormat::Float, 32).unwrap();
         let source_2 = MemorySampleSource::new(intermediate_samples, 1, 44100);
-        let mut converter_2 =
-            AudioTranscoder::new(source_2, &target_format, &back_format, 2).unwrap();
+        let mut converter_2 = AudioTranscoder::new(
+            source_2,
+            &target_format,
+            &back_format,
+            2,
+            ResamplerType::Sinc,
+        )
+        .unwrap();
 
         let mut output_samples = Vec::with_capacity(input_samples.len());
         loop {
@@ -1322,8 +1467,14 @@ mod sample_source_tests {
 
         // Resample complex signal
         let source = MemorySampleSource::new(input_samples.clone(), 1, 44100);
-        let mut converter =
-            AudioTranscoder::new(source, &source_format, &target_format, 1).unwrap();
+        let mut converter = AudioTranscoder::new(
+            source,
+            &source_format,
+            &target_format,
+            1,
+            ResamplerType::Sinc,
+        )
+        .unwrap();
 
         let mut output_samples = Vec::with_capacity(num_samples);
         loop {
@@ -1361,6 +1512,197 @@ mod sample_source_tests {
             input_energy,
             output_energy
         );
+    }
+
+    // -----------------------------------------------------------------
+    // FFT resampler tests
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn test_fft_resampler_basic_quality() {
+        // Verify FFT resampler produces reasonable output for a sine wave
+        let source_rate = 48000;
+        let target_rate = 44100;
+        let num_samples = 4800; // 100ms at 48kHz
+        let frequency = 440.0;
+
+        let input_samples: Vec<f32> = (0..num_samples)
+            .map(|i| {
+                (i as f32 * frequency * 2.0 * std::f32::consts::PI / source_rate as f32).sin() * 0.5
+            })
+            .collect();
+
+        let source_format =
+            TargetFormat::new(source_rate, crate::audio::SampleFormat::Float, 32).unwrap();
+        let target_format =
+            TargetFormat::new(target_rate, crate::audio::SampleFormat::Float, 32).unwrap();
+
+        let source = MemorySampleSource::new(input_samples.clone(), 1, source_rate);
+        let mut converter = AudioTranscoder::new(
+            source,
+            &source_format,
+            &target_format,
+            1,
+            ResamplerType::Fft,
+        )
+        .unwrap();
+
+        let mut output_samples = Vec::new();
+        loop {
+            match converter.next_sample() {
+                Ok(Some(sample)) => output_samples.push(sample),
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
+
+        // Should produce approximately target_rate/source_rate * num_samples output samples
+        let expected_len = (num_samples as f64 * target_rate as f64 / source_rate as f64) as usize;
+        assert!(
+            output_samples.len() > expected_len / 2,
+            "FFT resampler produced too few samples: {} (expected ~{})",
+            output_samples.len(),
+            expected_len
+        );
+
+        // Check that output has reasonable amplitude (not all zeros or clipped)
+        let rms: f32 = (output_samples.iter().map(|&x| x * x).sum::<f32>()
+            / output_samples.len() as f32)
+            .sqrt();
+        assert!(
+            rms > 0.1 && rms < 1.0,
+            "FFT resampler output RMS out of range: {}",
+            rms
+        );
+    }
+
+    #[test]
+    fn test_fft_resampler_roundtrip() {
+        // Resample 44.1kHz → 48kHz → 44.1kHz and verify signal is preserved
+        let num_samples = 8820; // 200ms at 44.1kHz
+        let frequency = 440.0;
+        let source_rate = 44100u32;
+        let intermediate_rate = 48000u32;
+
+        let original_samples: Vec<f32> = (0..num_samples)
+            .map(|i| {
+                (i as f32 * frequency * 2.0 * std::f32::consts::PI / source_rate as f32).sin() * 0.5
+            })
+            .collect();
+
+        let source_format =
+            TargetFormat::new(source_rate, crate::audio::SampleFormat::Float, 32).unwrap();
+        let intermediate_format =
+            TargetFormat::new(intermediate_rate, crate::audio::SampleFormat::Float, 32).unwrap();
+
+        // Forward: 44.1kHz → 48kHz
+        let source_1 = MemorySampleSource::new(original_samples.clone(), 1, source_rate);
+        let mut converter_1 = AudioTranscoder::new(
+            source_1,
+            &source_format,
+            &intermediate_format,
+            1,
+            ResamplerType::Fft,
+        )
+        .unwrap();
+
+        let mut intermediate_samples = Vec::new();
+        loop {
+            match converter_1.next_sample() {
+                Ok(Some(sample)) => intermediate_samples.push(sample),
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
+
+        // Reverse: 48kHz → 44.1kHz
+        let source_2 = MemorySampleSource::new(intermediate_samples, 1, intermediate_rate);
+        let mut converter_2 = AudioTranscoder::new(
+            source_2,
+            &intermediate_format,
+            &source_format,
+            1,
+            ResamplerType::Fft,
+        )
+        .unwrap();
+
+        let mut final_samples = Vec::new();
+        loop {
+            match converter_2.next_sample() {
+                Ok(Some(sample)) => final_samples.push(sample),
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
+
+        // Roundtrip should preserve length approximately
+        let len_ratio = final_samples.len() as f64 / original_samples.len() as f64;
+        assert!(
+            (0.9..=1.1).contains(&len_ratio),
+            "FFT roundtrip length ratio out of range: {} ({} vs {})",
+            len_ratio,
+            final_samples.len(),
+            original_samples.len()
+        );
+
+        // Compare RMS preservation (roundtrip should preserve energy)
+        let skip = 2048; // skip filter transients
+        let compare_len = original_samples
+            .len()
+            .min(final_samples.len())
+            .saturating_sub(skip * 2);
+        if compare_len > 100 {
+            let orig_slice = &original_samples[skip..skip + compare_len];
+            let final_slice = &final_samples[skip..skip + compare_len];
+            let orig_rms: f32 =
+                (orig_slice.iter().map(|&x| x * x).sum::<f32>() / orig_slice.len() as f32).sqrt();
+            let final_rms: f32 =
+                (final_slice.iter().map(|&x| x * x).sum::<f32>() / final_slice.len() as f32).sqrt();
+            let rms_ratio = final_rms / orig_rms;
+            assert!(
+                (0.7..=1.3).contains(&rms_ratio),
+                "FFT roundtrip RMS ratio out of range: {:.3} (orig: {:.4}, final: {:.4})",
+                rms_ratio,
+                orig_rms,
+                final_rms
+            );
+        }
+    }
+
+    #[test]
+    fn test_fft_resampler_no_resampling_passthrough() {
+        // When source and target rates match, FFT resampler type should still pass through
+        let source_format =
+            TargetFormat::new(44100, crate::audio::SampleFormat::Float, 32).unwrap();
+        let target_format =
+            TargetFormat::new(44100, crate::audio::SampleFormat::Float, 32).unwrap();
+
+        let samples = vec![0.1, 0.2, 0.3, 0.4, 0.5];
+        let source = MemorySampleSource::new(samples.clone(), 1, 44100);
+        let mut converter = AudioTranscoder::new(
+            source,
+            &source_format,
+            &target_format,
+            1,
+            ResamplerType::Fft,
+        )
+        .unwrap();
+
+        // When rates match, resampler should be None (passthrough)
+        assert!(
+            converter.resampler.is_none(),
+            "Resampler should be None when rates match"
+        );
+
+        let mut output = Vec::new();
+        loop {
+            match converter.next_sample() {
+                Ok(Some(s)) => output.push(s),
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
+        assert_eq!(output, samples);
     }
 
     #[test]
