@@ -1,0 +1,318 @@
+// Copyright (C) 2026 Michael Wilson <mike@mdwn.dev>
+//
+// This program is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free Software
+// Foundation, version 3.
+//
+// This program is distributed in the hope that it will be useful, but WITHOUT
+// ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License along with
+// this program. If not, see <https://www.gnu.org/licenses/>.
+//
+use std::time::Duration;
+
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Gauge, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::Frame;
+
+use super::app::App;
+
+/// Renders the entire TUI layout.
+pub fn draw(frame: &mut Frame, app: &App) {
+    let size = frame.area();
+
+    // Main vertical split: top area (content) | bottom area (log + keys)
+    let main_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(10),   // Content area
+            Constraint::Length(8), // Log panel
+            Constraint::Length(1), // Key hints bar
+        ])
+        .split(size);
+
+    // Top area: left (playlist) | right (now playing + fixtures + effects)
+    let top_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
+        .split(main_chunks[0]);
+
+    draw_playlist(frame, app, top_chunks[0]);
+    draw_right_panel(frame, app, top_chunks[1]);
+    draw_log(frame, app, main_chunks[1]);
+    draw_key_hints(frame, main_chunks[2]);
+}
+
+/// Draws the playlist panel on the left.
+fn draw_playlist(frame: &mut Frame, app: &App, area: Rect) {
+    let items: Vec<ListItem> = app
+        .song_names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            let prefix = if i == app.current_index { ">" } else { " " };
+            ListItem::new(format!("{}{:2}. {}", prefix, i + 1, name))
+        })
+        .collect();
+
+    let title = format!(" {} ", app.playlist_name);
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .highlight_style(
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .fg(Color::Yellow),
+        );
+
+    let mut state = ListState::default();
+    state.select(Some(app.current_index));
+    frame.render_stateful_widget(list, area, &mut state);
+}
+
+/// Draws the right panel: now playing, fixtures, and active effects.
+fn draw_right_panel(frame: &mut Frame, app: &App, area: Rect) {
+    // Decide how many sections to show based on available content
+    let has_fixtures = !app.fixture_colors.is_empty();
+    let has_effects = !app.active_effects.is_empty();
+
+    let constraints = match (has_fixtures, has_effects) {
+        (true, true) => vec![
+            Constraint::Length(5), // Now Playing
+            Constraint::Min(3),    // Fixtures
+            Constraint::Length(5), // Active Effects
+        ],
+        (true, false) => vec![
+            Constraint::Length(5), // Now Playing
+            Constraint::Min(3),    // Fixtures
+        ],
+        (false, true) => vec![
+            Constraint::Length(5), // Now Playing
+            Constraint::Min(3),    // Active Effects
+        ],
+        (false, false) => vec![
+            Constraint::Min(5), // Now Playing (takes all space)
+        ],
+    };
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
+        .split(area);
+
+    draw_now_playing(frame, app, chunks[0]);
+
+    match (has_fixtures, has_effects) {
+        (true, true) => {
+            draw_fixtures(frame, app, chunks[1]);
+            draw_active_effects(frame, app, chunks[2]);
+        }
+        (true, false) => {
+            draw_fixtures(frame, app, chunks[1]);
+        }
+        (false, true) => {
+            draw_active_effects(frame, app, chunks[1]);
+        }
+        (false, false) => {}
+    }
+}
+
+/// Draws the "Now Playing" panel.
+fn draw_now_playing(frame: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Now Playing ");
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.height < 2 {
+        return;
+    }
+
+    let play_indicator = if app.is_playing { "▶" } else { "■" };
+    let title_line = Line::from(vec![
+        Span::styled(
+            format!(" {} ", play_indicator),
+            Style::default().fg(if app.is_playing {
+                Color::Green
+            } else {
+                Color::Red
+            }),
+        ),
+        Span::raw(&app.current_song_name),
+    ]);
+
+    let title_paragraph = Paragraph::new(title_line);
+    frame.render_widget(title_paragraph, Rect::new(inner.x, inner.y, inner.width, 1));
+
+    // Progress bar
+    if inner.height >= 2 {
+        let elapsed = app.elapsed.unwrap_or(Duration::ZERO);
+        let total = app.current_song_duration;
+
+        let ratio = if total.as_secs_f64() > 0.0 {
+            (elapsed.as_secs_f64() / total.as_secs_f64()).min(1.0)
+        } else {
+            0.0
+        };
+
+        let elapsed_str = format_duration(elapsed);
+        let total_str = format_duration(total);
+        let label = format!("{} / {}", elapsed_str, total_str);
+
+        let gauge = Gauge::default()
+            .gauge_style(Style::default().fg(Color::Cyan))
+            .ratio(ratio)
+            .label(label);
+
+        frame.render_widget(
+            gauge,
+            Rect::new(inner.x + 1, inner.y + 1, inner.width.saturating_sub(2), 1),
+        );
+    }
+
+    // Track names
+    if inner.height >= 3 {
+        let tracks = format!(" Tracks: {}", app.current_song_tracks.join(", "));
+        let tracks_paragraph = Paragraph::new(tracks).style(Style::default().fg(Color::DarkGray));
+        frame.render_widget(
+            tracks_paragraph,
+            Rect::new(inner.x, inner.y + 2, inner.width, 1),
+        );
+    }
+}
+
+/// Draws the fixtures panel with colored blocks.
+fn draw_fixtures(frame: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default().borders(Borders::ALL).title(" Fixtures ");
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    // Calculate how many fixtures per row (each fixture takes ~14 chars)
+    let fixture_width = 14_u16;
+    let cols = (inner.width / fixture_width).max(1);
+
+    let mut lines: Vec<Line> = Vec::new();
+    let mut current_line_spans: Vec<Span> = Vec::new();
+    let mut col = 0;
+
+    for fixture in &app.fixture_colors {
+        let color_block = Span::styled(
+            "\u{2588}\u{2588}",
+            Style::default().fg(Color::Rgb(fixture.r, fixture.g, fixture.b)),
+        );
+
+        // Truncate name to fit
+        let max_name_len = (fixture_width as usize).saturating_sub(4);
+        let display_name: String = if fixture.name.len() > max_name_len {
+            fixture.name[..max_name_len].to_string()
+        } else {
+            fixture.name.clone()
+        };
+        let name_span = Span::styled(
+            format!(" {:<width$}", display_name, width = max_name_len),
+            Style::default().fg(Color::White),
+        );
+
+        current_line_spans.push(color_block);
+        current_line_spans.push(name_span);
+        current_line_spans.push(Span::raw(" "));
+
+        col += 1;
+        if col >= cols {
+            lines.push(Line::from(std::mem::take(&mut current_line_spans)));
+            col = 0;
+        }
+    }
+
+    if !current_line_spans.is_empty() {
+        lines.push(Line::from(current_line_spans));
+    }
+
+    let paragraph = Paragraph::new(lines);
+    frame.render_widget(paragraph, inner);
+}
+
+/// Draws the active effects panel.
+fn draw_active_effects(frame: &mut Frame, app: &App, area: Rect) {
+    let items: Vec<ListItem> = app
+        .active_effects
+        .iter()
+        .map(|name| ListItem::new(format!("  {}", name)))
+        .collect();
+
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Active Effects "),
+    );
+
+    frame.render_widget(list, area);
+}
+
+/// Draws the log panel.
+fn draw_log(frame: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default().borders(Borders::ALL).title(" Log ");
+
+    let inner = block.inner(area);
+    let visible_lines = inner.height as usize;
+
+    // Show the most recent log lines
+    let start = app.log_lines.len().saturating_sub(visible_lines);
+    let visible: Vec<Line> = app.log_lines[start..]
+        .iter()
+        .map(|line| {
+            let color = if line.starts_with("ERROR") {
+                Color::Red
+            } else if line.starts_with("WARN") {
+                Color::Yellow
+            } else if line.starts_with("DEBUG") {
+                Color::DarkGray
+            } else {
+                Color::Gray
+            };
+            Line::from(Span::styled(line.as_str(), Style::default().fg(color)))
+        })
+        .collect();
+
+    let paragraph = Paragraph::new(visible).wrap(Wrap { trim: false });
+    frame.render_widget(block, area);
+    frame.render_widget(paragraph, inner);
+}
+
+/// Draws the key hints bar at the bottom.
+fn draw_key_hints(frame: &mut Frame, area: Rect) {
+    let hints = Line::from(vec![
+        Span::styled(" Space", Style::default().fg(Color::Yellow)),
+        Span::raw("=play/stop  "),
+        Span::styled("\u{2190}/\u{2192}", Style::default().fg(Color::Yellow)),
+        Span::raw("=prev/next  "),
+        Span::styled("a", Style::default().fg(Color::Yellow)),
+        Span::raw("=all songs  "),
+        Span::styled("l", Style::default().fg(Color::Yellow)),
+        Span::raw("=playlist  "),
+        Span::styled("q", Style::default().fg(Color::Yellow)),
+        Span::raw("=quit"),
+    ]);
+
+    let paragraph =
+        Paragraph::new(hints).style(Style::default().bg(Color::DarkGray).fg(Color::White));
+    frame.render_widget(paragraph, area);
+}
+
+/// Formats a Duration as "M:SS".
+fn format_duration(d: Duration) -> String {
+    let total_secs = d.as_secs();
+    let minutes = total_secs / 60;
+    let seconds = total_secs % 60;
+    format!("{}:{:02}", minutes, seconds)
+}

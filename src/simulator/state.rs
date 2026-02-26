@@ -16,88 +16,60 @@ use parking_lot::Mutex;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::broadcast;
-use tokio::time;
+use tokio::sync::{broadcast, watch};
 
-use crate::lighting::effects::{is_multiplier_channel, FixtureState};
-use crate::lighting::EffectEngine;
+use crate::state::StateSnapshot;
 
-/// Runs at 20Hz, sampling fixture states from the effect engine and broadcasting JSON.
-pub async fn sampler_loop(effect_engine: Arc<Mutex<EffectEngine>>, tx: broadcast::Sender<String>) {
-    let mut interval = time::interval(Duration::from_millis(50));
-    // Cache the dimmer map — fixture registry doesn't change at runtime
-    let has_dimmer_map: HashMap<String, bool> = {
-        let engine = effect_engine.lock();
-        engine
-            .get_fixture_registry()
-            .iter()
-            .map(|(name, info)| (name.clone(), info.channels.contains_key("dimmer")))
-            .collect()
-    };
+/// Bridges the shared `watch` channel to the simulator's `broadcast` channel.
+///
+/// Each time the watch receiver sees a new `StateSnapshot`, it converts it to JSON
+/// and sends it via the broadcast sender to all connected WebSocket clients.
+pub async fn sampler_loop(
+    mut state_rx: watch::Receiver<Arc<StateSnapshot>>,
+    tx: broadcast::Sender<String>,
+) {
     loop {
-        interval.tick().await;
+        // Wait for new state
+        if state_rx.changed().await.is_err() {
+            // Sender dropped, sampler is shutting down
+            break;
+        }
 
-        // Skip if no subscribers
+        // Skip if no WebSocket subscribers
         if tx.receiver_count() == 0 {
             continue;
         }
 
-        let (fixture_states, active_effects) = {
-            let engine = effect_engine.lock();
-            let states = engine.get_fixture_states();
-            let effects: Vec<String> = engine.get_active_effects().keys().cloned().collect();
-            (states, effects)
-        };
-
-        let fixtures_json = fixture_states_to_json(&fixture_states, &has_dimmer_map);
-
-        let msg = json!({
-            "type": "state",
-            "fixtures": fixtures_json,
-            "active_effects": active_effects,
-        });
+        let snapshot = state_rx.borrow_and_update().clone();
+        let json = snapshot_to_json(&snapshot);
 
         // Ignore send errors (no receivers)
-        let _ = tx.send(msg.to_string());
+        let _ = tx.send(json);
     }
 }
 
-/// Converts a map of fixture states into JSON with RGB values (0-255 scale).
-///
-/// Uses `FixtureState::effective_channel_value` for RGB multiplier logic,
-/// keeping the simulator in sync with the DMX output path.
-fn fixture_states_to_json(
-    states: &HashMap<String, FixtureState>,
-    has_dimmer_map: &HashMap<String, bool>,
-) -> Value {
+/// Converts a `StateSnapshot` into the JSON format expected by WebSocket clients.
+fn snapshot_to_json(snapshot: &StateSnapshot) -> String {
     let mut fixtures = serde_json::Map::new();
 
-    for (name, state) in states {
+    for fixture in &snapshot.fixtures {
         let mut channels = serde_json::Map::new();
-        let has_dedicated_dimmer = has_dimmer_map.get(name).copied().unwrap_or(false);
-
-        for (channel_name, channel_state) in &state.channels {
-            // Skip internal multiplier channels
-            if is_multiplier_channel(channel_name) {
-                continue;
-            }
-
-            let value =
-                state.effective_channel_value(channel_name, channel_state, has_dedicated_dimmer);
-
-            // Convert to 0-255 scale
-            let dmx_value = (value * 255.0) as u8;
+        for (channel_name, &value) in &fixture.channels {
             channels.insert(
                 channel_name.clone(),
-                Value::Number(serde_json::Number::from(dmx_value)),
+                Value::Number(serde_json::Number::from(value)),
             );
         }
-
-        fixtures.insert(name.clone(), Value::Object(channels));
+        fixtures.insert(fixture.name.clone(), Value::Object(channels));
     }
 
-    Value::Object(fixtures)
+    let msg = json!({
+        "type": "state",
+        "fixtures": Value::Object(fixtures),
+        "active_effects": snapshot.active_effects,
+    });
+
+    msg.to_string()
 }
 
 /// Builds the initial metadata JSON from the lighting system.
@@ -147,98 +119,64 @@ fn get_venue_fixture_tags(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lighting::effects::{BlendMode, ChannelState, EffectLayer, FixtureState};
+    use crate::state::FixtureSnapshot;
 
     #[test]
-    fn test_fixture_states_to_json_rgb_only() {
-        let mut states = HashMap::new();
-        let mut fixture_state = FixtureState::new();
-        fixture_state.set_channel(
-            "red".to_string(),
-            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
-        );
-        fixture_state.set_channel(
-            "green".to_string(),
-            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace),
-        );
-        fixture_state.set_channel(
-            "blue".to_string(),
-            ChannelState::new(0.0, EffectLayer::Background, BlendMode::Replace),
-        );
-        states.insert("test_fixture".to_string(), fixture_state);
+    fn test_snapshot_to_json_rgb_only() {
+        let snapshot = StateSnapshot {
+            fixtures: vec![FixtureSnapshot {
+                name: "test_fixture".to_string(),
+                channels: HashMap::from([
+                    ("red".to_string(), 255),
+                    ("green".to_string(), 127),
+                    ("blue".to_string(), 0),
+                ]),
+            }],
+            active_effects: vec![],
+        };
 
-        // No dedicated dimmer → multiplier applies (but default is 1.0)
-        let has_dimmer = HashMap::from([("test_fixture".to_string(), false)]);
-        let json = fixture_states_to_json(&states, &has_dimmer);
-        let obj = json.as_object().unwrap();
-        let fixture = obj.get("test_fixture").unwrap().as_object().unwrap();
+        let json_str = snapshot_to_json(&snapshot);
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 
+        let fixture = parsed["fixtures"]["test_fixture"].as_object().unwrap();
         assert_eq!(fixture.get("red").unwrap().as_u64().unwrap(), 255);
         assert_eq!(fixture.get("green").unwrap().as_u64().unwrap(), 127);
         assert_eq!(fixture.get("blue").unwrap().as_u64().unwrap(), 0);
     }
 
     #[test]
-    fn test_fixture_states_with_dimmer_skips_multiplier() {
-        let mut states = HashMap::new();
-        let mut fixture_state = FixtureState::new();
-        fixture_state.set_channel(
-            "red".to_string(),
-            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
-        );
-        fixture_state.set_channel(
-            "dimmer".to_string(),
-            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace),
-        );
-        // Add a multiplier channel that would reduce RGB if applied
-        fixture_state.set_channel(
-            "_dimmer_mult_bg".to_string(),
-            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Multiply),
-        );
-        states.insert("fixture_with_dimmer".to_string(), fixture_state);
+    fn test_snapshot_to_json_with_active_effects() {
+        let snapshot = StateSnapshot {
+            fixtures: vec![],
+            active_effects: vec!["chase_1".to_string(), "static_blue".to_string()],
+        };
 
-        // Has dedicated dimmer → multiplier should NOT be applied to RGB
-        let has_dimmer = HashMap::from([("fixture_with_dimmer".to_string(), true)]);
-        let json = fixture_states_to_json(&states, &has_dimmer);
-        let fixture = json
-            .as_object()
-            .unwrap()
-            .get("fixture_with_dimmer")
-            .unwrap()
-            .as_object()
-            .unwrap();
+        let json_str = snapshot_to_json(&snapshot);
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 
-        // Red should remain 255, not be reduced by the multiplier
-        assert_eq!(fixture.get("red").unwrap().as_u64().unwrap(), 255);
-        assert_eq!(fixture.get("dimmer").unwrap().as_u64().unwrap(), 127);
+        let effects = parsed["active_effects"].as_array().unwrap();
+        assert_eq!(effects.len(), 2);
+        assert_eq!(effects[0].as_str().unwrap(), "chase_1");
+        assert_eq!(effects[1].as_str().unwrap(), "static_blue");
     }
 
     #[test]
-    fn test_fixture_states_excludes_multiplier_channels() {
-        let mut states = HashMap::new();
-        let mut fixture_state = FixtureState::new();
-        fixture_state.set_channel(
-            "red".to_string(),
-            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
-        );
-        fixture_state.set_channel(
-            "_dimmer_mult_bg".to_string(),
-            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Multiply),
-        );
-        states.insert("test_fixture".to_string(), fixture_state);
+    fn test_snapshot_to_json_with_dimmer() {
+        let snapshot = StateSnapshot {
+            fixtures: vec![FixtureSnapshot {
+                name: "fixture_with_dimmer".to_string(),
+                channels: HashMap::from([("red".to_string(), 255), ("dimmer".to_string(), 127)]),
+            }],
+            active_effects: vec![],
+        };
 
-        let has_dimmer = HashMap::from([("test_fixture".to_string(), false)]);
-        let json = fixture_states_to_json(&states, &has_dimmer);
-        let fixture = json
-            .as_object()
-            .unwrap()
-            .get("test_fixture")
-            .unwrap()
+        let json_str = snapshot_to_json(&snapshot);
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+
+        let fixture = parsed["fixtures"]["fixture_with_dimmer"]
             .as_object()
             .unwrap();
-
-        // Should have "red" but not "_dimmer_mult_bg"
-        assert!(fixture.contains_key("red"));
-        assert!(!fixture.contains_key("_dimmer_mult_bg"));
+        assert_eq!(fixture.get("red").unwrap().as_u64().unwrap(), 255);
+        assert_eq!(fixture.get("dimmer").unwrap().as_u64().unwrap(), 127);
     }
 }

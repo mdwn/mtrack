@@ -18,10 +18,10 @@ pub mod watcher;
 
 use parking_lot::Mutex;
 use std::sync::Arc;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 use tracing::info;
 
-use crate::lighting::EffectEngine;
+use crate::state::StateSnapshot;
 
 /// Configuration for the lighting simulator.
 #[derive(Debug, Clone)]
@@ -64,7 +64,7 @@ impl Drop for SimulatorHandle {
 /// can send reload notifications through the same WebSocket channel.
 pub async fn start(
     config: SimulatorConfig,
-    effect_engine: Arc<Mutex<EffectEngine>>,
+    state_rx: watch::Receiver<Arc<StateSnapshot>>,
     lighting_system: Option<Arc<Mutex<crate::lighting::system::LightingSystem>>>,
 ) -> Result<SimulatorHandle, Box<dyn std::error::Error + Send + Sync>> {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
@@ -73,10 +73,9 @@ pub async fn start(
     // Build metadata JSON once from the lighting system
     let metadata_json = state::build_metadata_json(lighting_system.as_ref());
 
-    // Spawn the state sampler (20Hz)
+    // Spawn the watch→broadcast bridge
     let sampler_tx = broadcast_tx.clone();
-    let sampler_engine = effect_engine.clone();
-    let sampler_handle = tokio::spawn(state::sampler_loop(sampler_engine, sampler_tx));
+    let sampler_handle = tokio::spawn(state::sampler_loop(state_rx, sampler_tx));
 
     // Spawn the HTTP/WS server
     let port = config.port;

@@ -62,12 +62,19 @@ impl Controller {
     }
 
     /// Join will block until the controller finishes.
-    pub async fn join(&mut self) -> Result<(), io::Error> {
+    pub async fn join(mut self) -> Result<(), io::Error> {
         for handle in &mut self.handles {
             handle.await??;
         }
 
         Ok(())
+    }
+
+    /// Shuts down all controller tasks by aborting their handles.
+    pub fn shutdown(self) {
+        for handle in self.handles {
+            handle.abort();
+        }
     }
 }
 
@@ -198,7 +205,7 @@ mod test {
         let device = binding.to_mock()?;
 
         let driver = Arc::new(TestDriver::new(player.clone(), TestEvent::Unset));
-        let mut controller = super::Controller::new_from_drivers(vec![driver.clone()]);
+        let controller = super::Controller::new_from_drivers(vec![driver.clone()]);
 
         println!("Playlist: {}", playlist);
 

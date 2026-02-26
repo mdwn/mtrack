@@ -587,23 +587,8 @@ impl Player {
                         false
                     }
                 };
-                let mut join = join_mutex.lock().await;
 
                 let cancelled = cancel_handle_for_cleanup.is_cancelled();
-                // Only move to the next playlist entry if not cancelled. On playback failure we still
-                // advance so the user is not stuck, but we already logged the error above.
-                if !cancelled {
-                    if !playback_ok {
-                        warn!("Advancing playlist despite playback failure so user is not stuck");
-                    }
-                    Player::next_and_emit(midi_device.clone(), playlist);
-                }
-
-                // Reset the play start time as well.
-                {
-                    let mut play_start_time = play_start_time.lock().await;
-                    *play_start_time = None;
-                }
 
                 info!(
                     song = song.name(),
@@ -612,8 +597,26 @@ impl Player {
                     "Song finished playing."
                 );
 
-                // Remove the handles and reset stop run.
-                // Note: stop() may have already cleared this, but we ensure it's cleared here too
+                // When cancelled, stop() already cleared join and play_start_time.
+                // Touching them here would clobber state from a new play() that
+                // may have started after stop() returned.
+                if cancelled {
+                    return;
+                }
+
+                // Natural finish: advance playlist and clean up.
+                let mut join = join_mutex.lock().await;
+
+                if !playback_ok {
+                    warn!("Advancing playlist despite playback failure so user is not stuck");
+                }
+                Player::next_and_emit(midi_device.clone(), playlist);
+
+                {
+                    let mut play_start_time = play_start_time.lock().await;
+                    *play_start_time = None;
+                }
+
                 *join = None;
                 stop_run.store(false, Ordering::Relaxed);
             });
@@ -835,26 +838,20 @@ impl Player {
 
         play_handles.cancel.cancel();
 
+        // Reset play start time — the cleanup task skips this when cancelled
+        // so we must do it here.
+        {
+            let mut play_start_time = self.play_start_time.lock().await;
+            *play_start_time = None;
+        }
+
+        // Reset stop_run immediately so play() is available right away.
+        // The cleanup task won't touch join or play_start_time when cancelled,
+        // so there's no clobber risk from a new play() starting before it runs.
+        self.stop_run.store(false, Ordering::Relaxed);
+
         drop(play_handles.join);
         drop(join);
-
-        // stop_run is cleared by the cleanup task when it runs (after play_rx fires). As a fallback
-        // (e.g. if cleanup never runs because play_tx was dropped or the blocking task hangs),
-        // clear stop_run after a timeout so the user can call stop() again.
-        const STOP_RUN_FALLBACK_TIMEOUT: Duration = Duration::from_secs(30);
-        let stop_run = self.stop_run.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(STOP_RUN_FALLBACK_TIMEOUT).await;
-            if stop_run
-                .compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed)
-                .is_ok()
-            {
-                warn!(
-                    "Stop cleanup did not complete within {:?}; cleared stop_run so further stop() can be attempted",
-                    STOP_RUN_FALLBACK_TIMEOUT
-                );
-            }
-        });
 
         Some(song)
     }
@@ -891,6 +888,16 @@ impl Player {
         }
 
         self.playlist.clone()
+    }
+
+    /// Returns true if a song is currently playing.
+    pub async fn is_playing(&self) -> bool {
+        self.join.lock().await.is_some()
+    }
+
+    /// Returns the effect engine, if a DMX engine is configured.
+    pub fn effect_engine(&self) -> Option<Arc<parking_lot::Mutex<crate::lighting::EffectEngine>>> {
+        self.dmx_engine.as_ref().map(|e| e.effect_engine())
     }
 
     /// Gets the elapsed time from the play start time.
