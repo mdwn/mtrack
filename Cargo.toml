@@ -18,17 +18,6 @@ exclude = [
     "examples/*",
 ]
 
-[features]
-default = ["simulator"]
-simulator = [
-    "dep:axum",
-    "dep:tower-http",
-    "dep:rust-embed",
-    "dep:notify",
-    "dep:notify-debouncer-mini",
-    "dep:futures-util",
-]
-
 [dependencies]
 clap = { version = "4.5.23", features = ["cargo", "derive"] }
 config = "0.15.6"
@@ -40,8 +29,8 @@ symphonia = { version = "0.5", features = ["all"] }
 midir = "0.10.1"
 midly = "0.5.3"
 ola = "0.1.0"
-prost = "0.13.4"
-prost-types = "0.13.4"
+prost = "0.14"
+prost-types = "0.14"
 rosc = "0.10.1"
 rubato = "0.15.0"
 rand = "0.8"
@@ -57,8 +46,10 @@ tokio = { version = "1.42.0", features = [
     "sync",
     "time",
 ] }
-tonic = "0.12.3"
-tonic-reflection = "0.12.3"
+tonic = "0.14"
+tonic-prost = "0.14"
+tonic-reflection = "0.14"
+tonic-web = "0.14"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 crossbeam-channel = "0.5.15"
@@ -71,22 +62,23 @@ serde_json = "1.0"
 ratatui = "0.29"
 crossterm = "0.28"
 
-# Simulator-only dependencies (optional, enabled by default via "simulator" feature)
-axum = { version = "0.7", features = ["ws"], optional = true }
-tower-http = { version = "0.5", features = ["fs"], optional = true }
-rust-embed = { version = "8", optional = true }
-notify = { version = "6", optional = true }
-notify-debouncer-mini = { version = "0.4", optional = true }
-futures-util = { version = "0.3", optional = true }
+axum = { version = "0.8", features = ["ws"] }
+http = "1"
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
+rust-embed = "8"
+notify = "6"
+notify-debouncer-mini = "0.4"
+futures-util = "0.3"
+tempfile = "3.14.0"
 
 [dev-dependencies]
-tempfile = "3.14.0"
 hound = "3.5.1"
 serial_test = "3.2.0"
 
 [build-dependencies]
-prost-build = "0.13.4"
-tonic-build = "0.12.3"
+tonic-build = "0.14"
+tonic-prost-build = "0.14"
 
 [lib]
 name = "mtrack"

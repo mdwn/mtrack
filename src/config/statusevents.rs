@@ -14,14 +14,14 @@
 use std::error::Error;
 
 use midly::live::LiveEvent;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use self::midi::ToMidiEvent;
 
 use super::midi;
 
 /// The configuration for emitting status events.
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Serialize, Clone)]
 pub struct StatusEvents {
     /// The events to emit to clear the status.
     off_events: Vec<midi::Event>,

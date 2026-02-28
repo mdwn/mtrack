@@ -14,7 +14,7 @@
 use std::{error::Error, str::FromStr, time::Duration};
 
 use duration_string::DurationString;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::audio::SampleFormat;
 
@@ -23,7 +23,7 @@ const DEFAULT_BUFFER_SIZE: usize = 1024;
 const DEFAULT_BUFFER_THREADS: usize = 2;
 
 /// Which resampling algorithm to use when source and output sample rates differ.
-#[derive(Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ResamplerType {
     /// High-quality sinc interpolation (lower latency, higher CPU). This is the default.
@@ -34,7 +34,7 @@ pub enum ResamplerType {
 }
 
 /// How to choose the CPAL stream buffer size (period size). Affects latency vs underrun tolerance.
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 #[serde(untagged)]
 pub enum StreamBufferSize {
     /// Use the backend's default (may be high latency on some systems).
@@ -48,7 +48,7 @@ pub enum StreamBufferSize {
 }
 
 /// A YAML representation of the audio configuration.
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Serialize, Clone)]
 pub struct Audio {
     /// The audio device.
     device: String,

@@ -1,0 +1,179 @@
+<!-- *     * Copyright (C) 2026 Michael Wilson <mike@mdwn.dev>
+     *
+     * This program is free software: you can redistribute it and/or modify it under
+     * the terms of the GNU General Public License as published by the Free Software
+     * Foundation, version 3.
+     *
+     * This program is distributed in the hope that it will be useful, but WITHOUT
+     * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+     * FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+     *
+     * You should have received a copy of the GNU General Public License along with
+     * this program. If not, see <https://www.gnu.org/licenses/>.
+     *
+     * -->
+<script lang="ts">
+  import { wsConnected } from "../lib/ws/stores";
+
+  interface Props {
+    currentHash: string;
+  }
+
+  let { currentHash }: Props = $props();
+  let menuOpen = $state(false);
+
+  const links = [
+    { hash: "#/", label: "Dashboard" },
+    { hash: "#/config", label: "Config" },
+    { hash: "#/songs", label: "Songs" },
+    { hash: "#/playlists", label: "Playlists" },
+    { hash: "#/lighting", label: "Lighting" },
+  ];
+
+  function isActive(hash: string): boolean {
+    if (hash === "#/") return currentHash === "#/" || currentHash === "";
+    return currentHash.startsWith(hash);
+  }
+
+  function closeMenu() {
+    menuOpen = false;
+  }
+</script>
+
+<nav class="nav">
+  <span class="nav-brand">mtrack</span>
+  <button
+    class="hamburger"
+    onclick={() => (menuOpen = !menuOpen)}
+    aria-label="Menu"
+  >
+    <span class="hamburger-line"></span>
+    <span class="hamburger-line"></span>
+    <span class="hamburger-line"></span>
+  </button>
+  <div class="nav-links" class:open={menuOpen}>
+    {#each links as link (link.hash)}
+      <a
+        href={link.hash}
+        class="nav-link"
+        class:active={isActive(link.hash)}
+        onclick={closeMenu}
+      >
+        {link.label}
+      </a>
+    {/each}
+  </div>
+  <div class="nav-status">
+    <div
+      class="status-indicator"
+      class:connected={$wsConnected}
+      class:disconnected={!$wsConnected}
+    ></div>
+  </div>
+</nav>
+
+<style>
+  .nav {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    padding: 0 20px;
+    height: 48px;
+    background: var(--bg-card);
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+  .nav-brand {
+    font-family: var(--mono);
+    font-weight: 700;
+    font-size: 15px;
+    color: var(--accent);
+    letter-spacing: -0.5px;
+  }
+  .hamburger {
+    display: none;
+    flex-direction: column;
+    justify-content: center;
+    gap: 4px;
+    background: none;
+    border: none;
+    padding: 4px;
+    cursor: pointer;
+    margin-left: auto;
+  }
+  .hamburger-line {
+    display: block;
+    width: 18px;
+    height: 2px;
+    background: var(--text-muted);
+    border-radius: 1px;
+  }
+  .nav-links {
+    display: flex;
+    gap: 4px;
+    flex: 1;
+  }
+  .nav-link {
+    color: var(--text-muted);
+    text-decoration: none;
+    padding: 6px 12px;
+    border-radius: var(--radius);
+    font-size: 13px;
+    font-weight: 500;
+    transition:
+      color 0.15s,
+      background 0.15s;
+  }
+  .nav-link:hover {
+    color: var(--text);
+    background: rgba(255, 255, 255, 0.05);
+  }
+  .nav-link.active {
+    color: var(--text);
+    background: rgba(91, 91, 214, 0.15);
+  }
+  .nav-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .status-indicator {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--text-dim);
+    transition: background 0.3s;
+  }
+  .status-indicator.connected {
+    background: var(--green);
+  }
+  .status-indicator.disconnected {
+    background: var(--red);
+  }
+
+  @media (max-width: 600px) {
+    .hamburger {
+      display: flex;
+    }
+    .nav-status {
+      margin-left: 12px;
+    }
+    .nav-links {
+      display: none;
+      position: absolute;
+      top: 48px;
+      left: 0;
+      right: 0;
+      flex-direction: column;
+      background: var(--bg-card);
+      border-bottom: 1px solid var(--border);
+      padding: 8px 12px;
+      gap: 2px;
+    }
+    .nav-links.open {
+      display: flex;
+    }
+  }
+</style>

@@ -3,3 +3,6 @@ target
 .claude
 cobertura.xml
 lcov.info
+src/webui/svelte/node_modules/
+src/webui/svelte/dist/
+src/webui/svelte/src/gen/

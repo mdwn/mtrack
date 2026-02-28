@@ -14,7 +14,7 @@
 use std::{collections::HashMap, error::Error};
 
 use midly::live::LiveEvent;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::midi::{self, ToMidiEvent};
 
@@ -56,7 +56,7 @@ fn default_osc_playlist_current_song_elapsed() -> String {
 }
 
 /// Allows users to specify various controllers.
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Serialize, Clone)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Controller {
     Grpc(GrpcController),
@@ -66,7 +66,7 @@ pub enum Controller {
 }
 
 /// The configuration that maps MIDI events to controller messages.
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Serialize, Clone)]
 pub struct MidiController {
     /// The MIDI event to look for to play the current song in the playlist.
     play: midi::Event,
@@ -133,7 +133,7 @@ impl MidiController {
 }
 
 /// The configuration for the multitrack player gRPC server.
-#[derive(Clone, Default, Deserialize)]
+#[derive(Clone, Default, Deserialize, Serialize)]
 pub struct GrpcController {
     /// The port to listen on.
     port: Option<u16>,
@@ -152,7 +152,7 @@ impl GrpcController {
 }
 
 /// The configuration for the multitrack player OSC server.
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct OscController {
     /// The port to listen on.
     #[serde(default = "default_osc_port")]

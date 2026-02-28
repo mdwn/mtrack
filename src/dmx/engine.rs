@@ -74,12 +74,10 @@ pub struct Engine {
     timeline_finished: Arc<AtomicBool>,
     /// Cancel handle for notifying when timeline finishes
     timeline_cancel_handle: Arc<Mutex<Option<CancelHandle>>>,
-    /// Broadcast sender from the simulator (if running), used to start the file watcher per-song
-    #[cfg(feature = "simulator")]
-    simulator_broadcast_tx: Mutex<Option<tokio::sync::broadcast::Sender<String>>>,
+    /// Broadcast sender for the web UI, used to start the file watcher per-song
+    broadcast_tx: Mutex<Option<tokio::sync::broadcast::Sender<String>>>,
     /// Handle to the current file watcher (dropped/replaced per-song)
-    #[cfg(feature = "simulator")]
-    watcher_handle: Mutex<Option<crate::simulator::watcher::WatcherHandle>>,
+    watcher_handle: Mutex<Option<super::watcher::WatcherHandle>>,
     /// Lockless store for legacy MIDI DMX values with built-in interpolation.
     /// RwLock protects structural changes (register_slot); hot-path reads
     /// (write/tick/iter_active) take a cheap read lock while atomics handle data.
@@ -89,6 +87,13 @@ pub struct Engine {
     /// Heartbeat counter incremented by the effects loop each frame.
     /// Used by barrier threads to detect if the effects loop has died.
     effects_loop_heartbeat: Arc<AtomicU64>,
+    /// Phase indicator for the effects loop (0=idle, 1=tick, 2=midi_advance,
+    /// 3=update_effects, 4=update_song_lighting, 5=timeline_check).
+    /// Used for diagnostics when the heartbeat goes stale.
+    effects_loop_phase: Arc<AtomicU64>,
+    /// Sub-phase indicator from EffectEngine::update() for finer-grained diagnostics.
+    /// Shared Arc with the EffectEngine instance.
+    update_subphase: Arc<AtomicU64>,
 }
 
 /// A legacy MIDI light show being played back from the effects loop.
@@ -106,9 +111,8 @@ pub(super) struct DmxMessage {
     pub buffer: DmxBuffer,
 }
 
-/// Shared handles exposed to the simulator for reading state.
-#[cfg(feature = "simulator")]
-pub struct SimulatorHandles {
+/// Shared handles exposed for reading lighting state.
+pub struct BroadcastHandles {
     pub lighting_system: Option<Arc<Mutex<LightingSystem>>>,
 }
 
@@ -165,7 +169,9 @@ impl Engine {
                 None
             };
 
-        let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
+        let ee = EffectEngine::new();
+        let update_subphase = ee.update_subphase();
+        let effect_engine = Arc::new(Mutex::new(ee));
         let current_song_timeline: Arc<Mutex<Option<LightingTimeline>>> =
             Arc::new(Mutex::new(None));
         let current_song_time = Arc::new(Mutex::new(Duration::ZERO));
@@ -190,13 +196,13 @@ impl Engine {
             current_song_time,
             timeline_finished,
             timeline_cancel_handle,
-            #[cfg(feature = "simulator")]
-            simulator_broadcast_tx: Mutex::new(None),
-            #[cfg(feature = "simulator")]
+            broadcast_tx: Mutex::new(None),
             watcher_handle: Mutex::new(None),
             legacy_store,
             legacy_midi_playbacks: Mutex::new(Vec::new()),
             effects_loop_heartbeat: Arc::new(AtomicU64::new(0)),
+            effects_loop_phase: Arc::new(AtomicU64::new(0)),
+            update_subphase,
         })
     }
 
@@ -228,15 +234,20 @@ impl Engine {
                 let dt = now.duration_since(last_update);
 
                 if dt >= target_frame_time {
-                    // Wrap tick in catch_unwind to prevent a panic from killing
-                    // the effects loop thread (which would freeze all lighting).
-                    // Safety: parking_lot mutexes do not poison on panic — they
-                    // release normally — so logical state inconsistency from a
-                    // partial update is acceptable for best-effort recovery.
+                    // Wrap the frame work in catch_unwind to prevent a panic from
+                    // killing the effects loop thread, which would permanently freeze
+                    // all lighting and block DMX playback cleanup.
+                    //
+                    // parking_lot mutexes do not poison on panic — they release normally.
+                    // AssertUnwindSafe is required because Engine contains parking_lot::Mutex
+                    // fields, which don't implement RefUnwindSafe. The logical state inside
+                    // any mutex that was mid-update when a panic fired may be inconsistent,
+                    // but the lock is released and subsequent ticks can proceed.
                     let engine_ref = AssertUnwindSafe(&engine);
                     let result = std::panic::catch_unwind(move || {
                         Self::effects_loop_tick(&engine_ref);
                     });
+
                     if let Err(panic_info) = result {
                         let msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
                             s.to_string()
@@ -260,6 +271,7 @@ impl Engine {
 
                 thread::sleep(Duration::from_millis(1));
             }
+
             info!("Effects loop exited.");
         });
 
@@ -268,20 +280,29 @@ impl Engine {
         *engine.effects_loop_handle.lock() = Some(handle);
     }
 
-    /// One frame of the effects loop, extracted for catch_unwind.
+    /// Performs one tick of the effects loop: interpolation, MIDI dispatch,
+    /// effects update, timeline update, and finished-check.
+    ///
+    /// Phase values (stored in `effects_loop_phase` for diagnostics):
+    ///   1 = legacy store tick, 2 = MIDI advance, 3 = update effects,
+    ///   4 = update song lighting, 5 = timeline finished check, 0 = idle.
     fn effects_loop_tick(&self) {
         // Tick the legacy store to interpolate dimming values
+        self.effects_loop_phase.store(1, Ordering::Relaxed);
         self.legacy_store.read().tick();
 
         // Advance legacy MIDI playback cursors and dispatch events
+        self.effects_loop_phase.store(2, Ordering::Relaxed);
         self.advance_legacy_midi_playbacks();
 
         // Update effects engine and apply to universes
+        self.effects_loop_phase.store(3, Ordering::Relaxed);
         if let Err(e) = self.update_effects() {
             error!("Error updating effects: {}", e);
         }
 
         // Update song lighting timeline with actual song time
+        self.effects_loop_phase.store(4, Ordering::Relaxed);
         let song_time = self.get_song_time();
         if let Err(e) = self.update_song_lighting(song_time) {
             error!("Error updating song lighting: {}", e);
@@ -289,6 +310,7 @@ impl Engine {
 
         // Check if all lighting has finished (DSL timeline cues + legacy MIDI playbacks)
         // and notify the waiting thread if so
+        self.effects_loop_phase.store(5, Ordering::Relaxed);
         if !self.timeline_finished.load(Ordering::Relaxed) {
             let timeline_done = {
                 let timeline = self.current_song_timeline.lock();
@@ -305,6 +327,8 @@ impl Engine {
                 }
             }
         }
+
+        self.effects_loop_phase.store(0, Ordering::Relaxed);
     }
 
     #[cfg(test)]
@@ -486,17 +510,16 @@ impl Engine {
         // Start the lighting timeline at the specified time
         dmx_engine.start_lighting_timeline_at(start_time);
 
-        // Start file watcher for hot-reload if simulator is running
-        #[cfg(feature = "simulator")]
+        // Start file watcher for hot-reload if broadcast channel is available
         {
-            let broadcast_tx = dmx_engine.simulator_broadcast_tx.lock();
+            let broadcast_tx = dmx_engine.broadcast_tx.lock();
             if let Some(tx) = broadcast_tx.as_ref() {
                 let file_paths: Vec<std::path::PathBuf> = dsl_lighting_shows
                     .iter()
                     .map(|s| s.file_path().to_path_buf())
                     .collect();
                 if !file_paths.is_empty() {
-                    match crate::simulator::watcher::start_watching(
+                    match super::watcher::start_watching(
                         file_paths,
                         dmx_engine.effect_engine.clone(),
                         dmx_engine.current_song_timeline.clone(),
@@ -617,11 +640,13 @@ impl Engine {
         // Spawn barrier threads for legacy light shows. player.rs allocates
         // song.light_shows().len() barrier slots for legacy shows, and +1 for DSL lighting.
         // We must spawn exactly that many threads here:
-        //   - has_dmx_sheets count threads for matched legacy shows
+        //   - num_legacy_playbacks threads for matched legacy shows
         //   - empty_barrier_counter threads for unmatched legacy shows
-        //   - 1 thread for DSL-only (if no legacy shows but has DSL lighting)
-        // The first legacy thread also waits for timeline completion; the rest
-        // just satisfy the barrier count and exit.
+        //   - 1 thread for DSL lighting (if the song has DSL lighting shows)
+        // The first legacy thread waits for timeline completion to keep the DMX
+        // thread alive while lighting processes; the rest just satisfy the barrier.
+        // It uses a heartbeat-aware timeout so the system can recover if the
+        // effects loop dies.
         let num_legacy_playbacks = dmx_engine.legacy_midi_playbacks.lock().len();
         let mut first_legacy = true;
         let mut join_handles: Vec<JoinHandle<()>> = (0..num_legacy_playbacks)
@@ -632,12 +657,16 @@ impl Engine {
                     let cancel_handle = cancel_handle.clone();
                     let timeline_finished = dmx_engine.timeline_finished.clone();
                     let heartbeat = dmx_engine.effects_loop_heartbeat.clone();
+                    let phase = dmx_engine.effects_loop_phase.clone();
+                    let subphase = dmx_engine.update_subphase.clone();
                     thread::spawn(move || {
                         play_barrier.wait();
                         Self::wait_for_timeline_with_heartbeat(
                             &cancel_handle,
                             timeline_finished,
                             &heartbeat,
+                            &phase,
+                            &subphase,
                         );
                     })
                 } else {
@@ -655,12 +684,16 @@ impl Engine {
             let timeline_finished = dmx_engine.timeline_finished.clone();
             let play_barrier_clone = play_barrier.clone();
             let heartbeat = dmx_engine.effects_loop_heartbeat.clone();
+            let phase = dmx_engine.effects_loop_phase.clone();
+            let subphase = dmx_engine.update_subphase.clone();
             join_handles.push(thread::spawn(move || {
                 play_barrier_clone.wait();
                 Self::wait_for_timeline_with_heartbeat(
                     &cancel_handle_clone,
                     timeline_finished,
                     &heartbeat,
+                    &phase,
+                    &subphase,
                 );
             }));
         }
@@ -690,17 +723,11 @@ impl Engine {
             );
             drop(join_handles);
         } else {
-            let results: Vec<Result<(), Box<dyn Error>>> = join_handles
-                .drain(..)
-                .map(|join_handle| {
-                    if join_handle.join().is_err() {
-                        return Err("Error while joining thread!".into());
-                    }
-                    Ok(())
-                })
-                .collect();
-            for result in results.into_iter() {
-                result?;
+            for (i, join_handle) in join_handles.drain(..).enumerate() {
+                if join_handle.join().is_err() {
+                    error!("Error while joining barrier thread {}!", i);
+                    return Err(format!("Error while joining barrier thread {}!", i).into());
+                }
             }
         }
 
@@ -843,8 +870,21 @@ impl Engine {
     pub fn update_effects(&self) -> Result<(), Box<dyn std::error::Error>> {
         // Update the effects engine with a frame time matching Universe TARGET_HZ
         let dt = Duration::from_secs_f64(1.0 / super::universe::TARGET_HZ);
+        // Subphase 1: about to acquire current_song_time lock
+        self.update_subphase.store(1, Ordering::Relaxed);
         let song_time = self.get_song_time();
-        let mut effect_engine = self.effect_engine.lock();
+        // Subphase 2: about to acquire effect_engine lock
+        self.update_subphase.store(2, Ordering::Relaxed);
+        let mut effect_engine = match self.effect_engine.try_lock_for(Duration::from_secs(2)) {
+            Some(guard) => guard,
+            None => {
+                error!(
+                    "effect_engine lock blocked for >2s in update_effects — \
+                     another holder is not releasing it"
+                );
+                self.effect_engine.lock()
+            }
+        };
         let commands = effect_engine.update(dt, Some(song_time))?;
 
         // Group commands by universe
@@ -1061,16 +1101,14 @@ impl Engine {
         *current_time
     }
 
-    /// Sets the simulator broadcast channel so the file watcher can send reload notifications.
-    #[cfg(feature = "simulator")]
-    pub fn set_simulator_broadcast_tx(&self, tx: tokio::sync::broadcast::Sender<String>) {
-        *self.simulator_broadcast_tx.lock() = Some(tx);
+    /// Sets the broadcast channel so the file watcher can send reload notifications.
+    pub fn set_broadcast_tx(&self, tx: tokio::sync::broadcast::Sender<String>) {
+        *self.broadcast_tx.lock() = Some(tx);
     }
 
-    /// Returns shared handles for the simulator to read state from.
-    #[cfg(feature = "simulator")]
-    pub fn simulator_handles(&self) -> SimulatorHandles {
-        SimulatorHandles {
+    /// Returns shared handles for reading lighting state.
+    pub fn broadcast_handles(&self) -> BroadcastHandles {
+        BroadcastHandles {
             lighting_system: self.lighting_system.clone(),
         }
     }
@@ -1078,6 +1116,12 @@ impl Engine {
     /// Returns the effect engine.
     pub fn effect_engine(&self) -> Arc<Mutex<EffectEngine>> {
         self.effect_engine.clone()
+    }
+
+    /// Returns the current effects loop heartbeat counter.
+    #[cfg(test)]
+    pub fn effects_loop_heartbeat(&self) -> u64 {
+        self.effects_loop_heartbeat.load(Ordering::Relaxed)
     }
 
     /// Get a formatted string listing all active effects
@@ -1096,13 +1140,16 @@ impl Engine {
         }
     }
 
-    /// Waits for the lighting timeline to finish, periodically checking the
-    /// effects loop heartbeat. If the heartbeat goes stale for 10s, forces
-    /// `timeline_finished` to true so DMX playback can unblock.
+    /// Waits for the lighting timeline to finish, with a heartbeat check to detect
+    /// a dead effects loop. If the heartbeat stops advancing for 10 seconds, the
+    /// effects loop is assumed dead and the wait is abandoned so `Engine::play()`
+    /// can clean up instead of blocking forever.
     fn wait_for_timeline_with_heartbeat(
         cancel_handle: &CancelHandle,
         timeline_finished: Arc<AtomicBool>,
         heartbeat: &AtomicU64,
+        phase: &AtomicU64,
+        update_subphase: &AtomicU64,
     ) {
         // Check every 5 seconds; declare dead after 2 consecutive stale checks (10s).
         const CHECK_INTERVAL: Duration = Duration::from_secs(5);
@@ -1121,8 +1168,35 @@ impl Engine {
             let current_heartbeat = heartbeat.load(Ordering::Relaxed);
             if current_heartbeat == last_heartbeat {
                 stale_count += 1;
+                let current_phase = phase.load(Ordering::Relaxed);
+                let phase_name = match current_phase {
+                    0 => "idle",
+                    1 => "legacy_store_tick",
+                    2 => "midi_advance",
+                    3 => "update_effects",
+                    4 => "update_song_lighting",
+                    5 => "timeline_finished_check",
+                    _ => "unknown",
+                };
+                let current_subphase = update_subphase.load(Ordering::Relaxed);
+                let subphase_name = match current_subphase {
+                    0 => "idle",
+                    1 => "get_song_time",
+                    2 => "acquire_effect_lock",
+                    10 => "fast_path_check",
+                    20 => "state_setup",
+                    30 => "legacy_inject",
+                    40 => "effect_sort",
+                    50 => "effect_process",
+                    60 => "completed_effects",
+                    70 => "persist_state",
+                    80 => "dmx_generate",
+                    _ => "unknown",
+                };
                 if stale_count >= MAX_STALE_CHECKS {
                     error!(
+                        phase = phase_name,
+                        update_subphase = subphase_name,
                         "Effects loop heartbeat stale for {}s — assuming dead. \
                          Forcing timeline_finished to unblock DMX playback.",
                         CHECK_INTERVAL.as_secs() * u64::from(MAX_STALE_CHECKS),
@@ -1132,6 +1206,8 @@ impl Engine {
                 }
                 warn!(
                     stale_count,
+                    phase = phase_name,
+                    update_subphase = subphase_name,
                     "Effects loop heartbeat stale — will force-finish if it persists."
                 );
             } else {

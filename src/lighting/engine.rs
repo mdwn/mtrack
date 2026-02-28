@@ -23,6 +23,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use super::effects::*;
 use super::tempo::TempoMap;
 use tracing::debug;
@@ -73,6 +75,11 @@ pub struct EffectEngine {
     /// stop_all_effects). Forces the next update() to do a full recomputation
     /// instead of returning cached commands.
     cache_dirty: bool,
+    /// Sub-phase indicator for update() progress. Shared via Arc so external
+    /// code (heartbeat checker) can read it without holding the effect_engine lock.
+    /// 0=idle, 10=fast_path, 20=state_setup, 30=legacy_inject, 40=effect_sort,
+    /// 50=effect_process, 60=completed_effects, 70=persist_state, 80=dmx_generate.
+    update_subphase: Arc<AtomicU64>,
 }
 
 impl Default for EffectEngine {
@@ -103,7 +110,13 @@ impl EffectEngine {
             cached_commands: Vec::new(),
             last_store_generation: 0,
             cache_dirty: false,
+            update_subphase: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// Returns the shared update sub-phase Arc for external monitoring.
+    pub fn update_subphase(&self) -> Arc<AtomicU64> {
+        self.update_subphase.clone()
     }
 
     /// Set the tempo map for tempo-aware effects
@@ -375,6 +388,7 @@ impl EffectEngine {
         dt: Duration,
         song_time: Option<Duration>,
     ) -> Result<Vec<DmxCommand>, EffectError> {
+        self.update_subphase.store(10, Ordering::Relaxed);
         self.current_time += dt;
         self.engine_elapsed += dt;
         self.last_song_time = song_time;
@@ -396,6 +410,7 @@ impl EffectEngine {
 
             // Unchanged since last frame — return cached commands.
             if store_gen == self.last_store_generation {
+                self.update_subphase.store(0, Ordering::Relaxed);
                 return Ok(self.cached_commands.clone());
             }
 
@@ -436,6 +451,7 @@ impl EffectEngine {
 
             self.cached_commands.clone_from(&commands);
             self.last_store_generation = store_gen;
+            self.update_subphase.store(0, Ordering::Relaxed);
             return Ok(commands);
         }
 
@@ -449,9 +465,12 @@ impl EffectEngine {
                 .map(|s| s.read().generation())
                 .unwrap_or(0);
             if store_gen == self.last_store_generation {
+                self.update_subphase.store(0, Ordering::Relaxed);
                 return Ok(self.cached_commands.clone());
             }
         }
+
+        self.update_subphase.store(20, Ordering::Relaxed);
 
         // Use song_time for tempo-aware speed lookups (BPM at current position).
         // Falls back to engine_elapsed when no song is playing.
@@ -473,6 +492,8 @@ impl EffectEngine {
                 .iter()
                 .map(|(name, state)| (name.clone(), state.channels.keys().cloned().collect()))
                 .collect();
+
+        self.update_subphase.store(30, Ordering::Relaxed);
 
         // Inject legacy MIDI values from the lockless store (lowest priority).
         // Only set channels that aren't already claimed by persisted permanent effects.
@@ -497,6 +518,8 @@ impl EffectEngine {
                 }
             }
         }
+
+        self.update_subphase.store(40, Ordering::Relaxed);
 
         // Group effects by layer - collect effect IDs first to avoid borrowing conflicts
         // Within each layer, we will sort effects deterministically so that:
@@ -549,6 +572,8 @@ impl EffectEngine {
                     .then_with(|| a.cmp(b))
             });
         }
+
+        self.update_subphase.store(50, Ordering::Relaxed);
 
         // Track effects that have just completed to preserve their final state
         let mut completed_effects = Vec::new();
@@ -689,6 +714,8 @@ impl EffectEngine {
             }
         }
 
+        self.update_subphase.store(60, Ordering::Relaxed);
+
         // Handle completed effects by preserving their final state
         for effect_id in completed_effects {
             // Clean up releasing effects tracking
@@ -767,6 +794,8 @@ impl EffectEngine {
             }
         }
 
+        self.update_subphase.store(70, Ordering::Relaxed);
+
         // Update persistent fixture states - only save channels from permanent effects
         self.fixture_states.clear();
         for (fixture_name, state) in &current_fixture_states {
@@ -811,6 +840,8 @@ impl EffectEngine {
             }
         }
 
+        self.update_subphase.store(80, Ordering::Relaxed);
+
         // Store merged states for preview/debugging (before converting to DMX)
         self.last_merged_states = merged_states.clone();
 
@@ -834,6 +865,7 @@ impl EffectEngine {
             .unwrap_or(0);
         self.cache_dirty = false;
 
+        self.update_subphase.store(0, Ordering::Relaxed);
         Ok(commands)
     }
 

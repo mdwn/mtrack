@@ -58,11 +58,13 @@ async fn sampler_loop(
     interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
 
     // Cache the dimmer map — fixture registry doesn't change at runtime.
-    // Use spawn_blocking to keep the parking_lot lock off the async runtime.
+    // Use spawn_blocking because effect_engine is a parking_lot::Mutex shared
+    // with the 44Hz effects loop on a std::thread — we must never block a
+    // tokio worker thread on it.
     let has_dimmer_map: HashMap<String, bool> = {
-        let engine = effect_engine.clone();
+        let engine_ref = effect_engine.clone();
         tokio::task::spawn_blocking(move || {
-            let engine = engine.lock();
+            let engine = engine_ref.lock();
             engine
                 .get_fixture_registry()
                 .iter()
@@ -70,24 +72,33 @@ async fn sampler_loop(
                 .collect()
         })
         .await
-        .expect("spawn_blocking panicked")
+        .unwrap_or_default()
     };
 
     loop {
         interval.tick().await;
 
-        // Clone data out under a blocking lock — sorting and snapshot
-        // conversion happen outside to avoid blocking the 44Hz effects loop.
-        let (states, mut active_effects) = {
-            let engine = effect_engine.clone();
-            tokio::task::spawn_blocking(move || {
-                let engine = engine.lock();
-                let states = engine.get_fixture_states();
-                let effects: Vec<String> = engine.get_active_effects().keys().cloned().collect();
-                (states, effects)
-            })
-            .await
-            .expect("spawn_blocking panicked")
+        // Acquire the effect engine lock on the blocking thread pool so we
+        // never block a tokio worker thread.
+        let engine_ref = effect_engine.clone();
+        let (states, mut active_effects) = match tokio::task::spawn_blocking(move || {
+            let lock_start = std::time::Instant::now();
+            let engine = engine_ref.lock();
+            let wait = lock_start.elapsed();
+            if wait > std::time::Duration::from_secs(1) {
+                tracing::warn!(
+                    wait_ms = wait.as_millis() as u64,
+                    "Sampler waited >1s for effect_engine lock"
+                );
+            }
+            let states = engine.get_fixture_states();
+            let effects: Vec<String> = engine.get_active_effects().keys().cloned().collect();
+            (states, effects)
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => continue,
         };
 
         active_effects.sort();

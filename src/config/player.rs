@@ -21,7 +21,7 @@ use super::statusevents::StatusEvents;
 use super::trackmappings::TrackMappings;
 use super::trigger::{MidiTriggerInput, TriggerConfig, TriggerInput};
 use config::{Config, File};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
@@ -34,7 +34,7 @@ use tracing::{error, info, warn};
 static EMPTY_TRACK_MAPPINGS: LazyLock<HashMap<String, Vec<u16>>> = LazyLock::new(HashMap::new);
 
 /// The configuration for the multitrack player.
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct Player {
     /// The controller configuration.
     controller: Option<Controller>,

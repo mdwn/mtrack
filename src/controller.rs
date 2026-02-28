@@ -18,7 +18,7 @@ use std::io;
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 
-mod grpc;
+pub(crate) mod grpc;
 mod midi;
 mod osc;
 
@@ -195,7 +195,6 @@ mod test {
                 "assets/songs",
             ),
             None,
-            false,
         )?);
         let playlist = player.get_playlist();
         let binding = player

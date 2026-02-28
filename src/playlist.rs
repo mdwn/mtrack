@@ -139,6 +139,11 @@ impl Playlist {
         current.clone()
     }
 
+    /// Look up a song by name from the underlying registry.
+    pub fn get_song(&self, name: &str) -> Option<Arc<Song>> {
+        self.registry.get(name).ok()
+    }
+
     /// Return the song at the current position of the playlist.
     pub fn current(&self) -> Arc<Song> {
         let position = self.position.read();

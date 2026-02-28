@@ -13,7 +13,7 @@
 //
 use std::collections::HashMap;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::audio::Audio;
 use super::controller::Controller;
@@ -22,7 +22,7 @@ use super::midi::Midi;
 use super::trigger::TriggerConfig;
 
 /// Audio configuration with track mappings.
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Serialize, Clone)]
 pub struct AudioConfig {
     #[serde(flatten)]
     audio: Audio,
@@ -52,7 +52,7 @@ impl AudioConfig {
 /// A unified hardware profile representing one complete host configuration.
 /// Profiles are tried in list order; the first one whose hostname matches (or has
 /// no constraint) is used.
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Serialize, Clone)]
 pub struct Profile {
     /// Optional hostname restriction.
     hostname: Option<String>,

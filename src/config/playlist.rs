@@ -14,12 +14,12 @@
 use std::path::Path;
 
 use config::{Config, File};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::error::ConfigError;
 
 /// The configuration for a playlist.
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct Playlist {
     /// The songs that belong to this playlist.
     songs: Vec<String>,

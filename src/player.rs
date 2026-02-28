@@ -95,16 +95,11 @@ pub struct Player {
 
 impl Player {
     /// Creates a new player.
-    ///
-    /// When `simulator_mode` is true, the DMX engine will fall back to a no-op OLA client
-    /// if the OLA daemon is unavailable, allowing the lighting simulator to run without
-    /// physical hardware.
     pub fn new(
         songs: Arc<Songs>,
         playlist: Arc<Playlist>,
         config: &config::Player,
         base_path: Option<&Path>,
-        simulator_mode: bool,
     ) -> Result<Player, Box<dyn Error>> {
         let span = span!(Level::INFO, "player");
         let _enter = span.enter();
@@ -153,18 +148,11 @@ impl Player {
         };
 
         // DMX: if present in profile, required. If absent, optional.
-        // Fall back to a null OLA client when in simulator mode or when null_client is set.
+        // Always allows null OLA fallback so the web UI / simulator can run without hardware.
         let dmx_engine = if let Some(dmx_config) = profile.dmx() {
-            let allow_null = simulator_mode || dmx_config.null_client();
-            if allow_null {
-                Self::wait_for_ok("dmx engine", || {
-                    dmx::create_engine_for_simulator(Some(dmx_config), base_path)
-                })?
-            } else {
-                Self::wait_for_ok("dmx engine", || {
-                    dmx::create_engine(Some(dmx_config), base_path)
-                })?
-            }
+            Self::wait_for_ok("dmx engine", || {
+                dmx::create_engine(Some(dmx_config), base_path)
+            })?
         } else {
             info!("DMX not configured in profile; proceeding without DMX");
             None
@@ -419,17 +407,15 @@ impl Player {
         }
     }
 
-    /// Returns handles needed by the lighting simulator, or None if no DMX engine is configured.
-    #[cfg(feature = "simulator")]
-    pub fn simulator_handles(&self) -> Option<dmx::engine::SimulatorHandles> {
-        self.dmx_engine.as_ref().map(|e| e.simulator_handles())
+    /// Returns handles needed for reading lighting state, or None if no DMX engine is configured.
+    pub fn broadcast_handles(&self) -> Option<dmx::engine::BroadcastHandles> {
+        self.dmx_engine.as_ref().map(|e| e.broadcast_handles())
     }
 
-    /// Passes the simulator broadcast channel to the DmxEngine for file watcher hot-reload.
-    #[cfg(feature = "simulator")]
-    pub fn set_simulator_broadcast_tx(&self, tx: tokio::sync::broadcast::Sender<String>) {
+    /// Passes the broadcast channel to the DmxEngine for file watcher hot-reload.
+    pub fn set_broadcast_tx(&self, tx: tokio::sync::broadcast::Sender<String>) {
         if let Some(ref engine) = self.dmx_engine {
-            engine.set_simulator_broadcast_tx(tx);
+            engine.set_broadcast_tx(tx);
         }
     }
 
@@ -882,6 +868,16 @@ impl Player {
         self.switch_playlist(false, "playlist").await;
     }
 
+    /// Returns the track-to-output-channel mappings, if audio is configured.
+    pub fn track_mappings(&self) -> Option<&HashMap<String, Vec<u16>>> {
+        self.mappings.as_deref()
+    }
+
+    /// Gets the all-songs playlist (every song in the registry).
+    pub fn get_all_songs_playlist(&self) -> Arc<Playlist> {
+        self.all_songs.clone()
+    }
+
     /// Gets the current playlist used by the player.
     pub fn get_playlist(&self) -> Arc<Playlist> {
         if self.use_all_songs.load(Ordering::Relaxed) {
@@ -1001,7 +997,6 @@ mod test {
                 "assets/songs",
             ),
             None,
-            false,
         )?;
         let binding = player
             .audio_device()
@@ -1185,7 +1180,6 @@ mod test {
                 temp_path.to_str().unwrap(),
             ),
             Some(temp_path),
-            false,
         )?;
 
         // Try to play the song - it should fail due to invalid lighting show
@@ -1285,7 +1279,6 @@ mod test {
                 temp_path.to_str().unwrap(),
             ),
             Some(temp_path),
-            false,
         )?;
 
         // Test validation directly through the DMX engine to avoid starting playback
@@ -1386,7 +1379,6 @@ mod test {
                 temp_path.to_str().unwrap(),
             ),
             Some(temp_path),
-            false,
         )?;
 
         // Try to play the song - it should succeed even without lighting shows
@@ -1487,7 +1479,6 @@ mod test {
                 temp_path.to_str().unwrap(),
             ),
             Some(temp_path),
-            false,
         )?;
 
         // Try to play the song - it should fail due to invalid lighting show groups
