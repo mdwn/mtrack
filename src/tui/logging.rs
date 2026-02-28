@@ -11,9 +11,10 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
+use parking_lot::Mutex;
 use std::collections::VecDeque;
 use std::fmt;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 
 use tracing::field::{Field, Visit};
 use tracing::{Event, Subscriber};
@@ -82,7 +83,8 @@ impl<S: Subscriber> Layer<S> for TuiLogLayer {
 
         let line = format!("{} {}: {}", level, target, visitor.message);
 
-        if let Ok(mut buffer) = self.buffer.lock() {
+        {
+            let mut buffer = self.buffer.lock();
             if buffer.len() >= self.capacity {
                 buffer.pop_front();
             }

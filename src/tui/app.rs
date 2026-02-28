@@ -126,10 +126,15 @@ impl App {
             .collect();
         self.active_effects = snapshot.active_effects.clone();
 
-        // Update log buffer
+        // Update log buffer (acquire parking_lot mutex off the async runtime).
         if let Some(buffer) = super::logging::get_log_buffer() {
-            if let Ok(buffer) = buffer.lock() {
-                self.log_lines = buffer.iter().cloned().collect();
+            if let Ok(lines) = tokio::task::spawn_blocking(move || {
+                let buffer = buffer.lock();
+                buffer.iter().cloned().collect::<Vec<String>>()
+            })
+            .await
+            {
+                self.log_lines = lines;
             }
         }
     }

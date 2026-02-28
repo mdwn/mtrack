@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.1] - 2026-02-28
+
+### Fixed
+
+- **DMX universe deadlock**: Fixed an ABBA deadlock between the effects loop and universe
+  threads caused by reversed lock ordering of the `target` and `rates` RwLocks in
+  `approach_target()`. This could cause lighting to freeze mid-song, after which audio
+  playback and lighting would no longer function until restart. The deadlock was timing-
+  dependent and could occur on any song type (legacy MIDI or DSL).
+
+- **Effects loop resilience**: The persistent effects loop is now wrapped in `catch_unwind`
+  so that a panic in a single tick cannot kill the loop thread. Panics are logged and the
+  loop continues on the next tick.
+
+- **Effects loop heartbeat monitoring**: Barrier threads now monitor the effects loop via an
+  atomic heartbeat counter instead of waiting indefinitely. If the heartbeat is stale for 10
+  seconds, the timeline is force-finished and the song completes gracefully rather than
+  hanging forever.
+
+- **Lost condvar notifications**: `CancelHandle::notify()` now acquires the mutex before
+  signaling, preventing a race where notifications could be lost between a waiter's predicate
+  check and its condvar sleep.
+
+- **Blocking mutexes in async code**: The state sampler and TUI tick now acquire
+  `parking_lot::Mutex` locks via `spawn_blocking` instead of blocking the tokio runtime
+  directly. The TUI log buffer was also migrated from `std::sync::Mutex` to
+  `parking_lot::Mutex` for consistency with the rest of the codebase.
+
 ## [0.9.0] - 2026-02-26
 
 ### Added

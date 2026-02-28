@@ -61,9 +61,29 @@ impl CancelHandle {
         });
     }
 
+    /// Waits for the cancel handle to be cancelled or for finished to be set to true,
+    /// with a timeout. Returns `true` if the condition was met, `false` if timed out.
+    pub fn wait_with_timeout(
+        &self,
+        finished: Arc<AtomicBool>,
+        timeout: std::time::Duration,
+    ) -> bool {
+        let mut guard = self.cancelled.lock();
+        let result = self.condvar.wait_while_for(
+            &mut guard,
+            |cancelled| *cancelled == CancelState::Untouched && !finished.load(Ordering::Relaxed),
+            timeout,
+        );
+        !result.timed_out()
+    }
+
     /// Notifies the cancel handle to see if this the song has been cancelled or if the
     /// particular element has finished.
+    ///
+    /// Acquires the mutex before signaling so the notification cannot be lost
+    /// between a waiter's predicate check and its condvar sleep.
     pub fn notify(&self) {
+        let _guard = self.cancelled.lock();
         self.condvar.notify_all();
     }
 
@@ -72,7 +92,8 @@ impl CancelHandle {
         let mut cancel_state = self.cancelled.lock();
         if *cancel_state == CancelState::Untouched {
             *cancel_state = CancelState::Cancelled;
-            self.notify();
+            // Signal directly — we already hold the mutex.
+            self.condvar.notify_all();
         }
     }
 }
@@ -110,5 +131,35 @@ mod test {
 
         assert!(join.join().is_ok());
         assert!(!cancel_handle.is_cancelled());
+    }
+
+    #[test]
+    fn test_wait_with_timeout_returns_true_when_finished() {
+        let cancel_handle = CancelHandle::new();
+        let finished = Arc::new(AtomicBool::new(true));
+        assert!(cancel_handle.wait_with_timeout(finished, std::time::Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn test_wait_with_timeout_returns_false_on_timeout() {
+        let cancel_handle = CancelHandle::new();
+        let finished = Arc::new(AtomicBool::new(false));
+        assert!(!cancel_handle.wait_with_timeout(finished, std::time::Duration::from_millis(50)));
+    }
+
+    #[test]
+    fn test_wait_with_timeout_returns_true_when_cancelled() {
+        let cancel_handle = CancelHandle::new();
+        let finished = Arc::new(AtomicBool::new(false));
+
+        let join = {
+            let cancel_handle = cancel_handle.clone();
+            thread::spawn(move || {
+                cancel_handle.wait_with_timeout(finished, std::time::Duration::from_secs(10))
+            })
+        };
+
+        cancel_handle.cancel();
+        assert!(join.join().unwrap());
     }
 }

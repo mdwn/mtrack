@@ -203,6 +203,11 @@ impl Universe {
 
     /// Takes the given inputs and approaches the current expected DMX values.
     /// Returns true if anything changed.
+    ///
+    /// Lock ordering: target → rates → current.  This matches the write-side
+    /// ordering in `update_effect_commands` (target → rates) and
+    /// `update_channel_data` (target → rates → current) to prevent ABBA
+    /// deadlocks between the universe thread and the effects loop.
     fn approach_target(
         rates: &Arc<RwLock<Vec<f64>>>,
         current: &Arc<RwLock<Vec<f64>>>,
@@ -210,9 +215,9 @@ impl Universe {
         max_channels: &Arc<AtomicU16>,
         buffer: &mut DmxBuffer,
     ) -> bool {
-        let mut current = current.write();
-        let rates = rates.read();
         let target = target.read();
+        let rates = rates.read();
+        let mut current = current.write();
 
         let mut changed = false;
         for i in 0..usize::from(max_channels.load(Ordering::Relaxed)) {
