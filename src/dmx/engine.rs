@@ -17,8 +17,9 @@ use std::{
     collections::{HashMap, HashSet},
     error::Error,
     fs,
+    panic::AssertUnwindSafe,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Receiver},
         Arc, Barrier,
     },
@@ -85,6 +86,9 @@ pub struct Engine {
     legacy_store: Arc<parking_lot::RwLock<LegacyDmxStore>>,
     /// Active legacy MIDI playbacks dispatched from the effects loop.
     legacy_midi_playbacks: Mutex<Vec<LegacyMidiPlayback>>,
+    /// Heartbeat counter incremented by the effects loop each frame.
+    /// Used by barrier threads to detect if the effects loop has died.
+    effects_loop_heartbeat: Arc<AtomicU64>,
 }
 
 /// A legacy MIDI light show being played back from the effects loop.
@@ -192,6 +196,7 @@ impl Engine {
             watcher_handle: Mutex::new(None),
             legacy_store,
             legacy_midi_playbacks: Mutex::new(Vec::new()),
+            effects_loop_heartbeat: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -203,8 +208,10 @@ impl Engine {
         // Use a weak reference to avoid preventing Engine from being dropped.
         // The thread will exit when the weak reference can no longer be upgraded.
         let weak_engine = Arc::downgrade(&engine);
+        let heartbeat = engine.effects_loop_heartbeat.clone();
 
         let handle = thread::spawn(move || {
+            info!("Effects loop started.");
             let mut last_update = std::time::Instant::now();
             let target_frame_time = Duration::from_secs_f64(1.0 / 44.0); // 44Hz
 
@@ -213,6 +220,7 @@ impl Engine {
             loop {
                 // Try to upgrade the weak reference - if it fails, the Engine was dropped
                 let Some(engine) = weak_engine.upgrade() else {
+                    info!("Effects loop exiting: engine was dropped.");
                     break;
                 };
 
@@ -220,41 +228,30 @@ impl Engine {
                 let dt = now.duration_since(last_update);
 
                 if dt >= target_frame_time {
-                    // Tick the legacy store to interpolate dimming values
-                    engine.legacy_store.read().tick();
-
-                    // Advance legacy MIDI playback cursors and dispatch events
-                    engine.advance_legacy_midi_playbacks();
-
-                    // Update effects engine and apply to universes
-                    if let Err(e) = engine.update_effects() {
-                        error!("Error updating effects: {}", e);
-                    }
-
-                    // Update song lighting timeline with actual song time
-                    let song_time = engine.get_song_time();
-                    if let Err(e) = engine.update_song_lighting(song_time) {
-                        error!("Error updating song lighting: {}", e);
-                    }
-
-                    // Check if all lighting has finished (DSL timeline cues + legacy MIDI playbacks)
-                    // and notify the waiting thread if so
-                    if !engine.timeline_finished.load(Ordering::Relaxed) {
-                        let timeline_done = {
-                            let timeline = engine.current_song_timeline.lock();
-                            timeline.as_ref().is_none_or(|tl| tl.is_finished())
+                    // Wrap tick in catch_unwind to prevent a panic from killing
+                    // the effects loop thread (which would freeze all lighting).
+                    // Safety: parking_lot mutexes do not poison on panic — they
+                    // release normally — so logical state inconsistency from a
+                    // partial update is acceptable for best-effort recovery.
+                    let engine_ref = AssertUnwindSafe(&engine);
+                    let result = std::panic::catch_unwind(move || {
+                        Self::effects_loop_tick(&engine_ref);
+                    });
+                    if let Err(panic_info) = result {
+                        let msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
+                            s.to_string()
+                        } else if let Some(s) = panic_info.downcast_ref::<String>() {
+                            s.clone()
+                        } else {
+                            "unknown panic".to_string()
                         };
-                        let legacy_done = engine.legacy_playbacks_finished();
-
-                        if timeline_done && legacy_done {
-                            engine.timeline_finished.store(true, Ordering::Relaxed);
-                            // Notify the cancel handle so wait() returns
-                            if let Some(ref cancel_handle) = *engine.timeline_cancel_handle.lock() {
-                                cancel_handle.notify();
-                            }
-                        }
+                        error!(
+                            panic_message = msg,
+                            "Effects loop caught panic! Continuing to prevent lighting freeze."
+                        );
                     }
 
+                    heartbeat.fetch_add(1, Ordering::Relaxed);
                     last_update = now;
                 }
 
@@ -263,11 +260,51 @@ impl Engine {
 
                 thread::sleep(Duration::from_millis(1));
             }
+            info!("Effects loop exited.");
         });
 
         // Store the handle so it can be joined on drop.
         // The thread will stop when the Engine is dropped (weak upgrade fails).
         *engine.effects_loop_handle.lock() = Some(handle);
+    }
+
+    /// One frame of the effects loop, extracted for catch_unwind.
+    fn effects_loop_tick(&self) {
+        // Tick the legacy store to interpolate dimming values
+        self.legacy_store.read().tick();
+
+        // Advance legacy MIDI playback cursors and dispatch events
+        self.advance_legacy_midi_playbacks();
+
+        // Update effects engine and apply to universes
+        if let Err(e) = self.update_effects() {
+            error!("Error updating effects: {}", e);
+        }
+
+        // Update song lighting timeline with actual song time
+        let song_time = self.get_song_time();
+        if let Err(e) = self.update_song_lighting(song_time) {
+            error!("Error updating song lighting: {}", e);
+        }
+
+        // Check if all lighting has finished (DSL timeline cues + legacy MIDI playbacks)
+        // and notify the waiting thread if so
+        if !self.timeline_finished.load(Ordering::Relaxed) {
+            let timeline_done = {
+                let timeline = self.current_song_timeline.lock();
+                timeline.as_ref().is_none_or(|tl| tl.is_finished())
+            };
+            let legacy_done = self.legacy_playbacks_finished();
+
+            if timeline_done && legacy_done {
+                info!("Lighting timeline finished. Notifying barrier.");
+                self.timeline_finished.store(true, Ordering::Relaxed);
+                // Notify the cancel handle so wait() returns
+                if let Some(ref cancel_handle) = *self.timeline_cancel_handle.lock() {
+                    cancel_handle.notify();
+                }
+            }
+        }
     }
 
     #[cfg(test)]
@@ -594,9 +631,14 @@ impl Engine {
                     first_legacy = false;
                     let cancel_handle = cancel_handle.clone();
                     let timeline_finished = dmx_engine.timeline_finished.clone();
+                    let heartbeat = dmx_engine.effects_loop_heartbeat.clone();
                     thread::spawn(move || {
                         play_barrier.wait();
-                        cancel_handle.wait(timeline_finished);
+                        Self::wait_for_timeline_with_heartbeat(
+                            &cancel_handle,
+                            timeline_finished,
+                            &heartbeat,
+                        );
                     })
                 } else {
                     thread::spawn(move || {
@@ -612,9 +654,14 @@ impl Engine {
             let cancel_handle_clone = cancel_handle.clone();
             let timeline_finished = dmx_engine.timeline_finished.clone();
             let play_barrier_clone = play_barrier.clone();
+            let heartbeat = dmx_engine.effects_loop_heartbeat.clone();
             join_handles.push(thread::spawn(move || {
                 play_barrier_clone.wait();
-                cancel_handle_clone.wait(timeline_finished);
+                Self::wait_for_timeline_with_heartbeat(
+                    &cancel_handle_clone,
+                    timeline_finished,
+                    &heartbeat,
+                );
             }));
         }
 
@@ -1046,6 +1093,52 @@ impl Engine {
             timeline.cues()
         } else {
             Vec::new()
+        }
+    }
+
+    /// Waits for the lighting timeline to finish, periodically checking the
+    /// effects loop heartbeat. If the heartbeat goes stale for 10s, forces
+    /// `timeline_finished` to true so DMX playback can unblock.
+    fn wait_for_timeline_with_heartbeat(
+        cancel_handle: &CancelHandle,
+        timeline_finished: Arc<AtomicBool>,
+        heartbeat: &AtomicU64,
+    ) {
+        // Check every 5 seconds; declare dead after 2 consecutive stale checks (10s).
+        const CHECK_INTERVAL: Duration = Duration::from_secs(5);
+        const MAX_STALE_CHECKS: u32 = 2;
+
+        let mut last_heartbeat = heartbeat.load(Ordering::Relaxed);
+        let mut stale_count: u32 = 0;
+
+        loop {
+            if cancel_handle.wait_with_timeout(timeline_finished.clone(), CHECK_INTERVAL) {
+                // Condition met (cancelled or timeline finished).
+                return;
+            }
+
+            // Timed out — check if the effects loop is still alive.
+            let current_heartbeat = heartbeat.load(Ordering::Relaxed);
+            if current_heartbeat == last_heartbeat {
+                stale_count += 1;
+                if stale_count >= MAX_STALE_CHECKS {
+                    error!(
+                        "Effects loop heartbeat stale for {}s — assuming dead. \
+                         Forcing timeline_finished to unblock DMX playback.",
+                        CHECK_INTERVAL.as_secs() * u64::from(MAX_STALE_CHECKS),
+                    );
+                    timeline_finished.store(true, Ordering::Relaxed);
+                    return;
+                }
+                warn!(
+                    stale_count,
+                    "Effects loop heartbeat stale — will force-finish if it persists."
+                );
+            } else {
+                // Heartbeat is advancing; reset stale counter.
+                stale_count = 0;
+                last_heartbeat = current_heartbeat;
+            }
         }
     }
 

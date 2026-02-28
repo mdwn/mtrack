@@ -57,27 +57,37 @@ async fn sampler_loop(
     let mut interval = time::interval(Duration::from_millis(50));
     interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
 
-    // Cache the dimmer map — fixture registry doesn't change at runtime
+    // Cache the dimmer map — fixture registry doesn't change at runtime.
+    // Use spawn_blocking to keep the parking_lot lock off the async runtime.
     let has_dimmer_map: HashMap<String, bool> = {
-        let engine = effect_engine.lock();
-        engine
-            .get_fixture_registry()
-            .iter()
-            .map(|(name, info)| (name.clone(), info.channels.contains_key("dimmer")))
-            .collect()
+        let engine = effect_engine.clone();
+        tokio::task::spawn_blocking(move || {
+            let engine = engine.lock();
+            engine
+                .get_fixture_registry()
+                .iter()
+                .map(|(name, info)| (name.clone(), info.channels.contains_key("dimmer")))
+                .collect()
+        })
+        .await
+        .expect("spawn_blocking panicked")
     };
 
     loop {
         interval.tick().await;
 
-        // Hold the lock only long enough to clone the raw data out.
-        // Sorting and snapshot conversion happen outside the lock to avoid
-        // blocking the 44Hz effects loop in dmx/engine.rs.
+        // Clone data out under a blocking lock — sorting and snapshot
+        // conversion happen outside to avoid blocking the 44Hz effects loop.
         let (states, mut active_effects) = {
-            let engine = effect_engine.lock();
-            let states = engine.get_fixture_states();
-            let effects: Vec<String> = engine.get_active_effects().keys().cloned().collect();
-            (states, effects)
+            let engine = effect_engine.clone();
+            tokio::task::spawn_blocking(move || {
+                let engine = engine.lock();
+                let states = engine.get_fixture_states();
+                let effects: Vec<String> = engine.get_active_effects().keys().cloned().collect();
+                (states, effects)
+            })
+            .await
+            .expect("spawn_blocking panicked")
         };
 
         active_effects.sort();
