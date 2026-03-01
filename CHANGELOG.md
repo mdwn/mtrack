@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.2] - 2026-03-01
+
+### Fixed
+
+- **Buffered audio near-livelock**: Fixed a near-livelock in `BufferedSampleSource` that could
+  cause audio playback to degrade to sparse blips (~3% real-time speed) while lighting continued
+  normally. When the ring buffer underran, the audio callback would acquire the inner source mutex
+  while holding the buffer state mutex, starving the background fill task and creating a
+  self-reinforcing stall. The audio callback no longer acquires the inner source mutex; underruns
+  produce brief silence while the fill task catches up. A new `is_exhausted()` trait method lets
+  the mixer distinguish transient buffer underruns from true end-of-source.
+
 ## [0.9.1] - 2026-02-28
 
 ### Fixed

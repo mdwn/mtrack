@@ -2270,6 +2270,40 @@ mod sample_source_tests {
     }
 
     #[test]
+    fn test_unbuffered_source_is_exhausted_returns_none() {
+        // ChannelMappedSource inherits the default is_exhausted() → None.
+        // The mixer treats None as "short read = EOF", preserving legacy behavior.
+        let memory = MemorySampleSource::new(vec![0.1, 0.2], 1, 44100);
+        let source = ChannelMappedSource::new(Box::new(memory), vec![vec!["test".to_string()]], 1);
+        assert_eq!(source.is_exhausted(), None);
+    }
+
+    #[test]
+    fn test_buffered_source_is_exhausted_lifecycle() {
+        // is_exhausted() should return Some(false) while the inner source still
+        // has data, then Some(true) after the source is fully consumed.
+        // Use enough samples that the warmup fill doesn't consume everything
+        // (device_buffer_frames=2 → capacity=8, warmup=2; 32 samples > capacity).
+        let samples: Vec<f32> = (0..32).map(|i| i as f32 * 0.01).collect();
+        let memory = MemorySampleSource::new(samples, 1, 44100);
+        let inner: Box<dyn ChannelMappedSampleSource + Send + Sync> = Box::new(
+            ChannelMappedSource::new(Box::new(memory), vec![vec!["test".to_string()]], 1),
+        );
+
+        let pool = Arc::new(BufferFillPool::new(1).expect("pool"));
+        let mut buffered = BufferedSampleSource::new(inner, pool, 2);
+
+        // Before draining: source is not exhausted.
+        assert_eq!(buffered.is_exhausted(), Some(false));
+
+        // Drain all samples.
+        while buffered.next_sample().unwrap().is_some() {}
+
+        // After draining: source is exhausted.
+        assert_eq!(buffered.is_exhausted(), Some(true));
+    }
+
+    #[test]
     fn test_wav_sample_source_4channel() {
         use crate::testutil::write_wav_with_bits;
         use tempfile::tempdir;
