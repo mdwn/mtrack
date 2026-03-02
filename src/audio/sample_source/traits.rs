@@ -137,6 +137,16 @@ pub trait ChannelMappedSampleSource: Send + Sync {
 
     /// Get the number of source channels in this sample source
     fn source_channel_count(&self) -> u16;
+
+    /// Reports whether this source has permanently exhausted its data.
+    ///
+    /// - `Some(true)` — source is permanently done (EOF reached).
+    /// - `Some(false)` — source still has data; a short/empty read is transient.
+    /// - `None` — source cannot answer (unbuffered sources; legacy behavior where
+    ///   a short read is treated as EOF).
+    fn is_exhausted(&self) -> Option<bool> {
+        None
+    }
 }
 
 #[cfg(test)]

@@ -296,37 +296,24 @@ impl ChannelMappedSampleSource for BufferedSampleSource {
             let mut state = self.buffer.state.lock().unwrap();
 
             if state.len_frames == 0 {
-                // Ring buffer underrun: defer to the underlying source rather than
-                // treating this as end‑of‑stream. This is rare and allowed to do
-                // heavier work since it only occurs when our prefetch falls behind.
-                let mut inner = self.inner.lock().unwrap();
-                match inner.next_frame(output) {
-                    Ok(Some(count)) => {
-                        // We got a frame directly; do not mark finished. Let the
-                        // background fill task catch up on its next run.
-                        return Ok(Some(count));
-                    }
-                    Ok(None) => {
-                        state.finished = true;
-                        self.finished_flag.store(true, Ordering::Relaxed);
-                        return Ok(None);
-                    }
-                    Err(e) => {
-                        state.finished = true;
-                        self.finished_flag.store(true, Ordering::Relaxed);
-                        return Err(e);
-                    }
+                if state.finished {
+                    return Ok(None);
                 }
-            }
-
-            let base = state.read_index * channels;
-            output[..channels].copy_from_slice(&state.data[base..(base + channels)]);
-
-            state.read_index = (state.read_index + 1) % self.capacity_frames;
-            state.len_frames -= 1;
-
-            if !state.finished && state.len_frames <= self.refill_threshold_frames {
+                // Buffer underrun but source not exhausted — output silence.
+                // Never acquire self.inner here; the fill task needs it.
+                output[..channels].fill(0.0);
                 maybe_spawn_refill = true;
+                // Fall through to drop state lock, then spawn refill below.
+            } else {
+                let base = state.read_index * channels;
+                output[..channels].copy_from_slice(&state.data[base..(base + channels)]);
+
+                state.read_index = (state.read_index + 1) % self.capacity_frames;
+                state.len_frames -= 1;
+
+                if !state.finished && state.len_frames <= self.refill_threshold_frames {
+                    maybe_spawn_refill = true;
+                }
             }
         }
 
@@ -386,25 +373,6 @@ impl ChannelMappedSampleSource for BufferedSampleSource {
             if !state.finished && state.len_frames <= self.refill_threshold_frames {
                 maybe_spawn_refill = true;
             }
-
-            // Underrun fallback: read directly from the inner source while
-            // holding the state lock. This matches next_frame's lock ordering
-            // and prevents the refill thread from writing frames that would
-            // be played out of chronological order.
-            if frames_read < max_frames && state.len_frames == 0 && !state.finished {
-                let mut inner = self.inner.lock().unwrap();
-                while frames_read < max_frames {
-                    let offset = frames_read * channels;
-                    match inner.next_frame(&mut output[offset..offset + channels]) {
-                        Ok(Some(_)) => frames_read += 1,
-                        Ok(None) | Err(_) => {
-                            state.finished = true;
-                            self.finished_flag.store(true, Ordering::Relaxed);
-                            break;
-                        }
-                    }
-                }
-            }
         }
 
         if maybe_spawn_refill {
@@ -420,5 +388,9 @@ impl ChannelMappedSampleSource for BufferedSampleSource {
 
     fn source_channel_count(&self) -> u16 {
         self.channels
+    }
+
+    fn is_exhausted(&self) -> Option<bool> {
+        Some(self.finished_flag.load(Ordering::Relaxed))
     }
 }

@@ -219,8 +219,10 @@ impl AudioMixer {
                     }
                 }
                 Ok(None) => {
-                    active_source.is_finished.store(true, Ordering::Relaxed);
-                    finished_source_ids.push(active_source.id);
+                    if active_source.source.is_exhausted().unwrap_or(true) {
+                        active_source.is_finished.store(true, Ordering::Relaxed);
+                        finished_source_ids.push(active_source.id);
+                    }
                 }
                 Err(_) => {
                     active_source.is_finished.store(true, Ordering::Relaxed);
@@ -415,12 +417,16 @@ impl AudioMixer {
                             }
                         }
                         if frames_got < frames_needed {
-                            debug!(
-                                source_id = active_source.id,
-                                "mixer: source marked finished (read_frames returned fewer frames)"
-                            );
-                            active_source.is_finished.store(true, Ordering::Relaxed);
-                            finished_source_ids.push(active_source.id);
+                            // Buffered sources report false during transient underruns;
+                            // unbuffered sources return None → treated as EOF.
+                            if active_source.source.is_exhausted().unwrap_or(true) {
+                                debug!(
+                                    source_id = active_source.id,
+                                    "mixer: source marked finished (read_frames returned fewer frames)"
+                                );
+                                active_source.is_finished.store(true, Ordering::Relaxed);
+                                finished_source_ids.push(active_source.id);
+                            }
                         }
                     }
                     Err(_) => {
@@ -968,5 +974,175 @@ mod tests {
                                      // Frames 6-7: silence (after cancel)
         assert_eq!(output[12], 0.0);
         assert_eq!(output[14], 0.0);
+    }
+
+    /// A source that returns 0 frames on the first N calls to read_frames
+    /// (simulating buffer underruns), then yields real data. is_exhausted()
+    /// returns Some(false) until truly done — exactly like BufferedSampleSource.
+    struct UnderrunSimSource {
+        inner: Box<dyn ChannelMappedSampleSource>,
+        underrun_calls_remaining: usize,
+        exhausted: AtomicBool,
+    }
+
+    impl UnderrunSimSource {
+        fn new(inner: Box<dyn ChannelMappedSampleSource>, underrun_calls: usize) -> Self {
+            Self {
+                inner,
+                underrun_calls_remaining: underrun_calls,
+                exhausted: AtomicBool::new(false),
+            }
+        }
+    }
+
+    impl ChannelMappedSampleSource for UnderrunSimSource {
+        fn next_sample(
+            &mut self,
+        ) -> Result<Option<f32>, crate::audio::sample_source::error::SampleSourceError> {
+            self.inner.next_sample()
+        }
+
+        fn next_frame(
+            &mut self,
+            output: &mut [f32],
+        ) -> Result<Option<usize>, crate::audio::sample_source::error::SampleSourceError> {
+            self.inner.next_frame(output)
+        }
+
+        fn read_frames(
+            &mut self,
+            output: &mut [f32],
+            max_frames: usize,
+        ) -> Result<usize, crate::audio::sample_source::error::SampleSourceError> {
+            if self.underrun_calls_remaining > 0 {
+                self.underrun_calls_remaining -= 1;
+                return Ok(0); // Simulate empty buffer
+            }
+            let got = self.inner.read_frames(output, max_frames)?;
+            if got < max_frames {
+                self.exhausted.store(true, Ordering::Relaxed);
+            }
+            Ok(got)
+        }
+
+        fn channel_mappings(&self) -> &Vec<Vec<String>> {
+            self.inner.channel_mappings()
+        }
+
+        fn source_channel_count(&self) -> u16 {
+            self.inner.source_channel_count()
+        }
+
+        fn is_exhausted(&self) -> Option<bool> {
+            Some(self.exhausted.load(Ordering::Relaxed))
+        }
+    }
+
+    #[test]
+    fn test_mixer_keeps_source_alive_during_transient_underrun() {
+        // Regression: before the livelock fix, a short read from a buffered
+        // source was unconditionally treated as EOF, causing the mixer to
+        // discard the source even though it still had data.
+        let mixer = AudioMixer::new(2, 44100);
+
+        let samples = vec![0.5, 0.8, 0.3, 0.6]; // 4 frames of 1 channel
+        let inner = create_test_source(samples, 1, vec![vec!["test".to_string()]]);
+
+        // First call to read_frames returns 0 (underrun), subsequent calls work.
+        let source: Box<dyn ChannelMappedSampleSource + Send + Sync> =
+            Box::new(UnderrunSimSource::new(inner, 1));
+
+        let is_finished = Arc::new(AtomicBool::new(false));
+        let active_source = ActiveSource {
+            id: 1,
+            source,
+            track_mappings: {
+                let mut map = HashMap::new();
+                map.insert("test".to_string(), vec![1]);
+                map
+            },
+            channel_mappings: Vec::new(),
+            cached_source_channel_count: 1,
+            is_finished: is_finished.clone(),
+            cancel_handle: CancelHandle::new(),
+            start_at_sample: None,
+            cancel_at_sample: None,
+        };
+
+        mixer.add_source(active_source);
+
+        // First callback: underrun returns 0 frames → silence.
+        // Source must NOT be removed.
+        let mut output = vec![0.0f32; 4 * 2];
+        mixer.process_into_output(&mut output, 4);
+
+        for &sample in &output {
+            assert_eq!(sample, 0.0, "underrun callback should produce silence");
+        }
+        assert!(
+            !is_finished.load(Ordering::Relaxed),
+            "source must not be marked finished on transient underrun"
+        );
+        assert_eq!(
+            mixer.active_sources.read().len(),
+            1,
+            "source must remain active"
+        );
+
+        // Second callback: data flows normally.
+        let mut output2 = vec![0.0f32; 4 * 2];
+        mixer.process_into_output(&mut output2, 4);
+
+        assert_eq!(output2[0], 0.5); // Frame 0, Ch 0
+        assert_eq!(output2[2], 0.8); // Frame 1, Ch 0
+        assert_eq!(output2[4], 0.3); // Frame 2, Ch 0
+        assert_eq!(output2[6], 0.6); // Frame 3, Ch 0
+    }
+
+    #[test]
+    fn test_mixer_finishes_source_when_truly_exhausted() {
+        // Complement to the underrun test: once is_exhausted() returns
+        // Some(true), the mixer must still clean up the source.
+        let mixer = AudioMixer::new(2, 44100);
+
+        let samples = vec![0.5, 0.8]; // Only 2 frames
+        let inner = create_test_source(samples, 1, vec![vec!["test".to_string()]]);
+
+        // No underruns — source runs out immediately.
+        let source: Box<dyn ChannelMappedSampleSource + Send + Sync> =
+            Box::new(UnderrunSimSource::new(inner, 0));
+
+        let active_source = ActiveSource {
+            id: 1,
+            source,
+            track_mappings: {
+                let mut map = HashMap::new();
+                map.insert("test".to_string(), vec![1]);
+                map
+            },
+            channel_mappings: Vec::new(),
+            cached_source_channel_count: 1,
+            is_finished: Arc::new(AtomicBool::new(false)),
+            cancel_handle: CancelHandle::new(),
+            start_at_sample: None,
+            cancel_at_sample: None,
+        };
+
+        mixer.add_source(active_source);
+
+        // Request 8 frames but source only has 2 and is_exhausted() → Some(true).
+        let mut output = vec![0.0f32; 8 * 2];
+        mixer.process_into_output(&mut output, 8);
+
+        assert_eq!(output[0], 0.5);
+        assert_eq!(output[2], 0.8);
+        for i in 4..16 {
+            assert_eq!(output[i], 0.0, "output[{i}] should be silence");
+        }
+        assert_eq!(
+            mixer.active_sources.read().len(),
+            0,
+            "exhausted source must be removed"
+        );
     }
 }
