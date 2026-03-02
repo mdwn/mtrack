@@ -12,11 +12,11 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Group constraint types for role-based group resolution
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 pub enum GroupConstraint {
     /// All of these tags must be present
     AllOf(Vec<String>),
@@ -35,7 +35,7 @@ pub enum GroupConstraint {
 }
 
 /// Group definition with role-based constraints
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct LogicalGroup {
     /// The name of the group
     name: String,
@@ -59,7 +59,7 @@ impl LogicalGroup {
 }
 
 /// A YAML representation of the lighting configuration.
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Serialize, Clone)]
 pub struct Lighting {
     /// The current venue selection.
     current_venue: Option<String>,
@@ -75,7 +75,7 @@ pub struct Lighting {
 }
 
 /// Directory configuration for loading fixture types and venues.
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Serialize, Clone)]
 pub struct Directories {
     /// Directory containing fixture type definitions.
     fixture_types: Option<String>,

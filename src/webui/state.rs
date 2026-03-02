@@ -1,0 +1,506 @@
+// Copyright (C) 2026 Michael Wilson <mike@mdwn.dev>
+//
+// This program is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free Software
+// Foundation, version 3.
+//
+// This program is distributed in the hope that it will be useful, but WITHOUT
+// ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License along with
+// this program. If not, see <https://www.gnu.org/licenses/>.
+//
+
+use parking_lot::Mutex;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use serde_json::json;
+use tokio::sync::{broadcast, watch};
+use tokio::time;
+use tracing::warn;
+
+use crate::audio::sample_source::create_sample_source_from_file;
+use crate::player::Player;
+use crate::tui::logging::get_log_buffer;
+
+/// Polls the player state at ~5Hz and broadcasts playback status messages.
+pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>) {
+    let mut interval = time::interval(Duration::from_millis(200));
+    interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+
+    loop {
+        interval.tick().await;
+
+        // Skip if no subscribers
+        if tx.receiver_count() == 0 {
+            continue;
+        }
+
+        let is_playing = player.is_playing().await;
+        let playlist = player.get_playlist();
+        let current_song = playlist.current();
+
+        let elapsed_ms = player
+            .elapsed()
+            .await
+            .ok()
+            .flatten()
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+
+        let song_name = current_song.name().to_string();
+        let song_duration_ms = current_song.duration().as_millis() as u64;
+
+        let playlist_name = playlist.name().to_string();
+        let playlist_position = playlist.position();
+        let playlist_songs: Vec<String> = playlist.songs().clone();
+
+        let mappings = player.track_mappings();
+        let tracks: Vec<serde_json::Value> = current_song
+            .tracks()
+            .iter()
+            .map(|t| {
+                let output_channels = mappings
+                    .and_then(|m| m.get(t.name()))
+                    .cloned()
+                    .unwrap_or_default();
+                json!({
+                    "name": t.name(),
+                    "output_channels": output_channels,
+                })
+            })
+            .collect();
+
+        let msg = json!({
+            "type": "playback",
+            "is_playing": is_playing,
+            "elapsed_ms": elapsed_ms,
+            "song_name": song_name,
+            "song_duration_ms": song_duration_ms,
+            "playlist_name": playlist_name,
+            "playlist_position": playlist_position,
+            "playlist_songs": playlist_songs,
+            "tracks": tracks,
+        });
+
+        let _ = tx.send(msg.to_string());
+    }
+}
+
+/// Watches the shared state snapshot (fixtures + active effects) and broadcasts changes.
+pub async fn state_poller(
+    mut state_rx: watch::Receiver<Arc<crate::state::StateSnapshot>>,
+    tx: broadcast::Sender<String>,
+) {
+    loop {
+        // Wait for the state to change
+        if state_rx.changed().await.is_err() {
+            break; // Sender dropped
+        }
+
+        if tx.receiver_count() == 0 {
+            continue;
+        }
+
+        let snapshot = state_rx.borrow_and_update().clone();
+
+        let fixtures: serde_json::Map<String, serde_json::Value> = snapshot
+            .fixtures
+            .iter()
+            .map(|f| {
+                let channels: serde_json::Map<String, serde_json::Value> = f
+                    .channels
+                    .iter()
+                    .map(|(k, v)| (k.clone(), json!(*v)))
+                    .collect();
+                (f.name.clone(), serde_json::Value::Object(channels))
+            })
+            .collect();
+
+        let msg = json!({
+            "type": "state",
+            "fixtures": fixtures,
+            "active_effects": snapshot.active_effects,
+        });
+
+        let _ = tx.send(msg.to_string());
+    }
+}
+
+/// Polls the log ring buffer at ~2Hz and broadcasts log lines.
+pub async fn log_poller(tx: broadcast::Sender<String>) {
+    let mut interval = time::interval(Duration::from_millis(500));
+    interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+
+    // Track how many log lines we've already sent
+    let mut last_sent_count: usize = 0;
+
+    loop {
+        interval.tick().await;
+
+        if tx.receiver_count() == 0 {
+            continue;
+        }
+
+        let buffer = match get_log_buffer() {
+            Some(buf) => buf,
+            None => continue,
+        };
+
+        // Acquire the log buffer lock on the blocking thread pool so we never
+        // block a tokio worker thread.  The TuiLogLayer acquires this same
+        // std::sync::Mutex on every log event from any thread.
+        let skip_from = last_sent_count;
+        let (new_lines, new_count) = match tokio::task::spawn_blocking(move || {
+            let buf = buffer.lock();
+
+            let current_len = buf.len();
+            let mut adjusted_skip = skip_from;
+            if current_len < adjusted_skip {
+                adjusted_skip = 0;
+            }
+            if current_len == adjusted_skip {
+                return (Vec::new(), adjusted_skip);
+            }
+
+            let lines: Vec<serde_json::Value> = buf
+                .iter()
+                .skip(adjusted_skip)
+                .map(|line| {
+                    // Parse "LEVEL target: message" format from TuiLogLayer
+                    let (level, rest) = line.split_once(' ').unwrap_or(("INFO", line));
+                    let (target, message) = rest.split_once(": ").unwrap_or(("", rest));
+                    json!({
+                        "level": level,
+                        "target": target,
+                        "message": message,
+                    })
+                })
+                .collect();
+
+            (lines, current_len)
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => continue,
+        };
+
+        last_sent_count = new_count;
+
+        if new_lines.is_empty() {
+            continue;
+        }
+
+        let msg = json!({
+            "type": "logs",
+            "lines": new_lines,
+        });
+
+        let _ = tx.send(msg.to_string());
+    }
+}
+
+/// Shared waveform cache: song name → [(track_name, peaks)].
+/// ~2 KB per track in memory; safe to cache entire setlists.
+pub type WaveformCache = Arc<parking_lot::Mutex<HashMap<String, Vec<(String, Vec<f32>)>>>>;
+
+/// Creates a new empty waveform cache.
+pub fn new_waveform_cache() -> WaveformCache {
+    Arc::new(parking_lot::Mutex::new(HashMap::new()))
+}
+
+/// Polls for song changes and sends waveform peaks to WebSocket clients.
+///
+/// Checks the shared cache first; on a miss, computes peaks on demand via
+/// `spawn_blocking` and inserts the result into the cache.
+pub async fn waveform_poller(
+    player: Arc<Player>,
+    tx: broadcast::Sender<String>,
+    cache: WaveformCache,
+) {
+    let mut interval = time::interval(Duration::from_millis(500));
+    interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+
+    let mut last_song_name = String::new();
+
+    loop {
+        interval.tick().await;
+
+        if tx.receiver_count() == 0 {
+            continue;
+        }
+
+        let playlist = player.get_playlist();
+        let current_song = playlist.current();
+        let song_name = current_song.name().to_string();
+
+        if song_name == last_song_name {
+            continue;
+        }
+        last_song_name = song_name.clone();
+
+        // Check cache first
+        let cached = cache.lock().get(&song_name).cloned();
+        let track_peaks = if let Some(cached) = cached {
+            cached
+        } else {
+            // Collect track info (owned data) for the blocking task
+            let track_infos: Vec<(String, PathBuf, u16)> = current_song
+                .tracks()
+                .iter()
+                .map(|t| {
+                    (
+                        t.name().to_string(),
+                        t.file().to_path_buf(),
+                        t.file_channel(),
+                    )
+                })
+                .collect();
+
+            let song_name_for_task = song_name.clone();
+            let peaks_result =
+                tokio::task::spawn_blocking(move || compute_waveform_peaks(&track_infos)).await;
+
+            // Song changed while we were computing — discard stale result
+            let current_now = player.get_playlist().current().name().to_string();
+            if current_now != song_name_for_task {
+                last_song_name = String::new(); // Force recompute on next tick
+                continue;
+            }
+
+            match peaks_result {
+                Ok(peaks) => {
+                    cache.lock().insert(song_name.clone(), peaks.clone());
+                    peaks
+                }
+                Err(e) => {
+                    warn!("Waveform computation task failed: {}", e);
+                    continue;
+                }
+            }
+        };
+
+        let tracks_json: Vec<serde_json::Value> = track_peaks
+            .into_iter()
+            .map(|(name, peaks)| {
+                json!({
+                    "name": name,
+                    "peaks": peaks,
+                })
+            })
+            .collect();
+
+        let msg = json!({
+            "type": "waveform",
+            "song_name": song_name,
+            "tracks": tracks_json,
+        });
+
+        let _ = tx.send(msg.to_string());
+    }
+}
+
+/// Background pre-warms the waveform cache for all songs.
+///
+/// Iterates through every song in the all-songs playlist, computing waveform
+/// peaks one song at a time. Pauses while a song is playing to avoid competing
+/// with audio playback for CPU and I/O.
+pub async fn waveform_prewarmer(player: Arc<Player>, cache: WaveformCache) {
+    // Small delay before starting so the server can finish initializing
+    time::sleep(Duration::from_secs(1)).await;
+
+    let all_songs = player.get_all_songs_playlist();
+    let song_names: Vec<String> = all_songs.songs().clone();
+
+    for song_name in &song_names {
+        // Wait until playback stops before computing
+        while player.is_playing().await {
+            time::sleep(Duration::from_secs(1)).await;
+        }
+
+        // Already cached (computed on demand or by an earlier pre-warm run)
+        if cache.lock().contains_key(song_name) {
+            continue;
+        }
+
+        let song = match all_songs.get_song(song_name) {
+            Some(s) => s,
+            None => continue,
+        };
+
+        let track_infos: Vec<(String, PathBuf, u16)> = song
+            .tracks()
+            .iter()
+            .map(|t| {
+                (
+                    t.name().to_string(),
+                    t.file().to_path_buf(),
+                    t.file_channel(),
+                )
+            })
+            .collect();
+
+        let peaks_result =
+            tokio::task::spawn_blocking(move || compute_waveform_peaks(&track_infos)).await;
+
+        if let Ok(peaks) = peaks_result {
+            cache.lock().insert(song_name.clone(), peaks);
+        }
+
+        // Brief pause between songs to keep CPU pressure low
+        time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Computes waveform peaks for all tracks. Returns (track_name, peaks) pairs.
+fn compute_waveform_peaks(tracks: &[(String, PathBuf, u16)]) -> Vec<(String, Vec<f32>)> {
+    const NUM_BUCKETS: usize = 500;
+
+    tracks
+        .iter()
+        .map(|(name, file, file_channel)| {
+            let peaks = compute_track_peaks(file, *file_channel, NUM_BUCKETS);
+            (name.clone(), peaks)
+        })
+        .collect()
+}
+
+/// Computes peak values for a single track by reading the audio file and
+/// extracting the target channel from interleaved samples.
+///
+/// Uses a streaming approach: estimates total samples from duration and sample
+/// rate, then accumulates peaks directly into buckets without buffering the
+/// entire file.
+fn compute_track_peaks(file: &std::path::Path, file_channel: u16, num_buckets: usize) -> Vec<f32> {
+    let mut source = match create_sample_source_from_file(file, None, 4096) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!("Failed to open audio file {}: {}", file.display(), e);
+            return vec![];
+        }
+    };
+
+    let channel_count = source.channel_count() as usize;
+    if channel_count == 0 {
+        return vec![];
+    }
+
+    // file_channel is 1-indexed
+    let target_channel = (file_channel as usize).saturating_sub(1);
+    if target_channel >= channel_count {
+        warn!(
+            "file_channel {} exceeds channel count {} for {}",
+            file_channel,
+            channel_count,
+            file.display()
+        );
+        return vec![];
+    }
+
+    // Estimate total mono samples from duration to size buckets up front
+    let estimated_samples = source
+        .duration()
+        .map(|d| (d.as_secs_f64() * source.sample_rate() as f64) as usize)
+        .unwrap_or(0);
+
+    let samples_per_bucket = if estimated_samples > 0 {
+        estimated_samples.div_ceil(num_buckets)
+    } else {
+        // Unknown duration: use a reasonable default, resize at end
+        4096
+    };
+
+    let mut peaks = vec![0.0_f32; num_buckets];
+    let mut mono_sample_idx: usize = 0;
+    let mut interleaved_idx: usize = 0;
+
+    loop {
+        match source.next_sample() {
+            Ok(Some(sample)) => {
+                let ch = interleaved_idx % channel_count;
+                interleaved_idx += 1;
+
+                if ch == target_channel {
+                    let bucket = (mono_sample_idx / samples_per_bucket).min(num_buckets - 1);
+                    let abs = sample.abs();
+                    if abs > peaks[bucket] {
+                        peaks[bucket] = abs;
+                    }
+                    mono_sample_idx += 1;
+                }
+            }
+            Ok(None) => break,
+            Err(_) => break,
+        }
+    }
+
+    // If we had no samples, return empty
+    if mono_sample_idx == 0 {
+        return vec![];
+    }
+
+    // Trim trailing empty buckets (if file was shorter than estimated)
+    let used_buckets = (mono_sample_idx / samples_per_bucket + 1).min(num_buckets);
+    peaks.truncate(used_buckets);
+
+    // Normalize to 0.0 - 1.0
+    let max_peak = peaks.iter().cloned().fold(0.0_f32, f32::max);
+    if max_peak > 0.0 {
+        for p in &mut peaks {
+            *p /= max_peak;
+        }
+    }
+
+    peaks
+}
+
+/// Builds the initial metadata JSON from the lighting system.
+///
+/// Sent to each WebSocket client on connect so the stage view knows fixture
+/// names, types, and spatial tags.
+pub fn build_metadata_json(
+    lighting_system: Option<&Arc<Mutex<crate::lighting::system::LightingSystem>>>,
+) -> String {
+    let mut fixtures = serde_json::Map::new();
+
+    if let Some(ls) = lighting_system {
+        let system = ls.lock();
+        if let Ok(fixture_infos) = system.get_current_venue_fixtures() {
+            let venue_fixtures = get_venue_fixture_tags(&system);
+
+            for fi in &fixture_infos {
+                let tags = venue_fixtures.get(&fi.name).cloned().unwrap_or_default();
+
+                let fixture_meta = json!({
+                    "tags": tags,
+                    "type": fi.fixture_type,
+                });
+                fixtures.insert(fi.name.clone(), fixture_meta);
+            }
+        }
+    }
+
+    let msg = json!({
+        "type": "metadata",
+        "fixtures": fixtures,
+    });
+    msg.to_string()
+}
+
+/// Extracts fixture names → tags from the lighting system's current venue.
+fn get_venue_fixture_tags(
+    system: &crate::lighting::system::LightingSystem,
+) -> HashMap<String, Vec<String>> {
+    let mut result = HashMap::new();
+    if let Some(venue) = system.get_current_venue() {
+        for (name, fixture) in venue.fixtures() {
+            result.insert(name.clone(), fixture.tags().to_vec());
+        }
+    }
+    result
+}

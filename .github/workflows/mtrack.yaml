@@ -14,15 +14,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-    - name: Update apt
-      run: sudo apt update
-    - name: Install dependencies
-      run: sudo apt-get install -y libasound2-dev libudev-dev protobuf-compiler
-    - uses: dtolnay/rust-toolchain@stable
-    - uses: Swatinem/rust-cache@v2
+    - uses: jetify-com/devbox-install-action@v0.12.0
+      with:
+        enable-cache: 'true'
+    - uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: cargo-build-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', '**/package-lock.json') }}
+        restore-keys: cargo-build-${{ runner.os }}-
+    - name: Build frontend
+      run: devbox run -- bash -c 'cd src/webui/svelte && npm ci && buf generate && npm run build'
     - name: Build mtrack
-      run: cargo build
-    - name: Check of Cargo.lock is up to date
+      run: devbox run -- cargo build
+    - name: Check if Cargo.lock is up to date
       run: |
         if git diff --exit-code Cargo.lock; then
           echo "Cargo.lock is up to date."
@@ -37,16 +44,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-    - name: Update apt
-      run: sudo apt update
-    - name: Install dependencies
-      run: sudo apt-get install -y libasound2-dev libudev-dev protobuf-compiler
-    - uses: dtolnay/rust-toolchain@stable
+    - uses: jetify-com/devbox-install-action@v0.12.0
       with:
-        components: clippy
-    - uses: Swatinem/rust-cache@v2
+        enable-cache: 'true'
+    - uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: cargo-clippy-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', '**/package-lock.json') }}
+        restore-keys: cargo-clippy-${{ runner.os }}-
+    - name: Build frontend
+      run: devbox run -- bash -c 'cd src/webui/svelte && npm ci && buf generate && npm run build'
     - name: Run clippy
-      run: cargo clippy --all --all-features
+      run: devbox run -- cargo clippy --all --all-features
 
   # Make sure the code is properly formatted.
   rustfmt-check:
@@ -54,16 +66,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-    - name: Update apt
-      run: sudo apt update
-    - name: Install dependencies
-      run: sudo apt-get install -y libasound2-dev libudev-dev protobuf-compiler
-    - uses: dtolnay/rust-toolchain@stable
+    - uses: jetify-com/devbox-install-action@v0.12.0
       with:
-        components: rustfmt
-    - uses: Swatinem/rust-cache@v2
+        enable-cache: 'true'
     - name: Run rustfmt
-      run: cargo fmt --all -- --check
+      run: devbox run -- cargo fmt --all -- --check
 
   # Make sure the tests pass.
   test:
@@ -71,20 +78,44 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-    - name: Update apt
-      run: sudo apt update
-    - name: Install dependencies
-      run: sudo apt-get install -y libasound2-dev libudev-dev protobuf-compiler
-    - uses: dtolnay/rust-toolchain@stable
-    - uses: Swatinem/rust-cache@v2
-    - run: cargo install cargo-tarpaulin
+    - uses: jetify-com/devbox-install-action@v0.12.0
+      with:
+        enable-cache: 'true'
+    - uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: cargo-test-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', '**/package-lock.json') }}
+        restore-keys: cargo-test-${{ runner.os }}-
+    - name: Build frontend
+      run: devbox run -- bash -c 'cd src/webui/svelte && npm ci && buf generate && npm run build'
     - name: Test mtrack
-      run: cargo tarpaulin --all-features --timeout 120 --out xml
+      run: devbox run -- cargo tarpaulin --skip-clean --all-features --timeout 120 --out xml
     - name: Upload coverage reports to Codecov
       uses: codecov/codecov-action@v4.0.1
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
         slug: mdwn/mtrack
+
+  # Lint, format-check, and type-check the Svelte frontend.
+  frontend:
+    name: Frontend checks
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: jetify-com/devbox-install-action@v0.12.0
+      with:
+        enable-cache: 'true'
+    - name: Install and generate
+      run: devbox run -- bash -c 'cd src/webui/svelte && npm ci && buf generate'
+    - name: Lint
+      run: devbox run -- bash -c 'cd src/webui/svelte && npm run lint'
+    - name: Format check
+      run: devbox run -- bash -c 'cd src/webui/svelte && npm run format:check'
+    - name: Type check
+      run: devbox run -- bash -c 'cd src/webui/svelte && npm run check'
 
   # Make sure all code has an appropriate license header.
   licensure:
@@ -92,12 +123,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-    - uses: dtolnay/rust-toolchain@stable
-    - uses: Swatinem/rust-cache@v2
-    - name: Install licensure
-      run: cargo install licensure@0.5.1
+    - uses: jetify-com/devbox-install-action@v0.12.0
+      with:
+        enable-cache: 'true'
     - name: Check for licenses
-      run: licensure --check -p
+      run: devbox run -- licensure --check -p
 
   # Verify changelog is in keep-a-changelog format.
   verify-changelog:

@@ -110,8 +110,7 @@ pub fn playlist(repository_path: &str, playlist_path: &str) -> Result<(), Box<dy
 pub async fn start(
     player_path: &str,
     playlist_path: Option<String>,
-    #[cfg(feature = "simulator")] simulator_config: Option<crate::simulator::SimulatorConfig>,
-    #[cfg(not(feature = "simulator"))] _simulator_config: Option<()>,
+    web_config: crate::webui::server::WebConfig,
     tui_mode: bool,
 ) -> Result<(), Box<dyn Error>> {
     apply_thread_priority();
@@ -143,17 +142,11 @@ pub async fn start(
         songs.clone(),
     )?;
 
-    #[cfg(feature = "simulator")]
-    let simulator_mode = simulator_config.is_some();
-    #[cfg(not(feature = "simulator"))]
-    let simulator_mode = false;
-
     let player = Arc::new(crate::player::Player::new(
         songs,
         playlist,
         &player_config,
         player_path.parent(),
-        simulator_mode,
     )?);
 
     // Start the shared state sampler if a DMX engine (with effect engine) is present.
@@ -168,30 +161,43 @@ pub async fn start(
         (rx, None)
     };
 
-    // Start the lighting simulator if configured
-    #[cfg(feature = "simulator")]
-    let _simulator_handle = if let Some(sim_config) = simulator_config {
-        if let Some(handles) = player.simulator_handles() {
-            match crate::simulator::start(sim_config, state_rx.clone(), handles.lighting_system)
-                .await
-            {
-                Ok(handle) => {
-                    // Pass the broadcast channel to the DmxEngine so it can start the
-                    // file watcher per-song for hot-reload of .light files.
-                    player.set_simulator_broadcast_tx(handle.broadcast_tx.clone());
-                    Some(handle)
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to start lighting simulator: {}", e);
-                    None
-                }
-            }
+    // Start the unified web server (dashboard + gRPC-Web + REST API)
+    let _webui_handle = {
+        // Create a broadcast channel for the web UI (shared by dashboard WS and DMX file watcher)
+        let (broadcast_tx, _) = tokio::sync::broadcast::channel::<String>(128);
+
+        // Build metadata JSON and wire the broadcast channel to the DMX engine
+        let metadata_json = if let Some(handles) = player.broadcast_handles() {
+            let metadata =
+                crate::webui::state::build_metadata_json(handles.lighting_system.as_ref());
+            // Pass the broadcast channel to the DmxEngine for file watcher hot-reload
+            player.set_broadcast_tx(broadcast_tx.clone());
+            metadata
         } else {
-            tracing::warn!("No DMX engine available for lighting simulator");
-            None
+            // No DMX engine — empty metadata
+            crate::webui::state::build_metadata_json(None)
+        };
+
+        let webui_state = crate::webui::server::WebUiState {
+            player: player.clone(),
+            state_rx: state_rx.clone(),
+            broadcast_tx,
+            config_path: player_path.to_path_buf(),
+            songs_path: player_config.songs(player_path),
+            playlist_path: playlist_path.clone(),
+            metadata_json: std::sync::Arc::new(metadata_json),
+            waveform_cache: crate::webui::state::new_waveform_cache(),
+        };
+
+        match crate::webui::server::start(webui_state, web_config.address.clone(), web_config.port)
+            .await
+        {
+            Ok(handle) => Some(handle),
+            Err(e) => {
+                tracing::warn!("Failed to start web UI: {}", e);
+                None
+            }
         }
-    } else {
-        None
     };
 
     let hostname = config::resolve_hostname();

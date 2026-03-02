@@ -16,6 +16,7 @@ pub mod engine;
 pub mod legacy_store;
 pub mod ola_client;
 pub mod universe;
+pub mod watcher;
 
 use crate::config;
 use crate::dmx::ola_client::OlaClientFactory;
@@ -30,17 +31,9 @@ use std::{error::Error, path::Path, sync::Arc};
 use tracing::info;
 
 /// Creates a DMX engine, connecting to the OLA daemon for output.
+/// Falls back to a no-op OLA client if the OLA daemon is unavailable, so the
+/// lighting/effects engine can still run without physical hardware (web UI, etc.).
 pub fn create_engine(
-    config: Option<&config::Dmx>,
-    base_path: Option<&Path>,
-) -> Result<Option<Arc<Engine>>, Box<dyn Error>> {
-    create_engine_inner(config, base_path, false)
-}
-
-/// Creates a DMX engine for simulator use. Falls back to a no-op OLA client
-/// if the OLA daemon is unavailable, so the lighting/effects engine can still
-/// run without physical hardware.
-pub fn create_engine_for_simulator(
     config: Option<&config::Dmx>,
     base_path: Option<&Path>,
 ) -> Result<Option<Arc<Engine>>, Box<dyn Error>> {

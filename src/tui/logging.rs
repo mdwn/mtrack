@@ -15,7 +15,6 @@ use parking_lot::Mutex;
 use std::collections::VecDeque;
 use std::fmt;
 use std::sync::{Arc, OnceLock};
-
 use tracing::field::{Field, Visit};
 use tracing::{Event, Subscriber};
 use tracing_subscriber::layer::Context;
@@ -83,12 +82,10 @@ impl<S: Subscriber> Layer<S> for TuiLogLayer {
 
         let line = format!("{} {}: {}", level, target, visitor.message);
 
-        {
-            let mut buffer = self.buffer.lock();
-            if buffer.len() >= self.capacity {
-                buffer.pop_front();
-            }
-            buffer.push_back(line);
+        let mut buffer = self.buffer.lock();
+        if buffer.len() >= self.capacity {
+            buffer.pop_front();
         }
+        buffer.push_back(line);
     }
 }

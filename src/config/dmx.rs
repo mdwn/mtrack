@@ -15,7 +15,7 @@
 use std::time::Duration;
 
 use duration_string::DurationString;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::lighting::Lighting;
 
@@ -26,7 +26,7 @@ pub const DEFAULT_DMX_DIMMING_SPEED_MODIFIER: f64 = 1.0;
 pub const DEFAULT_DMX_PLAYBACK_DELAY: Duration = Duration::ZERO;
 
 /// A YAML representation of the DMX configuration.
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Serialize, Clone)]
 pub struct Dmx {
     /// Controls the dim speed modifier. A modifier of 1.0 means a dim speed of 1 == 1.0 second.
     dim_speed_modifier: Option<f64>,
@@ -113,7 +113,7 @@ impl Dmx {
 }
 
 /// A YAML representation of a DMX universe configuration.
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Serialize, Clone)]
 pub struct Universe {
     /// The OpenLighting universe.
     universe: u16,

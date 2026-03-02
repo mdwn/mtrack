@@ -201,7 +201,9 @@ fn reload_timeline(
     // Atomically stop + apply the new state under a single lock to prevent
     // the sampler loop from seeing an intermediate empty state (flash).
     {
+        info!("Watcher acquiring effect_engine lock for reload...");
         let mut engine = effect_engine.lock();
+        info!("Watcher acquired effect_engine lock.");
         engine.set_tempo_map(tempo_map);
         engine.stop_all_effects();
 
@@ -223,6 +225,7 @@ fn reload_timeline(
                 error!("Failed to start lighting effect: {}", e);
             }
         }
+        info!("Watcher releasing effect_engine lock.");
     }
 
     Ok(())

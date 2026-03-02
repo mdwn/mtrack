@@ -72,9 +72,7 @@ impl super::Driver for Driver {
 
             Server::builder()
                 .add_service(reflection_service)
-                .add_service(PlayerServiceServer::new(PlayerServer {
-                    player: player.clone(),
-                }))
+                .add_service(PlayerServiceServer::new(PlayerServer::new(player.clone())))
                 .serve(addr)
                 .await
                 .map_err(io::Error::other)
@@ -83,12 +81,17 @@ impl super::Driver for Driver {
 }
 
 /// The actual player server.
-struct PlayerServer {
+pub(crate) struct PlayerServer {
     /// The player.
     player: Arc<Player>,
 }
 
 impl PlayerServer {
+    /// Creates a new PlayerServer wrapping the given player.
+    pub(crate) fn new(player: Arc<Player>) -> Self {
+        Self { player }
+    }
+
     /// Converts a play/play_from result into a gRPC response.
     #[allow(clippy::result_large_err)]
     fn play_response(
@@ -310,7 +313,6 @@ mod test {
                 "assets/songs",
             ),
             None,
-            false,
         )?);
         let binding = player
             .audio_device()

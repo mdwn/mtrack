@@ -109,21 +109,15 @@ enum Commands {
         player_path: String,
         /// The path to the playlist. Must be specified if the playlist is not specified in the player config.
         playlist_path: Option<String>,
-        /// Disable the terminal UI even when running interactively.
+        /// Enable the terminal UI.
         #[arg(long)]
-        no_tui: bool,
-        /// Enable the lighting simulator web UI.
-        #[cfg(feature = "simulator")]
-        #[arg(long)]
-        simulator: bool,
-        /// Port for the lighting simulator (default: 8080).
-        #[cfg(feature = "simulator")]
+        tui: bool,
+        /// Port for the web UI and lighting simulator (default: 8080).
         #[arg(long, default_value = "8080")]
-        simulator_port: u16,
-        /// Bind address for the lighting simulator (default: 127.0.0.1).
-        #[cfg(feature = "simulator")]
+        web_port: u16,
+        /// Bind address for the web UI and lighting simulator (default: 127.0.0.1).
         #[arg(long, default_value = "127.0.0.1")]
-        simulator_address: String,
+        web_address: String,
     },
     /// Plays the current song in the playlist.
     Play {
@@ -245,27 +239,16 @@ pub async fn run(tui_mode: bool) -> Result<(), Box<dyn Error>> {
         Commands::Start {
             player_path,
             playlist_path,
-            no_tui,
-            #[cfg(feature = "simulator")]
-            simulator,
-            #[cfg(feature = "simulator")]
-            simulator_port,
-            #[cfg(feature = "simulator")]
-            simulator_address,
+            tui,
+            web_port,
+            web_address,
         } => {
-            #[cfg(feature = "simulator")]
-            let sim_config = if simulator {
-                Some(crate::simulator::SimulatorConfig {
-                    port: simulator_port,
-                    address: simulator_address,
-                })
-            } else {
-                None
+            let web_config = crate::webui::server::WebConfig {
+                port: web_port,
+                address: web_address,
             };
-            #[cfg(not(feature = "simulator"))]
-            let sim_config = None;
-            let effective_tui = tui_mode && !no_tui;
-            local::start(&player_path, playlist_path, sim_config, effective_tui).await?
+            let effective_tui = tui_mode && tui;
+            local::start(&player_path, playlist_path, web_config, effective_tui).await?
         }
         Commands::Play { host_port, from } => remote::play(host_port, from).await?,
         Commands::Previous { host_port } => remote::previous(host_port).await?,

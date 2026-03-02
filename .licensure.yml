@@ -20,6 +20,12 @@ excludes:
   - lcov.info
   - .*\.tosc
   - .*\.light
+  - .*/node_modules/.*
+  - .*/dist/.*
+  - .*/gen/.*
+  - .*\.json
+  - .*\.prettierignore
+  - .*\.prettierrc
 licenses:
   - files: any
     ident: GPL-3.0
@@ -46,16 +52,28 @@ comments:
       - rs
       - proto
       - pest
+      - ts
+      - js
     commenter:
       type: line
       comment_char: "//"
       trailing_lines: 0
   - columns: 80
     extensions:
+      - css
+    commenter:
+      type: block
+      start_block_char: "/*"
+      per_line_char: " *"
+      end_block_char: " */"
+      trailing_lines: 0
+  - columns: 80
+    extensions:
       - html
+      - svelte
     commenter:
       type: block
       start_block_char: "<!-- *"
-      per_line_char: "     *" 
+      per_line_char: "     *"
       end_block_char: "     * -->"
       trailing_lines: 1

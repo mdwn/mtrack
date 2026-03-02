@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 const DEFAULT_MIDI_PLAYBACK_DELAY: Duration = Duration::ZERO;
 
 /// A YAML representation of the MIDI configuration.
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Serialize, Clone)]
 pub struct Midi {
     /// The MIDI device.
     device: String,
@@ -65,7 +65,7 @@ impl Midi {
 }
 
 /// A YAML representation of the MIDI configuration.
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Serialize, Clone)]
 pub struct MidiToDmx {
     /// The MIDI channel to pass through to DMX.
     midi_channel: u8,
@@ -100,7 +100,7 @@ pub trait ToMidiEvent {
     fn to_midi_event(&self) -> Result<LiveEvent<'static>, Box<dyn Error>>;
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Serialize, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum MidiTransformer {
     NoteMapper(NoteMapper),
@@ -108,7 +108,7 @@ pub enum MidiTransformer {
 }
 
 /// A YAML representation of the note mapper MIDI transformation.
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Serialize, Clone)]
 pub struct NoteMapper {
     input_note: u8,
     convert_to_notes: Vec<u8>,
@@ -130,7 +130,7 @@ impl NoteMapper {
 }
 
 /// A YAML representation of the control change mapper MIDI transformation.
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Serialize, Clone)]
 pub struct ControlChangeMapper {
     input_controller: u8,
     convert_to_controllers: Vec<u8>,

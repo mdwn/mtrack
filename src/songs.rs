@@ -786,6 +786,16 @@ impl Track {
         &self.name
     }
 
+    /// Gets the path to the audio file for this track.
+    pub fn file(&self) -> &Path {
+        &self.file
+    }
+
+    /// Gets the channel index within the audio file for this track.
+    pub fn file_channel(&self) -> u16 {
+        self.file_channel
+    }
+
     pub fn get_config(&self) -> config::Track {
         config::Track::new(
             self.name().to_string(),

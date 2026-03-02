@@ -20,7 +20,7 @@
 
 use std::str::FromStr;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use super::samples::SampleTrigger;
@@ -51,7 +51,7 @@ fn default_noise_floor_decay_ms() -> u32 {
 }
 
 /// Configuration for the trigger system.
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct TriggerConfig {
     /// The audio input device name (matched against cpal input devices).
     /// Only required when audio inputs are configured.
@@ -167,7 +167,7 @@ impl TriggerConfig {
 }
 
 /// A trigger input, discriminated by `kind`.
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TriggerInput {
     /// Audio trigger input (piezo, line-level, etc.).
@@ -177,7 +177,7 @@ pub enum TriggerInput {
 }
 
 /// What action an input channel performs when triggered.
-#[derive(Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TriggerInputAction {
     /// Fire a sample (default).
@@ -188,7 +188,7 @@ pub enum TriggerInputAction {
 }
 
 /// How amplitude maps to velocity (0-127).
-#[derive(Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum VelocityCurve {
     /// Linear mapping: velocity = peak * 127.
@@ -201,7 +201,7 @@ pub enum VelocityCurve {
 }
 
 /// Configuration for a single audio input channel used as a trigger.
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct AudioTriggerInput {
     /// 1-indexed input channel number.
     channel: u16,
@@ -317,7 +317,7 @@ impl AudioTriggerInput {
 }
 
 /// Configuration for a MIDI event trigger input.
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct MidiTriggerInput {
     /// The MIDI event to listen for.
     event: super::midi::Event,
