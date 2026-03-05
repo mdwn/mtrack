@@ -456,4 +456,134 @@ mod test {
 
         Ok(())
     }
+
+    /// Helper to set up a player + gRPC client pair on an ephemeral port.
+    async fn setup_grpc() -> Result<
+        (
+            Arc<Player>,
+            PlayerServiceClient<Channel>,
+            Arc<crate::audio::mock::Device>,
+        ),
+        Box<dyn Error>,
+    > {
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
+        let player = Arc::new(Player::new(
+            songs.clone(),
+            Playlist::new(
+                "playlist",
+                &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
+                songs,
+            )?,
+            &config::Player::new(
+                vec![],
+                Some(config::Audio::new("mock-device")),
+                Some(config::Midi::new("mock-midi-device", None)),
+                None,
+                HashMap::new(),
+                "assets/songs",
+            ),
+            None,
+        )?);
+        let device = player.audio_device().expect("audio device").to_mock()?;
+
+        let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0));
+        let listener = TcpListener::bind(addr).await?;
+        let port = listener.local_addr()?.port();
+        drop(listener);
+
+        let driver = Driver::new(config::GrpcController::new(port), player.clone())?;
+        tokio::spawn(driver.monitor_events());
+
+        let mut client = None;
+        for _ in 0..10 {
+            match PlayerServiceClient::connect(format!("http://127.0.0.1:{}", port)).await {
+                Ok(c) => {
+                    client = Some(c);
+                    break;
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+            }
+        }
+        Ok((
+            player,
+            client.expect("gRPC client connection failed"),
+            device,
+        ))
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_grpc_stop_when_not_playing() -> Result<(), Box<dyn Error>> {
+        let (_player, mut client, _device) = setup_grpc().await?;
+
+        let result = client.stop(StopRequest {}).await;
+        assert!(result.is_err(), "stop() when idle should fail");
+        let status = result.unwrap_err();
+        assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+        assert!(status.message().contains("not playing"));
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_grpc_play_already_playing() -> Result<(), Box<dyn Error>> {
+        let (_player, mut client, device) = setup_grpc().await?;
+
+        // First play should succeed.
+        let resp = client.play(PlayRequest {}).await?;
+        assert!(resp.into_inner().song.is_some());
+        eventually(|| device.is_playing(), "Song never started playing");
+
+        // Second play while already playing should fail.
+        let result = client.play(PlayRequest {}).await;
+        assert!(
+            result.is_err(),
+            "play() while playing should be a precondition failure"
+        );
+
+        client.stop(StopRequest {}).await?;
+        eventually(|| !device.is_playing(), "Song never stopped");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_grpc_switch_to_invalid_playlist() -> Result<(), Box<dyn Error>> {
+        let (_player, mut client, _device) = setup_grpc().await?;
+
+        let result = client
+            .switch_to_playlist(SwitchToPlaylistRequest {
+                playlist_name: "nonexistent".to_string(),
+            })
+            .await;
+        assert!(result.is_err());
+        let status = result.unwrap_err();
+        assert_eq!(status.code(), tonic::Code::Unimplemented);
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_grpc_status_shows_current_song() -> Result<(), Box<dyn Error>> {
+        let (_player, mut client, _device) = setup_grpc().await?;
+
+        let resp = client.status(StatusRequest {}).await?;
+        let status = resp.into_inner();
+        assert!(!status.playing);
+        assert!(status.elapsed.is_none());
+        assert!(status.current_song.is_some());
+        assert_eq!(status.current_song.unwrap().name, "Song 1");
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_grpc_stop_samples() -> Result<(), Box<dyn Error>> {
+        use crate::proto::player::v1::StopSamplesRequest;
+
+        let (_player, mut client, _device) = setup_grpc().await?;
+
+        // stop_samples should always succeed, even with no active samples.
+        client.stop_samples(StopSamplesRequest {}).await?;
+
+        Ok(())
+    }
 }

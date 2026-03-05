@@ -492,7 +492,7 @@ pub fn build_metadata_json(
     msg.to_string()
 }
 
-/// Extracts fixture names → tags from the lighting system's current venue.
+/// Extracts fixture names -> tags from the lighting system's current venue.
 fn get_venue_fixture_tags(
     system: &crate::lighting::system::LightingSystem,
 ) -> HashMap<String, Vec<String>> {
@@ -503,4 +503,100 @@ fn get_venue_fixture_tags(
         }
     }
     result
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn new_waveform_cache_is_empty() {
+        let cache = new_waveform_cache();
+        assert!(cache.lock().is_empty());
+    }
+
+    #[test]
+    fn waveform_cache_insert_and_retrieve() {
+        let cache = new_waveform_cache();
+        let peaks = vec![("track1".to_string(), vec![0.5, 1.0, 0.3])];
+        cache.lock().insert("Song 1".to_string(), peaks.clone());
+
+        let retrieved = cache.lock().get("Song 1").cloned();
+        assert!(retrieved.is_some());
+        assert_eq!(retrieved.unwrap(), peaks);
+    }
+
+    #[test]
+    fn build_metadata_json_no_lighting() {
+        let json_str = build_metadata_json(None);
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).expect("valid JSON");
+        assert_eq!(parsed["type"], "metadata");
+        assert!(parsed["fixtures"].is_object());
+        assert!(parsed["fixtures"].as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn compute_track_peaks_with_test_wav() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let wav_path = temp_dir.path().join("test.wav");
+
+        // Create a simple WAV with known samples
+        let samples: Vec<i32> = (0..4410).map(|i| (i * 100) % 32768).collect();
+        crate::testutil::write_wav(wav_path.clone(), vec![samples], 44100).expect("write test wav");
+
+        let peaks = compute_track_peaks(&wav_path, 1, 10);
+        assert!(!peaks.is_empty());
+        // Peaks should be normalized to 0.0-1.0
+        for &p in &peaks {
+            assert!((0.0..=1.0).contains(&p), "peak {} out of range", p);
+        }
+        // At least one peak should be 1.0 (the max)
+        assert!(
+            peaks.iter().any(|&p| (p - 1.0).abs() < f32::EPSILON),
+            "expected at least one normalized peak at 1.0"
+        );
+    }
+
+    #[test]
+    fn compute_track_peaks_invalid_channel() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let wav_path = temp_dir.path().join("mono.wav");
+
+        crate::testutil::write_wav(wav_path.clone(), vec![vec![1_i32, 2, 3]], 44100)
+            .expect("write wav");
+
+        // file_channel 5 on a mono file — should return empty
+        let peaks = compute_track_peaks(&wav_path, 5, 10);
+        assert!(peaks.is_empty());
+    }
+
+    #[test]
+    fn compute_track_peaks_missing_file() {
+        let peaks = compute_track_peaks(std::path::Path::new("/nonexistent/file.wav"), 1, 10);
+        assert!(peaks.is_empty());
+    }
+
+    #[test]
+    fn compute_waveform_peaks_multiple_tracks() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+
+        let wav1 = temp_dir.path().join("track1.wav");
+        let wav2 = temp_dir.path().join("track2.wav");
+
+        let samples: Vec<i32> = (0..4410).map(|i| (i * 50) % 32768).collect();
+        crate::testutil::write_wav(wav1.clone(), vec![samples.clone()], 44100).expect("write wav1");
+        crate::testutil::write_wav(wav2.clone(), vec![samples], 44100).expect("write wav2");
+
+        let tracks = vec![
+            ("Track 1".to_string(), wav1, 1_u16),
+            ("Track 2".to_string(), wav2, 1_u16),
+        ];
+
+        let results = compute_waveform_peaks(&tracks);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].0, "Track 1");
+        assert_eq!(results[1].0, "Track 2");
+        assert!(!results[0].1.is_empty());
+        assert!(!results[1].1.is_empty());
+    }
 }

@@ -44,4 +44,47 @@ mod test {
         assert_eq!("2:05", duration_minutes_seconds(Duration::new(125, 0)));
         assert_eq!("60:06", duration_minutes_seconds(Duration::new(3606, 0)));
     }
+
+    #[test]
+    fn filename_display_normal() {
+        use std::path::Path;
+        assert_eq!(
+            super::filename_display(Path::new("/home/user/song.wav")),
+            "song.wav"
+        );
+    }
+
+    #[test]
+    fn filename_display_no_extension() {
+        use std::path::Path;
+        assert_eq!(
+            super::filename_display(Path::new("/home/user/readme")),
+            "readme"
+        );
+    }
+
+    #[test]
+    fn filename_display_just_filename() {
+        use std::path::Path;
+        assert_eq!(super::filename_display(Path::new("track.wav")), "track.wav");
+    }
+
+    #[test]
+    fn filename_display_root_path() {
+        use std::path::Path;
+        // "/" has no file_name component
+        assert_eq!(
+            super::filename_display(Path::new("/")),
+            "unreadable file name"
+        );
+    }
+
+    #[test]
+    fn filename_display_empty_path() {
+        use std::path::Path;
+        assert_eq!(
+            super::filename_display(Path::new("")),
+            "unreadable file name"
+        );
+    }
 }

@@ -241,4 +241,95 @@ mod test {
 
         Ok(())
     }
+
+    #[test]
+    fn note_mapper_non_matching_note_passes_through() {
+        let mapper = NoteMapper::new(
+            u7::from_int_lossy(10),
+            u7::slice_from_int(&[20, 30]).to_vec(),
+        );
+        // Note 5 doesn't match input_note 10 — should pass through unchanged.
+        let results = mapper.transform(&note_on(5, 100));
+        assert_eq!(results, vec![note_on(5, 100)]);
+
+        let results = mapper.transform(&note_off(5, 64));
+        assert_eq!(results, vec![note_off(5, 64)]);
+    }
+
+    #[test]
+    fn note_mapper_non_note_message_passes_through() {
+        let mapper = NoteMapper::new(u7::from_int_lossy(1), u7::slice_from_int(&[2, 3]).to_vec());
+        // Control change should pass through NoteMapper unchanged.
+        let results = mapper.transform(&control_change(1, 127));
+        assert_eq!(results, vec![control_change(1, 127)]);
+    }
+
+    #[test]
+    fn note_mapper_preserves_velocity() {
+        let mapper = NoteMapper::new(
+            u7::from_int_lossy(60),
+            u7::slice_from_int(&[61, 62]).to_vec(),
+        );
+        let results = mapper.transform(&note_on(60, 99));
+        assert_eq!(results, vec![note_on(61, 99), note_on(62, 99)]);
+    }
+
+    #[test]
+    fn control_change_mapper_non_matching_passes_through() {
+        let mapper = ControlChangeMapper::new(
+            u7::from_int_lossy(10),
+            u7::slice_from_int(&[20, 30]).to_vec(),
+        );
+        // Controller 5 doesn't match input_controller 10.
+        let results = mapper.transform(&control_change(5, 127));
+        assert_eq!(results, vec![control_change(5, 127)]);
+    }
+
+    #[test]
+    fn control_change_mapper_non_cc_message_passes_through() {
+        let mapper =
+            ControlChangeMapper::new(u7::from_int_lossy(1), u7::slice_from_int(&[2, 3]).to_vec());
+        // Note on should pass through ControlChangeMapper unchanged.
+        let results = mapper.transform(&note_on(1, 127));
+        assert_eq!(results, vec![note_on(1, 127)]);
+    }
+
+    #[test]
+    fn control_change_mapper_preserves_value() {
+        let mapper =
+            ControlChangeMapper::new(u7::from_int_lossy(7), u7::slice_from_int(&[8, 9]).to_vec());
+        let results = mapper.transform(&control_change(7, 100));
+        assert_eq!(
+            results,
+            vec![control_change(8, 100), control_change(9, 100)]
+        );
+    }
+
+    #[test]
+    fn midi_transformer_dispatch_note_mapper() {
+        let mapper = MidiTransformer::NoteMapper(NoteMapper::new(
+            u7::from_int_lossy(1),
+            u7::slice_from_int(&[2]).to_vec(),
+        ));
+        assert!(mapper.can_process(&note_on(1, 0)));
+        assert!(!mapper.can_process(&control_change(1, 0)));
+    }
+
+    #[test]
+    fn midi_transformer_dispatch_cc_mapper() {
+        let mapper = MidiTransformer::ControlChangeMapper(ControlChangeMapper::new(
+            u7::from_int_lossy(1),
+            u7::slice_from_int(&[2]).to_vec(),
+        ));
+        assert!(!mapper.can_process(&note_on(1, 0)));
+        assert!(mapper.can_process(&control_change(1, 0)));
+    }
+
+    #[test]
+    fn note_mapper_single_output() {
+        let mapper = NoteMapper::new(u7::from_int_lossy(60), u7::slice_from_int(&[61]).to_vec());
+        let results = mapper.transform(&note_on(60, 127));
+        assert_eq!(results.len(), 1);
+        assert_eq!(results, vec![note_on(61, 127)]);
+    }
 }

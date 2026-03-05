@@ -290,3 +290,151 @@ impl OscController {
         &self.playlist_current_song_elapsed
     }
 }
+
+#[cfg(test)]
+mod test {
+    use std::error::Error;
+
+    use config::{Config, File, FileFormat};
+
+    use super::*;
+
+    #[test]
+    fn grpc_default_port() {
+        let grpc = GrpcController::default();
+        assert_eq!(grpc.port(), DEFAULT_GRPC_PORT);
+    }
+
+    #[test]
+    fn grpc_custom_port() {
+        let grpc = GrpcController::new(9999);
+        assert_eq!(grpc.port(), 9999);
+    }
+
+    #[test]
+    fn grpc_serde_default() -> Result<(), Box<dyn Error>> {
+        let grpc: GrpcController = Config::builder()
+            .add_source(File::from_str("{}", FileFormat::Yaml))
+            .build()?
+            .try_deserialize()?;
+        assert_eq!(grpc.port(), DEFAULT_GRPC_PORT);
+        Ok(())
+    }
+
+    #[test]
+    fn grpc_serde_custom_port() -> Result<(), Box<dyn Error>> {
+        let grpc: GrpcController = Config::builder()
+            .add_source(File::from_str("port: 5000", FileFormat::Yaml))
+            .build()?
+            .try_deserialize()?;
+        assert_eq!(grpc.port(), 5000);
+        Ok(())
+    }
+
+    #[test]
+    fn osc_defaults() {
+        let osc = OscController::default();
+        assert_eq!(osc.port(), DEFAULT_OSC_PORT);
+        assert!(osc.broadcast_addresses().is_empty());
+        assert_eq!(osc.play(), "/mtrack/play");
+        assert_eq!(osc.prev(), "/mtrack/prev");
+        assert_eq!(osc.next(), "/mtrack/next");
+        assert_eq!(osc.stop(), "/mtrack/stop");
+        assert_eq!(osc.all_songs(), "/mtrack/all_songs");
+        assert_eq!(osc.playlist(), "/mtrack/playlist");
+        assert_eq!(osc.stop_samples(), "/mtrack/samples/stop");
+        assert_eq!(osc.status(), "/mtrack/status");
+        assert_eq!(osc.playlist_current(), "/mtrack/playlist/current");
+        assert_eq!(osc.playlist_current_song(), "/mtrack/playlist/current_song");
+        assert_eq!(
+            osc.playlist_current_song_elapsed(),
+            "/mtrack/playlist/current_song/elapsed"
+        );
+    }
+
+    #[test]
+    fn osc_serde_custom_addresses() -> Result<(), Box<dyn Error>> {
+        let osc: OscController = Config::builder()
+            .add_source(File::from_str(
+                r#"
+                port: 9000
+                play: /custom/play
+                stop: /custom/stop
+                broadcast_addresses:
+                  - "192.168.1.100:9000"
+                "#,
+                FileFormat::Yaml,
+            ))
+            .build()?
+            .try_deserialize()?;
+        assert_eq!(osc.port(), 9000);
+        assert_eq!(osc.play(), "/custom/play");
+        assert_eq!(osc.stop(), "/custom/stop");
+        // Non-overridden fields keep defaults.
+        assert_eq!(osc.next(), "/mtrack/next");
+        assert_eq!(osc.prev(), "/mtrack/prev");
+        assert_eq!(
+            osc.broadcast_addresses(),
+            &["192.168.1.100:9000".to_string()]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn midi_controller_events() -> Result<(), Box<dyn Error>> {
+        let mc = MidiController::new(
+            midi::note_on(1, 60, 127),
+            midi::note_on(1, 61, 127),
+            midi::note_on(1, 62, 127),
+            midi::note_on(1, 63, 127),
+            midi::note_on(1, 64, 127),
+            midi::note_on(1, 65, 127),
+        );
+        // Each accessor should produce a valid LiveEvent.
+        mc.play()?;
+        mc.prev()?;
+        mc.next()?;
+        mc.stop()?;
+        mc.all_songs()?;
+        mc.playlist()?;
+        Ok(())
+    }
+
+    #[test]
+    fn controller_enum_grpc_serde() -> Result<(), Box<dyn Error>> {
+        let controller: Controller = Config::builder()
+            .add_source(File::from_str(
+                r#"
+                kind: grpc
+                port: 1234
+                "#,
+                FileFormat::Yaml,
+            ))
+            .build()?
+            .try_deserialize()?;
+        match controller {
+            Controller::Grpc(grpc) => assert_eq!(grpc.port(), 1234),
+            _ => panic!("expected Grpc variant"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn controller_enum_osc_serde() -> Result<(), Box<dyn Error>> {
+        let controller: Controller = Config::builder()
+            .add_source(File::from_str(
+                r#"
+                kind: osc
+                port: 5555
+                "#,
+                FileFormat::Yaml,
+            ))
+            .build()?
+            .try_deserialize()?;
+        match controller {
+            Controller::Osc(osc) => assert_eq!(osc.port(), 5555),
+            _ => panic!("expected Osc variant"),
+        }
+        Ok(())
+    }
+}

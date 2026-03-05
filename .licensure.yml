@@ -77,3 +77,11 @@ comments:
       per_line_char: "     *"
       end_block_char: "     * -->"
       trailing_lines: 1
+  - columns: 80
+    extension: any
+    files:
+      - ^Makefile$
+    commenter:
+      type: line
+      comment_char: "#"
+      trailing_lines: 0

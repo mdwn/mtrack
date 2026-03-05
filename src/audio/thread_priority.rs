@@ -20,8 +20,13 @@ const DEFAULT_CALLBACK_THREAD_PRIORITY: u8 = 70;
 
 /// Reads MTRACK_THREAD_PRIORITY (0-99) once; used when building the callback so we don't touch env in the hot path.
 pub fn callback_thread_priority() -> ThreadPriorityValue {
-    std::env::var("MTRACK_THREAD_PRIORITY")
-        .ok()
+    parse_thread_priority(std::env::var("MTRACK_THREAD_PRIORITY").ok().as_deref())
+}
+
+/// Parses a thread priority value from an optional string (0-99).
+/// Returns the default priority if the value is missing, unparseable, or out of range.
+fn parse_thread_priority(value: Option<&str>) -> ThreadPriorityValue {
+    value
         .and_then(|v| {
             let n = v.parse::<u8>().ok()?;
             (n < 100).then(|| ThreadPriorityValue::try_from(n).ok())?
@@ -83,4 +88,107 @@ pub fn configure_audio_thread_priority(
     }
 
     *priority_set = true;
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn env_flag_true_values() {
+        for val in &[
+            "1", "true", "TRUE", "True", "yes", "YES", "Yes", "on", "ON", "On",
+        ] {
+            std::env::set_var("MTRACK_TEST_FLAG", val);
+            assert!(env_flag("MTRACK_TEST_FLAG"), "expected true for {:?}", val);
+        }
+        std::env::remove_var("MTRACK_TEST_FLAG");
+    }
+
+    #[test]
+    fn env_flag_false_values() {
+        for val in &["0", "false", "no", "off", "", "maybe"] {
+            std::env::set_var("MTRACK_TEST_FLAG_F", val);
+            assert!(
+                !env_flag("MTRACK_TEST_FLAG_F"),
+                "expected false for {:?}",
+                val
+            );
+        }
+        std::env::remove_var("MTRACK_TEST_FLAG_F");
+    }
+
+    #[test]
+    fn env_flag_unset() {
+        std::env::remove_var("MTRACK_TEST_FLAG_UNSET");
+        assert!(!env_flag("MTRACK_TEST_FLAG_UNSET"));
+    }
+
+    #[test]
+    fn parse_priority_default() {
+        let prio = parse_thread_priority(None);
+        assert_eq!(
+            prio,
+            ThreadPriorityValue::try_from(DEFAULT_CALLBACK_THREAD_PRIORITY).unwrap()
+        );
+    }
+
+    #[test]
+    fn parse_priority_custom() {
+        let prio = parse_thread_priority(Some("50"));
+        assert_eq!(prio, ThreadPriorityValue::try_from(50u8).unwrap());
+    }
+
+    #[test]
+    fn parse_priority_zero() {
+        let prio = parse_thread_priority(Some("0"));
+        assert_eq!(prio, ThreadPriorityValue::try_from(0u8).unwrap());
+    }
+
+    #[test]
+    fn parse_priority_max_valid() {
+        let prio = parse_thread_priority(Some("99"));
+        assert_eq!(prio, ThreadPriorityValue::try_from(99u8).unwrap());
+    }
+
+    #[test]
+    fn parse_priority_out_of_range() {
+        // 100 is out of range (0-99), should fall back to default.
+        let prio = parse_thread_priority(Some("100"));
+        assert_eq!(
+            prio,
+            ThreadPriorityValue::try_from(DEFAULT_CALLBACK_THREAD_PRIORITY).unwrap()
+        );
+    }
+
+    #[test]
+    fn parse_priority_invalid_string() {
+        let prio = parse_thread_priority(Some("not_a_number"));
+        assert_eq!(
+            prio,
+            ThreadPriorityValue::try_from(DEFAULT_CALLBACK_THREAD_PRIORITY).unwrap()
+        );
+    }
+
+    #[test]
+    fn parse_priority_empty_string() {
+        let prio = parse_thread_priority(Some(""));
+        assert_eq!(
+            prio,
+            ThreadPriorityValue::try_from(DEFAULT_CALLBACK_THREAD_PRIORITY).unwrap()
+        );
+    }
+
+    #[test]
+    fn configure_audio_thread_priority_idempotent() {
+        let prio = ThreadPriorityValue::try_from(50u8).unwrap();
+        let mut priority_set = false;
+
+        configure_audio_thread_priority(prio, false, &mut priority_set);
+        assert!(priority_set);
+
+        // Second call should be a no-op (the flag is already set).
+        configure_audio_thread_priority(prio, false, &mut priority_set);
+        assert!(priority_set);
+    }
 }

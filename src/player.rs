@@ -1399,6 +1399,174 @@ mod test {
         Ok(())
     }
 
+    /// Helper to create a player with the standard test assets.
+    fn make_test_player() -> Result<Player, Box<dyn Error>> {
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
+        Ok(Player::new(
+            songs.clone(),
+            Playlist::new(
+                "playlist",
+                &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
+                songs,
+            )?,
+            &config::Player::new(
+                vec![],
+                Some(config::Audio::new("mock-device")),
+                Some(config::Midi::new("mock-midi-device", None)),
+                None,
+                HashMap::new(),
+                "assets/songs",
+            ),
+            None,
+        )?)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_stop_when_not_playing() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player()?;
+
+        // stop() when nothing is playing should return None.
+        let result = player.stop().await;
+        assert!(result.is_none());
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_is_playing() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player()?;
+        let binding = player
+            .audio_device()
+            .expect("audio device should be present");
+        let device = binding.to_mock()?;
+
+        assert!(!player.is_playing().await);
+
+        player.play().await?;
+        eventually(|| device.is_playing(), "Song never started playing");
+        assert!(player.is_playing().await);
+
+        player.stop().await;
+        eventually(|| !device.is_playing(), "Song never stopped playing");
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_elapsed_stopped() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player()?;
+
+        // elapsed() when not playing should be Ok(None).
+        let elapsed = player.elapsed().await?;
+        assert!(elapsed.is_none());
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_elapsed_while_playing() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player()?;
+        let binding = player
+            .audio_device()
+            .expect("audio device should be present");
+        let device = binding.to_mock()?;
+
+        player.play().await?;
+        eventually(|| device.is_playing(), "Song never started playing");
+
+        let elapsed = player.elapsed().await?;
+        assert!(
+            elapsed.is_some(),
+            "elapsed should have a value while playing"
+        );
+
+        player.stop().await;
+        eventually(|| !device.is_playing(), "Song never stopped playing");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_concurrent_play_returns_none() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player()?;
+        let binding = player
+            .audio_device()
+            .expect("audio device should be present");
+        let device = binding.to_mock()?;
+
+        // First play should succeed.
+        let result = player.play().await?;
+        assert!(result.is_some());
+        eventually(|| device.is_playing(), "Song never started playing");
+
+        // Second play while already playing should return Ok(None).
+        let result = player.play().await?;
+        assert!(result.is_none(), "play() while playing should return None");
+
+        player.stop().await;
+        eventually(|| !device.is_playing(), "Song never stopped playing");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_navigation() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player()?;
+
+        assert_eq!(player.get_playlist().current().name(), "Song 1");
+
+        let song = player.next().await;
+        assert_eq!(song.name(), "Song 3");
+        assert_eq!(player.get_playlist().current().name(), "Song 3");
+
+        let song = player.prev().await;
+        assert_eq!(song.name(), "Song 1");
+        assert_eq!(player.get_playlist().current().name(), "Song 1");
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_switch_playlists() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player()?;
+
+        assert_eq!(player.get_playlist().name(), "playlist");
+        player.switch_to_all_songs().await;
+        assert_eq!(player.get_playlist().name(), "all_songs");
+        player.switch_to_playlist().await;
+        assert_eq!(player.get_playlist().name(), "playlist");
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_get_all_songs_playlist() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player()?;
+        let all = player.get_all_songs_playlist();
+        assert_eq!(all.name(), "all_songs");
+        assert!(!all.songs().is_empty());
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_format_active_effects_no_dmx() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player()?;
+        // No DMX engine configured, should return None.
+        assert!(player.format_active_effects().is_none());
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_dmx_engine_none_without_config() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player()?;
+        assert!(player.dmx_engine().is_none());
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_get_cues_empty_without_lighting() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player()?;
+        let cues = player.get_cues();
+        assert!(cues.is_empty());
+        Ok(())
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn test_player_rejects_song_with_multiple_invalid_groups() -> Result<(), Box<dyn Error>> {
         // Create a temporary directory for test files
