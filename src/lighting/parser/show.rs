@@ -1657,3 +1657,238 @@ fn parse_layer_command(
         speed,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── relative_time ────────────────────────────────────────────
+
+    #[test]
+    fn relative_time_basic() {
+        let result = relative_time(Duration::from_secs(5), Duration::from_secs(2));
+        assert_eq!(result, Duration::from_secs(3));
+    }
+
+    #[test]
+    fn relative_time_saturates_at_zero() {
+        let result = relative_time(Duration::from_secs(1), Duration::from_secs(5));
+        assert_eq!(result, Duration::ZERO);
+    }
+
+    #[test]
+    fn relative_time_same() {
+        let result = relative_time(Duration::from_secs(3), Duration::from_secs(3));
+        assert_eq!(result, Duration::ZERO);
+    }
+
+    // ── apply_time_offset ────────────────────────────────────────
+
+    #[test]
+    fn apply_time_offset_basic() {
+        let result = apply_time_offset(Duration::from_secs(1), 2.5);
+        assert_eq!(result, Duration::from_secs_f64(3.5));
+    }
+
+    #[test]
+    fn apply_time_offset_zero() {
+        let result = apply_time_offset(Duration::from_secs(5), 0.0);
+        assert_eq!(result, Duration::from_secs(5));
+    }
+
+    // ── remove_time_offset ───────────────────────────────────────
+
+    #[test]
+    fn remove_time_offset_basic() {
+        let result = remove_time_offset(Duration::from_secs(5), 2.0);
+        assert_eq!(result, Duration::from_secs(3));
+    }
+
+    #[test]
+    fn remove_time_offset_saturates() {
+        let result = remove_time_offset(Duration::from_secs(1), 5.0);
+        assert_eq!(result, Duration::ZERO);
+    }
+
+    // ── iteration_offset ─────────────────────────────────────────
+
+    #[test]
+    fn iteration_offset_first() {
+        let result = iteration_offset(Duration::from_secs(10), Duration::from_secs(5), 0);
+        assert_eq!(result, Duration::from_secs(10));
+    }
+
+    #[test]
+    fn iteration_offset_third() {
+        let result = iteration_offset(Duration::from_secs(10), Duration::from_secs(5), 2);
+        assert_eq!(result, Duration::from_secs(20));
+    }
+
+    // ── get_sequence_base_time ───────────────────────────────────
+
+    fn make_cue(time: Duration) -> Cue {
+        Cue {
+            time,
+            effects: vec![],
+            layer_commands: vec![],
+            stop_sequences: vec![],
+            start_sequences: vec![],
+        }
+    }
+
+    fn make_sequence(cues: Vec<Cue>) -> Sequence {
+        Sequence { cues, bpm: 120.0 }
+    }
+
+    #[test]
+    fn sequence_base_time_empty() {
+        let seq = make_sequence(vec![]);
+        assert_eq!(get_sequence_base_time(&seq), Duration::ZERO);
+    }
+
+    #[test]
+    fn sequence_base_time_from_first_cue() {
+        let seq = make_sequence(vec![
+            make_cue(Duration::from_secs(5)),
+            make_cue(Duration::from_secs(10)),
+        ]);
+        assert_eq!(get_sequence_base_time(&seq), Duration::from_secs(5));
+    }
+
+    // ── calculate_sequence_duration ──────────────────────────────
+
+    #[test]
+    fn sequence_duration_empty() {
+        let seq = make_sequence(vec![]);
+        assert_eq!(calculate_sequence_duration(&seq), Duration::ZERO);
+    }
+
+    #[test]
+    fn sequence_duration_perpetual_effects_only() {
+        // Perpetual effects: duration is time from first to last cue
+        let seq = make_sequence(vec![
+            make_cue(Duration::from_secs(2)),
+            make_cue(Duration::from_secs(7)),
+        ]);
+        assert_eq!(calculate_sequence_duration(&seq), Duration::from_secs(5));
+    }
+
+    // ── determine_loop_count ─────────────────────────────────────
+
+    #[test]
+    fn loop_count_none() {
+        assert_eq!(determine_loop_count(None).unwrap(), 1);
+    }
+
+    #[test]
+    fn loop_count_once() {
+        assert_eq!(determine_loop_count(Some(SequenceLoop::Once)).unwrap(), 1);
+    }
+
+    #[test]
+    fn loop_count_loop() {
+        assert_eq!(
+            determine_loop_count(Some(SequenceLoop::Loop)).unwrap(),
+            10000
+        );
+    }
+
+    #[test]
+    fn loop_count_specific() {
+        assert_eq!(
+            determine_loop_count(Some(SequenceLoop::Count(5))).unwrap(),
+            5
+        );
+    }
+
+    #[test]
+    fn loop_count_pingpong_unsupported() {
+        assert!(determine_loop_count(Some(SequenceLoop::PingPong)).is_err());
+    }
+
+    #[test]
+    fn loop_count_random_unsupported() {
+        assert!(determine_loop_count(Some(SequenceLoop::Random)).is_err());
+    }
+
+    // ── parse_light_shows (integration) ──────────────────────────
+
+    #[test]
+    fn parse_empty_content() {
+        let shows = parse_light_shows("").unwrap();
+        assert!(shows.is_empty());
+    }
+
+    #[test]
+    fn parse_comments_only() {
+        let shows = parse_light_shows("# Just a comment\n").unwrap();
+        assert!(shows.is_empty());
+    }
+
+    #[test]
+    fn parse_minimal_show() {
+        let content = r#"show "Test Show" {
+    @0:00.000
+    front_wash: static color: "red"
+}"#;
+        let shows = parse_light_shows(content).unwrap();
+        assert_eq!(shows.len(), 1);
+        let show = shows.get("Test Show").unwrap();
+        assert_eq!(show.name, "Test Show");
+        assert!(!show.cues.is_empty());
+    }
+
+    #[test]
+    fn parse_show_multiple_cues() {
+        let content = r#"show "Multi" {
+    @0:00.000
+    front_wash: static color: "red"
+
+    @0:05.000
+    front_wash: static color: "blue"
+}"#;
+        let shows = parse_light_shows(content).unwrap();
+        let show = shows.get("Multi").unwrap();
+        assert_eq!(show.cues.len(), 2);
+        assert_eq!(show.cues[0].time, Duration::ZERO);
+        assert_eq!(show.cues[1].time, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn parse_show_with_tempo() {
+        let content = r#"tempo {
+    bpm: 120
+    time_signature: 4/4
+}
+
+show "Tempo Show" {
+    @1/1
+    front_wash: static color: "red"
+}"#;
+        let shows = parse_light_shows(content).unwrap();
+        assert_eq!(shows.len(), 1);
+        assert!(shows.contains_key("Tempo Show"));
+    }
+
+    #[test]
+    fn parse_invalid_syntax() {
+        assert!(parse_light_shows("show {").is_err());
+    }
+
+    #[test]
+    fn parse_multiple_shows() {
+        let content = r#"show "A" {
+    @0:00.000
+    front: static color: "red"
+}
+
+show "B" {
+    @0:00.000
+    back: static color: "blue"
+}"#;
+        let shows = parse_light_shows(content).unwrap();
+        assert_eq!(shows.len(), 2);
+        assert!(shows.contains_key("A"));
+        assert!(shows.contains_key("B"));
+    }
+}

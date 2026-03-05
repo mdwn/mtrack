@@ -207,3 +207,110 @@ impl Venue {
         &self.groups
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── FixtureType ────────────────────────────────────────────────
+
+    #[test]
+    fn fixture_type_new() {
+        let mut channels = HashMap::new();
+        channels.insert("red".to_string(), 1);
+        channels.insert("green".to_string(), 2);
+        channels.insert("blue".to_string(), 3);
+        let ft = FixtureType::new("RGB Par".to_string(), channels, vec![]);
+        assert_eq!(ft.name(), "RGB Par");
+        assert_eq!(ft.channels().len(), 3);
+        assert_eq!(ft.max_strobe_frequency(), None);
+        assert_eq!(ft.min_strobe_frequency(), None);
+        assert_eq!(ft.strobe_dmx_offset(), None);
+    }
+
+    #[test]
+    fn fixture_type_strobe_fields() {
+        let mut ft = FixtureType::new("Strobe".to_string(), HashMap::new(), vec![]);
+        ft.max_strobe_frequency = Some(25.0);
+        ft.min_strobe_frequency = Some(1.0);
+        ft.strobe_dmx_offset = Some(128);
+        assert_eq!(ft.max_strobe_frequency(), Some(25.0));
+        assert_eq!(ft.min_strobe_frequency(), Some(1.0));
+        assert_eq!(ft.strobe_dmx_offset(), Some(128));
+    }
+
+    // ── Fixture ────────────────────────────────────────────────────
+
+    #[test]
+    fn fixture_new() {
+        let f = Fixture::new(
+            "par1".to_string(),
+            "RGB Par".to_string(),
+            1,
+            10,
+            vec!["front".to_string(), "wash".to_string()],
+        );
+        assert_eq!(f.name(), "par1");
+        assert_eq!(f.fixture_type(), "RGB Par");
+        assert_eq!(f.universe(), 1);
+        assert_eq!(f.start_channel(), 10);
+        assert_eq!(f.tags(), &["front", "wash"]);
+    }
+
+    #[test]
+    fn fixture_no_tags() {
+        let f = Fixture::new("spot1".to_string(), "Spot".to_string(), 2, 1, vec![]);
+        assert!(f.tags().is_empty());
+    }
+
+    // ── Group ──────────────────────────────────────────────────────
+
+    #[test]
+    fn group_new() {
+        let g = Group::new(
+            "front_wash".to_string(),
+            vec!["par1".to_string(), "par2".to_string()],
+        );
+        assert_eq!(g.name(), "front_wash");
+        assert_eq!(g.fixtures().len(), 2);
+        assert_eq!(g.fixtures()[0], "par1");
+    }
+
+    #[test]
+    fn group_empty_fixtures() {
+        let g = Group::new("empty".to_string(), vec![]);
+        assert!(g.fixtures().is_empty());
+    }
+
+    // ── Venue ──────────────────────────────────────────────────────
+
+    #[test]
+    fn venue_new() {
+        let mut fixtures = HashMap::new();
+        fixtures.insert(
+            "par1".to_string(),
+            Fixture::new("par1".to_string(), "RGB".to_string(), 1, 1, vec![]),
+        );
+
+        let mut groups = HashMap::new();
+        groups.insert(
+            "all".to_string(),
+            Group::new("all".to_string(), vec!["par1".to_string()]),
+        );
+
+        let v = Venue::new("Club".to_string(), fixtures, groups);
+        assert_eq!(v.name(), "Club");
+        assert_eq!(v.fixtures().len(), 1);
+        assert!(v.fixtures().contains_key("par1"));
+        assert_eq!(v.groups().len(), 1);
+        assert!(v.groups().contains_key("all"));
+    }
+
+    #[test]
+    fn venue_empty() {
+        let v = Venue::new("Empty".to_string(), HashMap::new(), HashMap::new());
+        assert_eq!(v.name(), "Empty");
+        assert!(v.fixtures().is_empty());
+        assert!(v.groups().is_empty());
+    }
+}

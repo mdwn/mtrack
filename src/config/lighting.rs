@@ -132,3 +132,158 @@ impl Directories {
         self.venues.as_deref()
     }
 }
+
+#[cfg(test)]
+impl Directories {
+    pub fn new(fixture_types: Option<String>, venues: Option<String>) -> Self {
+        Self {
+            fixture_types,
+            venues,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lighting_current_venue_some() {
+        let l = Lighting::new(Some("club".to_string()), None, None, None);
+        assert_eq!(l.current_venue(), Some("club"));
+    }
+
+    #[test]
+    fn lighting_current_venue_none() {
+        let l = Lighting::new(None, None, None, None);
+        assert_eq!(l.current_venue(), None);
+    }
+
+    #[test]
+    fn fixtures_default_empty() {
+        let l = Lighting::new(None, None, None, None);
+        assert!(l.fixtures().is_empty());
+    }
+
+    #[test]
+    fn fixtures_populated() {
+        let mut fixtures = HashMap::new();
+        fixtures.insert("par1".to_string(), "generic_par".to_string());
+        fixtures.insert("mover1".to_string(), "moving_head".to_string());
+        let l = Lighting::new(None, Some(fixtures), None, None);
+        let f = l.fixtures();
+        assert_eq!(f.len(), 2);
+        assert_eq!(f.get("par1").unwrap(), "generic_par");
+    }
+
+    #[test]
+    fn groups_default_empty() {
+        let l = Lighting::new(None, None, None, None);
+        assert!(l.groups().is_empty());
+    }
+
+    #[test]
+    fn groups_populated() {
+        let mut groups = HashMap::new();
+        groups.insert(
+            "front".to_string(),
+            LogicalGroup::new("front".to_string(), vec![GroupConstraint::MinCount(2)]),
+        );
+        let l = Lighting::new(None, None, Some(groups), None);
+        let g = l.groups();
+        assert_eq!(g.len(), 1);
+        let front = g.get("front").unwrap();
+        assert_eq!(front.name(), "front");
+        assert_eq!(front.constraints().len(), 1);
+    }
+
+    #[test]
+    fn directories_none() {
+        let l = Lighting::new(None, None, None, None);
+        assert!(l.directories().is_none());
+    }
+
+    #[test]
+    fn directories_some() {
+        let dirs = Directories::new(Some("/fixtures".to_string()), Some("/venues".to_string()));
+        let l = Lighting::new(None, None, None, Some(dirs));
+        let d = l.directories().unwrap();
+        assert_eq!(d.fixture_types(), Some("/fixtures"));
+        assert_eq!(d.venues(), Some("/venues"));
+    }
+
+    #[test]
+    fn directories_partial() {
+        let dirs = Directories::new(Some("/fixtures".to_string()), None);
+        assert_eq!(dirs.fixture_types(), Some("/fixtures"));
+        assert_eq!(dirs.venues(), None);
+    }
+
+    #[test]
+    fn logical_group_accessors() {
+        let group = LogicalGroup::new(
+            "wash".to_string(),
+            vec![
+                GroupConstraint::AllOf(vec!["par".to_string()]),
+                GroupConstraint::MaxCount(4),
+                GroupConstraint::AllowEmpty(true),
+            ],
+        );
+        assert_eq!(group.name(), "wash");
+        assert_eq!(group.constraints().len(), 3);
+    }
+
+    #[test]
+    fn group_constraint_variants() {
+        // Just ensure all variants construct properly.
+        let constraints = vec![
+            GroupConstraint::AllOf(vec!["a".to_string()]),
+            GroupConstraint::AnyOf(vec!["b".to_string()]),
+            GroupConstraint::Prefer(vec!["c".to_string()]),
+            GroupConstraint::MinCount(1),
+            GroupConstraint::MaxCount(10),
+            GroupConstraint::FallbackTo("other".to_string()),
+            GroupConstraint::AllowEmpty(false),
+        ];
+        assert_eq!(constraints.len(), 7);
+    }
+
+    #[test]
+    fn serde_round_trip() {
+        let yaml = r#"
+            current_venue: "main_stage"
+            fixtures:
+              par1: generic_par
+              mover1: moving_head
+            directories:
+              fixture_types: /path/to/fixtures
+              venues: /path/to/venues
+        "#;
+        let lighting: Lighting = config::Config::builder()
+            .add_source(config::File::from_str(yaml, config::FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+        assert_eq!(lighting.current_venue(), Some("main_stage"));
+        assert_eq!(lighting.fixtures().len(), 2);
+        let dirs = lighting.directories().unwrap();
+        assert_eq!(dirs.fixture_types(), Some("/path/to/fixtures"));
+        assert_eq!(dirs.venues(), Some("/path/to/venues"));
+    }
+
+    #[test]
+    fn serde_minimal() {
+        let yaml = "{}";
+        let lighting: Lighting = config::Config::builder()
+            .add_source(config::File::from_str(yaml, config::FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+        assert_eq!(lighting.current_venue(), None);
+        assert!(lighting.fixtures().is_empty());
+        assert!(lighting.groups().is_empty());
+        assert!(lighting.directories().is_none());
+    }
+}

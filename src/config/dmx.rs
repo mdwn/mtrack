@@ -154,4 +154,130 @@ mod tests {
         let dmx = Dmx::new(None, None, None, vec![], None);
         assert_eq!(dmx.get_ola_port(), None);
     }
+
+    #[test]
+    fn dimming_speed_modifier_default() {
+        let dmx = Dmx::new(None, None, None, vec![], None);
+        assert!(
+            (dmx.dimming_speed_modifier() - DEFAULT_DMX_DIMMING_SPEED_MODIFIER).abs()
+                < f64::EPSILON
+        );
+    }
+
+    #[test]
+    fn dimming_speed_modifier_custom() {
+        let dmx = Dmx::new(Some(2.5), None, None, vec![], None);
+        assert!((dmx.dimming_speed_modifier() - 2.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn playback_delay_default() {
+        let dmx = Dmx::new(None, None, None, vec![], None);
+        assert_eq!(dmx.playback_delay().unwrap(), DEFAULT_DMX_PLAYBACK_DELAY);
+    }
+
+    #[test]
+    fn playback_delay_valid() {
+        let dmx = Dmx::new(None, Some("500ms".to_string()), None, vec![], None);
+        assert_eq!(dmx.playback_delay().unwrap(), Duration::from_millis(500));
+    }
+
+    #[test]
+    fn playback_delay_invalid() {
+        let dmx = Dmx::new(None, Some("not_a_duration".to_string()), None, vec![], None);
+        assert!(dmx.playback_delay().is_err());
+    }
+
+    #[test]
+    fn null_client_default() {
+        let dmx = Dmx::new(None, None, None, vec![], None);
+        assert!(!dmx.null_client());
+    }
+
+    #[test]
+    fn universes_empty() {
+        let dmx = Dmx::new(None, None, None, vec![], None);
+        assert!(dmx.universes().is_empty());
+    }
+
+    #[test]
+    fn universes_populated() {
+        let dmx = Dmx::new(
+            None,
+            None,
+            None,
+            vec![
+                Universe::new(1, "front".to_string()),
+                Universe::new(2, "back".to_string()),
+            ],
+            None,
+        );
+        let unis = dmx.universes();
+        assert_eq!(unis.len(), 2);
+        assert_eq!(unis[0].universe(), 1);
+        assert_eq!(unis[0].name(), "front");
+        assert_eq!(unis[1].universe(), 2);
+        assert_eq!(unis[1].name(), "back");
+    }
+
+    #[test]
+    fn lighting_none() {
+        let dmx = Dmx::new(None, None, None, vec![], None);
+        assert!(dmx.lighting().is_none());
+    }
+
+    #[test]
+    fn lighting_some() {
+        let lighting = Lighting::new(Some("venue1".to_string()), None, None, None);
+        let dmx = Dmx::new(None, None, None, vec![], Some(lighting));
+        assert!(dmx.lighting().is_some());
+        assert_eq!(dmx.lighting().unwrap().current_venue(), Some("venue1"));
+    }
+
+    #[test]
+    fn serde_round_trip() {
+        let yaml = r#"
+            dim_speed_modifier: 1.5
+            playback_delay: "200ms"
+            ola_port: 9020
+            universes:
+              - universe: 1
+                name: main
+              - universe: 2
+                name: aux
+            null_client: true
+        "#;
+        let dmx: Dmx = config::Config::builder()
+            .add_source(config::File::from_str(yaml, config::FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+        assert!((dmx.dimming_speed_modifier() - 1.5).abs() < f64::EPSILON);
+        assert_eq!(dmx.playback_delay().unwrap(), Duration::from_millis(200));
+        assert_eq!(dmx.get_ola_port(), Some(9020));
+        assert_eq!(dmx.universes().len(), 2);
+        assert!(dmx.null_client());
+    }
+
+    #[test]
+    fn serde_minimal() {
+        let yaml = r#"
+            universes: []
+        "#;
+        let dmx: Dmx = config::Config::builder()
+            .add_source(config::File::from_str(yaml, config::FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+        assert!(
+            (dmx.dimming_speed_modifier() - DEFAULT_DMX_DIMMING_SPEED_MODIFIER).abs()
+                < f64::EPSILON
+        );
+        assert_eq!(dmx.playback_delay().unwrap(), DEFAULT_DMX_PLAYBACK_DELAY);
+        assert!(!dmx.null_client());
+        assert!(dmx.universes().is_empty());
+        assert!(dmx.lighting().is_none());
+    }
 }

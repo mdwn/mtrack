@@ -553,3 +553,456 @@ pub(crate) fn apply_parameters_to_effect_type(
 
     Ok(effect_type)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── color_to_normalized_params ─────────────────────────────────
+
+    #[test]
+    fn color_normalize_white() {
+        let c = Color {
+            r: 255,
+            g: 255,
+            b: 255,
+            w: None,
+        };
+        let (r, g, b) = color_to_normalized_params(&c);
+        assert!((r - 1.0).abs() < 1e-9);
+        assert!((g - 1.0).abs() < 1e-9);
+        assert!((b - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn color_normalize_black() {
+        let c = Color {
+            r: 0,
+            g: 0,
+            b: 0,
+            w: None,
+        };
+        let (r, g, b) = color_to_normalized_params(&c);
+        assert!((r - 0.0).abs() < 1e-9);
+        assert!((g - 0.0).abs() < 1e-9);
+        assert!((b - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn color_normalize_half() {
+        let c = Color {
+            r: 128,
+            g: 64,
+            b: 0,
+            w: None,
+        };
+        let (r, g, b) = color_to_normalized_params(&c);
+        assert!((r - 128.0 / 255.0).abs() < 1e-9);
+        assert!((g - 64.0 / 255.0).abs() < 1e-9);
+        assert!((b - 0.0).abs() < 1e-9);
+    }
+
+    // ── calculate_score_time ───────────────────────────────────────
+
+    #[test]
+    fn score_time_no_offset() {
+        let result = calculate_score_time(Duration::from_secs(10), 0.0);
+        assert_eq!(result, Duration::from_secs(10));
+    }
+
+    #[test]
+    fn score_time_with_offset() {
+        let result = calculate_score_time(Duration::from_secs(10), 3.0);
+        assert_eq!(result, Duration::from_secs(7));
+    }
+
+    #[test]
+    fn score_time_offset_larger_than_cue() {
+        // saturating_sub prevents underflow
+        let result = calculate_score_time(Duration::from_secs(2), 5.0);
+        assert_eq!(result, Duration::ZERO);
+    }
+
+    // ── clean_string_value ─────────────────────────────────────────
+
+    #[test]
+    fn clean_strips_quotes_and_lowercases() {
+        assert_eq!(clean_string_value("\"Forward\""), "forward");
+    }
+
+    #[test]
+    fn clean_trims_whitespace() {
+        assert_eq!(clean_string_value("  hello  "), "hello");
+    }
+
+    #[test]
+    fn clean_no_quotes() {
+        assert_eq!(clean_string_value("snap"), "snap");
+    }
+
+    #[test]
+    fn clean_mixed() {
+        assert_eq!(clean_string_value("\"  PingPong  \""), "pingpong");
+    }
+
+    // ── apply_parameters_to_effect_type — Static ───────────────────
+
+    #[test]
+    fn apply_static_dimmer() {
+        let et = EffectType::Static {
+            parameters: HashMap::new(),
+            duration: None,
+        };
+        let mut params = HashMap::new();
+        params.insert("dimmer".to_string(), "50%".to_string());
+        let result =
+            apply_parameters_to_effect_type(et, &params, &[], &None, Duration::ZERO, 0.0).unwrap();
+        if let EffectType::Static { parameters, .. } = result {
+            assert!((parameters["dimmer"] - 0.5).abs() < 1e-9);
+        } else {
+            panic!("Expected Static");
+        }
+    }
+
+    #[test]
+    fn apply_static_color() {
+        let et = EffectType::Static {
+            parameters: HashMap::new(),
+            duration: None,
+        };
+        let mut params = HashMap::new();
+        params.insert("color".to_string(), "#FF8000".to_string());
+        let result =
+            apply_parameters_to_effect_type(et, &params, &[], &None, Duration::ZERO, 0.0).unwrap();
+        if let EffectType::Static { parameters, .. } = result {
+            assert!((parameters["red"] - 1.0).abs() < 1e-9);
+            assert!((parameters["green"] - 128.0 / 255.0).abs() < 1e-2);
+            assert!((parameters["blue"] - 0.0).abs() < 1e-9);
+        } else {
+            panic!("Expected Static");
+        }
+    }
+
+    #[test]
+    fn apply_static_rgb_channels() {
+        let et = EffectType::Static {
+            parameters: HashMap::new(),
+            duration: None,
+        };
+        let mut params = HashMap::new();
+        params.insert("red".to_string(), "100%".to_string());
+        params.insert("green".to_string(), "50%".to_string());
+        params.insert("blue".to_string(), "0%".to_string());
+        let result =
+            apply_parameters_to_effect_type(et, &params, &[], &None, Duration::ZERO, 0.0).unwrap();
+        if let EffectType::Static { parameters, .. } = result {
+            assert!((parameters["red"] - 1.0).abs() < 1e-9);
+            assert!((parameters["green"] - 0.5).abs() < 1e-9);
+            assert!((parameters["blue"] - 0.0).abs() < 1e-9);
+        } else {
+            panic!("Expected Static");
+        }
+    }
+
+    #[test]
+    fn apply_static_duration() {
+        let et = EffectType::Static {
+            parameters: HashMap::new(),
+            duration: None,
+        };
+        let mut params = HashMap::new();
+        params.insert("duration".to_string(), "2s".to_string());
+        let result =
+            apply_parameters_to_effect_type(et, &params, &[], &None, Duration::ZERO, 0.0).unwrap();
+        if let EffectType::Static { duration, .. } = result {
+            assert_eq!(duration, Some(Duration::from_secs(2)));
+        } else {
+            panic!("Expected Static");
+        }
+    }
+
+    // ── apply_parameters_to_effect_type — ColorCycle ───────────────
+
+    #[test]
+    fn apply_color_cycle_colors() {
+        let et = EffectType::ColorCycle {
+            colors: Vec::new(),
+            speed: TempoAwareSpeed::Fixed(1.0),
+            direction: CycleDirection::Forward,
+            transition: CycleTransition::Snap,
+        };
+        let colors = vec!["red".to_string(), "#0000FF".to_string()];
+        let result = apply_parameters_to_effect_type(
+            et,
+            &HashMap::new(),
+            &colors,
+            &None,
+            Duration::ZERO,
+            0.0,
+        )
+        .unwrap();
+        if let EffectType::ColorCycle { colors, .. } = result {
+            assert_eq!(colors.len(), 2);
+            assert_eq!(colors[0].r, 255);
+            assert_eq!(colors[1].b, 255);
+        } else {
+            panic!("Expected ColorCycle");
+        }
+    }
+
+    #[test]
+    fn apply_color_cycle_direction() {
+        let et = EffectType::ColorCycle {
+            colors: Vec::new(),
+            speed: TempoAwareSpeed::Fixed(1.0),
+            direction: CycleDirection::Forward,
+            transition: CycleTransition::Snap,
+        };
+        let mut params = HashMap::new();
+        params.insert("direction".to_string(), "backward".to_string());
+        let result =
+            apply_parameters_to_effect_type(et, &params, &[], &None, Duration::ZERO, 0.0).unwrap();
+        if let EffectType::ColorCycle { direction, .. } = result {
+            assert_eq!(direction, CycleDirection::Backward);
+        } else {
+            panic!("Expected ColorCycle");
+        }
+    }
+
+    #[test]
+    fn apply_color_cycle_transition_crossfade() {
+        let et = EffectType::ColorCycle {
+            colors: Vec::new(),
+            speed: TempoAwareSpeed::Fixed(1.0),
+            direction: CycleDirection::Forward,
+            transition: CycleTransition::Snap,
+        };
+        let mut params = HashMap::new();
+        params.insert("transition".to_string(), "crossfade".to_string());
+        let result =
+            apply_parameters_to_effect_type(et, &params, &[], &None, Duration::ZERO, 0.0).unwrap();
+        if let EffectType::ColorCycle { transition, .. } = result {
+            assert_eq!(transition, CycleTransition::Fade);
+        } else {
+            panic!("Expected ColorCycle");
+        }
+    }
+
+    // ── apply_parameters_to_effect_type — Strobe ───────────────────
+
+    #[test]
+    fn apply_strobe_frequency() {
+        let et = EffectType::Strobe {
+            frequency: TempoAwareFrequency::Fixed(8.0),
+            duration: None,
+        };
+        let mut params = HashMap::new();
+        params.insert("frequency".to_string(), "15.0".to_string());
+        let result =
+            apply_parameters_to_effect_type(et, &params, &[], &None, Duration::ZERO, 0.0).unwrap();
+        if let EffectType::Strobe { frequency, .. } = result {
+            assert_eq!(frequency, TempoAwareFrequency::Fixed(15.0));
+        } else {
+            panic!("Expected Strobe");
+        }
+    }
+
+    #[test]
+    fn apply_strobe_rate_alias() {
+        let et = EffectType::Strobe {
+            frequency: TempoAwareFrequency::Fixed(8.0),
+            duration: None,
+        };
+        let mut params = HashMap::new();
+        params.insert("rate".to_string(), "20.0".to_string());
+        let result =
+            apply_parameters_to_effect_type(et, &params, &[], &None, Duration::ZERO, 0.0).unwrap();
+        if let EffectType::Strobe { frequency, .. } = result {
+            assert_eq!(frequency, TempoAwareFrequency::Fixed(20.0));
+        } else {
+            panic!("Expected Strobe");
+        }
+    }
+
+    // ── apply_parameters_to_effect_type — Pulse ────────────────────
+
+    #[test]
+    fn apply_pulse_params() {
+        let et = EffectType::Pulse {
+            base_level: 0.5,
+            pulse_amplitude: 0.5,
+            frequency: TempoAwareFrequency::Fixed(1.0),
+            duration: None,
+        };
+        let mut params = HashMap::new();
+        params.insert("base_level".to_string(), "20%".to_string());
+        params.insert("intensity".to_string(), "80%".to_string());
+        params.insert("frequency".to_string(), "4.0".to_string());
+        let result =
+            apply_parameters_to_effect_type(et, &params, &[], &None, Duration::ZERO, 0.0).unwrap();
+        if let EffectType::Pulse {
+            base_level,
+            pulse_amplitude,
+            frequency,
+            ..
+        } = result
+        {
+            assert!((base_level - 0.2).abs() < 1e-9);
+            assert!((pulse_amplitude - 0.8).abs() < 1e-9);
+            assert_eq!(frequency, TempoAwareFrequency::Fixed(4.0));
+        } else {
+            panic!("Expected Pulse");
+        }
+    }
+
+    // ── apply_parameters_to_effect_type — Chase ────────────────────
+
+    #[test]
+    fn apply_chase_params() {
+        let et = EffectType::Chase {
+            pattern: ChasePattern::Linear,
+            speed: TempoAwareSpeed::Fixed(1.0),
+            direction: ChaseDirection::LeftToRight,
+            transition: CycleTransition::Snap,
+        };
+        let mut params = HashMap::new();
+        params.insert("pattern".to_string(), "snake".to_string());
+        params.insert("direction".to_string(), "clockwise".to_string());
+        params.insert("transition".to_string(), "fade".to_string());
+        let result =
+            apply_parameters_to_effect_type(et, &params, &[], &None, Duration::ZERO, 0.0).unwrap();
+        if let EffectType::Chase {
+            pattern,
+            direction,
+            transition,
+            ..
+        } = result
+        {
+            assert_eq!(pattern, ChasePattern::Snake);
+            assert!(matches!(direction, ChaseDirection::Clockwise));
+            assert_eq!(transition, CycleTransition::Fade);
+        } else {
+            panic!("Expected Chase");
+        }
+    }
+
+    // ── apply_parameters_to_effect_type — Dimmer ───────────────────
+
+    #[test]
+    fn apply_dimmer_params() {
+        let et = EffectType::Dimmer {
+            start_level: 0.0,
+            end_level: 1.0,
+            duration: Duration::from_secs(1),
+            curve: DimmerCurve::Linear,
+        };
+        let mut params = HashMap::new();
+        params.insert("start".to_string(), "25%".to_string());
+        params.insert("end".to_string(), "75%".to_string());
+        params.insert("duration".to_string(), "3s".to_string());
+        params.insert("curve".to_string(), "exponential".to_string());
+        let result =
+            apply_parameters_to_effect_type(et, &params, &[], &None, Duration::ZERO, 0.0).unwrap();
+        if let EffectType::Dimmer {
+            start_level,
+            end_level,
+            duration,
+            curve,
+        } = result
+        {
+            assert!((start_level - 0.25).abs() < 1e-9);
+            assert!((end_level - 0.75).abs() < 1e-9);
+            assert_eq!(duration, Duration::from_secs(3));
+            assert!(matches!(curve, DimmerCurve::Exponential));
+        } else {
+            panic!("Expected Dimmer");
+        }
+    }
+
+    #[test]
+    fn apply_dimmer_invalid_curve() {
+        let et = EffectType::Dimmer {
+            start_level: 0.0,
+            end_level: 1.0,
+            duration: Duration::from_secs(1),
+            curve: DimmerCurve::Linear,
+        };
+        let mut params = HashMap::new();
+        params.insert("curve".to_string(), "invalid_curve".to_string());
+        let result = apply_parameters_to_effect_type(et, &params, &[], &None, Duration::ZERO, 0.0);
+        assert!(result.is_err());
+    }
+
+    // ── apply_parameters_to_effect_type — Rainbow ──────────────────
+
+    #[test]
+    fn apply_rainbow_params() {
+        let et = EffectType::Rainbow {
+            speed: TempoAwareSpeed::Fixed(1.0),
+            saturation: 1.0,
+            brightness: 1.0,
+        };
+        let mut params = HashMap::new();
+        params.insert("saturation".to_string(), "80%".to_string());
+        params.insert("brightness".to_string(), "60%".to_string());
+        params.insert("speed".to_string(), "2.0".to_string());
+        let result =
+            apply_parameters_to_effect_type(et, &params, &[], &None, Duration::ZERO, 0.0).unwrap();
+        if let EffectType::Rainbow {
+            speed,
+            saturation,
+            brightness,
+        } = result
+        {
+            assert_eq!(speed, TempoAwareSpeed::Fixed(2.0));
+            assert!((saturation - 0.8).abs() < 1e-9);
+            assert!((brightness - 0.6).abs() < 1e-9);
+        } else {
+            panic!("Expected Rainbow");
+        }
+    }
+
+    // ── Error cases ────────────────────────────────────────────────
+
+    #[test]
+    fn apply_invalid_direction_error() {
+        let et = EffectType::ColorCycle {
+            colors: Vec::new(),
+            speed: TempoAwareSpeed::Fixed(1.0),
+            direction: CycleDirection::Forward,
+            transition: CycleTransition::Snap,
+        };
+        let mut params = HashMap::new();
+        params.insert("direction".to_string(), "sideways".to_string());
+        let result = apply_parameters_to_effect_type(et, &params, &[], &None, Duration::ZERO, 0.0);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn apply_invalid_chase_direction_error() {
+        let et = EffectType::Chase {
+            pattern: ChasePattern::Linear,
+            speed: TempoAwareSpeed::Fixed(1.0),
+            direction: ChaseDirection::LeftToRight,
+            transition: CycleTransition::Snap,
+        };
+        let mut params = HashMap::new();
+        params.insert("direction".to_string(), "diagonal".to_string());
+        let result = apply_parameters_to_effect_type(et, &params, &[], &None, Duration::ZERO, 0.0);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn apply_invalid_transition_error() {
+        let et = EffectType::ColorCycle {
+            colors: Vec::new(),
+            speed: TempoAwareSpeed::Fixed(1.0),
+            direction: CycleDirection::Forward,
+            transition: CycleTransition::Snap,
+        };
+        let mut params = HashMap::new();
+        params.insert("transition".to_string(), "dissolve".to_string());
+        let result = apply_parameters_to_effect_type(et, &params, &[], &None, Duration::ZERO, 0.0);
+        assert!(result.is_err());
+    }
+}

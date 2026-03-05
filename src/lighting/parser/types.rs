@@ -184,3 +184,281 @@ pub struct LayerCommand {
     pub intensity: Option<f64>,
     pub speed: Option<f64>,
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+    use crate::lighting::effects::{
+        ChaseDirection, ChasePattern, Color, CycleDirection, CycleTransition, DimmerCurve,
+        TempoAwareFrequency, TempoAwareSpeed,
+    };
+
+    fn static_effect(duration: Option<Duration>) -> Effect {
+        Effect {
+            groups: vec![],
+            effect_type: EffectType::Static {
+                parameters: HashMap::new(),
+                duration,
+            },
+            layer: None,
+            blend_mode: None,
+            up_time: None,
+            hold_time: None,
+            down_time: None,
+            sequence_name: None,
+        }
+    }
+
+    fn timed_effect(
+        effect_type: EffectType,
+        up: Option<Duration>,
+        hold: Option<Duration>,
+        down: Option<Duration>,
+    ) -> Effect {
+        Effect {
+            groups: vec![],
+            effect_type,
+            layer: None,
+            blend_mode: None,
+            up_time: up,
+            hold_time: hold,
+            down_time: down,
+            sequence_name: None,
+        }
+    }
+
+    // ── Effect::total_duration ──────────────────────────────────────
+
+    #[test]
+    fn effect_perpetual_static_no_duration() {
+        let e = static_effect(None);
+        assert_eq!(e.total_duration(), None);
+    }
+
+    #[test]
+    fn effect_static_with_duration() {
+        let e = static_effect(Some(Duration::from_secs(5)));
+        // Static with duration uses: up + static_duration + down
+        assert_eq!(e.total_duration(), Some(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn effect_static_with_duration_and_up_down() {
+        let e = timed_effect(
+            EffectType::Static {
+                parameters: HashMap::new(),
+                duration: Some(Duration::from_secs(5)),
+            },
+            Some(Duration::from_secs(1)),
+            None, // hold_time not used; static_duration acts as hold
+            Some(Duration::from_secs(2)),
+        );
+        // up(1) + static_duration(5) + down(2) = 8
+        assert_eq!(e.total_duration(), Some(Duration::from_secs(8)));
+    }
+
+    #[test]
+    fn effect_dimmer_uses_effect_duration() {
+        let e = timed_effect(
+            EffectType::Dimmer {
+                start_level: 0.0,
+                end_level: 1.0,
+                duration: Duration::from_secs(3),
+                curve: DimmerCurve::Linear,
+            },
+            None,
+            None,
+            None,
+        );
+        assert_eq!(e.total_duration(), Some(Duration::from_secs(3)));
+    }
+
+    #[test]
+    fn effect_strobe_no_duration_perpetual() {
+        let e = timed_effect(
+            EffectType::Strobe {
+                frequency: TempoAwareFrequency::Fixed(10.0),
+                duration: None,
+            },
+            None,
+            None,
+            None,
+        );
+        assert_eq!(e.total_duration(), None);
+    }
+
+    #[test]
+    fn effect_pulse_no_duration_perpetual() {
+        let e = timed_effect(
+            EffectType::Pulse {
+                base_level: 0.0,
+                pulse_amplitude: 1.0,
+                frequency: TempoAwareFrequency::Fixed(2.0),
+                duration: None,
+            },
+            None,
+            None,
+            None,
+        );
+        assert_eq!(e.total_duration(), None);
+    }
+
+    #[test]
+    fn effect_color_cycle_perpetual() {
+        let e = timed_effect(
+            EffectType::ColorCycle {
+                colors: vec![Color::new(255, 0, 0)],
+                speed: TempoAwareSpeed::Fixed(1.0),
+                direction: CycleDirection::Forward,
+                transition: CycleTransition::Fade,
+            },
+            None,
+            None,
+            None,
+        );
+        assert_eq!(e.total_duration(), None);
+    }
+
+    #[test]
+    fn effect_chase_perpetual() {
+        let e = timed_effect(
+            EffectType::Chase {
+                pattern: ChasePattern::Linear,
+                speed: TempoAwareSpeed::Fixed(1.0),
+                direction: ChaseDirection::LeftToRight,
+                transition: CycleTransition::Snap,
+            },
+            None,
+            None,
+            None,
+        );
+        assert_eq!(e.total_duration(), None);
+    }
+
+    #[test]
+    fn effect_rainbow_perpetual() {
+        let e = timed_effect(
+            EffectType::Rainbow {
+                speed: TempoAwareSpeed::Fixed(0.5),
+                saturation: 1.0,
+                brightness: 1.0,
+            },
+            None,
+            None,
+            None,
+        );
+        assert_eq!(e.total_duration(), None);
+    }
+
+    #[test]
+    fn effect_with_up_hold_down() {
+        let e = timed_effect(
+            EffectType::Strobe {
+                frequency: TempoAwareFrequency::Fixed(10.0),
+                duration: Some(Duration::from_secs(5)),
+            },
+            Some(Duration::from_secs(1)),
+            Some(Duration::from_secs(3)),
+            Some(Duration::from_secs(1)),
+        );
+        // up(1) + hold(3) + down(1) = 5
+        assert_eq!(e.total_duration(), Some(Duration::from_secs(5)));
+    }
+
+    // ── Sequence::duration ─────────────────────────────────────────
+
+    #[test]
+    fn sequence_empty() {
+        let seq = Sequence {
+            cues: vec![],
+            bpm: 120.0,
+        };
+        assert_eq!(seq.duration(), Some(Duration::ZERO));
+    }
+
+    #[test]
+    fn sequence_all_perpetual() {
+        let seq = Sequence {
+            cues: vec![Cue {
+                time: Duration::ZERO,
+                effects: vec![static_effect(None)],
+                layer_commands: vec![],
+                stop_sequences: vec![],
+                start_sequences: vec![],
+            }],
+            bpm: 120.0,
+        };
+        assert_eq!(seq.duration(), None);
+    }
+
+    #[test]
+    fn sequence_single_timed_cue() {
+        let seq = Sequence {
+            cues: vec![Cue {
+                time: Duration::from_secs(2),
+                effects: vec![static_effect(Some(Duration::from_secs(3)))],
+                layer_commands: vec![],
+                stop_sequences: vec![],
+                start_sequences: vec![],
+            }],
+            bpm: 120.0,
+        };
+        // cue_time(2) + effect_duration(3) = 5
+        assert_eq!(seq.duration(), Some(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn sequence_max_completion_across_cues() {
+        let seq = Sequence {
+            cues: vec![
+                Cue {
+                    time: Duration::from_secs(0),
+                    effects: vec![static_effect(Some(Duration::from_secs(3)))],
+                    layer_commands: vec![],
+                    stop_sequences: vec![],
+                    start_sequences: vec![],
+                },
+                Cue {
+                    time: Duration::from_secs(5),
+                    effects: vec![static_effect(Some(Duration::from_secs(10)))],
+                    layer_commands: vec![],
+                    stop_sequences: vec![],
+                    start_sequences: vec![],
+                },
+            ],
+            bpm: 120.0,
+        };
+        // max(0+3, 5+10) = 15
+        assert_eq!(seq.duration(), Some(Duration::from_secs(15)));
+    }
+
+    #[test]
+    fn sequence_mixed_perpetual_and_timed() {
+        // Perpetual effects are ignored; only timed effects count
+        let seq = Sequence {
+            cues: vec![Cue {
+                time: Duration::from_secs(1),
+                effects: vec![
+                    static_effect(None),                         // perpetual, ignored
+                    static_effect(Some(Duration::from_secs(4))), // timed: 1+4=5
+                ],
+                layer_commands: vec![],
+                stop_sequences: vec![],
+                start_sequences: vec![],
+            }],
+            bpm: 120.0,
+        };
+        assert_eq!(seq.duration(), Some(Duration::from_secs(5)));
+    }
+
+    // ── LayerCommandType ───────────────────────────────────────────
+
+    #[test]
+    fn layer_command_type_equality() {
+        assert_eq!(LayerCommandType::Clear, LayerCommandType::Clear);
+        assert_ne!(LayerCommandType::Clear, LayerCommandType::Release);
+        assert_ne!(LayerCommandType::Freeze, LayerCommandType::Unfreeze);
+    }
+}

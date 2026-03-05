@@ -738,3 +738,293 @@ fn apply_pulse(
 
     Ok(Some(fixture_states))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── cycle_progress ───────────────────────────────────────────
+
+    #[test]
+    fn cycle_progress_at_zero() {
+        assert!((cycle_progress(Duration::ZERO, 1.0) - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn cycle_progress_halfway() {
+        let p = cycle_progress(Duration::from_secs_f64(0.5), 1.0);
+        assert!((p - 0.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn cycle_progress_wraps() {
+        let p = cycle_progress(Duration::from_secs_f64(1.5), 1.0);
+        assert!((p - 0.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn cycle_progress_quarter() {
+        let p = cycle_progress(Duration::from_secs_f64(0.25), 1.0);
+        assert!((p - 0.25).abs() < 1e-10);
+    }
+
+    #[test]
+    fn cycle_progress_fast_period() {
+        let p = cycle_progress(Duration::from_secs_f64(0.1), 0.2);
+        assert!((p - 0.5).abs() < 1e-10);
+    }
+
+    // ── phase ────────────────────────────────────────────────────
+
+    #[test]
+    fn phase_at_zero() {
+        assert!((phase(Duration::ZERO, 1.0) - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn phase_one_cycle() {
+        let p = phase(Duration::from_secs(1), 1.0);
+        assert!((p - 2.0 * std::f64::consts::PI).abs() < 1e-10);
+    }
+
+    #[test]
+    fn phase_half_cycle() {
+        let p = phase(Duration::from_secs_f64(0.5), 1.0);
+        assert!((p - std::f64::consts::PI).abs() < 1e-10);
+    }
+
+    #[test]
+    fn phase_2hz() {
+        let p = phase(Duration::from_secs(1), 2.0);
+        assert!((p - 4.0 * std::f64::consts::PI).abs() < 1e-10);
+    }
+
+    // ── calculate_color_indices ──────────────────────────────────
+
+    #[test]
+    fn color_indices_forward_start() {
+        let (idx, next, progress) = calculate_color_indices(0.0, 3, &CycleDirection::Forward);
+        assert_eq!(idx, 0);
+        assert_eq!(next, 1);
+        assert!(progress < 0.01);
+    }
+
+    #[test]
+    fn color_indices_forward_mid() {
+        // At 50% through a 3-color cycle, we're at color index 1.5
+        let (idx, next, progress) = calculate_color_indices(0.5, 3, &CycleDirection::Forward);
+        assert_eq!(idx, 1);
+        assert_eq!(next, 2);
+        assert!((progress - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn color_indices_forward_wraps() {
+        // Near the end, next should wrap to 0
+        let (idx, next, _) = calculate_color_indices(0.9, 3, &CycleDirection::Forward);
+        assert_eq!(idx, 2);
+        assert_eq!(next, 0);
+    }
+
+    #[test]
+    fn color_indices_backward_start() {
+        // At progress 0.0, backward means reversed_progress = 1.0
+        let (idx, next, progress) = calculate_color_indices(0.0, 3, &CycleDirection::Backward);
+        // At boundary: color_index = color_count, returns (count-1, count-1, 0.0)
+        assert_eq!(idx, 2);
+        assert_eq!(next, 2);
+        assert!(progress.abs() < 0.01);
+    }
+
+    #[test]
+    fn color_indices_backward_mid() {
+        let (idx, _, _) = calculate_color_indices(0.5, 3, &CycleDirection::Backward);
+        // reversed_progress = 0.5, 0.5 * 3 = 1.5, floor = 1
+        assert_eq!(idx, 1);
+    }
+
+    #[test]
+    fn color_indices_pingpong_start() {
+        let (idx, next, _) = calculate_color_indices(0.0, 4, &CycleDirection::PingPong);
+        assert_eq!(idx, 0);
+        assert_eq!(next, 1);
+    }
+
+    #[test]
+    fn color_indices_pingpong_midpoint() {
+        // At 0.5, ping_pong_progress = 1.0, should be at last color
+        let (idx, next, _) = calculate_color_indices(0.5, 4, &CycleDirection::PingPong);
+        assert_eq!(idx, 3);
+        assert_eq!(next, 3); // edge case at last color
+    }
+
+    #[test]
+    fn color_indices_pingpong_quarter() {
+        // At 0.25, ping_pong_progress = 0.5, 0.5 * 3 = 1.5
+        let (idx, next, progress) = calculate_color_indices(0.25, 4, &CycleDirection::PingPong);
+        assert_eq!(idx, 1);
+        assert_eq!(next, 2);
+        assert!((progress - 0.5).abs() < 0.01);
+    }
+
+    // ── calculate_fixture_order ──────────────────────────────────
+
+    #[test]
+    fn fixture_order_linear_forward() {
+        let order =
+            calculate_fixture_order(4, &ChasePattern::Linear, &ChaseDirection::LeftToRight, None);
+        assert_eq!(order, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn fixture_order_linear_reverse() {
+        let order =
+            calculate_fixture_order(4, &ChasePattern::Linear, &ChaseDirection::RightToLeft, None);
+        assert_eq!(order, vec![3, 2, 1, 0]);
+    }
+
+    #[test]
+    fn fixture_order_snake_forward() {
+        let order =
+            calculate_fixture_order(4, &ChasePattern::Snake, &ChaseDirection::LeftToRight, None);
+        // 0, 1, 2, 3, 2, 1
+        assert_eq!(order, vec![0, 1, 2, 3, 2, 1]);
+    }
+
+    #[test]
+    fn fixture_order_snake_reverse() {
+        let order =
+            calculate_fixture_order(4, &ChasePattern::Snake, &ChaseDirection::RightToLeft, None);
+        // Reversed: 1, 2, 3, 2, 1, 0
+        assert_eq!(order, vec![1, 2, 3, 2, 1, 0]);
+    }
+
+    #[test]
+    fn fixture_order_random_deterministic() {
+        let cue_time = Some(Duration::from_secs(10));
+        let order1 = calculate_fixture_order(
+            5,
+            &ChasePattern::Random,
+            &ChaseDirection::LeftToRight,
+            cue_time,
+        );
+        let order2 = calculate_fixture_order(
+            5,
+            &ChasePattern::Random,
+            &ChaseDirection::LeftToRight,
+            cue_time,
+        );
+        // Same cue_time → same order
+        assert_eq!(order1, order2);
+        // Should be a permutation of 0..5
+        let mut sorted = order1.clone();
+        sorted.sort();
+        assert_eq!(sorted, vec![0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn fixture_order_random_different_seeds() {
+        let order1 = calculate_fixture_order(
+            8,
+            &ChasePattern::Random,
+            &ChaseDirection::LeftToRight,
+            Some(Duration::from_secs(1)),
+        );
+        let order2 = calculate_fixture_order(
+            8,
+            &ChasePattern::Random,
+            &ChaseDirection::LeftToRight,
+            Some(Duration::from_secs(999)),
+        );
+        // Different seeds should (very likely) produce different orders
+        // Not guaranteed, but with 8 elements the chance of collision is ~1/40320
+        assert_ne!(order1, order2);
+    }
+
+    #[test]
+    fn fixture_order_linear_single() {
+        let order =
+            calculate_fixture_order(1, &ChasePattern::Linear, &ChaseDirection::LeftToRight, None);
+        assert_eq!(order, vec![0]);
+    }
+
+    // ── process_effect disabled ──────────────────────────────────
+
+    #[test]
+    fn process_effect_disabled() {
+        let registry = HashMap::new();
+        let mut effect = EffectInstance::new(
+            "test".to_string(),
+            EffectType::Static {
+                parameters: HashMap::new(),
+                duration: None,
+            },
+            vec![],
+            None,
+            None,
+            None,
+        );
+        effect.enabled = false;
+        let result =
+            process_effect(&registry, &effect, Duration::ZERO, Duration::ZERO, None).unwrap();
+        assert!(result.is_none());
+    }
+
+    // ── build_fixture_states ─────────────────────────────────────
+
+    #[test]
+    fn build_fixture_states_skips_unknown() {
+        let registry = HashMap::new(); // No fixtures registered
+        let effect = EffectInstance::new(
+            "test".to_string(),
+            EffectType::Static {
+                parameters: HashMap::new(),
+                duration: None,
+            },
+            vec!["unknown_fixture".to_string()],
+            None,
+            None,
+            None,
+        );
+        let states = build_fixture_states(&registry, &effect, |_profile| HashMap::new());
+        assert!(states.is_empty());
+    }
+
+    #[test]
+    fn build_fixture_states_with_fixture() {
+        let mut channels = HashMap::new();
+        channels.insert("dimmer".to_string(), 1u16);
+        let fixture = FixtureInfo::new(
+            "test_fix".to_string(),
+            1,
+            1,
+            "generic".to_string(),
+            channels,
+            None,
+        );
+        let mut registry = HashMap::new();
+        registry.insert("test_fix".to_string(), fixture);
+
+        let effect = EffectInstance::new(
+            "test".to_string(),
+            EffectType::Static {
+                parameters: HashMap::new(),
+                duration: None,
+            },
+            vec!["test_fix".to_string()],
+            None,
+            None,
+            None,
+        );
+        let states = build_fixture_states(&registry, &effect, |_profile| {
+            let mut cmds = HashMap::new();
+            cmds.insert(
+                "dimmer".to_string(),
+                ChannelState::new(1.0, EffectLayer::Foreground, BlendMode::Replace),
+            );
+            cmds
+        });
+        assert_eq!(states.len(), 1);
+        assert!(states.contains_key("test_fix"));
+    }
+}

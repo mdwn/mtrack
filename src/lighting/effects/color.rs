@@ -154,3 +154,225 @@ impl Color {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Color::new ──────────────────────────────────────────────────
+
+    #[test]
+    fn new_rgb() {
+        let c = Color::new(10, 20, 30);
+        assert_eq!(c.r, 10);
+        assert_eq!(c.g, 20);
+        assert_eq!(c.b, 30);
+        assert_eq!(c.w, None);
+    }
+
+    // ── Color::from_hex ─────────────────────────────────────────────
+
+    #[test]
+    fn from_hex_valid() {
+        let c = Color::from_hex("#FF8000").unwrap();
+        assert_eq!(c.r, 255);
+        assert_eq!(c.g, 128);
+        assert_eq!(c.b, 0);
+    }
+
+    #[test]
+    fn from_hex_without_hash() {
+        let c = Color::from_hex("00FF00").unwrap();
+        assert_eq!(c, Color::new(0, 255, 0));
+    }
+
+    #[test]
+    fn from_hex_black() {
+        let c = Color::from_hex("#000000").unwrap();
+        assert_eq!(c, Color::new(0, 0, 0));
+    }
+
+    #[test]
+    fn from_hex_white() {
+        let c = Color::from_hex("#FFFFFF").unwrap();
+        assert_eq!(c, Color::new(255, 255, 255));
+    }
+
+    #[test]
+    fn from_hex_lowercase() {
+        let c = Color::from_hex("#ff0000").unwrap();
+        assert_eq!(c, Color::new(255, 0, 0));
+    }
+
+    #[test]
+    fn from_hex_invalid_length() {
+        assert!(Color::from_hex("#FFF").is_err());
+        assert!(Color::from_hex("#FFFFFFF").is_err());
+    }
+
+    #[test]
+    fn from_hex_invalid_chars() {
+        assert!(Color::from_hex("#GGHHII").is_err());
+    }
+
+    // ── Color::from_name ────────────────────────────────────────────
+
+    #[test]
+    fn from_name_all_known_colors() {
+        let cases = vec![
+            ("red", (255, 0, 0)),
+            ("green", (0, 255, 0)),
+            ("blue", (0, 0, 255)),
+            ("white", (255, 255, 255)),
+            ("black", (0, 0, 0)),
+            ("yellow", (255, 255, 0)),
+            ("cyan", (0, 255, 255)),
+            ("magenta", (255, 0, 255)),
+            ("orange", (255, 165, 0)),
+            ("purple", (128, 0, 128)),
+        ];
+        for (name, (r, g, b)) in cases {
+            let c = Color::from_name(name).unwrap();
+            assert_eq!(c.r, r, "failed for {}", name);
+            assert_eq!(c.g, g, "failed for {}", name);
+            assert_eq!(c.b, b, "failed for {}", name);
+        }
+    }
+
+    #[test]
+    fn from_name_case_insensitive() {
+        assert_eq!(
+            Color::from_name("RED").unwrap(),
+            Color::from_name("red").unwrap()
+        );
+        assert_eq!(
+            Color::from_name("Blue").unwrap(),
+            Color::from_name("blue").unwrap()
+        );
+    }
+
+    #[test]
+    fn from_name_unknown() {
+        assert!(Color::from_name("chartreuse").is_err());
+    }
+
+    // ── Color::from_hsv ─────────────────────────────────────────────
+
+    #[test]
+    fn from_hsv_red() {
+        let c = Color::from_hsv(0.0, 1.0, 1.0);
+        assert_eq!(c.r, 255);
+        assert_eq!(c.g, 0);
+        assert_eq!(c.b, 0);
+    }
+
+    #[test]
+    fn from_hsv_green() {
+        let c = Color::from_hsv(120.0, 1.0, 1.0);
+        assert_eq!(c.r, 0);
+        assert_eq!(c.g, 255);
+        assert_eq!(c.b, 0);
+    }
+
+    #[test]
+    fn from_hsv_blue() {
+        let c = Color::from_hsv(240.0, 1.0, 1.0);
+        assert_eq!(c.r, 0);
+        assert_eq!(c.g, 0);
+        assert_eq!(c.b, 255);
+    }
+
+    #[test]
+    fn from_hsv_black() {
+        let c = Color::from_hsv(0.0, 0.0, 0.0);
+        assert_eq!(c.r, 0);
+        assert_eq!(c.g, 0);
+        assert_eq!(c.b, 0);
+    }
+
+    #[test]
+    fn from_hsv_white() {
+        let c = Color::from_hsv(0.0, 0.0, 1.0);
+        assert_eq!(c.r, 255);
+        assert_eq!(c.g, 255);
+        assert_eq!(c.b, 255);
+    }
+
+    #[test]
+    fn from_hsv_half_brightness() {
+        let c = Color::from_hsv(0.0, 1.0, 0.5);
+        assert_eq!(c.r, 127);
+        assert_eq!(c.g, 0);
+        assert_eq!(c.b, 0);
+    }
+
+    // ── Color::lerp ─────────────────────────────────────────────────
+
+    #[test]
+    fn lerp_at_zero() {
+        let a = Color::new(0, 0, 0);
+        let b = Color::new(255, 255, 255);
+        let result = a.lerp(&b, 0.0);
+        assert_eq!(result, a);
+    }
+
+    #[test]
+    fn lerp_at_one() {
+        let a = Color::new(0, 0, 0);
+        let b = Color::new(255, 255, 255);
+        let result = a.lerp(&b, 1.0);
+        assert_eq!(result, b);
+    }
+
+    #[test]
+    fn lerp_at_midpoint() {
+        let a = Color::new(0, 0, 0);
+        let b = Color::new(254, 254, 254);
+        let result = a.lerp(&b, 0.5);
+        assert_eq!(result.r, 127);
+        assert_eq!(result.g, 127);
+        assert_eq!(result.b, 127);
+    }
+
+    #[test]
+    fn lerp_clamps_below_zero() {
+        let a = Color::new(100, 100, 100);
+        let b = Color::new(200, 200, 200);
+        let result = a.lerp(&b, -1.0);
+        assert_eq!(result, a);
+    }
+
+    #[test]
+    fn lerp_clamps_above_one() {
+        let a = Color::new(100, 100, 100);
+        let b = Color::new(200, 200, 200);
+        let result = a.lerp(&b, 2.0);
+        assert_eq!(result, b);
+    }
+
+    #[test]
+    fn lerp_with_white_channels() {
+        let a = Color {
+            r: 0,
+            g: 0,
+            b: 0,
+            w: Some(0),
+        };
+        let b = Color {
+            r: 255,
+            g: 255,
+            b: 255,
+            w: Some(254),
+        };
+        let result = a.lerp(&b, 0.5);
+        assert_eq!(result.w, Some(127));
+    }
+
+    #[test]
+    fn lerp_no_white_channels() {
+        let a = Color::new(0, 0, 0);
+        let b = Color::new(255, 255, 255);
+        let result = a.lerp(&b, 0.5);
+        assert_eq!(result.w, None);
+    }
+}

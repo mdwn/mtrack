@@ -31,3 +31,39 @@ impl std::fmt::Display for EffectError {
 }
 
 impl std::error::Error for EffectError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_fixture() {
+        let e = EffectError::Fixture("par1 not found".to_string());
+        assert_eq!(format!("{}", e), "Invalid fixture: par1 not found");
+    }
+
+    #[test]
+    fn display_parameter() {
+        let e = EffectError::Parameter("out of range".to_string());
+        assert_eq!(format!("{}", e), "Invalid parameter: out of range");
+    }
+
+    #[test]
+    fn display_timing() {
+        let e = EffectError::Timing("negative duration".to_string());
+        assert_eq!(format!("{}", e), "Invalid timing: negative duration");
+    }
+
+    #[test]
+    fn is_std_error() {
+        let e: Box<dyn std::error::Error> = Box::new(EffectError::Fixture("test".to_string()));
+        assert!(e.to_string().contains("Invalid fixture"));
+    }
+
+    #[test]
+    fn debug_format() {
+        let e = EffectError::Fixture("test".to_string());
+        let debug = format!("{:?}", e);
+        assert!(debug.contains("Fixture"));
+    }
+}

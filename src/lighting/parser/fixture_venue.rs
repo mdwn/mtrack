@@ -345,3 +345,253 @@ fn parse_identifier_list(pair: Pair<Rule>) -> Vec<String> {
         .map(|id| id.as_str().trim().to_string())
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── parse_fixture_types ──────────────────────────────────────
+
+    #[test]
+    fn fixture_type_basic_channels() {
+        let content = r#"fixture_type "LED_Par" {
+    channels: 4
+    channel_map: {
+        "red": 1,
+        "green": 2,
+        "blue": 3,
+        "dimmer": 4
+    }
+}"#;
+        let result = parse_fixture_types(content).unwrap();
+        assert_eq!(result.len(), 1);
+        let ft = result.get("LED_Par").unwrap();
+        assert_eq!(ft.name(), "LED_Par");
+        assert_eq!(ft.channels().len(), 4);
+        assert_eq!(ft.channels().get("red"), Some(&1));
+        assert_eq!(ft.channels().get("dimmer"), Some(&4));
+    }
+
+    #[test]
+    fn fixture_type_strobe_properties() {
+        let content = r#"fixture_type "Strobe_Fix" {
+    channels: 2
+    channel_map: {
+        "dimmer": 1,
+        "strobe": 2
+    }
+    max_strobe_frequency: 25.0
+    min_strobe_frequency: 0.5
+    strobe_dmx_offset: 10
+}"#;
+        let result = parse_fixture_types(content).unwrap();
+        let ft = result.get("Strobe_Fix").unwrap();
+        assert_eq!(ft.max_strobe_frequency(), Some(25.0));
+        assert_eq!(ft.min_strobe_frequency(), Some(0.5));
+        assert_eq!(ft.strobe_dmx_offset(), Some(10));
+    }
+
+    #[test]
+    fn fixture_type_no_strobe() {
+        let content = r#"fixture_type "Simple" {
+    channels: 1
+    channel_map: {
+        "dimmer": 1
+    }
+}"#;
+        let result = parse_fixture_types(content).unwrap();
+        let ft = result.get("Simple").unwrap();
+        assert_eq!(ft.max_strobe_frequency(), None);
+        assert_eq!(ft.min_strobe_frequency(), None);
+        assert_eq!(ft.strobe_dmx_offset(), None);
+    }
+
+    #[test]
+    fn fixture_type_multiple() {
+        let content = r#"fixture_type "TypeA" {
+    channels: 1
+    channel_map: { "dimmer": 1 }
+}
+
+fixture_type "TypeB" {
+    channels: 3
+    channel_map: {
+        "red": 1,
+        "green": 2,
+        "blue": 3
+    }
+}"#;
+        let result = parse_fixture_types(content).unwrap();
+        assert_eq!(result.len(), 2);
+        assert!(result.contains_key("TypeA"));
+        assert!(result.contains_key("TypeB"));
+    }
+
+    #[test]
+    fn fixture_type_with_special_cases() {
+        let content = r#"fixture_type "RGBW" {
+    channels: 5
+    channel_map: {
+        "dimmer": 1,
+        "red": 2,
+        "green": 3,
+        "blue": 4,
+        "white": 5
+    }
+    special_cases: ["RGB", "Dimmer"]
+}"#;
+        let result = parse_fixture_types(content).unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(result.contains_key("RGBW"));
+    }
+
+    #[test]
+    fn fixture_type_empty_input() {
+        let result = parse_fixture_types("").unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn fixture_type_comments_only() {
+        let content = "# This is a comment\n# Another comment\n";
+        let result = parse_fixture_types(content).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn fixture_type_invalid_syntax() {
+        let content = "fixture_type {";
+        assert!(parse_fixture_types(content).is_err());
+    }
+
+    // ── parse_venues ─────────────────────────────────────────────
+
+    #[test]
+    fn venue_empty() {
+        let content = r#"venue "Empty Hall" { }"#;
+        let result = parse_venues(content).unwrap();
+        assert_eq!(result.len(), 1);
+        let v = result.get("Empty Hall").unwrap();
+        assert_eq!(v.name(), "Empty Hall");
+        assert!(v.fixtures().is_empty());
+        assert!(v.groups().is_empty());
+    }
+
+    #[test]
+    fn venue_with_fixtures() {
+        let content = r#"venue "Club" {
+    fixture "Spot1" GenericPar @ 1:1
+    fixture "Spot2" GenericPar @ 1:5
+    fixture "Spot3" GenericPar @ 2:1
+}"#;
+        let result = parse_venues(content).unwrap();
+        let v = result.get("Club").unwrap();
+        assert_eq!(v.fixtures().len(), 3);
+
+        let s1 = v.fixtures().get("Spot1").unwrap();
+        assert_eq!(s1.fixture_type(), "GenericPar");
+        assert_eq!(s1.universe(), 1);
+        assert_eq!(s1.start_channel(), 1);
+
+        let s3 = v.fixtures().get("Spot3").unwrap();
+        assert_eq!(s3.universe(), 2);
+        assert_eq!(s3.start_channel(), 1);
+    }
+
+    #[test]
+    fn venue_with_tags() {
+        let content = r#"venue "Tagged" {
+    fixture "Wash1" Par @ 1:1 tags ["front", "wash"]
+    fixture "Wash2" Par @ 1:5 tags ["back"]
+}"#;
+        let result = parse_venues(content).unwrap();
+        let v = result.get("Tagged").unwrap();
+        assert_eq!(v.fixtures().len(), 2);
+
+        let w1 = v.fixtures().get("Wash1").unwrap();
+        assert_eq!(w1.tags(), &["front", "wash"]);
+
+        let w2 = v.fixtures().get("Wash2").unwrap();
+        assert_eq!(w2.tags(), &["back"]);
+    }
+
+    #[test]
+    fn venue_with_groups() {
+        let content = r#"venue "Stage" {
+    fixture "L1" Par @ 1:1
+    fixture "L2" Par @ 1:5
+    fixture "L3" Par @ 1:9
+    group "front" = L1, L2, L3
+}"#;
+        let result = parse_venues(content).unwrap();
+        let v = result.get("Stage").unwrap();
+        assert_eq!(v.fixtures().len(), 3);
+        assert_eq!(v.groups().len(), 1);
+
+        let front = v.groups().get("front").unwrap();
+        assert_eq!(front.name(), "front");
+        assert_eq!(front.fixtures(), &["L1", "L2", "L3"]);
+    }
+
+    #[test]
+    fn venue_multiple() {
+        let content = r#"venue "A" {
+    fixture "F1" Par @ 1:1
+}
+
+venue "B" {
+    fixture "F2" Par @ 2:1
+}"#;
+        let result = parse_venues(content).unwrap();
+        assert_eq!(result.len(), 2);
+        assert!(result.contains_key("A"));
+        assert!(result.contains_key("B"));
+    }
+
+    #[test]
+    fn venue_with_comments() {
+        let content = r#"# Main venue
+venue "Main" {
+    fixture "F1" Par @ 1:1
+}"#;
+        let result = parse_venues(content).unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(result.contains_key("Main"));
+    }
+
+    #[test]
+    fn venue_empty_input() {
+        let result = parse_venues("").unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn venue_invalid_syntax() {
+        let content = "venue {";
+        assert!(parse_venues(content).is_err());
+    }
+
+    // ── parse_fixture_definition (standalone) ────────────────────
+
+    #[test]
+    fn fixture_definition_basic() {
+        let content = r#"fixture "MyLight" SomePar @ 3:17"#;
+        let mut pairs = LightingParser::parse(Rule::fixture, content).unwrap();
+        let pair = pairs.next().unwrap();
+        let f = parse_fixture_definition(pair).unwrap();
+        assert_eq!(f.name(), "MyLight");
+        assert_eq!(f.fixture_type(), "SomePar");
+        assert_eq!(f.universe(), 3);
+        assert_eq!(f.start_channel(), 17);
+    }
+
+    #[test]
+    fn fixture_definition_with_tags() {
+        let content = r#"fixture "Spot" GenericSpot @ 1:100 tags ["front", "spot"]"#;
+        let mut pairs = LightingParser::parse(Rule::fixture, content).unwrap();
+        let pair = pairs.next().unwrap();
+        let f = parse_fixture_definition(pair).unwrap();
+        assert_eq!(f.name(), "Spot");
+        assert_eq!(f.tags(), &["front", "spot"]);
+    }
+}

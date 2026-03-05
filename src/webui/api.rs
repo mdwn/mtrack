@@ -520,4 +520,51 @@ mod test {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0]["name"].as_str().unwrap(), "my_show");
     }
+
+    #[test]
+    fn find_light_files_deeply_nested() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path();
+
+        // Create a deeply nested structure
+        let deep_dir = base.join("a").join("b").join("c");
+        std::fs::create_dir_all(&deep_dir).unwrap();
+        std::fs::write(deep_dir.join("deep.light"), "content").unwrap();
+
+        let mut results = Vec::new();
+        find_light_files(base, base, &mut results).unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["path"].as_str().unwrap(), "a/b/c/deep.light");
+    }
+
+    #[test]
+    fn find_light_files_nonexistent_dir() {
+        let results_vec = &mut Vec::new();
+        let result = find_light_files(
+            std::path::Path::new("/nonexistent"),
+            std::path::Path::new("/nonexistent"),
+            results_vec,
+        );
+        // Non-dir path returns Ok(()) with empty results
+        assert!(result.is_ok());
+        assert!(results_vec.is_empty());
+    }
+
+    #[test]
+    fn find_light_files_multiple_extensions_only_light() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path();
+
+        std::fs::write(base.join("show.light"), "content").unwrap();
+        std::fs::write(base.join("show.yaml"), "content").unwrap();
+        std::fs::write(base.join("show.txt"), "content").unwrap();
+        std::fs::write(base.join("show.mid"), "content").unwrap();
+
+        let mut results = Vec::new();
+        find_light_files(base, base, &mut results).unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["name"].as_str().unwrap(), "show");
+    }
 }

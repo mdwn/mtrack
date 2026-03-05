@@ -1058,3 +1058,508 @@ impl TempoMap {
         duration
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── TimeSignature ──────────────────────────────────────────────
+
+    #[test]
+    fn time_signature_4_4() {
+        let ts = TimeSignature::new(4, 4);
+        assert!((ts.beats_per_measure() - 4.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn time_signature_3_4() {
+        let ts = TimeSignature::new(3, 4);
+        assert!((ts.beats_per_measure() - 3.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn time_signature_6_8() {
+        // 6/8 = 6 * 4/8 = 3 quarter-note beats
+        let ts = TimeSignature::new(6, 8);
+        assert!((ts.beats_per_measure() - 3.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn time_signature_7_8() {
+        // 7/8 = 7 * 4/8 = 3.5 quarter-note beats
+        let ts = TimeSignature::new(7, 8);
+        assert!((ts.beats_per_measure() - 3.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn time_signature_2_2() {
+        // 2/2 = 2 * 4/2 = 4 quarter-note beats
+        let ts = TimeSignature::new(2, 2);
+        assert!((ts.beats_per_measure() - 4.0).abs() < f64::EPSILON);
+    }
+
+    // ── TransitionCurve::bpm_at ────────────────────────────────────
+
+    #[test]
+    fn linear_bpm_at_start() {
+        assert!((TransitionCurve::Linear.bpm_at(0.0, 120.0, 180.0) - 120.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn linear_bpm_at_end() {
+        assert!((TransitionCurve::Linear.bpm_at(1.0, 120.0, 180.0) - 180.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn linear_bpm_at_midpoint() {
+        assert!((TransitionCurve::Linear.bpm_at(0.5, 120.0, 180.0) - 150.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn linear_bpm_clamped_below_zero() {
+        // t < 0 should clamp to 0
+        assert!((TransitionCurve::Linear.bpm_at(-0.5, 100.0, 200.0) - 100.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn linear_bpm_clamped_above_one() {
+        // t > 1 should clamp to 1
+        assert!((TransitionCurve::Linear.bpm_at(1.5, 100.0, 200.0) - 200.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn linear_bpm_deceleration() {
+        // BPM decreasing
+        assert!((TransitionCurve::Linear.bpm_at(0.5, 200.0, 100.0) - 150.0).abs() < f64::EPSILON);
+    }
+
+    // ── TransitionCurve::beats_in_duration ──────────────────────────
+
+    #[test]
+    fn beats_in_duration_constant_bpm() {
+        // When old_bpm == new_bpm, this reduces to bpm * dt / 60
+        let beats = TransitionCurve::Linear.beats_in_duration(120.0, 120.0, 4.0, 2.0);
+        // 120 bpm for 2 seconds = 4 beats
+        assert!((beats - 4.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn beats_in_duration_full_transition() {
+        // Full transition from 60 to 120 bpm over 4 seconds
+        // integral of (60 + 60*t/4)/60 from 0 to 4 = integral of (1 + t/4) from 0 to 4
+        // = [t + t^2/8] from 0 to 4 = 4 + 16/8 = 4 + 2 = 6
+        let beats = TransitionCurve::Linear.beats_in_duration(60.0, 120.0, 4.0, 4.0);
+        assert!((beats - 6.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn beats_in_duration_half_transition() {
+        // First 2 seconds of a 4-second transition from 60 to 120 bpm
+        // integral of (60 + 60*t/4)/60 from 0 to 2 = integral of (1 + t/4) from 0 to 2
+        // = [t + t^2/8] from 0 to 2 = 2 + 4/8 = 2 + 0.5 = 2.5
+        let beats = TransitionCurve::Linear.beats_in_duration(60.0, 120.0, 4.0, 2.0);
+        assert!((beats - 2.5).abs() < 1e-9);
+    }
+
+    // ── TransitionCurve::beats_in_remaining_transition ──────────────
+
+    #[test]
+    fn beats_in_remaining_from_start() {
+        // From start to end should equal beats_in_duration for full duration
+        let full = TransitionCurve::Linear.beats_in_duration(60.0, 120.0, 4.0, 4.0);
+        let remaining =
+            TransitionCurve::Linear.beats_in_remaining_transition(60.0, 120.0, 4.0, 0.0);
+        assert!((full - remaining).abs() < 1e-9);
+    }
+
+    #[test]
+    fn beats_in_remaining_from_midpoint() {
+        // Second half of transition: from elapsed=2 to total=4
+        // integral of (60 + 60*t/4)/60 from 2 to 4
+        // = [t + t^2/8] from 2 to 4 = (4+2) - (2+0.5) = 6 - 2.5 = 3.5
+        let remaining =
+            TransitionCurve::Linear.beats_in_remaining_transition(60.0, 120.0, 4.0, 2.0);
+        assert!((remaining - 3.5).abs() < 1e-9);
+    }
+
+    // ── TransitionCurve::solve_duration_for_beats ────────────────────
+
+    #[test]
+    fn solve_duration_constant_bpm() {
+        // Constant 120 bpm: 4 beats should take 2 seconds
+        let dt = TransitionCurve::Linear
+            .solve_duration_for_beats(120.0, 120.0, 4.0, 0.0, 4.0)
+            .unwrap();
+        assert!((dt - 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn solve_duration_round_trip() {
+        // beats_in_duration -> solve_duration_for_beats should round-trip
+        let old_bpm = 80.0;
+        let new_bpm = 160.0;
+        let total = 8.0;
+        let dt_input = 3.0;
+        let beats = TransitionCurve::Linear.beats_in_duration(old_bpm, new_bpm, total, dt_input);
+        let dt_output = TransitionCurve::Linear
+            .solve_duration_for_beats(old_bpm, new_bpm, total, 0.0, beats)
+            .unwrap();
+        assert!((dt_input - dt_output).abs() < 1e-6);
+    }
+
+    #[test]
+    fn solve_duration_zero_bpm_returns_none() {
+        // Both BPMs zero should return None
+        let result = TransitionCurve::Linear.solve_duration_for_beats(0.0, 0.0, 4.0, 0.0, 1.0);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn solve_duration_from_start_convenience() {
+        let a = TransitionCurve::Linear
+            .solve_duration_for_beats(120.0, 180.0, 4.0, 0.0, 2.0)
+            .unwrap();
+        let b = TransitionCurve::Linear
+            .solve_duration_for_beats_from_start(120.0, 180.0, 4.0, 2.0)
+            .unwrap();
+        assert!((a - b).abs() < 1e-12);
+    }
+
+    // ── TempoChangePosition ─────────────────────────────────────────
+
+    #[test]
+    fn tempo_change_position_time() {
+        let pos = TempoChangePosition::Time(Duration::from_secs(5));
+        assert_eq!(pos.absolute_time(), Some(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn tempo_change_position_measure_beat() {
+        let pos = TempoChangePosition::MeasureBeat(4, 1.0);
+        assert_eq!(pos.absolute_time(), None);
+    }
+
+    // ── TempoMap basics ─────────────────────────────────────────────
+
+    fn simple_tempo_map(bpm: f64) -> TempoMap {
+        TempoMap::new(Duration::ZERO, bpm, TimeSignature::new(4, 4), vec![])
+    }
+
+    #[test]
+    fn bpm_at_time_no_changes() {
+        let map = simple_tempo_map(120.0);
+        assert!((map.bpm_at_time(Duration::from_secs(10), 0.0) - 120.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn time_signature_at_time_no_changes() {
+        let map = simple_tempo_map(120.0);
+        assert_eq!(
+            map.time_signature_at_time(Duration::from_secs(10), 0.0),
+            TimeSignature::new(4, 4)
+        );
+    }
+
+    #[test]
+    fn bpm_at_time_with_snap_change() {
+        let map = TempoMap::new(
+            Duration::ZERO,
+            120.0,
+            TimeSignature::new(4, 4),
+            vec![TempoChange {
+                position: TempoChangePosition::Time(Duration::from_secs(5)),
+                original_measure_beat: None,
+                bpm: Some(180.0),
+                time_signature: None,
+                transition: TempoTransition::Snap,
+            }],
+        );
+        // Before the change
+        assert!((map.bpm_at_time(Duration::from_secs(3), 0.0) - 120.0).abs() < f64::EPSILON);
+        // After the change
+        assert!((map.bpm_at_time(Duration::from_secs(6), 0.0) - 180.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn time_signature_change() {
+        let map = TempoMap::new(
+            Duration::ZERO,
+            120.0,
+            TimeSignature::new(4, 4),
+            vec![TempoChange {
+                position: TempoChangePosition::Time(Duration::from_secs(8)),
+                original_measure_beat: None,
+                bpm: None,
+                time_signature: Some(TimeSignature::new(3, 4)),
+                transition: TempoTransition::Snap,
+            }],
+        );
+        assert_eq!(
+            map.time_signature_at_time(Duration::from_secs(3), 0.0),
+            TimeSignature::new(4, 4)
+        );
+        assert_eq!(
+            map.time_signature_at_time(Duration::from_secs(10), 0.0),
+            TimeSignature::new(3, 4)
+        );
+    }
+
+    // ── TempoMap::beats_to_duration ──────────────────────────────────
+
+    #[test]
+    fn beats_to_duration_constant_tempo() {
+        let map = simple_tempo_map(120.0);
+        // 4 beats at 120 bpm = 2 seconds
+        let dur = map.beats_to_duration(4.0, Duration::ZERO, 0.0);
+        assert!((dur.as_secs_f64() - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn beats_to_duration_across_tempo_change() {
+        let map = TempoMap::new(
+            Duration::ZERO,
+            60.0,
+            TimeSignature::new(4, 4),
+            vec![TempoChange {
+                position: TempoChangePosition::Time(Duration::from_secs(2)),
+                original_measure_beat: None,
+                bpm: Some(120.0),
+                time_signature: None,
+                transition: TempoTransition::Snap,
+            }],
+        );
+        // 3 beats starting at t=0: 60 bpm = 1 beat/sec
+        // First 2 beats take 2 seconds (reaching tempo change at t=2)
+        // Then 1 beat at 120 bpm = 0.5 seconds
+        // Total = 2.5 seconds
+        let dur = map.beats_to_duration(3.0, Duration::ZERO, 0.0);
+        assert!((dur.as_secs_f64() - 2.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn beats_to_duration_starting_after_change() {
+        let map = TempoMap::new(
+            Duration::ZERO,
+            60.0,
+            TimeSignature::new(4, 4),
+            vec![TempoChange {
+                position: TempoChangePosition::Time(Duration::from_secs(2)),
+                original_measure_beat: None,
+                bpm: Some(120.0),
+                time_signature: None,
+                transition: TempoTransition::Snap,
+            }],
+        );
+        // 4 beats starting at t=5 (after the tempo change to 120 bpm)
+        // 4 beats at 120 bpm = 2 seconds
+        let dur = map.beats_to_duration(4.0, Duration::from_secs(5), 0.0);
+        assert!((dur.as_secs_f64() - 2.0).abs() < 1e-6);
+    }
+
+    // ── TempoMap::measures_to_duration ────────────────────────────────
+
+    #[test]
+    fn measures_to_duration_constant_tempo_4_4() {
+        let map = simple_tempo_map(120.0);
+        // 2 measures of 4/4 at 120 bpm = 8 beats = 4 seconds
+        let dur = map.measures_to_duration(2.0, Duration::ZERO, 0.0);
+        assert!((dur.as_secs_f64() - 4.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn measures_to_duration_fractional() {
+        let map = simple_tempo_map(120.0);
+        // 0.5 measures of 4/4 at 120 bpm = 2 beats = 1 second
+        let dur = map.measures_to_duration(0.5, Duration::ZERO, 0.0);
+        assert!((dur.as_secs_f64() - 1.0).abs() < 1e-9);
+    }
+
+    // ── TempoMap::measure_to_time_with_offset ────────────────────────
+
+    #[test]
+    fn measure_to_time_measure_1_beat_1() {
+        let map = simple_tempo_map(120.0);
+        // Measure 1, beat 1, no offset = start_offset = 0
+        let t = map.measure_to_time_with_offset(1, 1.0, 0, 0.0).unwrap();
+        assert!((t.as_secs_f64() - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn measure_to_time_measure_2_beat_1() {
+        let map = simple_tempo_map(120.0);
+        // Measure 2, beat 1 = 4 beats at 120 bpm = 2 seconds
+        let t = map.measure_to_time_with_offset(2, 1.0, 0, 0.0).unwrap();
+        assert!((t.as_secs_f64() - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn measure_to_time_measure_1_beat_3() {
+        let map = simple_tempo_map(120.0);
+        // Measure 1, beat 3 = 2 beats at 120 bpm = 1 second
+        let t = map.measure_to_time_with_offset(1, 3.0, 0, 0.0).unwrap();
+        assert!((t.as_secs_f64() - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn measure_to_time_with_start_offset() {
+        let map = TempoMap::new(
+            Duration::from_secs(1),
+            120.0,
+            TimeSignature::new(4, 4),
+            vec![],
+        );
+        // Measure 1, beat 1 with start_offset=1s
+        let t = map.measure_to_time_with_offset(1, 1.0, 0, 0.0).unwrap();
+        assert!((t.as_secs_f64() - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn measure_to_time_invalid_measure_zero() {
+        let map = simple_tempo_map(120.0);
+        assert!(map.measure_to_time_with_offset(0, 1.0, 0, 0.0).is_none());
+    }
+
+    #[test]
+    fn measure_to_time_invalid_beat_below_one() {
+        let map = simple_tempo_map(120.0);
+        assert!(map.measure_to_time_with_offset(1, 0.5, 0, 0.0).is_none());
+    }
+
+    #[test]
+    fn measure_to_time_with_measure_offset() {
+        let map = simple_tempo_map(120.0);
+        // Measure 1 with offset 2 → effective playback measure 3
+        // = 8 beats at 120 bpm = 4 seconds
+        let t = map.measure_to_time_with_offset(1, 1.0, 2, 0.0).unwrap();
+        assert!((t.as_secs_f64() - 4.0).abs() < 1e-9);
+    }
+
+    // ── TempoMap construction with MeasureBeat positions ─────────────
+
+    #[test]
+    fn tempo_map_resolves_measure_beat_to_time() {
+        let map = TempoMap::new(
+            Duration::ZERO,
+            120.0,
+            TimeSignature::new(4, 4),
+            vec![TempoChange {
+                position: TempoChangePosition::MeasureBeat(3, 1.0),
+                original_measure_beat: None,
+                bpm: Some(60.0),
+                time_signature: None,
+                transition: TempoTransition::Snap,
+            }],
+        );
+        // Measure 3 beat 1 at 120 bpm 4/4 = 8 beats = 4 seconds
+        let change_time = map.changes[0].position.absolute_time().unwrap();
+        assert!((change_time.as_secs_f64() - 4.0).abs() < 1e-6);
+        // After the change
+        assert!((map.bpm_at_time(Duration::from_secs(5), 0.0) - 60.0).abs() < f64::EPSILON);
+    }
+
+    // ── TempoMap with offset_secs ────────────────────────────────────
+
+    #[test]
+    fn bpm_at_time_with_offset() {
+        let map = TempoMap::new(
+            Duration::ZERO,
+            120.0,
+            TimeSignature::new(4, 4),
+            vec![TempoChange {
+                position: TempoChangePosition::Time(Duration::from_secs(5)),
+                original_measure_beat: None,
+                bpm: Some(60.0),
+                time_signature: None,
+                transition: TempoTransition::Snap,
+            }],
+        );
+        // Without offset, change at t=5: at t=4 we should still be at 120
+        assert!((map.bpm_at_time(Duration::from_secs(4), 0.0) - 120.0).abs() < f64::EPSILON);
+        // With offset=3, change shifts to t=8: at t=6 we should still be at 120
+        assert!((map.bpm_at_time(Duration::from_secs(6), 3.0) - 120.0).abs() < f64::EPSILON);
+        // With offset=3, at t=9 we should be at 60
+        assert!((map.bpm_at_time(Duration::from_secs(9), 3.0) - 60.0).abs() < f64::EPSILON);
+    }
+
+    // ── TempoMap::playback_measures_to_duration ──────────────────────
+
+    #[test]
+    fn playback_measures_to_duration_constant() {
+        let map = simple_tempo_map(120.0);
+        // 4 playback measures of 4/4 at 120 bpm from score measure 1
+        // = 16 beats = 8 seconds
+        let dur = map.playback_measures_to_duration(1, 4.0, 0);
+        assert!((dur.as_secs_f64() - 8.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn playback_measures_to_duration_with_tempo_change() {
+        let map = TempoMap::new(
+            Duration::ZERO,
+            120.0,
+            TimeSignature::new(4, 4),
+            vec![TempoChange {
+                position: TempoChangePosition::MeasureBeat(3, 1.0),
+                original_measure_beat: Some((3, 1.0)),
+                bpm: Some(60.0),
+                time_signature: None,
+                transition: TempoTransition::Snap,
+            }],
+        );
+        // 4 measures from score measure 1:
+        // Measures 1-2 at 120 bpm: 8 beats = 4s
+        // Measures 3-4 at 60 bpm: 8 beats = 8s
+        // Total = 12s
+        let dur = map.playback_measures_to_duration(1, 4.0, 0);
+        assert!((dur.as_secs_f64() - 12.0).abs() < 1e-6);
+    }
+
+    // ── Multiple tempo changes ────────────────────────────────────────
+
+    #[test]
+    fn multiple_snap_tempo_changes() {
+        let map = TempoMap::new(
+            Duration::ZERO,
+            60.0,
+            TimeSignature::new(4, 4),
+            vec![
+                TempoChange {
+                    position: TempoChangePosition::Time(Duration::from_secs(4)),
+                    original_measure_beat: None,
+                    bpm: Some(120.0),
+                    time_signature: None,
+                    transition: TempoTransition::Snap,
+                },
+                TempoChange {
+                    position: TempoChangePosition::Time(Duration::from_secs(8)),
+                    original_measure_beat: None,
+                    bpm: Some(60.0),
+                    time_signature: None,
+                    transition: TempoTransition::Snap,
+                },
+            ],
+        );
+        assert!((map.bpm_at_time(Duration::from_secs(2), 0.0) - 60.0).abs() < f64::EPSILON);
+        assert!((map.bpm_at_time(Duration::from_secs(6), 0.0) - 120.0).abs() < f64::EPSILON);
+        assert!((map.bpm_at_time(Duration::from_secs(10), 0.0) - 60.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn beats_to_duration_across_multiple_changes() {
+        let map = TempoMap::new(
+            Duration::ZERO,
+            60.0, // 1 beat/sec
+            TimeSignature::new(4, 4),
+            vec![TempoChange {
+                position: TempoChangePosition::Time(Duration::from_secs(2)),
+                original_measure_beat: None,
+                bpm: Some(60.0), // same BPM (no change, effectively)
+                time_signature: None,
+                transition: TempoTransition::Snap,
+            }],
+        );
+        // 4 beats at constant 60 bpm = 4 seconds
+        let dur = map.beats_to_duration(4.0, Duration::ZERO, 0.0);
+        assert!((dur.as_secs_f64() - 4.0).abs() < 1e-6);
+    }
+}

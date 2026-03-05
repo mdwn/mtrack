@@ -120,3 +120,97 @@ impl SampleSourceTestExt for MemorySampleSource {
         self.current_index >= self.samples.len()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn new_basic() {
+        let src = MemorySampleSource::new(vec![1.0, 2.0, 3.0, 4.0], 2, 44100);
+        assert_eq!(src.channel_count(), 2);
+        assert_eq!(src.sample_rate(), 44100);
+        assert_eq!(src.bits_per_sample(), 32);
+        assert_eq!(src.sample_format(), crate::audio::SampleFormat::Float);
+    }
+
+    #[test]
+    fn next_sample_sequential() {
+        let mut src = MemorySampleSource::new(vec![0.5, 1.0, -0.5], 1, 44100);
+        assert_eq!(src.next_sample().unwrap(), Some(0.5));
+        assert_eq!(src.next_sample().unwrap(), Some(1.0));
+        assert_eq!(src.next_sample().unwrap(), Some(-0.5));
+        assert_eq!(src.next_sample().unwrap(), None); // EOF
+    }
+
+    #[test]
+    fn next_sample_empty() {
+        let mut src = MemorySampleSource::new(vec![], 1, 44100);
+        assert_eq!(src.next_sample().unwrap(), None);
+    }
+
+    #[test]
+    fn next_sample_eof_repeatable() {
+        let mut src = MemorySampleSource::new(vec![1.0], 1, 44100);
+        assert_eq!(src.next_sample().unwrap(), Some(1.0));
+        assert_eq!(src.next_sample().unwrap(), None);
+        assert_eq!(src.next_sample().unwrap(), None); // Still None
+    }
+
+    #[test]
+    fn volume_scaling() {
+        let samples = Arc::new(vec![1.0, 0.5, -1.0]);
+        let mut src = MemorySampleSource::from_shared(samples, 1, 44100, 0.5);
+        assert_eq!(src.next_sample().unwrap(), Some(0.5));
+        assert_eq!(src.next_sample().unwrap(), Some(0.25));
+        assert_eq!(src.next_sample().unwrap(), Some(-0.5));
+    }
+
+    #[test]
+    fn duration_mono() {
+        // 44100 samples, 1 channel, 44100 Hz → 1.0 second
+        let samples = vec![0.0; 44100];
+        let src = MemorySampleSource::new(samples, 1, 44100);
+        let dur = src.duration().unwrap();
+        assert!((dur.as_secs_f64() - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn duration_stereo() {
+        // 88200 samples, 2 channels, 44100 Hz → 1.0 second
+        let samples = vec![0.0; 88200];
+        let src = MemorySampleSource::new(samples, 2, 44100);
+        let dur = src.duration().unwrap();
+        assert!((dur.as_secs_f64() - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn clone_resets_position() {
+        let mut src = MemorySampleSource::new(vec![1.0, 2.0, 3.0], 1, 44100);
+        src.next_sample().unwrap(); // advance to position 1
+        src.next_sample().unwrap(); // advance to position 2
+
+        let mut cloned = src.clone();
+        // Cloned source should start from the beginning
+        assert_eq!(cloned.next_sample().unwrap(), Some(1.0));
+    }
+
+    #[test]
+    fn is_finished_tracking() {
+        let mut src = MemorySampleSource::new(vec![1.0], 1, 44100);
+        assert!(!src.is_finished());
+        src.next_sample().unwrap();
+        assert!(src.is_finished());
+    }
+
+    #[test]
+    fn from_shared_arc() {
+        let data = Arc::new(vec![0.1, 0.2, 0.3]);
+        let mut src = MemorySampleSource::from_shared(data.clone(), 1, 48000, 1.0);
+        assert_eq!(src.sample_rate(), 48000);
+        assert_eq!(src.next_sample().unwrap(), Some(0.1));
+        // Verify Arc sharing
+        assert_eq!(Arc::strong_count(&data), 2);
+    }
+}

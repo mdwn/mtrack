@@ -274,3 +274,452 @@ impl EffectInstance {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+    use crate::lighting::effects::color::Color;
+    use crate::lighting::effects::tempo_aware::{TempoAwareFrequency, TempoAwareSpeed};
+    use crate::lighting::effects::types::{
+        ChaseDirection, ChasePattern, CycleDirection, CycleTransition, DimmerCurve,
+    };
+
+    fn static_effect(duration: Option<Duration>) -> EffectType {
+        EffectType::Static {
+            parameters: HashMap::new(),
+            duration,
+        }
+    }
+
+    fn dimmer_effect(start: f64, end: f64, dur: Duration) -> EffectType {
+        EffectType::Dimmer {
+            start_level: start,
+            end_level: end,
+            duration: dur,
+            curve: DimmerCurve::Linear,
+        }
+    }
+
+    fn strobe_effect(duration: Option<Duration>) -> EffectType {
+        EffectType::Strobe {
+            frequency: TempoAwareFrequency::Fixed(10.0),
+            duration,
+        }
+    }
+
+    fn pulse_effect(duration: Option<Duration>) -> EffectType {
+        EffectType::Pulse {
+            base_level: 0.0,
+            pulse_amplitude: 1.0,
+            frequency: TempoAwareFrequency::Fixed(2.0),
+            duration,
+        }
+    }
+
+    fn color_cycle_effect() -> EffectType {
+        EffectType::ColorCycle {
+            colors: vec![Color::new(255, 0, 0), Color::new(0, 0, 255)],
+            speed: TempoAwareSpeed::Fixed(1.0),
+            direction: CycleDirection::Forward,
+            transition: CycleTransition::Fade,
+        }
+    }
+
+    fn chase_effect() -> EffectType {
+        EffectType::Chase {
+            pattern: ChasePattern::Linear,
+            speed: TempoAwareSpeed::Fixed(1.0),
+            direction: ChaseDirection::LeftToRight,
+            transition: CycleTransition::Snap,
+        }
+    }
+
+    fn rainbow_effect() -> EffectType {
+        EffectType::Rainbow {
+            speed: TempoAwareSpeed::Fixed(0.5),
+            saturation: 1.0,
+            brightness: 1.0,
+        }
+    }
+
+    fn make_instance(effect_type: EffectType) -> EffectInstance {
+        EffectInstance::new(
+            "test".to_string(),
+            effect_type,
+            vec!["fixture1".to_string()],
+            None,
+            None,
+            None,
+        )
+    }
+
+    fn make_instance_timed(
+        effect_type: EffectType,
+        up: Option<Duration>,
+        hold: Option<Duration>,
+        down: Option<Duration>,
+    ) -> EffectInstance {
+        EffectInstance::new(
+            "test".to_string(),
+            effect_type,
+            vec!["fixture1".to_string()],
+            up,
+            hold,
+            down,
+        )
+    }
+
+    // ── is_permanent ───────────────────────────────────────────────
+
+    #[test]
+    fn is_permanent_static_no_duration() {
+        let inst = make_instance(static_effect(None));
+        assert!(inst.is_permanent());
+    }
+
+    #[test]
+    fn is_permanent_static_with_duration() {
+        let inst = make_instance(static_effect(Some(Duration::from_secs(5))));
+        assert!(!inst.is_permanent());
+    }
+
+    #[test]
+    fn is_permanent_static_with_timing_params() {
+        let inst = make_instance_timed(
+            static_effect(None),
+            Some(Duration::from_secs(1)),
+            None,
+            None,
+        );
+        assert!(!inst.is_permanent()); // has up_time
+    }
+
+    #[test]
+    fn is_permanent_dimmer_always() {
+        let inst = make_instance(dimmer_effect(0.0, 1.0, Duration::from_secs(2)));
+        assert!(inst.is_permanent());
+    }
+
+    #[test]
+    fn is_permanent_strobe_false() {
+        let inst = make_instance(strobe_effect(None));
+        assert!(!inst.is_permanent());
+    }
+
+    #[test]
+    fn is_permanent_color_cycle_false() {
+        let inst = make_instance(color_cycle_effect());
+        assert!(!inst.is_permanent());
+    }
+
+    #[test]
+    fn is_permanent_chase_false() {
+        let inst = make_instance(chase_effect());
+        assert!(!inst.is_permanent());
+    }
+
+    #[test]
+    fn is_permanent_rainbow_false() {
+        let inst = make_instance(rainbow_effect());
+        assert!(!inst.is_permanent());
+    }
+
+    #[test]
+    fn is_permanent_pulse_false() {
+        let inst = make_instance(pulse_effect(None));
+        assert!(!inst.is_permanent());
+    }
+
+    // ── new — timing defaults ──────────────────────────────────────
+
+    #[test]
+    fn new_static_no_duration_indefinite() {
+        let inst = make_instance(static_effect(None));
+        assert!(inst.up_time.is_none());
+        assert!(inst.hold_time.is_none());
+        assert!(inst.down_time.is_none());
+    }
+
+    #[test]
+    fn new_static_with_duration_sets_hold() {
+        let inst = make_instance(static_effect(Some(Duration::from_secs(5))));
+        assert_eq!(inst.hold_time, Some(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn new_dimmer_no_default_timing() {
+        let inst = make_instance(dimmer_effect(0.0, 1.0, Duration::from_secs(3)));
+        assert!(inst.up_time.is_none());
+        assert!(inst.hold_time.is_none());
+        assert!(inst.down_time.is_none());
+    }
+
+    #[test]
+    fn new_defaults_layer_and_blend() {
+        let inst = make_instance(static_effect(None));
+        assert_eq!(inst.layer, EffectLayer::Background);
+        assert_eq!(inst.blend_mode, BlendMode::Replace);
+        assert_eq!(inst.priority, 0);
+        assert!(inst.enabled);
+    }
+
+    #[test]
+    fn new_with_user_timing_overrides() {
+        let inst = make_instance_timed(
+            static_effect(None),
+            Some(Duration::from_secs(1)),
+            Some(Duration::from_secs(2)),
+            Some(Duration::from_secs(1)),
+        );
+        assert_eq!(inst.up_time, Some(Duration::from_secs(1)));
+        assert_eq!(inst.hold_time, Some(Duration::from_secs(2)));
+        assert_eq!(inst.down_time, Some(Duration::from_secs(1)));
+    }
+
+    // ── calculate_crossfade_multiplier ─────────────────────────────
+
+    #[test]
+    fn crossfade_indefinite_always_one() {
+        let inst = make_instance(static_effect(None));
+        assert!((inst.calculate_crossfade_multiplier(Duration::ZERO) - 1.0).abs() < 1e-9);
+        assert!(
+            (inst.calculate_crossfade_multiplier(Duration::from_secs(1000)) - 1.0).abs() < 1e-9
+        );
+    }
+
+    #[test]
+    fn crossfade_with_hold_only() {
+        let inst = make_instance_timed(
+            static_effect(None),
+            None,
+            Some(Duration::from_secs(2)),
+            None,
+        );
+        // hold_time=2s, no down_time → hold_end=2s, total_end=2s
+        // At t=0 → hold phase → 1.0
+        assert!((inst.calculate_crossfade_multiplier(Duration::ZERO) - 1.0).abs() < 1e-9);
+        // At t=1s → hold phase → 1.0
+        assert!((inst.calculate_crossfade_multiplier(Duration::from_secs(1)) - 1.0).abs() < 1e-9);
+        // At t=3s → past total_end → 0.0
+        assert!((inst.calculate_crossfade_multiplier(Duration::from_secs(3)) - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn crossfade_fade_in_phase() {
+        let inst = make_instance_timed(
+            static_effect(None),
+            Some(Duration::from_secs(2)),
+            Some(Duration::from_secs(2)),
+            None,
+        );
+        // At t=1s, midway through 2s fade-in → 0.5
+        let mult = inst.calculate_crossfade_multiplier(Duration::from_secs(1));
+        assert!((mult - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn crossfade_hold_phase_after_fade_in() {
+        let inst = make_instance_timed(
+            static_effect(None),
+            Some(Duration::from_secs(1)),
+            Some(Duration::from_secs(2)),
+            None,
+        );
+        // After 1s fade-in, at t=2s → in hold phase → 1.0
+        let mult = inst.calculate_crossfade_multiplier(Duration::from_secs(2));
+        assert!((mult - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn crossfade_fade_out_phase() {
+        let inst = make_instance_timed(
+            static_effect(None),
+            None,
+            Some(Duration::from_secs(1)),
+            Some(Duration::from_secs(2)),
+        );
+        // hold=1s, down=2s → hold_end=1s, total_end=3s
+        // At t=2s → 1s into 2s fade-out → 0.5
+        let mult = inst.calculate_crossfade_multiplier(Duration::from_secs(2));
+        assert!((mult - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn crossfade_after_total_end() {
+        let inst = make_instance_timed(
+            static_effect(None),
+            Some(Duration::from_secs(1)),
+            Some(Duration::from_secs(1)),
+            Some(Duration::from_secs(1)),
+        );
+        // total = 3s, at t=4s → 0.0
+        let mult = inst.calculate_crossfade_multiplier(Duration::from_secs(4));
+        assert!((mult - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn crossfade_fade_in_then_indefinite() {
+        let inst = make_instance_timed(
+            static_effect(None),
+            Some(Duration::from_secs(2)),
+            None,
+            None,
+        );
+        // Fade-in only, no hold/down → indefinite after fade-in
+        // At t=1s → 0.5 (fade-in)
+        assert!((inst.calculate_crossfade_multiplier(Duration::from_secs(1)) - 0.5).abs() < 1e-9);
+        // At t=3s → past fade-in, indefinite → 1.0
+        assert!((inst.calculate_crossfade_multiplier(Duration::from_secs(3)) - 1.0).abs() < 1e-9);
+    }
+
+    // ── total_duration ─────────────────────────────────────────────
+
+    #[test]
+    fn total_duration_perpetual_static() {
+        let inst = make_instance(static_effect(None));
+        assert_eq!(inst.total_duration(), None);
+    }
+
+    #[test]
+    fn total_duration_perpetual_color_cycle() {
+        let inst = make_instance(color_cycle_effect());
+        assert_eq!(inst.total_duration(), None);
+    }
+
+    #[test]
+    fn total_duration_perpetual_chase() {
+        let inst = make_instance(chase_effect());
+        assert_eq!(inst.total_duration(), None);
+    }
+
+    #[test]
+    fn total_duration_perpetual_rainbow() {
+        let inst = make_instance(rainbow_effect());
+        assert_eq!(inst.total_duration(), None);
+    }
+
+    #[test]
+    fn total_duration_perpetual_strobe_no_duration() {
+        let inst = make_instance(strobe_effect(None));
+        assert_eq!(inst.total_duration(), None);
+    }
+
+    #[test]
+    fn total_duration_perpetual_pulse_no_duration() {
+        let inst = make_instance(pulse_effect(None));
+        assert_eq!(inst.total_duration(), None);
+    }
+
+    #[test]
+    fn total_duration_dimmer_uses_effect_duration() {
+        let inst = make_instance(dimmer_effect(0.0, 1.0, Duration::from_secs(3)));
+        assert_eq!(inst.total_duration(), Some(Duration::from_secs(3)));
+    }
+
+    #[test]
+    fn total_duration_timed_static() {
+        let inst = make_instance_timed(
+            static_effect(None),
+            Some(Duration::from_secs(1)),
+            Some(Duration::from_secs(2)),
+            Some(Duration::from_secs(1)),
+        );
+        assert_eq!(inst.total_duration(), Some(Duration::from_secs(4)));
+    }
+
+    #[test]
+    fn total_duration_strobe_with_duration() {
+        // Strobe with duration → hold_time gets set via new()
+        let inst = make_instance(strobe_effect(Some(Duration::from_secs(5))));
+        assert_eq!(inst.total_duration(), Some(Duration::from_secs(5)));
+    }
+
+    // ── has_reached_terminal_state ─────────────────────────────────
+
+    #[test]
+    fn terminal_dimmer_zero_duration() {
+        let inst = make_instance(dimmer_effect(0.0, 1.0, Duration::ZERO));
+        assert!(inst.has_reached_terminal_state(Duration::ZERO));
+    }
+
+    #[test]
+    fn terminal_dimmer_at_end() {
+        let inst = make_instance(dimmer_effect(0.0, 1.0, Duration::from_secs(2)));
+        assert!(inst.has_reached_terminal_state(Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn terminal_dimmer_not_yet() {
+        let inst = make_instance(dimmer_effect(0.0, 1.0, Duration::from_secs(2)));
+        assert!(!inst.has_reached_terminal_state(Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn terminal_static_perpetual_never() {
+        let inst = make_instance(static_effect(None));
+        assert!(!inst.has_reached_terminal_state(Duration::from_secs(1000)));
+    }
+
+    #[test]
+    fn terminal_static_timed() {
+        let inst = make_instance(static_effect(Some(Duration::from_secs(3))));
+        assert!(!inst.has_reached_terminal_state(Duration::from_secs(2)));
+        assert!(inst.has_reached_terminal_state(Duration::from_secs(3)));
+    }
+
+    #[test]
+    fn terminal_strobe_no_duration_never() {
+        let inst = make_instance(strobe_effect(None));
+        assert!(!inst.has_reached_terminal_state(Duration::from_secs(1000)));
+    }
+
+    #[test]
+    fn terminal_strobe_with_duration() {
+        let inst = make_instance(strobe_effect(Some(Duration::from_secs(2))));
+        assert!(!inst.has_reached_terminal_state(Duration::from_secs(1)));
+        assert!(inst.has_reached_terminal_state(Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn terminal_pulse_no_duration_never() {
+        let inst = make_instance(pulse_effect(None));
+        assert!(!inst.has_reached_terminal_state(Duration::from_secs(1000)));
+    }
+
+    #[test]
+    fn terminal_color_cycle_perpetual_never() {
+        let inst = make_instance(color_cycle_effect());
+        assert!(!inst.has_reached_terminal_state(Duration::from_secs(1000)));
+    }
+
+    #[test]
+    fn terminal_chase_perpetual_never() {
+        let inst = make_instance(chase_effect());
+        assert!(!inst.has_reached_terminal_state(Duration::from_secs(1000)));
+    }
+
+    #[test]
+    fn terminal_rainbow_perpetual_never() {
+        let inst = make_instance(rainbow_effect());
+        assert!(!inst.has_reached_terminal_state(Duration::from_secs(1000)));
+    }
+
+    // ── builder helpers ────────────────────────────────────────────
+
+    #[test]
+    fn with_priority_sets_priority() {
+        let inst = make_instance(static_effect(None)).with_priority(5);
+        assert_eq!(inst.priority, 5);
+    }
+
+    #[test]
+    fn with_timing_sets_fields() {
+        let now = Instant::now();
+        let inst = make_instance(static_effect(None))
+            .with_timing(Some(now), Some(Duration::from_secs(10)));
+        assert_eq!(inst.start_time, Some(now));
+        assert_eq!(inst.hold_time, Some(Duration::from_secs(10)));
+    }
+}

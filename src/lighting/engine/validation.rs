@@ -140,6 +140,12 @@ pub(crate) fn validate_effect(
     Ok(())
 }
 
+#[cfg(test)]
+fn make_fixture(name: &str, fixture_type: &str, channels: Vec<(&str, u16)>) -> FixtureInfo {
+    let ch: HashMap<String, u16> = channels.iter().map(|(n, o)| (n.to_string(), *o)).collect();
+    FixtureInfo::new(name.to_string(), 1, 1, fixture_type.to_string(), ch, None)
+}
+
 /// Validate that the effect is compatible with fixture special cases
 pub(crate) fn validate_effect_compatibility(
     fixture_registry: &HashMap<String, FixtureInfo>,
@@ -194,4 +200,282 @@ pub(crate) fn validate_effect_compatibility(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+    use crate::lighting::effects::{
+        ChaseDirection, ChasePattern, Color, CycleDirection, CycleTransition, TempoAwareFrequency,
+        TempoAwareSpeed,
+    };
+
+    fn rgb_fixture(name: &str) -> FixtureInfo {
+        make_fixture(name, "RGB Par", vec![("red", 1), ("green", 2), ("blue", 3)])
+    }
+
+    fn dimmer_fixture(name: &str) -> FixtureInfo {
+        make_fixture(name, "Dimmer", vec![("dimmer", 1)])
+    }
+
+    fn strobe_fixture(name: &str) -> FixtureInfo {
+        make_fixture(name, "Strobe Unit", vec![("strobe", 1)])
+    }
+
+    fn make_effect_instance(effect_type: EffectType, fixtures: Vec<&str>) -> EffectInstance {
+        EffectInstance::new(
+            "test".to_string(),
+            effect_type,
+            fixtures.into_iter().map(|s| s.to_string()).collect(),
+            None,
+            None,
+            None,
+        )
+    }
+
+    fn registry_with(fixtures: Vec<FixtureInfo>) -> HashMap<String, FixtureInfo> {
+        fixtures.into_iter().map(|f| (f.name.clone(), f)).collect()
+    }
+
+    // ── validate_fixture_capabilities ──────────────────────────────
+
+    #[test]
+    fn valid_rgb_fixture() {
+        let f = rgb_fixture("par1");
+        assert!(validate_fixture_capabilities(&f).is_ok());
+    }
+
+    #[test]
+    fn rgb_fixture_missing_red() {
+        let f = make_fixture("par1", "RGB Par", vec![("green", 2), ("blue", 3)]);
+        assert!(validate_fixture_capabilities(&f).is_err());
+    }
+
+    #[test]
+    fn rgb_fixture_missing_green() {
+        let f = make_fixture("par1", "RGB Par", vec![("red", 1), ("blue", 3)]);
+        assert!(validate_fixture_capabilities(&f).is_err());
+    }
+
+    #[test]
+    fn rgb_fixture_missing_blue() {
+        let f = make_fixture("par1", "RGB Par", vec![("red", 1), ("green", 2)]);
+        assert!(validate_fixture_capabilities(&f).is_err());
+    }
+
+    #[test]
+    fn strobe_fixture_missing_strobe_channel() {
+        let f = make_fixture("s1", "Strobe Unit", vec![("dimmer", 1)]);
+        assert!(validate_fixture_capabilities(&f).is_err());
+    }
+
+    #[test]
+    fn moving_head_missing_pan() {
+        let f = make_fixture("mh1", "MovingHead", vec![("tilt", 2)]);
+        assert!(validate_fixture_capabilities(&f).is_err());
+    }
+
+    #[test]
+    fn moving_head_missing_tilt() {
+        let f = make_fixture("mh1", "MovingHead", vec![("pan", 1)]);
+        assert!(validate_fixture_capabilities(&f).is_err());
+    }
+
+    #[test]
+    fn non_special_type_always_valid() {
+        let f = make_fixture("generic", "Generic", vec![("intensity", 1)]);
+        assert!(validate_fixture_capabilities(&f).is_ok());
+    }
+
+    // ── validate_effect — fixture existence ────────────────────────
+
+    #[test]
+    fn validate_effect_unknown_fixture() {
+        let registry = registry_with(vec![rgb_fixture("par1")]);
+        let effect = make_effect_instance(
+            EffectType::Static {
+                parameters: HashMap::new(),
+                duration: None,
+            },
+            vec!["nonexistent"],
+        );
+        assert!(validate_effect(&registry, &effect).is_err());
+    }
+
+    #[test]
+    fn validate_effect_known_fixture() {
+        let registry = registry_with(vec![rgb_fixture("par1")]);
+        let effect = make_effect_instance(
+            EffectType::Static {
+                parameters: HashMap::new(),
+                duration: None,
+            },
+            vec!["par1"],
+        );
+        assert!(validate_effect(&registry, &effect).is_ok());
+    }
+
+    // ── validate_effect — parameter ranges ─────────────────────────
+
+    #[test]
+    fn validate_static_param_out_of_range() {
+        let registry = registry_with(vec![rgb_fixture("par1")]);
+        let mut params = HashMap::new();
+        params.insert("red".to_string(), 1.5); // > 1.0
+        let effect = make_effect_instance(
+            EffectType::Static {
+                parameters: params,
+                duration: None,
+            },
+            vec!["par1"],
+        );
+        assert!(validate_effect(&registry, &effect).is_err());
+    }
+
+    #[test]
+    fn validate_static_param_negative() {
+        let registry = registry_with(vec![rgb_fixture("par1")]);
+        let mut params = HashMap::new();
+        params.insert("red".to_string(), -0.1);
+        let effect = make_effect_instance(
+            EffectType::Static {
+                parameters: params,
+                duration: None,
+            },
+            vec!["par1"],
+        );
+        assert!(validate_effect(&registry, &effect).is_err());
+    }
+
+    #[test]
+    fn validate_strobe_negative_frequency() {
+        let registry = registry_with(vec![strobe_fixture("s1")]);
+        let effect = make_effect_instance(
+            EffectType::Strobe {
+                frequency: TempoAwareFrequency::Fixed(-1.0),
+                duration: None,
+            },
+            vec!["s1"],
+        );
+        assert!(validate_effect(&registry, &effect).is_err());
+    }
+
+    #[test]
+    fn validate_pulse_zero_frequency() {
+        let registry = registry_with(vec![rgb_fixture("par1")]);
+        let effect = make_effect_instance(
+            EffectType::Pulse {
+                base_level: 0.0,
+                pulse_amplitude: 1.0,
+                frequency: TempoAwareFrequency::Fixed(0.0),
+                duration: None,
+            },
+            vec!["par1"],
+        );
+        assert!(validate_effect(&registry, &effect).is_err());
+    }
+
+    // ── validate_effect_compatibility ──────────────────────────────
+
+    #[test]
+    fn color_cycle_requires_rgb() {
+        let registry = registry_with(vec![dimmer_fixture("d1")]);
+        let effect = make_effect_instance(
+            EffectType::ColorCycle {
+                colors: vec![Color::new(255, 0, 0)],
+                speed: TempoAwareSpeed::Fixed(1.0),
+                direction: CycleDirection::Forward,
+                transition: CycleTransition::Fade,
+            },
+            vec!["d1"],
+        );
+        assert!(validate_effect_compatibility(&registry, &effect).is_err());
+    }
+
+    #[test]
+    fn color_cycle_ok_with_rgb() {
+        let registry = registry_with(vec![rgb_fixture("par1")]);
+        let effect = make_effect_instance(
+            EffectType::ColorCycle {
+                colors: vec![Color::new(255, 0, 0)],
+                speed: TempoAwareSpeed::Fixed(1.0),
+                direction: CycleDirection::Forward,
+                transition: CycleTransition::Fade,
+            },
+            vec!["par1"],
+        );
+        assert!(validate_effect_compatibility(&registry, &effect).is_ok());
+    }
+
+    #[test]
+    fn rainbow_requires_rgb() {
+        let registry = registry_with(vec![dimmer_fixture("d1")]);
+        let effect = make_effect_instance(
+            EffectType::Rainbow {
+                speed: TempoAwareSpeed::Fixed(1.0),
+                saturation: 1.0,
+                brightness: 1.0,
+            },
+            vec!["d1"],
+        );
+        assert!(validate_effect_compatibility(&registry, &effect).is_err());
+    }
+
+    #[test]
+    fn chase_ok_with_rgb() {
+        let registry = registry_with(vec![rgb_fixture("par1")]);
+        let effect = make_effect_instance(
+            EffectType::Chase {
+                pattern: ChasePattern::Linear,
+                speed: TempoAwareSpeed::Fixed(1.0),
+                direction: ChaseDirection::LeftToRight,
+                transition: CycleTransition::Snap,
+            },
+            vec!["par1"],
+        );
+        assert!(validate_effect_compatibility(&registry, &effect).is_ok());
+    }
+
+    #[test]
+    fn chase_ok_with_dimmer() {
+        let registry = registry_with(vec![dimmer_fixture("d1")]);
+        let effect = make_effect_instance(
+            EffectType::Chase {
+                pattern: ChasePattern::Linear,
+                speed: TempoAwareSpeed::Fixed(1.0),
+                direction: ChaseDirection::LeftToRight,
+                transition: CycleTransition::Snap,
+            },
+            vec!["d1"],
+        );
+        assert!(validate_effect_compatibility(&registry, &effect).is_ok());
+    }
+
+    #[test]
+    fn strobe_ok_with_dimmer() {
+        let registry = registry_with(vec![dimmer_fixture("d1")]);
+        let effect = make_effect_instance(
+            EffectType::Strobe {
+                frequency: TempoAwareFrequency::Fixed(10.0),
+                duration: Some(Duration::from_secs(1)),
+            },
+            vec!["d1"],
+        );
+        assert!(validate_effect_compatibility(&registry, &effect).is_ok());
+    }
+
+    #[test]
+    fn static_effect_ok_with_anything() {
+        let registry = registry_with(vec![dimmer_fixture("d1")]);
+        let effect = make_effect_instance(
+            EffectType::Static {
+                parameters: HashMap::new(),
+                duration: None,
+            },
+            vec!["d1"],
+        );
+        assert!(validate_effect_compatibility(&registry, &effect).is_ok());
+    }
 }
