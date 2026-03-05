@@ -250,10 +250,239 @@ impl LightingShow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::track::Track;
+
+    fn minimal_song() -> Song {
+        Song::new(
+            "Test Song",
+            None,
+            None,
+            None,
+            None,
+            None,
+            vec![Track::new("track1".to_string(), "track1.wav", None)],
+            HashMap::new(),
+            vec![],
+        )
+    }
 
     #[test]
     fn test_lighting_show_creation() {
         let show = LightingShow::new("test.light".to_string());
         assert_eq!(show.file(), "test.light");
+    }
+
+    #[test]
+    fn song_name() {
+        assert_eq!(minimal_song().name(), "Test Song");
+    }
+
+    #[test]
+    fn song_tracks() {
+        let song = minimal_song();
+        assert_eq!(song.tracks().len(), 1);
+        assert_eq!(song.tracks()[0].name(), "track1");
+    }
+
+    #[test]
+    fn midi_event_none() {
+        let song = minimal_song();
+        assert!(song.midi_event().unwrap().is_none());
+    }
+
+    #[test]
+    fn midi_event_some() {
+        let song = Song::new(
+            "test",
+            Some(midi::note_on(1, 60, 127)),
+            None,
+            None,
+            None,
+            None,
+            vec![Track::new("t".to_string(), "t.wav", None)],
+            HashMap::new(),
+            vec![],
+        );
+        let event = song.midi_event().unwrap();
+        assert!(event.is_some());
+    }
+
+    #[test]
+    fn midi_playback_none() {
+        let song = minimal_song();
+        assert!(song.midi_playback().is_none());
+    }
+
+    #[test]
+    fn midi_playback_from_midi_file_field() {
+        let song = Song::new(
+            "test",
+            None,
+            Some("song.mid".to_string()),
+            None,
+            None,
+            None,
+            vec![Track::new("t".to_string(), "t.wav", None)],
+            HashMap::new(),
+            vec![],
+        );
+        let playback = song.midi_playback().unwrap();
+        assert_eq!(playback.file(), "song.mid");
+        assert!(playback.exclude_midi_channels().is_empty());
+    }
+
+    #[test]
+    fn midi_playback_field_overrides_midi_file() {
+        let mp = MidiPlayback {
+            file: "override.mid".to_string(),
+            exclude_midi_channels: Some(vec![10]),
+        };
+        let song = Song::new(
+            "test",
+            None,
+            Some("fallback.mid".to_string()),
+            Some(mp),
+            None,
+            None,
+            vec![Track::new("t".to_string(), "t.wav", None)],
+            HashMap::new(),
+            vec![],
+        );
+        let playback = song.midi_playback().unwrap();
+        assert_eq!(playback.file(), "override.mid");
+    }
+
+    #[test]
+    fn exclude_midi_channels_subtracts_one() {
+        let mp = MidiPlayback {
+            file: "test.mid".to_string(),
+            exclude_midi_channels: Some(vec![1, 10, 16]),
+        };
+        let excluded = mp.exclude_midi_channels();
+        assert_eq!(excluded, vec![0, 9, 15]);
+    }
+
+    #[test]
+    fn exclude_midi_channels_empty_default() {
+        let mp = MidiPlayback {
+            file: "test.mid".to_string(),
+            exclude_midi_channels: None,
+        };
+        assert!(mp.exclude_midi_channels().is_empty());
+    }
+
+    #[test]
+    fn light_shows_none() {
+        let song = minimal_song();
+        assert!(song.light_shows().is_none());
+    }
+
+    #[test]
+    fn light_shows_some() {
+        let song = Song::new(
+            "test",
+            None,
+            None,
+            None,
+            Some(vec![LightShow::new(
+                "universe1".to_string(),
+                "lights.mid".to_string(),
+                Some(vec![10]),
+            )]),
+            None,
+            vec![Track::new("t".to_string(), "t.wav", None)],
+            HashMap::new(),
+            vec![],
+        );
+        let shows = song.light_shows().unwrap();
+        assert_eq!(shows.len(), 1);
+        assert_eq!(shows[0].universe_name(), "universe1");
+        assert_eq!(shows[0].dmx_file(), "lights.mid");
+    }
+
+    #[test]
+    fn light_show_midi_channels_subtracts_one() {
+        let ls = LightShow::new("u".to_string(), "f.mid".to_string(), Some(vec![1, 10]));
+        assert_eq!(ls.midi_channels(), vec![0, 9]);
+    }
+
+    #[test]
+    fn light_show_midi_channels_empty_default() {
+        let ls = LightShow::new("u".to_string(), "f.mid".to_string(), None);
+        assert!(ls.midi_channels().is_empty());
+    }
+
+    #[test]
+    fn lighting_none() {
+        let song = minimal_song();
+        assert!(song.lighting().is_none());
+    }
+
+    #[test]
+    fn lighting_some() {
+        let song = Song::new(
+            "test",
+            None,
+            None,
+            None,
+            None,
+            Some(vec![LightingShow::new("show.light".to_string())]),
+            vec![Track::new("t".to_string(), "t.wav", None)],
+            HashMap::new(),
+            vec![],
+        );
+        let lighting = song.lighting().unwrap();
+        assert_eq!(lighting.len(), 1);
+        assert_eq!(lighting[0].file(), "show.light");
+    }
+
+    #[test]
+    fn samples_config_empty() {
+        let song = minimal_song();
+        let sc = song.samples_config();
+        assert!(sc.samples().is_empty());
+        assert!(sc.sample_triggers().is_empty());
+    }
+
+    #[test]
+    fn serde_deserialize_minimal() {
+        let yaml = r#"
+            name: "Minimal Song"
+            tracks:
+              - name: track1
+                file: track1.wav
+        "#;
+        let song: Song = config::Config::builder()
+            .add_source(config::File::from_str(yaml, config::FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+        assert_eq!(song.name(), "Minimal Song");
+        assert_eq!(song.tracks().len(), 1);
+        assert!(song.midi_playback().is_none());
+        assert!(song.light_shows().is_none());
+    }
+
+    #[test]
+    fn serde_deserialize_with_midi_playback() {
+        let yaml = r#"
+            name: "MIDI Song"
+            tracks:
+              - name: track1
+                file: track1.wav
+            midi_playback:
+              file: song.mid
+              exclude_midi_channels: [10, 16]
+        "#;
+        let song: Song = config::Config::builder()
+            .add_source(config::File::from_str(yaml, config::FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+        let mp = song.midi_playback().unwrap();
+        assert_eq!(mp.file(), "song.mid");
+        assert_eq!(mp.exclude_midi_channels(), vec![9, 15]);
     }
 }

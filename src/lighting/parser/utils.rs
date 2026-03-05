@@ -350,3 +350,397 @@ pub(crate) fn parse_color_parameter(pair: Pair<Rule>) -> Result<String, Box<dyn 
 pub(crate) fn parse_generic_parameter(pair: Pair<Rule>) -> Result<String, Box<dyn Error>> {
     Ok(pair.as_str().trim().to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── parse_percentage_to_f64 ────────────────────────────────────
+
+    #[test]
+    fn percentage_with_percent_sign() {
+        assert!((parse_percentage_to_f64("50%").unwrap() - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn percentage_100_percent() {
+        assert!((parse_percentage_to_f64("100%").unwrap() - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn percentage_0_percent() {
+        assert!((parse_percentage_to_f64("0%").unwrap() - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn percentage_without_percent_sign() {
+        assert!((parse_percentage_to_f64("0.75").unwrap() - 0.75).abs() < 1e-9);
+    }
+
+    #[test]
+    fn percentage_with_whitespace() {
+        assert!((parse_percentage_to_f64("  50%  ").unwrap() - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn percentage_invalid() {
+        assert!(parse_percentage_to_f64("abc%").is_err());
+    }
+
+    // ── parse_frequency_string ─────────────────────────────────────
+
+    #[test]
+    fn freq_fixed_number() {
+        let f = parse_frequency_string("4.0", &None).unwrap();
+        assert_eq!(f, TempoAwareFrequency::Fixed(4.0));
+    }
+
+    #[test]
+    fn freq_milliseconds() {
+        let f = parse_frequency_string("500ms", &None).unwrap();
+        assert_eq!(f, TempoAwareFrequency::Seconds(0.5));
+    }
+
+    #[test]
+    fn freq_seconds() {
+        let f = parse_frequency_string("2.5s", &None).unwrap();
+        assert_eq!(f, TempoAwareFrequency::Seconds(2.5));
+    }
+
+    #[test]
+    fn freq_measures_with_tempo() {
+        let tm = TempoMap::new(
+            Duration::ZERO,
+            120.0,
+            crate::lighting::tempo::TimeSignature::new(4, 4),
+            vec![],
+        );
+        let f = parse_frequency_string("2measures", &Some(tm)).unwrap();
+        assert_eq!(f, TempoAwareFrequency::Measures(2.0));
+    }
+
+    #[test]
+    fn freq_measures_without_tempo_errors() {
+        assert!(parse_frequency_string("2measures", &None).is_err());
+    }
+
+    #[test]
+    fn freq_beats_with_tempo() {
+        let tm = TempoMap::new(
+            Duration::ZERO,
+            120.0,
+            crate::lighting::tempo::TimeSignature::new(4, 4),
+            vec![],
+        );
+        let f = parse_frequency_string("4beats", &Some(tm)).unwrap();
+        assert_eq!(f, TempoAwareFrequency::Beats(4.0));
+    }
+
+    #[test]
+    fn freq_beats_without_tempo_errors() {
+        assert!(parse_frequency_string("4beats", &None).is_err());
+    }
+
+    #[test]
+    fn freq_invalid() {
+        assert!(parse_frequency_string("notanumber", &None).is_err());
+    }
+
+    // ── parse_speed_string ─────────────────────────────────────────
+
+    #[test]
+    fn speed_fixed_number() {
+        let s = parse_speed_string("1.5", &None).unwrap();
+        assert_eq!(s, TempoAwareSpeed::Fixed(1.5));
+    }
+
+    #[test]
+    fn speed_milliseconds() {
+        let s = parse_speed_string("250ms", &None).unwrap();
+        assert_eq!(s, TempoAwareSpeed::Seconds(0.25));
+    }
+
+    #[test]
+    fn speed_seconds() {
+        let s = parse_speed_string("3s", &None).unwrap();
+        assert_eq!(s, TempoAwareSpeed::Seconds(3.0));
+    }
+
+    #[test]
+    fn speed_measures_with_tempo() {
+        let tm = TempoMap::new(
+            Duration::ZERO,
+            120.0,
+            crate::lighting::tempo::TimeSignature::new(4, 4),
+            vec![],
+        );
+        let s = parse_speed_string("1measures", &Some(tm)).unwrap();
+        assert_eq!(s, TempoAwareSpeed::Measures(1.0));
+    }
+
+    #[test]
+    fn speed_measures_without_tempo_errors() {
+        assert!(parse_speed_string("1measures", &None).is_err());
+    }
+
+    #[test]
+    fn speed_beats_with_tempo() {
+        let tm = TempoMap::new(
+            Duration::ZERO,
+            120.0,
+            crate::lighting::tempo::TimeSignature::new(4, 4),
+            vec![],
+        );
+        let s = parse_speed_string("2beats", &Some(tm)).unwrap();
+        assert_eq!(s, TempoAwareSpeed::Beats(2.0));
+    }
+
+    #[test]
+    fn speed_beats_without_tempo_errors() {
+        assert!(parse_speed_string("2beats", &None).is_err());
+    }
+
+    // ── parse_duration_string ──────────────────────────────────────
+
+    #[test]
+    fn duration_milliseconds() {
+        let d = parse_duration_string("500ms", &None, None, 0.0).unwrap();
+        assert_eq!(d, Duration::from_millis(500));
+    }
+
+    #[test]
+    fn duration_seconds_unit() {
+        let d = parse_duration_string("2.5s", &None, None, 0.0).unwrap();
+        assert!((d.as_secs_f64() - 2.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn duration_seconds_no_unit() {
+        let d = parse_duration_string("3.0", &None, None, 0.0).unwrap();
+        assert!((d.as_secs_f64() - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn duration_measures_with_tempo() {
+        let tm = TempoMap::new(
+            Duration::ZERO,
+            120.0,
+            crate::lighting::tempo::TimeSignature::new(4, 4),
+            vec![],
+        );
+        let d = parse_duration_string("1measures", &Some(tm), None, 0.0).unwrap();
+        // 1 measure = 4 beats at 120 BPM = 2.0 seconds
+        assert!((d.as_secs_f64() - 2.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn duration_measures_without_tempo_errors() {
+        assert!(parse_duration_string("1measures", &None, None, 0.0).is_err());
+    }
+
+    #[test]
+    fn duration_beats_with_tempo() {
+        let tm = TempoMap::new(
+            Duration::ZERO,
+            60.0,
+            crate::lighting::tempo::TimeSignature::new(4, 4),
+            vec![],
+        );
+        let d = parse_duration_string("2beats", &Some(tm), None, 0.0).unwrap();
+        // 2 beats at 60 BPM = 2.0 seconds
+        assert!((d.as_secs_f64() - 2.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn duration_beats_without_tempo_errors() {
+        assert!(parse_duration_string("2beats", &None, None, 0.0).is_err());
+    }
+
+    #[test]
+    fn duration_invalid() {
+        assert!(parse_duration_string("notanumber", &None, None, 0.0).is_err());
+    }
+
+    // ── parse_color_string ─────────────────────────────────────────
+
+    #[test]
+    fn color_hex() {
+        let c = parse_color_string("#FF0000").unwrap();
+        assert_eq!(c.r, 255);
+        assert_eq!(c.g, 0);
+        assert_eq!(c.b, 0);
+    }
+
+    #[test]
+    fn color_hex_quoted() {
+        let c = parse_color_string("\"#00FF00\"").unwrap();
+        assert_eq!(c.r, 0);
+        assert_eq!(c.g, 255);
+        assert_eq!(c.b, 0);
+    }
+
+    #[test]
+    fn color_hex_lowercase() {
+        let c = parse_color_string("#ff8000").unwrap();
+        assert_eq!(c.r, 255);
+        assert_eq!(c.g, 128);
+        assert_eq!(c.b, 0);
+    }
+
+    #[test]
+    fn color_hex_invalid_length() {
+        assert!(parse_color_string("#FFF").is_none());
+    }
+
+    #[test]
+    fn color_hex_invalid_chars() {
+        assert!(parse_color_string("#GGHHII").is_none());
+    }
+
+    #[test]
+    fn color_rgb_notation() {
+        let c = parse_color_string("rgb(128,64,32)").unwrap();
+        assert_eq!(c.r, 128);
+        assert_eq!(c.g, 64);
+        assert_eq!(c.b, 32);
+    }
+
+    #[test]
+    fn color_rgb_with_spaces() {
+        let c = parse_color_string("rgb(255, 0, 128)").unwrap();
+        assert_eq!(c.r, 255);
+        assert_eq!(c.g, 0);
+        assert_eq!(c.b, 128);
+    }
+
+    #[test]
+    fn color_rgb_invalid_components() {
+        // Only 2 components
+        assert!(parse_color_string("rgb(128,64)").is_none());
+    }
+
+    #[test]
+    fn color_named() {
+        let c = parse_color_string("red").unwrap();
+        assert_eq!(c.r, 255);
+        assert_eq!(c.g, 0);
+        assert_eq!(c.b, 0);
+    }
+
+    #[test]
+    fn color_named_blue() {
+        let c = parse_color_string("blue").unwrap();
+        assert_eq!(c.r, 0);
+        assert_eq!(c.g, 0);
+        assert_eq!(c.b, 255);
+    }
+
+    #[test]
+    fn color_unknown_name() {
+        assert!(parse_color_string("chartreuse").is_none());
+    }
+
+    // ── parse_measure_time ─────────────────────────────────────────
+
+    #[test]
+    fn measure_time_basic() {
+        let (m, b) = parse_measure_time("@12/1").unwrap();
+        assert_eq!(m, 12);
+        assert!((b - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn measure_time_fractional_beat() {
+        let (m, b) = parse_measure_time("@4/2.5").unwrap();
+        assert_eq!(m, 4);
+        assert!((b - 2.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn measure_time_no_at() {
+        let (m, b) = parse_measure_time("8/3").unwrap();
+        assert_eq!(m, 8);
+        assert!((b - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn measure_time_invalid_format() {
+        assert!(parse_measure_time("@12").is_err());
+        assert!(parse_measure_time("@12/1/2").is_err());
+    }
+
+    #[test]
+    fn measure_time_invalid_measure() {
+        assert!(parse_measure_time("@abc/1").is_err());
+    }
+
+    #[test]
+    fn measure_time_invalid_beat() {
+        assert!(parse_measure_time("@12/xyz").is_err());
+    }
+
+    // ── parse_time_string ──────────────────────────────────────────
+
+    #[test]
+    fn time_string_mm_ss() {
+        let d = parse_time_string("1:30").unwrap();
+        assert_eq!(d, Duration::from_millis(90_000));
+    }
+
+    #[test]
+    fn time_string_mm_ss_mmm() {
+        let d = parse_time_string("2:15.500").unwrap();
+        assert_eq!(d, Duration::from_millis(135_500));
+    }
+
+    #[test]
+    fn time_string_ss_only() {
+        let d = parse_time_string("45").unwrap();
+        assert_eq!(d, Duration::from_millis(45_000));
+    }
+
+    #[test]
+    fn time_string_ss_mmm() {
+        let d = parse_time_string("30.250").unwrap();
+        assert_eq!(d, Duration::from_millis(30_250));
+    }
+
+    #[test]
+    fn time_string_with_at_prefix() {
+        let d = parse_time_string("@1:00").unwrap();
+        assert_eq!(d, Duration::from_millis(60_000));
+    }
+
+    #[test]
+    fn time_string_fractional_ms_truncation() {
+        // "30.1" → 1 digit → scaled to 100ms
+        let d = parse_time_string("30.1").unwrap();
+        assert_eq!(d, Duration::from_millis(30_100));
+    }
+
+    #[test]
+    fn time_string_two_digit_ms() {
+        // "30.25" → 2 digits → scaled to 250ms
+        let d = parse_time_string("30.25").unwrap();
+        assert_eq!(d, Duration::from_millis(30_250));
+    }
+
+    #[test]
+    fn time_string_long_ms_truncated() {
+        // "30.1234" → truncated to 3 digits → 123ms
+        let d = parse_time_string("30.1234").unwrap();
+        assert_eq!(d, Duration::from_millis(30_123));
+    }
+
+    #[test]
+    fn time_string_zero() {
+        let d = parse_time_string("0").unwrap();
+        assert_eq!(d, Duration::ZERO);
+    }
+
+    #[test]
+    fn time_string_zero_colon() {
+        let d = parse_time_string("0:00").unwrap();
+        assert_eq!(d, Duration::ZERO);
+    }
+}

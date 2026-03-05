@@ -158,3 +158,115 @@ pub enum BlendMode {
     /// Screen - screen blend mode
     Screen,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn effect_type_static_duration() {
+        let effect = EffectType::Static {
+            parameters: HashMap::new(),
+            duration: Some(Duration::from_secs(5)),
+        };
+        assert_eq!(effect.get_duration(), Some(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn effect_type_static_no_duration() {
+        let effect = EffectType::Static {
+            parameters: HashMap::new(),
+            duration: None,
+        };
+        assert_eq!(effect.get_duration(), None);
+    }
+
+    #[test]
+    fn effect_type_strobe_duration() {
+        let effect = EffectType::Strobe {
+            frequency: TempoAwareFrequency::Fixed(10.0),
+            duration: Some(Duration::from_millis(500)),
+        };
+        assert_eq!(effect.get_duration(), Some(Duration::from_millis(500)));
+    }
+
+    #[test]
+    fn effect_type_pulse_duration() {
+        let effect = EffectType::Pulse {
+            base_level: 0.0,
+            pulse_amplitude: 1.0,
+            frequency: TempoAwareFrequency::Fixed(2.0),
+            duration: Some(Duration::from_secs(3)),
+        };
+        assert_eq!(effect.get_duration(), Some(Duration::from_secs(3)));
+    }
+
+    #[test]
+    fn effect_type_dimmer_always_has_duration() {
+        let effect = EffectType::Dimmer {
+            start_level: 0.0,
+            end_level: 1.0,
+            duration: Duration::from_secs(2),
+            curve: DimmerCurve::Linear,
+        };
+        assert_eq!(effect.get_duration(), Some(Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn effect_type_color_cycle_no_duration() {
+        let effect = EffectType::ColorCycle {
+            colors: vec![Color::new(255, 0, 0), Color::new(0, 0, 255)],
+            speed: TempoAwareSpeed::Fixed(1.0),
+            direction: CycleDirection::Forward,
+            transition: CycleTransition::Fade,
+        };
+        assert_eq!(effect.get_duration(), None);
+    }
+
+    #[test]
+    fn effect_type_chase_no_duration() {
+        let effect = EffectType::Chase {
+            pattern: ChasePattern::Linear,
+            speed: TempoAwareSpeed::Fixed(1.0),
+            direction: ChaseDirection::LeftToRight,
+            transition: CycleTransition::Snap,
+        };
+        assert_eq!(effect.get_duration(), None);
+    }
+
+    #[test]
+    fn effect_type_rainbow_no_duration() {
+        let effect = EffectType::Rainbow {
+            speed: TempoAwareSpeed::Fixed(0.5),
+            saturation: 1.0,
+            brightness: 1.0,
+        };
+        assert_eq!(effect.get_duration(), None);
+    }
+
+    #[test]
+    fn effect_layer_ordering() {
+        assert!(EffectLayer::Background < EffectLayer::Midground);
+        assert!(EffectLayer::Midground < EffectLayer::Foreground);
+    }
+
+    #[test]
+    fn cycle_direction_equality() {
+        assert_eq!(CycleDirection::Forward, CycleDirection::Forward);
+        assert_ne!(CycleDirection::Forward, CycleDirection::Backward);
+        assert_ne!(CycleDirection::Backward, CycleDirection::PingPong);
+    }
+
+    #[test]
+    fn cycle_transition_equality() {
+        assert_eq!(CycleTransition::Snap, CycleTransition::Snap);
+        assert_ne!(CycleTransition::Snap, CycleTransition::Fade);
+    }
+
+    #[test]
+    fn blend_mode_equality() {
+        assert_eq!(BlendMode::Replace, BlendMode::Replace);
+        assert_ne!(BlendMode::Replace, BlendMode::Multiply);
+        assert_ne!(BlendMode::Add, BlendMode::Screen);
+    }
+}

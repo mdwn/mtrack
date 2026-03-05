@@ -515,6 +515,83 @@ mod test {
         )
     }
 
+    #[test]
+    fn midi_device_and_delay() {
+        let midi = super::Midi::new("my-device", Some("500ms".to_string()));
+        assert_eq!(midi.device(), "my-device");
+        assert_eq!(
+            midi.playback_delay().unwrap(),
+            std::time::Duration::from_millis(500)
+        );
+    }
+
+    #[test]
+    fn midi_playback_delay_default() {
+        let midi = super::Midi::new("dev", None);
+        assert_eq!(midi.playback_delay().unwrap(), std::time::Duration::ZERO);
+    }
+
+    #[test]
+    fn midi_to_dmx_empty_default() {
+        let midi = super::Midi::new("dev", None);
+        assert!(midi.midi_to_dmx().is_empty());
+    }
+
+    #[test]
+    fn midi_to_dmx_deserialization() -> Result<(), Box<dyn Error>> {
+        let yaml = r#"
+            device: test
+            midi_to_dmx:
+              - midi_channel: 10
+                universe: "main"
+                transformers:
+                  - type: note_mapper
+                    input_note: 60
+                    convert_to_notes: [61, 62]
+        "#;
+        let midi: super::Midi = Config::builder()
+            .add_source(File::from_str(yaml, FileFormat::Yaml))
+            .build()?
+            .try_deserialize()?;
+        let mappings = midi.midi_to_dmx();
+        assert_eq!(mappings.len(), 1);
+        assert_eq!(mappings[0].universe(), "main");
+        assert_eq!(u8::from(mappings[0].midi_channel()?), 9); // 10 - 1
+        assert_eq!(mappings[0].transformers().len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn parse_channel_boundary_values() -> Result<(), Box<dyn Error>> {
+        // Channel 1 (min valid) -> u4(0)
+        let ch = super::parse_channel(1)?;
+        assert_eq!(u8::from(ch), 0);
+
+        // Channel 16 (max valid) -> u4(15)
+        let ch = super::parse_channel(16)?;
+        assert_eq!(u8::from(ch), 15);
+
+        // Channel 17 (out of range) -> error
+        assert!(super::parse_channel(17).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn parse_u7_boundary_values() -> Result<(), Box<dyn Error>> {
+        assert_eq!(u8::from(super::parse_u7(0)?), 0);
+        assert_eq!(u8::from(super::parse_u7(127)?), 127);
+        assert!(super::parse_u7(128).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn parse_u14_boundary_values() -> Result<(), Box<dyn Error>> {
+        assert_eq!(u16::from(super::parse_u14(0)?), 0);
+        assert_eq!(u16::from(super::parse_u14(16383)?), 16383);
+        assert!(super::parse_u14(16384).is_err());
+        Ok(())
+    }
+
     fn assert_yaml_matches_midi(
         yaml: String,
         expected_event: midly::live::LiveEvent,

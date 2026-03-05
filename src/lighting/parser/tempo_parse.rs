@@ -255,3 +255,254 @@ fn parse_time_parameter(value: &str) -> Result<Duration, Box<dyn Error>> {
         Ok(Duration::from_secs_f64(num))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lighting::parser::grammar::{LightingParser, Rule};
+    use pest::Parser;
+
+    // ── parse_time_signature ─────────────────────────────────────
+
+    #[test]
+    fn time_signature_4_4() {
+        let (num, den) = parse_time_signature("4/4").unwrap();
+        assert_eq!((num, den), (4, 4));
+    }
+
+    #[test]
+    fn time_signature_3_4() {
+        let (num, den) = parse_time_signature("3/4").unwrap();
+        assert_eq!((num, den), (3, 4));
+    }
+
+    #[test]
+    fn time_signature_6_8() {
+        let (num, den) = parse_time_signature("6/8").unwrap();
+        assert_eq!((num, den), (6, 8));
+    }
+
+    #[test]
+    fn time_signature_5_4() {
+        let (num, den) = parse_time_signature("5/4").unwrap();
+        assert_eq!((num, den), (5, 4));
+    }
+
+    #[test]
+    fn time_signature_with_whitespace() {
+        let (num, den) = parse_time_signature("  4/4  ").unwrap();
+        assert_eq!((num, den), (4, 4));
+    }
+
+    #[test]
+    fn time_signature_missing_slash() {
+        assert!(parse_time_signature("44").is_err());
+    }
+
+    #[test]
+    fn time_signature_too_many_parts() {
+        assert!(parse_time_signature("4/4/4").is_err());
+    }
+
+    #[test]
+    fn time_signature_non_numeric() {
+        assert!(parse_time_signature("abc/4").is_err());
+    }
+
+    #[test]
+    fn time_signature_empty() {
+        assert!(parse_time_signature("").is_err());
+    }
+
+    #[test]
+    fn time_signature_slash_only() {
+        assert!(parse_time_signature("/").is_err());
+    }
+
+    #[test]
+    fn time_signature_zero_numerator() {
+        // Parses successfully — semantic validation is separate
+        let (num, den) = parse_time_signature("0/4").unwrap();
+        assert_eq!((num, den), (0, 4));
+    }
+
+    // ── parse_time_parameter ─────────────────────────────────────
+
+    #[test]
+    fn time_parameter_milliseconds() {
+        let d = parse_time_parameter("500ms").unwrap();
+        assert_eq!(d, Duration::from_millis(500));
+    }
+
+    #[test]
+    fn time_parameter_milliseconds_zero() {
+        let d = parse_time_parameter("0ms").unwrap();
+        assert_eq!(d, Duration::from_millis(0));
+    }
+
+    #[test]
+    fn time_parameter_seconds() {
+        let d = parse_time_parameter("2.5s").unwrap();
+        assert_eq!(d, Duration::from_secs_f64(2.5));
+    }
+
+    #[test]
+    fn time_parameter_seconds_integer() {
+        let d = parse_time_parameter("3s").unwrap();
+        assert_eq!(d, Duration::from_secs(3));
+    }
+
+    #[test]
+    fn time_parameter_seconds_zero() {
+        let d = parse_time_parameter("0.0s").unwrap();
+        assert_eq!(d, Duration::ZERO);
+    }
+
+    #[test]
+    fn time_parameter_bare_number() {
+        let d = parse_time_parameter("1.5").unwrap();
+        assert_eq!(d, Duration::from_secs_f64(1.5));
+    }
+
+    #[test]
+    fn time_parameter_with_whitespace() {
+        let d = parse_time_parameter("  100ms  ").unwrap();
+        assert_eq!(d, Duration::from_millis(100));
+    }
+
+    #[test]
+    fn time_parameter_invalid_ms() {
+        assert!(parse_time_parameter("abcms").is_err());
+    }
+
+    #[test]
+    fn time_parameter_invalid_seconds() {
+        assert!(parse_time_parameter("abcs").is_err());
+    }
+
+    #[test]
+    fn time_parameter_invalid_bare() {
+        assert!(parse_time_parameter("xyz").is_err());
+    }
+
+    // ── parse_tempo_definition (via grammar) ─────────────────────
+
+    fn parse_tempo_from_dsl(content: &str) -> TempoMap {
+        let mut pairs = LightingParser::parse(Rule::tempo, content).unwrap();
+        let pair = pairs.next().unwrap();
+        parse_tempo_definition(pair).unwrap()
+    }
+
+    #[test]
+    fn tempo_definition_defaults() {
+        let tm = parse_tempo_from_dsl("tempo { }");
+        assert_eq!(
+            tm.bpm_at_time(Duration::ZERO, 0.0),
+            crate::lighting::tempo::DEFAULT_BPM
+        );
+    }
+
+    #[test]
+    fn tempo_definition_bpm_only() {
+        let tm = parse_tempo_from_dsl(
+            r#"tempo {
+    bpm: 140
+}"#,
+        );
+        assert_eq!(tm.bpm_at_time(Duration::ZERO, 0.0), 140.0);
+    }
+
+    #[test]
+    fn tempo_definition_full() {
+        let tm = parse_tempo_from_dsl(
+            r#"tempo {
+    start: 500ms
+    bpm: 90
+    time_signature: 3/4
+}"#,
+        );
+        assert_eq!(tm.bpm_at_time(Duration::from_millis(500), 0.0), 90.0);
+    }
+
+    #[test]
+    fn tempo_definition_with_changes() {
+        let content = r#"tempo {
+    bpm: 120
+    time_signature: 4/4
+    changes: [
+    @8/1 { bpm: 140, transition: snap }
+    ]
+}"#;
+        let tm = parse_tempo_from_dsl(content);
+        assert_eq!(tm.bpm_at_time(Duration::ZERO, 0.0), 120.0);
+    }
+
+    #[test]
+    fn tempo_definition_empty_changes() {
+        let content = r#"tempo {
+    bpm: 120
+    time_signature: 4/4
+    changes: []
+}"#;
+        let tm = parse_tempo_from_dsl(content);
+        assert_eq!(tm.bpm_at_time(Duration::ZERO, 0.0), 120.0);
+    }
+
+    // ── parse_tempo_change (via grammar) ─────────────────────────
+
+    fn parse_change_from_dsl(change_str: &str) -> TempoChange {
+        let mut pairs = LightingParser::parse(Rule::tempo_change, change_str).unwrap();
+        let pair = pairs.next().unwrap();
+        parse_tempo_change(pair).unwrap()
+    }
+
+    #[test]
+    fn tempo_change_bpm_snap() {
+        let change = parse_change_from_dsl("@8/1 { bpm: 140, transition: snap }");
+        assert_eq!(change.bpm, Some(140.0));
+        assert!(matches!(change.transition, TempoTransition::Snap));
+        assert_eq!(change.original_measure_beat, Some((8, 1.0)));
+    }
+
+    #[test]
+    fn tempo_change_time_signature() {
+        let change = parse_change_from_dsl("@16/1 { time_signature: 6/8 }");
+        assert!(change.time_signature.is_some());
+        assert_eq!(change.original_measure_beat, Some((16, 1.0)));
+    }
+
+    #[test]
+    fn tempo_change_beat_transition() {
+        let change = parse_change_from_dsl("@8/1 { bpm: 140, transition: 2.5 }");
+        assert_eq!(change.bpm, Some(140.0));
+        assert!(matches!(change.transition, TempoTransition::Beats(..)));
+    }
+
+    #[test]
+    fn tempo_change_measure_transition() {
+        let change = parse_change_from_dsl("@8/1 { bpm: 160, transition: 1.5m }");
+        assert_eq!(change.bpm, Some(160.0));
+        assert!(matches!(change.transition, TempoTransition::Measures(..)));
+    }
+
+    #[test]
+    fn tempo_change_absolute_time() {
+        let change = parse_change_from_dsl("@00:30.000 { bpm: 140 }");
+        assert_eq!(change.bpm, Some(140.0));
+        assert_eq!(change.original_measure_beat, None);
+        assert!(matches!(
+            change.position,
+            TempoChangePosition::Time(d) if d == Duration::from_secs(30)
+        ));
+    }
+
+    #[test]
+    fn tempo_change_ss_mmm_time() {
+        let change = parse_change_from_dsl("@45.500 { bpm: 160 }");
+        assert_eq!(change.bpm, Some(160.0));
+        assert!(matches!(
+            change.position,
+            TempoChangePosition::Time(d) if d == Duration::from_secs_f64(45.5)
+        ));
+    }
+}

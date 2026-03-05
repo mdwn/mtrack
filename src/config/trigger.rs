@@ -674,4 +674,104 @@ mod tests {
         assert_eq!(config.device(), None);
         assert!(!config.has_audio_inputs());
     }
+
+    #[test]
+    fn new_midi_only_constructor() {
+        let midi_input = TriggerInput::Midi(MidiTriggerInput::new(
+            super::super::midi::note_on(1, 60, 127),
+            "kick".to_string(),
+        ));
+        let config = TriggerConfig::new_midi_only(vec![midi_input]);
+        assert_eq!(config.device(), None);
+        assert_eq!(config.sample_rate(), None);
+        assert_eq!(config.sample_format(), None);
+        assert_eq!(config.bits_per_sample(), None);
+        assert_eq!(config.buffer_size(), None);
+        assert_eq!(config.inputs().len(), 1);
+        assert!(!config.has_audio_inputs());
+        assert_eq!(config.midi_triggers().len(), 1);
+    }
+
+    #[test]
+    fn add_input() {
+        let mut config = TriggerConfig::new_midi_only(vec![]);
+        assert!(config.inputs().is_empty());
+        config.add_input(TriggerInput::Midi(MidiTriggerInput::new(
+            super::super::midi::note_on(1, 60, 127),
+            "snare".to_string(),
+        )));
+        assert_eq!(config.inputs().len(), 1);
+    }
+
+    #[test]
+    fn has_audio_inputs_false_when_empty() {
+        let config = TriggerConfig::new_midi_only(vec![]);
+        assert!(!config.has_audio_inputs());
+    }
+
+    #[test]
+    fn midi_trigger_input_accessors() {
+        let event = super::super::midi::note_on(10, 36, 100);
+        let midi = MidiTriggerInput::new(event.clone(), "hihat".to_string());
+        assert_eq!(midi.sample(), "hihat");
+        assert_eq!(*midi.event(), event);
+    }
+
+    #[test]
+    fn invalid_sample_format_returns_none() {
+        let yaml = r#"
+            device: "test"
+            sample_format: "banana"
+            inputs: []
+        "#;
+        let config: TriggerConfig = Config::builder()
+            .add_source(File::from_str(yaml, FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+        assert_eq!(config.sample_format(), None);
+    }
+
+    #[test]
+    fn noise_floor_fields_deserialize() {
+        let yaml = r#"
+            device: "test"
+            inputs:
+              - kind: audio
+                channel: 1
+                sample: "kick"
+                noise_floor_sensitivity: 5.0
+                noise_floor_decay_ms: 300
+        "#;
+        let config: TriggerConfig = Config::builder()
+            .add_source(File::from_str(yaml, FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+        let input = unwrap_audio(&config.inputs()[0]);
+        assert!((input.noise_floor_sensitivity().unwrap() - 5.0).abs() < 0.001);
+        assert_eq!(input.noise_floor_decay_ms(), 300);
+    }
+
+    #[test]
+    fn noise_floor_decay_ms_default() {
+        let yaml = r#"
+            device: "test"
+            inputs:
+              - kind: audio
+                channel: 1
+                sample: "kick"
+        "#;
+        let config: TriggerConfig = Config::builder()
+            .add_source(File::from_str(yaml, FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+        let input = unwrap_audio(&config.inputs()[0]);
+        assert_eq!(input.noise_floor_decay_ms(), 200);
+        assert_eq!(input.noise_floor_sensitivity(), None);
+    }
 }

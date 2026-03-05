@@ -245,4 +245,80 @@ mod tests {
         assert_eq!(snapshots[1].name, "middle");
         assert_eq!(snapshots[2].name, "zebra");
     }
+
+    #[test]
+    fn test_compute_fixture_snapshots_empty() {
+        let states = HashMap::new();
+        let snapshots = compute_fixture_snapshots(&states, &HashMap::new());
+        assert!(snapshots.is_empty());
+    }
+
+    #[test]
+    fn test_compute_fixture_snapshots_zero_value() {
+        let mut states = HashMap::new();
+        let mut fixture_state = FixtureState::new();
+        fixture_state.set_channel(
+            "red".to_string(),
+            ChannelState::new(0.0, EffectLayer::Background, BlendMode::Replace),
+        );
+        states.insert("dark_fixture".to_string(), fixture_state);
+
+        let has_dimmer = HashMap::new();
+        let snapshots = compute_fixture_snapshots(&states, &has_dimmer);
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(*snapshots[0].channels.get("red").unwrap(), 0);
+    }
+
+    #[test]
+    fn test_compute_fixture_snapshots_unknown_fixture_in_dimmer_map() {
+        let mut states = HashMap::new();
+        let mut fixture_state = FixtureState::new();
+        fixture_state.set_channel(
+            "red".to_string(),
+            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace),
+        );
+        states.insert("unknown_fixture".to_string(), fixture_state);
+
+        // has_dimmer_map doesn't contain this fixture - should default to false
+        let has_dimmer = HashMap::from([("other_fixture".to_string(), true)]);
+        let snapshots = compute_fixture_snapshots(&states, &has_dimmer);
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(*snapshots[0].channels.get("red").unwrap(), 127);
+    }
+
+    #[test]
+    fn test_state_snapshot_default() {
+        let snapshot = StateSnapshot::default();
+        assert!(snapshot.fixtures.is_empty());
+        assert!(snapshot.active_effects.is_empty());
+    }
+
+    #[test]
+    fn test_fixture_snapshot_clone() {
+        let mut channels = HashMap::new();
+        channels.insert("red".to_string(), 255u8);
+        channels.insert("green".to_string(), 128u8);
+        let snapshot = FixtureSnapshot {
+            name: "test".to_string(),
+            channels,
+        };
+        let cloned = snapshot.clone();
+        assert_eq!(cloned.name, "test");
+        assert_eq!(*cloned.channels.get("red").unwrap(), 255);
+        assert_eq!(*cloned.channels.get("green").unwrap(), 128);
+    }
+
+    #[test]
+    fn test_state_snapshot_clone() {
+        let snapshot = StateSnapshot {
+            fixtures: vec![FixtureSnapshot {
+                name: "f1".to_string(),
+                channels: HashMap::new(),
+            }],
+            active_effects: vec!["effect1".to_string()],
+        };
+        let cloned = snapshot.clone();
+        assert_eq!(cloned.fixtures.len(), 1);
+        assert_eq!(cloned.active_effects.len(), 1);
+    }
 }

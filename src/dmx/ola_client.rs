@@ -260,4 +260,43 @@ mod tests {
         mock_client.clear_messages();
         assert_eq!(mock_client.message_count(), 0);
     }
+
+    #[test]
+    fn test_mock_ola_client_failure_mode() {
+        let mut mock_client = MockOlaClient::new();
+        mock_client.should_fail = true;
+
+        let buffer = ola::DmxBuffer::new();
+        assert!(mock_client.send_dmx(1, &buffer).is_err());
+        assert!(mock_client.reconnect().is_err());
+
+        // No messages should have been captured
+        assert_eq!(mock_client.message_count(), 0);
+    }
+
+    #[test]
+    fn test_mock_ola_client_reconnect_success() {
+        let mut mock_client = MockOlaClient::new();
+        assert!(mock_client.reconnect().is_ok());
+    }
+
+    #[test]
+    fn test_mock_ola_client_default() {
+        let mock_client = MockOlaClient::default();
+        assert_eq!(mock_client.message_count(), 0);
+        assert!(!mock_client.should_fail);
+    }
+
+    #[test]
+    fn test_mock_ola_client_no_last_message_when_empty() {
+        let mock_client = MockOlaClient::new();
+        assert!(mock_client.get_last_message().is_none());
+        assert!(mock_client.get_buffer_for_universe(1).is_none());
+    }
+
+    #[test]
+    fn test_ola_client_factory_mock() {
+        let _client = OlaClientFactory::create_mock_client();
+        let _client2 = OlaClientFactory::create_mock_client_unconditional();
+    }
 }

@@ -359,4 +359,155 @@ mod tests {
         // Valid lookup
         assert!(store.lookup(1, 10).is_some());
     }
+
+    #[test]
+    fn test_generation_increments_on_write() {
+        let store = create_test_store();
+        let gen0 = store.generation();
+
+        store.write(1, 10, 100, false);
+        let gen1 = store.generation();
+        assert!(gen1 > gen0);
+
+        store.write(1, 11, 50, false);
+        let gen2 = store.generation();
+        assert!(gen2 > gen1);
+    }
+
+    #[test]
+    fn test_generation_increments_on_tick_change() {
+        let store = create_test_store();
+        store.set_dim_rate(1, 10.0);
+        store.write(1, 10, 200, true);
+
+        let gen_before = store.generation();
+        let changed = store.tick();
+        let gen_after = store.generation();
+
+        assert!(changed);
+        assert!(gen_after > gen_before);
+    }
+
+    #[test]
+    fn test_generation_increments_on_clear() {
+        let store = create_test_store();
+        store.write(1, 10, 100, false);
+        let gen_before = store.generation();
+
+        store.clear();
+        let gen_after = store.generation();
+        assert!(gen_after > gen_before);
+    }
+
+    #[test]
+    fn test_fixture_info() {
+        let store = create_test_store();
+
+        let (fixture, channel) = store.fixture_info(0);
+        assert_eq!(fixture, "wash1");
+        assert_eq!(channel, "dimmer");
+
+        let (fixture, channel) = store.fixture_info(2);
+        assert_eq!(fixture, "wash1");
+        assert_eq!(channel, "green");
+    }
+
+    #[test]
+    fn test_tick_no_active_slots_returns_false() {
+        let store = create_test_store();
+        assert!(!store.tick());
+    }
+
+    #[test]
+    fn test_tick_converged_slots_returns_false() {
+        let store = create_test_store();
+        store.write(1, 10, 100, false);
+        store.tick(); // First tick sets to target
+
+        // Already at target — tick should return false
+        assert!(!store.tick());
+    }
+
+    #[test]
+    fn test_write_to_unmapped_channel_is_noop() {
+        let store = create_test_store();
+        let gen_before = store.generation();
+
+        store.write(2, 99, 255, false); // non-existent universe/channel
+
+        // Nothing should change
+        assert_eq!(store.generation(), gen_before);
+        assert!(!store.has_active_slots());
+    }
+
+    #[test]
+    fn test_default_trait() {
+        let store = LegacyDmxStore::default();
+        assert_eq!(store.iter_active().count(), 0);
+        assert_eq!(store.generation(), 0);
+    }
+
+    #[test]
+    fn test_multiple_universes() {
+        let mut store = LegacyDmxStore::new();
+        store.register_slot(1, 1, "fixture_a", "dimmer");
+        store.register_slot(2, 1, "fixture_b", "dimmer");
+        store.register_universe(1);
+        store.register_universe(2);
+
+        store.write(1, 1, 100, false);
+        store.write(2, 1, 200, false);
+        store.tick();
+
+        let values: Vec<(usize, f64)> = store.iter_active().collect();
+        assert_eq!(values.len(), 2);
+    }
+
+    #[test]
+    fn test_instant_write_zero_dim_rate() {
+        let store = create_test_store();
+        store.set_dim_rate(1, 0.0);
+
+        store.write(1, 10, 128, true); // dim=true but rate=0
+        store.tick();
+
+        let values: Vec<(usize, f64)> = store.iter_active().collect();
+        assert_eq!(values.len(), 1);
+        // Should be at target immediately (rate was 0)
+        assert!((values[0].1 - 128.0 / 255.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_dim_down() {
+        let store = create_test_store();
+        store.set_dim_rate(1, 44.0);
+
+        // Set to high value first
+        store.write(1, 10, 200, false);
+        store.tick();
+
+        // Now dim down
+        store.write(1, 10, 50, true);
+
+        // After several ticks, should be between current and target
+        for _ in 0..22 {
+            store.tick();
+        }
+
+        let values: Vec<(usize, f64)> = store.iter_active().collect();
+        let normalized = values[0].1;
+        // Should be between 50/255 and 200/255
+        assert!(normalized > 50.0 / 255.0 - 0.05);
+        assert!(normalized < 200.0 / 255.0 + 0.05);
+    }
+
+    #[test]
+    fn test_lookup_returns_correct_slot_index() {
+        let store = create_test_store();
+
+        assert_eq!(store.lookup(1, 10), Some(0));
+        assert_eq!(store.lookup(1, 11), Some(1));
+        assert_eq!(store.lookup(1, 12), Some(2));
+        assert_eq!(store.lookup(1, 13), Some(3));
+    }
 }

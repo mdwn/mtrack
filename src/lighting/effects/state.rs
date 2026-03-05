@@ -101,6 +101,11 @@ impl FixtureState {
         }
     }
 
+    #[cfg(test)]
+    pub fn get_channel(&self, name: &str) -> Option<&ChannelState> {
+        self.channels.get(name)
+    }
+
     /// Create a FixtureState from an iterator of channel name/state pairs.
     pub fn from_channels(channels: impl IntoIterator<Item = (String, ChannelState)>) -> Self {
         Self {
@@ -189,5 +194,374 @@ impl FixtureState {
         }
 
         commands
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── is_multiplier_channel ──────────────────────────────────────
+
+    #[test]
+    fn is_multiplier_dimmer_bg() {
+        assert!(is_multiplier_channel("_dimmer_mult_bg"));
+    }
+
+    #[test]
+    fn is_multiplier_dimmer_fg() {
+        assert!(is_multiplier_channel("_dimmer_mult_fg"));
+    }
+
+    #[test]
+    fn is_multiplier_pulse_mid() {
+        assert!(is_multiplier_channel("_pulse_mult_mid"));
+    }
+
+    #[test]
+    fn is_multiplier_regular_channel() {
+        assert!(!is_multiplier_channel("red"));
+        assert!(!is_multiplier_channel("dimmer"));
+        assert!(!is_multiplier_channel("strobe"));
+    }
+
+    // ── ChannelState::new ──────────────────────────────────────────
+
+    #[test]
+    fn channel_state_new_clamps_above_one() {
+        let cs = ChannelState::new(1.5, EffectLayer::Background, BlendMode::Replace);
+        assert_eq!(cs.value, 1.0);
+    }
+
+    #[test]
+    fn channel_state_new_clamps_below_zero() {
+        let cs = ChannelState::new(-0.5, EffectLayer::Background, BlendMode::Replace);
+        assert_eq!(cs.value, 0.0);
+    }
+
+    #[test]
+    fn channel_state_new_normal_value() {
+        let cs = ChannelState::new(0.75, EffectLayer::Midground, BlendMode::Add);
+        assert_eq!(cs.value, 0.75);
+        assert_eq!(cs.layer, EffectLayer::Midground);
+        assert_eq!(cs.blend_mode, BlendMode::Add);
+    }
+
+    // ── ChannelState::blend_with — Replace ─────────────────────────
+
+    #[test]
+    fn blend_replace() {
+        let a = ChannelState::new(0.3, EffectLayer::Background, BlendMode::Replace);
+        let b = ChannelState::new(0.8, EffectLayer::Foreground, BlendMode::Replace);
+        let result = a.blend_with(b);
+        assert!((result.value - 0.8).abs() < 1e-9);
+    }
+
+    // ── ChannelState::blend_with — Multiply ────────────────────────
+
+    #[test]
+    fn blend_multiply() {
+        let a = ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace);
+        let b = ChannelState::new(0.6, EffectLayer::Midground, BlendMode::Multiply);
+        let result = a.blend_with(b);
+        assert!((result.value - 0.3).abs() < 1e-9);
+    }
+
+    // ── ChannelState::blend_with — Add ─────────────────────────────
+
+    #[test]
+    fn blend_add_no_overflow() {
+        let a = ChannelState::new(0.3, EffectLayer::Background, BlendMode::Replace);
+        let b = ChannelState::new(0.4, EffectLayer::Midground, BlendMode::Add);
+        let result = a.blend_with(b);
+        assert!((result.value - 0.7).abs() < 1e-9);
+    }
+
+    #[test]
+    fn blend_add_clamped_to_one() {
+        let a = ChannelState::new(0.7, EffectLayer::Background, BlendMode::Replace);
+        let b = ChannelState::new(0.8, EffectLayer::Midground, BlendMode::Add);
+        let result = a.blend_with(b);
+        assert!((result.value - 1.0).abs() < 1e-9);
+    }
+
+    // ── ChannelState::blend_with — Overlay ─────────────────────────
+
+    #[test]
+    fn blend_overlay_dark_base() {
+        // base < 0.5 → multiply formula: 2 * base * overlay
+        let a = ChannelState::new(0.25, EffectLayer::Background, BlendMode::Replace);
+        let b = ChannelState::new(0.5, EffectLayer::Midground, BlendMode::Overlay);
+        let result = a.blend_with(b);
+        assert!((result.value - 0.25).abs() < 1e-9); // 2 * 0.25 * 0.5 = 0.25
+    }
+
+    #[test]
+    fn blend_overlay_bright_base() {
+        // base >= 0.5 → screen formula: 1 - 2*(1-base)*(1-overlay)
+        let a = ChannelState::new(0.75, EffectLayer::Background, BlendMode::Replace);
+        let b = ChannelState::new(0.5, EffectLayer::Midground, BlendMode::Overlay);
+        let result = a.blend_with(b);
+        // 1 - 2*(0.25)*(0.5) = 1 - 0.25 = 0.75
+        assert!((result.value - 0.75).abs() < 1e-9);
+    }
+
+    // ── ChannelState::blend_with — Screen ──────────────────────────
+
+    #[test]
+    fn blend_screen() {
+        let a = ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace);
+        let b = ChannelState::new(0.5, EffectLayer::Midground, BlendMode::Screen);
+        let result = a.blend_with(b);
+        // 1 - (0.5)*(0.5) = 0.75
+        assert!((result.value - 0.75).abs() < 1e-9);
+    }
+
+    // ── ChannelState::blend_with — layer propagation ───────────────
+
+    #[test]
+    fn blend_uses_higher_layer() {
+        let a = ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace);
+        let b = ChannelState::new(0.5, EffectLayer::Foreground, BlendMode::Multiply);
+        let result = a.blend_with(b);
+        assert_eq!(result.layer, EffectLayer::Foreground);
+        assert_eq!(result.blend_mode, BlendMode::Multiply);
+    }
+
+    #[test]
+    fn blend_keeps_self_blend_mode_when_higher() {
+        let a = ChannelState::new(0.5, EffectLayer::Foreground, BlendMode::Add);
+        let b = ChannelState::new(0.5, EffectLayer::Background, BlendMode::Multiply);
+        let result = a.blend_with(b);
+        assert_eq!(result.layer, EffectLayer::Foreground);
+        assert_eq!(result.blend_mode, BlendMode::Add);
+    }
+
+    // ── FixtureState ───────────────────────────────────────────────
+
+    #[test]
+    fn fixture_state_default_empty() {
+        let fs = FixtureState::default();
+        assert!(fs.channels.is_empty());
+    }
+
+    #[test]
+    fn fixture_state_set_and_get_channel() {
+        let mut fs = FixtureState::new();
+        let cs = ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace);
+        fs.set_channel("red".to_string(), cs);
+        assert_eq!(fs.get_channel("red"), Some(&cs));
+    }
+
+    #[test]
+    fn fixture_state_from_channels() {
+        let channels = vec![
+            (
+                "red".to_string(),
+                ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
+            ),
+            (
+                "green".to_string(),
+                ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace),
+            ),
+        ];
+        let fs = FixtureState::from_channels(channels);
+        assert_eq!(fs.channels.len(), 2);
+    }
+
+    // ── FixtureState::blend_with ───────────────────────────────────
+
+    #[test]
+    fn fixture_state_blend_adds_new_channels() {
+        let mut fs1 = FixtureState::new();
+        fs1.set_channel(
+            "red".to_string(),
+            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
+        );
+
+        let mut fs2 = FixtureState::new();
+        fs2.set_channel(
+            "green".to_string(),
+            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace),
+        );
+
+        fs1.blend_with(&fs2);
+        assert!(fs1.get_channel("red").is_some());
+        assert!(fs1.get_channel("green").is_some());
+    }
+
+    #[test]
+    fn fixture_state_blend_blends_existing_channels() {
+        let mut fs1 = FixtureState::new();
+        fs1.set_channel(
+            "red".to_string(),
+            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace),
+        );
+
+        let mut fs2 = FixtureState::new();
+        fs2.set_channel(
+            "red".to_string(),
+            ChannelState::new(0.8, EffectLayer::Midground, BlendMode::Replace),
+        );
+
+        fs1.blend_with(&fs2);
+        let red = fs1.get_channel("red").unwrap();
+        assert!((red.value - 0.8).abs() < 1e-9); // Replace mode
+    }
+
+    #[test]
+    fn fixture_state_blend_multiplier_overwrites() {
+        let mut fs1 = FixtureState::new();
+        fs1.set_channel(
+            "_dimmer_mult_bg".to_string(),
+            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Multiply),
+        );
+
+        let mut fs2 = FixtureState::new();
+        fs2.set_channel(
+            "_dimmer_mult_bg".to_string(),
+            ChannelState::new(0.8, EffectLayer::Background, BlendMode::Multiply),
+        );
+
+        fs1.blend_with(&fs2);
+        let mult = fs1.get_channel("_dimmer_mult_bg").unwrap();
+        // Multiplier channels overwrite, not blend
+        assert!((mult.value - 0.8).abs() < 1e-9);
+    }
+
+    // ── effective_channel_value ─────────────────────────────────────
+
+    #[test]
+    fn effective_value_with_dedicated_dimmer() {
+        let mut fs = FixtureState::new();
+        let cs = ChannelState::new(0.8, EffectLayer::Background, BlendMode::Replace);
+        fs.set_channel("red".to_string(), cs);
+        // With a dedicated dimmer, multipliers should NOT apply
+        let value = fs.effective_channel_value("red", &cs, true);
+        assert!((value - 0.8).abs() < 1e-9);
+    }
+
+    #[test]
+    fn effective_value_without_dimmer_no_multipliers() {
+        let mut fs = FixtureState::new();
+        let cs = ChannelState::new(0.8, EffectLayer::Background, BlendMode::Replace);
+        fs.set_channel("red".to_string(), cs);
+        // No multipliers set → defaults to 1.0 → no change
+        let value = fs.effective_channel_value("red", &cs, false);
+        assert!((value - 0.8).abs() < 1e-9);
+    }
+
+    #[test]
+    fn effective_value_with_dimmer_multiplier() {
+        let mut fs = FixtureState::new();
+        let cs = ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace);
+        fs.set_channel("red".to_string(), cs);
+        fs.set_channel(
+            "_dimmer_mult_bg".to_string(),
+            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Multiply),
+        );
+        // Only bg dimmer set (0.5), mid/fg default to 1.0, pulse defaults to 1.0
+        // combined = 0.5 * 1.0 * 1.0 * 1.0 * 1.0 * 1.0 = 0.5
+        let value = fs.effective_channel_value("red", &cs, false);
+        assert!((value - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn effective_value_non_rgb_channel_unaffected() {
+        let mut fs = FixtureState::new();
+        let cs = ChannelState::new(0.8, EffectLayer::Background, BlendMode::Replace);
+        fs.set_channel("strobe".to_string(), cs);
+        fs.set_channel(
+            "_dimmer_mult_bg".to_string(),
+            ChannelState::new(0.1, EffectLayer::Background, BlendMode::Multiply),
+        );
+        // Non-RGB channels are not affected by multipliers
+        let value = fs.effective_channel_value("strobe", &cs, false);
+        assert!((value - 0.8).abs() < 1e-9);
+    }
+
+    #[test]
+    fn effective_value_foreground_replace_uses_fg_only() {
+        let mut fs = FixtureState::new();
+        let cs = ChannelState::new(1.0, EffectLayer::Foreground, BlendMode::Replace);
+        fs.set_channel("red".to_string(), cs);
+        fs.set_channel(
+            "_dimmer_mult_bg".to_string(),
+            ChannelState::new(0.1, EffectLayer::Background, BlendMode::Multiply),
+        );
+        fs.set_channel(
+            "_dimmer_mult_fg".to_string(),
+            ChannelState::new(0.5, EffectLayer::Foreground, BlendMode::Multiply),
+        );
+        // Foreground+Replace uses only fg multiplier: dimmer_fg * pulse_fg = 0.5 * 1.0
+        let value = fs.effective_channel_value("red", &cs, false);
+        assert!((value - 0.5).abs() < 1e-9);
+    }
+
+    // ── to_dmx_commands ────────────────────────────────────────────
+
+    fn make_fixture_info(channels: Vec<(&str, u16)>, address: u16) -> FixtureInfo {
+        let ch: HashMap<String, u16> = channels.iter().map(|(n, o)| (n.to_string(), *o)).collect();
+        FixtureInfo::new(
+            "test".to_string(),
+            1,
+            address,
+            "generic".to_string(),
+            ch,
+            None,
+        )
+    }
+
+    #[test]
+    fn to_dmx_commands_basic() {
+        let fixture = make_fixture_info(vec![("red", 1), ("green", 2), ("blue", 3)], 10);
+        let mut fs = FixtureState::new();
+        fs.set_channel(
+            "red".to_string(),
+            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
+        );
+        let cmds = fs.to_dmx_commands(&fixture);
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].universe, 1);
+        assert_eq!(cmds[0].channel, 10); // address(10) + offset(1) - 1
+        assert_eq!(cmds[0].value, 255);
+    }
+
+    #[test]
+    fn to_dmx_commands_skips_unknown_channels() {
+        let fixture = make_fixture_info(vec![("red", 1)], 1);
+        let mut fs = FixtureState::new();
+        fs.set_channel(
+            "nonexistent".to_string(),
+            ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace),
+        );
+        let cmds = fs.to_dmx_commands(&fixture);
+        assert!(cmds.is_empty());
+    }
+
+    #[test]
+    fn to_dmx_commands_skips_multiplier_channels() {
+        let fixture = make_fixture_info(vec![("red", 1)], 1);
+        let mut fs = FixtureState::new();
+        fs.set_channel(
+            "_dimmer_mult_bg".to_string(),
+            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Multiply),
+        );
+        let cmds = fs.to_dmx_commands(&fixture);
+        // Multiplier channels have no fixture mapping, so they produce no commands
+        assert!(cmds.is_empty());
+    }
+
+    #[test]
+    fn to_dmx_commands_half_value() {
+        let fixture = make_fixture_info(vec![("dimmer", 1)], 1);
+        let mut fs = FixtureState::new();
+        fs.set_channel(
+            "dimmer".to_string(),
+            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Replace),
+        );
+        let cmds = fs.to_dmx_commands(&fixture);
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].value, 127); // 0.5 * 255 = 127
     }
 }

@@ -765,6 +765,251 @@ mod tests {
     }
 
     #[test]
+    fn test_midi_release_group_format() {
+        assert_eq!(SampleEngine::midi_release_group(10, 36), "midi:10:36");
+        assert_eq!(SampleEngine::midi_release_group(1, 0), "midi:1:0");
+        assert_eq!(SampleEngine::midi_release_group(16, 127), "midi:16:127");
+    }
+
+    #[test]
+    fn test_extract_note_channel_note_on() {
+        let (mixer, source_tx) = create_test_mixer_and_sender();
+        let engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
+
+        let event = LiveEvent::Midi {
+            channel: 9.into(), // 0-indexed, so channel 10
+            message: MidiMessage::NoteOn {
+                key: 60.into(),
+                vel: 100.into(),
+            },
+        };
+
+        let result = engine.extract_note_channel(&event);
+        assert_eq!(result, Some((60, 10))); // note, channel (1-indexed)
+    }
+
+    #[test]
+    fn test_extract_note_channel_note_off() {
+        let (mixer, source_tx) = create_test_mixer_and_sender();
+        let engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
+
+        let event = LiveEvent::Midi {
+            channel: 0.into(),
+            message: MidiMessage::NoteOff {
+                key: 36.into(),
+                vel: 0.into(),
+            },
+        };
+
+        let result = engine.extract_note_channel(&event);
+        assert_eq!(result, Some((36, 1)));
+    }
+
+    #[test]
+    fn test_extract_note_channel_cc_returns_none() {
+        let (mixer, source_tx) = create_test_mixer_and_sender();
+        let engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
+
+        let event = LiveEvent::Midi {
+            channel: 0.into(),
+            message: MidiMessage::Controller {
+                controller: 1.into(),
+                value: 64.into(),
+            },
+        };
+
+        assert_eq!(engine.extract_note_channel(&event), None);
+    }
+
+    #[test]
+    fn test_extract_velocity_note_off() {
+        let (mixer, source_tx) = create_test_mixer_and_sender();
+        let engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
+
+        let event = LiveEvent::Midi {
+            channel: 0.into(),
+            message: MidiMessage::NoteOff {
+                key: 60.into(),
+                vel: 64.into(),
+            },
+        };
+        assert_eq!(engine.extract_velocity(&event), 64);
+    }
+
+    #[test]
+    fn test_extract_velocity_aftertouch() {
+        let (mixer, source_tx) = create_test_mixer_and_sender();
+        let engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
+
+        let event = LiveEvent::Midi {
+            channel: 0.into(),
+            message: MidiMessage::Aftertouch {
+                key: 60.into(),
+                vel: 50.into(),
+            },
+        };
+        assert_eq!(engine.extract_velocity(&event), 50);
+    }
+
+    #[test]
+    fn test_extract_velocity_channel_aftertouch() {
+        let (mixer, source_tx) = create_test_mixer_and_sender();
+        let engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
+
+        let event = LiveEvent::Midi {
+            channel: 0.into(),
+            message: MidiMessage::ChannelAftertouch { vel: 80.into() },
+        };
+        assert_eq!(engine.extract_velocity(&event), 80);
+    }
+
+    #[test]
+    fn test_extract_velocity_program_change() {
+        let (mixer, source_tx) = create_test_mixer_and_sender();
+        let engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
+
+        let event = LiveEvent::Midi {
+            channel: 0.into(),
+            message: MidiMessage::ProgramChange { program: 5.into() },
+        };
+        // ProgramChange has no velocity, defaults to 127
+        assert_eq!(engine.extract_velocity(&event), 127);
+    }
+
+    #[test]
+    fn test_trigger_matching_note_off() {
+        let (mixer, source_tx) = create_test_mixer_and_sender();
+        let engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
+
+        let trigger = LiveEvent::Midi {
+            channel: 0.into(),
+            message: MidiMessage::NoteOff {
+                key: 60.into(),
+                vel: 0.into(),
+            },
+        };
+
+        // Same key NoteOff — should match
+        let event = LiveEvent::Midi {
+            channel: 0.into(),
+            message: MidiMessage::NoteOff {
+                key: 60.into(),
+                vel: 64.into(),
+            },
+        };
+        assert!(engine.matches_trigger(&event, &trigger));
+
+        // Different key — should not match
+        let event2 = LiveEvent::Midi {
+            channel: 0.into(),
+            message: MidiMessage::NoteOff {
+                key: 61.into(),
+                vel: 0.into(),
+            },
+        };
+        assert!(!engine.matches_trigger(&event2, &trigger));
+    }
+
+    #[test]
+    fn test_trigger_matching_cc() {
+        let (mixer, source_tx) = create_test_mixer_and_sender();
+        let engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
+
+        let trigger = LiveEvent::Midi {
+            channel: 0.into(),
+            message: MidiMessage::Controller {
+                controller: 64.into(),
+                value: 127.into(),
+            },
+        };
+
+        // Same CC and value — should match
+        let event = LiveEvent::Midi {
+            channel: 0.into(),
+            message: MidiMessage::Controller {
+                controller: 64.into(),
+                value: 127.into(),
+            },
+        };
+        assert!(engine.matches_trigger(&event, &trigger));
+
+        // Same CC, different value — should NOT match (CC matching is exact)
+        let event2 = LiveEvent::Midi {
+            channel: 0.into(),
+            message: MidiMessage::Controller {
+                controller: 64.into(),
+                value: 0.into(),
+            },
+        };
+        assert!(!engine.matches_trigger(&event2, &trigger));
+    }
+
+    #[test]
+    fn test_trigger_matching_program_change() {
+        let (mixer, source_tx) = create_test_mixer_and_sender();
+        let engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
+
+        let trigger = LiveEvent::Midi {
+            channel: 0.into(),
+            message: MidiMessage::ProgramChange { program: 5.into() },
+        };
+
+        let event = LiveEvent::Midi {
+            channel: 0.into(),
+            message: MidiMessage::ProgramChange { program: 5.into() },
+        };
+        assert!(engine.matches_trigger(&event, &trigger));
+
+        let event2 = LiveEvent::Midi {
+            channel: 0.into(),
+            message: MidiMessage::ProgramChange { program: 6.into() },
+        };
+        assert!(!engine.matches_trigger(&event2, &trigger));
+    }
+
+    #[test]
+    fn test_trigger_matching_mismatched_types() {
+        let (mixer, source_tx) = create_test_mixer_and_sender();
+        let engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
+
+        let trigger = LiveEvent::Midi {
+            channel: 0.into(),
+            message: MidiMessage::NoteOn {
+                key: 60.into(),
+                vel: 127.into(),
+            },
+        };
+
+        // CC event should not match NoteOn trigger
+        let event = LiveEvent::Midi {
+            channel: 0.into(),
+            message: MidiMessage::Controller {
+                controller: 60.into(),
+                value: 127.into(),
+            },
+        };
+        assert!(!engine.matches_trigger(&event, &trigger));
+    }
+
+    #[test]
+    fn test_engine_debug_format() {
+        let (mixer, source_tx) = create_test_mixer_and_sender();
+        let engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
+
+        let debug_str = format!("{:?}", engine);
+        assert!(debug_str.contains("SampleEngine"));
+        assert!(debug_str.contains("samples"));
+        assert!(debug_str.contains("triggers"));
+    }
+
+    #[test]
+    fn test_engine_memory_usage_empty() {
+        let (mixer, source_tx) = create_test_mixer_and_sender();
+        let engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
+        assert_eq!(engine.memory_usage(), 0);
+    }
+
+    #[test]
     fn test_output_channels_still_works() {
         let (mixer, source_tx) = create_test_mixer_and_sender();
         let mut engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());

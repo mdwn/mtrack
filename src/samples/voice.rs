@@ -392,6 +392,80 @@ mod tests {
     }
 
     #[test]
+    fn test_voice_manager_clear() {
+        let mut manager = VoiceManager::new(32);
+
+        let voice1 = make_voice("kick", Some("midi:10:36"), 1);
+        let voice2 = make_voice("snare", Some("midi:10:38"), 2);
+        manager.add_voice(voice1, RetriggerBehavior::Polyphonic);
+        manager.add_voice(voice2, RetriggerBehavior::Polyphonic);
+        assert_eq!(manager.active_count(), 2);
+
+        let handles = manager.clear();
+        assert_eq!(handles.len(), 2);
+        assert_eq!(manager.active_count(), 0);
+    }
+
+    #[test]
+    fn test_voice_manager_debug_format() {
+        let manager = VoiceManager::new(16);
+        let debug_str = format!("{:?}", manager);
+        assert!(debug_str.contains("VoiceManager"));
+        assert!(debug_str.contains("active_voices"));
+        assert!(debug_str.contains("max_voices"));
+        assert!(debug_str.contains("16"));
+    }
+
+    #[test]
+    fn test_voice_manager_sweep_finished() {
+        let mut manager = VoiceManager::new(32);
+
+        let is_finished = Arc::new(AtomicBool::new(false));
+        let voice = Voice::new(
+            "test".to_string(),
+            None,
+            ReleaseBehavior::Stop,
+            1,
+            CancelHandle::new(),
+            Arc::new(AtomicU64::new(0)),
+            is_finished.clone(),
+        );
+        manager.add_voice(voice, RetriggerBehavior::Polyphonic);
+        assert_eq!(manager.active_count(), 1);
+
+        // Mark as finished and add another voice (triggers sweep)
+        is_finished.store(true, Ordering::Relaxed);
+        let voice2 = make_voice("other", None, 2);
+        manager.add_voice(voice2, RetriggerBehavior::Polyphonic);
+        // First voice should have been swept, only second remains
+        assert_eq!(manager.active_count(), 1);
+    }
+
+    #[test]
+    fn test_release_nonexistent_group() {
+        let mut manager = VoiceManager::new(32);
+        let voice = make_voice("kick", Some("midi:10:36"), 1);
+        manager.add_voice(voice, RetriggerBehavior::Polyphonic);
+
+        // Release a group that no voice belongs to
+        let stopped = manager.release("nonexistent");
+        assert!(stopped.is_empty());
+        assert_eq!(manager.active_count(), 1);
+    }
+
+    #[test]
+    fn test_voice_without_release_group() {
+        let mut manager = VoiceManager::new(32);
+        let voice = make_voice("ambient", None, 1);
+        manager.add_voice(voice, RetriggerBehavior::Polyphonic);
+
+        // Releasing any group should not affect a voice with no release group
+        let stopped = manager.release("midi:10:36");
+        assert!(stopped.is_empty());
+        assert_eq!(manager.active_count(), 1);
+    }
+
+    #[test]
     fn test_release_mixed_behaviors_in_same_group() {
         let mut manager = VoiceManager::new(32);
 

@@ -577,6 +577,46 @@ mod test {
     }
 
     #[test]
+    fn compute_track_peaks_zero_buckets_edge() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let wav_path = temp_dir.path().join("test.wav");
+        let samples: Vec<i32> = (0..4410).map(|i| (i * 100) % 32768).collect();
+        crate::testutil::write_wav(wav_path.clone(), vec![samples], 44100).expect("write test wav");
+
+        // Even with 1 bucket, should work
+        let peaks = compute_track_peaks(&wav_path, 1, 1);
+        assert!(!peaks.is_empty());
+        assert!(peaks.len() <= 1);
+    }
+
+    #[test]
+    fn waveform_cache_overwrite() {
+        let cache = new_waveform_cache();
+        let peaks1 = vec![("t1".to_string(), vec![0.5])];
+        let peaks2 = vec![("t2".to_string(), vec![1.0])];
+        cache.lock().insert("Song".to_string(), peaks1);
+        cache.lock().insert("Song".to_string(), peaks2.clone());
+
+        let retrieved = cache.lock().get("Song").cloned().unwrap();
+        assert_eq!(retrieved, peaks2);
+    }
+
+    #[test]
+    fn waveform_cache_multiple_songs() {
+        let cache = new_waveform_cache();
+        cache
+            .lock()
+            .insert("Song A".to_string(), vec![("t".to_string(), vec![0.1])]);
+        cache
+            .lock()
+            .insert("Song B".to_string(), vec![("t".to_string(), vec![0.9])]);
+
+        assert_eq!(cache.lock().len(), 2);
+        assert!(cache.lock().contains_key("Song A"));
+        assert!(cache.lock().contains_key("Song B"));
+    }
+
+    #[test]
     fn compute_waveform_peaks_multiple_tracks() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
 

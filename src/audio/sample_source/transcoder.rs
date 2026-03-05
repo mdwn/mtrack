@@ -368,3 +368,97 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── SlidingInputBuffer ─────────────────────────────────────────
+
+    #[test]
+    fn input_buffer_new_empty() {
+        let buf = SlidingInputBuffer::new(2);
+        assert_eq!(buf.len(), 0);
+        assert!(!buf.source_finished);
+    }
+
+    #[test]
+    fn input_buffer_push_and_len() {
+        let mut buf = SlidingInputBuffer::new(2);
+        buf.push_frame(&[1.0, 2.0]);
+        assert_eq!(buf.len(), 1);
+        buf.push_frame(&[3.0, 4.0]);
+        assert_eq!(buf.len(), 2);
+    }
+
+    #[test]
+    fn input_buffer_drain() {
+        let mut buf = SlidingInputBuffer::new(2);
+        buf.push_frame(&[1.0, 2.0]);
+        buf.push_frame(&[3.0, 4.0]);
+        buf.push_frame(&[5.0, 6.0]);
+        buf.drain_frames(2);
+        assert_eq!(buf.len(), 1);
+        assert_eq!(buf.channels[0][0], 5.0);
+        assert_eq!(buf.channels[1][0], 6.0);
+    }
+
+    #[test]
+    fn input_buffer_drain_more_than_available() {
+        let mut buf = SlidingInputBuffer::new(1);
+        buf.push_frame(&[1.0]);
+        buf.drain_frames(100); // Should not panic
+        assert_eq!(buf.len(), 0);
+    }
+
+    #[test]
+    fn input_buffer_zero_channels() {
+        let buf = SlidingInputBuffer::new(0);
+        assert_eq!(buf.len(), 0);
+    }
+
+    // ── OutputFifo ─────────────────────────────────────────────────
+
+    #[test]
+    fn output_fifo_empty() {
+        let mut fifo = OutputFifo::new();
+        assert_eq!(fifo.pop(), None);
+    }
+
+    #[test]
+    fn output_fifo_push_and_pop() {
+        let mut fifo = OutputFifo::new();
+        let ch0 = vec![1.0, 3.0, 5.0];
+        let ch1 = vec![2.0, 4.0, 6.0];
+        fifo.push_frames(&[ch0, ch1], 3);
+        // Should be interleaved: 1,2, 3,4, 5,6
+        assert_eq!(fifo.pop(), Some(1.0));
+        assert_eq!(fifo.pop(), Some(2.0));
+        assert_eq!(fifo.pop(), Some(3.0));
+        assert_eq!(fifo.pop(), Some(4.0));
+        assert_eq!(fifo.pop(), Some(5.0));
+        assert_eq!(fifo.pop(), Some(6.0));
+        assert_eq!(fifo.pop(), None);
+    }
+
+    #[test]
+    fn output_fifo_partial_frames() {
+        let mut fifo = OutputFifo::new();
+        let ch0 = vec![1.0, 2.0, 3.0];
+        // Push only 2 of 3 available frames
+        fifo.push_frames(&[ch0], 2);
+        assert_eq!(fifo.pop(), Some(1.0));
+        assert_eq!(fifo.pop(), Some(2.0));
+        assert_eq!(fifo.pop(), None);
+    }
+
+    #[test]
+    fn output_fifo_mono() {
+        let mut fifo = OutputFifo::new();
+        let ch = vec![0.5, -0.5];
+        fifo.push_frames(&[ch], 2);
+        assert_eq!(fifo.pop(), Some(0.5));
+        assert_eq!(fifo.pop(), Some(-0.5));
+        assert_eq!(fifo.pop(), None);
+    }
+}

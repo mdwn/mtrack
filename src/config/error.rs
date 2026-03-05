@@ -33,3 +33,29 @@ pub enum ConfigError {
         source: config::ConfigError,
     },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_io_error() {
+        let e = ConfigError::Io {
+            path: PathBuf::from("/tmp/config.yaml"),
+            source: std::io::Error::new(std::io::ErrorKind::NotFound, "not found"),
+        };
+        let msg = format!("{}", e);
+        assert!(msg.contains("/tmp/config.yaml"));
+        assert!(msg.contains("not found"));
+    }
+
+    #[test]
+    fn is_std_error() {
+        let e = ConfigError::Io {
+            path: PathBuf::from("test"),
+            source: std::io::Error::new(std::io::ErrorKind::Other, "test"),
+        };
+        let boxed: Box<dyn std::error::Error> = Box::new(e);
+        assert!(boxed.to_string().contains("test"));
+    }
+}

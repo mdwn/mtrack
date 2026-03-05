@@ -162,4 +162,73 @@ mod test {
         cancel_handle.cancel();
         assert!(join.join().unwrap());
     }
+
+    #[test]
+    fn test_cancel_idempotent() {
+        let cancel_handle = CancelHandle::new();
+        assert!(!cancel_handle.is_cancelled());
+
+        cancel_handle.cancel();
+        assert!(cancel_handle.is_cancelled());
+
+        // Second cancel should be a no-op
+        cancel_handle.cancel();
+        assert!(cancel_handle.is_cancelled());
+    }
+
+    #[test]
+    fn test_default_impl() {
+        let cancel_handle = CancelHandle::default();
+        assert!(!cancel_handle.is_cancelled());
+    }
+
+    #[test]
+    fn test_clone_shares_state() {
+        let handle1 = CancelHandle::new();
+        let handle2 = handle1.clone();
+
+        assert!(!handle2.is_cancelled());
+        handle1.cancel();
+        assert!(handle2.is_cancelled());
+    }
+
+    #[test]
+    fn test_notify_wakes_waiter_when_finished() {
+        let cancel_handle = CancelHandle::new();
+        let finished = Arc::new(AtomicBool::new(false));
+
+        let join = {
+            let cancel_handle = cancel_handle.clone();
+            let finished = finished.clone();
+            thread::spawn(move || cancel_handle.wait(finished))
+        };
+
+        // Set finished and notify
+        finished.store(true, Ordering::Relaxed);
+        cancel_handle.notify();
+
+        assert!(join.join().is_ok());
+        // Should NOT be cancelled — just finished
+        assert!(!cancel_handle.is_cancelled());
+    }
+
+    #[test]
+    fn test_wait_returns_immediately_when_already_cancelled() {
+        let cancel_handle = CancelHandle::new();
+        cancel_handle.cancel();
+
+        // Wait should return immediately since already cancelled
+        let finished = Arc::new(AtomicBool::new(false));
+        cancel_handle.wait(finished);
+        assert!(cancel_handle.is_cancelled());
+    }
+
+    #[test]
+    fn test_wait_with_timeout_returns_immediately_when_already_finished() {
+        let cancel_handle = CancelHandle::new();
+        let finished = Arc::new(AtomicBool::new(true));
+
+        let result = cancel_handle.wait_with_timeout(finished, std::time::Duration::from_millis(1));
+        assert!(result);
+    }
 }

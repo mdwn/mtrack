@@ -86,3 +86,110 @@ pub(crate) fn analyze_parsing_failure(content: &str) -> String {
         format!("Possible issues found:\n{}", suggestions.join("\n"))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── get_error_context ──────────────────────────────────────────
+
+    #[test]
+    fn error_context_basic() {
+        let content = "line1\nline2\nline3\nline4\nline5";
+        let ctx = get_error_context(content, 3, 1);
+        assert!(ctx.contains("line3"));
+        assert!(ctx.contains("^")); // caret marker
+    }
+
+    #[test]
+    fn error_context_first_line() {
+        let content = "first\nsecond\nthird";
+        let ctx = get_error_context(content, 1, 3);
+        assert!(ctx.contains("first"));
+        assert!(ctx.contains("^"));
+    }
+
+    #[test]
+    fn error_context_last_line() {
+        let content = "first\nsecond\nthird";
+        let ctx = get_error_context(content, 3, 1);
+        assert!(ctx.contains("third"));
+        assert!(ctx.contains("^"));
+    }
+
+    #[test]
+    fn error_context_line_zero_invalid() {
+        let ctx = get_error_context("hello", 0, 1);
+        assert!(ctx.contains("Unable to determine"));
+    }
+
+    #[test]
+    fn error_context_line_out_of_bounds() {
+        let ctx = get_error_context("hello", 100, 1);
+        assert!(ctx.contains("Unable to determine"));
+    }
+
+    #[test]
+    fn error_context_col_offset() {
+        let content = "line1\nline2\nline3";
+        let ctx = get_error_context(content, 2, 5);
+        // Should have spaces before the caret
+        assert!(ctx.contains("    ^"));
+    }
+
+    #[test]
+    fn error_context_col_one() {
+        let content = "hello";
+        let ctx = get_error_context(content, 1, 1);
+        assert!(ctx.contains("^"));
+    }
+
+    // ── analyze_parsing_failure ────────────────────────────────────
+
+    #[test]
+    fn analyze_no_issues() {
+        let result = analyze_parsing_failure("normal content here");
+        assert!(result.contains("Unable to determine"));
+    }
+
+    #[test]
+    fn analyze_missing_show_quotes() {
+        let result = analyze_parsing_failure("show My Show Name");
+        assert!(result.contains("missing quotes"));
+    }
+
+    #[test]
+    fn analyze_show_with_quotes_ok() {
+        // show "My Show" should NOT trigger the warning
+        let result = analyze_parsing_failure("show \"My Show\"");
+        assert!(result.contains("Unable to determine"));
+    }
+
+    #[test]
+    fn analyze_missing_at_symbol() {
+        let result = analyze_parsing_failure("00:30.000");
+        assert!(result.contains("missing @"));
+    }
+
+    #[test]
+    fn analyze_missing_at_symbol_short() {
+        let result = analyze_parsing_failure("0:15");
+        assert!(result.contains("missing @"));
+    }
+
+    #[test]
+    fn analyze_shows_typo() {
+        let result = analyze_parsing_failure("shows something");
+        assert!(result.contains("Did you mean 'show'"));
+    }
+
+    #[test]
+    fn analyze_multiple_issues() {
+        let content = "show My Show\n00:30.000";
+        let result = analyze_parsing_failure(content);
+        assert!(result.contains("Possible issues found:"));
+        // Should find both issues
+        assert!(result.contains("missing quotes"));
+        assert!(result.contains("missing @"));
+    }
+}

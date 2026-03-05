@@ -250,3 +250,288 @@ pub(crate) fn set_layer_speed_master(
         layer_speed_masters.insert(layer, clamped);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+
+    fn static_effect() -> EffectType {
+        EffectType::Static {
+            parameters: HashMap::new(),
+            duration: None,
+        }
+    }
+
+    fn make_effect(id: &str, fixtures: Vec<&str>, layer: EffectLayer) -> EffectInstance {
+        let mut inst = EffectInstance::new(
+            id.to_string(),
+            static_effect(),
+            fixtures.into_iter().map(|s| s.to_string()).collect(),
+            None,
+            None,
+            None,
+        );
+        inst.layer = layer;
+        inst
+    }
+
+    fn make_effect_with_blend(
+        id: &str,
+        fixtures: Vec<&str>,
+        layer: EffectLayer,
+        blend: BlendMode,
+    ) -> EffectInstance {
+        let mut inst = make_effect(id, fixtures, layer);
+        inst.blend_mode = blend;
+        inst
+    }
+
+    fn make_effect_with_priority(
+        id: &str,
+        fixtures: Vec<&str>,
+        layer: EffectLayer,
+        priority: u8,
+    ) -> EffectInstance {
+        let mut inst = make_effect(id, fixtures, layer);
+        inst.priority = priority;
+        inst
+    }
+
+    // ── blend_modes_are_compatible ─────────────────────────────────
+
+    #[test]
+    fn replace_incompatible_with_anything() {
+        assert!(!blend_modes_are_compatible(
+            BlendMode::Replace,
+            BlendMode::Add
+        ));
+        assert!(!blend_modes_are_compatible(
+            BlendMode::Add,
+            BlendMode::Replace
+        ));
+        assert!(!blend_modes_are_compatible(
+            BlendMode::Replace,
+            BlendMode::Replace
+        ));
+    }
+
+    #[test]
+    fn non_replace_modes_compatible() {
+        assert!(blend_modes_are_compatible(
+            BlendMode::Add,
+            BlendMode::Multiply
+        ));
+        assert!(blend_modes_are_compatible(
+            BlendMode::Multiply,
+            BlendMode::Screen
+        ));
+        assert!(blend_modes_are_compatible(
+            BlendMode::Overlay,
+            BlendMode::Add
+        ));
+    }
+
+    // ── should_effects_conflict ────────────────────────────────────
+
+    #[test]
+    fn different_layers_no_conflict() {
+        let e1 = make_effect("a", vec!["f1"], EffectLayer::Background);
+        let e2 = make_effect("b", vec!["f1"], EffectLayer::Foreground);
+        assert!(!should_effects_conflict(&e1, &e2));
+    }
+
+    #[test]
+    fn same_layer_same_fixtures_conflicts() {
+        let e1 = make_effect("a", vec!["f1"], EffectLayer::Background);
+        let e2 = make_effect("b", vec!["f1"], EffectLayer::Background);
+        assert!(should_effects_conflict(&e1, &e2));
+    }
+
+    #[test]
+    fn same_layer_no_fixture_overlap_no_conflict() {
+        let e1 = make_effect("a", vec!["f1"], EffectLayer::Background);
+        let e2 = make_effect("b", vec!["f2"], EffectLayer::Background);
+        assert!(!should_effects_conflict(&e1, &e2));
+    }
+
+    #[test]
+    fn higher_priority_new_effect_conflicts_with_overlap() {
+        let e1 = make_effect_with_priority("a", vec!["f1"], EffectLayer::Background, 0);
+        let e2 = make_effect_with_priority("b", vec!["f1"], EffectLayer::Background, 5);
+        assert!(should_effects_conflict(&e1, &e2));
+    }
+
+    #[test]
+    fn compatible_blend_modes_no_conflict() {
+        let e1 = make_effect_with_blend("a", vec!["f1"], EffectLayer::Background, BlendMode::Add);
+        let e2 = make_effect_with_blend(
+            "b",
+            vec!["f1"],
+            EffectLayer::Background,
+            BlendMode::Multiply,
+        );
+        assert!(!should_effects_conflict(&e1, &e2));
+    }
+
+    // ── stop_conflicting_effects ───────────────────────────────────
+
+    #[test]
+    fn stop_removes_conflicting() {
+        let mut active = HashMap::new();
+        active.insert(
+            "a".to_string(),
+            make_effect("a", vec!["f1"], EffectLayer::Background),
+        );
+        let new_effect = make_effect("b", vec!["f1"], EffectLayer::Background);
+        stop_conflicting_effects(&mut active, &new_effect);
+        assert!(!active.contains_key("a"));
+    }
+
+    #[test]
+    fn stop_keeps_non_conflicting() {
+        let mut active = HashMap::new();
+        active.insert(
+            "a".to_string(),
+            make_effect("a", vec!["f2"], EffectLayer::Background),
+        );
+        let new_effect = make_effect("b", vec!["f1"], EffectLayer::Background);
+        stop_conflicting_effects(&mut active, &new_effect);
+        assert!(active.contains_key("a"));
+    }
+
+    #[test]
+    fn stop_skips_disabled_effects() {
+        let mut active = HashMap::new();
+        let mut disabled = make_effect("a", vec!["f1"], EffectLayer::Background);
+        disabled.enabled = false;
+        active.insert("a".to_string(), disabled);
+        let new_effect = make_effect("b", vec!["f1"], EffectLayer::Background);
+        stop_conflicting_effects(&mut active, &new_effect);
+        assert!(active.contains_key("a")); // Disabled effect not removed
+    }
+
+    // ── clear_layer ────────────────────────────────────────────────
+
+    #[test]
+    fn clear_layer_removes_matching() {
+        let mut active = HashMap::new();
+        active.insert(
+            "a".to_string(),
+            make_effect("a", vec!["f1"], EffectLayer::Background),
+        );
+        active.insert(
+            "b".to_string(),
+            make_effect("b", vec!["f1"], EffectLayer::Foreground),
+        );
+        let mut releasing = HashMap::new();
+        let mut frozen = HashMap::new();
+        clear_layer(
+            &mut active,
+            &mut releasing,
+            &mut frozen,
+            EffectLayer::Background,
+        );
+        assert!(!active.contains_key("a"));
+        assert!(active.contains_key("b"));
+    }
+
+    // ── clear_all_layers ───────────────────────────────────────────
+
+    #[test]
+    fn clear_all_empties_everything() {
+        let mut active = HashMap::new();
+        active.insert(
+            "a".to_string(),
+            make_effect("a", vec!["f1"], EffectLayer::Background),
+        );
+        let mut releasing = HashMap::new();
+        releasing.insert("a".to_string(), (Duration::from_secs(1), Instant::now()));
+        let mut frozen = HashMap::new();
+        frozen.insert(EffectLayer::Background, Instant::now());
+        clear_all_layers(&mut active, &mut releasing, &mut frozen);
+        assert!(active.is_empty());
+        assert!(releasing.is_empty());
+        assert!(frozen.is_empty());
+    }
+
+    // ── set_layer_intensity_master ─────────────────────────────────
+
+    #[test]
+    fn intensity_master_set_value() {
+        let mut masters = HashMap::new();
+        set_layer_intensity_master(&mut masters, EffectLayer::Background, 0.5);
+        assert_eq!(masters.get(&EffectLayer::Background), Some(&0.5));
+    }
+
+    #[test]
+    fn intensity_master_one_removes() {
+        let mut masters = HashMap::new();
+        masters.insert(EffectLayer::Background, 0.5);
+        set_layer_intensity_master(&mut masters, EffectLayer::Background, 1.0);
+        assert!(!masters.contains_key(&EffectLayer::Background));
+    }
+
+    #[test]
+    fn intensity_master_clamps() {
+        let mut masters = HashMap::new();
+        set_layer_intensity_master(&mut masters, EffectLayer::Background, 1.5);
+        // 1.5 clamps to 1.0, which is default, so removed
+        assert!(!masters.contains_key(&EffectLayer::Background));
+    }
+
+    #[test]
+    fn intensity_master_clamps_negative() {
+        let mut masters = HashMap::new();
+        set_layer_intensity_master(&mut masters, EffectLayer::Background, -0.5);
+        assert_eq!(masters.get(&EffectLayer::Background), Some(&0.0));
+    }
+
+    // ── freeze/unfreeze ────────────────────────────────────────────
+
+    #[test]
+    fn freeze_records_time() {
+        let mut frozen = HashMap::new();
+        let mut active = HashMap::new();
+        let now = Instant::now();
+        freeze_layer(&mut frozen, &mut active, EffectLayer::Background, now);
+        assert_eq!(frozen.get(&EffectLayer::Background), Some(&now));
+    }
+
+    #[test]
+    fn freeze_does_not_overwrite() {
+        let mut frozen = HashMap::new();
+        let mut active = HashMap::new();
+        let t1 = Instant::now();
+        freeze_layer(&mut frozen, &mut active, EffectLayer::Background, t1);
+        let t2 = Instant::now();
+        freeze_layer(&mut frozen, &mut active, EffectLayer::Background, t2);
+        assert_eq!(frozen.get(&EffectLayer::Background), Some(&t1));
+    }
+
+    #[test]
+    fn unfreeze_adjusts_start_times() {
+        let mut frozen = HashMap::new();
+        let mut active = HashMap::new();
+        let base = Instant::now();
+        let mut effect = make_effect("a", vec!["f1"], EffectLayer::Background);
+        effect.start_time = Some(base);
+        active.insert("a".to_string(), effect);
+
+        frozen.insert(EffectLayer::Background, base);
+        // Simulate 2 seconds frozen
+        let unfreeze_time = base + Duration::from_secs(2);
+        unfreeze_layer(
+            &mut frozen,
+            &mut active,
+            EffectLayer::Background,
+            unfreeze_time,
+        );
+
+        assert!(!frozen.contains_key(&EffectLayer::Background));
+        // Start time should be pushed forward by 2 seconds
+        let new_start = active.get("a").unwrap().start_time.unwrap();
+        assert_eq!(new_start, base + Duration::from_secs(2));
+    }
+}

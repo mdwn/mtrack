@@ -46,3 +46,88 @@ impl Playlist {
         &self.songs
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use config::{Config, File, FileFormat};
+
+    #[test]
+    fn new_creates_playlist() {
+        let songs = vec!["song1".to_string(), "song2".to_string()];
+        let p = Playlist::new(&songs);
+        assert_eq!(p.songs().len(), 2);
+        assert_eq!(p.songs()[0], "song1");
+        assert_eq!(p.songs()[1], "song2");
+    }
+
+    #[test]
+    fn new_empty() {
+        let p = Playlist::new(&[]);
+        assert!(p.songs().is_empty());
+    }
+
+    #[test]
+    fn deserialize_yaml() {
+        let yaml = r#"
+songs:
+  - "Track A"
+  - "Track B"
+  - "Track C"
+"#;
+        let p: Playlist = Config::builder()
+            .add_source(File::from_str(yaml, FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+        assert_eq!(p.songs().len(), 3);
+        assert_eq!(p.songs()[0], "Track A");
+    }
+
+    #[test]
+    fn deserialize_empty_songs() {
+        let yaml = r#"
+songs: []
+"#;
+        let p: Playlist = Config::builder()
+            .add_source(File::from_str(yaml, FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+        assert!(p.songs().is_empty());
+    }
+
+    #[test]
+    fn serialize_roundtrip() {
+        let songs = vec![
+            "Alpha".to_string(),
+            "Bravo".to_string(),
+            "Charlie".to_string(),
+        ];
+        let p = Playlist::new(&songs);
+        let serialized = serde_yml::to_string(&p).unwrap();
+        let deserialized: Playlist = serde_yml::from_str(&serialized).unwrap();
+        assert_eq!(deserialized.songs().len(), 3);
+        assert_eq!(deserialized.songs()[0], "Alpha");
+        assert_eq!(deserialized.songs()[1], "Bravo");
+        assert_eq!(deserialized.songs()[2], "Charlie");
+    }
+
+    #[test]
+    fn deserialize_single_song() {
+        let yaml = r#"
+songs:
+  - "Only Song"
+"#;
+        let p: Playlist = Config::builder()
+            .add_source(File::from_str(yaml, FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+        assert_eq!(p.songs().len(), 1);
+        assert_eq!(p.songs()[0], "Only Song");
+    }
+}

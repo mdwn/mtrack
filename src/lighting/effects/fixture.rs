@@ -560,3 +560,358 @@ impl FixtureInfo {
         &self.cached_profile
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_channels(names: &[&str]) -> HashMap<String, u16> {
+        names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| (name.to_string(), i as u16 + 1))
+            .collect()
+    }
+
+    fn rgb_fixture() -> FixtureInfo {
+        FixtureInfo::new(
+            "par".to_string(),
+            1,
+            1,
+            "generic_par".to_string(),
+            make_channels(&["red", "green", "blue"]),
+            None,
+        )
+    }
+
+    fn rgb_dimmer_fixture() -> FixtureInfo {
+        FixtureInfo::new(
+            "par_d".to_string(),
+            1,
+            1,
+            "par_with_dimmer".to_string(),
+            make_channels(&["red", "green", "blue", "dimmer"]),
+            None,
+        )
+    }
+
+    fn full_fixture() -> FixtureInfo {
+        FixtureInfo::new(
+            "mover".to_string(),
+            1,
+            1,
+            "moving_head".to_string(),
+            make_channels(&[
+                "red", "green", "blue", "white", "dimmer", "strobe", "pan", "tilt",
+            ]),
+            None,
+        )
+    }
+
+    // ── FixtureCapabilities ──────────────────────────────────────────
+
+    #[test]
+    fn capabilities_none() {
+        assert_eq!(FixtureCapabilities::NONE.count(), 0);
+    }
+
+    #[test]
+    fn capabilities_single() {
+        let caps = FixtureCapabilities::NONE.with(FixtureCapabilities::RGB_COLOR);
+        assert!(caps.contains(FixtureCapabilities::RGB_COLOR));
+        assert!(!caps.contains(FixtureCapabilities::DIMMING));
+        assert_eq!(caps.count(), 1);
+    }
+
+    #[test]
+    fn capabilities_multiple() {
+        let caps = FixtureCapabilities::NONE
+            .with(FixtureCapabilities::RGB_COLOR)
+            .with(FixtureCapabilities::DIMMING)
+            .with(FixtureCapabilities::STROBING);
+        assert!(caps.contains(FixtureCapabilities::RGB_COLOR));
+        assert!(caps.contains(FixtureCapabilities::DIMMING));
+        assert!(caps.contains(FixtureCapabilities::STROBING));
+        assert!(!caps.contains(FixtureCapabilities::PANNING));
+        assert_eq!(caps.count(), 3);
+    }
+
+    #[test]
+    fn capabilities_idempotent() {
+        let caps = FixtureCapabilities::NONE
+            .with(FixtureCapabilities::RGB_COLOR)
+            .with(FixtureCapabilities::RGB_COLOR);
+        assert_eq!(caps.count(), 1);
+    }
+
+    // ── multiplier_key ───────────────────────────────────────────────
+
+    #[test]
+    fn multiplier_key_background() {
+        assert_eq!(
+            multiplier_key("dimmer", EffectLayer::Background),
+            "_dimmer_mult_bg"
+        );
+    }
+
+    #[test]
+    fn multiplier_key_midground() {
+        assert_eq!(
+            multiplier_key("pulse", EffectLayer::Midground),
+            "_pulse_mult_mid"
+        );
+    }
+
+    #[test]
+    fn multiplier_key_foreground() {
+        assert_eq!(
+            multiplier_key("chase", EffectLayer::Foreground),
+            "_chase_mult_fg"
+        );
+    }
+
+    // ── derive_capabilities ──────────────────────────────────────────
+
+    #[test]
+    fn derive_capabilities_rgb_only() {
+        let f = rgb_fixture();
+        assert!(f.has_capability(FixtureCapabilities::RGB_COLOR));
+        assert!(!f.has_capability(FixtureCapabilities::DIMMING));
+        assert!(!f.has_capability(FixtureCapabilities::STROBING));
+    }
+
+    #[test]
+    fn derive_capabilities_rgb_plus_dimmer() {
+        let f = rgb_dimmer_fixture();
+        assert!(f.has_capability(FixtureCapabilities::RGB_COLOR));
+        assert!(f.has_capability(FixtureCapabilities::DIMMING));
+        assert!(!f.has_capability(FixtureCapabilities::STROBING));
+    }
+
+    #[test]
+    fn derive_capabilities_full() {
+        let f = full_fixture();
+        assert!(f.has_capability(FixtureCapabilities::RGB_COLOR));
+        assert!(f.has_capability(FixtureCapabilities::WHITE_COLOR));
+        assert!(f.has_capability(FixtureCapabilities::DIMMING));
+        assert!(f.has_capability(FixtureCapabilities::STROBING));
+        assert!(f.has_capability(FixtureCapabilities::PANNING));
+        assert!(f.has_capability(FixtureCapabilities::TILTING));
+    }
+
+    #[test]
+    fn derive_capabilities_requires_all_rgb() {
+        // Only red+green (no blue) should NOT get RGB_COLOR
+        let f = FixtureInfo::new(
+            "partial".to_string(),
+            1,
+            1,
+            "type".to_string(),
+            make_channels(&["red", "green"]),
+            None,
+        );
+        assert!(!f.has_capability(FixtureCapabilities::RGB_COLOR));
+    }
+
+    #[test]
+    fn derive_capabilities_color_temp() {
+        let f = FixtureInfo::new(
+            "ct_fixture".to_string(),
+            1,
+            1,
+            "type".to_string(),
+            make_channels(&["ct"]),
+            None,
+        );
+        assert!(f.has_capability(FixtureCapabilities::COLOR_TEMPERATURE));
+    }
+
+    #[test]
+    fn derive_capabilities_effects_channels() {
+        for channel in &["effects", "prism", "frost"] {
+            let f = FixtureInfo::new(
+                "fx".to_string(),
+                1,
+                1,
+                "type".to_string(),
+                make_channels(&[channel]),
+                None,
+            );
+            assert!(
+                f.has_capability(FixtureCapabilities::EFFECTS),
+                "failed for {}",
+                channel
+            );
+        }
+    }
+
+    // ── FixtureProfile strategy selection ─────────────────────────────
+
+    #[test]
+    fn profile_rgb_only_strategies() {
+        let p = rgb_fixture().profile().clone();
+        assert_eq!(p.brightness_strategy, BrightnessStrategy::RgbMultiplication);
+        assert_eq!(p.strobe_strategy, StrobeStrategy::RgbStrobing);
+        assert_eq!(p.pulse_strategy, PulseStrategy::RgbMultiplication);
+        assert_eq!(p.chase_strategy, ChaseStrategy::RgbChannels);
+    }
+
+    #[test]
+    fn profile_rgb_dimmer_strategies() {
+        let p = rgb_dimmer_fixture().profile().clone();
+        assert_eq!(p.brightness_strategy, BrightnessStrategy::DedicatedDimmer);
+        assert_eq!(p.strobe_strategy, StrobeStrategy::BrightnessStrobing);
+        assert_eq!(p.pulse_strategy, PulseStrategy::DedicatedDimmer);
+        assert_eq!(p.chase_strategy, ChaseStrategy::DedicatedDimmer);
+    }
+
+    #[test]
+    fn profile_full_fixture_strategies() {
+        let p = full_fixture().profile().clone();
+        assert_eq!(p.brightness_strategy, BrightnessStrategy::DedicatedDimmer);
+        assert_eq!(p.strobe_strategy, StrobeStrategy::DedicatedChannel);
+        assert_eq!(p.pulse_strategy, PulseStrategy::DedicatedDimmer);
+        assert_eq!(p.chase_strategy, ChaseStrategy::DedicatedDimmer);
+    }
+
+    #[test]
+    fn profile_no_capabilities_fallbacks() {
+        let p = FixtureProfile::from_capabilities(&FixtureCapabilities::NONE);
+        assert_eq!(p.brightness_strategy, BrightnessStrategy::RgbMultiplication);
+        assert_eq!(p.strobe_strategy, StrobeStrategy::BrightnessStrobing);
+        assert_eq!(p.pulse_strategy, PulseStrategy::RgbMultiplication);
+        assert_eq!(p.chase_strategy, ChaseStrategy::BrightnessControl);
+    }
+
+    // ── apply_brightness ─────────────────────────────────────────────
+
+    #[test]
+    fn apply_brightness_dedicated_dimmer() {
+        let p = rgb_dimmer_fixture().profile().clone();
+        let result = p.apply_brightness(0.75, EffectLayer::Background, BlendMode::Replace);
+        assert!(result.contains_key("dimmer"));
+        assert!(!result.contains_key("red"));
+        assert!((result["dimmer"].value - 0.75).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn apply_brightness_rgb_multiplication() {
+        let p = rgb_fixture().profile().clone();
+        let result = p.apply_brightness(0.5, EffectLayer::Background, BlendMode::Replace);
+        assert!(!result.contains_key("dimmer"));
+        let key = multiplier_key("dimmer", EffectLayer::Background);
+        assert!(result.contains_key(&key));
+    }
+
+    // ── apply_color ──────────────────────────────────────────────────
+
+    #[test]
+    fn apply_color_rgb() {
+        let p = rgb_fixture().profile().clone();
+        let color = Color::new(255, 128, 0);
+        let result = p.apply_color(color, EffectLayer::Background, BlendMode::Replace);
+        assert!((result["red"].value - 1.0).abs() < f64::EPSILON);
+        assert!((result["green"].value - 128.0 / 255.0).abs() < 0.01);
+        assert!((result["blue"].value - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn apply_color_with_white_channel() {
+        let p = rgb_fixture().profile().clone();
+        let color = Color {
+            r: 255,
+            g: 255,
+            b: 255,
+            w: Some(200),
+        };
+        let result = p.apply_color(color, EffectLayer::Background, BlendMode::Replace);
+        assert!(result.contains_key("white"));
+        assert!((result["white"].value - 200.0 / 255.0).abs() < 0.01);
+    }
+
+    // ── apply_strobe ─────────────────────────────────────────────────
+
+    #[test]
+    fn apply_strobe_dedicated_channel() {
+        let p = full_fixture().profile().clone();
+        let result = p.apply_strobe(0.5, EffectLayer::Foreground, BlendMode::Replace, 1.0, None);
+        assert!(result.contains_key("strobe"));
+    }
+
+    #[test]
+    fn apply_strobe_zero_crossfade_returns_empty() {
+        let p = full_fixture().profile().clone();
+        let result = p.apply_strobe(0.5, EffectLayer::Foreground, BlendMode::Replace, 0.0, None);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn apply_strobe_rgb_strobing() {
+        let p = rgb_fixture().profile().clone();
+        let result = p.apply_strobe(
+            0.0,
+            EffectLayer::Foreground,
+            BlendMode::Replace,
+            1.0,
+            Some(1.0),
+        );
+        assert!(result.contains_key("red"));
+        assert!(result.contains_key("green"));
+        assert!(result.contains_key("blue"));
+    }
+
+    // ── apply_pulse ──────────────────────────────────────────────────
+
+    #[test]
+    fn apply_pulse_dedicated_dimmer() {
+        let p = rgb_dimmer_fixture().profile().clone();
+        let result = p.apply_pulse(0.8, EffectLayer::Midground, BlendMode::Multiply);
+        assert!(result.contains_key("dimmer"));
+    }
+
+    #[test]
+    fn apply_pulse_rgb_multiplication() {
+        let p = rgb_fixture().profile().clone();
+        let result = p.apply_pulse(0.8, EffectLayer::Midground, BlendMode::Multiply);
+        let key = multiplier_key("pulse", EffectLayer::Midground);
+        assert!(result.contains_key(&key));
+    }
+
+    // ── apply_chase ──────────────────────────────────────────────────
+
+    #[test]
+    fn apply_chase_dedicated_dimmer() {
+        let p = rgb_dimmer_fixture().profile().clone();
+        let result = p.apply_chase(0.5, EffectLayer::Foreground, BlendMode::Replace);
+        assert!(result.contains_key("dimmer"));
+    }
+
+    #[test]
+    fn apply_chase_rgb_channels() {
+        let p = rgb_fixture().profile().clone();
+        let result = p.apply_chase(0.5, EffectLayer::Foreground, BlendMode::Replace);
+        assert!(result.contains_key("red"));
+        assert!(result.contains_key("green"));
+        assert!(result.contains_key("blue"));
+    }
+
+    // ── FixtureInfo accessors ────────────────────────────────────────
+
+    #[test]
+    fn fixture_info_basic_accessors() {
+        let f = FixtureInfo::new(
+            "spot1".to_string(),
+            2,
+            10,
+            "generic_spot".to_string(),
+            make_channels(&["red", "green", "blue", "dimmer"]),
+            Some(25.0),
+        );
+        assert_eq!(f.name, "spot1");
+        assert_eq!(f.universe, 2);
+        assert_eq!(f.address, 10);
+        assert_eq!(f.fixture_type, "generic_spot");
+        assert_eq!(f.max_strobe_frequency, Some(25.0));
+        assert_eq!(f.channels.len(), 4);
+    }
+}

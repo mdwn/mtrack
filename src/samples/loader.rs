@@ -279,4 +279,118 @@ mod tests {
         assert!((result[0] - 1.0).abs() < 0.1);
         assert!((result[1] - (-1.0)).abs() < 0.1);
     }
+
+    #[test]
+    fn test_transcode_same_rate() {
+        let loader = SampleLoader::new(44100);
+        let source = vec![0.5f32, -0.5, 0.25, -0.25];
+
+        let result = loader.transcode_samples(&source, 1, 44100, 44100).unwrap();
+
+        // Same rate: output length should match input length
+        assert_eq!(result.len(), source.len());
+        for (a, b) in result.iter().zip(source.iter()) {
+            assert!((a - b).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn test_transcode_downsample() {
+        let loader = SampleLoader::new(22050);
+        let source: Vec<f32> = (0..4800).map(|i| (i as f32) / 4800.0).collect();
+
+        let result = loader.transcode_samples(&source, 1, 48000, 22050).unwrap();
+
+        // Downsampling should produce fewer samples
+        assert!(result.len() < source.len());
+        let expected_len = (4800.0_f64 * 22050.0 / 48000.0).ceil() as usize;
+        assert_eq!(result.len(), expected_len);
+    }
+
+    #[test]
+    fn test_transcode_empty_input() {
+        let loader = SampleLoader::new(48000);
+        let result = loader.transcode_samples(&[], 1, 44100, 48000).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_transcode_single_frame() {
+        let loader = SampleLoader::new(48000);
+        let source = vec![0.75f32];
+
+        let result = loader.transcode_samples(&source, 1, 44100, 48000).unwrap();
+
+        // Should produce at least 1 sample
+        assert!(!result.is_empty());
+        // First sample should match source
+        assert!((result[0] - 0.75).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_loaded_sample_memory_size() {
+        let data = vec![1.0f32; 1000];
+        let sample = LoadedSample {
+            data: Arc::new(data),
+            channel_count: 2,
+            sample_rate: 44100,
+        };
+
+        assert_eq!(sample.memory_size(), 1000 * std::mem::size_of::<f32>());
+        assert_eq!(sample.channel_count(), 2);
+    }
+
+    #[test]
+    fn test_loaded_sample_create_source() {
+        let data = vec![0.5f32; 100];
+        let sample = LoadedSample {
+            data: Arc::new(data),
+            channel_count: 1,
+            sample_rate: 44100,
+        };
+
+        // Should be able to create multiple sources from the same sample
+        let _source1 = sample.create_source(1.0);
+        let _source2 = sample.create_source(0.5);
+    }
+
+    #[test]
+    fn test_sample_loader_new() {
+        let loader = SampleLoader::new(48000);
+        assert_eq!(loader.total_memory_usage(), 0);
+    }
+
+    #[test]
+    fn test_sample_loader_debug() {
+        let loader = SampleLoader::new(44100);
+        let debug_str = format!("{:?}", loader);
+        assert!(debug_str.contains("SampleLoader"));
+        assert!(debug_str.contains("cached_samples"));
+        assert!(debug_str.contains("target_sample_rate"));
+    }
+
+    #[test]
+    fn test_transcode_preserves_stereo_channels() {
+        let loader = SampleLoader::new(48000);
+
+        // Create stereo signal: L channel positive ramp, R channel negative ramp
+        let frames = 100;
+        let mut source = Vec::with_capacity(frames * 2);
+        for i in 0..frames {
+            source.push(i as f32 / frames as f32); // L
+            source.push(-(i as f32 / frames as f32)); // R
+        }
+
+        let result = loader.transcode_samples(&source, 2, 44100, 48000).unwrap();
+
+        // Result should have even number of samples (stereo)
+        assert_eq!(result.len() % 2, 0);
+
+        // Check that L and R channels maintain their sign relationship
+        for frame in result.chunks(2) {
+            // L should be positive or zero, R should be negative or zero
+            assert!(frame[0] >= -0.01, "L channel should be non-negative");
+            assert!(frame[1] <= 0.01, "R channel should be non-positive");
+        }
+    }
 }

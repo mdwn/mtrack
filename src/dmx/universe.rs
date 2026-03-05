@@ -528,6 +528,107 @@ mod test {
     }
 
     #[test]
+    fn test_update_dim_speed_zero_duration() {
+        let (universe, _) = new_universe();
+
+        // Zero duration should set global_dim_rate to 1.0 (instant)
+        universe.update_dim_speed(Duration::ZERO);
+        assert_eq!(universe.get_dim_speed(), 1.0);
+    }
+
+    #[test]
+    fn test_update_dim_speed_one_second() {
+        let (universe, _) = new_universe();
+
+        universe.update_dim_speed(Duration::from_secs(1));
+        // 1.0 second * 44.0 Hz = 44.0
+        assert_eq!(universe.get_dim_speed(), TARGET_HZ);
+    }
+
+    #[test]
+    fn test_update_channel_data_channel_zero() {
+        let (universe, _) = new_universe();
+
+        // Channel 0 should map to index 0
+        universe.update_channel_data(0, 100, false);
+        assert_eq!(universe.get_target_value(0), 100.0);
+    }
+
+    #[test]
+    fn test_update_effect_commands_basic() {
+        let (universe, _) = new_universe();
+
+        let commands = vec![(1u16, 200u8), (2, 100), (3, 50)];
+        universe.update_effect_commands(commands);
+
+        assert_eq!(universe.get_target_value(0), 200.0);
+        assert_eq!(universe.get_target_value(1), 100.0);
+        assert_eq!(universe.get_target_value(2), 50.0);
+    }
+
+    #[test]
+    fn test_update_effect_commands_deduplicates() {
+        let (universe, _) = new_universe();
+
+        // First batch: set values
+        let commands = vec![(1u16, 200u8), (2, 100)];
+        universe.update_effect_commands(commands);
+
+        // Second batch with same values: should be a no-op
+        let commands = vec![(1u16, 200u8), (2, 100)];
+        universe.update_effect_commands(commands);
+
+        // Values should still be the same
+        assert_eq!(universe.get_target_value(0), 200.0);
+        assert_eq!(universe.get_target_value(1), 100.0);
+    }
+
+    #[test]
+    fn test_clear_effect_cache() {
+        let (universe, _) = new_universe();
+
+        // Set some effect values
+        universe.update_effect_commands(vec![(1u16, 200u8)]);
+        assert_eq!(universe.get_target_value(0), 200.0);
+
+        // Clear cache
+        universe.clear_effect_cache();
+
+        // Same command should now apply again (not deduplicated)
+        universe.update_effect_commands(vec![(1u16, 200u8)]);
+        assert_eq!(universe.get_target_value(0), 200.0);
+    }
+
+    #[test]
+    fn test_approach_target_no_change_returns_false() {
+        let (universe, _) = new_universe();
+
+        // Don't set any targets, so everything is at default (0.0)
+        // Ensure max_channels covers at least 1 channel
+        universe.update_channel_data(1, 0, false);
+
+        // First approach brings current to target
+        let mut buffer = DmxBuffer::new();
+        Universe::approach_target(
+            &universe.rates,
+            &universe.current,
+            &universe.target,
+            &universe.max_channels,
+            &mut buffer,
+        );
+
+        // Second approach should return false (no change)
+        let changed = Universe::approach_target(
+            &universe.rates,
+            &universe.current,
+            &universe.target,
+            &universe.max_channels,
+            &mut buffer,
+        );
+        assert!(!changed);
+    }
+
+    #[test]
     fn test_dimming_down_from_higher_to_lower() {
         let (universe, _) = new_universe();
 

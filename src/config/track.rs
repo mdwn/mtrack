@@ -49,3 +49,89 @@ impl Track {
         self.file_channel
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use config::{Config, File, FileFormat};
+
+    #[test]
+    fn new_with_channel() {
+        let t = Track::new("vocals".to_string(), "vocals.wav", Some(1));
+        assert_eq!(t.name(), "vocals");
+        assert_eq!(t.file(), "vocals.wav");
+        assert_eq!(t.file_channel(), Some(1));
+    }
+
+    #[test]
+    fn new_without_channel() {
+        let t = Track::new("drums".to_string(), "drums.wav", None);
+        assert_eq!(t.name(), "drums");
+        assert_eq!(t.file(), "drums.wav");
+        assert_eq!(t.file_channel(), None);
+    }
+
+    #[test]
+    fn deserialize_with_channel() {
+        let yaml = r#"
+name: guitar
+file: guitar.wav
+file_channel: 2
+"#;
+        let t: Track = Config::builder()
+            .add_source(File::from_str(yaml, FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+        assert_eq!(t.name(), "guitar");
+        assert_eq!(t.file(), "guitar.wav");
+        assert_eq!(t.file_channel(), Some(2));
+    }
+
+    #[test]
+    fn deserialize_without_channel() {
+        let yaml = r#"
+name: bass
+file: bass.wav
+"#;
+        let t: Track = Config::builder()
+            .add_source(File::from_str(yaml, FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+        assert_eq!(t.name(), "bass");
+        assert_eq!(t.file(), "bass.wav");
+        assert_eq!(t.file_channel(), None);
+    }
+
+    #[test]
+    fn clone_preserves_all_fields() {
+        let t = Track::new("vocals".to_string(), "vocals.wav", Some(3));
+        let cloned = t.clone();
+        assert_eq!(cloned.name(), "vocals");
+        assert_eq!(cloned.file(), "vocals.wav");
+        assert_eq!(cloned.file_channel(), Some(3));
+    }
+
+    #[test]
+    fn serialize_roundtrip() {
+        let t = Track::new("keys".to_string(), "keys.wav", Some(5));
+        let serialized = serde_yml::to_string(&t).unwrap();
+        let deserialized: Track = serde_yml::from_str(&serialized).unwrap();
+        assert_eq!(deserialized.name(), "keys");
+        assert_eq!(deserialized.file(), "keys.wav");
+        assert_eq!(deserialized.file_channel(), Some(5));
+    }
+
+    #[test]
+    fn serialize_roundtrip_no_channel() {
+        let t = Track::new("click".to_string(), "click.wav", None);
+        let serialized = serde_yml::to_string(&t).unwrap();
+        let deserialized: Track = serde_yml::from_str(&serialized).unwrap();
+        assert_eq!(deserialized.name(), "click");
+        assert_eq!(deserialized.file(), "click.wav");
+        assert_eq!(deserialized.file_channel(), None);
+    }
+}

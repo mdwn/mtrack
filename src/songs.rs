@@ -1377,4 +1377,132 @@ mod test {
     }
 
     // Removed test_buffer_fill_performance - not relevant with Crossbeam channels
+
+    // ── Pure function tests (no I/O) ─────────────────────────────────
+
+    #[test]
+    fn duration_string_zero() {
+        let song = super::Song::new_for_test("test", &["t1"]);
+        assert_eq!(song.duration_string(), "0:00");
+    }
+
+    #[test]
+    fn duration_string_formatted() {
+        let mut song = super::Song::new_for_test("test", &["t1"]);
+        song.duration = std::time::Duration::from_secs(125); // 2:05
+        assert_eq!(song.duration_string(), "2:05");
+    }
+
+    #[test]
+    fn duration_string_exact_minute() {
+        let mut song = super::Song::new_for_test("test", &["t1"]);
+        song.duration = std::time::Duration::from_secs(180); // 3:00
+        assert_eq!(song.duration_string(), "3:00");
+    }
+
+    #[test]
+    fn duration_string_long() {
+        let mut song = super::Song::new_for_test("test", &["t1"]);
+        song.duration = std::time::Duration::from_secs(3661); // 61:01
+        assert_eq!(song.duration_string(), "61:01");
+    }
+
+    #[test]
+    fn song_name() {
+        let song = super::Song::new_for_test("My Song", &["t1"]);
+        assert_eq!(song.name(), "My Song");
+    }
+
+    #[test]
+    fn song_tracks_count() {
+        let song = super::Song::new_for_test("test", &["kick", "snare", "bass"]);
+        assert_eq!(song.tracks().len(), 3);
+        assert_eq!(song.tracks()[0].name, "kick");
+    }
+
+    #[test]
+    fn song_num_channels() {
+        let song = super::Song::new_for_test("test", &["t1", "t2"]);
+        // new_for_test creates tracks with 0 num_channels by default
+        assert_eq!(song.num_channels, 0);
+    }
+
+    #[test]
+    fn song_default_no_midi() {
+        let song = super::Song::new_for_test("test", &["t1"]);
+        assert!(song.midi_playback().is_none());
+        assert!(song.midi_event.is_none());
+    }
+
+    #[test]
+    fn song_light_shows_empty() {
+        let song = super::Song::new_for_test("test", &["t1"]);
+        assert!(song.light_shows().is_empty());
+    }
+
+    #[test]
+    fn song_dsl_lighting_shows_empty() {
+        let song = super::Song::new_for_test("test", &["t1"]);
+        assert!(song.dsl_lighting_shows().is_empty());
+    }
+
+    // ── Songs registry tests ─────────────────────────────────────────
+
+    #[test]
+    fn songs_empty() {
+        let songs = super::Songs::new(std::collections::HashMap::new());
+        assert!(songs.is_empty());
+        assert_eq!(songs.len(), 0);
+        assert!(songs.list().is_empty());
+    }
+
+    #[test]
+    fn songs_get_found() {
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            "Song A".to_string(),
+            std::sync::Arc::new(super::Song::new_for_test("Song A", &["t1"])),
+        );
+        let songs = super::Songs::new(map);
+        let song = songs.get("Song A").unwrap();
+        assert_eq!(song.name(), "Song A");
+    }
+
+    #[test]
+    fn songs_get_not_found() {
+        let songs = super::Songs::new(std::collections::HashMap::new());
+        assert!(songs.get("nonexistent").is_err());
+    }
+
+    #[test]
+    fn songs_len() {
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            "A".to_string(),
+            std::sync::Arc::new(super::Song::new_for_test("A", &["t"])),
+        );
+        map.insert(
+            "B".to_string(),
+            std::sync::Arc::new(super::Song::new_for_test("B", &["t"])),
+        );
+        let songs = super::Songs::new(map);
+        assert_eq!(songs.len(), 2);
+        assert!(!songs.is_empty());
+    }
+
+    #[test]
+    fn songs_sorted_list() {
+        let mut map = std::collections::HashMap::new();
+        for name in &["Charlie", "Alpha", "Bravo"] {
+            map.insert(
+                name.to_string(),
+                std::sync::Arc::new(super::Song::new_for_test(name, &["t"])),
+            );
+        }
+        let songs = super::Songs::new(map);
+        let sorted = songs.sorted_list();
+        assert_eq!(sorted[0].name(), "Alpha");
+        assert_eq!(sorted[1].name(), "Bravo");
+        assert_eq!(sorted[2].name(), "Charlie");
+    }
 }

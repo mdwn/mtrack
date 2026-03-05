@@ -26,3 +26,34 @@ pub enum SampleSourceError {
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_resampling_failed() {
+        let e = SampleSourceError::ResamplingFailed(44100, 48000);
+        assert_eq!(format!("{}", e), "Resampling failed: 44100Hz -> 48000Hz");
+    }
+
+    #[test]
+    fn display_sample_conversion_failed() {
+        let e = SampleSourceError::SampleConversionFailed("test.wav".to_string());
+        assert_eq!(format!("{}", e), "Sample conversion failed for test.wav");
+    }
+
+    #[test]
+    fn from_io_error() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
+        let e: SampleSourceError = io_err.into();
+        assert!(format!("{}", e).contains("file not found"));
+    }
+
+    #[test]
+    fn is_std_error() {
+        let e: Box<dyn std::error::Error> =
+            Box::new(SampleSourceError::ResamplingFailed(44100, 48000));
+        assert!(e.to_string().contains("Resampling"));
+    }
+}
