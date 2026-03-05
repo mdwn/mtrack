@@ -473,3 +473,51 @@ async fn validate_lighting(body: String) -> impl IntoResponse {
             .into_response(),
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn find_light_files_discovers_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path();
+
+        // Create nested structure with .light files
+        std::fs::create_dir(base.join("song1")).unwrap();
+        std::fs::write(base.join("song1/show.light"), "content").unwrap();
+        std::fs::write(base.join("top.light"), "content").unwrap();
+        std::fs::write(base.join("not_a_light.txt"), "content").unwrap();
+
+        let mut results = Vec::new();
+        find_light_files(base, base, &mut results).unwrap();
+
+        assert_eq!(results.len(), 2);
+        let paths: Vec<&str> = results
+            .iter()
+            .map(|r| r["path"].as_str().unwrap())
+            .collect();
+        assert!(paths.contains(&"song1/show.light"));
+        assert!(paths.contains(&"top.light"));
+    }
+
+    #[test]
+    fn find_light_files_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut results = Vec::new();
+        find_light_files(dir.path(), dir.path(), &mut results).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn find_light_files_extracts_name() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("my_show.light"), "content").unwrap();
+
+        let mut results = Vec::new();
+        find_light_files(dir.path(), dir.path(), &mut results).unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["name"].as_str().unwrap(), "my_show");
+    }
+}

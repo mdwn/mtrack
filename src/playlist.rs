@@ -174,20 +174,26 @@ pub fn from_songs(songs: Arc<Songs>) -> Result<Arc<Playlist>, PlaylistError> {
 #[cfg(test)]
 mod test {
     use std::path::Path;
+    use std::sync::Arc;
 
-    use crate::{config, songs};
+    use crate::{config, songs, songs::Songs};
+
+    fn test_registry() -> Arc<Songs> {
+        songs::get_all_songs(Path::new("assets/songs")).expect("Parse songs should have succeeded.")
+    }
+
+    fn two_song_playlist(registry: Arc<Songs>) -> Arc<super::Playlist> {
+        super::Playlist::new(
+            "Test Playlist",
+            &config::Playlist::new(&["Song 1".to_string(), "Song 2".to_string()]),
+            registry,
+        )
+        .expect("Unable to create playlist")
+    }
 
     #[test]
     fn test_playlist() {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))
-            .expect("Parse songs should have succeeded.");
-
-        let playlist = super::Playlist::new(
-            "Test Playlist",
-            &config::Playlist::new(&["Song 1".to_string(), "Song 2".to_string()]),
-            songs,
-        )
-        .expect("Unable to create playlist");
+        let playlist = two_song_playlist(test_registry());
 
         // Starts at the first element in the list.
         assert_eq!("Song 1", playlist.current().name());
@@ -207,5 +213,96 @@ mod test {
         // Prev goes to the previous entry.
         playlist.prev();
         assert_eq!("Song 1", playlist.current().name());
+    }
+
+    #[test]
+    fn position_tracking() {
+        let playlist = two_song_playlist(test_registry());
+        assert_eq!(playlist.position(), 0);
+
+        playlist.next();
+        assert_eq!(playlist.position(), 1);
+
+        playlist.prev();
+        assert_eq!(playlist.position(), 0);
+    }
+
+    #[test]
+    fn name() {
+        let playlist = two_song_playlist(test_registry());
+        assert_eq!(playlist.name(), "Test Playlist");
+    }
+
+    #[test]
+    fn songs_list() {
+        let playlist = two_song_playlist(test_registry());
+        assert_eq!(playlist.songs(), &["Song 1", "Song 2"]);
+    }
+
+    #[test]
+    fn get_song_found() {
+        let playlist = two_song_playlist(test_registry());
+        let song = playlist.get_song("Song 1");
+        assert!(song.is_some());
+        assert_eq!(song.unwrap().name(), "Song 1");
+    }
+
+    #[test]
+    fn get_song_not_found() {
+        let playlist = two_song_playlist(test_registry());
+        assert!(playlist.get_song("Nonexistent Song").is_none());
+    }
+
+    #[test]
+    fn song_not_in_registry_error() {
+        let registry = test_registry();
+        let result = super::Playlist::new(
+            "Bad Playlist",
+            &config::Playlist::new(&["Song 1".to_string(), "No Such Song".to_string()]),
+            registry,
+        );
+        let err = result.err().expect("should be an error");
+        assert!(
+            err.to_string().contains("No Such Song"),
+            "error should mention missing song name: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn from_songs_all_songs_playlist() {
+        let registry = test_registry();
+        let all = super::from_songs(Arc::clone(&registry)).expect("from_songs");
+        assert_eq!(all.name(), "all_songs");
+        // Should contain all songs in the registry, sorted alphabetically.
+        let names: Vec<&str> = all.songs().iter().map(|s| s.as_str()).collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(names, sorted);
+        assert!(!names.is_empty());
+    }
+
+    #[test]
+    fn next_returns_correct_song() {
+        let playlist = two_song_playlist(test_registry());
+        let song = playlist.next();
+        assert_eq!(song.name(), "Song 2");
+    }
+
+    #[test]
+    fn prev_returns_correct_song() {
+        let playlist = two_song_playlist(test_registry());
+        playlist.next(); // move to Song 2
+        let song = playlist.prev();
+        assert_eq!(song.name(), "Song 1");
+    }
+
+    #[test]
+    fn display_impl() {
+        let playlist = two_song_playlist(test_registry());
+        let display = format!("{}", playlist);
+        assert!(display.contains("Playlist (2 songs):"));
+        assert!(display.contains("Song 1"));
+        assert!(display.contains("Song 2"));
     }
 }

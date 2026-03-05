@@ -190,3 +190,181 @@ impl Audio {
         self
     }
 }
+
+#[cfg(test)]
+mod test {
+    use std::time::Duration;
+
+    use super::*;
+
+    #[test]
+    fn defaults() {
+        let audio = Audio::new("test-device");
+        assert_eq!(audio.device(), "test-device");
+        assert_eq!(audio.sample_rate(), 44100);
+        assert_eq!(audio.bits_per_sample(), 32);
+        assert_eq!(audio.sample_format().unwrap(), SampleFormat::Int);
+        assert_eq!(audio.buffer_size(), DEFAULT_BUFFER_SIZE);
+        assert_eq!(audio.buffer_threads(), DEFAULT_BUFFER_THREADS);
+        assert_eq!(audio.playback_delay().unwrap(), Duration::ZERO);
+        assert!(audio.stream_buffer_size().is_none());
+        assert_eq!(audio.resampler(), ResamplerType::Sinc);
+    }
+
+    #[test]
+    fn builder_sample_rate() {
+        let audio = Audio::new("dev").with_sample_rate(48000);
+        assert_eq!(audio.sample_rate(), 48000);
+    }
+
+    #[test]
+    fn builder_buffer_size() {
+        let audio = Audio::new("dev").with_buffer_size(2048);
+        assert_eq!(audio.buffer_size(), 2048);
+    }
+
+    #[test]
+    fn builder_bits_per_sample() {
+        let audio = Audio::new("dev").with_bits_per_sample(16);
+        assert_eq!(audio.bits_per_sample(), 16);
+    }
+
+    #[test]
+    fn builder_sample_format_float() {
+        let audio = Audio::new("dev").with_sample_format("float");
+        assert_eq!(audio.sample_format().unwrap(), SampleFormat::Float);
+    }
+
+    #[test]
+    fn builder_sample_format_int() {
+        let audio = Audio::new("dev").with_sample_format("int");
+        assert_eq!(audio.sample_format().unwrap(), SampleFormat::Int);
+    }
+
+    #[test]
+    fn sample_format_invalid() {
+        let audio = Audio::new("dev").with_sample_format("wav");
+        assert!(audio.sample_format().is_err());
+    }
+
+    #[test]
+    fn playback_delay_valid() {
+        let audio = Audio {
+            playback_delay: Some("500ms".to_string()),
+            ..Audio::new("dev")
+        };
+        assert_eq!(audio.playback_delay().unwrap(), Duration::from_millis(500));
+    }
+
+    #[test]
+    fn playback_delay_invalid() {
+        let audio = Audio {
+            playback_delay: Some("not-a-duration".to_string()),
+            ..Audio::new("dev")
+        };
+        assert!(audio.playback_delay().is_err());
+    }
+
+    #[test]
+    fn buffer_threads_clamped_to_one() {
+        let audio = Audio {
+            buffer_threads: Some(0),
+            ..Audio::new("dev")
+        };
+        assert_eq!(audio.buffer_threads(), 1);
+    }
+
+    #[test]
+    fn buffer_threads_custom() {
+        let audio = Audio {
+            buffer_threads: Some(4),
+            ..Audio::new("dev")
+        };
+        assert_eq!(audio.buffer_threads(), 4);
+    }
+
+    #[test]
+    fn builder_resampler_fft() {
+        let audio = Audio::new("dev").with_resampler(ResamplerType::Fft);
+        assert_eq!(audio.resampler(), ResamplerType::Fft);
+    }
+
+    #[test]
+    fn builder_stream_buffer_size() {
+        let audio = Audio::new("dev").with_stream_buffer_size(StreamBufferSize::Min);
+        assert!(matches!(
+            audio.stream_buffer_size(),
+            Some(StreamBufferSize::Min)
+        ));
+    }
+
+    #[test]
+    fn builder_chaining() {
+        let audio = Audio::new("dev")
+            .with_sample_rate(96000)
+            .with_buffer_size(512)
+            .with_bits_per_sample(24)
+            .with_sample_format("float")
+            .with_resampler(ResamplerType::Fft);
+
+        assert_eq!(audio.sample_rate(), 96000);
+        assert_eq!(audio.buffer_size(), 512);
+        assert_eq!(audio.bits_per_sample(), 24);
+        assert_eq!(audio.sample_format().unwrap(), SampleFormat::Float);
+        assert_eq!(audio.resampler(), ResamplerType::Fft);
+    }
+
+    fn from_yaml(yaml: &str) -> Audio {
+        config::Config::builder()
+            .add_source(config::File::from_str(yaml, config::FileFormat::Yaml))
+            .build()
+            .expect("build config")
+            .try_deserialize::<Audio>()
+            .expect("deserialize")
+    }
+
+    #[test]
+    fn serde_defaults_from_minimal_yaml() {
+        let audio = from_yaml("device: minimal-device\n");
+
+        assert_eq!(audio.device(), "minimal-device");
+        assert_eq!(audio.sample_rate(), 44100);
+        assert_eq!(audio.bits_per_sample(), 32);
+        assert_eq!(audio.buffer_size(), DEFAULT_BUFFER_SIZE);
+        assert_eq!(audio.resampler(), ResamplerType::Sinc);
+    }
+
+    #[test]
+    fn serde_full_yaml() {
+        let audio = from_yaml(
+            r#"
+            device: my-device
+            sample_rate: 48000
+            buffer_size: 512
+            bits_per_sample: 24
+            sample_format: float
+            resampler: fft
+            buffer_threads: 4
+            playback_delay: 100ms
+            "#,
+        );
+
+        assert_eq!(audio.device(), "my-device");
+        assert_eq!(audio.sample_rate(), 48000);
+        assert_eq!(audio.buffer_size(), 512);
+        assert_eq!(audio.bits_per_sample(), 24);
+        assert_eq!(audio.sample_format().unwrap(), SampleFormat::Float);
+        assert_eq!(audio.resampler(), ResamplerType::Fft);
+        assert_eq!(audio.buffer_threads(), 4);
+        assert_eq!(audio.playback_delay().unwrap(), Duration::from_millis(100));
+    }
+
+    #[test]
+    fn serde_resampler_variants() {
+        let audio = from_yaml("device: dev\nresampler: sinc\n");
+        assert_eq!(audio.resampler(), ResamplerType::Sinc);
+
+        let audio = from_yaml("device: dev\nresampler: fft\n");
+        assert_eq!(audio.resampler(), ResamplerType::Fft);
+    }
+}

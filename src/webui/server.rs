@@ -359,3 +359,76 @@ async fn handle_ws(socket: WebSocket, state: WebUiState) {
         _ = &mut recv_task => { send_task.abort(); }
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn mime_type_html() {
+        assert_eq!(mime_type_for_path("index.html"), "text/html; charset=utf-8");
+    }
+
+    #[test]
+    fn mime_type_css() {
+        assert_eq!(
+            mime_type_for_path("styles/app.css"),
+            "text/css; charset=utf-8"
+        );
+    }
+
+    #[test]
+    fn mime_type_js() {
+        assert_eq!(
+            mime_type_for_path("bundle.js"),
+            "application/javascript; charset=utf-8"
+        );
+    }
+
+    #[test]
+    fn mime_type_json() {
+        assert_eq!(mime_type_for_path("data.json"), "application/json");
+    }
+
+    #[test]
+    fn mime_type_png() {
+        assert_eq!(mime_type_for_path("logo.png"), "image/png");
+    }
+
+    #[test]
+    fn mime_type_svg() {
+        assert_eq!(mime_type_for_path("icon.svg"), "image/svg+xml");
+    }
+
+    #[test]
+    fn mime_type_ico() {
+        assert_eq!(mime_type_for_path("favicon.ico"), "image/x-icon");
+    }
+
+    #[test]
+    fn mime_type_woff() {
+        assert_eq!(mime_type_for_path("font.woff"), "font/woff");
+    }
+
+    #[test]
+    fn mime_type_woff2() {
+        assert_eq!(mime_type_for_path("font.woff2"), "font/woff2");
+    }
+
+    #[test]
+    fn mime_type_unknown() {
+        assert_eq!(mime_type_for_path("file.xyz"), "application/octet-stream");
+    }
+
+    #[test]
+    fn mime_type_no_extension() {
+        assert_eq!(mime_type_for_path("README"), "application/octet-stream");
+    }
+
+    #[test]
+    fn web_config_default() {
+        let config = WebConfig::default();
+        assert_eq!(config.port, 8080);
+        assert_eq!(config.address, "127.0.0.1");
+    }
+}
