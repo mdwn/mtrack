@@ -101,34 +101,15 @@ impl super::Device for Device {
                             if let Ok(LiveEvent::Midi { channel, message }) =
                                 LiveEvent::parse(&event)
                             {
-                                // Take the MIDI and pass through to the DMX engine if the DMX engine is present.
-                                if let Some(universe) = midi_to_dmx_mappings.get(&channel.as_int())
-                                {
-                                    let mut transformed = false;
-
-                                    if let Some(transformers_for_channel) =
-                                        dmx_midi_transformers.get(&channel.as_int())
-                                    {
-                                        for transformer in transformers_for_channel {
-                                            if transformer.can_process(&message) {
-                                                for transformed_message in
-                                                    transformer.transform(&message)
-                                                {
-                                                    transformed = true;
-                                                    dmx_engine.handle_midi_event(
-                                                        universe.into(),
-                                                        transformed_message,
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    // Only send the original note if
-                                    if !transformed {
-                                        dmx_engine.handle_midi_event(universe.into(), message);
-                                    }
-                                }
+                                route_midi_to_dmx(
+                                    channel.as_int(),
+                                    message,
+                                    &midi_to_dmx_mappings,
+                                    &dmx_midi_transformers,
+                                    &|universe, msg| {
+                                        dmx_engine.handle_midi_event(universe, msg);
+                                    },
+                                );
                             }
                         }
                         Err(_) => return,
@@ -385,6 +366,26 @@ fn list_midir_devices() -> Result<Vec<Device>, Box<dyn Error>> {
     Ok(sorted_devices)
 }
 
+/// Validates that exactly one device matches the given name.
+/// Returns an error if no devices match or if the match is ambiguous.
+fn validate_device_match<T: fmt::Display>(name: &str, matches: &[T]) -> Result<(), Box<dyn Error>> {
+    if matches.is_empty() {
+        return Err(format!("no device found with name {}", name).into());
+    }
+    if matches.len() > 1 {
+        return Err(format!(
+            "found too many devices that match ({}), use a less ambiguous device name",
+            matches
+                .iter()
+                .map(|device| format!("{}", device))
+                .collect::<Vec<String>>()
+                .join(", ")
+        )
+        .into());
+    }
+    Ok(())
+}
+
 /// Gets the given midir device.
 pub fn get(
     config: &config::Midi,
@@ -397,20 +398,7 @@ pub fn get(
         .filter(|device| device.name.contains(name))
         .collect::<Vec<Device>>();
 
-    if matches.is_empty() {
-        return Err(format!("no device found with name {}", name).into());
-    }
-    if matches.len() > 1 {
-        return Err(format!(
-            "found too many devices that match ({}), use a less ambiguous device name",
-            matches
-                .iter()
-                .map(|device| device.name.clone())
-                .collect::<Vec<String>>()
-                .join(", ")
-        )
-        .into());
-    }
+    validate_device_match(name, &matches)?;
 
     let (midi_to_dmx_mappings, dmx_midi_transformers) = build_transformers(config)?;
 
@@ -468,6 +456,62 @@ fn build_transformers(config: &config::Midi) -> Result<TransformerConfig, Box<dy
     Ok((midi_to_dmx_mappings, dmx_midi_transformers))
 }
 
+/// Routes a MIDI event to DMX by looking up the channel→universe mapping,
+/// applying any configured transformers, and emitting the result via `emit`.
+/// If transformers produce output, the original message is suppressed.
+fn route_midi_to_dmx(
+    channel: u8,
+    message: midly::MidiMessage,
+    midi_to_dmx_mappings: &HashMap<u8, String>,
+    dmx_midi_transformers: &HashMap<u8, Vec<MidiTransformer>>,
+    emit: &dyn Fn(String, midly::MidiMessage),
+) {
+    let universe = match midi_to_dmx_mappings.get(&channel) {
+        Some(u) => u,
+        None => return,
+    };
+
+    let mut transformed = false;
+
+    if let Some(transformers_for_channel) = dmx_midi_transformers.get(&channel) {
+        for transformer in transformers_for_channel {
+            if transformer.can_process(&message) {
+                for transformed_message in transformer.transform(&message) {
+                    transformed = true;
+                    emit(universe.clone(), transformed_message);
+                }
+            }
+        }
+    }
+
+    // Only send the original message if no transformer produced output.
+    if !transformed {
+        emit(universe.clone(), message);
+    }
+}
+
+/// Serializes a MIDI event to bytes, filtering out excluded channels.
+/// Returns `Some(bytes)` if the event should be sent, `None` if it should be skipped.
+fn serialize_midi_event(
+    event: &super::playback::TimedMidiEvent,
+    exclude_channels: &HashSet<u8>,
+    buf: &mut Vec<u8>,
+) -> Option<Vec<u8>> {
+    if !exclude_channels.is_empty() && exclude_channels.contains(&event.channel) {
+        return None;
+    }
+    let live_event = midly::live::LiveEvent::Midi {
+        channel: event.channel.into(),
+        message: event.message,
+    };
+    buf.clear();
+    if live_event.write_std(&mut *buf).is_ok() {
+        Some(buf.clone())
+    } else {
+        None
+    }
+}
+
 /// Plays pre-computed MIDI events through a hardware connection.
 /// Sleeps between events using spin_sleep for precision without busy-waiting.
 fn play_precomputed(
@@ -495,18 +539,510 @@ fn play_precomputed(
             return;
         }
 
-        if !exclude_channels.is_empty() && exclude_channels.contains(&event.channel) {
-            continue;
-        }
-        let live_event = midly::live::LiveEvent::Midi {
-            channel: event.channel.into(),
-            message: event.message,
-        };
-        buf.clear();
-        if live_event.write_std(&mut buf).is_ok() {
-            if let Err(e) = connection.send(&buf) {
+        if let Some(bytes) = serialize_midi_event(event, exclude_channels, &mut buf) {
+            if let Err(e) = connection.send(&bytes) {
                 debug!("MIDI send failed: {:?}", e);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use midly::num::u7;
+    use midly::MidiMessage;
+
+    mod display {
+        use super::*;
+
+        #[test]
+        fn display_no_ports() {
+            let device = Device::new_default("test-device".to_string());
+            assert_eq!(format!("{}", device), "test-device ()");
+        }
+
+        #[test]
+        fn display_input_only() {
+            let device = Device::new_default("test-device".to_string());
+            assert!(device.input_port.is_none());
+            assert!(device.output_port.is_none());
+            let display = format!("{}", device);
+            assert!(display.contains("test-device"));
+        }
+
+        #[test]
+        fn new_default_has_empty_fields() {
+            let device = Device::new_default("my-midi".to_string());
+            assert_eq!(device.name, "my-midi");
+            assert_eq!(device.playback_delay, Duration::ZERO);
+            assert!(device.input_port.is_none());
+            assert!(device.output_port.is_none());
+            assert!(device.midi_to_dmx_mappings.is_empty());
+            assert!(device.dmx_engine.is_none());
+            assert!(device.dmx_midi_transformers.is_empty());
+        }
+    }
+
+    mod build_transformers_tests {
+        use super::*;
+
+        #[test]
+        fn empty_config_produces_empty_mappings() {
+            let config = config::Midi::new("dev", None);
+            let (mappings, transformers) = build_transformers(&config).unwrap();
+            assert!(mappings.is_empty());
+            assert!(transformers.is_empty());
+        }
+
+        #[test]
+        fn midi_to_dmx_mapping_without_transformers() {
+            let yaml = r#"
+                device: test
+                midi_to_dmx:
+                  - midi_channel: 10
+                    universe: "main"
+            "#;
+            let config: config::Midi = serde_yml::from_str(yaml).unwrap();
+            let (mappings, transformers) = build_transformers(&config).unwrap();
+
+            // MIDI channel 10 → internal channel 9 (1-indexed to 0-indexed in config)
+            assert_eq!(mappings.get(&9), Some(&"main".to_string()));
+            // No transformers configured.
+            assert!(transformers.get(&9).map_or(true, |t| t.is_empty()) || transformers.is_empty());
+        }
+
+        #[test]
+        fn midi_to_dmx_with_note_mapper() {
+            let yaml = r#"
+                device: test
+                midi_to_dmx:
+                  - midi_channel: 1
+                    universe: "main"
+                    transformers:
+                      - type: note_mapper
+                        input_note: 60
+                        convert_to_notes: [61, 62]
+            "#;
+            let config: config::Midi = serde_yml::from_str(yaml).unwrap();
+            let (mappings, transformers) = build_transformers(&config).unwrap();
+
+            assert_eq!(mappings.get(&0), Some(&"main".to_string()));
+            let channel_transformers = transformers.get(&0).unwrap();
+            assert_eq!(channel_transformers.len(), 1);
+
+            // Verify the transformer processes note messages.
+            let note_on = MidiMessage::NoteOn {
+                key: u7::new(60),
+                vel: u7::new(100),
+            };
+            assert!(channel_transformers[0].can_process(&note_on));
+
+            // NoteMapper doesn't process control change messages.
+            let cc = MidiMessage::Controller {
+                controller: u7::new(1),
+                value: u7::new(127),
+            };
+            assert!(!channel_transformers[0].can_process(&cc));
+        }
+
+        #[test]
+        fn midi_to_dmx_with_control_change_mapper() {
+            let yaml = r#"
+                device: test
+                midi_to_dmx:
+                  - midi_channel: 2
+                    universe: "lights"
+                    transformers:
+                      - type: control_change_mapper
+                        input_controller: 1
+                        convert_to_controllers: [60, 61]
+            "#;
+            let config: config::Midi = serde_yml::from_str(yaml).unwrap();
+            let (mappings, transformers) = build_transformers(&config).unwrap();
+
+            assert_eq!(mappings.get(&1), Some(&"lights".to_string()));
+            let channel_transformers = transformers.get(&1).unwrap();
+            assert_eq!(channel_transformers.len(), 1);
+
+            // Verify it processes control change messages.
+            let cc = MidiMessage::Controller {
+                controller: u7::new(1),
+                value: u7::new(127),
+            };
+            assert!(channel_transformers[0].can_process(&cc));
+        }
+
+        #[test]
+        fn multiple_channels_and_transformers() {
+            let yaml = r#"
+                device: test
+                midi_to_dmx:
+                  - midi_channel: 1
+                    universe: "universe_a"
+                    transformers:
+                      - type: note_mapper
+                        input_note: 60
+                        convert_to_notes: [61]
+                      - type: note_mapper
+                        input_note: 72
+                        convert_to_notes: [73, 74]
+                  - midi_channel: 10
+                    universe: "universe_b"
+            "#;
+            let config: config::Midi = serde_yml::from_str(yaml).unwrap();
+            let (mappings, transformers) = build_transformers(&config).unwrap();
+
+            assert_eq!(mappings.len(), 2);
+            assert_eq!(mappings.get(&0), Some(&"universe_a".to_string()));
+            assert_eq!(mappings.get(&9), Some(&"universe_b".to_string()));
+
+            // Channel 0 should have 2 transformers.
+            assert_eq!(transformers.get(&0).unwrap().len(), 2);
+        }
+    }
+
+    mod serialize_midi_event_tests {
+        use super::*;
+        use crate::midi::playback::TimedMidiEvent;
+
+        fn make_event(channel: u8, key: u8) -> TimedMidiEvent {
+            TimedMidiEvent {
+                time: Duration::from_millis(100),
+                channel,
+                message: MidiMessage::NoteOn {
+                    key: u7::new(key),
+                    vel: u7::new(100),
+                },
+            }
+        }
+
+        #[test]
+        fn serializes_event_with_no_exclusions() {
+            let event = make_event(0, 60);
+            let exclude = HashSet::new();
+            let mut buf = Vec::new();
+
+            let result = serialize_midi_event(&event, &exclude, &mut buf);
+            assert!(result.is_some());
+            let bytes = result.unwrap();
+            assert!(!bytes.is_empty());
+        }
+
+        #[test]
+        fn excludes_matching_channel() {
+            let event = make_event(5, 60);
+            let exclude = HashSet::from([5]);
+            let mut buf = Vec::new();
+
+            let result = serialize_midi_event(&event, &exclude, &mut buf);
+            assert!(result.is_none());
+        }
+
+        #[test]
+        fn passes_non_excluded_channel() {
+            let event = make_event(3, 60);
+            let exclude = HashSet::from([5, 9]);
+            let mut buf = Vec::new();
+
+            let result = serialize_midi_event(&event, &exclude, &mut buf);
+            assert!(result.is_some());
+        }
+
+        #[test]
+        fn serialized_bytes_are_valid_midi() {
+            let event = make_event(0, 60);
+            let exclude = HashSet::new();
+            let mut buf = Vec::new();
+
+            let bytes = serialize_midi_event(&event, &exclude, &mut buf).unwrap();
+            // Standard MIDI note-on: status byte (0x90 | channel), key, velocity
+            assert_eq!(bytes.len(), 3);
+            assert_eq!(bytes[0], 0x90); // Note on, channel 0
+            assert_eq!(bytes[1], 60); // Key
+            assert_eq!(bytes[2], 100); // Velocity
+        }
+
+        #[test]
+        fn different_channels_produce_correct_status_byte() {
+            let exclude = HashSet::new();
+            let mut buf = Vec::new();
+
+            for ch in 0..16u8 {
+                let event = make_event(ch, 60);
+                let bytes = serialize_midi_event(&event, &exclude, &mut buf).unwrap();
+                assert_eq!(bytes[0], 0x90 | ch);
+            }
+        }
+
+        #[test]
+        fn note_off_serialization() {
+            let event = TimedMidiEvent {
+                time: Duration::from_millis(200),
+                channel: 0,
+                message: MidiMessage::NoteOff {
+                    key: u7::new(60),
+                    vel: u7::new(64),
+                },
+            };
+            let exclude = HashSet::new();
+            let mut buf = Vec::new();
+
+            let bytes = serialize_midi_event(&event, &exclude, &mut buf).unwrap();
+            assert_eq!(bytes.len(), 3);
+            assert_eq!(bytes[0], 0x80); // Note off, channel 0
+            assert_eq!(bytes[1], 60);
+            assert_eq!(bytes[2], 64);
+        }
+
+        #[test]
+        fn empty_exclude_set_passes_all() {
+            let exclude = HashSet::new();
+            let mut buf = Vec::new();
+
+            for ch in 0..16u8 {
+                let event = make_event(ch, 60);
+                assert!(serialize_midi_event(&event, &exclude, &mut buf).is_some());
+            }
+        }
+    }
+
+    mod route_midi_to_dmx_tests {
+        use super::*;
+        use std::cell::RefCell;
+
+        fn note_on(key: u8, vel: u8) -> MidiMessage {
+            MidiMessage::NoteOn {
+                key: u7::new(key),
+                vel: u7::new(vel),
+            }
+        }
+
+        fn cc(controller: u8, value: u8) -> MidiMessage {
+            MidiMessage::Controller {
+                controller: u7::new(controller),
+                value: u7::new(value),
+            }
+        }
+
+        #[test]
+        fn no_mapping_emits_nothing() {
+            let mappings = HashMap::new();
+            let transformers = HashMap::new();
+            let emitted = RefCell::new(Vec::new());
+
+            route_midi_to_dmx(0, note_on(60, 100), &mappings, &transformers, &|u, m| {
+                emitted.borrow_mut().push((u, m));
+            });
+
+            assert!(emitted.borrow().is_empty());
+        }
+
+        #[test]
+        fn mapped_channel_emits_original_without_transformers() {
+            let mut mappings = HashMap::new();
+            mappings.insert(0u8, "main".to_string());
+            let transformers = HashMap::new();
+            let emitted = RefCell::new(Vec::new());
+
+            route_midi_to_dmx(0, note_on(60, 100), &mappings, &transformers, &|u, m| {
+                emitted.borrow_mut().push((u, m));
+            });
+
+            let emitted = emitted.borrow();
+            assert_eq!(emitted.len(), 1);
+            assert_eq!(emitted[0].0, "main");
+            assert_eq!(emitted[0].1, note_on(60, 100));
+        }
+
+        #[test]
+        fn unmapped_channel_emits_nothing() {
+            let mut mappings = HashMap::new();
+            mappings.insert(0u8, "main".to_string());
+            let transformers = HashMap::new();
+            let emitted = RefCell::new(Vec::new());
+
+            // Send on channel 5, which has no mapping.
+            route_midi_to_dmx(5, note_on(60, 100), &mappings, &transformers, &|u, m| {
+                emitted.borrow_mut().push((u, m));
+            });
+
+            assert!(emitted.borrow().is_empty());
+        }
+
+        #[test]
+        fn transformer_replaces_original_message() {
+            let mut mappings = HashMap::new();
+            mappings.insert(0u8, "main".to_string());
+
+            // NoteMapper: note 60 → notes 61, 62
+            let mut transformers = HashMap::new();
+            transformers.insert(
+                0u8,
+                vec![MidiTransformer::NoteMapper(NoteMapper::new(
+                    u7::new(60),
+                    vec![u7::new(61), u7::new(62)],
+                ))],
+            );
+            let emitted = RefCell::new(Vec::new());
+
+            route_midi_to_dmx(0, note_on(60, 100), &mappings, &transformers, &|u, m| {
+                emitted.borrow_mut().push((u, m));
+            });
+
+            let emitted = emitted.borrow();
+            // Should emit 2 transformed messages, NOT the original.
+            assert_eq!(emitted.len(), 2);
+            assert_eq!(emitted[0].1, note_on(61, 100));
+            assert_eq!(emitted[1].1, note_on(62, 100));
+        }
+
+        #[test]
+        fn non_matching_transformer_passes_original() {
+            let mut mappings = HashMap::new();
+            mappings.insert(0u8, "main".to_string());
+
+            // NoteMapper configured for note 60, but we send note 72.
+            let mut transformers = HashMap::new();
+            transformers.insert(
+                0u8,
+                vec![MidiTransformer::NoteMapper(NoteMapper::new(
+                    u7::new(60),
+                    vec![u7::new(61)],
+                ))],
+            );
+            let emitted = RefCell::new(Vec::new());
+
+            // Note 72 doesn't match — but can_process returns true for any NoteOn,
+            // and transform passes through non-matching notes. So transformer will
+            // produce output (the passthrough), meaning transformed=true.
+            route_midi_to_dmx(0, note_on(72, 100), &mappings, &transformers, &|u, m| {
+                emitted.borrow_mut().push((u, m));
+            });
+
+            let emitted = emitted.borrow();
+            assert_eq!(emitted.len(), 1);
+            assert_eq!(emitted[0].1, note_on(72, 100));
+        }
+
+        #[test]
+        fn non_processable_message_type_passes_original() {
+            let mut mappings = HashMap::new();
+            mappings.insert(0u8, "main".to_string());
+
+            // NoteMapper can't process CC messages.
+            let mut transformers = HashMap::new();
+            transformers.insert(
+                0u8,
+                vec![MidiTransformer::NoteMapper(NoteMapper::new(
+                    u7::new(60),
+                    vec![u7::new(61)],
+                ))],
+            );
+            let emitted = RefCell::new(Vec::new());
+
+            route_midi_to_dmx(0, cc(1, 127), &mappings, &transformers, &|u, m| {
+                emitted.borrow_mut().push((u, m));
+            });
+
+            let emitted = emitted.borrow();
+            // NoteMapper can't process CC, so original passes through.
+            assert_eq!(emitted.len(), 1);
+            assert_eq!(emitted[0].1, cc(1, 127));
+        }
+
+        #[test]
+        fn multiple_transformers_on_same_channel() {
+            let mut mappings = HashMap::new();
+            mappings.insert(0u8, "main".to_string());
+
+            // Two NoteMappers on same channel: note 60→61 and note 72→73
+            let mut transformers = HashMap::new();
+            transformers.insert(
+                0u8,
+                vec![
+                    MidiTransformer::NoteMapper(NoteMapper::new(u7::new(60), vec![u7::new(61)])),
+                    MidiTransformer::NoteMapper(NoteMapper::new(u7::new(72), vec![u7::new(73)])),
+                ],
+            );
+            let emitted = RefCell::new(Vec::new());
+
+            // Send note 60 — first transformer matches and maps, second also processes
+            // (NoteMapper.can_process is true for any NoteOn) and passes through as note 60.
+            route_midi_to_dmx(0, note_on(60, 100), &mappings, &transformers, &|u, m| {
+                emitted.borrow_mut().push((u, m));
+            });
+
+            let emitted = emitted.borrow();
+            // First transformer: 60→61, second transformer: passes through 60 unchanged.
+            assert_eq!(emitted.len(), 2);
+            assert_eq!(emitted[0].1, note_on(61, 100));
+            assert_eq!(emitted[1].1, note_on(60, 100));
+        }
+
+        #[test]
+        fn emits_to_correct_universe() {
+            let mut mappings = HashMap::new();
+            mappings.insert(0u8, "universe_a".to_string());
+            mappings.insert(1u8, "universe_b".to_string());
+            let transformers = HashMap::new();
+            let emitted = RefCell::new(Vec::new());
+
+            route_midi_to_dmx(0, note_on(60, 100), &mappings, &transformers, &|u, m| {
+                emitted.borrow_mut().push((u, m));
+            });
+            route_midi_to_dmx(1, note_on(72, 100), &mappings, &transformers, &|u, m| {
+                emitted.borrow_mut().push((u, m));
+            });
+
+            let emitted = emitted.borrow();
+            assert_eq!(emitted.len(), 2);
+            assert_eq!(emitted[0].0, "universe_a");
+            assert_eq!(emitted[1].0, "universe_b");
+        }
+    }
+
+    mod validate_device_match_tests {
+        use super::*;
+
+        // Simple wrapper to provide Display for test strings.
+        struct Named(String);
+        impl fmt::Display for Named {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "{}", self.0)
+            }
+        }
+
+        #[test]
+        fn single_match_succeeds() {
+            let matches = vec![Named("device-1".to_string())];
+            assert!(validate_device_match("device", &matches).is_ok());
+        }
+
+        #[test]
+        fn no_matches_fails() {
+            let matches: Vec<Named> = vec![];
+            let err = validate_device_match("my-device", &matches).unwrap_err();
+            assert!(err.to_string().contains("no device found"));
+            assert!(err.to_string().contains("my-device"));
+        }
+
+        #[test]
+        fn multiple_matches_fails() {
+            let matches = vec![
+                Named("midi-device-1".to_string()),
+                Named("midi-device-2".to_string()),
+            ];
+            let err = validate_device_match("midi-device", &matches).unwrap_err();
+            assert!(err.to_string().contains("too many devices"));
+            assert!(err.to_string().contains("midi-device-1"));
+            assert!(err.to_string().contains("midi-device-2"));
+        }
+
+        #[test]
+        fn exactly_two_matches_fails() {
+            let matches = vec![Named("a".to_string()), Named("b".to_string())];
+            assert!(validate_device_match("x", &matches).is_err());
         }
     }
 }
