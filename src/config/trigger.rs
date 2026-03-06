@@ -244,6 +244,82 @@ pub struct AudioTriggerInput {
     noise_floor_decay_ms: u32,
 }
 
+#[cfg(test)]
+impl AudioTriggerInput {
+    /// Creates a trigger-action input for testing.
+    pub fn new_trigger(channel: u16, sample: &str) -> Self {
+        Self {
+            channel,
+            sample: Some(sample.to_string()),
+            threshold: default_threshold(),
+            retrigger_time_ms: default_retrigger_time_ms(),
+            scan_time_ms: default_scan_time_ms(),
+            gain: default_gain(),
+            velocity_curve: VelocityCurve::default(),
+            fixed_velocity: default_fixed_velocity(),
+            release_group: None,
+            action: TriggerInputAction::Trigger,
+            highpass_freq: None,
+            dynamic_threshold_decay_ms: None,
+            noise_floor_sensitivity: None,
+            noise_floor_decay_ms: default_noise_floor_decay_ms(),
+        }
+    }
+
+    /// Creates a release-action input for testing.
+    pub fn new_release(channel: u16, release_group: &str) -> Self {
+        Self {
+            channel,
+            sample: None,
+            threshold: default_threshold(),
+            retrigger_time_ms: default_retrigger_time_ms(),
+            scan_time_ms: default_scan_time_ms(),
+            gain: default_gain(),
+            velocity_curve: VelocityCurve::default(),
+            fixed_velocity: default_fixed_velocity(),
+            release_group: Some(release_group.to_string()),
+            action: TriggerInputAction::Release,
+            highpass_freq: None,
+            dynamic_threshold_decay_ms: None,
+            noise_floor_sensitivity: None,
+            noise_floor_decay_ms: default_noise_floor_decay_ms(),
+        }
+    }
+
+    /// Creates a trigger-action input with no sample (invalid, for testing validation).
+    pub fn new_trigger_no_sample(channel: u16) -> Self {
+        Self {
+            channel,
+            sample: None,
+            action: TriggerInputAction::Trigger,
+            ..Self::new_trigger(channel, "")
+        }
+    }
+
+    /// Creates a release-action input with no group (invalid, for testing validation).
+    pub fn new_release_no_group(channel: u16) -> Self {
+        Self {
+            channel,
+            sample: None,
+            release_group: None,
+            action: TriggerInputAction::Release,
+            ..Self::new_release(channel, "")
+        }
+    }
+
+    pub fn set_threshold(&mut self, threshold: f32) {
+        self.threshold = threshold;
+    }
+
+    pub fn set_retrigger_time_ms(&mut self, ms: u32) {
+        self.retrigger_time_ms = ms;
+    }
+
+    pub fn set_scan_time_ms(&mut self, ms: u32) {
+        self.scan_time_ms = ms;
+    }
+}
+
 impl AudioTriggerInput {
     /// Returns the 1-indexed channel number.
     pub fn channel(&self) -> u16 {
