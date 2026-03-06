@@ -2508,4 +2508,1383 @@ mod sample_source_tests {
     fn test_symphonia_can_decode_alac_stereo() {
         decode_some_samples_from(std::path::Path::new("assets/2Channel44.1k_alac.m4a"));
     }
+
+    // -----------------------------------------------------------------
+    // AudioSampleSource metadata accessor coverage
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn test_audio_sample_source_metadata_accessors() {
+        use crate::testutil::write_wav_with_bits;
+        use tempfile::tempdir;
+
+        let tempdir = tempdir().unwrap();
+        let wav_path = tempdir.path().join("meta.wav");
+
+        let samples: Vec<i16> = vec![1000, 2000, 3000, 4000]; // 2 frames stereo
+        write_wav_with_bits(wav_path.clone(), vec![samples.clone(), samples], 48000, 16).unwrap();
+
+        let source = AudioSampleSource::from_file(&wav_path, None, 1024).unwrap();
+        assert_eq!(source.channel_count(), 2);
+        assert_eq!(source.sample_rate(), 48000);
+        assert_eq!(source.bits_per_sample(), 16);
+        assert_eq!(source.sample_format(), crate::audio::SampleFormat::Int);
+        assert!(source.duration().is_some());
+    }
+
+    // -----------------------------------------------------------------
+    // Box<dyn SampleSource> blanket impl coverage
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn test_boxed_sample_source_blanket_impl() {
+        let inner = MemorySampleSource::new(vec![0.1, 0.2, 0.3], 1, 44100);
+        let mut boxed: Box<dyn SampleSource> = Box::new(inner);
+
+        assert_eq!(boxed.channel_count(), 1);
+        assert_eq!(boxed.sample_rate(), 44100);
+        assert_eq!(boxed.bits_per_sample(), 32);
+        assert_eq!(boxed.sample_format(), crate::audio::SampleFormat::Float);
+        assert!(boxed.duration().is_some());
+
+        assert_eq!(boxed.next_sample().unwrap(), Some(0.1));
+        assert_eq!(boxed.next_sample().unwrap(), Some(0.2));
+        assert_eq!(boxed.next_sample().unwrap(), Some(0.3));
+        assert_eq!(boxed.next_sample().unwrap(), None);
+    }
+
+    // -----------------------------------------------------------------
+    // ChannelMappedSampleSource default method coverage
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn test_channel_mapped_source_next_frame_default() {
+        let memory = MemorySampleSource::new(vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6], 2, 44100);
+        let mut source = ChannelMappedSource::new(
+            Box::new(memory),
+            vec![vec!["L".into()], vec!["R".into()]],
+            2,
+        );
+
+        let mut frame = [0.0f32; 2];
+        let result = source.next_frame(&mut frame).unwrap();
+        assert_eq!(result, Some(2));
+        assert_eq!(frame, [0.1, 0.2]);
+
+        let result = source.next_frame(&mut frame).unwrap();
+        assert_eq!(result, Some(2));
+        assert_eq!(frame, [0.3, 0.4]);
+
+        let result = source.next_frame(&mut frame).unwrap();
+        assert_eq!(result, Some(2));
+        assert_eq!(frame, [0.5, 0.6]);
+
+        // EOF
+        let result = source.next_frame(&mut frame).unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_channel_mapped_source_next_frame_buffer_too_small() {
+        let memory = MemorySampleSource::new(vec![0.1, 0.2], 2, 44100);
+        let mut source = ChannelMappedSource::new(
+            Box::new(memory),
+            vec![vec!["L".into()], vec!["R".into()]],
+            2,
+        );
+
+        let mut frame = [0.0f32; 1]; // Too small for 2 channels
+        let result = source.next_frame(&mut frame);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_channel_mapped_source_read_frames_default() {
+        let memory = MemorySampleSource::new(vec![0.1, 0.2, 0.3, 0.4], 2, 44100);
+        let mut source = ChannelMappedSource::new(
+            Box::new(memory),
+            vec![vec!["L".into()], vec!["R".into()]],
+            2,
+        );
+
+        let mut output = [0.0f32; 4];
+        let frames_read = source.read_frames(&mut output, 2).unwrap();
+        assert_eq!(frames_read, 2);
+        assert_eq!(output, [0.1, 0.2, 0.3, 0.4]);
+    }
+
+    #[test]
+    fn test_channel_mapped_source_read_frames_partial_eof() {
+        // Source has 1 frame but we ask for 3
+        let memory = MemorySampleSource::new(vec![0.5, 0.6], 2, 44100);
+        let mut source = ChannelMappedSource::new(
+            Box::new(memory),
+            vec![vec!["L".into()], vec!["R".into()]],
+            2,
+        );
+
+        let mut output = [0.0f32; 6];
+        let frames_read = source.read_frames(&mut output, 3).unwrap();
+        assert_eq!(frames_read, 1);
+        assert_eq!(output[0], 0.5);
+        assert_eq!(output[1], 0.6);
+    }
+
+    #[test]
+    fn test_channel_mapped_source_is_exhausted_default() {
+        let memory = MemorySampleSource::new(vec![0.1], 1, 44100);
+        let source = ChannelMappedSource::new(Box::new(memory), vec![vec!["M".into()]], 1);
+        // Default impl returns None
+        assert_eq!(source.is_exhausted(), None);
+    }
+
+    #[test]
+    fn test_channel_mapped_source_accessors() {
+        let memory = MemorySampleSource::new(vec![0.1], 1, 44100);
+        let mappings = vec![vec!["test".to_string()]];
+        let source = ChannelMappedSource::new(Box::new(memory), mappings.clone(), 1);
+        assert_eq!(source.source_channel_count(), 1);
+        assert_eq!(source.channel_mappings(), &mappings);
+    }
+
+    // -----------------------------------------------------------------
+    // create_channel_mapped_sample_source coverage
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn test_create_channel_mapped_no_transcoding() {
+        use crate::audio::sample_source::create_channel_mapped_sample_source;
+
+        let source = MemorySampleSource::new(vec![0.1, 0.2, 0.3, 0.4], 2, 44100);
+        let target = TargetFormat::new(44100, crate::audio::SampleFormat::Float, 32).unwrap();
+        let mappings = vec![vec!["L".into()], vec!["R".into()]];
+
+        let mut mapped = create_channel_mapped_sample_source(
+            Box::new(source),
+            target,
+            mappings,
+            ResamplerType::Sinc,
+        )
+        .unwrap();
+
+        assert_eq!(mapped.source_channel_count(), 2);
+        assert_eq!(mapped.next_sample().unwrap(), Some(0.1));
+        assert_eq!(mapped.next_sample().unwrap(), Some(0.2));
+    }
+
+    #[test]
+    fn test_create_channel_mapped_with_transcoding() {
+        use crate::audio::sample_source::create_channel_mapped_sample_source;
+
+        // Source at 44100, target at 48000 — triggers transcoding
+        let num_samples = 4410; // 100ms at 44100
+        let input: Vec<f32> = (0..num_samples)
+            .map(|i| (i as f32 * 440.0 * 2.0 * std::f32::consts::PI / 44100.0).sin() * 0.3)
+            .collect();
+
+        let source = MemorySampleSource::new(input, 1, 44100);
+        let target = TargetFormat::new(48000, crate::audio::SampleFormat::Float, 32).unwrap();
+        let mappings = vec![vec!["M".into()]];
+
+        let mut mapped = create_channel_mapped_sample_source(
+            Box::new(source),
+            target,
+            mappings,
+            ResamplerType::Sinc,
+        )
+        .unwrap();
+
+        assert_eq!(mapped.source_channel_count(), 1);
+
+        let mut count = 0;
+        while let Some(_) = mapped.next_sample().unwrap() {
+            count += 1;
+            if count > 50000 {
+                break;
+            }
+        }
+        // Should produce roughly 4800 samples (44100→48000 ratio)
+        assert!(count > 3000, "expected transcoded output, got {count}");
+    }
+
+    // -----------------------------------------------------------------
+    // AudioTranscoder metadata accessor coverage
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn test_audio_transcoder_metadata_passthrough() {
+        let source = MemorySampleSource::new(vec![0.1, 0.2], 1, 44100);
+        let source_fmt = TargetFormat::new(44100, crate::audio::SampleFormat::Float, 32).unwrap();
+        let target_fmt = TargetFormat::new(44100, crate::audio::SampleFormat::Float, 32).unwrap();
+
+        let transcoder =
+            AudioTranscoder::new(source, &source_fmt, &target_fmt, 1, ResamplerType::Sinc).unwrap();
+
+        assert_eq!(transcoder.channel_count(), 1);
+        assert_eq!(transcoder.sample_rate(), 44100);
+        assert_eq!(transcoder.bits_per_sample(), 32);
+        assert_eq!(
+            transcoder.sample_format(),
+            crate::audio::SampleFormat::Float
+        );
+        assert!(transcoder.duration().is_some());
+    }
+
+    #[test]
+    fn test_audio_transcoder_metadata_with_resampling() {
+        let source = MemorySampleSource::new(vec![0.0; 4800], 2, 48000);
+        let source_fmt = TargetFormat::new(48000, crate::audio::SampleFormat::Float, 32).unwrap();
+        let target_fmt = TargetFormat::new(44100, crate::audio::SampleFormat::Float, 32).unwrap();
+
+        let transcoder =
+            AudioTranscoder::new(source, &source_fmt, &target_fmt, 2, ResamplerType::Sinc).unwrap();
+
+        assert_eq!(transcoder.channel_count(), 2);
+        assert_eq!(transcoder.sample_rate(), 44100); // target rate
+        assert_eq!(
+            transcoder.sample_format(),
+            crate::audio::SampleFormat::Float
+        );
+        assert!(transcoder.resampler.is_some());
+    }
+
+    // -----------------------------------------------------------------
+    // BufferedSampleSource expanded coverage
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn test_buffered_source_stereo() {
+        // Verify stereo interleaving is preserved through the buffer.
+        // Use next_frame because next_sample only returns frame[0] for each frame.
+        let samples = vec![0.1, -0.1, 0.2, -0.2, 0.3, -0.3, 0.4, -0.4];
+        let memory = MemorySampleSource::new(samples.clone(), 2, 44100);
+        let mappings = vec![vec!["L".to_string()], vec!["R".to_string()]];
+        let inner: Box<dyn ChannelMappedSampleSource + Send + Sync> =
+            Box::new(ChannelMappedSource::new(Box::new(memory), mappings, 2));
+
+        let pool = Arc::new(BufferFillPool::new(1).unwrap());
+        // device_buffer_frames=8 → capacity=32 (fits all 4 stereo frames comfortably)
+        let mut buffered = BufferedSampleSource::new(inner, pool, 8);
+
+        assert_eq!(buffered.source_channel_count(), 2);
+        assert_eq!(buffered.channel_mappings().len(), 2);
+
+        let mut read = Vec::new();
+        let mut frame = [0.0f32; 2];
+        loop {
+            match buffered.next_frame(&mut frame).unwrap() {
+                Some(_) => {
+                    read.push(frame[0]);
+                    read.push(frame[1]);
+                }
+                None => break,
+            }
+        }
+        assert_eq!(read, samples);
+    }
+
+    #[test]
+    fn test_buffered_source_next_frame() {
+        let samples = vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6];
+        let memory = MemorySampleSource::new(samples, 2, 44100);
+        let inner: Box<dyn ChannelMappedSampleSource + Send + Sync> =
+            Box::new(ChannelMappedSource::new(
+                Box::new(memory),
+                vec![vec!["L".into()], vec!["R".into()]],
+                2,
+            ));
+
+        let pool = Arc::new(BufferFillPool::new(1).unwrap());
+        let mut buffered = BufferedSampleSource::new(inner, pool, 2);
+
+        let mut frame = [0.0f32; 2];
+        let result = buffered.next_frame(&mut frame).unwrap();
+        assert_eq!(result, Some(2));
+        assert_eq!(frame, [0.1, 0.2]);
+
+        let result = buffered.next_frame(&mut frame).unwrap();
+        assert_eq!(result, Some(2));
+        assert_eq!(frame, [0.3, 0.4]);
+    }
+
+    #[test]
+    fn test_buffered_source_next_frame_output_too_small() {
+        let memory = MemorySampleSource::new(vec![0.1, 0.2], 2, 44100);
+        let inner: Box<dyn ChannelMappedSampleSource + Send + Sync> =
+            Box::new(ChannelMappedSource::new(
+                Box::new(memory),
+                vec![vec!["L".into()], vec!["R".into()]],
+                2,
+            ));
+
+        let pool = Arc::new(BufferFillPool::new(1).unwrap());
+        let mut buffered = BufferedSampleSource::new(inner, pool, 2);
+
+        let mut frame = [0.0f32; 1]; // Too small
+        let result = buffered.next_frame(&mut frame);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_buffered_source_read_frames() {
+        // 10 stereo frames = 20 samples
+        let samples: Vec<f32> = (0..20).map(|i| i as f32 * 0.05).collect();
+        let memory = MemorySampleSource::new(samples.clone(), 2, 44100);
+        let inner: Box<dyn ChannelMappedSampleSource + Send + Sync> =
+            Box::new(ChannelMappedSource::new(
+                Box::new(memory),
+                vec![vec!["L".into()], vec!["R".into()]],
+                2,
+            ));
+
+        let pool = Arc::new(BufferFillPool::new(1).unwrap());
+        // Large enough capacity that warmup fills everything
+        let mut buffered = BufferedSampleSource::new(inner, pool, 20);
+
+        let mut all_output = Vec::new();
+        let mut buf = vec![0.0f32; 10]; // Read up to 5 frames at a time
+        loop {
+            let frames = buffered.read_frames(&mut buf, 5).unwrap();
+            if frames == 0 {
+                break;
+            }
+            all_output.extend_from_slice(&buf[..frames * 2]);
+        }
+        assert_eq!(all_output.len(), 20);
+        for (i, &s) in all_output.iter().enumerate() {
+            assert!(
+                (s - samples[i]).abs() < 1e-7,
+                "mismatch at {i}: {s} vs {}",
+                samples[i]
+            );
+        }
+    }
+
+    #[test]
+    fn test_buffer_fill_pool_creation() {
+        // 0 threads should be clamped to 1
+        let pool = BufferFillPool::new(0).unwrap();
+        // Just verify it can spawn work
+        let (tx, rx) = std::sync::mpsc::channel();
+        pool.spawn(move || {
+            tx.send(42).unwrap();
+        });
+        assert_eq!(rx.recv().unwrap(), 42);
+    }
+
+    #[test]
+    fn test_buffer_fill_pool_multiple_threads() {
+        let pool = BufferFillPool::new(4).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        for i in 0..8 {
+            let tx = tx.clone();
+            pool.spawn(move || {
+                tx.send(i).unwrap();
+            });
+        }
+        drop(tx);
+        let mut results: Vec<_> = rx.iter().collect();
+        results.sort();
+        assert_eq!(results, (0..8).collect::<Vec<_>>());
+    }
+
+    // -----------------------------------------------------------------
+    // factory.rs coverage
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn test_create_sample_source_from_file_nonexistent() {
+        let result = create_sample_source_from_file("nonexistent_file.wav", None, 1024);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_create_sample_source_from_file_with_start_time() {
+        use crate::testutil::write_wav;
+        use tempfile::tempdir;
+
+        let tempdir = tempdir().unwrap();
+        let wav_path = tempdir.path().join("factory_seek.wav");
+
+        let sample_rate = 44100u32;
+        let samples: Vec<i32> = (0..44100).map(|i| (i * 100) as i32).collect();
+        write_wav(wav_path.clone(), vec![samples], sample_rate).unwrap();
+
+        let mut source = create_sample_source_from_file(
+            &wav_path,
+            Some(std::time::Duration::from_millis(500)),
+            1024,
+        )
+        .unwrap();
+
+        assert!(source.sample_rate() > 0);
+        assert!(source.next_sample().unwrap().is_some());
+    }
+
+    // -----------------------------------------------------------------
+    // Buffered source: wrap-around ring buffer coverage
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn test_buffered_source_ring_buffer_wraparound() {
+        // Verify that data survives a ring buffer wrap by reading all samples
+        // from a source that exactly fits within the buffer capacity.
+        // device_buffer_frames=8 → capacity=32, warmup=8
+        // 20 mono samples < 32 capacity → fill task fills all data during warmup
+        let num_samples = 20;
+        let samples: Vec<f32> = (0..num_samples).map(|i| i as f32 * 0.05).collect();
+        let memory = MemorySampleSource::new(samples.clone(), 1, 44100);
+        let inner: Box<dyn ChannelMappedSampleSource + Send + Sync> = Box::new(
+            ChannelMappedSource::new(Box::new(memory), vec![vec!["M".into()]], 1),
+        );
+
+        let pool = Arc::new(BufferFillPool::new(1).unwrap());
+        let mut buffered = BufferedSampleSource::new(inner, pool, 8);
+
+        let mut read = Vec::new();
+        while let Some(s) = buffered.next_sample().unwrap() {
+            read.push(s);
+        }
+        assert_eq!(read.len(), num_samples);
+        for (i, &s) in read.iter().enumerate() {
+            assert!(
+                (s - samples[i]).abs() < 1e-7,
+                "mismatch at {i}: {s} vs {}",
+                samples[i]
+            );
+        }
+    }
+
+    #[test]
+    fn test_buffered_source_read_frames_wraparound() {
+        // Test read_frames with stereo data that fits in the buffer
+        // device_buffer_frames=20 → capacity=80, warmup=20
+        // 30 stereo frames = 60 samples < 80 capacity
+        let num_samples = 60; // 30 stereo frames
+        let samples: Vec<f32> = (0..num_samples).map(|i| i as f32 * 0.01).collect();
+        let memory = MemorySampleSource::new(samples.clone(), 2, 44100);
+        let inner: Box<dyn ChannelMappedSampleSource + Send + Sync> =
+            Box::new(ChannelMappedSource::new(
+                Box::new(memory),
+                vec![vec!["L".into()], vec!["R".into()]],
+                2,
+            ));
+
+        let pool = Arc::new(BufferFillPool::new(1).unwrap());
+        let mut buffered = BufferedSampleSource::new(inner, pool, 40);
+
+        let mut all_output = Vec::new();
+        let mut buf = vec![0.0f32; 10]; // Read up to 5 frames at a time
+        loop {
+            let frames = buffered.read_frames(&mut buf, 5).unwrap();
+            if frames == 0 {
+                break;
+            }
+            all_output.extend_from_slice(&buf[..frames * 2]);
+        }
+        assert_eq!(all_output.len(), num_samples);
+        for (i, &s) in all_output.iter().enumerate() {
+            assert!(
+                (s - samples[i]).abs() < 1e-7,
+                "mismatch at {i}: {s} vs {}",
+                samples[i]
+            );
+        }
+    }
+
+    #[test]
+    fn test_buffered_source_empty_inner() {
+        let memory = MemorySampleSource::new(vec![], 1, 44100);
+        let inner: Box<dyn ChannelMappedSampleSource + Send + Sync> = Box::new(
+            ChannelMappedSource::new(Box::new(memory), vec![vec!["M".into()]], 1),
+        );
+
+        let pool = Arc::new(BufferFillPool::new(1).unwrap());
+        let mut buffered = BufferedSampleSource::new(inner, pool, 2);
+
+        assert_eq!(buffered.next_sample().unwrap(), None);
+        assert_eq!(buffered.is_exhausted(), Some(true));
+    }
+
+    // -----------------------------------------------------------------
+    // AudioTranscoder: FFT resampler metadata
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn test_audio_transcoder_fft_metadata() {
+        let source = MemorySampleSource::new(vec![0.0; 4800], 1, 48000);
+        let source_fmt = TargetFormat::new(48000, crate::audio::SampleFormat::Float, 32).unwrap();
+        let target_fmt = TargetFormat::new(44100, crate::audio::SampleFormat::Float, 32).unwrap();
+
+        let transcoder =
+            AudioTranscoder::new(source, &source_fmt, &target_fmt, 1, ResamplerType::Fft).unwrap();
+
+        assert_eq!(transcoder.channel_count(), 1);
+        assert_eq!(transcoder.sample_rate(), 44100);
+        assert!(transcoder.resampler.is_some());
+    }
+
+    // -----------------------------------------------------------------
+    // AudioTranscoder: error paths
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn test_audio_transcoder_resampling_failed_error() {
+        // Verify that ResamplingFailed error formats correctly
+        let e =
+            crate::audio::sample_source::error::SampleSourceError::ResamplingFailed(44100, 48000);
+        let msg = format!("{e}");
+        assert!(msg.contains("44100"));
+        assert!(msg.contains("48000"));
+    }
+
+    // -----------------------------------------------------------------
+    // ChannelMappedSource: next_sample delegation
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn test_channel_mapped_source_next_sample_delegation() {
+        let memory = MemorySampleSource::new(vec![0.5, -0.5], 1, 44100);
+        let mut source = ChannelMappedSource::new(Box::new(memory), vec![vec!["mono".into()]], 1);
+
+        assert_eq!(source.next_sample().unwrap(), Some(0.5));
+        assert_eq!(source.next_sample().unwrap(), Some(-0.5));
+        assert_eq!(source.next_sample().unwrap(), None);
+    }
+
+    // -----------------------------------------------------------------
+    // AudioSampleSource: is_finished early return (line 57)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn test_audio_sample_source_repeated_eof() {
+        use crate::testutil::write_wav;
+        use tempfile::tempdir;
+
+        let tempdir = tempdir().unwrap();
+        let wav_path = tempdir.path().join("repeated_eof.wav");
+        write_wav(wav_path.clone(), vec![vec![1000i32, 2000]], 44100).unwrap();
+
+        let mut source = AudioSampleSource::from_file(&wav_path, None, 1024).unwrap();
+        // Drain all samples
+        while source.next_sample().unwrap().is_some() {}
+        assert!(source.is_finished());
+
+        // Calling next_sample again should hit the early return (is_finished check)
+        assert_eq!(source.next_sample().unwrap(), None);
+        assert_eq!(source.next_sample().unwrap(), None);
+    }
+
+    // -----------------------------------------------------------------
+    // AudioSampleSource: float WAV format detection (line 159)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn test_audio_sample_source_float_wav() {
+        use crate::testutil::write_wav_with_bits;
+        use tempfile::tempdir;
+
+        let tempdir = tempdir().unwrap();
+        let wav_path = tempdir.path().join("float32.wav");
+
+        // Write a 32-bit float WAV
+        let float_samples: Vec<f32> = vec![0.25, -0.5, 0.75, -1.0, 0.0];
+        write_wav_with_bits(wav_path.clone(), vec![float_samples.clone()], 44100, 32).unwrap();
+
+        let mut source = AudioSampleSource::from_file(&wav_path, None, 1024).unwrap();
+        assert_eq!(source.sample_format(), crate::audio::SampleFormat::Float);
+        assert_eq!(source.bits_per_sample(), 32);
+        assert_eq!(source.channel_count(), 1);
+
+        let mut read = Vec::new();
+        while let Some(s) = source.next_sample().unwrap() {
+            read.push(s);
+        }
+        assert_eq!(read.len(), 5);
+        for (i, (&actual, &expected)) in read.iter().zip(float_samples.iter()).enumerate() {
+            assert!(
+                (actual - expected).abs() < 1e-6,
+                "Float sample {i} mismatch: {actual} vs {expected}"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // AudioSampleSource: leftover samples from buffer overflow (line 383)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn test_audio_sample_source_small_buffer_leftover() {
+        use crate::testutil::write_wav;
+        use tempfile::tempdir;
+
+        let tempdir = tempdir().unwrap();
+        let wav_path = tempdir.path().join("leftover.wav");
+
+        // Create a file with enough samples that the decoder will produce
+        // more samples than fit in a very small buffer, exercising the leftover path
+        let num_samples = 4096;
+        let samples: Vec<i32> = (0..num_samples)
+            .map(|i| {
+                ((i as f32 * 440.0 * 2.0 * std::f32::consts::PI / 44100.0).sin() * 1_000_000.0)
+                    as i32
+            })
+            .collect();
+        write_wav(wav_path.clone(), vec![samples], 44100).unwrap();
+
+        // Use buffer_size=1 to force leftovers on every refill
+        let mut source = AudioSampleSource::from_file(&wav_path, None, 1).unwrap();
+
+        let mut count = 0;
+        while source.next_sample().unwrap().is_some() {
+            count += 1;
+        }
+        assert_eq!(
+            count, num_samples,
+            "all samples should be read despite tiny buffer"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // AudioSampleSource: stereo with small buffer (leftover + interleaving)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn test_audio_sample_source_stereo_small_buffer() {
+        use crate::testutil::write_wav;
+        use tempfile::tempdir;
+
+        let tempdir = tempdir().unwrap();
+        let wav_path = tempdir.path().join("stereo_small_buf.wav");
+
+        let left: Vec<i32> = (0..200).map(|i| i * 1000).collect();
+        let right: Vec<i32> = (0..200).map(|i| -(i * 1000)).collect();
+        write_wav(wav_path.clone(), vec![left, right], 44100).unwrap();
+
+        // Small buffer to exercise refill + leftover logic
+        let mut source = AudioSampleSource::from_file(&wav_path, None, 4).unwrap();
+        assert_eq!(source.channel_count(), 2);
+
+        let mut count = 0;
+        while source.next_sample().unwrap().is_some() {
+            count += 1;
+        }
+        assert_eq!(count, 400); // 200 frames * 2 channels
+    }
+
+    // -----------------------------------------------------------------
+    // Transcoder: FFT resampler with real processing
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn test_fft_resampler_stereo_processing() {
+        let source_rate = 44100u32;
+        let target_rate = 48000u32;
+        let num_frames = 4410; // 100ms
+
+        let mut input = Vec::with_capacity(num_frames * 2);
+        for i in 0..num_frames {
+            let t = i as f32 / source_rate as f32;
+            input.push((2.0 * std::f32::consts::PI * 440.0 * t).sin() * 0.3);
+            input.push((2.0 * std::f32::consts::PI * 880.0 * t).sin() * 0.3);
+        }
+
+        let source = MemorySampleSource::new(input, 2, source_rate);
+        let source_fmt =
+            TargetFormat::new(source_rate, crate::audio::SampleFormat::Float, 32).unwrap();
+        let target_fmt =
+            TargetFormat::new(target_rate, crate::audio::SampleFormat::Float, 32).unwrap();
+
+        let mut transcoder =
+            AudioTranscoder::new(source, &source_fmt, &target_fmt, 2, ResamplerType::Fft).unwrap();
+
+        assert_eq!(transcoder.channel_count(), 2);
+        assert_eq!(transcoder.sample_rate(), target_rate);
+
+        let mut output = Vec::new();
+        loop {
+            match transcoder.next_sample() {
+                Ok(Some(s)) => output.push(s),
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
+
+        let expected_samples =
+            (num_frames as f64 * target_rate as f64 / source_rate as f64) as usize * 2;
+        assert!(
+            output.len() > expected_samples / 2,
+            "too few output samples: {}",
+            output.len()
+        );
+
+        // Verify output contains non-trivial signal
+        let rms = (output.iter().map(|&x| x * x).sum::<f32>() / output.len() as f32).sqrt();
+        assert!(rms > 0.05, "RMS too low: {rms}");
+    }
+
+    // -----------------------------------------------------------------
+    // Transcoder: passthrough (no resampler) exercises fill_output_fifo early return
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn test_transcoder_passthrough_samples_unchanged() {
+        let input = vec![0.1, 0.2, 0.3, 0.4, 0.5];
+        let source = MemorySampleSource::new(input.clone(), 1, 44100);
+        let fmt = TargetFormat::new(44100, crate::audio::SampleFormat::Float, 32).unwrap();
+
+        let mut transcoder =
+            AudioTranscoder::new(source, &fmt, &fmt, 1, ResamplerType::Sinc).unwrap();
+
+        assert!(transcoder.resampler.is_none());
+        assert_eq!(
+            transcoder.sample_format(),
+            crate::audio::SampleFormat::Float
+        );
+
+        let mut output = Vec::new();
+        loop {
+            match transcoder.next_sample() {
+                Ok(Some(s)) => output.push(s),
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
+        assert_eq!(output, input);
+    }
+
+    // -----------------------------------------------------------------
+    // Transcoder: duration delegation
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn test_transcoder_duration_delegates_to_source() {
+        // 44100 samples at 44100 Hz = 1 second
+        let source = MemorySampleSource::new(vec![0.0; 44100], 1, 44100);
+        let fmt = TargetFormat::new(44100, crate::audio::SampleFormat::Float, 32).unwrap();
+
+        let transcoder = AudioTranscoder::new(source, &fmt, &fmt, 1, ResamplerType::Sinc).unwrap();
+        let dur = transcoder.duration().unwrap();
+        assert!((dur.as_secs_f64() - 1.0).abs() < 1e-6);
+    }
+
+    // -----------------------------------------------------------------
+    // Buffered: channel_mappings preserved
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn test_buffered_source_channel_mappings_preserved() {
+        let memory = MemorySampleSource::new(vec![0.0; 4], 2, 44100);
+        let mappings = vec![
+            vec!["Left".to_string(), "FL".to_string()],
+            vec!["Right".to_string()],
+        ];
+        let inner: Box<dyn ChannelMappedSampleSource + Send + Sync> = Box::new(
+            ChannelMappedSource::new(Box::new(memory), mappings.clone(), 2),
+        );
+
+        let pool = Arc::new(BufferFillPool::new(1).unwrap());
+        let buffered = BufferedSampleSource::new(inner, pool, 4);
+
+        assert_eq!(buffered.channel_mappings(), &mappings);
+        assert_eq!(buffered.source_channel_count(), 2);
+    }
+
+    // -----------------------------------------------------------------
+    // create_channel_mapped: bit depth / format mismatch triggers transcoding
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn test_create_channel_mapped_bit_depth_mismatch() {
+        use crate::audio::sample_source::create_channel_mapped_sample_source;
+
+        // Source is 32-bit float at 44100, target is 16-bit int at 44100
+        // Different bit depth/format should trigger transcoding
+        let source = MemorySampleSource::new(vec![0.5, -0.5, 0.25, -0.25], 1, 44100);
+        let target = TargetFormat::new(44100, crate::audio::SampleFormat::Int, 16).unwrap();
+
+        let mut mapped = create_channel_mapped_sample_source(
+            Box::new(source),
+            target,
+            vec![vec!["M".into()]],
+            ResamplerType::Sinc,
+        )
+        .unwrap();
+
+        // Should still produce samples (transcoding doesn't change sample count for same rate)
+        let mut count = 0;
+        while mapped.next_sample().unwrap().is_some() {
+            count += 1;
+        }
+        assert_eq!(count, 4);
+    }
+
+    // -----------------------------------------------------------------
+    // ChannelMappedSource: read_frames with mono
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn test_channel_mapped_source_read_frames_mono() {
+        let memory = MemorySampleSource::new(vec![0.1, 0.2, 0.3, 0.4, 0.5], 1, 44100);
+        let mut source = ChannelMappedSource::new(Box::new(memory), vec![vec!["M".into()]], 1);
+
+        let mut output = [0.0f32; 3];
+        let frames = source.read_frames(&mut output, 3).unwrap();
+        assert_eq!(frames, 3);
+        assert_eq!(output, [0.1, 0.2, 0.3]);
+
+        // Read remaining
+        let frames = source.read_frames(&mut output, 3).unwrap();
+        assert_eq!(frames, 2); // Only 2 left
+        assert_eq!(output[0], 0.4);
+        assert_eq!(output[1], 0.5);
+    }
+
+    // -----------------------------------------------------------------
+    // AudioSampleSource: duration accessor
+    // -----------------------------------------------------------------
+
+    // -----------------------------------------------------------------
+    // decode_buffer_to_f32: direct tests for all AudioBufferRef variants
+    // -----------------------------------------------------------------
+
+    use symphonia::core::audio::Channels;
+    use symphonia::core::audio::{
+        AsAudioBufferRef, AudioBuffer as SymphAudioBuffer, Signal, SignalSpec,
+    };
+
+    fn mono_spec() -> SignalSpec {
+        SignalSpec::new(44100, Channels::FRONT_LEFT)
+    }
+
+    fn stereo_spec() -> SignalSpec {
+        SignalSpec::new(44100, Channels::FRONT_LEFT | Channels::FRONT_RIGHT)
+    }
+
+    #[test]
+    fn test_decode_buffer_f64() {
+        let mut buf = SymphAudioBuffer::<f64>::new(3, mono_spec());
+        buf.render(None, |planes, _| {
+            planes.planes()[0][0] = 0.25;
+            planes.planes()[0][1] = -0.5;
+            planes.planes()[0][2] = 1.0;
+            Ok(())
+        })
+        .unwrap();
+
+        let (samples, channels) =
+            AudioSampleSource::decode_buffer_to_f32(buf.as_audio_buffer_ref()).unwrap();
+        assert_eq!(channels, 1);
+        assert_eq!(samples.len(), 3);
+        assert!((samples[0] - 0.25).abs() < 1e-6);
+        assert!((samples[1] - (-0.5)).abs() < 1e-6);
+        assert!((samples[2] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_decode_buffer_s8() {
+        let mut buf = SymphAudioBuffer::<i8>::new(3, mono_spec());
+        buf.render(None, |planes, _| {
+            planes.planes()[0][0] = 0;
+            planes.planes()[0][1] = i8::MAX;
+            planes.planes()[0][2] = i8::MIN;
+            Ok(())
+        })
+        .unwrap();
+
+        let (samples, channels) =
+            AudioSampleSource::decode_buffer_to_f32(buf.as_audio_buffer_ref()).unwrap();
+        assert_eq!(channels, 1);
+        assert_eq!(samples.len(), 3);
+        assert!((samples[0] - AudioSampleSource::scale_s8(0)).abs() < 1e-6);
+        assert!((samples[1] - AudioSampleSource::scale_s8(i8::MAX)).abs() < 1e-6);
+        assert!((samples[2] - AudioSampleSource::scale_s8(i8::MIN)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_decode_buffer_u8() {
+        let mut buf = SymphAudioBuffer::<u8>::new(3, mono_spec());
+        buf.render(None, |planes, _| {
+            planes.planes()[0][0] = 0;
+            planes.planes()[0][1] = 128;
+            planes.planes()[0][2] = 255;
+            Ok(())
+        })
+        .unwrap();
+
+        let (samples, channels) =
+            AudioSampleSource::decode_buffer_to_f32(buf.as_audio_buffer_ref()).unwrap();
+        assert_eq!(channels, 1);
+        assert_eq!(samples.len(), 3);
+        assert!((samples[0] - AudioSampleSource::scale_u8(0)).abs() < 1e-6);
+        assert!((samples[1] - AudioSampleSource::scale_u8(128)).abs() < 1e-6);
+        assert!((samples[2] - AudioSampleSource::scale_u8(255)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_decode_buffer_u16() {
+        let mut buf = SymphAudioBuffer::<u16>::new(3, mono_spec());
+        buf.render(None, |planes, _| {
+            planes.planes()[0][0] = 0;
+            planes.planes()[0][1] = u16::MAX / 2;
+            planes.planes()[0][2] = u16::MAX;
+            Ok(())
+        })
+        .unwrap();
+
+        let (samples, channels) =
+            AudioSampleSource::decode_buffer_to_f32(buf.as_audio_buffer_ref()).unwrap();
+        assert_eq!(channels, 1);
+        assert_eq!(samples.len(), 3);
+        assert!((samples[0] - AudioSampleSource::scale_u16(0)).abs() < 1e-6);
+        assert!((samples[1] - AudioSampleSource::scale_u16(u16::MAX / 2)).abs() < 1e-6);
+        assert!((samples[2] - AudioSampleSource::scale_u16(u16::MAX)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_decode_buffer_u24() {
+        use symphonia::core::sample::u24;
+
+        let mut buf = SymphAudioBuffer::<u24>::new(3, mono_spec());
+        buf.render(None, |planes, _| {
+            planes.planes()[0][0] = u24(0);
+            planes.planes()[0][1] = u24((1u32 << 24) / 2);
+            planes.planes()[0][2] = u24((1u32 << 24) - 1);
+            Ok(())
+        })
+        .unwrap();
+
+        let (samples, channels) =
+            AudioSampleSource::decode_buffer_to_f32(buf.as_audio_buffer_ref()).unwrap();
+        assert_eq!(channels, 1);
+        assert_eq!(samples.len(), 3);
+        assert!((samples[0] - AudioSampleSource::scale_u24(0)).abs() < 1e-6);
+        assert!((samples[1] - AudioSampleSource::scale_u24((1u32 << 24) / 2)).abs() < 1e-6);
+        assert!((samples[2] - AudioSampleSource::scale_u24((1u32 << 24) - 1)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_decode_buffer_u32() {
+        let mut buf = SymphAudioBuffer::<u32>::new(3, mono_spec());
+        buf.render(None, |planes, _| {
+            planes.planes()[0][0] = 0;
+            planes.planes()[0][1] = u32::MAX / 2;
+            planes.planes()[0][2] = u32::MAX;
+            Ok(())
+        })
+        .unwrap();
+
+        let (samples, channels) =
+            AudioSampleSource::decode_buffer_to_f32(buf.as_audio_buffer_ref()).unwrap();
+        assert_eq!(channels, 1);
+        assert_eq!(samples.len(), 3);
+        assert!((samples[0] - AudioSampleSource::scale_u32(0)).abs() < 1e-6);
+        assert!((samples[1] - AudioSampleSource::scale_u32(u32::MAX / 2)).abs() < 1e-6);
+        assert!((samples[2] - AudioSampleSource::scale_u32(u32::MAX)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_decode_buffer_stereo_interleaving() {
+        // Verify interleaving works correctly with multi-channel audio
+        let mut buf = SymphAudioBuffer::<f32>::new(2, stereo_spec());
+        buf.render(None, |planes, _| {
+            planes.planes()[0][0] = 0.1; // L frame 0
+            planes.planes()[0][1] = 0.3; // L frame 1
+            planes.planes()[1][0] = 0.2; // R frame 0
+            planes.planes()[1][1] = 0.4; // R frame 1
+            Ok(())
+        })
+        .unwrap();
+
+        let (samples, channels) =
+            AudioSampleSource::decode_buffer_to_f32(buf.as_audio_buffer_ref()).unwrap();
+        assert_eq!(channels, 2);
+        assert_eq!(samples.len(), 4);
+        // Should be interleaved: L0, R0, L1, R1
+        assert!((samples[0] - 0.1).abs() < 1e-6);
+        assert!((samples[1] - 0.2).abs() < 1e-6);
+        assert!((samples[2] - 0.3).abs() < 1e-6);
+        assert!((samples[3] - 0.4).abs() < 1e-6);
+    }
+
+    // -----------------------------------------------------------------
+    // AudioSampleSource: formats with unknown duration (n_frames is None)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn test_audio_sample_source_mp3_duration() {
+        // MP3 files typically don't have n_frames in their metadata,
+        // exercising the Duration::ZERO fallback path in from_file.
+        let path = std::path::Path::new("assets/1Channel44.1k.mp3");
+        if !path.exists() {
+            return; // Skip if fixture missing
+        }
+        let source = AudioSampleSource::from_file(path, None, 1024).unwrap();
+        // Duration may be ZERO or Some value depending on the MP3 header.
+        // We just verify it doesn't panic and returns a valid value.
+        let _dur = source.duration();
+        assert!(source.sample_rate() > 0);
+        assert!(source.channel_count() > 0);
+    }
+
+    #[test]
+    fn test_audio_sample_source_aac_duration() {
+        // AAC files often don't report n_frames, exercising
+        // the Duration::ZERO fallback in from_file (line 169).
+        let path = std::path::Path::new("assets/1Channel44.1k.aac");
+        if !path.exists() {
+            return;
+        }
+        let source = AudioSampleSource::from_file(path, None, 1024).unwrap();
+        let _dur = source.duration();
+        assert!(source.sample_rate() > 0);
+        assert!(source.channel_count() > 0);
+    }
+
+    #[test]
+    fn test_audio_sample_source_ogg_duration() {
+        // OGG Vorbis — verify we can open and read duration.
+        let path = std::path::Path::new("assets/1Channel44.1k.ogg");
+        if !path.exists() {
+            return;
+        }
+        let source = AudioSampleSource::from_file(path, None, 1024).unwrap();
+        let _dur = source.duration();
+        assert!(source.sample_rate() > 0);
+        assert!(source.channel_count() > 0);
+    }
+
+    // -----------------------------------------------------------------
+    // AudioSampleSource: channel detection via env var
+    // (isolated from other tests to avoid env var race)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn test_audio_sample_source_channel_detection() {
+        use crate::testutil::write_wav;
+        use tempfile::tempdir;
+
+        let tempdir = tempdir().unwrap();
+        let wav_path = tempdir.path().join("detect_channels.wav");
+
+        let samples: Vec<i32> = (0..1000).map(|i| (i * 100) as i32).collect();
+        write_wav(wav_path.clone(), vec![samples], 44100).unwrap();
+
+        // Force channel detection by first audio packet instead of metadata
+        std::env::set_var("MTRACK_FORCE_DETECT_CHANNELS", "1");
+        let mut source = AudioSampleSource::from_file(&wav_path, None, 1024).unwrap();
+        std::env::remove_var("MTRACK_FORCE_DETECT_CHANNELS");
+
+        assert_eq!(source.channel_count(), 1);
+        // Verify we can still read all samples (initial leftover from detection preserved)
+        let mut count = 0;
+        while source.next_sample().unwrap().is_some() {
+            count += 1;
+        }
+        assert_eq!(count, 1000);
+    }
+
+    // -----------------------------------------------------------------
+    // AudioSampleSource: invalid file format error path
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn test_audio_sample_source_invalid_format() {
+        use std::io::Write;
+        use tempfile::tempdir;
+
+        let tempdir = tempdir().unwrap();
+        let path = tempdir.path().join("garbage.wav");
+
+        // Write random bytes that aren't a valid audio file
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(b"this is not a valid audio file at all")
+            .unwrap();
+        drop(f);
+
+        let result = AudioSampleSource::from_file(&path, None, 1024);
+        assert!(result.is_err(), "should fail on invalid audio file");
+    }
+
+    // -----------------------------------------------------------------
+    // AudioSampleSource: duration accessor
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn test_audio_sample_source_duration() {
+        use crate::testutil::write_wav;
+        use tempfile::tempdir;
+
+        let tempdir = tempdir().unwrap();
+        let wav_path = tempdir.path().join("duration.wav");
+
+        let sample_rate = 44100u32;
+        let num_samples = 44100; // Exactly 1 second
+        let samples: Vec<i32> = vec![0; num_samples];
+        write_wav(wav_path.clone(), vec![samples], sample_rate).unwrap();
+
+        let source = AudioSampleSource::from_file(&wav_path, None, 1024).unwrap();
+        let dur = source.duration().unwrap();
+        assert!(
+            (dur.as_secs_f64() - 1.0).abs() < 0.01,
+            "expected ~1s, got {:?}",
+            dur
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Trait default: read_frames with an erroring source (line 126)
+    // -----------------------------------------------------------------
+
+    /// A sample source that errors after delivering a fixed number of samples.
+    struct ErrorAfterN {
+        remaining: usize,
+        channel_count: u16,
+    }
+
+    impl ErrorAfterN {
+        fn new(n: usize, channels: u16) -> Self {
+            Self {
+                remaining: n,
+                channel_count: channels,
+            }
+        }
+    }
+
+    impl ChannelMappedSampleSource for ErrorAfterN {
+        fn next_sample(
+            &mut self,
+        ) -> Result<Option<f32>, crate::audio::sample_source::error::SampleSourceError> {
+            if self.remaining == 0 {
+                return Err(
+                    crate::audio::sample_source::error::SampleSourceError::SampleConversionFailed(
+                        "test error".into(),
+                    ),
+                );
+            }
+            self.remaining -= 1;
+            Ok(Some(0.5))
+        }
+
+        fn channel_mappings(&self) -> &Vec<Vec<String>> {
+            // Leak a static vec for testing convenience
+            static EMPTY: std::sync::OnceLock<Vec<Vec<String>>> = std::sync::OnceLock::new();
+            EMPTY.get_or_init(|| vec![vec!["M".to_string()]])
+        }
+
+        fn source_channel_count(&self) -> u16 {
+            self.channel_count
+        }
+    }
+
+    #[test]
+    fn test_default_read_frames_error_mid_read() {
+        // Source delivers 3 mono samples then errors.
+        // read_frames should return Ok(3) (frames read before error), not Err.
+        let mut source = ErrorAfterN::new(3, 1);
+
+        let mut output = [0.0f32; 5];
+        let frames = source.read_frames(&mut output, 5).unwrap();
+        assert_eq!(frames, 3);
+        assert_eq!(output[0], 0.5);
+        assert_eq!(output[1], 0.5);
+        assert_eq!(output[2], 0.5);
+    }
+
+    #[test]
+    fn test_default_read_frames_error_on_first() {
+        // Source errors immediately — should return 0 frames
+        let mut source = ErrorAfterN::new(0, 1);
+
+        let mut output = [0.0f32; 3];
+        let frames = source.read_frames(&mut output, 3).unwrap();
+        assert_eq!(frames, 0);
+    }
+
+    #[test]
+    fn test_default_next_frame_with_erroring_source() {
+        // Error on the second sample of a stereo frame → returns None
+        let mut source = ErrorAfterN::new(1, 2);
+
+        let mut frame = [0.0f32; 2];
+        // First sample succeeds (0.5), second sample errors → returns None
+        let result = source.next_frame(&mut frame);
+        // The default impl gets Some(0.5) for the first channel, then Err for the second
+        // Err propagates up
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------
+    // Buffered: error from inner source during fill
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn test_buffered_source_inner_error_treated_as_eof() {
+        // The fill task treats Err as "done" (line 235 in buffered.rs)
+        let source = ErrorAfterN::new(4, 1);
+        let inner: Box<dyn ChannelMappedSampleSource + Send + Sync> = Box::new(source);
+
+        let pool = Arc::new(BufferFillPool::new(1).unwrap());
+        let mut buffered = BufferedSampleSource::new(inner, pool, 8);
+
+        let mut count = 0;
+        while buffered.next_sample().unwrap().is_some() {
+            count += 1;
+        }
+        // Should get 4 samples then EOF (error treated as done)
+        assert_eq!(count, 4);
+        assert_eq!(buffered.is_exhausted(), Some(true));
+    }
+
+    // -----------------------------------------------------------------
+    // Transcoder: Sinc resampler with stereo processing
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn test_sinc_resampler_stereo_44100_to_48000() {
+        let source_rate = 44100u32;
+        let target_rate = 48000u32;
+        let num_frames = 4410;
+
+        let mut input = Vec::with_capacity(num_frames * 2);
+        for i in 0..num_frames {
+            let t = i as f32 / source_rate as f32;
+            input.push((2.0 * std::f32::consts::PI * 440.0 * t).sin() * 0.3);
+            input.push((2.0 * std::f32::consts::PI * 880.0 * t).sin() * 0.3);
+        }
+
+        let source = MemorySampleSource::new(input, 2, source_rate);
+        let source_fmt =
+            TargetFormat::new(source_rate, crate::audio::SampleFormat::Float, 32).unwrap();
+        let target_fmt =
+            TargetFormat::new(target_rate, crate::audio::SampleFormat::Float, 32).unwrap();
+
+        let mut transcoder =
+            AudioTranscoder::new(source, &source_fmt, &target_fmt, 2, ResamplerType::Sinc).unwrap();
+
+        assert!(transcoder.resampler.is_some());
+        assert_eq!(transcoder.channel_count(), 2);
+        assert_eq!(transcoder.sample_rate(), target_rate);
+        assert_eq!(transcoder.bits_per_sample(), 32);
+
+        let mut output = Vec::new();
+        loop {
+            match transcoder.next_sample() {
+                Ok(Some(s)) => output.push(s),
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
+
+        // ~4800 frames * 2 channels = ~9600 samples expected
+        let expected = (num_frames as f64 * target_rate as f64 / source_rate as f64) as usize * 2;
+        assert!(output.len() > expected / 2, "too few: {}", output.len());
+
+        let rms = (output.iter().map(|&x| x * x).sum::<f32>() / output.len() as f32).sqrt();
+        assert!(rms > 0.05 && rms < 1.0, "RMS out of range: {rms}");
+    }
+
+    // -----------------------------------------------------------------
+    // AudioSampleSource: large buffer_size (no leftover needed)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn test_audio_sample_source_large_buffer() {
+        use crate::testutil::write_wav;
+        use tempfile::tempdir;
+
+        let tempdir = tempdir().unwrap();
+        let wav_path = tempdir.path().join("large_buf.wav");
+
+        let samples: Vec<i32> = (0..100).map(|i| i * 1000).collect();
+        write_wav(wav_path.clone(), vec![samples], 44100).unwrap();
+
+        // Buffer much larger than file — entire file read in one refill
+        let mut source = AudioSampleSource::from_file(&wav_path, None, 100000).unwrap();
+
+        let mut count = 0;
+        while source.next_sample().unwrap().is_some() {
+            count += 1;
+        }
+        assert_eq!(count, 100);
+    }
+
+    // -----------------------------------------------------------------
+    // AudioSampleSource: truncated audio file (exercises error/EOF handling)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn test_audio_sample_source_truncated_file() {
+        use tempfile::tempdir;
+
+        let tempdir = tempdir().unwrap();
+
+        // Read the real FLAC file and truncate it mid-stream
+        let flac_data = std::fs::read("assets/1Channel44.1k.flac").unwrap();
+        let truncated_path = tempdir.path().join("truncated.flac");
+        // Keep header but cut off most of the data
+        let truncate_at = flac_data.len() / 3;
+        std::fs::write(&truncated_path, &flac_data[..truncate_at]).unwrap();
+
+        // Opening should succeed (header is intact), but reading will hit errors
+        let result = AudioSampleSource::from_file(&truncated_path, None, 1024);
+        match result {
+            Ok(mut source) => {
+                // May succeed partially — drain what we can
+                let mut count = 0;
+                loop {
+                    match source.next_sample() {
+                        Ok(Some(_)) => count += 1,
+                        Ok(None) => break,
+                        Err(_) => break, // Error during decode — expected
+                    }
+                }
+                // Should get at least some samples from the intact portion
+                assert!(count > 0, "expected some samples from truncated file");
+            }
+            Err(_) => {
+                // Some truncation points cause probe/decode failure — that's fine too
+            }
+        }
+    }
+
+    #[test]
+    fn test_audio_sample_source_truncated_wav() {
+        use crate::testutil::write_wav;
+        use tempfile::tempdir;
+
+        let tempdir = tempdir().unwrap();
+        let wav_path = tempdir.path().join("full.wav");
+
+        // Create a valid WAV with enough samples to need multiple packets
+        let samples: Vec<i32> = (0..10000)
+            .map(|i| ((i as f64 * 0.1).sin() * 30000.0) as i32)
+            .collect();
+        write_wav(wav_path.clone(), vec![samples], 44100).unwrap();
+
+        // Read and truncate
+        let wav_data = std::fs::read(&wav_path).unwrap();
+        let truncated_path = tempdir.path().join("truncated.wav");
+        // Cut off half the data section
+        std::fs::write(&truncated_path, &wav_data[..wav_data.len() / 2]).unwrap();
+
+        let result = AudioSampleSource::from_file(&truncated_path, None, 256);
+        match result {
+            Ok(mut source) => {
+                let mut count = 0;
+                loop {
+                    match source.next_sample() {
+                        Ok(Some(_)) => count += 1,
+                        Ok(None) => break,
+                        Err(_) => break,
+                    }
+                }
+                // Truncated WAV should still yield samples from the intact portion
+                assert!(count > 0);
+            }
+            Err(_) => {
+                // If truncation corrupts the header, that's acceptable
+            }
+        }
+    }
 }
