@@ -19,25 +19,57 @@ use tracing::{error, info, span, Level};
 
 use crate::{config, midi::Device, player::Player};
 
+/// Recognized MIDI controller actions.
+#[derive(Debug, PartialEq)]
+enum MidiAction {
+    Play,
+    Prev,
+    Next,
+    Stop,
+    AllSongs,
+    Playlist,
+    Unrecognized,
+}
+
+/// MIDI events that the controller recognizes.
+struct MidiEvents {
+    play: LiveEvent<'static>,
+    prev: LiveEvent<'static>,
+    next: LiveEvent<'static>,
+    stop: LiveEvent<'static>,
+    all_songs: LiveEvent<'static>,
+    playlist: LiveEvent<'static>,
+}
+
+/// Classifies a parsed MIDI event against the known controller events.
+fn classify_midi_event(events: &MidiEvents, event: &LiveEvent<'_>) -> MidiAction {
+    if *event == events.play {
+        MidiAction::Play
+    } else if *event == events.prev {
+        MidiAction::Prev
+    } else if *event == events.next {
+        MidiAction::Next
+    } else if *event == events.stop {
+        MidiAction::Stop
+    } else if *event == events.all_songs {
+        MidiAction::AllSongs
+    } else if *event == events.playlist {
+        MidiAction::Playlist
+    } else {
+        MidiAction::Unrecognized
+    }
+}
+
 /// A controller that controls a player using MIDI.
 pub struct Driver {
     /// The player.
     player: Arc<Player>,
     /// The MIDI device.
     midi_device: Arc<dyn Device>,
-    /// The MIDI event to look for to play the current song in the playlist.
-    play: LiveEvent<'static>,
-    /// The MIDI event to look for to move the playlist to the previous item.
-    prev: LiveEvent<'static>,
-    /// The MIDI event to look for to move the playlist to the next item.
-    next: LiveEvent<'static>,
-    /// The MIDI event to look for to stop playback.
-    stop: LiveEvent<'static>,
-    /// The MIDI event to look for to switch from the current playlist to an all songs playlist.
-    all_songs: LiveEvent<'static>,
-    /// The MIDI event to look for to switch back to the current playlist.
-    playlist: LiveEvent<'static>,
+    /// The recognized MIDI events.
+    events: MidiEvents,
 }
+
 impl Driver {
     pub fn new(
         config: config::MidiController,
@@ -47,12 +79,14 @@ impl Driver {
             Some(midi_device) => Ok(Arc::new(Driver {
                 player,
                 midi_device,
-                play: config.play()?,
-                prev: config.prev()?,
-                next: config.next()?,
-                stop: config.stop()?,
-                all_songs: config.all_songs()?,
-                playlist: config.playlist()?,
+                events: MidiEvents {
+                    play: config.play()?,
+                    prev: config.prev()?,
+                    next: config.next()?,
+                    stop: config.stop()?,
+                    all_songs: config.all_songs()?,
+                    playlist: config.playlist()?,
+                },
             })),
             None => Err("No MIDI device to use for MIDI configuration".into()),
         }
@@ -64,12 +98,14 @@ impl super::Driver for Driver {
         let (midi_events_tx, mut midi_events_rx) = mpsc::channel::<Vec<u8>>(10);
         let player = self.player.clone();
         let device = self.midi_device.clone();
-        let play = self.play;
-        let prev = self.prev;
-        let next = self.next;
-        let stop = self.stop;
-        let all_songs = self.all_songs;
-        let playlist = self.playlist;
+        let events = MidiEvents {
+            play: self.events.play,
+            prev: self.events.prev,
+            next: self.events.next,
+            stop: self.events.stop,
+            all_songs: self.events.all_songs,
+            playlist: self.events.playlist,
+        };
 
         tokio::task::spawn_blocking(move || {
             let span = span!(Level::INFO, "MIDI driver");
@@ -108,20 +144,24 @@ impl super::Driver for Driver {
                     }
                 };
 
-                if event == play {
-                    if let Err(e) = player.play().await {
-                        error!(err = e.as_ref(), "Failed to play song: {}", e);
+                match classify_midi_event(&events, &event) {
+                    MidiAction::Play => {
+                        if let Err(e) = player.play().await {
+                            error!(err = e.as_ref(), "Failed to play song: {}", e);
+                        }
                     }
-                } else if event == prev {
-                    player.prev().await;
-                } else if event == next {
-                    player.next().await;
-                } else if event == stop {
-                    player.stop().await;
-                } else if event == all_songs {
-                    player.switch_to_all_songs().await;
-                } else if event == playlist {
-                    player.switch_to_playlist().await;
+                    MidiAction::Prev => {
+                        player.prev().await;
+                    }
+                    MidiAction::Next => {
+                        player.next().await;
+                    }
+                    MidiAction::Stop => {
+                        player.stop().await;
+                    }
+                    MidiAction::AllSongs => player.switch_to_all_songs().await,
+                    MidiAction::Playlist => player.switch_to_playlist().await,
+                    MidiAction::Unrecognized => {}
                 }
             }
         })
@@ -344,5 +384,127 @@ mod test {
         midi_device.stop_watch_events();
 
         Ok(())
+    }
+
+    mod classify_midi_event_tests {
+        use super::super::{classify_midi_event, MidiAction, MidiEvents};
+        use crate::config::midi::{note_on, ToMidiEvent};
+        use midly::live::LiveEvent;
+
+        fn make_test_events() -> MidiEvents {
+            MidiEvents {
+                play: note_on(16, 0, 127).to_midi_event().unwrap(),
+                prev: note_on(16, 1, 127).to_midi_event().unwrap(),
+                next: note_on(16, 2, 127).to_midi_event().unwrap(),
+                stop: note_on(16, 3, 127).to_midi_event().unwrap(),
+                all_songs: note_on(16, 4, 127).to_midi_event().unwrap(),
+                playlist: note_on(16, 5, 127).to_midi_event().unwrap(),
+            }
+        }
+
+        #[test]
+        fn recognizes_play() {
+            let events = make_test_events();
+            let event = note_on(16, 0, 127).to_midi_event().unwrap();
+            assert_eq!(classify_midi_event(&events, &event), MidiAction::Play);
+        }
+
+        #[test]
+        fn recognizes_prev() {
+            let events = make_test_events();
+            let event = note_on(16, 1, 127).to_midi_event().unwrap();
+            assert_eq!(classify_midi_event(&events, &event), MidiAction::Prev);
+        }
+
+        #[test]
+        fn recognizes_next() {
+            let events = make_test_events();
+            let event = note_on(16, 2, 127).to_midi_event().unwrap();
+            assert_eq!(classify_midi_event(&events, &event), MidiAction::Next);
+        }
+
+        #[test]
+        fn recognizes_stop() {
+            let events = make_test_events();
+            let event = note_on(16, 3, 127).to_midi_event().unwrap();
+            assert_eq!(classify_midi_event(&events, &event), MidiAction::Stop);
+        }
+
+        #[test]
+        fn recognizes_all_songs() {
+            let events = make_test_events();
+            let event = note_on(16, 4, 127).to_midi_event().unwrap();
+            assert_eq!(classify_midi_event(&events, &event), MidiAction::AllSongs);
+        }
+
+        #[test]
+        fn recognizes_playlist() {
+            let events = make_test_events();
+            let event = note_on(16, 5, 127).to_midi_event().unwrap();
+            assert_eq!(classify_midi_event(&events, &event), MidiAction::Playlist);
+        }
+
+        #[test]
+        fn unrecognized_note() {
+            let events = make_test_events();
+            let event = note_on(16, 99, 127).to_midi_event().unwrap();
+            assert_eq!(
+                classify_midi_event(&events, &event),
+                MidiAction::Unrecognized
+            );
+        }
+
+        #[test]
+        fn wrong_channel_is_unrecognized() {
+            let events = make_test_events();
+            // Play is on channel 16, note 0 — try channel 1
+            let event = note_on(1, 0, 127).to_midi_event().unwrap();
+            assert_eq!(
+                classify_midi_event(&events, &event),
+                MidiAction::Unrecognized
+            );
+        }
+
+        #[test]
+        fn different_velocity_still_matches() {
+            let events = make_test_events();
+            // Play is note_on(16, 0, 127) — try with velocity 64
+            let event = note_on(16, 0, 64).to_midi_event().unwrap();
+            // LiveEvent NoteOn equality checks velocity too, so different velocity won't match
+            assert_eq!(
+                classify_midi_event(&events, &event),
+                MidiAction::Unrecognized
+            );
+        }
+
+        #[test]
+        fn program_change_is_unrecognized() {
+            let events = make_test_events();
+            let event = LiveEvent::Midi {
+                channel: 15.into(),
+                message: midly::MidiMessage::ProgramChange { program: 27.into() },
+            };
+            assert_eq!(
+                classify_midi_event(&events, &event),
+                MidiAction::Unrecognized
+            );
+        }
+
+        #[test]
+        fn note_off_is_unrecognized() {
+            let events = make_test_events();
+            // Play is NoteOn ch16 note0 — NoteOff same params should not match
+            let event = LiveEvent::Midi {
+                channel: 15.into(), // midly channel 15 = MIDI channel 16
+                message: midly::MidiMessage::NoteOff {
+                    key: 0.into(),
+                    vel: 127.into(),
+                },
+            };
+            assert_eq!(
+                classify_midi_event(&events, &event),
+                MidiAction::Unrecognized
+            );
+        }
     }
 }
