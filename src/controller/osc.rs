@@ -45,6 +45,19 @@ const BROADCAST_SLEEP_DURATION: Duration = Duration::from_millis(500);
 const STATUS_STOPPED: &str = "Stopped";
 const STATUS_PLAYING: &str = "Playing";
 
+/// Recognized OSC command actions.
+#[derive(Debug, PartialEq)]
+enum OscAction {
+    Play,
+    Prev,
+    Next,
+    Stop,
+    AllSongs,
+    Playlist,
+    StopSamples,
+    Unrecognized,
+}
+
 /// A controller that controls a player using OSC.
 pub struct Driver {
     /// The player.
@@ -263,54 +276,29 @@ impl Driver {
     ) -> Result<(), Box<dyn Error>> {
         let playlist = player.get_playlist();
         let song = playlist.current();
-        let song_name = song.name();
-
-        // Output the current song.
-        let current_song_packet = OscPacket::Message(OscMessage {
-            addr: osc_events.playlist_current_song.clone(),
-            args: vec![OscType::String(song_name.to_string())],
-        });
-        tx_sender.send(current_song_packet).await?;
-
-        // Output the current playing status.
         let elapsed = player.elapsed().await?;
         let status_string = match elapsed {
             Some(_) => STATUS_PLAYING,
             None => STATUS_STOPPED,
         };
-        tx_sender
-            .send(OscPacket::Message(OscMessage {
-                addr: osc_events.status.clone(),
-                args: vec![OscType::String(status_string.to_string())],
-            }))
-            .await?;
-
         let duration_string = format!(
             "{}/{}",
             util::duration_minutes_seconds(elapsed.unwrap_or_default()),
             util::duration_minutes_seconds(song.duration())
         );
-        tx_sender
-            .send(OscPacket::Message(OscMessage {
-                addr: osc_events.playlist_current_song_elapsed.clone(),
-                args: vec![OscType::String(duration_string)],
-            }))
-            .await?;
+        let playlist_songs: Vec<String> = playlist.songs().to_vec();
 
-        // Output the actual current playlist contents.
-        let playlist_content: String = playlist
-            .songs()
-            .iter()
-            .enumerate()
-            .map(|(i, song)| format!("{}. {}", i + 1, song))
-            .collect::<Vec<String>>()
-            .join("\n");
-        tx_sender
-            .send(OscPacket::Message(OscMessage {
-                addr: osc_events.playlist_current.clone(),
-                args: vec![OscType::String(playlist_content)],
-            }))
-            .await?;
+        let packets = build_broadcast_packets(
+            osc_events,
+            song.name(),
+            status_string,
+            &duration_string,
+            &playlist_songs,
+        );
+
+        for packet in packets {
+            tx_sender.send(packet).await?;
+        }
 
         Ok(())
     }
@@ -344,35 +332,89 @@ impl Driver {
         osc_events: &Arc<OscEvents>,
         msg: &OscMessage,
     ) -> Result<bool, Box<dyn Error>> {
-        let address = OscAddress::new(msg.addr.clone())?;
-        let mut recognized_event = false;
-        if osc_events.play.match_address(&address) {
-            if let Err(e) = player.play().await {
-                error!(err = e.as_ref(), "Failed to play song: {}", e);
+        let action = classify_message(osc_events, &msg.addr)?;
+        match action {
+            OscAction::Play => {
+                if let Err(e) = player.play().await {
+                    error!(err = e.as_ref(), "Failed to play song: {}", e);
+                }
             }
-            recognized_event = true;
-        } else if osc_events.prev.match_address(&address) {
-            player.prev().await;
-            recognized_event = true;
-        } else if osc_events.next.match_address(&address) {
-            player.next().await;
-            recognized_event = true;
-        } else if osc_events.stop.match_address(&address) {
-            player.stop().await;
-            recognized_event = true;
-        } else if osc_events.all_songs.match_address(&address) {
-            player.switch_to_all_songs().await;
-            recognized_event = true;
-        } else if osc_events.playlist.match_address(&address) {
-            player.switch_to_playlist().await;
-            recognized_event = true;
-        } else if osc_events.stop_samples.match_address(&address) {
-            player.stop_samples();
-            recognized_event = true;
+            OscAction::Prev => {
+                player.prev().await;
+            }
+            OscAction::Next => {
+                player.next().await;
+            }
+            OscAction::Stop => {
+                player.stop().await;
+            }
+            OscAction::AllSongs => player.switch_to_all_songs().await,
+            OscAction::Playlist => player.switch_to_playlist().await,
+            OscAction::StopSamples => player.stop_samples(),
+            OscAction::Unrecognized => return Ok(false),
         }
-
-        Ok(recognized_event)
+        Ok(true)
     }
+}
+
+/// Classifies an OSC address against the configured event matchers.
+fn classify_message(osc_events: &OscEvents, addr: &str) -> Result<OscAction, Box<dyn Error>> {
+    let address = OscAddress::new(addr.to_string())?;
+    if osc_events.play.match_address(&address) {
+        Ok(OscAction::Play)
+    } else if osc_events.prev.match_address(&address) {
+        Ok(OscAction::Prev)
+    } else if osc_events.next.match_address(&address) {
+        Ok(OscAction::Next)
+    } else if osc_events.stop.match_address(&address) {
+        Ok(OscAction::Stop)
+    } else if osc_events.all_songs.match_address(&address) {
+        Ok(OscAction::AllSongs)
+    } else if osc_events.playlist.match_address(&address) {
+        Ok(OscAction::Playlist)
+    } else if osc_events.stop_samples.match_address(&address) {
+        Ok(OscAction::StopSamples)
+    } else {
+        Ok(OscAction::Unrecognized)
+    }
+}
+
+/// Formats a playlist's song list with 1-based numbering.
+fn format_playlist_content(songs: &[String]) -> String {
+    songs
+        .iter()
+        .enumerate()
+        .map(|(i, song)| format!("{}. {}", i + 1, song))
+        .collect::<Vec<String>>()
+        .join("\n")
+}
+
+/// Builds the set of broadcast OSC packets from player state data.
+fn build_broadcast_packets(
+    osc_events: &OscEvents,
+    song_name: &str,
+    status: &str,
+    duration_string: &str,
+    playlist_songs: &[String],
+) -> Vec<OscPacket> {
+    vec![
+        OscPacket::Message(OscMessage {
+            addr: osc_events.playlist_current_song.clone(),
+            args: vec![OscType::String(song_name.to_string())],
+        }),
+        OscPacket::Message(OscMessage {
+            addr: osc_events.status.clone(),
+            args: vec![OscType::String(status.to_string())],
+        }),
+        OscPacket::Message(OscMessage {
+            addr: osc_events.playlist_current_song_elapsed.clone(),
+            args: vec![OscType::String(duration_string.to_string())],
+        }),
+        OscPacket::Message(OscMessage {
+            addr: osc_events.playlist_current.clone(),
+            args: vec![OscType::String(format_playlist_content(playlist_songs))],
+        }),
+    ]
 }
 
 #[cfg(test)]
@@ -806,5 +848,231 @@ mod test {
         handler_task.abort();
 
         Ok(())
+    }
+
+    use super::{
+        build_broadcast_packets, classify_message, format_playlist_content, OscAction, OscEvents,
+    };
+    use rosc::address::Matcher;
+
+    fn make_default_osc_events() -> OscEvents {
+        let config = config::OscController::new();
+        OscEvents {
+            play: Matcher::new(config.play()).unwrap(),
+            prev: Matcher::new(config.prev()).unwrap(),
+            next: Matcher::new(config.next()).unwrap(),
+            stop: Matcher::new(config.stop()).unwrap(),
+            all_songs: Matcher::new(config.all_songs()).unwrap(),
+            playlist: Matcher::new(config.playlist()).unwrap(),
+            stop_samples: Matcher::new(config.stop_samples()).unwrap(),
+            status: config.status().to_string(),
+            playlist_current: config.playlist_current().to_string(),
+            playlist_current_song: config.playlist_current_song().to_string(),
+            playlist_current_song_elapsed: config.playlist_current_song_elapsed().to_string(),
+        }
+    }
+
+    mod classify_message_tests {
+        use super::{classify_message, make_default_osc_events, OscAction};
+
+        #[test]
+        fn recognizes_play() {
+            let events = make_default_osc_events();
+            assert_eq!(
+                classify_message(&events, "/mtrack/play").unwrap(),
+                OscAction::Play
+            );
+        }
+
+        #[test]
+        fn recognizes_prev() {
+            let events = make_default_osc_events();
+            assert_eq!(
+                classify_message(&events, "/mtrack/prev").unwrap(),
+                OscAction::Prev
+            );
+        }
+
+        #[test]
+        fn recognizes_next() {
+            let events = make_default_osc_events();
+            assert_eq!(
+                classify_message(&events, "/mtrack/next").unwrap(),
+                OscAction::Next
+            );
+        }
+
+        #[test]
+        fn recognizes_stop() {
+            let events = make_default_osc_events();
+            assert_eq!(
+                classify_message(&events, "/mtrack/stop").unwrap(),
+                OscAction::Stop
+            );
+        }
+
+        #[test]
+        fn recognizes_all_songs() {
+            let events = make_default_osc_events();
+            assert_eq!(
+                classify_message(&events, "/mtrack/all_songs").unwrap(),
+                OscAction::AllSongs
+            );
+        }
+
+        #[test]
+        fn recognizes_playlist() {
+            let events = make_default_osc_events();
+            assert_eq!(
+                classify_message(&events, "/mtrack/playlist").unwrap(),
+                OscAction::Playlist
+            );
+        }
+
+        #[test]
+        fn recognizes_stop_samples() {
+            let events = make_default_osc_events();
+            assert_eq!(
+                classify_message(&events, "/mtrack/samples/stop").unwrap(),
+                OscAction::StopSamples
+            );
+        }
+
+        #[test]
+        fn unrecognized_address() {
+            let events = make_default_osc_events();
+            assert_eq!(
+                classify_message(&events, "/unknown/address").unwrap(),
+                OscAction::Unrecognized
+            );
+        }
+
+        #[test]
+        fn invalid_osc_address_is_error() {
+            let events = make_default_osc_events();
+            // OSC addresses must start with /
+            assert!(classify_message(&events, "no_leading_slash").is_err());
+        }
+    }
+
+    mod format_playlist_content_tests {
+        use super::format_playlist_content;
+
+        #[test]
+        fn empty_playlist() {
+            assert_eq!(format_playlist_content(&[]), "");
+        }
+
+        #[test]
+        fn single_song() {
+            let songs = vec!["Song A".to_string()];
+            assert_eq!(format_playlist_content(&songs), "1. Song A");
+        }
+
+        #[test]
+        fn multiple_songs() {
+            let songs = vec![
+                "Song A".to_string(),
+                "Song B".to_string(),
+                "Song C".to_string(),
+            ];
+            assert_eq!(
+                format_playlist_content(&songs),
+                "1. Song A\n2. Song B\n3. Song C"
+            );
+        }
+
+        #[test]
+        fn preserves_song_names() {
+            let songs = vec!["  Spaces  ".to_string(), "Special: Chars!".to_string()];
+            assert_eq!(
+                format_playlist_content(&songs),
+                "1.   Spaces  \n2. Special: Chars!"
+            );
+        }
+    }
+
+    mod build_broadcast_packets_tests {
+        use super::{build_broadcast_packets, make_default_osc_events};
+        use crate::controller::osc::{STATUS_PLAYING, STATUS_STOPPED};
+        use rosc::{OscMessage, OscPacket, OscType};
+
+        #[test]
+        fn returns_four_packets() {
+            let events = make_default_osc_events();
+            let songs = vec!["Song 1".to_string(), "Song 2".to_string()];
+            let packets =
+                build_broadcast_packets(&events, "Song 1", STATUS_STOPPED, "0:00/3:30", &songs);
+            assert_eq!(packets.len(), 4);
+        }
+
+        #[test]
+        fn first_packet_is_current_song() {
+            let events = make_default_osc_events();
+            let packets =
+                build_broadcast_packets(&events, "My Song", STATUS_PLAYING, "1:00/3:00", &[]);
+            assert_eq!(
+                packets[0],
+                OscPacket::Message(OscMessage {
+                    addr: events.playlist_current_song.clone(),
+                    args: vec![OscType::String("My Song".to_string())],
+                })
+            );
+        }
+
+        #[test]
+        fn second_packet_is_status() {
+            let events = make_default_osc_events();
+            let packets =
+                build_broadcast_packets(&events, "Song", STATUS_PLAYING, "0:00/0:00", &[]);
+            assert_eq!(
+                packets[1],
+                OscPacket::Message(OscMessage {
+                    addr: events.status.clone(),
+                    args: vec![OscType::String(STATUS_PLAYING.to_string())],
+                })
+            );
+        }
+
+        #[test]
+        fn third_packet_is_elapsed() {
+            let events = make_default_osc_events();
+            let packets =
+                build_broadcast_packets(&events, "Song", STATUS_STOPPED, "1:23/4:56", &[]);
+            assert_eq!(
+                packets[2],
+                OscPacket::Message(OscMessage {
+                    addr: events.playlist_current_song_elapsed.clone(),
+                    args: vec![OscType::String("1:23/4:56".to_string())],
+                })
+            );
+        }
+
+        #[test]
+        fn fourth_packet_is_playlist() {
+            let events = make_default_osc_events();
+            let songs = vec!["A".to_string(), "B".to_string()];
+            let packets =
+                build_broadcast_packets(&events, "A", STATUS_STOPPED, "0:00/1:00", &songs);
+            assert_eq!(
+                packets[3],
+                OscPacket::Message(OscMessage {
+                    addr: events.playlist_current.clone(),
+                    args: vec![OscType::String("1. A\n2. B".to_string())],
+                })
+            );
+        }
+
+        #[test]
+        fn stopped_status() {
+            let events = make_default_osc_events();
+            let packets =
+                build_broadcast_packets(&events, "Song", STATUS_STOPPED, "0:00/0:00", &[]);
+            if let OscPacket::Message(msg) = &packets[1] {
+                assert_eq!(msg.args[0], OscType::String(STATUS_STOPPED.to_string()));
+            } else {
+                panic!("expected message");
+            }
+        }
     }
 }
