@@ -271,15 +271,7 @@ fn draw_log(frame: &mut Frame, app: &App, area: Rect) {
     let visible: Vec<Line> = app.log_lines[start..]
         .iter()
         .map(|line| {
-            let color = if line.starts_with("ERROR") {
-                Color::Red
-            } else if line.starts_with("WARN") {
-                Color::Yellow
-            } else if line.starts_with("DEBUG") {
-                Color::DarkGray
-            } else {
-                Color::Gray
-            };
+            let color = log_line_color(line);
             Line::from(Span::styled(line.as_str(), Style::default().fg(color)))
         })
         .collect();
@@ -309,10 +301,115 @@ fn draw_key_hints(frame: &mut Frame, area: Rect) {
     frame.render_widget(paragraph, area);
 }
 
+/// Returns the color for a log line based on its level prefix.
+fn log_line_color(line: &str) -> Color {
+    if line.starts_with("ERROR") {
+        Color::Red
+    } else if line.starts_with("WARN") {
+        Color::Yellow
+    } else if line.starts_with("DEBUG") {
+        Color::DarkGray
+    } else {
+        Color::Gray
+    }
+}
+
 /// Formats a Duration as "M:SS".
 fn format_duration(d: Duration) -> String {
     let total_secs = d.as_secs();
     let minutes = total_secs / 60;
     let seconds = total_secs % 60;
     format!("{}:{:02}", minutes, seconds)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod log_line_color_tests {
+        use super::*;
+
+        #[test]
+        fn error_line_is_red() {
+            assert_eq!(log_line_color("ERROR something went wrong"), Color::Red);
+        }
+
+        #[test]
+        fn warn_line_is_yellow() {
+            assert_eq!(
+                log_line_color("WARN deprecated feature used"),
+                Color::Yellow
+            );
+        }
+
+        #[test]
+        fn debug_line_is_dark_gray() {
+            assert_eq!(log_line_color("DEBUG entering function"), Color::DarkGray);
+        }
+
+        #[test]
+        fn info_line_is_gray() {
+            assert_eq!(log_line_color("INFO server started"), Color::Gray);
+        }
+
+        #[test]
+        fn trace_line_is_gray() {
+            assert_eq!(log_line_color("TRACE detailed output"), Color::Gray);
+        }
+
+        #[test]
+        fn empty_line_is_gray() {
+            assert_eq!(log_line_color(""), Color::Gray);
+        }
+
+        #[test]
+        fn case_sensitive_error() {
+            // "error" (lowercase) should not match ERROR
+            assert_eq!(log_line_color("error lowercase"), Color::Gray);
+        }
+
+        #[test]
+        fn error_prefix_only() {
+            assert_eq!(log_line_color("ERROR"), Color::Red);
+        }
+    }
+
+    mod format_duration_tests {
+        use super::*;
+
+        #[test]
+        fn zero_duration() {
+            assert_eq!(format_duration(Duration::ZERO), "0:00");
+        }
+
+        #[test]
+        fn seconds_only() {
+            assert_eq!(format_duration(Duration::from_secs(45)), "0:45");
+        }
+
+        #[test]
+        fn one_minute() {
+            assert_eq!(format_duration(Duration::from_secs(60)), "1:00");
+        }
+
+        #[test]
+        fn minutes_and_seconds() {
+            assert_eq!(format_duration(Duration::from_secs(185)), "3:05");
+        }
+
+        #[test]
+        fn pads_single_digit_seconds() {
+            assert_eq!(format_duration(Duration::from_secs(61)), "1:01");
+        }
+
+        #[test]
+        fn large_duration() {
+            assert_eq!(format_duration(Duration::from_secs(3661)), "61:01");
+        }
+
+        #[test]
+        fn subsecond_truncated() {
+            assert_eq!(format_duration(Duration::from_millis(59_999)), "0:59");
+        }
+    }
 }

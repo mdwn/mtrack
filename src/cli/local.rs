@@ -33,6 +33,17 @@ use crate::verify;
 /// On Linux (normal scheduling) this is roughly in the nice -8 to -10 range—higher than default 0 but below max.
 const DEFAULT_THREAD_PRIORITY: u8 = 70;
 
+/// Resolves the thread priority from an optional environment variable value.
+/// Returns a value in [0, 100) or the default (70) if the input is None, unparseable, or out of range.
+fn resolve_thread_priority(env_value: Option<&str>) -> u8 {
+    env_value
+        .and_then(|v| {
+            let n = v.parse::<u8>().ok()?;
+            (n < 100).then_some(n)
+        })
+        .unwrap_or(DEFAULT_THREAD_PRIORITY)
+}
+
 /// Sets the current thread's priority for better audio scheduling (cross-platform).
 /// Uses the [0; 100) scale: higher value = higher priority.
 /// Default is 70 when MTRACK_THREAD_PRIORITY is unset; set to 0-99 to override.
@@ -40,13 +51,8 @@ const DEFAULT_THREAD_PRIORITY: u8 = 70;
 fn apply_thread_priority() {
     use thread_priority::{set_current_thread_priority, ThreadPriority, ThreadPriorityValue};
 
-    let priority = std::env::var("MTRACK_THREAD_PRIORITY")
-        .ok()
-        .and_then(|v| {
-            let n = v.parse::<u8>().ok()?;
-            (n < 100).then(|| ThreadPriorityValue::try_from(n).ok())?
-        })
-        .unwrap_or_else(|| ThreadPriorityValue::try_from(DEFAULT_THREAD_PRIORITY).unwrap());
+    let value = resolve_thread_priority(std::env::var("MTRACK_THREAD_PRIORITY").ok().as_deref());
+    let priority = ThreadPriorityValue::try_from(value).unwrap();
 
     match set_current_thread_priority(ThreadPriority::Crossplatform(priority)) {
         Ok(()) => info!("Set thread priority for audio"),
@@ -423,4 +429,72 @@ pub fn verify(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod resolve_thread_priority_tests {
+        use super::*;
+
+        #[test]
+        fn none_returns_default() {
+            assert_eq!(resolve_thread_priority(None), DEFAULT_THREAD_PRIORITY);
+        }
+
+        #[test]
+        fn valid_value() {
+            assert_eq!(resolve_thread_priority(Some("50")), 50);
+        }
+
+        #[test]
+        fn zero_is_valid() {
+            assert_eq!(resolve_thread_priority(Some("0")), 0);
+        }
+
+        #[test]
+        fn ninety_nine_is_valid() {
+            assert_eq!(resolve_thread_priority(Some("99")), 99);
+        }
+
+        #[test]
+        fn one_hundred_is_out_of_range() {
+            assert_eq!(
+                resolve_thread_priority(Some("100")),
+                DEFAULT_THREAD_PRIORITY
+            );
+        }
+
+        #[test]
+        fn large_value_out_of_range() {
+            assert_eq!(
+                resolve_thread_priority(Some("255")),
+                DEFAULT_THREAD_PRIORITY
+            );
+        }
+
+        #[test]
+        fn negative_value_unparseable() {
+            assert_eq!(resolve_thread_priority(Some("-1")), DEFAULT_THREAD_PRIORITY);
+        }
+
+        #[test]
+        fn non_numeric_returns_default() {
+            assert_eq!(
+                resolve_thread_priority(Some("high")),
+                DEFAULT_THREAD_PRIORITY
+            );
+        }
+
+        #[test]
+        fn empty_string_returns_default() {
+            assert_eq!(resolve_thread_priority(Some("")), DEFAULT_THREAD_PRIORITY);
+        }
+
+        #[test]
+        fn boundary_value_one() {
+            assert_eq!(resolve_thread_priority(Some("1")), 1);
+        }
+    }
 }

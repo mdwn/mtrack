@@ -82,10 +82,84 @@ impl<S: Subscriber> Layer<S> for TuiLogLayer {
 
         let line = format!("{} {}: {}", level, target, visitor.message);
 
-        let mut buffer = self.buffer.lock();
-        if buffer.len() >= self.capacity {
-            buffer.pop_front();
+        push_to_ring_buffer(&self.buffer, self.capacity, line);
+    }
+}
+
+/// Pushes a line into the ring buffer, evicting the oldest entry if at capacity.
+fn push_to_ring_buffer(buffer: &Arc<Mutex<VecDeque<String>>>, capacity: usize, line: String) {
+    let mut buffer = buffer.lock();
+    if buffer.len() >= capacity {
+        buffer.pop_front();
+    }
+    buffer.push_back(line);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod ring_buffer_tests {
+        use super::*;
+
+        fn make_buffer() -> Arc<Mutex<VecDeque<String>>> {
+            Arc::new(Mutex::new(VecDeque::new()))
         }
-        buffer.push_back(line);
+
+        #[test]
+        fn push_to_empty_buffer() {
+            let buffer = make_buffer();
+            push_to_ring_buffer(&buffer, 5, "line 1".to_string());
+            let buf = buffer.lock();
+            assert_eq!(buf.len(), 1);
+            assert_eq!(buf[0], "line 1");
+        }
+
+        #[test]
+        fn push_multiple_within_capacity() {
+            let buffer = make_buffer();
+            push_to_ring_buffer(&buffer, 3, "a".to_string());
+            push_to_ring_buffer(&buffer, 3, "b".to_string());
+            push_to_ring_buffer(&buffer, 3, "c".to_string());
+            let buf = buffer.lock();
+            assert_eq!(buf.len(), 3);
+            assert_eq!(buf[0], "a");
+            assert_eq!(buf[2], "c");
+        }
+
+        #[test]
+        fn evicts_oldest_when_at_capacity() {
+            let buffer = make_buffer();
+            push_to_ring_buffer(&buffer, 2, "first".to_string());
+            push_to_ring_buffer(&buffer, 2, "second".to_string());
+            push_to_ring_buffer(&buffer, 2, "third".to_string());
+            let buf = buffer.lock();
+            assert_eq!(buf.len(), 2);
+            assert_eq!(buf[0], "second");
+            assert_eq!(buf[1], "third");
+        }
+
+        #[test]
+        fn capacity_one_always_has_latest() {
+            let buffer = make_buffer();
+            push_to_ring_buffer(&buffer, 1, "a".to_string());
+            push_to_ring_buffer(&buffer, 1, "b".to_string());
+            push_to_ring_buffer(&buffer, 1, "c".to_string());
+            let buf = buffer.lock();
+            assert_eq!(buf.len(), 1);
+            assert_eq!(buf[0], "c");
+        }
+
+        #[test]
+        fn many_items_evict_correctly() {
+            let buffer = make_buffer();
+            for i in 0..100 {
+                push_to_ring_buffer(&buffer, 5, format!("line {}", i));
+            }
+            let buf = buffer.lock();
+            assert_eq!(buf.len(), 5);
+            assert_eq!(buf[0], "line 95");
+            assert_eq!(buf[4], "line 99");
+        }
     }
 }
