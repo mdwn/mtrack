@@ -34,6 +34,28 @@ use crate::{
 const PLAYLIST_NAME: &str = "playlist";
 const ALL_SONGS_NAME: &str = "all_songs";
 
+/// Recognized playlist switch targets.
+#[derive(Debug, PartialEq)]
+enum PlaylistTarget {
+    Playlist,
+    AllSongs,
+}
+
+/// Classifies a playlist name string into a known target, or returns an error Status.
+#[allow(clippy::result_large_err)]
+fn classify_playlist_name(name: &str) -> Result<PlaylistTarget, Status> {
+    if name == PLAYLIST_NAME {
+        Ok(PlaylistTarget::Playlist)
+    } else if name == ALL_SONGS_NAME {
+        Ok(PlaylistTarget::AllSongs)
+    } else {
+        Err(Status::unimplemented(format!(
+            "only {} and {} are supported for now",
+            ALL_SONGS_NAME, PLAYLIST_NAME
+        )))
+    }
+}
+
 /// A controller that controls a player using gRPC.
 pub struct Driver {
     /// The player.
@@ -174,20 +196,11 @@ impl PlayerService for PlayerServer {
         &self,
         request: Request<SwitchToPlaylistRequest>,
     ) -> Result<Response<SwitchToPlaylistResponse>, Status> {
-        let playlist_name = request.into_inner().playlist_name;
-        if playlist_name == PLAYLIST_NAME {
-            self.player.switch_to_playlist().await;
-            return Ok(Response::new(SwitchToPlaylistResponse {}));
+        match classify_playlist_name(&request.into_inner().playlist_name)? {
+            PlaylistTarget::Playlist => self.player.switch_to_playlist().await,
+            PlaylistTarget::AllSongs => self.player.switch_to_all_songs().await,
         }
-        if playlist_name == ALL_SONGS_NAME {
-            self.player.switch_to_all_songs().await;
-            return Ok(Response::new(SwitchToPlaylistResponse {}));
-        }
-
-        Err(Status::unimplemented(format!(
-            "only {} and {} are supported for now",
-            ALL_SONGS_NAME, PLAYLIST_NAME
-        )))
+        Ok(Response::new(SwitchToPlaylistResponse {}))
     }
 
     async fn status(&self, _: Request<StatusRequest>) -> Result<Response<StatusResponse>, Status> {
@@ -585,5 +598,169 @@ mod test {
         client.stop_samples(StopSamplesRequest {}).await?;
 
         Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_grpc_play_from() -> Result<(), Box<dyn Error>> {
+        use crate::proto::player::v1::PlayFromRequest;
+
+        let (_player, mut client, _device) = setup_grpc().await?;
+
+        // play_from with a start time should succeed and return the song.
+        let start = prost_types::Duration {
+            seconds: 0,
+            nanos: 500_000_000,
+        };
+        let resp = client
+            .play_from(PlayFromRequest {
+                start_time: Some(start),
+            })
+            .await?;
+        let song = resp.into_inner().song;
+        assert!(song.is_some());
+        assert_eq!(song.unwrap().name, "Song 1");
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_grpc_play_from_no_time() -> Result<(), Box<dyn Error>> {
+        use crate::proto::player::v1::PlayFromRequest;
+
+        let (_player, mut client, device) = setup_grpc().await?;
+
+        // play_from with no start_time should default to beginning.
+        let resp = client
+            .play_from(PlayFromRequest { start_time: None })
+            .await?;
+        assert!(resp.into_inner().song.is_some());
+        eventually(|| device.is_playing(), "Song never started playing");
+
+        client.stop(StopRequest {}).await?;
+        eventually(|| !device.is_playing(), "Song never stopped");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_grpc_next_while_playing() -> Result<(), Box<dyn Error>> {
+        let (_player, mut client, device) = setup_grpc().await?;
+
+        client.play(PlayRequest {}).await?;
+        eventually(|| device.is_playing(), "Song never started playing");
+
+        // next while playing should fail.
+        let result = client.next(NextRequest {}).await;
+        assert!(result.is_err(), "next() while playing should fail");
+        assert_eq!(result.unwrap_err().code(), tonic::Code::FailedPrecondition);
+
+        client.stop(StopRequest {}).await?;
+        eventually(|| !device.is_playing(), "Song never stopped");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_grpc_previous_while_playing() -> Result<(), Box<dyn Error>> {
+        let (_player, mut client, device) = setup_grpc().await?;
+
+        // Move to Song 3 first so previous has somewhere to go.
+        client.next(NextRequest {}).await?;
+
+        client.play(PlayRequest {}).await?;
+        eventually(|| device.is_playing(), "Song never started playing");
+
+        // previous while playing should fail.
+        let result = client.previous(PreviousRequest {}).await;
+        assert!(result.is_err(), "previous() while playing should fail");
+        assert_eq!(result.unwrap_err().code(), tonic::Code::FailedPrecondition);
+
+        client.stop(StopRequest {}).await?;
+        eventually(|| !device.is_playing(), "Song never stopped");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_grpc_get_active_effects() -> Result<(), Box<dyn Error>> {
+        use crate::proto::player::v1::GetActiveEffectsRequest;
+
+        let (_player, mut client, _device) = setup_grpc().await?;
+
+        // With no DMX engine, should return a "no engine" message.
+        let resp = client
+            .get_active_effects(GetActiveEffectsRequest {})
+            .await?;
+        let effects = resp.into_inner().active_effects;
+        assert!(!effects.is_empty());
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_grpc_get_cues() -> Result<(), Box<dyn Error>> {
+        use crate::proto::player::v1::GetCuesRequest;
+
+        let (_player, mut client, _device) = setup_grpc().await?;
+
+        // Without a lighting timeline, should return an empty cues list.
+        let resp = client.get_cues(GetCuesRequest {}).await?;
+        let cues = resp.into_inner().cues;
+        assert!(cues.is_empty());
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_grpc_status_while_playing() -> Result<(), Box<dyn Error>> {
+        let (_player, mut client, device) = setup_grpc().await?;
+
+        client.play(PlayRequest {}).await?;
+        eventually(|| device.is_playing(), "Song never started playing");
+
+        let resp = client.status(StatusRequest {}).await?;
+        let status = resp.into_inner();
+        assert!(status.playing);
+        assert!(status.elapsed.is_some());
+
+        client.stop(StopRequest {}).await?;
+        eventually(|| !device.is_playing(), "Song never stopped");
+        Ok(())
+    }
+
+    mod classify_playlist_name_tests {
+        use super::super::{classify_playlist_name, PlaylistTarget};
+
+        #[test]
+        fn recognizes_playlist() {
+            assert_eq!(
+                classify_playlist_name("playlist").unwrap(),
+                PlaylistTarget::Playlist
+            );
+        }
+
+        #[test]
+        fn recognizes_all_songs() {
+            assert_eq!(
+                classify_playlist_name("all_songs").unwrap(),
+                PlaylistTarget::AllSongs
+            );
+        }
+
+        #[test]
+        fn unknown_name_returns_error() {
+            let result = classify_playlist_name("nonexistent");
+            assert!(result.is_err());
+            let status = result.unwrap_err();
+            assert_eq!(status.code(), tonic::Code::Unimplemented);
+        }
+
+        #[test]
+        fn empty_name_returns_error() {
+            assert!(classify_playlist_name("").is_err());
+        }
+
+        #[test]
+        fn case_sensitive() {
+            assert!(classify_playlist_name("Playlist").is_err());
+            assert!(classify_playlist_name("ALL_SONGS").is_err());
+        }
     }
 }
