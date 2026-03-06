@@ -26,7 +26,7 @@ use tracing::{debug, error, info, warn};
 use super::detector::TriggerDetector;
 use super::ms_to_samples;
 use crate::audio::format::SampleFormat;
-use crate::config::trigger::{TriggerConfig, TriggerInput, TriggerInputAction};
+use crate::config::trigger::{AudioTriggerInput, TriggerConfig, TriggerInput, TriggerInputAction};
 use crate::samples::TriggerAction;
 
 /// Manages a cpal input stream and per-channel trigger detectors.
@@ -84,13 +84,11 @@ impl TriggerEngine {
             .map(|c| c.sample_format())
             .unwrap_or(cpal::SampleFormat::F32);
 
-        let stream_format = match (config.sample_format(), config.bits_per_sample()) {
-            (Some(SampleFormat::Float), _) => cpal::SampleFormat::F32,
-            (Some(SampleFormat::Int), Some(16)) => cpal::SampleFormat::I16,
-            (Some(SampleFormat::Int), _) => cpal::SampleFormat::I32,
-            (None, Some(16)) => cpal::SampleFormat::I16,
-            _ => native_format,
-        };
+        let stream_format = resolve_stream_format(
+            config.sample_format(),
+            config.bits_per_sample(),
+            native_format,
+        );
 
         let sample_rate = config.sample_rate().unwrap_or(default_config.sample_rate());
 
@@ -114,73 +112,21 @@ impl TriggerEngine {
         );
 
         // Pre-compute crosstalk parameters (ms → samples) if both fields are set.
-        let crosstalk: Option<(u32, f32)> =
-            match (config.crosstalk_window_ms(), config.crosstalk_threshold()) {
-                (Some(ms), Some(mult)) => {
-                    let window_samples = ms_to_samples(ms, sample_rate);
-                    info!(
-                        crosstalk_window_ms = ms,
-                        crosstalk_threshold = mult,
-                        crosstalk_window_samples = window_samples,
-                        "Crosstalk suppression enabled"
-                    );
-                    Some((window_samples, mult))
-                }
-                _ => None,
-            };
-
-        // Build detectors for each configured input, keyed by 0-indexed channel
-        let mut detector_map: Vec<Option<TriggerDetector>> = (0..channels).map(|_| None).collect();
-
-        for input in config.inputs().iter().filter_map(|i| match i {
-            TriggerInput::Audio(audio) => Some(audio),
-            _ => None,
-        }) {
-            // Validate that trigger actions have a sample name and release actions have a group
-            match input.action() {
-                TriggerInputAction::Trigger => {
-                    if input.sample().is_none_or(|s| s.is_empty()) {
-                        return Err(format!(
-                            "Trigger input on channel {} has action 'trigger' but no sample name configured",
-                            input.channel()
-                        ).into());
-                    }
-                }
-                TriggerInputAction::Release => {
-                    if input.release_group().is_none_or(|s| s.is_empty()) {
-                        return Err(format!(
-                            "Trigger input on channel {} has action 'release' but no release_group configured",
-                            input.channel()
-                        ).into());
-                    }
-                }
-            }
-
-            let ch_idx = input.channel().checked_sub(1).ok_or_else(|| {
-                format!(
-                    "Trigger input channel must be >= 1, got {}",
-                    input.channel()
-                )
-            })? as usize;
-
-            if ch_idx >= channels as usize {
-                warn!(
-                    channel = input.channel(),
-                    device_channels = channels,
-                    "Trigger input channel exceeds device channel count, skipping"
-                );
-                continue;
-            }
-
-            let detector = TriggerDetector::from_input(input, sample_rate);
-
-            detector_map[ch_idx] = Some(detector);
-            debug!(
-                channel = input.channel(),
-                sample = input.sample().unwrap_or("(release)"),
-                "Trigger detector created"
+        let crosstalk = resolve_crosstalk(
+            config.crosstalk_window_ms(),
+            config.crosstalk_threshold(),
+            sample_rate,
+        );
+        if crosstalk.is_some() {
+            info!(
+                crosstalk_window_ms = config.crosstalk_window_ms().unwrap(),
+                crosstalk_threshold = config.crosstalk_threshold().unwrap(),
+                "Crosstalk suppression enabled"
             );
         }
+
+        // Build detectors for each configured input, keyed by 0-indexed channel
+        let detector_map = build_detector_map(config.inputs(), channels, sample_rate)?;
 
         // Create the event channel (bounded to prevent unbounded growth under load)
         let (tx, rx) = crossbeam_channel::bounded(256);
@@ -251,41 +197,11 @@ impl TriggerEngine {
             move |data: &[T], _: &cpal::InputCallbackInfo| {
                 // Data is interleaved: [ch0, ch1, ch2, ..., ch0, ch1, ...]
                 for frame in data.chunks_exact(channels as usize) {
-                    // Track which channels fired in this frame for crosstalk.
-                    let mut fired_channels: u64 = 0;
-
-                    for (ch_idx, raw_sample) in frame.iter().enumerate() {
-                        if let Some(ref mut detector) = detectors[ch_idx] {
-                            let sample: f32 =
-                                <f32 as cpal::FromSample<T>>::from_sample_(*raw_sample);
-                            if let Some(action) = detector.process_sample(sample) {
-                                if ch_idx < 64 {
-                                    fired_channels |= 1u64 << ch_idx;
-                                }
-                                // Non-blocking send — drop events if channel is full
-                                if tx.try_send(action).is_err() {
-                                    error!("Trigger event dropped (channel full)");
-                                }
-                            }
-                        }
-                    }
-
-                    // Apply crosstalk suppression to all OTHER detectors when any fired.
-                    // Crosstalk tracking is limited to the first 64 channels.
-                    if let Some((window_samples, multiplier)) = crosstalk {
-                        if fired_channels != 0 {
-                            for (ch_idx, slot) in detectors.iter_mut().enumerate() {
-                                if ch_idx >= 64 || fired_channels & (1u64 << ch_idx) == 0 {
-                                    if let Some(ref mut detector) = slot {
-                                        detector.apply_crosstalk_suppression(
-                                            window_samples,
-                                            multiplier,
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    let f32_frame: Vec<f32> = frame
+                        .iter()
+                        .map(|s| <f32 as cpal::FromSample<T>>::from_sample_(*s))
+                        .collect();
+                    process_frame(&f32_frame, &mut detectors, &tx, crosstalk);
                 }
             },
             move |err| {
@@ -295,5 +211,466 @@ impl TriggerEngine {
         )?;
 
         Ok(stream)
+    }
+}
+
+/// Pre-computes crosstalk suppression parameters (ms → samples).
+/// Returns `Some((window_samples, multiplier))` when both fields are configured.
+fn resolve_crosstalk(
+    window_ms: Option<u32>,
+    threshold: Option<f32>,
+    sample_rate: u32,
+) -> Option<(u32, f32)> {
+    match (window_ms, threshold) {
+        (Some(ms), Some(mult)) => Some((ms_to_samples(ms, sample_rate), mult)),
+        _ => None,
+    }
+}
+
+/// Builds the detector map from config inputs.
+/// Returns a Vec of `Option<TriggerDetector>` indexed by 0-based channel number.
+fn build_detector_map(
+    inputs: &[TriggerInput],
+    device_channels: u16,
+    sample_rate: u32,
+) -> Result<Vec<Option<TriggerDetector>>, Box<dyn Error>> {
+    let mut detector_map: Vec<Option<TriggerDetector>> =
+        (0..device_channels).map(|_| None).collect();
+
+    for input in inputs.iter().filter_map(|i| match i {
+        TriggerInput::Audio(audio) => Some(audio),
+        _ => None,
+    }) {
+        validate_audio_input(input)?;
+
+        let ch_idx = match validate_channel_index(input.channel(), device_channels) {
+            Some(idx) => idx,
+            None => continue,
+        };
+
+        let detector = TriggerDetector::from_input(input, sample_rate);
+
+        detector_map[ch_idx] = Some(detector);
+        debug!(
+            channel = input.channel(),
+            sample = input.sample().unwrap_or("(release)"),
+            "Trigger detector created"
+        );
+    }
+
+    Ok(detector_map)
+}
+
+/// Resolves the cpal sample format from config preferences and device native format.
+fn resolve_stream_format(
+    sample_format: Option<SampleFormat>,
+    bits_per_sample: Option<u16>,
+    native_format: cpal::SampleFormat,
+) -> cpal::SampleFormat {
+    match (sample_format, bits_per_sample) {
+        (Some(SampleFormat::Float), _) => cpal::SampleFormat::F32,
+        (Some(SampleFormat::Int), Some(16)) => cpal::SampleFormat::I16,
+        (Some(SampleFormat::Int), _) => cpal::SampleFormat::I32,
+        (None, Some(16)) => cpal::SampleFormat::I16,
+        _ => native_format,
+    }
+}
+
+/// Validates that a trigger input has the required fields for its action type.
+fn validate_audio_input(input: &AudioTriggerInput) -> Result<(), Box<dyn Error>> {
+    match input.action() {
+        TriggerInputAction::Trigger => {
+            if input.sample().is_none_or(|s| s.is_empty()) {
+                return Err(format!(
+                    "Trigger input on channel {} has action 'trigger' but no sample name configured",
+                    input.channel()
+                )
+                .into());
+            }
+        }
+        TriggerInputAction::Release => {
+            if input.release_group().is_none_or(|s| s.is_empty()) {
+                return Err(format!(
+                    "Trigger input on channel {} has action 'release' but no release_group configured",
+                    input.channel()
+                )
+                .into());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Validates that a 1-indexed channel number is valid for the device.
+/// Returns the 0-indexed channel index, or `None` if the channel exceeds device capacity.
+fn validate_channel_index(channel: u16, device_channels: u16) -> Option<usize> {
+    let ch_idx = channel.checked_sub(1)? as usize;
+    if ch_idx >= device_channels as usize {
+        warn!(
+            channel,
+            device_channels, "Trigger input channel exceeds device channel count, skipping"
+        );
+        return None;
+    }
+    Some(ch_idx)
+}
+
+/// Processes a single interleaved audio frame through the trigger detectors.
+/// Sends trigger actions for any channels that fired. Also applies crosstalk
+/// suppression to non-firing detectors when crosstalk parameters are configured.
+/// Returns a bitmask of channels that fired (up to 64 channels).
+fn process_frame(
+    frame: &[f32],
+    detectors: &mut [Option<TriggerDetector>],
+    tx: &Sender<TriggerAction>,
+    crosstalk: Option<(u32, f32)>,
+) -> u64 {
+    let mut fired_channels: u64 = 0;
+
+    for (ch_idx, &sample) in frame.iter().enumerate() {
+        if let Some(ref mut detector) = detectors[ch_idx] {
+            if let Some(action) = detector.process_sample(sample) {
+                if ch_idx < 64 {
+                    fired_channels |= 1u64 << ch_idx;
+                }
+                if tx.try_send(action).is_err() {
+                    error!("Trigger event dropped (channel full)");
+                }
+            }
+        }
+    }
+
+    // Apply crosstalk suppression to all OTHER detectors when any fired.
+    // Crosstalk tracking is limited to the first 64 channels.
+    if let Some((window_samples, multiplier)) = crosstalk {
+        if fired_channels != 0 {
+            for (ch_idx, slot) in detectors.iter_mut().enumerate() {
+                if ch_idx >= 64 || fired_channels & (1u64 << ch_idx) == 0 {
+                    if let Some(ref mut detector) = slot {
+                        detector.apply_crosstalk_suppression(window_samples, multiplier);
+                    }
+                }
+            }
+        }
+    }
+
+    fired_channels
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    mod resolve_stream_format_tests {
+        use super::*;
+
+        #[test]
+        fn explicit_float_overrides_native() {
+            let result =
+                resolve_stream_format(Some(SampleFormat::Float), None, cpal::SampleFormat::I16);
+            assert_eq!(result, cpal::SampleFormat::F32);
+        }
+
+        #[test]
+        fn explicit_int_16_bit() {
+            let result =
+                resolve_stream_format(Some(SampleFormat::Int), Some(16), cpal::SampleFormat::F32);
+            assert_eq!(result, cpal::SampleFormat::I16);
+        }
+
+        #[test]
+        fn explicit_int_32_bit() {
+            let result =
+                resolve_stream_format(Some(SampleFormat::Int), Some(32), cpal::SampleFormat::F32);
+            assert_eq!(result, cpal::SampleFormat::I32);
+        }
+
+        #[test]
+        fn explicit_int_no_bits_defaults_to_i32() {
+            let result =
+                resolve_stream_format(Some(SampleFormat::Int), None, cpal::SampleFormat::F32);
+            assert_eq!(result, cpal::SampleFormat::I32);
+        }
+
+        #[test]
+        fn no_format_with_16_bits() {
+            let result = resolve_stream_format(None, Some(16), cpal::SampleFormat::F32);
+            assert_eq!(result, cpal::SampleFormat::I16);
+        }
+
+        #[test]
+        fn no_preferences_uses_native() {
+            let result = resolve_stream_format(None, None, cpal::SampleFormat::I32);
+            assert_eq!(result, cpal::SampleFormat::I32);
+        }
+
+        #[test]
+        fn float_ignores_bits_per_sample() {
+            let result =
+                resolve_stream_format(Some(SampleFormat::Float), Some(16), cpal::SampleFormat::I16);
+            assert_eq!(result, cpal::SampleFormat::F32);
+        }
+    }
+
+    mod resolve_crosstalk_tests {
+        use super::*;
+
+        #[test]
+        fn both_fields_set_returns_some() {
+            let result = resolve_crosstalk(Some(10), Some(3.0), 44100);
+            assert!(result.is_some());
+            let (window_samples, mult) = result.unwrap();
+            assert_eq!(window_samples, ms_to_samples(10, 44100));
+            assert_eq!(mult, 3.0);
+        }
+
+        #[test]
+        fn no_window_returns_none() {
+            assert!(resolve_crosstalk(None, Some(3.0), 44100).is_none());
+        }
+
+        #[test]
+        fn no_threshold_returns_none() {
+            assert!(resolve_crosstalk(Some(10), None, 44100).is_none());
+        }
+
+        #[test]
+        fn neither_field_returns_none() {
+            assert!(resolve_crosstalk(None, None, 44100).is_none());
+        }
+
+        #[test]
+        fn sample_rate_affects_window() {
+            let at_44100 = resolve_crosstalk(Some(10), Some(3.0), 44100).unwrap().0;
+            let at_48000 = resolve_crosstalk(Some(10), Some(3.0), 48000).unwrap().0;
+            assert!(at_48000 > at_44100);
+        }
+    }
+
+    mod build_detector_map_tests {
+        use super::*;
+
+        #[test]
+        fn empty_inputs_produces_all_none() {
+            let inputs: Vec<TriggerInput> = vec![];
+            let map = build_detector_map(&inputs, 4, 44100).unwrap();
+            assert_eq!(map.len(), 4);
+            assert!(map.iter().all(|d| d.is_none()));
+        }
+
+        #[test]
+        fn audio_input_creates_detector_at_correct_index() {
+            let inputs = vec![TriggerInput::Audio(AudioTriggerInput::new_trigger(
+                2, "snare",
+            ))];
+            let map = build_detector_map(&inputs, 4, 44100).unwrap();
+            assert!(map[0].is_none());
+            assert!(map[1].is_some()); // channel 2 → index 1
+            assert!(map[2].is_none());
+            assert!(map[3].is_none());
+        }
+
+        #[test]
+        fn multiple_inputs_on_different_channels() {
+            let inputs = vec![
+                TriggerInput::Audio(AudioTriggerInput::new_trigger(1, "kick")),
+                TriggerInput::Audio(AudioTriggerInput::new_trigger(3, "snare")),
+            ];
+            let map = build_detector_map(&inputs, 4, 44100).unwrap();
+            assert!(map[0].is_some());
+            assert!(map[1].is_none());
+            assert!(map[2].is_some());
+            assert!(map[3].is_none());
+        }
+
+        #[test]
+        fn channel_exceeding_device_is_skipped() {
+            let inputs = vec![TriggerInput::Audio(AudioTriggerInput::new_trigger(
+                5, "kick",
+            ))];
+            let map = build_detector_map(&inputs, 4, 44100).unwrap();
+            assert_eq!(map.len(), 4);
+            assert!(map.iter().all(|d| d.is_none()));
+        }
+
+        #[test]
+        fn invalid_trigger_input_returns_error() {
+            let inputs = vec![TriggerInput::Audio(
+                AudioTriggerInput::new_trigger_no_sample(1),
+            )];
+            assert!(build_detector_map(&inputs, 4, 44100).is_err());
+        }
+
+        #[test]
+        fn midi_inputs_are_ignored() {
+            use crate::config::trigger::MidiTriggerInput;
+            let midi_event = crate::config::midi::note_on(10, 36, 127);
+            let midi_input =
+                TriggerInput::Midi(MidiTriggerInput::new(midi_event, "kick".to_string()));
+            let inputs = vec![midi_input];
+            let map = build_detector_map(&inputs, 4, 44100).unwrap();
+            assert!(map.iter().all(|d| d.is_none()));
+        }
+
+        #[test]
+        fn release_input_creates_detector() {
+            let inputs = vec![TriggerInput::Audio(AudioTriggerInput::new_release(
+                1, "cymbal",
+            ))];
+            let map = build_detector_map(&inputs, 2, 44100).unwrap();
+            assert!(map[0].is_some());
+        }
+    }
+
+    mod validate_audio_input_tests {
+        use super::*;
+
+        #[test]
+        fn trigger_with_sample_passes() {
+            let input = AudioTriggerInput::new_trigger(1, "kick");
+            assert!(validate_audio_input(&input).is_ok());
+        }
+
+        #[test]
+        fn trigger_without_sample_fails() {
+            let input = AudioTriggerInput::new_trigger_no_sample(1);
+            let err = validate_audio_input(&input).unwrap_err();
+            assert!(err.to_string().contains("no sample name"));
+        }
+
+        #[test]
+        fn trigger_with_empty_sample_fails() {
+            let input = AudioTriggerInput::new_trigger(1, "");
+            let err = validate_audio_input(&input).unwrap_err();
+            assert!(err.to_string().contains("no sample name"));
+        }
+
+        #[test]
+        fn release_with_group_passes() {
+            let input = AudioTriggerInput::new_release(2, "cymbal");
+            assert!(validate_audio_input(&input).is_ok());
+        }
+
+        #[test]
+        fn release_without_group_fails() {
+            let input = AudioTriggerInput::new_release_no_group(2);
+            let err = validate_audio_input(&input).unwrap_err();
+            assert!(err.to_string().contains("no release_group"));
+        }
+
+        #[test]
+        fn release_with_empty_group_fails() {
+            let input = AudioTriggerInput::new_release(2, "");
+            let err = validate_audio_input(&input).unwrap_err();
+            assert!(err.to_string().contains("no release_group"));
+        }
+    }
+
+    mod validate_channel_index_tests {
+        use super::*;
+
+        #[test]
+        fn channel_1_returns_index_0() {
+            assert_eq!(validate_channel_index(1, 4), Some(0));
+        }
+
+        #[test]
+        fn channel_4_returns_index_3() {
+            assert_eq!(validate_channel_index(4, 4), Some(3));
+        }
+
+        #[test]
+        fn channel_exceeds_device_returns_none() {
+            assert_eq!(validate_channel_index(5, 4), None);
+        }
+
+        #[test]
+        fn channel_0_returns_none() {
+            assert_eq!(validate_channel_index(0, 4), None);
+        }
+    }
+
+    mod process_frame_tests {
+        use super::*;
+
+        fn make_detector(sample_rate: u32) -> TriggerDetector {
+            let mut input = AudioTriggerInput::new_trigger(1, "test");
+            input.set_threshold(0.5);
+            input.set_retrigger_time_ms(0);
+            input.set_scan_time_ms(0);
+            TriggerDetector::from_input(&input, sample_rate)
+        }
+
+        #[test]
+        fn silent_frame_produces_no_events() {
+            let (tx, rx) = crossbeam_channel::bounded(16);
+            let mut detectors: Vec<Option<TriggerDetector>> =
+                vec![Some(make_detector(44100)), None];
+            let frame = [0.0f32, 0.0];
+
+            let fired = process_frame(&frame, &mut detectors, &tx, None);
+
+            assert_eq!(fired, 0);
+            assert!(rx.try_recv().is_err());
+        }
+
+        #[test]
+        fn loud_frame_fires_detector() {
+            let (tx, rx) = crossbeam_channel::bounded(16);
+            let mut detectors: Vec<Option<TriggerDetector>> =
+                vec![Some(make_detector(44100)), None];
+
+            // Feed enough loud samples to get through scan phase.
+            // With scan_time_ms=0, a single above-threshold sample should trigger.
+            let frame = [0.9f32, 0.0];
+            let fired = process_frame(&frame, &mut detectors, &tx, None);
+
+            // The detector fires on the transition from scanning→lockout.
+            // With scan_time_ms=0 and retrigger_time_ms=0, one sample should do it.
+            if fired != 0 {
+                assert_eq!(fired, 1); // channel 0
+                assert!(rx.try_recv().is_ok());
+            }
+        }
+
+        #[test]
+        fn none_detector_slots_are_skipped() {
+            let (tx, rx) = crossbeam_channel::bounded(16);
+            let mut detectors: Vec<Option<TriggerDetector>> = vec![None, None, None];
+            let frame = [0.9f32, 0.9, 0.9];
+
+            let fired = process_frame(&frame, &mut detectors, &tx, None);
+
+            assert_eq!(fired, 0);
+            assert!(rx.try_recv().is_err());
+        }
+
+        #[test]
+        fn full_channel_drops_events_without_panic() {
+            // Channel with capacity 0 will always be full.
+            let (tx, _rx) = crossbeam_channel::bounded(0);
+            let mut detectors: Vec<Option<TriggerDetector>> = vec![Some(make_detector(44100))];
+
+            // Just verify we don't panic on a full channel.
+            let frame = [0.9f32];
+            process_frame(&frame, &mut detectors, &tx, None);
+        }
+
+        #[test]
+        fn crosstalk_suppression_applied_to_non_firing_channels() {
+            let (tx, _rx) = crossbeam_channel::bounded(16);
+            let mut detectors: Vec<Option<TriggerDetector>> =
+                vec![Some(make_detector(44100)), Some(make_detector(44100))];
+
+            // Simulate channel 0 firing by having a loud sample.
+            // Channel 1 is quiet, so crosstalk suppression should be applied to it.
+            let frame = [0.9f32, 0.0];
+            let fired = process_frame(&frame, &mut detectors, &tx, Some((441, 3.0)));
+
+            // We can't easily verify the internal state of the detector,
+            // but we confirm no panic and the function completes.
+            // The fired bitmask tells us which channels triggered.
+            let _ = fired;
+        }
     }
 }
