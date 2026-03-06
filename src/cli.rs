@@ -122,7 +122,7 @@ enum Commands {
     /// Plays the current song in the playlist.
     Play {
         /// The host and port of the gRPC server.
-        #[arg[short, long]]
+        #[arg(short = 'H', long)]
         host_port: Option<String>,
         /// Start playback from a specific time (e.g., "1:23.456" or "45.5s").
         #[arg(long)]
@@ -131,25 +131,25 @@ enum Commands {
     /// Moves to the previous song in the playlist.
     Previous {
         /// The host and port of the gRPC server.
-        #[arg[short, long]]
+        #[arg(short = 'H', long)]
         host_port: Option<String>,
     },
     /// Moves to the next song in the playlist.
     Next {
         /// The host and port of the gRPC server.
-        #[arg[short, long]]
+        #[arg(short = 'H', long)]
         host_port: Option<String>,
     },
     /// Stops the currently playing song.
     Stop {
         /// The host and port of the gRPC server.
-        #[arg[short, long]]
+        #[arg(short = 'H', long)]
         host_port: Option<String>,
     },
     /// Switches to the given playlist.
     SwitchToPlaylist {
         /// The host and port of the gRPC server.
-        #[arg[short, long]]
+        #[arg(short = 'H', long)]
         host_port: Option<String>,
         /// The name of the playlist to switch to. Currently only supports "all_songs" and "playlist."
         playlist_name: String,
@@ -157,13 +157,13 @@ enum Commands {
     /// Gets the current status of the player from the gRPC server.
     Status {
         /// The host and port of the gRPC server.
-        #[arg[short, long]]
+        #[arg(short = 'H', long)]
         host_port: Option<String>,
     },
     /// Prints all active lighting effects from the gRPC server.
     ActiveEffects {
         /// The host and port of the gRPC server.
-        #[arg[short, long]]
+        #[arg(short = 'H', long)]
         host_port: Option<String>,
     },
     /// Prints a systemd service definition to stdout.
@@ -179,7 +179,7 @@ enum Commands {
     /// Lists all cues in the current song's lighting timeline.
     Cues {
         /// The host and port of the gRPC server.
-        #[arg[short, long]]
+        #[arg(short = 'H', long)]
         host_port: Option<String>,
     },
     /// Auto-calibrate trigger detection parameters from a connected audio input device.
@@ -213,16 +213,26 @@ enum Commands {
     },
 }
 
+/// Formats a list of devices into a display string.
+fn format_device_list<T: Display>(devices: &[T], empty_msg: &str) -> String {
+    if devices.is_empty() {
+        return empty_msg.to_string();
+    }
+    let mut output = String::from("Devices:");
+    for device in devices {
+        output.push_str(&format!("\n- {}", device));
+    }
+    output
+}
+
 /// Prints a list of devices for the Devices and MidiDevices subcommands.
 fn print_device_list<T: Display>(devices: Vec<T>, empty_msg: &str) {
-    if devices.is_empty() {
-        println!("{}", empty_msg);
-        return;
-    }
-    println!("Devices:");
-    for device in devices {
-        println!("- {}", device);
-    }
+    println!("{}", format_device_list(&devices, empty_msg));
+}
+
+/// Renders the systemd service template with the given executable path.
+fn render_systemd_service(executable_path: &str) -> String {
+    SYSTEMD_SERVICE.replace("{{ CURRENT_EXECUTABLE }}", executable_path)
 }
 
 pub async fn run(tui_mode: bool) -> Result<(), Box<dyn Error>> {
@@ -264,8 +274,7 @@ pub async fn run(tui_mode: bool) -> Result<(), Box<dyn Error>> {
             let current_executable_path = env::current_exe()?;
             println!(
                 "{}",
-                SYSTEMD_SERVICE.replace(
-                    "{{ CURRENT_EXECUTABLE }}",
+                render_systemd_service(
                     current_executable_path
                         .to_str()
                         .expect("unable to convert current executable path to string")
@@ -297,4 +306,311 @@ pub async fn run(tui_mode: bool) -> Result<(), Box<dyn Error>> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    mod format_device_list_tests {
+        use super::*;
+
+        #[test]
+        fn empty_list_returns_empty_msg() {
+            let devices: Vec<String> = vec![];
+            assert_eq!(
+                format_device_list(&devices, "No devices found."),
+                "No devices found."
+            );
+        }
+
+        #[test]
+        fn single_device() {
+            let devices = vec!["My Speaker"];
+            let result = format_device_list(&devices, "No devices found.");
+            assert_eq!(result, "Devices:\n- My Speaker");
+        }
+
+        #[test]
+        fn multiple_devices() {
+            let devices = vec!["Speaker A", "Speaker B", "Headphones"];
+            let result = format_device_list(&devices, "");
+            assert!(result.starts_with("Devices:"));
+            assert!(result.contains("- Speaker A"));
+            assert!(result.contains("- Speaker B"));
+            assert!(result.contains("- Headphones"));
+        }
+
+        #[test]
+        fn works_with_display_types() {
+            let devices: Vec<i32> = vec![1, 2, 3];
+            let result = format_device_list(&devices, "");
+            assert!(result.contains("- 1"));
+            assert!(result.contains("- 2"));
+            assert!(result.contains("- 3"));
+        }
+
+        #[test]
+        fn custom_empty_message() {
+            let devices: Vec<String> = vec![];
+            assert_eq!(
+                format_device_list(&devices, "Nothing here!"),
+                "Nothing here!"
+            );
+        }
+    }
+
+    mod render_systemd_service_tests {
+        use super::*;
+
+        #[test]
+        fn substitutes_executable_path() {
+            let result = render_systemd_service("/usr/local/bin/mtrack");
+            assert!(result.contains("ExecStart=/usr/local/bin/mtrack start"));
+            assert!(!result.contains("{{ CURRENT_EXECUTABLE }}"));
+        }
+
+        #[test]
+        fn preserves_service_structure() {
+            let result = render_systemd_service("/usr/bin/mtrack");
+            assert!(result.contains("[Unit]"));
+            assert!(result.contains("[Service]"));
+            assert!(result.contains("[Install]"));
+            assert!(result.contains("Type=simple"));
+        }
+
+        #[test]
+        fn preserves_hardening_directives() {
+            let result = render_systemd_service("/usr/bin/mtrack");
+            assert!(result.contains("ProtectSystem=strict"));
+            assert!(result.contains("NoNewPrivileges=true"));
+            assert!(result.contains("MemoryDenyWriteExecute=true"));
+        }
+
+        #[test]
+        fn handles_path_with_spaces() {
+            let result = render_systemd_service("/opt/my apps/mtrack");
+            assert!(result.contains("ExecStart=/opt/my apps/mtrack start"));
+        }
+    }
+
+    mod cli_parsing_tests {
+        use super::*;
+
+        #[test]
+        fn parse_songs_command() {
+            let cli = Cli::try_parse_from(["mtrack", "songs", "/path/to/songs"]).unwrap();
+            match cli.command {
+                Commands::Songs { path, init } => {
+                    assert_eq!(path, "/path/to/songs");
+                    assert!(!init);
+                }
+                _ => panic!("expected Songs command"),
+            }
+        }
+
+        #[test]
+        fn parse_songs_with_init() {
+            let cli = Cli::try_parse_from(["mtrack", "songs", "/path", "--init"]).unwrap();
+            match cli.command {
+                Commands::Songs { init, .. } => assert!(init),
+                _ => panic!("expected Songs command"),
+            }
+        }
+
+        #[test]
+        fn parse_devices_command() {
+            let cli = Cli::try_parse_from(["mtrack", "devices"]).unwrap();
+            assert!(matches!(cli.command, Commands::Devices {}));
+        }
+
+        #[test]
+        fn parse_midi_devices_command() {
+            let cli = Cli::try_parse_from(["mtrack", "midi-devices"]).unwrap();
+            assert!(matches!(cli.command, Commands::MidiDevices {}));
+        }
+
+        #[test]
+        fn parse_start_command_defaults() {
+            let cli = Cli::try_parse_from(["mtrack", "start", "config.yaml"]).unwrap();
+            match cli.command {
+                Commands::Start {
+                    player_path,
+                    playlist_path,
+                    tui,
+                    web_port,
+                    web_address,
+                } => {
+                    assert_eq!(player_path, "config.yaml");
+                    assert!(playlist_path.is_none());
+                    assert!(!tui);
+                    assert_eq!(web_port, 8080);
+                    assert_eq!(web_address, "127.0.0.1");
+                }
+                _ => panic!("expected Start command"),
+            }
+        }
+
+        #[test]
+        fn parse_start_with_all_options() {
+            let cli = Cli::try_parse_from([
+                "mtrack",
+                "start",
+                "config.yaml",
+                "playlist.yaml",
+                "--tui",
+                "--web-port",
+                "9090",
+                "--web-address",
+                "0.0.0.0",
+            ])
+            .unwrap();
+            match cli.command {
+                Commands::Start {
+                    player_path,
+                    playlist_path,
+                    tui,
+                    web_port,
+                    web_address,
+                } => {
+                    assert_eq!(player_path, "config.yaml");
+                    assert_eq!(playlist_path.as_deref(), Some("playlist.yaml"));
+                    assert!(tui);
+                    assert_eq!(web_port, 9090);
+                    assert_eq!(web_address, "0.0.0.0");
+                }
+                _ => panic!("expected Start command"),
+            }
+        }
+
+        #[test]
+        fn parse_play_with_from() {
+            let cli = Cli::try_parse_from(["mtrack", "play", "--from", "1:23.456"]).unwrap();
+            match cli.command {
+                Commands::Play { host_port, from } => {
+                    assert!(host_port.is_none());
+                    assert_eq!(from.as_deref(), Some("1:23.456"));
+                }
+                _ => panic!("expected Play command"),
+            }
+        }
+
+        #[test]
+        fn parse_play_with_host() {
+            let cli =
+                Cli::try_parse_from(["mtrack", "play", "--host-port", "localhost:50051"]).unwrap();
+            match cli.command {
+                Commands::Play { host_port, .. } => {
+                    assert_eq!(host_port.as_deref(), Some("localhost:50051"));
+                }
+                _ => panic!("expected Play command"),
+            }
+        }
+
+        #[test]
+        fn parse_switch_to_playlist() {
+            let cli = Cli::try_parse_from(["mtrack", "switch-to-playlist", "all_songs"]).unwrap();
+            match cli.command {
+                Commands::SwitchToPlaylist {
+                    playlist_name,
+                    host_port,
+                } => {
+                    assert_eq!(playlist_name, "all_songs");
+                    assert!(host_port.is_none());
+                }
+                _ => panic!("expected SwitchToPlaylist command"),
+            }
+        }
+
+        #[test]
+        fn parse_systemd_command() {
+            let cli = Cli::try_parse_from(["mtrack", "systemd"]).unwrap();
+            assert!(matches!(cli.command, Commands::Systemd {}));
+        }
+
+        #[test]
+        fn parse_verify_light_show() {
+            let cli = Cli::try_parse_from([
+                "mtrack",
+                "verify-light-show",
+                "show.yaml",
+                "--config",
+                "mtrack.yaml",
+            ])
+            .unwrap();
+            match cli.command {
+                Commands::VerifyLightShow { show_path, config } => {
+                    assert_eq!(show_path, "show.yaml");
+                    assert_eq!(config.as_deref(), Some("mtrack.yaml"));
+                }
+                _ => panic!("expected VerifyLightShow command"),
+            }
+        }
+
+        #[test]
+        fn parse_calibrate_triggers() {
+            let cli = Cli::try_parse_from([
+                "mtrack",
+                "calibrate-triggers",
+                "USB Audio",
+                "--sample-rate",
+                "48000",
+                "--duration",
+                "5",
+            ])
+            .unwrap();
+            match cli.command {
+                Commands::CalibrateTriggers {
+                    device,
+                    sample_rate,
+                    duration,
+                    ..
+                } => {
+                    assert_eq!(device, "USB Audio");
+                    assert_eq!(sample_rate, Some(48000));
+                    assert_eq!(duration, 5.0);
+                }
+                _ => panic!("expected CalibrateTriggers command"),
+            }
+        }
+
+        #[test]
+        fn parse_verify_command() {
+            let cli = Cli::try_parse_from([
+                "mtrack",
+                "verify",
+                "mtrack.yaml",
+                "--check",
+                "track-mappings",
+                "--hostname",
+                "stage-left",
+            ])
+            .unwrap();
+            match cli.command {
+                Commands::Verify {
+                    config,
+                    check,
+                    hostname,
+                } => {
+                    assert_eq!(config, "mtrack.yaml");
+                    assert_eq!(check.as_deref(), Some(&["track-mappings".to_string()][..]));
+                    assert_eq!(hostname.as_deref(), Some("stage-left"));
+                }
+                _ => panic!("expected Verify command"),
+            }
+        }
+
+        #[test]
+        fn missing_required_args_fails() {
+            assert!(Cli::try_parse_from(["mtrack", "songs"]).is_err());
+            assert!(Cli::try_parse_from(["mtrack", "start"]).is_err());
+            assert!(Cli::try_parse_from(["mtrack", "verify"]).is_err());
+        }
+
+        #[test]
+        fn unknown_command_fails() {
+            assert!(Cli::try_parse_from(["mtrack", "nonexistent"]).is_err());
+        }
+    }
 }
