@@ -172,94 +172,16 @@ impl Player {
             StatusEvents::new(config.status_events())
         })?;
 
-        // Initialize the sample engine if the audio device supports it
-        let sample_engine = match device
-            .as_ref()
-            .and_then(|d| d.mixer().and_then(|m| d.source_sender().map(|s| (m, s))))
-        {
-            Some((mixer, source_tx)) => {
-                let max_voices = config.max_sample_voices();
-                let buffer_size = resolved_audio
-                    .as_ref()
-                    .map(|a| a.buffer_size())
-                    .unwrap_or(1024);
-                let track_mappings = mappings.as_ref().cloned().unwrap_or_default();
-                let mut engine =
-                    SampleEngine::new(mixer, source_tx, max_voices, buffer_size, track_mappings);
+        let sample_engine = init_sample_engine(
+            &device,
+            &mappings,
+            resolved_audio.as_ref(),
+            config,
+            profile,
+            base_path,
+        );
 
-                // Load global samples config if available
-                if let Some(base_path) = base_path {
-                    match config.samples_config(base_path) {
-                        Ok(mut samples_config) => {
-                            // Add MIDI triggers from profile's trigger config
-                            if let Some(trigger_config) = profile.trigger() {
-                                samples_config.add_triggers(trigger_config.midi_triggers());
-                            }
-                            if let Err(e) = engine.load_global_config(&samples_config, base_path) {
-                                warn!(error = %e, "Failed to load global samples config");
-                            }
-                        }
-                        Err(e) => {
-                            warn!(error = %e, "Failed to parse samples config");
-                        }
-                    }
-                }
-
-                Some(Arc::new(RwLock::new(engine)))
-            }
-            _ => None,
-        };
-
-        // Initialize the trigger engine if configured and sample engine is available.
-        // Unlike audio/MIDI devices, triggers are non-essential — fail immediately
-        // rather than retrying indefinitely.
-        let trigger_engine = if let (Some(trigger_config), Some(ref sample_engine)) = (
-            profile.trigger().filter(|t| t.has_audio_inputs()),
-            &sample_engine,
-        ) {
-            match TriggerEngine::new(trigger_config) {
-                Ok(engine) => {
-                    let engine: Arc<TriggerEngine> = Arc::new(engine);
-
-                    // Spawn a forwarding thread: reads TriggerActions and dispatches
-                    // to the sample engine. When the TriggerEngine drops, the sender
-                    // closes and the receiver returns Err, ending the thread.
-                    let receiver = engine.subscribe();
-                    let se = sample_engine.clone();
-                    thread::Builder::new()
-                        .name("trigger-fwd".to_string())
-                        .spawn(move || {
-                            let result =
-                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                    while let Ok(action) = receiver.recv() {
-                                        match action {
-                                            samples::TriggerAction::Trigger(event) => {
-                                                let engine = se.read();
-                                                engine.trigger(&event);
-                                            }
-                                            samples::TriggerAction::Release { group } => {
-                                                let engine = se.read();
-                                                engine.release(&group);
-                                            }
-                                        }
-                                    }
-                                }));
-                            if result.is_err() {
-                                error!("Trigger forwarding thread panicked");
-                            }
-                            info!("Trigger forwarding thread exiting");
-                        })?;
-
-                    Some(engine)
-                }
-                Err(e) => {
-                    warn!(error = %e, "Failed to initialize trigger engine, continuing without triggers");
-                    None
-                }
-            }
-        } else {
-            None
-        };
+        let trigger_engine = init_trigger_engine(profile, &sample_engine)?;
 
         let player = Player {
             device,
@@ -559,20 +481,10 @@ impl Player {
             let song = song.clone();
             let midi_device = self.midi_device.clone();
             tokio::spawn(async move {
-                let playback_ok = match play_rx.await {
-                    Ok(Ok(())) => true,
-                    Ok(Err(e)) => {
-                        error!(
-                            err = %e,
-                            song = song.name(),
-                            "Playback failed (e.g. audio error); playlist not advanced"
-                        );
-                        false
-                    }
-                    Err(_e) => {
-                        error!("Error receiving playback signal (receiver dropped)");
-                        false
-                    }
+                let result = match play_rx.await {
+                    Ok(Ok(())) => PlaybackResult::Success,
+                    Ok(Err(e)) => PlaybackResult::Failed(e),
+                    Err(_e) => PlaybackResult::SenderDropped,
                 };
 
                 let cancelled = cancel_handle_for_cleanup.is_cancelled();
@@ -580,23 +492,19 @@ impl Player {
                 info!(
                     song = song.name(),
                     cancelled = cancelled,
-                    playback_ok = playback_ok,
                     "Song finished playing."
                 );
 
-                // When cancelled, stop() already cleared join and play_start_time.
-                // Touching them here would clobber state from a new play() that
-                // may have started after stop() returned.
-                if cancelled {
+                let action = decide_cleanup_action(result, cancelled);
+                if action == CleanupAction::StopCancelled {
+                    // stop() already cleared join and play_start_time.
+                    // Touching them here would clobber state from a new play() that
+                    // may have started after stop() returned.
                     return;
                 }
 
                 // Natural finish: advance playlist and clean up.
                 let mut join = join_mutex.lock().await;
-
-                if !playback_ok {
-                    warn!("Advancing playlist despite playback failure so user is not stuck");
-                }
                 Player::next_and_emit(midi_device.clone(), playlist);
 
                 {
@@ -626,19 +534,15 @@ impl Player {
 
         // Set up the play barrier, which will synchronize the subsystem threads.
         let has_audio = device.is_some();
-        let mut num_barriers = 0;
-        if has_audio {
-            num_barriers += 1;
-        }
-        if song.midi_playback().is_some() && midi_device.is_some() {
-            num_barriers += 1;
-        }
-        if !song.light_shows().is_empty() && dmx_engine.is_some() {
-            num_barriers += song.light_shows().len();
-        }
-        if !song.dsl_lighting_shows().is_empty() && dmx_engine.is_some() {
-            num_barriers += 1; // One barrier for the lighting timeline
-        }
+        let has_midi = song.midi_playback().is_some() && midi_device.is_some();
+        let num_light_shows = if dmx_engine.is_some() {
+            song.light_shows().len()
+        } else {
+            0
+        };
+        let has_dsl_lighting = !song.dsl_lighting_shows().is_empty() && dmx_engine.is_some();
+        let num_barriers =
+            compute_barrier_count(has_audio, has_midi, num_light_shows, has_dsl_lighting);
 
         // If no subsystems are active, signal success immediately and return.
         if num_barriers == 0 {
@@ -741,17 +645,7 @@ impl Player {
             }
         }
 
-        let outcome = if has_audio {
-            audio_outcome.lock().take().unwrap_or_else(|| {
-                warn!(
-                    "Audio thread did not set outcome (e.g. panicked before setting); \
-                     treating as success so playlist is not stuck"
-                );
-                Ok(())
-            })
-        } else {
-            Ok(())
-        };
+        let outcome = resolve_playback_outcome(has_audio, audio_outcome.lock().take());
         if play_tx.send(outcome).is_err() {
             error!("Error while sending to finish channel (receiver dropped).")
         }
@@ -944,6 +838,101 @@ impl Player {
     }
 }
 
+/// Initializes the sample engine if the audio device supports mixing and source input.
+fn init_sample_engine(
+    device: &Option<Arc<dyn audio::Device>>,
+    mappings: &Option<HashMap<String, Vec<u16>>>,
+    resolved_audio: Option<&config::Audio>,
+    config: &config::Player,
+    profile: &config::Profile,
+    base_path: Option<&Path>,
+) -> Option<Arc<RwLock<SampleEngine>>> {
+    let (mixer, source_tx) = device
+        .as_ref()
+        .and_then(|d| d.mixer().and_then(|m| d.source_sender().map(|s| (m, s))))?;
+
+    let max_voices = config.max_sample_voices();
+    let buffer_size = resolved_audio.map(|a| a.buffer_size()).unwrap_or(1024);
+    let track_mappings = mappings.as_ref().cloned().unwrap_or_default();
+    let mut engine = SampleEngine::new(mixer, source_tx, max_voices, buffer_size, track_mappings);
+
+    // Load global samples config if available
+    if let Some(base_path) = base_path {
+        match config.samples_config(base_path) {
+            Ok(mut samples_config) => {
+                // Add MIDI triggers from profile's trigger config
+                if let Some(trigger_config) = profile.trigger() {
+                    samples_config.add_triggers(trigger_config.midi_triggers());
+                }
+                if let Err(e) = engine.load_global_config(&samples_config, base_path) {
+                    warn!(error = %e, "Failed to load global samples config");
+                }
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to parse samples config");
+            }
+        }
+    }
+
+    Some(Arc::new(RwLock::new(engine)))
+}
+
+/// Initializes the trigger engine if configured and sample engine is available.
+/// Unlike audio/MIDI devices, triggers are non-essential — fail immediately
+/// rather than retrying indefinitely.
+fn init_trigger_engine(
+    profile: &config::Profile,
+    sample_engine: &Option<Arc<RwLock<SampleEngine>>>,
+) -> Result<Option<Arc<TriggerEngine>>, Box<dyn Error>> {
+    let (trigger_config, sample_engine) = match (
+        profile.trigger().filter(|t| t.has_audio_inputs()),
+        sample_engine,
+    ) {
+        (Some(tc), Some(se)) => (tc, se),
+        _ => return Ok(None),
+    };
+
+    match TriggerEngine::new(trigger_config) {
+        Ok(engine) => {
+            let engine: Arc<TriggerEngine> = Arc::new(engine);
+
+            // Spawn a forwarding thread: reads TriggerActions and dispatches
+            // to the sample engine. When the TriggerEngine drops, the sender
+            // closes and the receiver returns Err, ending the thread.
+            let receiver = engine.subscribe();
+            let se = sample_engine.clone();
+            thread::Builder::new()
+                .name("trigger-fwd".to_string())
+                .spawn(move || {
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        while let Ok(action) = receiver.recv() {
+                            match action {
+                                samples::TriggerAction::Trigger(event) => {
+                                    let engine = se.read();
+                                    engine.trigger(&event);
+                                }
+                                samples::TriggerAction::Release { group } => {
+                                    let engine = se.read();
+                                    engine.release(&group);
+                                }
+                            }
+                        }
+                    }));
+                    if result.is_err() {
+                        error!("Trigger forwarding thread panicked");
+                    }
+                    info!("Trigger forwarding thread exiting");
+                })?;
+
+            Ok(Some(engine))
+        }
+        Err(e) => {
+            warn!(error = %e, "Failed to initialize trigger engine, continuing without triggers");
+            Ok(None)
+        }
+    }
+}
+
 /// Describes how to report status via MIDI.
 pub struct StatusEvents {
     /// The events to emit to clear the status.
@@ -970,13 +959,92 @@ impl StatusEvents {
     }
 }
 
+/// Computes the number of barrier participants needed for playback synchronization.
+fn compute_barrier_count(
+    has_audio: bool,
+    has_midi: bool,
+    num_light_shows: usize,
+    has_dsl_lighting: bool,
+) -> usize {
+    let mut count = 0;
+    if has_audio {
+        count += 1;
+    }
+    if has_midi {
+        count += 1;
+    }
+    count += num_light_shows;
+    if has_dsl_lighting {
+        count += 1;
+    }
+    count
+}
+
+/// The result of receiving a playback completion signal.
+#[derive(Debug)]
+enum PlaybackResult {
+    Success,
+    Failed(String),
+    SenderDropped,
+}
+
+/// What the cleanup task should do after playback finishes.
+#[derive(Debug, PartialEq)]
+enum CleanupAction {
+    AdvancePlaylist,
+    StopCancelled,
+}
+
+/// Decides whether to advance the playlist or stop after playback finishes.
+fn decide_cleanup_action(result: PlaybackResult, cancelled: bool) -> CleanupAction {
+    if cancelled {
+        return CleanupAction::StopCancelled;
+    }
+    match &result {
+        PlaybackResult::Failed(e) => {
+            warn!(
+                err = %e,
+                "Advancing playlist despite playback failure so user is not stuck"
+            );
+        }
+        PlaybackResult::SenderDropped => {
+            error!("Error receiving playback signal (receiver dropped)");
+        }
+        PlaybackResult::Success => {}
+    }
+    CleanupAction::AdvancePlaylist
+}
+
+/// Resolves the final playback outcome from the audio thread result.
+fn resolve_playback_outcome(
+    has_audio: bool,
+    audio_outcome: Option<Result<(), String>>,
+) -> Result<(), String> {
+    if has_audio {
+        audio_outcome.unwrap_or_else(|| {
+            warn!(
+                "Audio thread did not set outcome (e.g. panicked before setting); \
+                 treating as success so playlist is not stuck"
+            );
+            Ok(())
+        })
+    } else {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod test {
     use std::{collections::HashMap, error::Error, fs, path::Path, sync::Arc};
 
-    use crate::{config, playlist::Playlist, songs, testutil::eventually};
+    use crate::{
+        config,
+        playlist::Playlist,
+        songs,
+        testutil::{eventually, eventually_async},
+    };
 
-    use super::Player;
+    use super::*;
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_player() -> Result<(), Box<dyn Error>> {
@@ -1399,8 +1467,13 @@ mod test {
         Ok(())
     }
 
-    /// Helper to create a player with the standard test assets.
-    fn make_test_player() -> Result<Player, Box<dyn Error>> {
+    /// Flexible helper to create a player with the standard test assets and
+    /// optional subsystem configs.
+    fn make_test_player_with_config(
+        audio: Option<config::Audio>,
+        midi: Option<config::Midi>,
+        dmx: Option<config::Dmx>,
+    ) -> Result<Player, Box<dyn Error>> {
         let songs = songs::get_all_songs(Path::new("assets/songs"))?;
         Ok(Player::new(
             songs.clone(),
@@ -1409,16 +1482,18 @@ mod test {
                 &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
                 songs,
             )?,
-            &config::Player::new(
-                vec![],
-                Some(config::Audio::new("mock-device")),
-                Some(config::Midi::new("mock-midi-device", None)),
-                None,
-                HashMap::new(),
-                "assets/songs",
-            ),
+            &config::Player::new(vec![], audio, midi, dmx, HashMap::new(), "assets/songs"),
             None,
         )?)
+    }
+
+    /// Helper to create a player with the standard test assets (audio + MIDI).
+    fn make_test_player() -> Result<Player, Box<dyn Error>> {
+        make_test_player_with_config(
+            Some(config::Audio::new("mock-device")),
+            Some(config::Midi::new("mock-midi-device", None)),
+            None,
+        )
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1656,6 +1731,501 @@ mod test {
             "Player should reject song with invalid lighting show groups"
         );
 
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_stop_returns_current_song() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player()?;
+        let binding = player
+            .audio_device()
+            .expect("audio device should be present");
+        let device = binding.to_mock()?;
+
+        player.play().await?;
+        eventually(|| device.is_playing(), "Song never started playing");
+
+        let song = player.stop().await;
+        assert!(song.is_some(), "stop() should return the current song");
+        assert_eq!(song.unwrap().name(), "Song 1");
+
+        eventually(|| !device.is_playing(), "Song never stopped playing");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_play_from_nonzero_start() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player()?;
+        let binding = player
+            .audio_device()
+            .expect("audio device should be present");
+        let device = binding.to_mock()?;
+
+        let result = player.play_from(Duration::from_millis(100)).await?;
+        assert!(result.is_some(), "play_from should succeed");
+
+        eventually(|| device.is_playing(), "Song never started playing");
+
+        player.stop().await;
+        eventually(|| !device.is_playing(), "Song never stopped playing");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_play_after_stop_restarts() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player()?;
+        let binding = player
+            .audio_device()
+            .expect("audio device should be present");
+        let device = binding.to_mock()?;
+
+        // First play/stop cycle.
+        player.play().await?;
+        eventually(|| device.is_playing(), "Song never started playing");
+        player.stop().await;
+        eventually(|| !device.is_playing(), "Song never stopped playing");
+
+        // Second play should succeed (stop_run flag was reset).
+        let result = player.play().await?;
+        assert!(
+            result.is_some(),
+            "play() after stop should start a new song"
+        );
+        eventually(|| device.is_playing(), "Song never restarted");
+
+        player.stop().await;
+        eventually(|| !device.is_playing(), "Song never stopped playing");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_audio_only_no_midi() -> Result<(), Box<dyn Error>> {
+        let player =
+            make_test_player_with_config(Some(config::Audio::new("mock-device")), None, None)?;
+        let binding = player
+            .audio_device()
+            .expect("audio device should be present");
+        let device = binding.to_mock()?;
+
+        assert!(
+            player.midi_device().is_none(),
+            "MIDI device should be absent"
+        );
+
+        // Song 2 has no midi_file, so barrier is audio-only.
+        // Navigate to Song 2 (default playlist starts at Song 1).
+        player.get_playlist().next(); // Song 3
+        player.get_playlist().next(); // Song 5
+                                      // Use the all songs playlist to reach Song 2 more easily.
+        player.switch_to_all_songs().await;
+        // all_songs starts at Song 1, navigate to Song 2.
+        player.get_playlist().next(); // Song 10
+        player.get_playlist().next(); // Song 2
+        assert_eq!(player.get_playlist().current().name(), "Song 2");
+
+        player.play().await?;
+        eventually(|| device.is_playing(), "Song never started playing");
+
+        player.stop().await;
+        eventually(|| !device.is_playing(), "Song never stopped playing");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_midi_only_no_audio() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player_with_config(
+            None,
+            Some(config::Midi::new("mock-midi-device", None)),
+            None,
+        )?;
+
+        assert!(
+            player.audio_device().is_none(),
+            "Audio device should be absent"
+        );
+
+        // Song 1 has midi_file. Barrier = 1 (MIDI only).
+        assert_eq!(player.get_playlist().current().name(), "Song 1");
+
+        player.play().await?;
+
+        // Natural finish: playlist should advance.
+        eventually_async(
+            || async { player.get_playlist().current().name() != "Song 1" },
+            "Playlist never advanced after MIDI-only playback",
+        )
+        .await;
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_no_subsystems_completes_immediately() -> Result<(), Box<dyn Error>> {
+        // Build a Player directly with no subsystems to exercise the
+        // num_barriers == 0 early-return in play_files().
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
+        let playlist = Playlist::new(
+            "playlist",
+            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
+            songs.clone(),
+        )?;
+        let player = Player {
+            device: None,
+            mappings: None,
+            midi_device: None,
+            dmx_engine: None,
+            sample_engine: None,
+            trigger_engine: None,
+            playlist: playlist.clone(),
+            all_songs: crate::playlist::from_songs(songs)?,
+            use_all_songs: Arc::new(AtomicBool::new(false)),
+            play_start_time: Arc::new(Mutex::new(None)),
+            join: Arc::new(Mutex::new(None)),
+            stop_run: Arc::new(AtomicBool::new(false)),
+            span: span!(Level::INFO, "test"),
+        };
+
+        assert!(player.audio_device().is_none());
+        assert!(player.midi_device().is_none());
+        assert!(player.dmx_engine().is_none());
+
+        player.play().await?;
+
+        // num_barriers == 0 → play_files returns immediately → playlist advances.
+        eventually_async(
+            || async { player.get_playlist().current().name() != "Song 1" },
+            "Playlist never advanced after no-subsystem playback",
+        )
+        .await;
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_natural_finish_clears_play_state() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player()?;
+
+        // Song 1 is short (~0.7s). Let it finish naturally.
+        player.play().await?;
+
+        // Wait for natural finish: playlist advances.
+        eventually_async(
+            || async { !player.is_playing().await },
+            "Player never stopped after natural finish",
+        )
+        .await;
+
+        let elapsed = player.elapsed().await?;
+        assert!(
+            elapsed.is_none(),
+            "elapsed() should be None after natural finish"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_play_with_dmx_engine() -> Result<(), Box<dyn Error>> {
+        let dmx_config = config::Dmx::new(
+            None,
+            None,
+            Some(9090),
+            vec![config::Universe::new(1, "test".to_string())],
+            None,
+        );
+        let player = make_test_player_with_config(
+            Some(config::Audio::new("mock-device")),
+            None,
+            Some(dmx_config),
+        )?;
+
+        assert!(
+            player.dmx_engine().is_some(),
+            "DMX engine should be present"
+        );
+
+        let binding = player
+            .audio_device()
+            .expect("audio device should be present");
+        let device = binding.to_mock()?;
+
+        player.play().await?;
+        eventually(|| device.is_playing(), "Song never started playing");
+
+        player.stop().await;
+        eventually(|| !device.is_playing(), "Song never stopped playing");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_switch_playlist_while_playing_stays() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player()?;
+        let binding = player
+            .audio_device()
+            .expect("audio device should be present");
+        let device = binding.to_mock()?;
+
+        assert_eq!(player.get_playlist().name(), "playlist");
+
+        player.play().await?;
+        eventually(|| device.is_playing(), "Song never started playing");
+
+        // Attempt switch while playing — should be a no-op.
+        player.switch_to_all_songs().await;
+        assert_eq!(
+            player.get_playlist().name(),
+            "playlist",
+            "switch_to_all_songs should be a no-op while playing"
+        );
+
+        player.stop().await;
+        eventually(|| !device.is_playing(), "Song never stopped playing");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_playlist_clamps_at_end_on_natural_finish() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player()?;
+
+        // Navigate to Song 9 (last in playlist).
+        // Playlist: Song 1, Song 3, Song 5, Song 7, Song 9
+        player.next().await; // Song 3
+        player.next().await; // Song 5
+        player.next().await; // Song 7
+        player.next().await; // Song 9
+        assert_eq!(player.get_playlist().current().name(), "Song 9");
+
+        // Play Song 9 — short audio (0.5s), should finish naturally.
+        player.play().await?;
+
+        // After natural finish, playlist next() clamps at the last song.
+        eventually_async(
+            || async { !player.is_playing().await },
+            "Player never stopped after Song 9 finished",
+        )
+        .await;
+
+        // Playlist should still be at Song 9 (clamped, no wrap).
+        assert_eq!(player.get_playlist().current().name(), "Song 9");
+
+        Ok(())
+    }
+
+    // --- compute_barrier_count tests ---
+
+    #[test]
+    fn barrier_count_no_subsystems() {
+        assert_eq!(compute_barrier_count(false, false, 0, false), 0);
+    }
+
+    #[test]
+    fn barrier_count_audio_only() {
+        assert_eq!(compute_barrier_count(true, false, 0, false), 1);
+    }
+
+    #[test]
+    fn barrier_count_midi_only() {
+        assert_eq!(compute_barrier_count(false, true, 0, false), 1);
+    }
+
+    #[test]
+    fn barrier_count_one_legacy_show() {
+        assert_eq!(compute_barrier_count(false, false, 1, false), 1);
+    }
+
+    #[test]
+    fn barrier_count_three_legacy_shows() {
+        assert_eq!(compute_barrier_count(false, false, 3, false), 3);
+    }
+
+    #[test]
+    fn barrier_count_dsl_lighting_only() {
+        assert_eq!(compute_barrier_count(false, false, 0, true), 1);
+    }
+
+    #[test]
+    fn barrier_count_all_subsystems() {
+        // 1 audio + 1 midi + 2 legacy + 1 dsl = 5
+        assert_eq!(compute_barrier_count(true, true, 2, true), 5);
+    }
+
+    #[test]
+    fn barrier_count_audio_and_midi_no_dmx() {
+        assert_eq!(compute_barrier_count(true, true, 0, false), 2);
+    }
+
+    // --- resolve_playback_outcome tests ---
+
+    #[test]
+    fn playback_outcome_no_audio() {
+        assert_eq!(resolve_playback_outcome(false, None), Ok(()));
+    }
+
+    #[test]
+    fn playback_outcome_audio_ok() {
+        assert_eq!(resolve_playback_outcome(true, Some(Ok(()))), Ok(()));
+    }
+
+    #[test]
+    fn playback_outcome_audio_err() {
+        let err_msg = "device disconnected".to_string();
+        assert_eq!(
+            resolve_playback_outcome(true, Some(Err(err_msg.clone()))),
+            Err(err_msg)
+        );
+    }
+
+    #[test]
+    fn playback_outcome_audio_none_panicked() {
+        // Thread panicked before setting outcome — treated as success
+        assert_eq!(resolve_playback_outcome(true, None), Ok(()));
+    }
+
+    // --- decide_cleanup_action tests ---
+
+    #[test]
+    fn cleanup_success_not_cancelled() {
+        assert_eq!(
+            decide_cleanup_action(PlaybackResult::Success, false),
+            CleanupAction::AdvancePlaylist
+        );
+    }
+
+    #[test]
+    fn cleanup_success_cancelled() {
+        assert_eq!(
+            decide_cleanup_action(PlaybackResult::Success, true),
+            CleanupAction::StopCancelled
+        );
+    }
+
+    #[test]
+    fn cleanup_failed_not_cancelled() {
+        assert_eq!(
+            decide_cleanup_action(PlaybackResult::Failed("err".into()), false),
+            CleanupAction::AdvancePlaylist
+        );
+    }
+
+    #[test]
+    fn cleanup_failed_cancelled() {
+        assert_eq!(
+            decide_cleanup_action(PlaybackResult::Failed("err".into()), true),
+            CleanupAction::StopCancelled
+        );
+    }
+
+    #[test]
+    fn cleanup_sender_dropped_not_cancelled() {
+        assert_eq!(
+            decide_cleanup_action(PlaybackResult::SenderDropped, false),
+            CleanupAction::AdvancePlaylist
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_dmx_utility_methods() -> Result<(), Box<dyn Error>> {
+        let dmx_config = config::Dmx::new(
+            None,
+            None,
+            Some(9090),
+            vec![config::Universe::new(1, "test".to_string())],
+            None,
+        );
+        let player = make_test_player_with_config(
+            Some(config::Audio::new("mock-device")),
+            None,
+            Some(dmx_config),
+        )?;
+
+        // get_cues() with DMX engine present (no timeline loaded → empty)
+        let cues = player.get_cues();
+        assert!(cues.is_empty());
+
+        // broadcast_handles() returns Some when DMX engine is present
+        assert!(
+            player.broadcast_handles().is_some(),
+            "broadcast_handles should be Some with DMX engine"
+        );
+
+        // set_broadcast_tx() should not panic
+        let (tx, _rx) = tokio::sync::broadcast::channel(1);
+        player.set_broadcast_tx(tx);
+
+        // effect_engine() returns Some when DMX engine is present
+        assert!(
+            player.effect_engine().is_some(),
+            "effect_engine should be Some with DMX engine"
+        );
+
+        // format_active_effects() returns Some when DMX engine is present
+        assert!(
+            player.format_active_effects().is_some(),
+            "format_active_effects should be Some with DMX engine"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_track_mappings() -> Result<(), Box<dyn Error>> {
+        // Player with audio → track_mappings is Some
+        let player = make_test_player()?;
+        assert!(
+            player.track_mappings().is_some(),
+            "track_mappings should be Some when audio is configured"
+        );
+
+        // Player without audio → track_mappings is None
+        let player = make_test_player_with_config(
+            None,
+            Some(config::Midi::new("mock-midi-device", None)),
+            None,
+        )?;
+        assert!(
+            player.track_mappings().is_none(),
+            "track_mappings should be None without audio"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_next_while_playing_returns_current() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player()?;
+        let binding = player
+            .audio_device()
+            .expect("audio device should be present");
+        let device = binding.to_mock()?;
+
+        assert_eq!(player.get_playlist().current().name(), "Song 1");
+
+        player.play().await?;
+        eventually(|| device.is_playing(), "Song never started playing");
+
+        // next() while playing should return the current song without advancing
+        let song = player.next().await;
+        assert_eq!(
+            song.name(),
+            "Song 1",
+            "next() while playing should return current song"
+        );
+        assert_eq!(
+            player.get_playlist().current().name(),
+            "Song 1",
+            "playlist should not advance while playing"
+        );
+
+        // prev() while playing should also return the current song
+        let song = player.prev().await;
+        assert_eq!(
+            song.name(),
+            "Song 1",
+            "prev() while playing should return current song"
+        );
+
+        player.stop().await;
+        eventually(|| !device.is_playing(), "Song never stopped playing");
         Ok(())
     }
 }
