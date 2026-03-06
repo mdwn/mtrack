@@ -356,31 +356,25 @@ impl AudioSampleSource {
             // Add samples to the buffer
             if !samples.is_empty() {
                 let remaining = target_samples.saturating_sub(samples_read);
-                if remaining > 0 {
-                    let to_take = remaining.min(samples.len());
-                    self.sample_buffer.extend_from_slice(&samples[..to_take]);
-                    samples_read += to_take;
+                let to_take = remaining.min(samples.len());
+                self.sample_buffer.extend_from_slice(&samples[..to_take]);
+                samples_read += to_take;
 
-                    // If we have more samples than we can fit, save them as leftover
-                    if samples.len() > to_take {
-                        self.leftover_samples.extend_from_slice(&samples[to_take..]);
-                        // Buffer is full for this iteration, break to avoid infinite loops
-                        // Leftover samples will be used in the next refill_buffer call
-                        break;
-                    }
+                // If we have more samples than we can fit, save them as leftover
+                if samples.len() > to_take {
+                    self.leftover_samples.extend_from_slice(&samples[to_take..]);
+                    // Buffer is full for this iteration, break to avoid infinite loops
+                    // Leftover samples will be used in the next refill_buffer call
+                    break;
+                }
 
-                    // For very small files, if we got a small number of samples (less than 32 total),
-                    // the file is likely exhausted. Break immediately to avoid calling next_packet() again
-                    // which might block indefinitely. This handles edge cases with tiny files
-                    // (like the test file with only 3 samples).
-                    // We use a fixed threshold (32) rather than channels-based to catch all tiny files.
-                    // This is critical for preventing hangs on very small audio files.
-                    if samples.len() < 32 {
-                        break;
-                    }
-                } else {
-                    // Buffer is full, save all samples as leftover and break
-                    self.leftover_samples.extend_from_slice(&samples);
+                // For very small files, if we got a small number of samples (less than 32 total),
+                // the file is likely exhausted. Break immediately to avoid calling next_packet() again
+                // which might block indefinitely. This handles edge cases with tiny files
+                // (like the test file with only 3 samples).
+                // We use a fixed threshold (32) rather than channels-based to catch all tiny files.
+                // This is critical for preventing hangs on very small audio files.
+                if samples.len() < 32 {
                     break;
                 }
             }
@@ -420,7 +414,8 @@ impl AudioSampleSource {
 
     /// Converts a decoded AudioBufferRef to a Vec<f32> of interleaved samples
     /// and returns the channel count as observed in the decoded buffer.
-    fn decode_buffer_to_f32(
+    #[cfg_attr(test, allow(dead_code))]
+    pub(crate) fn decode_buffer_to_f32(
         decoded: AudioBufferRef,
     ) -> Result<(Vec<f32>, usize), SampleSourceError> {
         match decoded {

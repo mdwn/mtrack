@@ -254,10 +254,12 @@ where
     /// Fill the output FIFO by reading from source and processing through resampler.
     /// This uses rubato's standard process_into_buffer pattern for streaming resampling.
     fn fill_output_fifo(&mut self) -> Result<(), SampleSourceError> {
-        let resampler_mutex = match self.resampler.as_ref() {
-            Some(r) => r,
-            None => return Ok(()), // No resampling needed
-        };
+        // Safety: fill_output_fifo is only called from next_sample when
+        // self.resampler.is_some(), so unwrap is safe here.
+        let resampler_mutex = self
+            .resampler
+            .as_ref()
+            .expect("fill_output_fifo called without resampler");
 
         let num_channels = self.channels as usize;
 
