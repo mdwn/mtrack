@@ -501,6 +501,25 @@ mod tests {
         ))
     }
 
+    /// Helper to build an ActiveSource with common defaults.
+    fn make_active_source(
+        id: u64,
+        source: Box<dyn ChannelMappedSampleSource>,
+        track_mappings: HashMap<String, Vec<u16>>,
+    ) -> ActiveSource {
+        ActiveSource {
+            id,
+            source,
+            track_mappings,
+            channel_mappings: Vec::new(),
+            cached_source_channel_count: 0,
+            is_finished: Arc::new(AtomicBool::new(false)),
+            cancel_handle: CancelHandle::new(),
+            start_at_sample: None,
+            cancel_at_sample: None,
+        }
+    }
+
     #[test]
     fn test_basic_mixing() {
         let mixer = AudioMixer::new(2, 44100);
@@ -1144,5 +1163,335 @@ mod tests {
             0,
             "exhausted source must be removed"
         );
+    }
+
+    mod precompute_channel_mappings_tests {
+        use super::*;
+
+        #[test]
+        fn single_channel_single_output() {
+            let source = create_test_source(vec![0.0], 1, vec![vec!["vocals".to_string()]]);
+            let mut track_mappings = HashMap::new();
+            track_mappings.insert("vocals".to_string(), vec![1]);
+
+            let mappings =
+                AudioMixer::precompute_channel_mappings(source.as_ref(), &track_mappings);
+            assert_eq!(mappings.len(), 1);
+            assert_eq!(mappings[0], vec![0]); // channel 1 → index 0
+        }
+
+        #[test]
+        fn one_source_to_multiple_outputs() {
+            let source = create_test_source(vec![0.0], 1, vec![vec!["mono".to_string()]]);
+            let mut track_mappings = HashMap::new();
+            // Map "mono" to output channels 1 and 2
+            track_mappings.insert("mono".to_string(), vec![1, 2]);
+
+            let mappings =
+                AudioMixer::precompute_channel_mappings(source.as_ref(), &track_mappings);
+            assert_eq!(mappings.len(), 1);
+            assert_eq!(mappings[0], vec![0, 1]); // channels 1,2 → indices 0,1
+        }
+
+        #[test]
+        fn unmapped_label_produces_empty_outputs() {
+            let source = create_test_source(vec![0.0], 1, vec![vec!["not_in_config".to_string()]]);
+            let track_mappings = HashMap::new(); // empty — no labels match
+
+            let mappings =
+                AudioMixer::precompute_channel_mappings(source.as_ref(), &track_mappings);
+            assert_eq!(mappings.len(), 1);
+            assert!(mappings[0].is_empty());
+        }
+
+        #[test]
+        fn multi_channel_source() {
+            let source = create_test_source(
+                vec![0.0; 2],
+                2,
+                vec![vec!["left".to_string()], vec!["right".to_string()]],
+            );
+            let mut track_mappings = HashMap::new();
+            track_mappings.insert("left".to_string(), vec![1]);
+            track_mappings.insert("right".to_string(), vec![2]);
+
+            let mappings =
+                AudioMixer::precompute_channel_mappings(source.as_ref(), &track_mappings);
+            assert_eq!(mappings.len(), 2);
+            assert_eq!(mappings[0], vec![0]); // left → index 0
+            assert_eq!(mappings[1], vec![1]); // right → index 1
+        }
+
+        #[test]
+        fn source_channel_with_multiple_labels() {
+            // A source channel labelled with two labels, both mapped
+            let source = create_test_source(
+                vec![0.0],
+                1,
+                vec![vec!["main".to_string(), "monitor".to_string()]],
+            );
+            let mut track_mappings = HashMap::new();
+            track_mappings.insert("main".to_string(), vec![1]);
+            track_mappings.insert("monitor".to_string(), vec![3]);
+
+            let mappings =
+                AudioMixer::precompute_channel_mappings(source.as_ref(), &track_mappings);
+            assert_eq!(mappings.len(), 1);
+            assert_eq!(mappings[0], vec![0, 2]); // ch1→0, ch3→2
+        }
+
+        #[test]
+        fn no_labels_on_source_channel() {
+            // Source has an empty label vector for a channel
+            let source = create_test_source(vec![0.0], 1, vec![vec![]]);
+            let mut track_mappings = HashMap::new();
+            track_mappings.insert("anything".to_string(), vec![1]);
+
+            let mappings =
+                AudioMixer::precompute_channel_mappings(source.as_ref(), &track_mappings);
+            assert_eq!(mappings.len(), 1);
+            assert!(mappings[0].is_empty());
+        }
+    }
+
+    mod remove_sources_tests {
+        use super::*;
+
+        #[test]
+        fn remove_single_source() {
+            let mixer = AudioMixer::new(2, 44100);
+            let source = create_test_source(vec![0.0; 100], 1, vec![vec!["t".to_string()]]);
+            let mut mappings = HashMap::new();
+            mappings.insert("t".to_string(), vec![1]);
+            mixer.add_source(make_active_source(42, source, mappings));
+
+            assert_eq!(mixer.active_sources.read().len(), 1);
+            mixer.remove_sources(&[42]);
+            assert_eq!(mixer.active_sources.read().len(), 0);
+        }
+
+        #[test]
+        fn remove_subset_of_sources() {
+            let mixer = AudioMixer::new(2, 44100);
+            for id in 1..=3 {
+                let source = create_test_source(vec![0.0; 100], 1, vec![vec!["t".to_string()]]);
+                let mut mappings = HashMap::new();
+                mappings.insert("t".to_string(), vec![1]);
+                mixer.add_source(make_active_source(id, source, mappings));
+            }
+
+            assert_eq!(mixer.active_sources.read().len(), 3);
+            mixer.remove_sources(&[1, 3]);
+            let sources = mixer.active_sources.read();
+            assert_eq!(sources.len(), 1);
+            assert_eq!(sources[0].lock().id, 2);
+        }
+
+        #[test]
+        fn remove_nonexistent_id_is_noop() {
+            let mixer = AudioMixer::new(2, 44100);
+            let source = create_test_source(vec![0.0; 100], 1, vec![vec!["t".to_string()]]);
+            let mut mappings = HashMap::new();
+            mappings.insert("t".to_string(), vec![1]);
+            mixer.add_source(make_active_source(1, source, mappings));
+
+            mixer.remove_sources(&[99]);
+            assert_eq!(mixer.active_sources.read().len(), 1);
+        }
+
+        #[test]
+        fn remove_from_empty_mixer() {
+            let mixer = AudioMixer::new(2, 44100);
+            mixer.remove_sources(&[1, 2, 3]); // should not panic
+            assert_eq!(mixer.active_sources.read().len(), 0);
+        }
+    }
+
+    mod sample_counter_tests {
+        use super::*;
+
+        #[test]
+        fn starts_at_zero() {
+            let mixer = AudioMixer::new(2, 44100);
+            assert_eq!(mixer.current_sample(), 0);
+        }
+
+        #[test]
+        fn advances_by_frame_count() {
+            let mixer = AudioMixer::new(2, 44100);
+            let mut output = vec![0.0f32; 256 * 2];
+            mixer.process_into_output(&mut output, 256);
+            assert_eq!(mixer.current_sample(), 256);
+        }
+
+        #[test]
+        fn accumulates_across_calls() {
+            let mixer = AudioMixer::new(2, 44100);
+            let mut output = vec![0.0f32; 128 * 2];
+            mixer.process_into_output(&mut output, 128);
+            mixer.process_into_output(&mut output, 128);
+            mixer.process_into_output(&mut output, 128);
+            assert_eq!(mixer.current_sample(), 384);
+        }
+    }
+
+    mod cancel_handle_tests {
+        use super::*;
+
+        #[test]
+        fn cancel_handle_removes_source() {
+            let mixer = AudioMixer::new(2, 44100);
+            let samples = vec![0.5; 1000];
+            let source = create_test_source(samples, 1, vec![vec!["t".to_string()]]);
+
+            let mut mappings = HashMap::new();
+            mappings.insert("t".to_string(), vec![1]);
+            let mut active = make_active_source(1, source, mappings);
+            let cancel = active.cancel_handle.clone();
+            mixer.add_source(active);
+
+            // First callback: source is alive
+            let mut output = vec![0.0f32; 64 * 2];
+            mixer.process_into_output(&mut output, 64);
+            assert_eq!(mixer.active_sources.read().len(), 1);
+            assert!(output[0] > 0.0); // source is producing audio
+
+            // Cancel the source
+            cancel.cancel();
+
+            // Next callback: source should be cleaned up
+            let mut output2 = vec![0.0f32; 64 * 2];
+            mixer.process_into_output(&mut output2, 64);
+            assert_eq!(mixer.active_sources.read().len(), 0);
+            for &sample in &output2 {
+                assert_eq!(sample, 0.0);
+            }
+        }
+
+        #[test]
+        fn already_finished_source_skipped() {
+            let mixer = AudioMixer::new(2, 44100);
+            let samples = vec![0.5; 1000];
+            let source = create_test_source(samples, 1, vec![vec!["t".to_string()]]);
+
+            let mut mappings = HashMap::new();
+            mappings.insert("t".to_string(), vec![1]);
+            let mut active = make_active_source(1, source, mappings);
+            active.is_finished.store(true, Ordering::Relaxed);
+            mixer.add_source(active);
+
+            let mut output = vec![0.0f32; 64 * 2];
+            mixer.process_into_output(&mut output, 64);
+
+            // Should be silence and source cleaned up
+            for &sample in &output {
+                assert_eq!(sample, 0.0);
+            }
+            assert_eq!(mixer.active_sources.read().len(), 0);
+        }
+    }
+
+    mod channel_mapping_mixing_tests {
+        use super::*;
+
+        #[test]
+        fn one_to_many_channel_mapping() {
+            // A mono source mapped to both output channels
+            let mixer = AudioMixer::new(2, 44100);
+            let samples = vec![0.5, 0.8]; // 2 frames, 1 channel
+            let source = create_test_source(samples, 1, vec![vec!["mono".to_string()]]);
+
+            let mut mappings = HashMap::new();
+            mappings.insert("mono".to_string(), vec![1, 2]); // Map to both outputs
+            mixer.add_source(make_active_source(1, source, mappings));
+
+            let mut output = vec![0.0f32; 2 * 2];
+            mixer.process_into_output(&mut output, 2);
+
+            assert_eq!(output[0], 0.5); // Frame 0, Ch 0
+            assert_eq!(output[1], 0.5); // Frame 0, Ch 1 (same source)
+            assert_eq!(output[2], 0.8); // Frame 1, Ch 0
+            assert_eq!(output[3], 0.8); // Frame 1, Ch 1
+        }
+
+        #[test]
+        fn unmapped_source_produces_silence() {
+            let mixer = AudioMixer::new(2, 44100);
+            let samples = vec![0.5, 0.8];
+            let source = create_test_source(samples, 1, vec![vec!["not_configured".to_string()]]);
+
+            let mappings = HashMap::new(); // No mappings at all
+            mixer.add_source(make_active_source(1, source, mappings));
+
+            let mut output = vec![0.0f32; 2 * 2];
+            mixer.process_into_output(&mut output, 2);
+
+            for &sample in &output {
+                assert_eq!(sample, 0.0);
+            }
+        }
+
+        #[test]
+        fn source_with_out_of_range_output_channel() {
+            // Track mapping points to channel 5 but mixer only has 2 channels
+            let mixer = AudioMixer::new(2, 44100);
+            let samples = vec![0.5];
+            let source = create_test_source(samples, 1, vec![vec!["test".to_string()]]);
+
+            let mut mappings = HashMap::new();
+            mappings.insert("test".to_string(), vec![5]); // Out of range
+            mixer.add_source(make_active_source(1, source, mappings));
+
+            let mut output = vec![0.0f32; 1 * 2];
+            mixer.process_into_output(&mut output, 1);
+
+            // Should not panic, should produce silence
+            for &sample in &output {
+                assert_eq!(sample, 0.0);
+            }
+        }
+    }
+
+    mod mixer_properties_tests {
+        use super::*;
+
+        #[test]
+        fn num_channels_returns_configured_value() {
+            assert_eq!(AudioMixer::new(2, 44100).num_channels(), 2);
+            assert_eq!(AudioMixer::new(32, 48000).num_channels(), 32);
+        }
+
+        #[test]
+        fn sample_rate_returns_configured_value() {
+            assert_eq!(AudioMixer::new(2, 44100).sample_rate(), 44100);
+            assert_eq!(AudioMixer::new(2, 48000).sample_rate(), 48000);
+        }
+
+        #[test]
+        fn add_source_precomputes_channel_count() {
+            let mixer = AudioMixer::new(2, 44100);
+            let source = create_test_source(
+                vec![0.0; 4],
+                2,
+                vec![vec!["a".to_string()], vec!["b".to_string()]],
+            );
+            let mut active = make_active_source(1, source, HashMap::new());
+            assert_eq!(active.cached_source_channel_count, 0); // not yet set
+            mixer.add_source(active);
+
+            let sources = mixer.active_sources.read();
+            let source = sources[0].lock();
+            assert_eq!(source.cached_source_channel_count, 2);
+        }
+
+        #[test]
+        fn empty_mixer_produces_silence() {
+            let mixer = AudioMixer::new(4, 44100);
+            let mut output = vec![1.0f32; 256 * 4]; // fill with non-zero
+            mixer.process_into_output(&mut output, 256);
+            for &sample in &output {
+                assert_eq!(sample, 0.0);
+            }
+        }
     }
 }
