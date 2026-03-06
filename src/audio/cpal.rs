@@ -217,6 +217,45 @@ fn min_supported_buffer_size(
     best_min
 }
 
+/// Validates that the channel mappings don't exceed the device's max channel count.
+fn validate_channel_count(
+    mappings: &HashMap<String, Vec<u16>>,
+    max_channels: u16,
+    song_name: &str,
+    device_name: &str,
+) -> Result<(), Box<dyn Error>> {
+    let num_channels = *mappings
+        .iter()
+        .flat_map(|entry| entry.1)
+        .max()
+        .ok_or("no max channel found")?;
+
+    if max_channels < num_channels {
+        return Err(format!(
+            "{} channels requested for song {}, audio device {} only has {}",
+            num_channels, song_name, device_name, max_channels
+        )
+        .into());
+    }
+
+    Ok(())
+}
+
+/// Resolves the output buffer size for the CPAL stream based on the config setting.
+/// Returns `None` for default (let CPAL decide), or `Some(size)` for a fixed frame count.
+fn resolve_buffer_size(
+    stream_buffer_size: Option<StreamBufferSize>,
+    fallback_buffer_size: u32,
+    min_supported: Option<u32>,
+) -> Option<u32> {
+    match stream_buffer_size {
+        None => Some(fallback_buffer_size),
+        Some(StreamBufferSize::Default) => None,
+        Some(StreamBufferSize::Min) => min_supported.or(Some(fallback_buffer_size)),
+        Some(StreamBufferSize::Fixed(n)) => Some(n as u32),
+    }
+}
+
 /// A small wrapper around a cpal::Device. Used for storing some extra
 /// data that makes multitrack playing more convenient.
 pub struct Device {
@@ -264,6 +303,64 @@ impl fmt::Display for Device {
     }
 }
 
+/// Drains pending sources from the channel and adds them to the mixer.
+fn drain_pending_sources(
+    mixer: &AudioMixer,
+    source_rx: &crossbeam_channel::Receiver<MixerActiveSource>,
+) {
+    while let Ok(new_source) = source_rx.try_recv() {
+        mixer.add_source(new_source);
+    }
+}
+
+/// Core f32 mixing logic: drains pending sources, mixes into the output buffer, and profiles.
+fn process_f32_callback(
+    data: &mut [f32],
+    mixer: &AudioMixer,
+    source_rx: &crossbeam_channel::Receiver<MixerActiveSource>,
+    num_channels: u16,
+    profiler: &mut CallbackProfiler,
+) {
+    drain_pending_sources(mixer, source_rx);
+    let num_frames = data.len() / num_channels as usize;
+    let start = profiler.on_cb_start();
+    mixer.process_into_output(data, num_frames);
+    profiler.on_mix_done(start);
+    profiler.maybe_log_float();
+}
+
+/// Core integer mixing logic: drains pending sources, mixes into a temp f32 buffer,
+/// converts to the target integer type, and profiles. `temp_buffer` must be pre-allocated
+/// to the max expected sample count to avoid allocations in the callback.
+fn process_int_callback<T: cpal::Sample + cpal::FromSample<f32>>(
+    data: &mut [T],
+    mixer: &AudioMixer,
+    source_rx: &crossbeam_channel::Receiver<MixerActiveSource>,
+    num_channels: u16,
+    temp_buffer: &mut [f32],
+    profiler: &mut CallbackProfiler,
+) {
+    drain_pending_sources(mixer, source_rx);
+    // Never allocate in the callback: clamp to pre-allocated size. If the backend
+    // ever sends a larger buffer, we mix only the first max_samples and zero the rest.
+    let n = std::cmp::min(data.len(), temp_buffer.len());
+    let temp_slice = &mut temp_buffer[..n];
+    let num_frames = n / num_channels as usize;
+    let start = profiler.on_cb_start();
+    mixer.process_into_output(temp_slice, num_frames);
+    profiler.on_mix_done(start);
+    let start_convert = start.map(|_| Instant::now());
+    let zero = T::from_sample(0.0);
+    for (out, &sample) in data[..n].iter_mut().zip(temp_slice.iter()) {
+        *out = T::from_sample(sample);
+    }
+    if n < data.len() {
+        data[n..].fill(zero);
+    }
+    profiler.on_convert_done(start_convert);
+    profiler.maybe_log_int();
+}
+
 /// f32 callback: read directly into CPAL buffer (true zero-copy)
 /// Direct mixer callback for f32 output - no intermediate ring buffer
 fn create_direct_f32_callback(
@@ -279,17 +376,7 @@ fn create_direct_f32_callback(
 
     move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
         configure_audio_thread_priority(callback_priority, rt_audio, &mut priority_set);
-        // Process any pending new sources (non-blocking)
-        while let Ok(new_source) = source_rx.try_recv() {
-            mixer.add_source(new_source);
-        }
-
-        // Mix directly into the output buffer (cleanup happens inline)
-        let num_frames = data.len() / num_channels as usize;
-        let start = profiler.on_cb_start();
-        mixer.process_into_output(data, num_frames);
-        profiler.on_mix_done(start);
-        profiler.maybe_log_float();
+        process_f32_callback(data, &mixer, &source_rx, num_channels, &mut profiler);
     }
 }
 
@@ -314,29 +401,14 @@ where
 
     move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
         configure_audio_thread_priority(callback_priority, rt_audio, &mut priority_set);
-        // Process any pending new sources (non-blocking)
-        while let Ok(new_source) = source_rx.try_recv() {
-            mixer.add_source(new_source);
-        }
-
-        // Never allocate in the callback: clamp to pre-allocated size. If the backend
-        // ever sends a larger buffer, we mix only the first max_samples and zero the rest.
-        let n = std::cmp::min(data.len(), temp_buffer.len());
-        let temp_slice = &mut temp_buffer[..n];
-        let num_frames = n / num_channels as usize;
-        let start = profiler.on_cb_start();
-        mixer.process_into_output(temp_slice, num_frames);
-        profiler.on_mix_done(start);
-        let start_convert = start.map(|_| Instant::now());
-        let zero = T::from_sample(0.0);
-        for (out, &sample) in data[..n].iter_mut().zip(temp_slice.iter()) {
-            *out = T::from_sample(sample);
-        }
-        if n < data.len() {
-            data[n..].fill(zero);
-        }
-        profiler.on_convert_done(start_convert);
-        profiler.maybe_log_int();
+        process_int_callback(
+            data,
+            &mixer,
+            &source_rx,
+            num_channels,
+            &mut temp_buffer,
+            &mut profiler,
+        );
     }
 }
 
@@ -706,25 +778,26 @@ impl Device {
                     OutputManager::new(device.max_channels, device.target_format.sample_rate)?;
 
                 // Resolve stream buffer size for CPAL (default / min / fixed)
-                let output_buffer_size = match config.stream_buffer_size() {
-                    None => Some(config.buffer_size() as u32),
-                    Some(StreamBufferSize::Default) => None,
-                    Some(StreamBufferSize::Min) => {
-                        let min_size = min_supported_buffer_size(
-                            &device.device,
-                            &device.target_format,
-                            device.max_channels,
+                let min_size = min_supported_buffer_size(
+                    &device.device,
+                    &device.target_format,
+                    device.max_channels,
+                );
+                let output_buffer_size = resolve_buffer_size(
+                    config.stream_buffer_size(),
+                    config.buffer_size() as u32,
+                    min_size,
+                );
+                if let (Some(StreamBufferSize::Min), Some(s)) =
+                    (config.stream_buffer_size(), output_buffer_size)
+                {
+                    if min_size.is_some() {
+                        info!(
+                            stream_buffer_size = s,
+                            "Using minimum supported stream buffer size (low latency)"
                         );
-                        if let Some(s) = min_size {
-                            info!(
-                                stream_buffer_size = s,
-                                "Using minimum supported stream buffer size (low latency)"
-                            );
-                        }
-                        min_size.or_else(|| Some(config.buffer_size() as u32))
                     }
-                    Some(StreamBufferSize::Fixed(n)) => Some(n as u32),
-                };
+                }
 
                 // Start the output thread with resolved buffer size
                 output_manager.start_output_thread(
@@ -770,22 +843,7 @@ impl AudioDevice for Device {
             "Playing song."
         );
 
-        let num_channels = *mappings
-            .iter()
-            .flat_map(|entry| entry.1)
-            .max()
-            .ok_or("no max channel found")?;
-
-        if self.max_channels < num_channels {
-            return Err(format!(
-                "{} channels requested for song {}, audio device {} only has {}",
-                num_channels,
-                song.name(),
-                self.name,
-                self.max_channels
-            )
-            .into());
-        }
+        validate_channel_count(mappings, self.max_channels, song.name(), &self.name)?;
 
         play_barrier.wait();
 
@@ -900,6 +958,470 @@ impl AudioDevice for Device {
 
 #[cfg(test)]
 mod test {
-    // Note: Old tests removed - they were testing the obsolete SongSource/IntToFloatIterator architecture
-    // The new ChannelMappedSampleSource and AudioMixer architecture is tested in src/audio/mixer.rs
+    use super::*;
+
+    mod callback_profiler {
+        use super::*;
+
+        #[test]
+        fn disabled_profiler_returns_none_on_cb_start() {
+            let mut profiler = CallbackProfiler::new(false);
+            assert!(profiler.on_cb_start().is_none());
+        }
+
+        #[test]
+        fn enabled_profiler_returns_some_on_cb_start() {
+            let mut profiler = CallbackProfiler::new(true);
+            assert!(profiler.on_cb_start().is_some());
+        }
+
+        #[test]
+        fn on_mix_done_noop_when_disabled() {
+            let mut profiler = CallbackProfiler::new(false);
+            profiler.on_mix_done(Some(Instant::now()));
+            assert_eq!(profiler.count, 0);
+            assert_eq!(profiler.sum_mix_us, 0);
+        }
+
+        #[test]
+        fn on_mix_done_noop_when_start_is_none() {
+            let mut profiler = CallbackProfiler::new(true);
+            profiler.on_mix_done(None);
+            assert_eq!(profiler.count, 0);
+        }
+
+        #[test]
+        fn on_mix_done_tracks_stats() {
+            let mut profiler = CallbackProfiler::new(true);
+            let start = Instant::now();
+            std::thread::sleep(Duration::from_micros(100));
+            profiler.on_mix_done(Some(start));
+            assert_eq!(profiler.count, 1);
+            assert!(profiler.sum_mix_us > 0);
+            assert!(profiler.max_mix_us > 0);
+        }
+
+        #[test]
+        fn on_convert_done_noop_when_disabled() {
+            let mut profiler = CallbackProfiler::new(false);
+            profiler.on_convert_done(Some(Instant::now()));
+            assert_eq!(profiler.sum_convert_us, 0);
+        }
+
+        #[test]
+        fn on_convert_done_noop_when_start_is_none() {
+            let mut profiler = CallbackProfiler::new(true);
+            profiler.on_convert_done(None);
+            assert_eq!(profiler.sum_convert_us, 0);
+        }
+
+        #[test]
+        fn on_convert_done_tracks_stats() {
+            let mut profiler = CallbackProfiler::new(true);
+            let start = Instant::now();
+            std::thread::sleep(Duration::from_micros(100));
+            profiler.on_convert_done(Some(start));
+            assert!(profiler.sum_convert_us > 0);
+            assert!(profiler.max_convert_us > 0);
+        }
+
+        #[test]
+        fn cb_start_tracks_gap_between_callbacks() {
+            let mut profiler = CallbackProfiler::new(true);
+            profiler.on_cb_start();
+            std::thread::sleep(Duration::from_micros(100));
+            profiler.on_cb_start();
+            assert_eq!(profiler.gap_count, 1);
+            assert!(profiler.sum_gap_us > 0);
+            assert!(profiler.max_gap_us > 0);
+        }
+
+        #[test]
+        fn avg_returns_zero_when_count_is_zero() {
+            let profiler = CallbackProfiler::new(false);
+            assert_eq!(profiler.avg(1000, 0), 0);
+        }
+
+        #[test]
+        fn avg_computes_correctly() {
+            let profiler = CallbackProfiler::new(false);
+            assert_eq!(profiler.avg(300, 3), 100);
+            assert_eq!(profiler.avg(10, 3), 3); // integer division
+        }
+
+        #[test]
+        fn reset_clears_all_stats() {
+            let mut profiler = CallbackProfiler::new(true);
+            // Accumulate some stats.
+            profiler.on_cb_start();
+            std::thread::sleep(Duration::from_micros(50));
+            let start = profiler.on_cb_start();
+            profiler.on_mix_done(start);
+            profiler.on_convert_done(Some(Instant::now()));
+
+            profiler.reset();
+
+            assert_eq!(profiler.count, 0);
+            assert_eq!(profiler.sum_mix_us, 0);
+            assert_eq!(profiler.max_mix_us, 0);
+            assert_eq!(profiler.sum_convert_us, 0);
+            assert_eq!(profiler.max_convert_us, 0);
+            assert_eq!(profiler.sum_gap_us, 0);
+            assert_eq!(profiler.gap_count, 0);
+            assert_eq!(profiler.max_gap_us, 0);
+        }
+
+        #[test]
+        fn should_log_returns_false_when_disabled() {
+            let profiler = CallbackProfiler::new(false);
+            assert!(!profiler.should_log());
+        }
+
+        #[test]
+        fn should_log_returns_false_when_under_one_second() {
+            let profiler = CallbackProfiler::new(true);
+            // Just created, well under 1 second.
+            assert!(!profiler.should_log());
+        }
+
+        #[test]
+        fn max_mix_us_tracks_maximum() {
+            let mut profiler = CallbackProfiler::new(true);
+
+            // First callback - short sleep.
+            let start1 = Instant::now();
+            std::thread::sleep(Duration::from_micros(50));
+            profiler.on_mix_done(Some(start1));
+            let first_max = profiler.max_mix_us;
+
+            // Second callback - longer sleep.
+            let start2 = Instant::now();
+            std::thread::sleep(Duration::from_millis(1));
+            profiler.on_mix_done(Some(start2));
+
+            assert!(profiler.max_mix_us >= first_max);
+            assert_eq!(profiler.count, 2);
+        }
+
+        #[test]
+        fn max_convert_us_tracks_maximum() {
+            let mut profiler = CallbackProfiler::new(true);
+
+            let start1 = Instant::now();
+            std::thread::sleep(Duration::from_micros(50));
+            profiler.on_convert_done(Some(start1));
+            let first_max = profiler.max_convert_us;
+
+            let start2 = Instant::now();
+            std::thread::sleep(Duration::from_millis(1));
+            profiler.on_convert_done(Some(start2));
+
+            assert!(profiler.max_convert_us >= first_max);
+        }
+
+        #[test]
+        fn max_gap_us_tracks_maximum() {
+            let mut profiler = CallbackProfiler::new(true);
+
+            // Three callbacks with increasing gaps.
+            profiler.on_cb_start();
+            std::thread::sleep(Duration::from_micros(50));
+            profiler.on_cb_start();
+            let first_max = profiler.max_gap_us;
+
+            std::thread::sleep(Duration::from_millis(1));
+            profiler.on_cb_start();
+
+            assert!(profiler.max_gap_us >= first_max);
+            assert_eq!(profiler.gap_count, 2);
+        }
+    }
+
+    fn make_test_source(
+        samples: Vec<f32>,
+        channels: u16,
+        labels: Vec<Vec<String>>,
+    ) -> Box<dyn crate::audio::sample_source::ChannelMappedSampleSource + Send + Sync> {
+        let memory_source =
+            crate::audio::sample_source::MemorySampleSource::new(samples, channels, 44100);
+        Box::new(crate::audio::sample_source::ChannelMappedSource::new(
+            Box::new(memory_source),
+            labels,
+            channels,
+        ))
+    }
+
+    fn make_silent_source(
+        channels: u16,
+    ) -> Box<dyn crate::audio::sample_source::ChannelMappedSampleSource + Send + Sync> {
+        let labels = (0..channels).map(|i| vec![format!("ch{}", i)]).collect();
+        make_test_source(vec![0.0; 64], channels, labels)
+    }
+
+    fn make_active_source(
+        source: Box<dyn crate::audio::sample_source::ChannelMappedSampleSource + Send + Sync>,
+        track_mappings: HashMap<String, Vec<u16>>,
+    ) -> MixerActiveSource {
+        MixerActiveSource {
+            id: crate::audio::next_source_id(),
+            cached_source_channel_count: source.source_channel_count(),
+            source,
+            track_mappings,
+            channel_mappings: Vec::new(),
+            cancel_handle: CancelHandle::new(),
+            is_finished: Arc::new(AtomicBool::new(false)),
+            start_at_sample: None,
+            cancel_at_sample: None,
+        }
+    }
+
+    mod output_manager {
+        use super::*;
+
+        #[test]
+        fn new_creates_manager() {
+            let manager = OutputManager::new(2, 44100).expect("should create output manager");
+            assert_eq!(manager.mixer.num_channels(), 2);
+            assert_eq!(manager.mixer.sample_rate(), 44100);
+            assert!(manager.output_thread.is_none());
+        }
+
+        #[test]
+        fn add_source_sends_through_channel() {
+            let manager = OutputManager::new(2, 44100).expect("should create output manager");
+            let source = make_active_source(make_silent_source(2), HashMap::new());
+            manager.add_source(source).expect("should add source");
+            let received = manager.source_rx.try_recv();
+            assert!(received.is_ok());
+        }
+
+        #[test]
+        fn drop_cleans_up_without_panic() {
+            let manager = OutputManager::new(4, 48000).expect("should create output manager");
+            drop(manager);
+        }
+    }
+
+    mod process_callbacks {
+        use super::*;
+        use crate::audio::mixer::AudioMixer;
+
+        fn setup(channels: u16) -> (AudioMixer, crossbeam_channel::Receiver<MixerActiveSource>) {
+            let (tx, rx) = crossbeam_channel::bounded(64);
+            let mixer = AudioMixer::new(channels, 44100);
+
+            // Pre-load a source with known data via the channel.
+            let mut track_mappings = HashMap::new();
+            track_mappings.insert("ch0".to_string(), vec![1]);
+            if channels > 1 {
+                track_mappings.insert("ch1".to_string(), vec![2]);
+            }
+
+            let labels: Vec<Vec<String>> =
+                (0..channels).map(|i| vec![format!("ch{}", i)]).collect();
+            // 4 frames of data per channel.
+            let samples: Vec<f32> = (0..4 * channels as usize)
+                .map(|i| (i + 1) as f32 * 0.1)
+                .collect();
+            let source =
+                make_active_source(make_test_source(samples, channels, labels), track_mappings);
+            tx.send(source).unwrap();
+
+            (mixer, rx)
+        }
+
+        #[test]
+        fn f32_callback_mixes_into_buffer() {
+            let (mixer, rx) = setup(2);
+            let mut profiler = CallbackProfiler::new(false);
+            let mut output = vec![0.0f32; 8]; // 4 frames * 2 channels
+
+            process_f32_callback(&mut output, &mixer, &rx, 2, &mut profiler);
+
+            // Source should have been drained from channel and mixed in.
+            assert!(rx.try_recv().is_err(), "channel should be empty");
+            // At least some non-zero samples should be present.
+            assert!(
+                output.iter().any(|&s| s != 0.0),
+                "output should contain mixed audio"
+            );
+        }
+
+        #[test]
+        fn f32_callback_produces_silence_with_no_sources() {
+            let (_tx, rx) = crossbeam_channel::bounded::<MixerActiveSource>(64);
+            let mixer = AudioMixer::new(2, 44100);
+            let mut profiler = CallbackProfiler::new(false);
+            let mut output = vec![1.0f32; 8];
+
+            process_f32_callback(&mut output, &mixer, &rx, 2, &mut profiler);
+
+            assert!(output.iter().all(|&s| s == 0.0), "output should be silence");
+        }
+
+        #[test]
+        fn int_callback_converts_to_i16() {
+            let (mixer, rx) = setup(1);
+            let mut profiler = CallbackProfiler::new(false);
+            let mut temp_buffer = vec![0.0f32; 4];
+            let mut output = vec![0i16; 4];
+
+            process_int_callback(&mut output, &mixer, &rx, 1, &mut temp_buffer, &mut profiler);
+
+            assert!(rx.try_recv().is_err(), "channel should be empty");
+            assert!(
+                output.iter().any(|&s| s != 0),
+                "output should contain converted audio"
+            );
+        }
+
+        #[test]
+        fn int_callback_converts_to_i32() {
+            let (mixer, rx) = setup(1);
+            let mut profiler = CallbackProfiler::new(false);
+            let mut temp_buffer = vec![0.0f32; 4];
+            let mut output = vec![0i32; 4];
+
+            process_int_callback(&mut output, &mixer, &rx, 1, &mut temp_buffer, &mut profiler);
+
+            assert!(rx.try_recv().is_err(), "channel should be empty");
+            assert!(
+                output.iter().any(|&s| s != 0),
+                "output should contain converted audio"
+            );
+        }
+
+        #[test]
+        fn int_callback_clamps_to_temp_buffer_size() {
+            let (mixer, rx) = setup(1);
+            let mut profiler = CallbackProfiler::new(false);
+            // temp_buffer smaller than output — extra samples should be zeroed.
+            let mut temp_buffer = vec![0.0f32; 2];
+            let mut output = vec![99i16; 4];
+
+            process_int_callback(&mut output, &mixer, &rx, 1, &mut temp_buffer, &mut profiler);
+
+            // The last 2 samples should be zeroed since they exceed the temp buffer.
+            assert_eq!(output[2], 0);
+            assert_eq!(output[3], 0);
+        }
+
+        #[test]
+        fn f32_callback_drains_multiple_sources() {
+            let (tx, rx) = crossbeam_channel::bounded(64);
+            let mixer = AudioMixer::new(1, 44100);
+
+            // Send two sources.
+            for _ in 0..2 {
+                let mut mappings = HashMap::new();
+                mappings.insert("ch0".to_string(), vec![1]);
+                let source = make_active_source(
+                    make_test_source(vec![0.5; 4], 1, vec![vec!["ch0".to_string()]]),
+                    mappings,
+                );
+                tx.send(source).unwrap();
+            }
+
+            let mut profiler = CallbackProfiler::new(false);
+            let mut output = vec![0.0f32; 4];
+
+            process_f32_callback(&mut output, &mixer, &rx, 1, &mut profiler);
+
+            assert!(rx.try_recv().is_err(), "both sources should be drained");
+            // Two sources each contributing 0.5 should sum to ~1.0.
+            assert!(output[0] > 0.5, "output should be sum of both sources");
+        }
+    }
+
+    mod resolve_buffer_size_tests {
+        use super::*;
+
+        #[test]
+        fn none_returns_fallback() {
+            assert_eq!(resolve_buffer_size(None, 256, None), Some(256));
+            assert_eq!(resolve_buffer_size(None, 512, Some(64)), Some(512));
+        }
+
+        #[test]
+        fn default_returns_none() {
+            assert_eq!(
+                resolve_buffer_size(Some(StreamBufferSize::Default), 256, None),
+                None
+            );
+        }
+
+        #[test]
+        fn min_returns_min_supported_when_available() {
+            assert_eq!(
+                resolve_buffer_size(Some(StreamBufferSize::Min), 256, Some(64)),
+                Some(64)
+            );
+        }
+
+        #[test]
+        fn min_falls_back_when_no_min_supported() {
+            assert_eq!(
+                resolve_buffer_size(Some(StreamBufferSize::Min), 256, None),
+                Some(256)
+            );
+        }
+
+        #[test]
+        fn fixed_returns_specified_value() {
+            assert_eq!(
+                resolve_buffer_size(Some(StreamBufferSize::Fixed(128)), 256, Some(64)),
+                Some(128)
+            );
+        }
+    }
+
+    mod validate_channel_count_tests {
+        use super::*;
+
+        #[test]
+        fn passes_when_channels_within_limit() {
+            let mut mappings = HashMap::new();
+            mappings.insert("track1".to_string(), vec![1, 2]);
+            mappings.insert("track2".to_string(), vec![3, 4]);
+
+            let result = validate_channel_count(&mappings, 4, "test_song", "test_device");
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn fails_when_channels_exceed_limit() {
+            let mut mappings = HashMap::new();
+            mappings.insert("track1".to_string(), vec![1, 2, 3, 4]);
+
+            let result = validate_channel_count(&mappings, 2, "test_song", "test_device");
+            assert!(result.is_err());
+            let err = result.unwrap_err().to_string();
+            assert!(err.contains("4"), "error should mention requested channels");
+            assert!(err.contains("2"), "error should mention available channels");
+            assert!(err.contains("test_song"), "error should mention song name");
+            assert!(
+                err.contains("test_device"),
+                "error should mention device name"
+            );
+        }
+
+        #[test]
+        fn fails_on_empty_mappings() {
+            let mappings: HashMap<String, Vec<u16>> = HashMap::new();
+            let result = validate_channel_count(&mappings, 8, "song", "device");
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn uses_max_channel_across_all_tracks() {
+            let mut mappings = HashMap::new();
+            mappings.insert("track1".to_string(), vec![1]);
+            mappings.insert("track2".to_string(), vec![8]);
+
+            // Max channel is 8, device has 8 — should pass.
+            assert!(validate_channel_count(&mappings, 8, "s", "d").is_ok());
+            // Max channel is 8, device has 7 — should fail.
+            assert!(validate_channel_count(&mappings, 7, "s", "d").is_err());
+        }
+    }
 }
