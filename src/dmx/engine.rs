@@ -46,6 +46,47 @@ use crate::{
 
 use super::universe::Universe;
 
+/// The result of classifying a MIDI message for DMX purposes.
+#[derive(Debug, PartialEq)]
+enum MidiDmxAction {
+    /// NoteOn/NoteOff: key+1 → DMX channel, velocity*2 → value, uses dimming.
+    KeyVelocity { channel: u16, value: u8 },
+    /// Controller: controller+1 → DMX channel, value*2 → value, no dimming.
+    Controller { channel: u16, value: u8 },
+    /// ProgramChange: sets dimming speed (program * modifier seconds).
+    Dimming { duration: Duration },
+    /// Unrecognized MIDI message type.
+    Unrecognized,
+}
+
+/// Converts a MIDI message into a DMX action without side effects.
+///
+/// Conversion rules:
+/// - NoteOn/NoteOff: channel = key + 1 (0-based MIDI → 1-based DMX), value = velocity * 2
+/// - Controller: channel = controller + 1, value = value * 2
+/// - ProgramChange: dimming duration = program * dimming_speed_modifier seconds
+fn classify_midi_dmx_action(
+    midi_message: midly::MidiMessage,
+    dimming_speed_modifier: f64,
+) -> MidiDmxAction {
+    match midi_message {
+        midly::MidiMessage::NoteOn { key, vel } | midly::MidiMessage::NoteOff { key, vel } => {
+            MidiDmxAction::KeyVelocity {
+                channel: (key.as_int() + 1).into(),
+                value: vel.as_int() * 2,
+            }
+        }
+        midly::MidiMessage::ProgramChange { program } => MidiDmxAction::Dimming {
+            duration: Duration::from_secs_f64(f64::from(program.as_int()) * dimming_speed_modifier),
+        },
+        midly::MidiMessage::Controller { controller, value } => MidiDmxAction::Controller {
+            channel: (controller.as_int() + 1).into(),
+            value: value.as_int() * 2,
+        },
+        _ => MidiDmxAction::Unrecognized,
+    }
+}
+
 /// The DMX engine. This is meant to control the current state of the
 /// universe(s) that should be sent to our DMX interface(s).
 pub struct Engine {
@@ -789,46 +830,23 @@ impl Engine {
     /// Handles an incoming MIDI event (by universe ID).
     /// Avoids the name→ID HashMap lookup when the caller already knows the ID.
     fn handle_midi_event_by_id(&self, universe_id: u16, midi_message: midly::MidiMessage) {
-        match midi_message {
-            midly::MidiMessage::NoteOn { key, vel } => {
-                self.handle_key_velocity_by_id(universe_id, key, vel);
+        match classify_midi_dmx_action(midi_message, self.dimming_speed_modifier) {
+            MidiDmxAction::KeyVelocity { channel, value } => {
+                self.update_universe_by_id(universe_id, channel, value, true);
             }
-            midly::MidiMessage::NoteOff { key, vel } => {
-                self.handle_key_velocity_by_id(universe_id, key, vel);
+            MidiDmxAction::Controller { channel, value } => {
+                self.update_universe_by_id(universe_id, channel, value, false);
             }
-            midly::MidiMessage::ProgramChange { program } => {
-                self.update_dimming_by_id(
-                    universe_id,
-                    Duration::from_secs_f64(
-                        f64::from(program.as_int()) * self.dimming_speed_modifier,
-                    ),
-                );
+            MidiDmxAction::Dimming { duration } => {
+                self.update_dimming_by_id(universe_id, duration);
             }
-            midly::MidiMessage::Controller { controller, value } => {
-                self.update_universe_by_id(
-                    universe_id,
-                    (controller.as_int() + 1).into(), // Convert from 0-based MIDI to 1-based DMX
-                    value.as_int() * 2,
-                    false,
-                );
-            }
-            _ => {
+            MidiDmxAction::Unrecognized => {
                 debug!(
                     midi_event = format!("{:?}", midi_message),
                     "Unrecognized MIDI event"
                 );
             }
         }
-    }
-
-    /// Handles MIDI events that use a key and velocity.
-    fn handle_key_velocity_by_id(&self, universe_id: u16, key: u7, velocity: u7) {
-        self.update_universe_by_id(
-            universe_id,
-            (key.as_int() + 1).into(), // Convert from 0-based MIDI to 1-based DMX
-            velocity.as_int() * 2,
-            true,
-        )
     }
 
     // Updates the current dimming speed.
@@ -2302,5 +2320,599 @@ mod test {
         }
 
         Ok(())
+    }
+
+    mod classify_midi_dmx_action_tests {
+        use super::super::{classify_midi_dmx_action, MidiDmxAction};
+        use midly::num::u7;
+        use std::time::Duration;
+
+        #[test]
+        fn note_on_converts_key_and_velocity() {
+            let action = classify_midi_dmx_action(
+                midly::MidiMessage::NoteOn {
+                    key: u7::new(0),
+                    vel: u7::new(127),
+                },
+                1.0,
+            );
+            assert_eq!(
+                action,
+                MidiDmxAction::KeyVelocity {
+                    channel: 1,
+                    value: 254
+                }
+            );
+        }
+
+        #[test]
+        fn note_off_converts_same_as_note_on() {
+            let action = classify_midi_dmx_action(
+                midly::MidiMessage::NoteOff {
+                    key: u7::new(63),
+                    vel: u7::new(0),
+                },
+                1.0,
+            );
+            assert_eq!(
+                action,
+                MidiDmxAction::KeyVelocity {
+                    channel: 64,
+                    value: 0
+                }
+            );
+        }
+
+        #[test]
+        fn note_on_max_key() {
+            let action = classify_midi_dmx_action(
+                midly::MidiMessage::NoteOn {
+                    key: u7::new(127),
+                    vel: u7::new(64),
+                },
+                1.0,
+            );
+            assert_eq!(
+                action,
+                MidiDmxAction::KeyVelocity {
+                    channel: 128,
+                    value: 128
+                }
+            );
+        }
+
+        #[test]
+        fn controller_converts_channel_and_value() {
+            let action = classify_midi_dmx_action(
+                midly::MidiMessage::Controller {
+                    controller: u7::new(0),
+                    value: u7::new(127),
+                },
+                1.0,
+            );
+            assert_eq!(
+                action,
+                MidiDmxAction::Controller {
+                    channel: 1,
+                    value: 254
+                }
+            );
+        }
+
+        #[test]
+        fn controller_mid_values() {
+            let action = classify_midi_dmx_action(
+                midly::MidiMessage::Controller {
+                    controller: u7::new(10),
+                    value: u7::new(50),
+                },
+                1.0,
+            );
+            assert_eq!(
+                action,
+                MidiDmxAction::Controller {
+                    channel: 11,
+                    value: 100
+                }
+            );
+        }
+
+        #[test]
+        fn program_change_with_default_modifier() {
+            let action = classify_midi_dmx_action(
+                midly::MidiMessage::ProgramChange {
+                    program: u7::new(1),
+                },
+                1.0,
+            );
+            assert_eq!(
+                action,
+                MidiDmxAction::Dimming {
+                    duration: Duration::from_secs(1)
+                }
+            );
+        }
+
+        #[test]
+        fn program_change_with_custom_modifier() {
+            let action = classify_midi_dmx_action(
+                midly::MidiMessage::ProgramChange {
+                    program: u7::new(2),
+                },
+                0.5,
+            );
+            assert_eq!(
+                action,
+                MidiDmxAction::Dimming {
+                    duration: Duration::from_secs(1)
+                }
+            );
+        }
+
+        #[test]
+        fn program_change_zero_gives_zero_duration() {
+            let action = classify_midi_dmx_action(
+                midly::MidiMessage::ProgramChange {
+                    program: u7::new(0),
+                },
+                1.0,
+            );
+            assert_eq!(
+                action,
+                MidiDmxAction::Dimming {
+                    duration: Duration::ZERO
+                }
+            );
+        }
+
+        #[test]
+        fn pitch_bend_is_unrecognized() {
+            let action = classify_midi_dmx_action(
+                midly::MidiMessage::PitchBend {
+                    bend: midly::PitchBend(midly::num::u14::new(8192)),
+                },
+                1.0,
+            );
+            assert_eq!(action, MidiDmxAction::Unrecognized);
+        }
+
+        #[test]
+        fn channel_aftertouch_is_unrecognized() {
+            let action = classify_midi_dmx_action(
+                midly::MidiMessage::Aftertouch {
+                    key: u7::new(60),
+                    vel: u7::new(100),
+                },
+                1.0,
+            );
+            assert_eq!(action, MidiDmxAction::Unrecognized);
+        }
+    }
+
+    mod song_time_tests {
+        use super::*;
+
+        #[test]
+        fn song_time_defaults_to_zero() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+            assert_eq!(engine.get_song_time(), std::time::Duration::ZERO);
+            Ok(())
+        }
+
+        #[test]
+        fn update_and_get_song_time() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+            let t = std::time::Duration::from_millis(1500);
+            engine.update_song_time(t);
+            assert_eq!(engine.get_song_time(), t);
+            Ok(())
+        }
+
+        #[test]
+        fn song_time_can_be_overwritten() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+            engine.update_song_time(std::time::Duration::from_secs(5));
+            engine.update_song_time(std::time::Duration::from_secs(10));
+            assert_eq!(engine.get_song_time(), std::time::Duration::from_secs(10));
+            Ok(())
+        }
+    }
+
+    mod timeline_cues_tests {
+        use super::*;
+
+        #[test]
+        fn no_timeline_returns_empty_cues() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+            assert!(engine.get_timeline_cues().is_empty());
+            Ok(())
+        }
+
+        #[test]
+        fn with_empty_timeline_returns_empty_cues() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+            {
+                let mut timeline = engine.current_song_timeline.lock();
+                *timeline = Some(crate::lighting::timeline::LightingTimeline::new_with_cues(
+                    vec![],
+                ));
+            }
+            assert!(engine.get_timeline_cues().is_empty());
+            Ok(())
+        }
+    }
+
+    mod legacy_playbacks_finished_tests {
+        use super::*;
+        use crate::midi::playback::{PrecomputedMidi, TimedMidiEvent};
+
+        #[test]
+        fn no_playbacks_means_finished() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+            assert!(engine.legacy_playbacks_finished());
+            Ok(())
+        }
+
+        #[test]
+        fn playback_at_start_is_not_finished() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+            let events = vec![TimedMidiEvent {
+                time: std::time::Duration::from_secs(1),
+                channel: 0,
+                message: midly::MidiMessage::NoteOn {
+                    key: 0.into(),
+                    vel: 100.into(),
+                },
+            }];
+            {
+                let mut playbacks = engine.legacy_midi_playbacks.lock();
+                playbacks.push(super::super::LegacyMidiPlayback {
+                    precomputed: PrecomputedMidi::from_events(events),
+                    cursor: 0,
+                    universe_id: 5,
+                    midi_channels: HashSet::new(),
+                });
+            }
+            assert!(!engine.legacy_playbacks_finished());
+            Ok(())
+        }
+
+        #[test]
+        fn playback_at_end_is_finished() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+            let events = vec![TimedMidiEvent {
+                time: std::time::Duration::from_secs(1),
+                channel: 0,
+                message: midly::MidiMessage::NoteOn {
+                    key: 0.into(),
+                    vel: 100.into(),
+                },
+            }];
+            let len = events.len();
+            {
+                let mut playbacks = engine.legacy_midi_playbacks.lock();
+                playbacks.push(super::super::LegacyMidiPlayback {
+                    precomputed: PrecomputedMidi::from_events(events),
+                    cursor: len,
+                    universe_id: 5,
+                    midi_channels: HashSet::new(),
+                });
+            }
+            assert!(engine.legacy_playbacks_finished());
+            Ok(())
+        }
+
+        #[test]
+        fn mixed_playbacks_not_finished() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+            let event = TimedMidiEvent {
+                time: std::time::Duration::ZERO,
+                channel: 0,
+                message: midly::MidiMessage::NoteOn {
+                    key: 0.into(),
+                    vel: 100.into(),
+                },
+            };
+            {
+                let mut playbacks = engine.legacy_midi_playbacks.lock();
+                // Finished playback
+                playbacks.push(super::super::LegacyMidiPlayback {
+                    precomputed: PrecomputedMidi::from_events(vec![event.clone()]),
+                    cursor: 1,
+                    universe_id: 5,
+                    midi_channels: HashSet::new(),
+                });
+                // Unfinished playback
+                playbacks.push(super::super::LegacyMidiPlayback {
+                    precomputed: PrecomputedMidi::from_events(vec![event]),
+                    cursor: 0,
+                    universe_id: 5,
+                    midi_channels: HashSet::new(),
+                });
+            }
+            assert!(!engine.legacy_playbacks_finished());
+            Ok(())
+        }
+    }
+
+    mod advance_legacy_playbacks_tests {
+        use super::*;
+        use crate::midi::playback::{PrecomputedMidi, TimedMidiEvent};
+
+        #[test]
+        fn playback_delay_prevents_advance() -> Result<(), Box<dyn Error>> {
+            // Create engine with a 2-second playback delay
+            let config = config::Dmx::new(
+                Some(1.0),
+                Some("2s".to_string()),
+                Some(9090),
+                vec![config::Universe::new(5, "universe1".to_string())],
+                None,
+            );
+            let ola_client = crate::dmx::ola_client::OlaClientFactory::create_mock_client();
+            let engine = Arc::new(Engine::new(&config, None, None, ola_client)?);
+
+            let events = vec![TimedMidiEvent {
+                time: std::time::Duration::ZERO,
+                channel: 0,
+                message: midly::MidiMessage::ProgramChange {
+                    program: u7::new(3),
+                },
+            }];
+            {
+                let mut playbacks = engine.legacy_midi_playbacks.lock();
+                playbacks.push(super::super::LegacyMidiPlayback {
+                    precomputed: PrecomputedMidi::from_events(events),
+                    cursor: 0,
+                    universe_id: 5,
+                    midi_channels: HashSet::new(),
+                });
+            }
+
+            // Song time = 1s, delay = 2s → checked_sub returns None → no advance
+            engine.update_song_time(std::time::Duration::from_secs(1));
+            engine.advance_legacy_midi_playbacks();
+
+            // Cursor should still be at 0
+            let playbacks = engine.legacy_midi_playbacks.lock();
+            assert_eq!(playbacks[0].cursor, 0);
+            Ok(())
+        }
+
+        #[test]
+        fn advance_past_delay() -> Result<(), Box<dyn Error>> {
+            // Create engine with a 1-second playback delay
+            let config = config::Dmx::new(
+                Some(1.0),
+                Some("1s".to_string()),
+                Some(9090),
+                vec![config::Universe::new(5, "universe1".to_string())],
+                None,
+            );
+            let ola_client = crate::dmx::ola_client::OlaClientFactory::create_mock_client();
+            let engine = Arc::new(Engine::new(&config, None, None, ola_client)?);
+
+            let events = vec![TimedMidiEvent {
+                time: std::time::Duration::ZERO,
+                channel: 0,
+                message: midly::MidiMessage::ProgramChange {
+                    program: u7::new(3),
+                },
+            }];
+            {
+                let mut playbacks = engine.legacy_midi_playbacks.lock();
+                playbacks.push(super::super::LegacyMidiPlayback {
+                    precomputed: PrecomputedMidi::from_events(events),
+                    cursor: 0,
+                    universe_id: 5,
+                    midi_channels: HashSet::new(),
+                });
+            }
+
+            // Song time = 2s, delay = 1s → effective time = 1s → should advance
+            engine.update_song_time(std::time::Duration::from_secs(2));
+            engine.advance_legacy_midi_playbacks();
+
+            let playbacks = engine.legacy_midi_playbacks.lock();
+            assert_eq!(playbacks[0].cursor, 1);
+            Ok(())
+        }
+
+        #[test]
+        fn advance_respects_event_time() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+
+            let events = vec![
+                TimedMidiEvent {
+                    time: std::time::Duration::from_millis(500),
+                    channel: 0,
+                    message: midly::MidiMessage::NoteOn {
+                        key: 0.into(),
+                        vel: 100.into(),
+                    },
+                },
+                TimedMidiEvent {
+                    time: std::time::Duration::from_secs(2),
+                    channel: 0,
+                    message: midly::MidiMessage::NoteOn {
+                        key: 1.into(),
+                        vel: 50.into(),
+                    },
+                },
+            ];
+            {
+                let mut playbacks = engine.legacy_midi_playbacks.lock();
+                playbacks.push(super::super::LegacyMidiPlayback {
+                    precomputed: PrecomputedMidi::from_events(events),
+                    cursor: 0,
+                    universe_id: 5,
+                    midi_channels: HashSet::new(),
+                });
+            }
+
+            // At 1s, only the first event (at 500ms) should be dispatched
+            engine.update_song_time(std::time::Duration::from_secs(1));
+            engine.advance_legacy_midi_playbacks();
+
+            let playbacks = engine.legacy_midi_playbacks.lock();
+            assert_eq!(
+                playbacks[0].cursor, 1,
+                "should advance past first event only"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn empty_channel_filter_accepts_all() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+
+            let events = vec![
+                TimedMidiEvent {
+                    time: std::time::Duration::ZERO,
+                    channel: 3,
+                    message: midly::MidiMessage::NoteOn {
+                        key: 0.into(),
+                        vel: 50.into(),
+                    },
+                },
+                TimedMidiEvent {
+                    time: std::time::Duration::ZERO,
+                    channel: 7,
+                    message: midly::MidiMessage::NoteOn {
+                        key: 1.into(),
+                        vel: 60.into(),
+                    },
+                },
+            ];
+            {
+                let mut playbacks = engine.legacy_midi_playbacks.lock();
+                playbacks.push(super::super::LegacyMidiPlayback {
+                    precomputed: PrecomputedMidi::from_events(events),
+                    cursor: 0,
+                    universe_id: 5,
+                    midi_channels: HashSet::new(), // empty = accept all
+                });
+            }
+
+            engine.update_song_time(std::time::Duration::from_secs(1));
+            engine.advance_legacy_midi_playbacks();
+
+            // Both events should be dispatched
+            let playbacks = engine.legacy_midi_playbacks.lock();
+            assert_eq!(playbacks[0].cursor, 2);
+            Ok(())
+        }
+    }
+
+    mod handle_midi_event_routing_tests {
+        use super::*;
+
+        #[test]
+        fn unknown_universe_name_is_ignored() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+
+            // Should not panic with unknown universe name
+            engine.handle_midi_event(
+                "nonexistent_universe".to_string(),
+                midly::MidiMessage::NoteOn {
+                    key: 0.into(),
+                    vel: 100.into(),
+                },
+            );
+
+            // Universe 5 should be unaffected
+            let universe = engine.get_universe(5).unwrap();
+            assert_eq!(universe.get_target_value(0), 0.0);
+            Ok(())
+        }
+
+        #[test]
+        fn note_off_updates_universe() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+
+            engine.handle_midi_event(
+                "universe1".to_string(),
+                midly::MidiMessage::NoteOff {
+                    key: 5.into(),
+                    vel: 50.into(),
+                },
+            );
+
+            let universe = engine.get_universe(5).unwrap();
+            assert_eq!(
+                universe.get_target_value(5),
+                100.0,
+                "NoteOff should update DMX channel 6 (index 5) with vel*2=100"
+            );
+            Ok(())
+        }
+    }
+
+    mod effects_loop_tick_tests {
+        use super::*;
+
+        #[test]
+        fn tick_updates_phase_diagnostics() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+
+            // After a tick, phase should be back to 0 (idle)
+            engine.effects_loop_tick();
+            assert_eq!(
+                engine
+                    .effects_loop_phase
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                0,
+                "phase should be 0 (idle) after tick completes"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn tick_with_finished_timeline_does_not_notify() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+
+            // timeline_finished defaults to true, so the finished-check branch
+            // should be skipped entirely
+            assert!(engine
+                .timeline_finished
+                .load(std::sync::atomic::Ordering::Relaxed));
+            engine.effects_loop_tick();
+            // Just verify no panic
+            Ok(())
+        }
+
+        #[test]
+        fn tick_detects_finished_timeline() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+
+            // Set timeline_finished to false to enter the finished-check branch
+            engine
+                .timeline_finished
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+
+            // No timeline + no playbacks = both done → should set finished to true
+            engine.effects_loop_tick();
+
+            assert!(
+                engine
+                    .timeline_finished
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                "timeline_finished should be set to true when no timeline and no playbacks"
+            );
+            Ok(())
+        }
+    }
+
+    mod format_active_effects_tests {
+        use super::*;
+
+        #[test]
+        fn no_effects_returns_empty_or_default() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+            let result = engine.format_active_effects();
+            // Should not panic and should return something reasonable
+            assert!(result.is_empty() || result.contains("No"));
+            Ok(())
+        }
     }
 }
