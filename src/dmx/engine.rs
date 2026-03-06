@@ -29,7 +29,6 @@ use std::{
 
 use super::legacy_store::LegacyDmxStore;
 use super::ola_client::OlaClient;
-use midly::num::u7;
 use ola::DmxBuffer;
 use tracing::{debug, error, info, span, warn, Level};
 

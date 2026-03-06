@@ -191,4 +191,39 @@ mod test {
         configure_audio_thread_priority(prio, false, &mut priority_set);
         assert!(priority_set);
     }
+
+    #[test]
+    fn callback_thread_priority_respects_env() {
+        // Run sequentially in one test to avoid racing on MTRACK_THREAD_PRIORITY.
+        std::env::remove_var("MTRACK_THREAD_PRIORITY");
+        let _prio = callback_thread_priority(); // Should not panic with default.
+
+        std::env::set_var("MTRACK_THREAD_PRIORITY", "42");
+        let prio = callback_thread_priority();
+        std::env::remove_var("MTRACK_THREAD_PRIORITY");
+        assert_eq!(prio, ThreadPriorityValue::try_from(42u8).unwrap());
+    }
+
+    #[test]
+    fn rt_audio_enabled_respects_env() {
+        // Run both checks sequentially in one test to avoid racing on
+        // MTRACK_DISABLE_RT_AUDIO with parallel test threads.
+        std::env::remove_var("MTRACK_DISABLE_RT_AUDIO");
+        assert!(rt_audio_enabled(), "should be enabled when env var unset");
+
+        std::env::set_var("MTRACK_DISABLE_RT_AUDIO", "1");
+        assert!(!rt_audio_enabled(), "should be disabled when env var is 1");
+
+        std::env::remove_var("MTRACK_DISABLE_RT_AUDIO");
+    }
+
+    #[test]
+    fn configure_with_rt_audio() {
+        let prio = ThreadPriorityValue::try_from(50u8).unwrap();
+        let mut priority_set = false;
+
+        // Exercise the RT audio path (may fail to set RT policy in test env, that's fine)
+        configure_audio_thread_priority(prio, true, &mut priority_set);
+        assert!(priority_set);
+    }
 }

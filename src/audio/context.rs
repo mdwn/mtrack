@@ -55,3 +55,34 @@ impl PlaybackContext {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_without_pool() {
+        let fmt = TargetFormat::default();
+        let ctx = PlaybackContext::new(fmt.clone(), 1024, None, ResamplerType::Sinc);
+        assert_eq!(ctx.target_format, fmt);
+        assert_eq!(ctx.buffer_size, 1024);
+        assert!(ctx.buffer_fill_pool.is_none());
+    }
+
+    #[test]
+    fn new_with_pool() {
+        let fmt = TargetFormat::default();
+        let pool = Arc::new(BufferFillPool::new(1).unwrap());
+        let ctx = PlaybackContext::new(fmt, 512, Some(pool.clone()), ResamplerType::Fft);
+        assert!(ctx.buffer_fill_pool.is_some());
+        assert_eq!(ctx.buffer_size, 512);
+    }
+
+    #[test]
+    fn clone() {
+        let fmt = TargetFormat::default();
+        let ctx = PlaybackContext::new(fmt, 256, None, ResamplerType::Sinc);
+        let ctx2 = ctx.clone();
+        assert_eq!(ctx2.buffer_size, 256);
+    }
+}
