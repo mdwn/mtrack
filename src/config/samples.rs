@@ -681,4 +681,111 @@ mod tests {
         assert_eq!(both.output_track(), Some("both-out"));
         assert_eq!(both.output_channels(), &[5, 6]);
     }
+
+    #[test]
+    fn test_retrigger_getter() {
+        let def = SampleDefinition::new(
+            Some("test.wav".to_string()),
+            vec![1],
+            VelocityConfig::ignore(None),
+            ReleaseBehavior::PlayToCompletion,
+            RetriggerBehavior::Polyphonic,
+            None,
+            50,
+        );
+        assert_eq!(def.retrigger(), RetriggerBehavior::Polyphonic);
+
+        let def2 = SampleDefinition::new(
+            Some("test.wav".to_string()),
+            vec![1],
+            VelocityConfig::ignore(None),
+            ReleaseBehavior::PlayToCompletion,
+            RetriggerBehavior::Cut,
+            None,
+            50,
+        );
+        assert_eq!(def2.retrigger(), RetriggerBehavior::Cut);
+    }
+
+    #[test]
+    fn test_fade_time_ms_getter() {
+        let def = SampleDefinition::new(
+            Some("test.wav".to_string()),
+            vec![1],
+            VelocityConfig::ignore(None),
+            ReleaseBehavior::Fade,
+            RetriggerBehavior::Cut,
+            None,
+            200,
+        );
+        assert_eq!(def.fade_time_ms(), 200);
+    }
+
+    #[test]
+    fn test_velocity_layers_no_match_returns_none() {
+        let layers = vec![VelocityLayer::new([10, 50], "mid.wav".to_string())];
+        let def = SampleDefinition::new(
+            None,
+            vec![1],
+            VelocityConfig::with_layers(layers, false),
+            ReleaseBehavior::PlayToCompletion,
+            RetriggerBehavior::Cut,
+            None,
+            50,
+        );
+        // Velocity 5 is below the only layer range [10, 50]
+        assert!(def.file_for_velocity(5).is_none());
+        // Velocity 51 is above the only layer range
+        assert!(def.file_for_velocity(51).is_none());
+    }
+
+    #[test]
+    fn test_add_triggers_replaces_matching() {
+        let trigger1 = SampleTrigger::new(midi::note_on(1, 60, 127), "kick".to_string());
+        let trigger2 = SampleTrigger::new(midi::note_on(1, 61, 127), "snare".to_string());
+
+        let mut config = SamplesConfig::new(HashMap::new(), vec![trigger1], 32);
+        assert_eq!(config.sample_triggers().len(), 1);
+
+        // Add a trigger with a different event — should append.
+        config.add_triggers(vec![trigger2]);
+        assert_eq!(config.sample_triggers().len(), 2);
+
+        // Add a trigger with the same event as trigger1 — should replace.
+        let trigger1_replacement =
+            SampleTrigger::new(midi::note_on(1, 60, 127), "kick_v2".to_string());
+        config.add_triggers(vec![trigger1_replacement]);
+        assert_eq!(config.sample_triggers().len(), 2);
+        // The replacement should be the one with "kick_v2".
+        let kick_trigger = config
+            .sample_triggers()
+            .iter()
+            .find(|t| t.sample() == "kick_v2");
+        assert!(kick_trigger.is_some());
+    }
+
+    #[test]
+    fn test_merge_triggers_dedup() {
+        let trigger1 = SampleTrigger::new(midi::note_on(1, 60, 127), "kick".to_string());
+        let trigger2 = SampleTrigger::new(midi::note_on(1, 61, 127), "snare".to_string());
+
+        let mut base = SamplesConfig::new(HashMap::new(), vec![trigger1.clone()], 32);
+
+        // Merge config with same trigger event but different sample name.
+        let override_trigger =
+            SampleTrigger::new(midi::note_on(1, 60, 127), "kick_override".to_string());
+        let other = SamplesConfig::new(HashMap::new(), vec![override_trigger, trigger2], 32);
+
+        base.merge(other);
+
+        // Should have 2 triggers (not 3), with the override replacing the original.
+        assert_eq!(base.sample_triggers().len(), 2);
+        let kick = base
+            .sample_triggers()
+            .iter()
+            .find(|t| t.sample() == "kick_override");
+        assert!(kick.is_some(), "override trigger should be present");
+        let original_kick = base.sample_triggers().iter().find(|t| t.sample() == "kick");
+        assert!(original_kick.is_none(), "original should be replaced");
+    }
 }

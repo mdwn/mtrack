@@ -1245,4 +1245,226 @@ profiles:
             "inline-fallback"
         );
     }
+
+    #[test]
+    fn test_playlist_getter() {
+        let player = player_from_yaml(
+            r#"
+songs: songs
+playlist: my_playlist.yaml
+"#,
+        );
+        assert_eq!(
+            player.playlist().unwrap(),
+            std::path::PathBuf::from("my_playlist.yaml")
+        );
+    }
+
+    #[test]
+    fn test_playlist_none() {
+        let player = player_from_yaml(
+            r#"
+songs: songs
+"#,
+        );
+        assert!(player.playlist().is_none());
+    }
+
+    #[test]
+    fn test_songs_absolute_path() {
+        let player = player_from_yaml(
+            r#"
+songs: /absolute/path/to/songs
+"#,
+        );
+        let songs_path = player.songs(Path::new("/some/config.yaml"));
+        assert_eq!(
+            songs_path,
+            std::path::PathBuf::from("/absolute/path/to/songs")
+        );
+    }
+
+    #[test]
+    fn test_songs_relative_path() {
+        let player = player_from_yaml(
+            r#"
+songs: relative/songs
+"#,
+        );
+        let songs_path = player.songs(Path::new("/config/dir/mtrack.yaml"));
+        assert_eq!(
+            songs_path,
+            std::path::PathBuf::from("/config/dir/relative/songs")
+        );
+    }
+
+    #[test]
+    fn test_dmx_none_without_profiles() {
+        let player = player_from_yaml(
+            r#"
+songs: songs
+"#,
+        );
+        assert!(player.dmx().is_none());
+    }
+
+    #[test]
+    fn test_profiles_none_returns_empty() {
+        let player = player_from_yaml(
+            r#"
+songs: songs
+"#,
+        );
+        assert!(player.profiles("any-host").is_empty());
+    }
+
+    #[test]
+    fn test_legacy_single_controller_normalizes() {
+        let player = player_from_yaml(
+            r#"
+songs: songs
+audio:
+  device: mock-device
+track_mappings:
+  click: [1]
+controller:
+  kind: grpc
+  port: 43234
+"#,
+        );
+        let profiles = player.all_profiles();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].controllers().len(), 1);
+    }
+
+    #[test]
+    fn test_max_sample_voices_default() {
+        let player = player_from_yaml(
+            r#"
+songs: songs
+"#,
+        );
+        assert_eq!(player.max_sample_voices(), super::DEFAULT_MAX_SAMPLE_VOICES);
+    }
+
+    #[test]
+    fn test_max_sample_voices_custom() {
+        let player = player_from_yaml(
+            r#"
+songs: songs
+max_sample_voices: 64
+"#,
+        );
+        assert_eq!(player.max_sample_voices(), 64);
+    }
+
+    #[test]
+    fn test_samples_config_inline() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("mtrack.yaml");
+        std::fs::write(
+            &config_path,
+            r#"
+songs: songs
+samples:
+  kick:
+    file: kick.wav
+    output_channels: [1, 2]
+"#,
+        )
+        .unwrap();
+        let player = Player::deserialize(&config_path).unwrap();
+        let sc = player.samples_config(&config_path).unwrap();
+        assert!(sc.samples().contains_key("kick"));
+        assert_eq!(sc.samples().get("kick").unwrap().file(), Some("kick.wav"));
+    }
+
+    #[test]
+    fn test_samples_config_with_external_file() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Write the external samples file.
+        let samples_path = dir.path().join("samples.yaml");
+        std::fs::write(
+            &samples_path,
+            r#"
+samples:
+  snare:
+    file: snare.wav
+    output_channels: [3, 4]
+"#,
+        )
+        .unwrap();
+
+        // Write the main config that references the external file.
+        let config_path = dir.path().join("mtrack.yaml");
+        std::fs::write(
+            &config_path,
+            r#"
+songs: songs
+samples_file: samples.yaml
+samples:
+  kick:
+    file: kick.wav
+    output_channels: [1, 2]
+"#,
+        )
+        .unwrap();
+
+        let player = Player::deserialize(&config_path).unwrap();
+        let sc = player.samples_config(&config_path).unwrap();
+        // Both inline and external samples should be present.
+        assert!(sc.samples().contains_key("kick"));
+        assert!(sc.samples().contains_key("snare"));
+    }
+
+    #[test]
+    fn test_profiles_dir_absolute_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let profiles_dir = dir.path().join("abs_profiles");
+        std::fs::create_dir(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("host.yaml"),
+            "hostname: pi-x\naudio:\n  device: dev-x\n  track_mappings:\n    drums: [1]\n",
+        )
+        .unwrap();
+
+        let config_path = dir.path().join("mtrack.yaml");
+        std::fs::write(
+            &config_path,
+            format!(
+                "songs: songs\nprofiles_dir: {}\n",
+                profiles_dir.to_str().unwrap()
+            ),
+        )
+        .unwrap();
+
+        let player = Player::deserialize(&config_path).unwrap();
+        let profiles = player.all_profiles();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].hostname(), Some("pi-x"));
+    }
+
+    #[test]
+    fn test_legacy_sample_triggers_normalize_into_trigger_config() {
+        let player = player_from_yaml(
+            r#"
+songs: songs
+audio:
+  device: mock-device
+track_mappings:
+  click: [1]
+sample_triggers:
+  - trigger:
+      type: note_on
+      channel: 1
+      key: 60
+      velocity: 127
+    sample: kick
+"#,
+        );
+        let profiles = player.all_profiles();
+        assert_eq!(profiles.len(), 1);
+        assert!(profiles[0].trigger().is_some());
+    }
 }
