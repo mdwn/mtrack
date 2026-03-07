@@ -657,6 +657,67 @@ mod test {
         }
 
         #[test]
+        fn multiple_channels_fire_independently() {
+            let (tx, rx) = crossbeam_channel::bounded(16);
+            let mut detectors: Vec<Option<TriggerDetector>> =
+                vec![Some(make_detector(44100)), Some(make_detector(44100))];
+
+            // Both channels loud
+            let frame = [0.9f32, 0.9];
+            let fired = process_frame(&frame, &mut detectors, &tx, None);
+
+            // Both channels should fire
+            assert_eq!(fired, 0b11);
+            assert!(rx.try_recv().is_ok());
+            assert!(rx.try_recv().is_ok());
+        }
+
+        #[test]
+        fn fired_bitmask_reflects_channel_index() {
+            let (tx, _rx) = crossbeam_channel::bounded(16);
+            // Only channel 1 (index 1) has a detector
+            let mut detectors: Vec<Option<TriggerDetector>> =
+                vec![None, Some(make_detector(44100)), None];
+
+            let frame = [0.0f32, 0.9, 0.0];
+            let fired = process_frame(&frame, &mut detectors, &tx, None);
+
+            assert_eq!(fired, 0b10); // bit 1 set
+        }
+
+        #[test]
+        fn crosstalk_suppression_prevents_trigger_on_other_channel() {
+            let (tx, rx) = crossbeam_channel::bounded(16);
+
+            // Create two detectors with low threshold
+            let make_low_threshold = || {
+                let mut input = AudioTriggerInput::new_trigger(1, "test");
+                input.set_threshold(0.1);
+                input.set_retrigger_time_ms(0);
+                input.set_scan_time_ms(0);
+                TriggerDetector::from_input(&input, 44100)
+            };
+
+            let mut detectors: Vec<Option<TriggerDetector>> =
+                vec![Some(make_low_threshold()), Some(make_low_threshold())];
+
+            // Frame 1: ch0 fires loud, ch1 is quiet — ch1 gets crosstalk suppression
+            let frame = [0.9f32, 0.0];
+            let fired = process_frame(&frame, &mut detectors, &tx, Some((441, 5.0)));
+            assert_eq!(fired & 1, 1); // ch0 fired
+
+            // Drain the event
+            while rx.try_recv().is_ok() {}
+
+            // Frame 2: ch1 has a moderate signal that would normally trigger (0.3 > 0.1)
+            // but crosstalk suppression raised its threshold to 0.1 * 5.0 = 0.5
+            let frame = [0.0f32, 0.3];
+            let fired = process_frame(&frame, &mut detectors, &tx, Some((441, 5.0)));
+            assert_eq!(fired, 0, "ch1 should be suppressed by crosstalk");
+            assert!(rx.try_recv().is_err());
+        }
+
+        #[test]
         fn crosstalk_suppression_applied_to_non_firing_channels() {
             let (tx, _rx) = crossbeam_channel::bounded(16);
             let mut detectors: Vec<Option<TriggerDetector>> =

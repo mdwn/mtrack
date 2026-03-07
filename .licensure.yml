@@ -8,6 +8,7 @@ excludes:
   - LICENSE.*
   - .*\.(md|rst|txt)
   - Cargo.toml
+  - tarpaulin.toml
   - .*\.yaml
   - .*\.wav
   - .*\.mp3
