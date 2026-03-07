@@ -374,6 +374,184 @@ mod tests {
         }
     }
 
+    mod draw_tests {
+        use super::*;
+        use crate::tui::app::FixtureColor;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        fn make_app() -> App {
+            use crate::config;
+            use crate::player::PlayerDevices;
+            use crate::playlist;
+            use crate::songs::{Song, Songs};
+            use std::collections::HashMap;
+            use tokio::sync::watch;
+
+            let mut map = HashMap::new();
+            for name in &["Song A", "Song B"] {
+                map.insert(
+                    name.to_string(),
+                    std::sync::Arc::new(Song::new_for_test(name, &["kick", "snare"])),
+                );
+            }
+            let songs = std::sync::Arc::new(Songs::new(map));
+            let playlist_config =
+                config::Playlist::new(&["Song A".to_string(), "Song B".to_string()]);
+            let playlist =
+                playlist::Playlist::new("My Set", &playlist_config, songs.clone()).unwrap();
+            let devices = PlayerDevices {
+                audio: None,
+                mappings: None,
+                midi: None,
+                dmx_engine: None,
+                sample_engine: None,
+                trigger_engine: None,
+            };
+            let player = std::sync::Arc::new(
+                crate::player::Player::new_with_devices(devices, playlist, songs).unwrap(),
+            );
+            let (_tx, state_rx) =
+                watch::channel(std::sync::Arc::new(crate::state::StateSnapshot::default()));
+            App::new(player, state_rx)
+        }
+
+        #[test]
+        fn draw_does_not_panic() {
+            let app = make_app();
+            let backend = TestBackend::new(80, 24);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal.draw(|frame| draw(frame, &app)).unwrap();
+        }
+
+        #[test]
+        fn draw_with_fixtures_and_effects() {
+            let mut app = make_app();
+            app.fixture_colors = vec![
+                FixtureColor {
+                    name: "wash1".to_string(),
+                    r: 255,
+                    g: 0,
+                    b: 0,
+                },
+                FixtureColor {
+                    name: "wash2".to_string(),
+                    r: 0,
+                    g: 255,
+                    b: 0,
+                },
+            ];
+            app.active_effects = vec!["chase".to_string(), "fade".to_string()];
+
+            let backend = TestBackend::new(100, 30);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal.draw(|frame| draw(frame, &app)).unwrap();
+        }
+
+        #[test]
+        fn draw_with_fixtures_only() {
+            let mut app = make_app();
+            app.fixture_colors = vec![FixtureColor {
+                name: "spot".to_string(),
+                r: 128,
+                g: 128,
+                b: 128,
+            }];
+
+            let backend = TestBackend::new(80, 24);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal.draw(|frame| draw(frame, &app)).unwrap();
+        }
+
+        #[test]
+        fn draw_with_effects_only() {
+            let mut app = make_app();
+            app.active_effects = vec!["strobe".to_string()];
+
+            let backend = TestBackend::new(80, 24);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal.draw(|frame| draw(frame, &app)).unwrap();
+        }
+
+        #[test]
+        fn draw_playing_with_elapsed() {
+            let mut app = make_app();
+            app.is_playing = true;
+            app.elapsed = Some(Duration::from_secs(30));
+            app.current_song_duration = Duration::from_secs(180);
+
+            let backend = TestBackend::new(80, 24);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal.draw(|frame| draw(frame, &app)).unwrap();
+        }
+
+        #[test]
+        fn draw_with_log_lines() {
+            let mut app = make_app();
+            app.log_lines = vec![
+                "INFO mtrack: Started".to_string(),
+                "WARN mtrack: Low buffer".to_string(),
+                "ERROR mtrack: Device lost".to_string(),
+                "DEBUG mtrack: Tick".to_string(),
+            ];
+
+            let backend = TestBackend::new(80, 24);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal.draw(|frame| draw(frame, &app)).unwrap();
+        }
+
+        #[test]
+        fn draw_small_terminal() {
+            let app = make_app();
+            let backend = TestBackend::new(40, 12);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal.draw(|frame| draw(frame, &app)).unwrap();
+        }
+
+        #[test]
+        fn draw_many_fixtures_wraps_rows() {
+            let mut app = make_app();
+            app.fixture_colors = (0..20)
+                .map(|i| FixtureColor {
+                    name: format!("fixture_{}", i),
+                    r: (i * 10) as u8,
+                    g: 0,
+                    b: 0,
+                })
+                .collect();
+
+            let backend = TestBackend::new(80, 30);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal.draw(|frame| draw(frame, &app)).unwrap();
+        }
+
+        #[test]
+        fn draw_zero_duration_song() {
+            let mut app = make_app();
+            app.current_song_duration = Duration::ZERO;
+            app.elapsed = Some(Duration::ZERO);
+
+            let backend = TestBackend::new(80, 24);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal.draw(|frame| draw(frame, &app)).unwrap();
+        }
+
+        #[test]
+        fn draw_long_fixture_name_truncated() {
+            let mut app = make_app();
+            app.fixture_colors = vec![FixtureColor {
+                name: "A Very Long Fixture Name That Should Be Truncated".to_string(),
+                r: 100,
+                g: 200,
+                b: 50,
+            }];
+
+            let backend = TestBackend::new(80, 24);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal.draw(|frame| draw(frame, &app)).unwrap();
+        }
+    }
+
     mod format_duration_tests {
         use super::*;
 

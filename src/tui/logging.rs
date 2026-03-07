@@ -162,4 +162,94 @@ mod tests {
             assert_eq!(buf[4], "line 99");
         }
     }
+
+    mod message_visitor_tests {
+        use super::*;
+
+        #[test]
+        fn new_visitor_has_empty_message() {
+            let visitor = MessageVisitor::new();
+            assert!(visitor.message.is_empty());
+        }
+    }
+
+    mod tui_log_layer_tests {
+        use super::*;
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::Registry;
+
+        #[test]
+        fn layer_captures_info_event() {
+            let buffer = Arc::new(Mutex::new(VecDeque::with_capacity(10)));
+            let layer = TuiLogLayer {
+                buffer: buffer.clone(),
+                capacity: 10,
+            };
+            let subscriber = Registry::default().with(layer);
+            let _guard = tracing::subscriber::set_default(subscriber);
+
+            tracing::info!("hello world");
+
+            let buf = buffer.lock();
+            assert_eq!(buf.len(), 1);
+            assert!(buf[0].contains("hello world"), "got: {}", buf[0]);
+        }
+
+        #[test]
+        fn layer_captures_multiple_levels() {
+            let buffer = Arc::new(Mutex::new(VecDeque::with_capacity(10)));
+            let layer = TuiLogLayer {
+                buffer: buffer.clone(),
+                capacity: 10,
+            };
+            let subscriber = Registry::default().with(layer);
+            let _guard = tracing::subscriber::set_default(subscriber);
+
+            tracing::warn!("warning message");
+            tracing::error!("error message");
+
+            let buf = buffer.lock();
+            assert_eq!(buf.len(), 2);
+            assert!(buf[0].contains("WARN"), "got: {}", buf[0]);
+            assert!(buf[1].contains("ERROR"), "got: {}", buf[1]);
+        }
+
+        #[test]
+        fn layer_respects_capacity() {
+            let buffer = Arc::new(Mutex::new(VecDeque::with_capacity(2)));
+            let layer = TuiLogLayer {
+                buffer: buffer.clone(),
+                capacity: 2,
+            };
+            let subscriber = Registry::default().with(layer);
+            let _guard = tracing::subscriber::set_default(subscriber);
+
+            tracing::info!("first");
+            tracing::info!("second");
+            tracing::info!("third");
+
+            let buf = buffer.lock();
+            assert_eq!(buf.len(), 2);
+            assert!(buf[0].contains("second"), "got: {}", buf[0]);
+            assert!(buf[1].contains("third"), "got: {}", buf[1]);
+        }
+
+        #[test]
+        fn layer_includes_target() {
+            let buffer = Arc::new(Mutex::new(VecDeque::with_capacity(10)));
+            let layer = TuiLogLayer {
+                buffer: buffer.clone(),
+                capacity: 10,
+            };
+            let subscriber = Registry::default().with(layer);
+            let _guard = tracing::subscriber::set_default(subscriber);
+
+            tracing::info!("test");
+
+            let buf = buffer.lock();
+            assert_eq!(buf.len(), 1);
+            // Should contain the module target
+            assert!(buf[0].contains("mtrack"), "got: {}", buf[0]);
+        }
+    }
 }

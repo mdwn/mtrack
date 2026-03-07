@@ -1,6 +1,7 @@
 target
 .vscode
 .claude
+tarpaulin-report.json
 cobertura.xml
 lcov.info
 src/webui/svelte/node_modules/

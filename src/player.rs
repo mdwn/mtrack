@@ -59,6 +59,16 @@ struct PlaybackContext {
     start_time: Duration,
 }
 
+/// Groups hardware devices for constructing a Player without discovering real hardware.
+pub struct PlayerDevices {
+    pub audio: Option<Arc<dyn audio::Device>>,
+    pub mappings: Option<Arc<HashMap<String, Vec<u16>>>>,
+    pub midi: Option<Arc<dyn midi::Device>>,
+    pub dmx_engine: Option<Arc<dmx::engine::Engine>>,
+    pub sample_engine: Option<Arc<RwLock<SampleEngine>>>,
+    pub trigger_engine: Option<Arc<TriggerEngine>>,
+}
+
 /// Plays back individual wav files as multichannel audio for the configured audio interface.
 #[derive(Clone)]
 pub struct Player {
@@ -94,7 +104,7 @@ pub struct Player {
 }
 
 impl Player {
-    /// Creates a new player.
+    /// Creates a new player by discovering hardware devices from the config.
     pub fn new(
         songs: Arc<Songs>,
         playlist: Arc<Playlist>,
@@ -183,21 +193,16 @@ impl Player {
 
         let trigger_engine = init_trigger_engine(profile, &sample_engine)?;
 
-        let player = Player {
-            device,
+        let devices = PlayerDevices {
+            audio: device,
             mappings: mappings.map(Arc::new),
-            midi_device,
+            midi: midi_device,
             dmx_engine,
             sample_engine,
             trigger_engine,
-            playlist,
-            all_songs: playlist::from_songs(songs)?,
-            use_all_songs: Arc::new(AtomicBool::new(false)),
-            play_start_time: Arc::new(Mutex::new(None)),
-            join: Arc::new(Mutex::new(None)),
-            stop_run: Arc::new(AtomicBool::new(false)),
-            span: span.clone(),
         };
+
+        let player = Self::new_with_devices(devices, playlist, songs)?;
 
         if player.midi_device.is_some() {
             // Emit the event for the first track if needed.
@@ -219,6 +224,32 @@ impl Player {
         }
 
         Ok(player)
+    }
+
+    /// Creates a new player with pre-constructed devices.
+    ///
+    /// This is the core constructor used by `new()` after device discovery,
+    /// and can be called directly in tests with mock devices.
+    pub fn new_with_devices(
+        devices: PlayerDevices,
+        playlist: Arc<Playlist>,
+        songs: Arc<Songs>,
+    ) -> Result<Player, Box<dyn Error>> {
+        Ok(Player {
+            device: devices.audio,
+            mappings: devices.mappings,
+            midi_device: devices.midi,
+            dmx_engine: devices.dmx_engine,
+            sample_engine: devices.sample_engine,
+            trigger_engine: devices.trigger_engine,
+            playlist,
+            all_songs: playlist::from_songs(songs)?,
+            use_all_songs: Arc::new(AtomicBool::new(false)),
+            play_start_time: Arc::new(Mutex::new(None)),
+            join: Arc::new(Mutex::new(None)),
+            stop_run: Arc::new(AtomicBool::new(false)),
+            span: span!(Level::INFO, "player"),
+        })
     }
 
     /// Wait for constructor function to return an Ok(result) variant.
