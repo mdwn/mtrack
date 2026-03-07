@@ -1346,7 +1346,7 @@ mod tests {
 
             let mut mappings = HashMap::new();
             mappings.insert("t".to_string(), vec![1]);
-            let mut active = make_active_source(1, source, mappings);
+            let active = make_active_source(1, source, mappings);
             let cancel = active.cancel_handle.clone();
             mixer.add_source(active);
 
@@ -1376,7 +1376,7 @@ mod tests {
 
             let mut mappings = HashMap::new();
             mappings.insert("t".to_string(), vec![1]);
-            let mut active = make_active_source(1, source, mappings);
+            let active = make_active_source(1, source, mappings);
             active.is_finished.store(true, Ordering::Relaxed);
             mixer.add_source(active);
 
@@ -1475,7 +1475,7 @@ mod tests {
                 2,
                 vec![vec!["a".to_string()], vec!["b".to_string()]],
             );
-            let mut active = make_active_source(1, source, HashMap::new());
+            let active = make_active_source(1, source, HashMap::new());
             assert_eq!(active.cached_source_channel_count, 0); // not yet set
             mixer.add_source(active);
 
@@ -1527,7 +1527,7 @@ mod tests {
             let source = create_test_source(vec![0.5; 100], 1, vec![vec!["t".to_string()]]);
             let mut mappings = HashMap::new();
             mappings.insert("t".to_string(), vec![1]);
-            let mut active = make_active_source(1, source, mappings);
+            let active = make_active_source(1, source, mappings);
             let cancel = active.cancel_handle.clone();
             mixer.add_source(active);
 
