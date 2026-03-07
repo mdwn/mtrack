@@ -74,7 +74,9 @@ tempfile = "3.14.0"
 
 [dev-dependencies]
 hound = "3.5.1"
+reqwest = { version = "0.12", features = ["json"] }
 serial_test = "3.2.0"
+tokio-tungstenite = "0.26"
 
 [build-dependencies]
 tonic-build = "0.14"

@@ -477,6 +477,1060 @@ async fn validate_lighting(body: String) -> impl IntoResponse {
 #[cfg(test)]
 mod test {
     use super::*;
+    use axum::body::Body;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    /// Creates a WebUiState with a test player and temp directories.
+    fn test_state() -> (WebUiState, tempfile::TempDir) {
+        use crate::player::PlayerDevices;
+        use crate::playlist;
+        use crate::songs::{Song, Songs};
+        use std::collections::HashMap;
+        use tokio::sync::{broadcast, watch};
+
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create a minimal config file
+        let config_path = dir.path().join("mtrack.yaml");
+        std::fs::write(&config_path, "songs: songs\n").unwrap();
+
+        // Create a minimal playlist file
+        let playlist_path = dir.path().join("playlist.yaml");
+        std::fs::write(&playlist_path, "songs:\n  - Song A\n").unwrap();
+
+        // Create songs directory with a song
+        let songs_path = dir.path().join("songs");
+        std::fs::create_dir(&songs_path).unwrap();
+
+        let mut map = HashMap::new();
+        map.insert(
+            "Song A".to_string(),
+            std::sync::Arc::new(Song::new_for_test("Song A", &["kick", "snare"])),
+        );
+        let songs = std::sync::Arc::new(Songs::new(map));
+        let playlist_config = crate::config::Playlist::new(&["Song A".to_string()]);
+        let playlist = playlist::Playlist::new("test", &playlist_config, songs.clone()).unwrap();
+
+        let devices = PlayerDevices {
+            audio: None,
+            mappings: None,
+            midi: None,
+            dmx_engine: None,
+            sample_engine: None,
+            trigger_engine: None,
+        };
+        let player = std::sync::Arc::new(
+            crate::player::Player::new_with_devices(devices, playlist, songs).unwrap(),
+        );
+
+        let (broadcast_tx, _) = broadcast::channel(16);
+        let (_state_tx, state_rx) =
+            watch::channel(std::sync::Arc::new(crate::state::StateSnapshot::default()));
+
+        let state = WebUiState {
+            player,
+            state_rx,
+            broadcast_tx,
+            config_path,
+            songs_path,
+            playlist_path,
+            metadata_json: std::sync::Arc::new("{}".to_string()),
+            waveform_cache: super::super::state::new_waveform_cache(),
+        };
+
+        (state, dir)
+    }
+
+    async fn response_body(response: axum::response::Response) -> String {
+        let body = response.into_body();
+        let bytes = body.collect().await.unwrap().to_bytes();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn get_config_raw_returns_yaml() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/config")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        assert!(body.contains("songs:"));
+    }
+
+    #[tokio::test]
+    async fn get_config_raw_missing_file() {
+        let (mut state, _dir) = test_state();
+        state.config_path = std::path::PathBuf::from("/nonexistent/config.yaml");
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/config")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn get_config_parsed_returns_json() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/config/parsed")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(parsed.is_object());
+    }
+
+    #[tokio::test]
+    async fn get_config_parsed_invalid_config() {
+        let (mut state, dir) = test_state();
+        // Write invalid YAML to the config file
+        let bad_config = dir.path().join("bad.yaml");
+        std::fs::write(&bad_config, "invalid: [[[").unwrap();
+        state.config_path = bad_config;
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/config/parsed")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn validate_config_valid() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/config/validate")
+                    .body(Body::from("songs: songs\n"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["valid"], true);
+    }
+
+    #[tokio::test]
+    async fn validate_config_invalid() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/config/validate")
+                    .body(Body::from("not valid: [[["))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["valid"], false);
+    }
+
+    #[tokio::test]
+    async fn put_config_valid() {
+        let (state, _dir) = test_state();
+        let config_path = state.config_path.clone();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/config")
+                    .body(Body::from("songs: songs\n"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            std::fs::read_to_string(&config_path).unwrap(),
+            "songs: songs\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn put_config_invalid() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/config")
+                    .body(Body::from("invalid: [[["))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn get_playlist_returns_json() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/playlist")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn get_playlist_missing_file() {
+        let (mut state, _dir) = test_state();
+        state.playlist_path = std::path::PathBuf::from("/nonexistent/playlist.yaml");
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/playlist")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn validate_playlist_valid() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/playlist/validate")
+                    .body(Body::from("songs:\n  - song1\n"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn validate_playlist_invalid() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/playlist/validate")
+                    .body(Body::from("not valid: [[["))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn put_playlist_valid() {
+        let (state, _dir) = test_state();
+        let playlist_path = state.playlist_path.clone();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/playlist")
+                    .body(Body::from("songs:\n  - Song A\n"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            std::fs::read_to_string(&playlist_path).unwrap(),
+            "songs:\n  - Song A\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn put_playlist_invalid() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/playlist")
+                    .body(Body::from("invalid yaml: [[["))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn get_lighting_files_empty() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/lighting")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(parsed["files"].is_array());
+    }
+
+    #[tokio::test]
+    async fn get_lighting_files_with_files() {
+        let (state, _dir) = test_state();
+        std::fs::write(state.songs_path.join("show.light"), "content").unwrap();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/lighting")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["files"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn get_lighting_files_sorted() {
+        let (state, _dir) = test_state();
+        std::fs::write(state.songs_path.join("z_show.light"), "content").unwrap();
+        std::fs::write(state.songs_path.join("a_show.light"), "content").unwrap();
+        std::fs::write(state.songs_path.join("m_show.light"), "content").unwrap();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/lighting")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let files = parsed["files"].as_array().unwrap();
+        assert_eq!(files.len(), 3);
+        // Verify sorted by path
+        let paths: Vec<&str> = files.iter().map(|f| f["path"].as_str().unwrap()).collect();
+        assert_eq!(paths, vec!["a_show.light", "m_show.light", "z_show.light"]);
+    }
+
+    #[tokio::test]
+    async fn get_lighting_file_success() {
+        let (state, _dir) = test_state();
+        std::fs::write(state.songs_path.join("show.light"), "light content").unwrap();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/lighting/show.light")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        assert_eq!(body, "light content");
+    }
+
+    #[tokio::test]
+    async fn get_lighting_file_path_traversal() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/lighting/..%2F..%2Fetc%2Fpasswd")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Should be rejected (BAD_REQUEST or NOT_FOUND)
+        assert_ne!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn get_lighting_file_symlink_escape() {
+        let (state, _dir) = test_state();
+        // Create a symlink inside songs_path that points outside
+        let outside_dir = tempfile::tempdir().unwrap();
+        let secret_file = outside_dir.path().join("secret.light");
+        std::fs::write(&secret_file, "secret content").unwrap();
+        // Create a symlink: songs_path/evil.light -> /outside/secret.light
+        std::os::unix::fs::symlink(&secret_file, state.songs_path.join("evil.light")).unwrap();
+
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/lighting/evil.light")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Should be rejected because canonical path is outside songs_path
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn get_lighting_file_not_found() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/lighting/nonexistent.light")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn get_lighting_file_unreadable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (state, _dir) = test_state();
+        let file = state.songs_path.join("unreadable.light");
+        std::fs::write(&file, "content").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/lighting/unreadable.light")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Restore permissions for cleanup
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn validate_lighting_valid() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let body = r#"
+show "test" {
+    @00:00.000
+    lights: static color: "red"
+}
+"#;
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/lighting/validate")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["valid"], true);
+    }
+
+    #[tokio::test]
+    async fn validate_lighting_invalid() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/lighting/validate")
+                    .body(Body::from("invalid {{{ content"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn put_lighting_file_valid() {
+        let (state, _dir) = test_state();
+        let file_path = state.songs_path.join("new.light");
+        let content = "show \"test\" {\n    @00:00.000\n    lights: static color: \"red\"\n}\n";
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/lighting/new.light")
+                    .body(Body::from(content))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(file_path.exists());
+    }
+
+    #[tokio::test]
+    async fn put_lighting_file_path_traversal() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/lighting/..%2F..%2Fevil.light")
+                    .body(Body::from("content"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_ne!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn get_songs_empty_dir() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/songs")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(parsed["songs"].is_array());
+        assert!(parsed["songs"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_songs_missing_dir() {
+        let (mut state, _dir) = test_state();
+        state.songs_path = std::path::PathBuf::from("/nonexistent/songs");
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/songs")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn get_song_not_found() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/songs/nonexistent")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Song doesn't exist on disk, so get_all_songs returns empty, so NOT_FOUND
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn get_song_missing_songs_dir() {
+        let (mut state, _dir) = test_state();
+        state.songs_path = std::path::PathBuf::from("/nonexistent/songs");
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/songs/anything")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn put_song_missing_songs_dir() {
+        let (mut state, _dir) = test_state();
+        state.songs_path = std::path::PathBuf::from("/nonexistent/songs");
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/songs/anything")
+                    .body(Body::from("name: test\n"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn put_song_not_found() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/songs/nonexistent")
+                    .body(Body::from("name: test\n"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn get_songs_with_wav_files() {
+        let (state, _dir) = test_state();
+        // Create a song directory with a WAV file and song config
+        let song_dir = state.songs_path.join("TestSong");
+        std::fs::create_dir(&song_dir).unwrap();
+        crate::testutil::write_wav(song_dir.join("track1.wav"), vec![vec![0_i32; 4410]], 44100)
+            .unwrap();
+        std::fs::write(
+            song_dir.join("song.yaml"),
+            "name: TestSong\ntracks:\n  - name: track1\n    file: track1.wav\n",
+        )
+        .unwrap();
+
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/songs")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let songs = parsed["songs"].as_array().unwrap();
+        assert_eq!(songs.len(), 1);
+        assert_eq!(songs[0]["name"], "TestSong");
+        assert!(songs[0]["tracks"].is_array());
+    }
+
+    #[tokio::test]
+    async fn get_song_with_config_file() {
+        let (state, _dir) = test_state();
+        let song_dir = state.songs_path.join("MySong");
+        std::fs::create_dir(&song_dir).unwrap();
+        crate::testutil::write_wav(song_dir.join("track1.wav"), vec![vec![0_i32; 4410]], 44100)
+            .unwrap();
+        let song_yaml = "name: MySong\ntracks:\n  - name: track1\n    file: track1.wav\n";
+        std::fs::write(song_dir.join("song.yaml"), song_yaml).unwrap();
+
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/songs/MySong")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        assert!(body.contains("MySong"));
+    }
+
+    #[tokio::test]
+    async fn get_song_no_config_file_returns_json_summary() {
+        let (state, _dir) = test_state();
+        // Create a song directory with only a WAV file (no song.yaml)
+        // We need song.yaml for get_all_songs to discover it, but then
+        // we can delete it before calling get_song.
+        let song_dir = state.songs_path.join("NoConfig");
+        std::fs::create_dir(&song_dir).unwrap();
+        crate::testutil::write_wav(song_dir.join("track1.wav"), vec![vec![0_i32; 4410]], 44100)
+            .unwrap();
+        std::fs::write(
+            song_dir.join("song.yaml"),
+            "name: NoConfig\ntracks:\n  - name: track1\n    file: track1.wav\n",
+        )
+        .unwrap();
+
+        // The song needs to be discoverable by get_all_songs, but we want
+        // the config file to be absent when get_song reads it.
+        // We'll rename it so it's not song.yaml or song.yml.
+        std::fs::rename(song_dir.join("song.yaml"), song_dir.join("song.bak")).unwrap();
+
+        // Song won't be found since get_all_songs needs the config
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/songs/NoConfig")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Song won't be found at all since config was removed
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn get_song_with_yml_extension() {
+        let (state, _dir) = test_state();
+        let song_dir = state.songs_path.join("YmlSong");
+        std::fs::create_dir(&song_dir).unwrap();
+        crate::testutil::write_wav(song_dir.join("track1.wav"), vec![vec![0_i32; 4410]], 44100)
+            .unwrap();
+        let song_yaml = "name: YmlSong\ntracks:\n  - name: track1\n    file: track1.wav\n";
+        // Use .yml extension
+        std::fs::write(song_dir.join("song.yml"), song_yaml).unwrap();
+
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/songs/YmlSong")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        assert!(body.contains("YmlSong"));
+    }
+
+    #[tokio::test]
+    async fn put_song_valid() {
+        let (state, _dir) = test_state();
+        let song_dir = state.songs_path.join("EditSong");
+        std::fs::create_dir(&song_dir).unwrap();
+        crate::testutil::write_wav(song_dir.join("track1.wav"), vec![vec![0_i32; 4410]], 44100)
+            .unwrap();
+        std::fs::write(
+            song_dir.join("song.yaml"),
+            "name: EditSong\ntracks:\n  - name: track1\n    file: track1.wav\n",
+        )
+        .unwrap();
+
+        let new_yaml = "name: EditSong\ntracks:\n  - name: track1\n    file: track1.wav\n";
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/songs/EditSong")
+                    .body(Body::from(new_yaml))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn put_song_invalid_yaml() {
+        let (state, _dir) = test_state();
+        let song_dir = state.songs_path.join("BadSong");
+        std::fs::create_dir(&song_dir).unwrap();
+        crate::testutil::write_wav(song_dir.join("track1.wav"), vec![vec![0_i32; 4410]], 44100)
+            .unwrap();
+        std::fs::write(
+            song_dir.join("song.yaml"),
+            "name: BadSong\ntracks:\n  - name: track1\n    file: track1.wav\n",
+        )
+        .unwrap();
+
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/songs/BadSong")
+                    .body(Body::from("invalid yaml: [[["))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn get_song_no_config_yaml_returns_summary() {
+        let (state, _dir) = test_state();
+        // Create a song with a non-standard config filename
+        let song_dir = state.songs_path.join("CustomSong");
+        std::fs::create_dir(&song_dir).unwrap();
+        crate::testutil::write_wav(song_dir.join("track1.wav"), vec![vec![0_i32; 4410]], 44100)
+            .unwrap();
+        // Use a non-standard config filename (not song.yaml or song.yml)
+        std::fs::write(
+            song_dir.join("config.yaml"),
+            "name: CustomSong\ntracks:\n  - name: track1\n    file: track1.wav\n",
+        )
+        .unwrap();
+
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/songs/CustomSong")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        // Should return JSON summary with config_file: false
+        assert_eq!(parsed["config_file"], false);
+        assert_eq!(parsed["name"], "CustomSong");
+    }
+
+    #[tokio::test]
+    async fn get_song_with_yml_config() {
+        let (state, _dir) = test_state();
+        let song_dir = state.songs_path.join("YmlOnlySong");
+        std::fs::create_dir(&song_dir).unwrap();
+        crate::testutil::write_wav(song_dir.join("track1.wav"), vec![vec![0_i32; 4410]], 44100)
+            .unwrap();
+        // Only song.yml, no song.yaml
+        std::fs::write(
+            song_dir.join("song.yml"),
+            "name: YmlOnlySong\ntracks:\n  - name: track1\n    file: track1.wav\n",
+        )
+        .unwrap();
+
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/songs/YmlOnlySong")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        // Should return the YAML content from song.yml
+        assert!(body.contains("YmlOnlySong"));
+    }
+
+    #[tokio::test]
+    async fn get_lighting_files_missing_dir() {
+        let (mut state, _dir) = test_state();
+        state.songs_path = std::path::PathBuf::from("/nonexistent/songs");
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/lighting")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // find_light_files returns Ok(()) for non-dir path, so this returns empty
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn put_lighting_file_outside_base() {
+        let (state, _dir) = test_state();
+        // Create a symlinked subdirectory pointing outside
+        let outside_dir = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside_dir.path(), state.songs_path.join("escape")).unwrap();
+
+        let content = "show \"test\" {\n    @00:00.000\n    lights: static color: \"red\"\n}\n";
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/lighting/escape%2Fevil.light")
+                    .body(Body::from(content))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Parent resolves outside songs_path — should be rejected
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn put_lighting_file_invalid_dsl() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/lighting/test.light")
+                    .body(Body::from("invalid {{{ content"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
 
     #[test]
     fn find_light_files_discovers_files() {
