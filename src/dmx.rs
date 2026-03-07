@@ -113,3 +113,27 @@ fn create_engine_inner(
 
     Ok(Some(engine))
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn create_engine_none_config_returns_none() {
+        let result = create_engine(None, None).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn create_engine_with_config_returns_some() {
+        let dmx_config = config::Dmx::new(
+            None,
+            None,
+            Some(9090),
+            vec![config::Universe::new(1, "test".to_string())],
+            None,
+        );
+        let result = create_engine(Some(&dmx_config), None).unwrap();
+        assert!(result.is_some());
+    }
+}

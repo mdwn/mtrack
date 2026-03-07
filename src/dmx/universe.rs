@@ -555,6 +555,16 @@ mod test {
     }
 
     #[test]
+    fn test_update_effect_commands_channel_zero() {
+        let (universe, _) = new_universe();
+
+        // Channel 0 edge case — should map to index 0
+        let commands = vec![(0u16, 128u8)];
+        universe.update_effect_commands(commands);
+        assert_eq!(universe.get_target_value(0), 128.0);
+    }
+
+    #[test]
     fn test_update_effect_commands_basic() {
         let (universe, _) = new_universe();
 

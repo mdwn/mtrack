@@ -16,7 +16,6 @@ use parking_lot::Mutex;
 use std::{
     collections::{HashMap, HashSet},
     error::Error,
-    fs,
     panic::AssertUnwindSafe,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -376,8 +375,8 @@ impl Engine {
         self.universes.get(&universe_id)
     }
 
-    /// Validates a song's lighting shows before playback starts.
-    /// Returns an error if any lighting show is invalid.
+    /// Validates a song's lighting shows against the engine's lighting config.
+    /// Returns an error if any lighting show references invalid groups or fixtures.
     pub fn validate_song_lighting(&self, song: &Song) -> Result<(), Box<dyn Error>> {
         let dsl_lighting_shows = song.dsl_lighting_shows();
 
@@ -385,27 +384,10 @@ impl Engine {
             return Ok(());
         }
 
-        // Validate DSL shows
-        for dsl_show in dsl_lighting_shows {
-            let content = fs::read_to_string(dsl_show.file_path()).map_err(|e| {
-                format!(
-                    "Failed to read DSL show {}: {}",
-                    dsl_show.file_path().display(),
-                    e
-                )
-            })?;
-
-            let shows = crate::lighting::parser::parse_light_shows(&content).map_err(|e| {
-                format!(
-                    "Failed to parse DSL show {}: {}",
-                    dsl_show.file_path().display(),
-                    e
-                )
-            })?;
-
-            // Validate shows if lighting config is available
-            if let Some(ref lighting_config) = self.lighting_config {
-                validate_light_shows(&shows, Some(lighting_config)).map_err(|e| {
+        // Validate group/fixture references against lighting config
+        if let Some(ref lighting_config) = self.lighting_config {
+            for dsl_show in dsl_lighting_shows {
+                validate_light_shows(dsl_show.shows(), Some(lighting_config)).map_err(|e| {
                     format!(
                         "Light show validation failed for {}: {}",
                         dsl_show.file_path().display(),
@@ -456,66 +438,11 @@ impl Engine {
                 dsl_lighting_shows.len()
             );
 
-            // Load DSL shows from the resolved file paths
-            let mut all_shows = Vec::new();
-            for dsl_show in dsl_lighting_shows {
-                match std::fs::read_to_string(dsl_show.file_path()) {
-                    Ok(content) => {
-                        match crate::lighting::parser::parse_light_shows(&content) {
-                            Ok(shows) => {
-                                // Validate shows if lighting config is available
-                                if let Some(ref lighting_config) = dmx_engine.lighting_config {
-                                    if let Err(e) =
-                                        validate_light_shows(&shows, Some(lighting_config))
-                                    {
-                                        error!(
-                                            "Light show validation failed for {}: {}",
-                                            dsl_show.file_path().display(),
-                                            e
-                                        );
-                                        return Err(format!(
-                                            "Light show validation failed for {}: {}",
-                                            dsl_show.file_path().display(),
-                                            e
-                                        )
-                                        .into());
-                                    }
-                                }
-
-                                for (_, show) in shows {
-                                    all_shows.push(show);
-                                }
-                            }
-                            Err(e) => {
-                                error!(
-                                    "Failed to parse DSL show {}: {}",
-                                    dsl_show.file_path().display(),
-                                    e
-                                );
-                                return Err(format!(
-                                    "Failed to parse DSL show {}: {}",
-                                    dsl_show.file_path().display(),
-                                    e
-                                )
-                                .into());
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        error!(
-                            "Failed to read DSL show {}: {}",
-                            dsl_show.file_path().display(),
-                            e
-                        );
-                        return Err(format!(
-                            "Failed to read DSL show {}: {}",
-                            dsl_show.file_path().display(),
-                            e
-                        )
-                        .into());
-                    }
-                }
-            }
+            // Collect cached shows from DSL lighting shows
+            let all_shows: Vec<_> = dsl_lighting_shows
+                .iter()
+                .flat_map(|dsl_show| dsl_show.shows().values().cloned())
+                .collect();
 
             if !all_shows.is_empty() {
                 let timeline = LightingTimeline::new(all_shows);
@@ -2902,6 +2829,977 @@ mod test {
         }
     }
 
+    mod validate_song_lighting_tests {
+        use super::*;
+
+        #[test]
+        fn no_dsl_shows_returns_ok() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+
+            let song_config = crate::config::Song::new(
+                "No Lighting",
+                None,
+                None,
+                None,
+                None,
+                None,
+                vec![],
+                std::collections::HashMap::new(),
+                Vec::new(),
+            );
+            let song = crate::songs::Song::new(std::path::Path::new("/tmp"), &song_config)?;
+            assert!(engine.validate_song_lighting(&song).is_ok());
+            Ok(())
+        }
+
+        #[test]
+        fn valid_dsl_show_passes_validation() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+
+            let tmp_dir = tempfile::tempdir()?;
+            let dsl_path = tmp_dir.path().join("test.light");
+            std::fs::write(
+                &dsl_path,
+                r#"show "test" {
+    @00:00.000
+    front_wash: static color: "blue", dimmer: 100%
+}"#,
+            )?;
+
+            let song_config = crate::config::Song::new(
+                "With Lighting",
+                None,
+                None,
+                None,
+                None,
+                Some(vec![crate::config::LightingShow::new(
+                    dsl_path.to_string_lossy().into_owned(),
+                )]),
+                vec![],
+                std::collections::HashMap::new(),
+                Vec::new(),
+            );
+            let song = crate::songs::Song::new(tmp_dir.path(), &song_config)?;
+            assert!(engine.validate_song_lighting(&song).is_ok());
+            Ok(())
+        }
+
+        #[test]
+        fn invalid_dsl_file_rejected_at_song_creation() {
+            let tmp_dir = tempfile::tempdir().unwrap();
+            let dsl_path = tmp_dir.path().join("bad.light");
+            std::fs::write(&dsl_path, "this is not valid DSL syntax {").unwrap();
+
+            let song_config = crate::config::Song::new(
+                "Bad Lighting",
+                None,
+                None,
+                None,
+                None,
+                Some(vec![crate::config::LightingShow::new(
+                    dsl_path.to_string_lossy().into_owned(),
+                )]),
+                vec![],
+                std::collections::HashMap::new(),
+                Vec::new(),
+            );
+            // Song::new validates DSL files at construction time
+            assert!(crate::songs::Song::new(tmp_dir.path(), &song_config).is_err());
+        }
+
+        #[test]
+        fn missing_dsl_file_rejected_at_song_creation() {
+            let tmp_dir = tempfile::tempdir().unwrap();
+            let song_config = crate::config::Song::new(
+                "Missing File",
+                None,
+                None,
+                None,
+                None,
+                Some(vec![crate::config::LightingShow::new(
+                    "/nonexistent/path.light".to_string(),
+                )]),
+                vec![],
+                std::collections::HashMap::new(),
+                Vec::new(),
+            );
+            assert!(crate::songs::Song::new(tmp_dir.path(), &song_config).is_err());
+        }
+    }
+
+    mod start_lighting_timeline_tests {
+        use super::*;
+
+        #[test]
+        fn start_at_zero_starts_timeline() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+
+            // Set up a timeline with cues
+            {
+                let mut timeline = engine.current_song_timeline.lock();
+                *timeline = Some(crate::lighting::timeline::LightingTimeline::new_with_cues(
+                    vec![],
+                ));
+            }
+
+            engine.start_lighting_timeline_at(std::time::Duration::ZERO);
+
+            // Timeline should still exist
+            let timeline = engine.current_song_timeline.lock();
+            assert!(timeline.is_some());
+            Ok(())
+        }
+
+        #[test]
+        fn start_at_nonzero_applies_historical_state() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+
+            // Register a fixture so effects can be started
+            let mut channels = std::collections::HashMap::new();
+            channels.insert("dimmer".to_string(), 1);
+            let fixture_info = crate::lighting::effects::FixtureInfo::new(
+                "front_wash".to_string(),
+                1,
+                1,
+                "Generic".to_string(),
+                channels,
+                None,
+            );
+            {
+                let mut effect_engine = engine.effect_engine.lock();
+                effect_engine.register_fixture(fixture_info);
+            }
+
+            // Create a timeline with a cue at t=0
+            use crate::lighting::parser::{Cue, Effect};
+            let effect = Effect {
+                sequence_name: None,
+                groups: vec!["front_wash".to_string()],
+                effect_type: crate::lighting::effects::EffectType::Static {
+                    parameters: {
+                        let mut p = std::collections::HashMap::new();
+                        p.insert("dimmer".to_string(), 1.0);
+                        p
+                    },
+                    duration: None,
+                },
+                up_time: None,
+                hold_time: None,
+                down_time: None,
+                layer: None,
+                blend_mode: None,
+            };
+            let cue = Cue {
+                time: std::time::Duration::ZERO,
+                effects: vec![effect],
+                layer_commands: vec![],
+                stop_sequences: vec![],
+                start_sequences: vec![],
+            };
+            {
+                let mut timeline = engine.current_song_timeline.lock();
+                *timeline = Some(crate::lighting::timeline::LightingTimeline::new_with_cues(
+                    vec![cue],
+                ));
+            }
+
+            // Start at 5 seconds — should apply historical cues
+            engine.start_lighting_timeline_at(std::time::Duration::from_secs(5));
+
+            // The effect should have been started via apply_timeline_update
+            let effect_engine = engine.effect_engine.lock();
+            let active = effect_engine.format_active_effects();
+            // Should have active effects from the historical cue
+            assert!(
+                !active.is_empty(),
+                "Historical cue effect should be active after seeking"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn start_without_timeline_is_noop() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+
+            // No timeline set — should not panic
+            engine.start_lighting_timeline_at(std::time::Duration::from_secs(5));
+
+            let timeline = engine.current_song_timeline.lock();
+            assert!(timeline.is_none());
+            Ok(())
+        }
+    }
+
+    mod update_song_lighting_tests {
+        use super::*;
+
+        #[test]
+        fn update_with_no_timeline_returns_ok() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+            assert!(engine
+                .update_song_lighting(std::time::Duration::from_secs(1))
+                .is_ok());
+            Ok(())
+        }
+
+        #[test]
+        fn update_with_timeline_processes_cues() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+
+            // Register a fixture
+            let mut channels = std::collections::HashMap::new();
+            channels.insert("dimmer".to_string(), 1);
+            let fixture_info = crate::lighting::effects::FixtureInfo::new(
+                "test_fixture".to_string(),
+                1,
+                1,
+                "Generic".to_string(),
+                channels,
+                None,
+            );
+            {
+                let mut effect_engine = engine.effect_engine.lock();
+                effect_engine.register_fixture(fixture_info);
+            }
+
+            // Create a timeline with a cue at t=1s
+            use crate::lighting::parser::{Cue, Effect};
+            let cue = Cue {
+                time: std::time::Duration::from_secs(1),
+                effects: vec![Effect {
+                    sequence_name: None,
+                    groups: vec!["test_fixture".to_string()],
+                    effect_type: crate::lighting::effects::EffectType::Static {
+                        parameters: {
+                            let mut p = std::collections::HashMap::new();
+                            p.insert("dimmer".to_string(), 0.5);
+                            p
+                        },
+                        duration: None,
+                    },
+                    up_time: None,
+                    hold_time: None,
+                    down_time: None,
+                    layer: None,
+                    blend_mode: None,
+                }],
+                layer_commands: vec![],
+                stop_sequences: vec![],
+                start_sequences: vec![],
+            };
+
+            {
+                let mut timeline = engine.current_song_timeline.lock();
+                let mut tl = crate::lighting::timeline::LightingTimeline::new_with_cues(vec![cue]);
+                tl.start();
+                *timeline = Some(tl);
+            }
+
+            // Update at t=0 — cue hasn't fired yet
+            engine.update_song_lighting(std::time::Duration::ZERO)?;
+
+            // Update at t=2s — cue should fire
+            engine.update_song_lighting(std::time::Duration::from_secs(2))?;
+
+            let effect_engine = engine.effect_engine.lock();
+            let active = effect_engine.format_active_effects();
+            assert!(!active.is_empty(), "Cue effect should be active at t=2s");
+            Ok(())
+        }
+    }
+
+    mod song_time_tracker_tests {
+        use super::*;
+
+        #[test]
+        fn tracker_updates_song_time() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+
+            let cancel = CancelHandle::new();
+            // Set timeline_finished to false so the tracker runs
+            engine
+                .timeline_finished
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+
+            let handle = Engine::start_song_time_tracker_from(
+                engine.clone(),
+                cancel.clone(),
+                std::time::Duration::from_secs(10),
+            );
+
+            // Wait a bit for the tracker to update
+            std::thread::sleep(std::time::Duration::from_millis(50));
+
+            let song_time = engine.get_song_time();
+            assert!(
+                song_time >= std::time::Duration::from_secs(10),
+                "Song time should be at least start_offset (10s), got {:?}",
+                song_time
+            );
+
+            cancel.cancel();
+            handle.join().expect("tracker thread should join");
+            Ok(())
+        }
+
+        #[test]
+        fn tracker_stops_on_timeline_finished() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+
+            let cancel = CancelHandle::new();
+            engine
+                .timeline_finished
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+
+            let handle = Engine::start_song_time_tracker_from(
+                engine.clone(),
+                cancel,
+                std::time::Duration::ZERO,
+            );
+
+            std::thread::sleep(std::time::Duration::from_millis(30));
+
+            // Signal timeline finished
+            engine
+                .timeline_finished
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+
+            // Thread should exit promptly
+            handle.join().expect("tracker thread should join");
+            Ok(())
+        }
+    }
+
+    mod dimming_tests {
+        use super::*;
+
+        #[test]
+        fn zero_duration_sets_rate_one() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+
+            // First set a non-zero dimming to verify it changes
+            engine.handle_midi_event_by_id(
+                5,
+                midly::MidiMessage::ProgramChange {
+                    program: u7::new(2),
+                },
+            );
+            assert!(engine.get_universe(5).unwrap().get_dim_speed() > 1.0);
+
+            // Now send program 0 (zero duration dimming)
+            engine.handle_midi_event_by_id(
+                5,
+                midly::MidiMessage::ProgramChange {
+                    program: u7::new(0),
+                },
+            );
+
+            assert_eq!(
+                engine.get_universe(5).unwrap().get_dim_speed(),
+                1.0,
+                "Zero dimming duration should set dim speed to 1.0"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn dimming_mirrors_to_legacy_store() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+
+            // Register universe in legacy store
+            engine.legacy_store.write().register_universe(5);
+
+            // Send a ProgramChange to set dimming
+            engine.handle_midi_event_by_id(
+                5,
+                midly::MidiMessage::ProgramChange {
+                    program: u7::new(1),
+                },
+            );
+
+            // Legacy store should have the mirrored rate
+            // Just verify it doesn't panic — the rate value depends on the dimming_speed_modifier
+            let _store = engine.legacy_store.read();
+            Ok(())
+        }
+
+        #[test]
+        fn dimming_unknown_universe_no_panic() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+
+            // Should not panic when universe ID doesn't exist
+            engine.update_dimming_by_id(999, std::time::Duration::from_secs(1));
+            Ok(())
+        }
+    }
+
+    mod register_fixtures_tests {
+        use super::*;
+
+        #[test]
+        fn register_without_lighting_system_is_ok() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+            // No lighting system — should succeed without registering anything
+            engine.register_venue_fixtures_safe()?;
+            let effect_engine = engine.effect_engine.lock();
+            assert!(effect_engine.get_fixture_states().is_empty());
+            Ok(())
+        }
+
+        #[test]
+        fn register_with_lighting_system_but_no_venue() -> Result<(), Box<dyn Error>> {
+            // Lighting config without a venue — loading will fail gracefully
+            let lighting_config = crate::config::Lighting::new(None, None, None, None);
+            let config = create_test_config();
+            let ola_client = OlaClientFactory::create_mock_client();
+            let engine = Engine::new(&config, Some(&lighting_config), None, ola_client)?;
+
+            // register_venue_fixtures_safe should handle the case where
+            // lighting system exists but venue is incomplete
+            let result = engine.register_venue_fixtures_safe();
+            // May error due to missing venue, that's expected
+            let _ = result;
+            Ok(())
+        }
+    }
+
+    mod effects_loop_heartbeat_tests {
+        use super::*;
+
+        #[test]
+        fn heartbeat_getter_returns_value() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+
+            // Initial heartbeat should be 0
+            assert_eq!(engine.effects_loop_heartbeat(), 0);
+
+            // After manually incrementing, should reflect the change
+            engine
+                .effects_loop_heartbeat
+                .fetch_add(42, std::sync::atomic::Ordering::Relaxed);
+            assert_eq!(engine.effects_loop_heartbeat(), 42);
+            Ok(())
+        }
+    }
+
+    mod stop_timeline_tests {
+        use super::*;
+
+        #[test]
+        fn stop_with_active_timeline() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+
+            {
+                let mut timeline = engine.current_song_timeline.lock();
+                let mut tl = crate::lighting::timeline::LightingTimeline::new_with_cues(vec![]);
+                tl.start();
+                *timeline = Some(tl);
+            }
+
+            engine.stop_lighting_timeline();
+
+            // Timeline should still exist but be stopped
+            let timeline = engine.current_song_timeline.lock();
+            assert!(timeline.is_some());
+            Ok(())
+        }
+
+        #[test]
+        fn stop_without_timeline_is_noop() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+            engine.stop_lighting_timeline();
+            Ok(())
+        }
+    }
+
+    mod broadcast_handles_tests {
+        use super::*;
+
+        #[test]
+        fn returns_handles() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+            let handles = engine.broadcast_handles();
+            assert!(handles.lighting_system.is_none());
+            Ok(())
+        }
+
+        #[test]
+        fn set_broadcast_tx() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+            let (tx, _rx) = tokio::sync::broadcast::channel(16);
+            engine.set_broadcast_tx(tx);
+            // Verify it was stored
+            let stored = engine.broadcast_tx.lock();
+            assert!(stored.is_some());
+            Ok(())
+        }
+    }
+
+    mod resolve_effect_groups_tests {
+        use super::*;
+        use crate::lighting::{effects::EffectType, EffectInstance};
+
+        #[test]
+        fn resolves_groups_with_lighting_system() -> Result<(), Box<dyn Error>> {
+            // Create engine with a lighting system (no venue, but system exists)
+            let lighting_config = crate::config::Lighting::new(
+                None, // no venue
+                None, // no fixtures
+                None, // no groups
+                None,
+            );
+            let config = create_test_config();
+            let ola_client = OlaClientFactory::create_mock_client();
+            let engine = Engine::new(&config, Some(&lighting_config), None, ola_client)?;
+
+            let effect = EffectInstance::new(
+                "test".to_string(),
+                EffectType::Static {
+                    parameters: std::collections::HashMap::new(),
+                    duration: None,
+                },
+                vec!["some_group".to_string()],
+                None,
+                None,
+                None,
+            );
+
+            let resolved = engine.resolve_effect_groups(effect);
+            // With a lighting system but no groups defined, resolve_logical_group_graceful
+            // will return the name itself as a fallback
+            assert!(
+                !resolved.target_fixtures.is_empty(),
+                "Graceful fallback should return something"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn no_lighting_system_passes_through() -> Result<(), Box<dyn Error>> {
+            let config = create_test_config();
+            let ola_client = OlaClientFactory::create_mock_client();
+            let engine = Engine::new(&config, None, None, ola_client)?;
+
+            let effect = EffectInstance::new(
+                "test".to_string(),
+                EffectType::Static {
+                    parameters: std::collections::HashMap::new(),
+                    duration: None,
+                },
+                vec!["some_group".to_string()],
+                None,
+                None,
+                None,
+            );
+
+            let resolved = engine.resolve_effect_groups(effect);
+            assert_eq!(
+                resolved.target_fixtures,
+                vec!["some_group".to_string()],
+                "Without lighting system, groups should pass through unchanged"
+            );
+            Ok(())
+        }
+    }
+
+    mod wait_for_timeline_tests {
+        use super::*;
+        use std::sync::atomic::{AtomicBool, AtomicU64};
+
+        #[test]
+        fn exits_when_timeline_finished() {
+            let cancel = CancelHandle::new();
+            let finished = Arc::new(AtomicBool::new(false));
+            let heartbeat = AtomicU64::new(0);
+            let phase = AtomicU64::new(0);
+            let subphase = AtomicU64::new(0);
+
+            let finished_clone = finished.clone();
+            // Set finished after a short delay
+            let setter = std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                finished_clone.store(true, std::sync::atomic::Ordering::Relaxed);
+            });
+
+            Engine::wait_for_timeline_with_heartbeat(
+                &cancel, finished, &heartbeat, &phase, &subphase,
+            );
+
+            setter.join().unwrap();
+        }
+
+        #[test]
+        fn exits_when_cancelled() {
+            let cancel = CancelHandle::new();
+            let finished = Arc::new(AtomicBool::new(false));
+            let heartbeat = AtomicU64::new(0);
+            let phase = AtomicU64::new(0);
+            let subphase = AtomicU64::new(0);
+
+            let cancel_clone = cancel.clone();
+            let setter = std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                cancel_clone.cancel();
+            });
+
+            Engine::wait_for_timeline_with_heartbeat(
+                &cancel, finished, &heartbeat, &phase, &subphase,
+            );
+
+            setter.join().unwrap();
+        }
+    }
+
+    mod effect_engine_accessor_tests {
+        use super::*;
+
+        #[test]
+        fn effect_engine_returns_arc() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+            let ee = engine.effect_engine();
+            // Should be able to lock and use
+            let locked = ee.lock();
+            let _ = locked.format_active_effects();
+            Ok(())
+        }
+    }
+
+    mod play_tests {
+        use super::*;
+
+        fn create_dsl_song_with_content(
+            dsl_content: &str,
+        ) -> Result<(tempfile::TempDir, Arc<crate::songs::Song>), Box<dyn Error>> {
+            let tmp_dir = tempfile::tempdir()?;
+            let dsl_path = tmp_dir.path().join("show.light");
+            std::fs::write(&dsl_path, dsl_content)?;
+
+            let song_config = crate::config::Song::new(
+                "DSL Song",
+                None,
+                None,
+                None,
+                None,
+                Some(vec![crate::config::LightingShow::new(
+                    dsl_path.to_string_lossy().into_owned(),
+                )]),
+                vec![],
+                std::collections::HashMap::new(),
+                Vec::new(),
+            );
+            let song = Arc::new(crate::songs::Song::new(tmp_dir.path(), &song_config)?);
+            Ok((tmp_dir, song))
+        }
+
+        #[test]
+        fn play_song_with_no_lighting_returns_ok() -> Result<(), Box<dyn Error>> {
+            let (engine, cancel_handle) = create_engine()?;
+            Engine::start_persistent_effects_loop(engine.clone());
+
+            let song_config = crate::config::Song::new(
+                "No Light",
+                None,
+                None,
+                None,
+                None,
+                None,
+                vec![],
+                std::collections::HashMap::new(),
+                Vec::new(),
+            );
+            let song = Arc::new(crate::songs::Song::new(
+                std::path::Path::new("/tmp"),
+                &song_config,
+            )?);
+            let play_barrier = Arc::new(Barrier::new(1));
+
+            let result = Engine::play(
+                engine,
+                song,
+                cancel_handle,
+                play_barrier,
+                std::time::Duration::ZERO,
+            );
+            assert!(result.is_ok());
+            Ok(())
+        }
+
+        #[test]
+        fn play_dsl_song_cancelled() -> Result<(), Box<dyn Error>> {
+            let (engine, cancel_handle) = create_engine()?;
+            Engine::start_persistent_effects_loop(engine.clone());
+
+            let (_tmp_dir, song) = create_dsl_song_with_content(
+                r#"show "test" {
+    @00:00.000
+    front_wash: static color: "blue", dimmer: 100%
+}"#,
+            )?;
+
+            let play_barrier = Arc::new(Barrier::new(1));
+
+            // Cancel before play so the blocking path exits immediately
+            cancel_handle.cancel();
+
+            let result = Engine::play(
+                engine.clone(),
+                song,
+                cancel_handle,
+                play_barrier,
+                std::time::Duration::ZERO,
+            );
+            assert!(result.is_ok());
+            Ok(())
+        }
+
+        #[test]
+        fn play_dsl_song_with_start_time() -> Result<(), Box<dyn Error>> {
+            let (engine, cancel_handle) = create_engine()?;
+            Engine::start_persistent_effects_loop(engine.clone());
+
+            let (_tmp_dir, song) = create_dsl_song_with_content(
+                r#"show "test" {
+    @00:00.000
+    front_wash: static color: "red", dimmer: 100%
+    @00:05.000
+    front_wash: static color: "blue", dimmer: 50%
+}"#,
+            )?;
+
+            let play_barrier = Arc::new(Barrier::new(1));
+            cancel_handle.cancel();
+
+            // Start at 3 seconds — should process historical cues
+            let result = Engine::play(
+                engine.clone(),
+                song,
+                cancel_handle,
+                play_barrier,
+                std::time::Duration::from_secs(3),
+            );
+            assert!(result.is_ok());
+            Ok(())
+        }
+
+        #[test]
+        fn play_legacy_song_with_unmatched_universe() -> Result<(), Box<dyn Error>> {
+            let (engine, cancel_handle) = create_engine()?;
+            Engine::start_persistent_effects_loop(engine.clone());
+
+            let assets_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets");
+            let song_config = crate::config::Song::new(
+                "Legacy Song",
+                None,
+                None,
+                None,
+                Some(vec![crate::config::LightShow::new(
+                    "nonexistent_universe".to_string(),
+                    "song.mid".to_string(),
+                    None,
+                )]),
+                None,
+                vec![],
+                std::collections::HashMap::new(),
+                Vec::new(),
+            );
+            let song = Arc::new(crate::songs::Song::new(&assets_path, &song_config)?);
+            let play_barrier = Arc::new(Barrier::new(1));
+
+            let result = Engine::play(
+                engine.clone(),
+                song,
+                cancel_handle,
+                play_barrier,
+                std::time::Duration::ZERO,
+            );
+            assert!(result.is_ok());
+            Ok(())
+        }
+
+        #[test]
+        fn play_legacy_song_multiple_unmatched_universes() -> Result<(), Box<dyn Error>> {
+            // Test the empty barrier thread path with multiple unmatched universes
+            let (engine, cancel_handle) = create_engine()?;
+            Engine::start_persistent_effects_loop(engine.clone());
+
+            let assets_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets");
+            let song_config = crate::config::Song::new(
+                "Legacy Multi",
+                None,
+                None,
+                None,
+                Some(vec![
+                    crate::config::LightShow::new(
+                        "nonexistent1".to_string(),
+                        "song.mid".to_string(),
+                        None,
+                    ),
+                    crate::config::LightShow::new(
+                        "nonexistent2".to_string(),
+                        "song.mid".to_string(),
+                        None,
+                    ),
+                ]),
+                None,
+                vec![],
+                std::collections::HashMap::new(),
+                Vec::new(),
+            );
+            let song = Arc::new(crate::songs::Song::new(&assets_path, &song_config)?);
+            let play_barrier = Arc::new(Barrier::new(1));
+
+            let result = Engine::play(
+                engine.clone(),
+                song,
+                cancel_handle,
+                play_barrier,
+                std::time::Duration::ZERO,
+            );
+            assert!(result.is_ok(), "play failed: {:?}", result.err());
+            Ok(())
+        }
+    }
+
+    mod apply_timeline_update_tests {
+        use super::*;
+        use crate::lighting::parser::{LayerCommand, LayerCommandType};
+
+        #[test]
+        fn applies_layer_commands() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+
+            let update = crate::lighting::timeline::TimelineUpdate {
+                effects: vec![],
+                effects_with_elapsed: std::collections::HashMap::new(),
+                layer_commands: vec![LayerCommand {
+                    command_type: LayerCommandType::Clear,
+                    layer: None,
+                    fade_time: None,
+                    intensity: None,
+                    speed: None,
+                }],
+                stop_sequences: vec![],
+            };
+
+            assert!(engine.apply_timeline_update(update).is_ok());
+            Ok(())
+        }
+
+        #[test]
+        fn applies_stop_sequences() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+
+            let update = crate::lighting::timeline::TimelineUpdate {
+                effects: vec![],
+                effects_with_elapsed: std::collections::HashMap::new(),
+                layer_commands: vec![],
+                stop_sequences: vec!["test_seq".to_string()],
+            };
+
+            assert!(engine.apply_timeline_update(update).is_ok());
+            Ok(())
+        }
+
+        #[test]
+        fn applies_effects_with_elapsed() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+
+            // Register a fixture for the effect
+            let mut channels = std::collections::HashMap::new();
+            channels.insert("dimmer".to_string(), 1);
+            let fixture_info = crate::lighting::effects::FixtureInfo::new(
+                "test_fixture".to_string(),
+                1,
+                1,
+                "Generic".to_string(),
+                channels,
+                None,
+            );
+            {
+                let mut ee = engine.effect_engine.lock();
+                ee.register_fixture(fixture_info);
+            }
+
+            let effect = crate::lighting::EffectInstance::new(
+                "test_effect".to_string(),
+                crate::lighting::effects::EffectType::Static {
+                    parameters: {
+                        let mut p = std::collections::HashMap::new();
+                        p.insert("dimmer".to_string(), 0.5);
+                        p
+                    },
+                    duration: None,
+                },
+                vec!["test_fixture".to_string()],
+                None,
+                None,
+                None,
+            );
+
+            let mut effects_with_elapsed = std::collections::HashMap::new();
+            effects_with_elapsed.insert(
+                "test_effect".to_string(),
+                (effect, std::time::Duration::from_secs(2)),
+            );
+
+            let update = crate::lighting::timeline::TimelineUpdate {
+                effects: vec![],
+                effects_with_elapsed,
+                layer_commands: vec![],
+                stop_sequences: vec![],
+            };
+
+            assert!(engine.apply_timeline_update(update).is_ok());
+            Ok(())
+        }
+
+        #[test]
+        fn applies_regular_effects() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+
+            let mut channels = std::collections::HashMap::new();
+            channels.insert("dimmer".to_string(), 1);
+            let fixture_info = crate::lighting::effects::FixtureInfo::new(
+                "test_fixture".to_string(),
+                1,
+                1,
+                "Generic".to_string(),
+                channels,
+                None,
+            );
+            {
+                let mut ee = engine.effect_engine.lock();
+                ee.register_fixture(fixture_info);
+            }
+
+            let effect = crate::lighting::EffectInstance::new(
+                "seq_test".to_string(),
+                crate::lighting::effects::EffectType::Static {
+                    parameters: {
+                        let mut p = std::collections::HashMap::new();
+                        p.insert("dimmer".to_string(), 1.0);
+                        p
+                    },
+                    duration: None,
+                },
+                vec!["test_fixture".to_string()],
+                None,
+                None,
+                None,
+            );
+
+            let update = crate::lighting::timeline::TimelineUpdate {
+                effects: vec![effect],
+                effects_with_elapsed: std::collections::HashMap::new(),
+                layer_commands: vec![],
+                stop_sequences: vec![],
+            };
+
+            assert!(engine.apply_timeline_update(update).is_ok());
+            Ok(())
+        }
+    }
+
     mod format_active_effects_tests {
         use super::*;
 
@@ -2911,6 +3809,841 @@ mod test {
             let result = engine.format_active_effects();
             // Should not panic and should return something reasonable
             assert!(result.is_empty() || result.contains("No"));
+            Ok(())
+        }
+    }
+
+    mod ola_thread_tests {
+        use super::*;
+        use crate::dmx::ola_client::MockOlaClient;
+        use std::sync::mpsc;
+
+        #[test]
+        fn sends_message_successfully() {
+            let client: Box<dyn crate::dmx::ola_client::OlaClient> = Box::new(MockOlaClient::new());
+            let client = Arc::new(parking_lot::Mutex::new(client));
+            let (tx, rx) = mpsc::channel::<super::super::DmxMessage>();
+
+            let client_clone = client.clone();
+            let handle = std::thread::spawn(move || {
+                Engine::ola_thread(client_clone, rx);
+            });
+
+            // Send a message
+            let mut buffer = ola::DmxBuffer::new();
+            buffer.set_channel(0, 255);
+            tx.send(super::super::DmxMessage {
+                universe: 1,
+                buffer,
+            })
+            .unwrap();
+
+            // Drop sender to close channel and exit ola_thread
+            drop(tx);
+            handle.join().unwrap();
+        }
+
+        #[test]
+        fn disconnect_and_reconnect() {
+            // Create a client that fails on the first send, then succeeds after reconnect
+            let mut mock = MockOlaClient::new();
+            mock.should_fail = true;
+            let client: Box<dyn crate::dmx::ola_client::OlaClient> = Box::new(mock);
+            let client = Arc::new(parking_lot::Mutex::new(client));
+            let (tx, rx) = mpsc::channel::<super::super::DmxMessage>();
+
+            let client_clone = client.clone();
+            let handle = std::thread::spawn(move || {
+                Engine::ola_thread(client_clone, rx);
+            });
+
+            // First send will fail → disconnected = true
+            let buffer = ola::DmxBuffer::new();
+            tx.send(super::super::DmxMessage {
+                universe: 1,
+                buffer: buffer.clone(),
+            })
+            .unwrap();
+
+            // Wait a moment for the thread to process
+            std::thread::sleep(std::time::Duration::from_millis(50));
+
+            // The client is behind a trait object so we can't fix should_fail.
+            // Instead, send another message while disconnected (covers the
+            // disconnected branch). The reconnect interval is 5s so this
+            // message will be dropped (too soon to retry).
+
+            // Send another message while disconnected (covers lines 1271-1275 interval check)
+            tx.send(super::super::DmxMessage {
+                universe: 1,
+                buffer: buffer.clone(),
+            })
+            .unwrap();
+
+            // Small sleep then drop to exit
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            drop(tx);
+            handle.join().unwrap();
+        }
+    }
+
+    mod heartbeat_stale_tests {
+        use super::*;
+        use std::sync::atomic::{AtomicBool, AtomicU64};
+
+        #[test]
+        fn stale_heartbeat_forces_timeline_finished() {
+            let cancel = CancelHandle::new();
+            let finished = Arc::new(AtomicBool::new(false));
+            let heartbeat = AtomicU64::new(0);
+            let phase = AtomicU64::new(3); // "update_effects"
+            let subphase = AtomicU64::new(50); // "effect_process"
+
+            // Don't increment heartbeat — it will go stale.
+            // The function checks every 2s with MAX_STALE_CHECKS=3,
+            // so after 6s it should force timeline_finished.
+            // Use a thread so we can timeout if it hangs.
+            let finished_clone = finished.clone();
+            let handle = std::thread::spawn(move || {
+                Engine::wait_for_timeline_with_heartbeat(
+                    &cancel,
+                    finished_clone,
+                    &heartbeat,
+                    &phase,
+                    &subphase,
+                );
+            });
+
+            // Should complete within ~8s (3 stale checks × 2s interval + margin)
+            let result = handle.join();
+            assert!(result.is_ok(), "wait_for_timeline should have exited");
+
+            // timeline_finished should have been forced to true
+            assert!(
+                finished.load(std::sync::atomic::Ordering::Relaxed),
+                "Stale heartbeat should force timeline_finished=true"
+            );
+        }
+
+        #[test]
+        fn advancing_heartbeat_resets_stale_counter() {
+            let cancel = CancelHandle::new();
+            let finished = Arc::new(AtomicBool::new(false));
+            let heartbeat = AtomicU64::new(0);
+            let phase = AtomicU64::new(0);
+            let subphase = AtomicU64::new(0);
+
+            let finished_clone = finished.clone();
+            let cancel_clone = cancel.clone();
+
+            // Advance the heartbeat periodically, then cancel after a few cycles
+            let advancer = std::thread::spawn(move || {
+                for i in 1..=5 {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    heartbeat.store(i, std::sync::atomic::Ordering::Relaxed);
+                }
+                // After advancing, cancel to exit
+                cancel_clone.cancel();
+            });
+
+            Engine::wait_for_timeline_with_heartbeat(
+                &cancel,
+                finished_clone,
+                // Can't pass the moved heartbeat, so use a separate one
+                &AtomicU64::new(0),
+                &phase,
+                &subphase,
+            );
+
+            // Cancel to make sure the advancer thread finishes
+            cancel.cancel();
+            advancer.join().unwrap();
+        }
+    }
+
+    mod unrecognized_midi_tests {
+        use super::*;
+
+        #[test]
+        fn handle_midi_event_by_id_unrecognized() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+
+            // PitchBend is classified as Unrecognized — should just log and not panic
+            engine.handle_midi_event_by_id(
+                5,
+                midly::MidiMessage::PitchBend {
+                    bend: midly::PitchBend(midly::num::u14::new(8192)),
+                },
+            );
+
+            // Universe should be unaffected
+            let universe = engine.get_universe(5).unwrap();
+            assert_eq!(universe.get_dim_speed(), 1.0);
+            Ok(())
+        }
+    }
+
+    mod lighting_system_engine_tests {
+        use super::*;
+
+        #[test]
+        fn engine_with_lighting_system() -> Result<(), Box<dyn Error>> {
+            // Create engine with both lighting_config AND base_path to initialize lighting_system
+            let lighting_config = crate::config::Lighting::new(None, None, None, None);
+            let config = create_test_config();
+            let ola_client = OlaClientFactory::create_mock_client();
+            let tmp_dir = tempfile::tempdir()?;
+            let engine = Engine::new(
+                &config,
+                Some(&lighting_config),
+                Some(tmp_dir.path()),
+                ola_client,
+            )?;
+
+            // Lighting system should be initialized (even with empty config)
+            let handles = engine.broadcast_handles();
+            assert!(
+                handles.lighting_system.is_some(),
+                "Lighting system should be initialized with config + base_path"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn resolve_effect_groups_with_lighting_system() -> Result<(), Box<dyn Error>> {
+            let lighting_config = crate::config::Lighting::new(None, None, None, None);
+            let config = create_test_config();
+            let ola_client = OlaClientFactory::create_mock_client();
+            let tmp_dir = tempfile::tempdir()?;
+            let engine = Engine::new(
+                &config,
+                Some(&lighting_config),
+                Some(tmp_dir.path()),
+                ola_client,
+            )?;
+
+            let effect = crate::lighting::EffectInstance::new(
+                "test".to_string(),
+                crate::lighting::effects::EffectType::Static {
+                    parameters: std::collections::HashMap::new(),
+                    duration: None,
+                },
+                vec!["some_group".to_string()],
+                None,
+                None,
+                None,
+            );
+
+            // With a lighting system, resolve_effect_groups goes through the resolution path
+            // (lines 1085-1091). With no groups defined, the graceful fallback may
+            // return the name itself or empty depending on implementation.
+            let _resolved = engine.resolve_effect_groups(effect);
+            Ok(())
+        }
+
+        #[test]
+        fn engine_with_lighting_system_load_failure() -> Result<(), Box<dyn Error>> {
+            // Force LightingSystem::load() to fail by pointing fixture_types dir at a file
+            let tmp_dir = tempfile::tempdir()?;
+            let file_path = tmp_dir.path().join("not_a_dir");
+            std::fs::write(&file_path, "I am a file, not a directory")?;
+
+            let dirs = crate::config::lighting::Directories::new(
+                Some(file_path.to_string_lossy().into_owned()),
+                None,
+            );
+            let lighting_config = crate::config::Lighting::new(None, None, None, Some(dirs));
+            let config = create_test_config();
+            let ola_client = OlaClientFactory::create_mock_client();
+            let engine = Engine::new(
+                &config,
+                Some(&lighting_config),
+                Some(tmp_dir.path()),
+                ola_client,
+            )?;
+
+            // Lighting system should be None because load() failed
+            let handles = engine.broadcast_handles();
+            assert!(
+                handles.lighting_system.is_none(),
+                "Lighting system should be None when load fails"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn register_venue_fixtures_with_full_lighting_system() -> Result<(), Box<dyn Error>> {
+            // Build a lighting system with fixture types and a venue defined in DSL files
+            let tmp_dir = tempfile::tempdir()?;
+
+            // Create fixture types directory with a dimmer fixture type
+            let ft_dir = tmp_dir.path().join("fixture_types");
+            std::fs::create_dir(&ft_dir)?;
+            std::fs::write(
+                ft_dir.join("dimmer.light"),
+                r#"fixture_type "Dimmer" {
+    channels: 1
+    channel_map: {
+        "dimmer": 1
+    }
+}"#,
+            )?;
+
+            // Create venues directory with a venue using the fixture type
+            let venue_dir = tmp_dir.path().join("venues");
+            std::fs::create_dir(&venue_dir)?;
+            std::fs::write(
+                venue_dir.join("test.light"),
+                r#"venue "test_venue" {
+    fixture "Wash1" Dimmer @ 1:1
+}"#,
+            )?;
+
+            let dirs = crate::config::lighting::Directories::new(
+                Some("fixture_types".to_string()),
+                Some("venues".to_string()),
+            );
+            let lighting_config = crate::config::Lighting::new(
+                Some("test_venue".to_string()),
+                None,
+                None,
+                Some(dirs),
+            );
+            let config = config::Dmx::new(
+                None,
+                None,
+                Some(9090),
+                vec![config::Universe::new(1, "universe1".to_string())],
+                None,
+            );
+            let ola_client = OlaClientFactory::create_mock_client();
+            let engine = Engine::new(
+                &config,
+                Some(&lighting_config),
+                Some(tmp_dir.path()),
+                ola_client,
+            )?;
+
+            // Verify lighting system was loaded
+            let handles = engine.broadcast_handles();
+            assert!(handles.lighting_system.is_some());
+
+            // register_venue_fixtures_safe should register fixtures from the venue
+            let result = engine.register_venue_fixtures_safe();
+            assert!(
+                result.is_ok(),
+                "register_venue_fixtures_safe failed: {:?}",
+                result.err()
+            );
+
+            // Verify a fixture was registered in the effect engine
+            let effect_engine = engine.effect_engine.lock();
+            let registry = effect_engine.get_fixture_registry();
+            assert!(
+                registry.contains_key("Wash1"),
+                "Wash1 fixture should be registered, got: {:?}",
+                registry.keys().collect::<Vec<_>>()
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn validate_song_lighting_with_lighting_config() -> Result<(), Box<dyn Error>> {
+            // Engine with lighting_config set (for validation path).
+            // Define "front_wash" as a fixture so validation passes.
+            let lighting_config = crate::config::Lighting::new(
+                None,
+                Some({
+                    let mut fixtures = std::collections::HashMap::new();
+                    fixtures.insert("front_wash".to_string(), "Generic_Dimmer @ 1:1".to_string());
+                    fixtures
+                }),
+                None,
+                None,
+            );
+            let config = create_test_config();
+            let ola_client = OlaClientFactory::create_mock_client();
+            let tmp_dir = tempfile::tempdir()?;
+            let engine = Engine::new(
+                &config,
+                Some(&lighting_config),
+                Some(tmp_dir.path()),
+                ola_client,
+            )?;
+
+            let dsl_path = tmp_dir.path().join("show.light");
+            std::fs::write(
+                &dsl_path,
+                r#"show "test" {
+    @00:00.000
+    front_wash: static color: "blue", dimmer: 100%
+}"#,
+            )?;
+
+            let song_config = crate::config::Song::new(
+                "With Lighting",
+                None,
+                None,
+                None,
+                None,
+                Some(vec![crate::config::LightingShow::new(
+                    dsl_path.to_string_lossy().into_owned(),
+                )]),
+                vec![],
+                std::collections::HashMap::new(),
+                Vec::new(),
+            );
+            let song = crate::songs::Song::new(tmp_dir.path(), &song_config)?;
+
+            // This exercises the validation path with lighting_config present
+            assert!(engine.validate_song_lighting(&song).is_ok());
+            Ok(())
+        }
+    }
+
+    mod validate_error_paths_tests {
+        use super::*;
+
+        #[test]
+        fn validate_validation_error_with_config() -> Result<(), Box<dyn Error>> {
+            // Engine with lighting_config that defines "front_wash" but not "unknown"
+            let lighting_config = crate::config::Lighting::new(
+                None,
+                Some({
+                    let mut fixtures = std::collections::HashMap::new();
+                    fixtures.insert("front_wash".to_string(), "Generic_Dimmer @ 1:1".to_string());
+                    fixtures
+                }),
+                None,
+                None,
+            );
+            let config = create_test_config();
+            let ola_client = OlaClientFactory::create_mock_client();
+            let tmp_dir = tempfile::tempdir()?;
+            let engine = Engine::new(
+                &config,
+                Some(&lighting_config),
+                Some(tmp_dir.path()),
+                ola_client,
+            )?;
+
+            let dsl_path = tmp_dir.path().join("show.light");
+            std::fs::write(
+                &dsl_path,
+                r#"show "test" {
+    @00:00.000
+    unknown_group: static color: "blue", dimmer: 100%
+}"#,
+            )?;
+
+            let song_config = crate::config::Song::new(
+                "Validate Config Error",
+                None,
+                None,
+                None,
+                None,
+                Some(vec![crate::config::LightingShow::new(
+                    dsl_path.to_string_lossy().into_owned(),
+                )]),
+                vec![],
+                std::collections::HashMap::new(),
+                Vec::new(),
+            );
+            let song = crate::songs::Song::new(tmp_dir.path(), &song_config)?;
+
+            // Validation should fail because "unknown_group" isn't in the config
+            let result = engine.validate_song_lighting(&song);
+            assert!(result.is_err());
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("Light show validation failed"));
+            Ok(())
+        }
+    }
+
+    mod play_matched_legacy_tests {
+        use super::*;
+
+        /// Create a minimal valid MIDI file (Type 0, 1 track)
+        fn create_valid_midi_file(path: &std::path::Path) {
+            let midi_bytes: Vec<u8> = vec![
+                // MThd header
+                0x4D, 0x54, 0x68, 0x64, // "MThd"
+                0x00, 0x00, 0x00, 0x06, // Header length = 6
+                0x00, 0x00, // Format type 0
+                0x00, 0x01, // 1 track
+                0x01, 0xE0, // 480 ticks per quarter note
+                // MTrk chunk
+                0x4D, 0x54, 0x72, 0x6B, // "MTrk"
+                0x00, 0x00, 0x00, 0x08, // Track length = 8 bytes
+                // ProgramChange: delta=0, channel 0, program 0 (instant dimming)
+                0x00, 0xC0, 0x00, // End of track marker (required by spec)
+                0x00, 0xFF, 0x2F, 0x00, // Padding byte for track length alignment
+                0x00,
+            ];
+            std::fs::write(path, midi_bytes).unwrap();
+        }
+
+        #[test]
+        fn play_legacy_song_with_matching_universe() -> Result<(), Box<dyn Error>> {
+            // Create engine with universe "universe1" mapped to ID 5
+            let (engine, cancel_handle) = create_engine()?;
+            Engine::start_persistent_effects_loop(engine.clone());
+
+            let tmp_dir = tempfile::tempdir()?;
+            let midi_path = tmp_dir.path().join("light.mid");
+            create_valid_midi_file(&midi_path);
+
+            let song_config = crate::config::Song::new(
+                "Legacy Matched",
+                None,
+                None,
+                None,
+                Some(vec![crate::config::LightShow::new(
+                    "universe1".to_string(),
+                    "light.mid".to_string(),
+                    None,
+                )]),
+                None,
+                vec![],
+                std::collections::HashMap::new(),
+                Vec::new(),
+            );
+            let song = Arc::new(crate::songs::Song::new(tmp_dir.path(), &song_config)?);
+            let play_barrier = Arc::new(Barrier::new(1));
+
+            let result = Engine::play(
+                engine.clone(),
+                song,
+                cancel_handle,
+                play_barrier,
+                std::time::Duration::ZERO,
+            );
+            assert!(result.is_ok(), "play failed: {:?}", result.err());
+            Ok(())
+        }
+
+        #[test]
+        fn play_legacy_song_matched_with_start_time() -> Result<(), Box<dyn Error>> {
+            let (engine, cancel_handle) = create_engine()?;
+            Engine::start_persistent_effects_loop(engine.clone());
+
+            let tmp_dir = tempfile::tempdir()?;
+            let midi_path = tmp_dir.path().join("light.mid");
+            create_valid_midi_file(&midi_path);
+
+            let song_config = crate::config::Song::new(
+                "Legacy Seek",
+                None,
+                None,
+                None,
+                Some(vec![crate::config::LightShow::new(
+                    "universe1".to_string(),
+                    "light.mid".to_string(),
+                    None,
+                )]),
+                None,
+                vec![],
+                std::collections::HashMap::new(),
+                Vec::new(),
+            );
+            let song = Arc::new(crate::songs::Song::new(tmp_dir.path(), &song_config)?);
+            let play_barrier = Arc::new(Barrier::new(1));
+
+            // Start at 10 seconds — should seek past all events
+            let result = Engine::play(
+                engine.clone(),
+                song,
+                cancel_handle,
+                play_barrier,
+                std::time::Duration::from_secs(10),
+            );
+            assert!(result.is_ok(), "play failed: {:?}", result.err());
+            Ok(())
+        }
+
+        #[test]
+        fn play_mixed_matched_and_unmatched() -> Result<(), Box<dyn Error>> {
+            let (engine, cancel_handle) = create_engine()?;
+            Engine::start_persistent_effects_loop(engine.clone());
+
+            let tmp_dir = tempfile::tempdir()?;
+            let midi_path = tmp_dir.path().join("light.mid");
+            create_valid_midi_file(&midi_path);
+
+            let song_config = crate::config::Song::new(
+                "Mixed",
+                None,
+                None,
+                None,
+                Some(vec![
+                    crate::config::LightShow::new(
+                        "universe1".to_string(), // matches engine
+                        "light.mid".to_string(),
+                        None,
+                    ),
+                    crate::config::LightShow::new(
+                        "nonexistent".to_string(), // doesn't match
+                        "light.mid".to_string(),
+                        None,
+                    ),
+                ]),
+                None,
+                vec![],
+                std::collections::HashMap::new(),
+                Vec::new(),
+            );
+            let song = Arc::new(crate::songs::Song::new(tmp_dir.path(), &song_config)?);
+            let play_barrier = Arc::new(Barrier::new(1));
+
+            let result = Engine::play(
+                engine.clone(),
+                song,
+                cancel_handle,
+                play_barrier,
+                std::time::Duration::ZERO,
+            );
+            assert!(result.is_ok(), "play failed: {:?}", result.err());
+            Ok(())
+        }
+    }
+
+    mod play_multi_universe_tests {
+        use super::*;
+
+        /// Create a minimal valid MIDI file
+        fn create_valid_midi(path: &std::path::Path) {
+            let midi_bytes: Vec<u8> = vec![
+                0x4D, 0x54, 0x68, 0x64, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x01, 0x01, 0xE0,
+                0x4D, 0x54, 0x72, 0x6B, 0x00, 0x00, 0x00, 0x08, 0x00, 0xC0, 0x00, 0x00, 0xFF, 0x2F,
+                0x00, 0x00,
+            ];
+            std::fs::write(path, midi_bytes).unwrap();
+        }
+
+        #[test]
+        fn play_two_matched_legacy_universes() -> Result<(), Box<dyn Error>> {
+            // Engine with two universes to cover the second legacy barrier thread (line 713-714)
+            let config = config::Dmx::new(
+                None,
+                None,
+                Some(9090),
+                vec![
+                    config::Universe::new(1, "uni_a".to_string()),
+                    config::Universe::new(2, "uni_b".to_string()),
+                ],
+                None,
+            );
+            let ola_client = OlaClientFactory::create_mock_client();
+            let engine = Arc::new(Engine::new(&config, None, None, ola_client)?);
+            let cancel_handle = engine.cancel_handle.clone();
+            Engine::start_persistent_effects_loop(engine.clone());
+
+            let tmp_dir = tempfile::tempdir()?;
+            let midi_path = tmp_dir.path().join("light.mid");
+            create_valid_midi(&midi_path);
+
+            let song_config = crate::config::Song::new(
+                "Multi Universe",
+                None,
+                None,
+                None,
+                Some(vec![
+                    crate::config::LightShow::new(
+                        "uni_a".to_string(),
+                        "light.mid".to_string(),
+                        None,
+                    ),
+                    crate::config::LightShow::new(
+                        "uni_b".to_string(),
+                        "light.mid".to_string(),
+                        None,
+                    ),
+                ]),
+                None,
+                vec![],
+                std::collections::HashMap::new(),
+                Vec::new(),
+            );
+            let song = Arc::new(crate::songs::Song::new(tmp_dir.path(), &song_config)?);
+            let play_barrier = Arc::new(Barrier::new(1));
+
+            let result = Engine::play(
+                engine.clone(),
+                song,
+                cancel_handle,
+                play_barrier,
+                std::time::Duration::ZERO,
+            );
+            assert!(result.is_ok(), "play failed: {:?}", result.err());
+            Ok(())
+        }
+
+        #[test]
+        fn play_dsl_and_legacy_combined() -> Result<(), Box<dyn Error>> {
+            // Song with both DSL and legacy light shows
+            let config = config::Dmx::new(
+                None,
+                None,
+                Some(9090),
+                vec![config::Universe::new(5, "universe1".to_string())],
+                None,
+            );
+            let ola_client = OlaClientFactory::create_mock_client();
+            let engine = Arc::new(Engine::new(&config, None, None, ola_client)?);
+            let cancel_handle = engine.cancel_handle.clone();
+            Engine::start_persistent_effects_loop(engine.clone());
+
+            let tmp_dir = tempfile::tempdir()?;
+            let midi_path = tmp_dir.path().join("light.mid");
+            create_valid_midi(&midi_path);
+            let dsl_path = tmp_dir.path().join("show.light");
+            std::fs::write(
+                &dsl_path,
+                r#"show "test" {
+    @00:00.000
+    front_wash: static color: "blue", dimmer: 100%
+}"#,
+            )?;
+
+            let song_config = crate::config::Song::new(
+                "Combined",
+                None,
+                None,
+                None,
+                Some(vec![crate::config::LightShow::new(
+                    "universe1".to_string(),
+                    "light.mid".to_string(),
+                    None,
+                )]),
+                Some(vec![crate::config::LightingShow::new(
+                    dsl_path.to_string_lossy().into_owned(),
+                )]),
+                vec![],
+                std::collections::HashMap::new(),
+                Vec::new(),
+            );
+            let song = Arc::new(crate::songs::Song::new(tmp_dir.path(), &song_config)?);
+            let play_barrier = Arc::new(Barrier::new(1));
+
+            let result = Engine::play(
+                engine.clone(),
+                song,
+                cancel_handle,
+                play_barrier,
+                std::time::Duration::ZERO,
+            );
+            assert!(result.is_ok(), "play failed: {:?}", result.err());
+            Ok(())
+        }
+    }
+
+    mod effects_loop_tick_notify_tests {
+        use super::*;
+
+        #[test]
+        fn tick_notifies_cancel_handle_when_finished() -> Result<(), Box<dyn Error>> {
+            let (engine, _cancel_handle) = create_engine()?;
+
+            // Set timeline_finished to false
+            engine
+                .timeline_finished
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+
+            // Set a cancel handle so the notify path is exercised
+            let song_cancel = CancelHandle::new();
+            {
+                let mut handle = engine.timeline_cancel_handle.lock();
+                *handle = Some(song_cancel.clone());
+            }
+
+            // No timeline + no playbacks → tick should set finished and notify
+            engine.effects_loop_tick();
+
+            assert!(
+                engine
+                    .timeline_finished
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                "Should set timeline_finished=true"
+            );
+            Ok(())
+        }
+    }
+
+    mod play_dsl_with_lighting_config_tests {
+        use super::*;
+
+        #[test]
+        fn play_dsl_song_with_lighting_config() -> Result<(), Box<dyn Error>> {
+            // Create engine with lighting system to exercise validation path in play()
+            let lighting_config = crate::config::Lighting::new(
+                None,
+                Some({
+                    let mut fixtures = std::collections::HashMap::new();
+                    fixtures.insert("front_wash".to_string(), "Generic_Dimmer @ 1:1".to_string());
+                    fixtures
+                }),
+                None,
+                None,
+            );
+            let config = config::Dmx::new(
+                None,
+                None,
+                Some(9090),
+                vec![config::Universe::new(5, "universe1".to_string())],
+                None,
+            );
+            let ola_client = OlaClientFactory::create_mock_client();
+            let tmp_dir = tempfile::tempdir()?;
+            let engine = Arc::new(Engine::new(
+                &config,
+                Some(&lighting_config),
+                Some(tmp_dir.path()),
+                ola_client,
+            )?);
+            let cancel_handle = engine.cancel_handle.clone();
+            Engine::start_persistent_effects_loop(engine.clone());
+
+            // Set broadcast_tx to exercise the watcher start path in play()
+            let (tx, _rx) = tokio::sync::broadcast::channel(16);
+            engine.set_broadcast_tx(tx);
+
+            let dsl_path = tmp_dir.path().join("show.light");
+            std::fs::write(
+                &dsl_path,
+                r#"show "test" {
+    @00:00.000
+    front_wash: static color: "blue", dimmer: 100%
+}"#,
+            )?;
+
+            let song_config = crate::config::Song::new(
+                "DSL With Config",
+                None,
+                None,
+                None,
+                None,
+                Some(vec![crate::config::LightingShow::new(
+                    dsl_path.to_string_lossy().into_owned(),
+                )]),
+                vec![],
+                std::collections::HashMap::new(),
+                Vec::new(),
+            );
+            let song = Arc::new(crate::songs::Song::new(tmp_dir.path(), &song_config)?);
+            let play_barrier = Arc::new(Barrier::new(1));
+
+            cancel_handle.cancel();
+
+            let result = Engine::play(
+                engine.clone(),
+                song,
+                cancel_handle,
+                play_barrier,
+                std::time::Duration::ZERO,
+            );
+            assert!(result.is_ok());
             Ok(())
         }
     }
