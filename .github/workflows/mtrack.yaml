@@ -17,18 +17,18 @@ jobs:
     - uses: jetify-com/devbox-install-action@v0.12.0
       with:
         enable-cache: 'true'
+    - uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: "cargo"
     - uses: actions/cache@v4
       with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: cargo-build-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', '**/package-lock.json') }}
-        restore-keys: cargo-build-${{ runner.os }}-
+        path: src/webui/svelte/node_modules
+        key: node-modules-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+        restore-keys: node-modules-${{ runner.os }}-
     - name: Build frontend
       run: devbox run -- bash -c 'cd src/webui/svelte && npm ci && buf generate && npm run build'
     - name: Build mtrack
-      run: devbox run -- cargo build
+      run: devbox run -- cargo build --all-targets --all-features
     - name: Check if Cargo.lock is up to date
       run: |
         if git diff --exit-code Cargo.lock; then
@@ -47,18 +47,18 @@ jobs:
     - uses: jetify-com/devbox-install-action@v0.12.0
       with:
         enable-cache: 'true'
+    - uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: "cargo"
     - uses: actions/cache@v4
       with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: cargo-clippy-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', '**/package-lock.json') }}
-        restore-keys: cargo-clippy-${{ runner.os }}-
+        path: src/webui/svelte/node_modules
+        key: node-modules-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+        restore-keys: node-modules-${{ runner.os }}-
     - name: Build frontend
       run: devbox run -- bash -c 'cd src/webui/svelte && npm ci && buf generate && npm run build'
     - name: Run clippy
-      run: devbox run -- cargo clippy --all --all-features
+      run: devbox run -- cargo clippy --all --all-targets --all-features
 
   # Make sure the code is properly formatted.
   rustfmt-check:
@@ -81,14 +81,14 @@ jobs:
     - uses: jetify-com/devbox-install-action@v0.12.0
       with:
         enable-cache: 'true'
+    - uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: "cargo"
     - uses: actions/cache@v4
       with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: cargo-test-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', '**/package-lock.json') }}
-        restore-keys: cargo-test-${{ runner.os }}-
+        path: src/webui/svelte/node_modules
+        key: node-modules-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+        restore-keys: node-modules-${{ runner.os }}-
     - name: Build frontend
       run: devbox run -- bash -c 'cd src/webui/svelte && npm ci && buf generate && npm run build'
     - name: Test mtrack
@@ -108,6 +108,11 @@ jobs:
     - uses: jetify-com/devbox-install-action@v0.12.0
       with:
         enable-cache: 'true'
+    - uses: actions/cache@v4
+      with:
+        path: src/webui/svelte/node_modules
+        key: node-modules-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+        restore-keys: node-modules-${{ runner.os }}-
     - name: Install and generate
       run: devbox run -- bash -c 'cd src/webui/svelte && npm ci && buf generate'
     - name: Lint
