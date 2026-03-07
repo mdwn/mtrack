@@ -1002,6 +1002,409 @@ mod tests {
         assert!(debug_str.contains("triggers"));
     }
 
+    fn make_samples_config(
+        sample_name: &str,
+        file: &str,
+        trigger_channel: u8,
+        trigger_note: u8,
+    ) -> SamplesConfig {
+        let mut samples = HashMap::new();
+        samples.insert(
+            sample_name.to_string(),
+            SampleDefinition::new(
+                Some(file.to_string()),
+                vec![1, 2],
+                crate::config::samples::VelocityConfig::ignore(None),
+                ReleaseBehavior::PlayToCompletion,
+                crate::config::samples::RetriggerBehavior::Cut,
+                None,
+                50,
+            ),
+        );
+        let triggers = vec![SampleTrigger::new(
+            crate::config::midi::note_on(trigger_channel, trigger_note, 127),
+            sample_name.to_string(),
+        )];
+        SamplesConfig::new(samples, triggers, 32)
+    }
+
+    fn create_loaded_engine() -> SampleEngine {
+        let (mixer, source_tx) = create_test_mixer_and_sender();
+        let mut engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
+        let base_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
+        let config = make_samples_config("kick", "1Channel44.1k.wav", 10, 36);
+        engine.load_global_config(&config, &base_path).unwrap();
+        engine
+    }
+
+    #[test]
+    fn test_load_global_config() {
+        let (mixer, source_tx) = create_test_mixer_and_sender();
+        let mut engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
+        let base_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
+        let config = make_samples_config("kick", "1Channel44.1k.wav", 10, 36);
+
+        engine.load_global_config(&config, &base_path).unwrap();
+
+        assert_eq!(engine.samples.len(), 1);
+        assert_eq!(engine.triggers.len(), 1);
+        assert!(engine.memory_usage() > 0);
+    }
+
+    #[test]
+    fn test_load_global_config_empty() {
+        let (mixer, source_tx) = create_test_mixer_and_sender();
+        let mut engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
+        let base_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
+        let config = SamplesConfig::new(HashMap::new(), vec![], 32);
+
+        engine.load_global_config(&config, &base_path).unwrap();
+
+        assert_eq!(engine.samples.len(), 0);
+        assert_eq!(engine.triggers.len(), 0);
+    }
+
+    #[test]
+    fn test_load_song_config_adds_samples() {
+        let mut engine = create_loaded_engine();
+        let base_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
+        let song_config = make_samples_config("snare", "2Channel44.1k.wav", 10, 38);
+
+        engine.load_song_config(&song_config, &base_path).unwrap();
+
+        assert_eq!(engine.samples.len(), 2);
+        assert_eq!(engine.triggers.len(), 2);
+    }
+
+    #[test]
+    fn test_load_song_config_empty_is_noop() {
+        let mut engine = create_loaded_engine();
+        let base_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
+        let config = SamplesConfig::new(HashMap::new(), vec![], 32);
+
+        engine.load_song_config(&config, &base_path).unwrap();
+
+        // Should remain unchanged
+        assert_eq!(engine.samples.len(), 1);
+        assert_eq!(engine.triggers.len(), 1);
+    }
+
+    #[test]
+    fn test_add_trigger_replaces_duplicate() {
+        let mut engine = create_loaded_engine();
+
+        // Add a trigger with the same MIDI event but different sample
+        let trigger = SampleTrigger::new(
+            crate::config::midi::note_on(10, 36, 127),
+            "other_sample".to_string(),
+        );
+        engine.add_trigger(&trigger).unwrap();
+
+        // Should still have 1 trigger (replaced, not appended)
+        assert_eq!(engine.triggers.len(), 1);
+        assert_eq!(engine.triggers[0].sample_name, "other_sample");
+    }
+
+    #[test]
+    fn test_trigger_fires_sample() {
+        let engine = create_loaded_engine();
+
+        let event = TriggerEvent {
+            sample_name: "kick".to_string(),
+            velocity: 100,
+            release_group: Some("test:group".to_string()),
+        };
+
+        engine.trigger(&event);
+
+        assert_eq!(engine.active_voice_count(), 1);
+    }
+
+    #[test]
+    fn test_trigger_unknown_sample_is_noop() {
+        let engine = create_loaded_engine();
+
+        let event = TriggerEvent {
+            sample_name: "nonexistent".to_string(),
+            velocity: 100,
+            release_group: None,
+        };
+
+        engine.trigger(&event);
+
+        assert_eq!(engine.active_voice_count(), 0);
+    }
+
+    #[test]
+    fn test_trigger_cut_retrigger() {
+        let engine = create_loaded_engine();
+
+        let event = TriggerEvent {
+            sample_name: "kick".to_string(),
+            velocity: 100,
+            release_group: Some("midi:10:36".to_string()),
+        };
+
+        engine.trigger(&event);
+        engine.trigger(&event);
+
+        // Cut retrigger: second trigger should replace the first
+        assert_eq!(engine.active_voice_count(), 1);
+    }
+
+    #[test]
+    fn test_release_stops_voices() {
+        let (mixer, source_tx) = create_test_mixer_and_sender();
+        let mut engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
+        let base_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
+
+        // Use Stop release behavior so release actually stops the voice
+        let mut samples = HashMap::new();
+        samples.insert(
+            "pad".to_string(),
+            SampleDefinition::new(
+                Some("1Channel44.1k.wav".to_string()),
+                vec![1, 2],
+                crate::config::samples::VelocityConfig::ignore(None),
+                ReleaseBehavior::Stop,
+                crate::config::samples::RetriggerBehavior::Polyphonic,
+                None,
+                50,
+            ),
+        );
+        let config = SamplesConfig::new(samples, vec![], 32);
+        engine.load_global_config(&config, &base_path).unwrap();
+
+        let event = TriggerEvent {
+            sample_name: "pad".to_string(),
+            velocity: 100,
+            release_group: Some("group:pad".to_string()),
+        };
+
+        engine.trigger(&event);
+        assert_eq!(engine.active_voice_count(), 1);
+
+        engine.release("group:pad");
+        assert_eq!(engine.active_voice_count(), 0);
+    }
+
+    #[test]
+    fn test_release_nonexistent_group_is_noop() {
+        let engine = create_loaded_engine();
+
+        let event = TriggerEvent {
+            sample_name: "kick".to_string(),
+            velocity: 100,
+            release_group: Some("midi:10:36".to_string()),
+        };
+        engine.trigger(&event);
+
+        engine.release("nonexistent");
+        assert_eq!(engine.active_voice_count(), 1);
+    }
+
+    #[test]
+    fn test_stop_all() {
+        let engine = create_loaded_engine();
+
+        let event = TriggerEvent {
+            sample_name: "kick".to_string(),
+            velocity: 100,
+            release_group: None,
+        };
+
+        engine.trigger(&event);
+        engine.trigger(&event);
+        // With Cut retrigger, only 1 voice remains
+        assert_eq!(engine.active_voice_count(), 1);
+
+        engine.stop_all();
+        assert_eq!(engine.active_voice_count(), 0);
+    }
+
+    #[test]
+    fn test_stop_all_empty_is_noop() {
+        let engine = create_loaded_engine();
+        engine.stop_all();
+        assert_eq!(engine.active_voice_count(), 0);
+    }
+
+    #[test]
+    fn test_process_midi_event_triggers_sample() {
+        let engine = create_loaded_engine();
+
+        // NoteOn on channel 10 (0-indexed: 9), note 36
+        let raw = [0x99, 36, 100]; // 0x90 | 9 = 0x99
+        engine.process_midi_event(&raw);
+
+        assert_eq!(engine.active_voice_count(), 1);
+    }
+
+    #[test]
+    fn test_process_midi_event_note_off_releases() {
+        let (mixer, source_tx) = create_test_mixer_and_sender();
+        let mut engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
+        let base_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
+
+        let mut samples = HashMap::new();
+        samples.insert(
+            "pad".to_string(),
+            SampleDefinition::new(
+                Some("1Channel44.1k.wav".to_string()),
+                vec![1, 2],
+                crate::config::samples::VelocityConfig::ignore(None),
+                ReleaseBehavior::Stop,
+                crate::config::samples::RetriggerBehavior::Polyphonic,
+                None,
+                50,
+            ),
+        );
+        let triggers = vec![SampleTrigger::new(
+            crate::config::midi::note_on(10, 36, 127),
+            "pad".to_string(),
+        )];
+        let config = SamplesConfig::new(samples, triggers, 32);
+        engine.load_global_config(&config, &base_path).unwrap();
+
+        // Trigger with NoteOn
+        let note_on = [0x99, 36, 100]; // channel 10 (0-indexed 9), note 36
+        engine.process_midi_event(&note_on);
+        assert_eq!(engine.active_voice_count(), 1);
+
+        // Release with NoteOff
+        let note_off = [0x89, 36, 0]; // NoteOff channel 10 (0-indexed 9), note 36
+        engine.process_midi_event(&note_off);
+        assert_eq!(engine.active_voice_count(), 0);
+    }
+
+    #[test]
+    fn test_process_midi_event_vel0_as_note_off() {
+        let (mixer, source_tx) = create_test_mixer_and_sender();
+        let mut engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
+        let base_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
+
+        let mut samples = HashMap::new();
+        samples.insert(
+            "pad".to_string(),
+            SampleDefinition::new(
+                Some("1Channel44.1k.wav".to_string()),
+                vec![1, 2],
+                crate::config::samples::VelocityConfig::ignore(None),
+                ReleaseBehavior::Stop,
+                crate::config::samples::RetriggerBehavior::Polyphonic,
+                None,
+                50,
+            ),
+        );
+        let triggers = vec![SampleTrigger::new(
+            crate::config::midi::note_on(10, 36, 127),
+            "pad".to_string(),
+        )];
+        let config = SamplesConfig::new(samples, triggers, 32);
+        engine.load_global_config(&config, &base_path).unwrap();
+
+        // Trigger with NoteOn
+        let note_on = [0x99, 36, 100];
+        engine.process_midi_event(&note_on);
+        assert_eq!(engine.active_voice_count(), 1);
+
+        // Release with NoteOn velocity 0 (treated as NoteOff)
+        let note_on_vel0 = [0x99, 36, 0];
+        engine.process_midi_event(&note_on_vel0);
+        assert_eq!(engine.active_voice_count(), 0);
+    }
+
+    #[test]
+    fn test_process_midi_event_invalid_data() {
+        let engine = create_loaded_engine();
+
+        // Invalid MIDI data
+        let invalid = [0xFF, 0xFF];
+        engine.process_midi_event(&invalid);
+
+        // Should not crash, no voices created
+        assert_eq!(engine.active_voice_count(), 0);
+    }
+
+    #[test]
+    fn test_process_midi_event_no_matching_trigger() {
+        let engine = create_loaded_engine();
+
+        // NoteOn on a different note than the trigger
+        let raw = [0x99, 60, 100]; // channel 10, note 60 (trigger is note 36)
+        engine.process_midi_event(&raw);
+
+        assert_eq!(engine.active_voice_count(), 0);
+    }
+
+    #[test]
+    fn test_prepare_sample_no_output_routing() {
+        let (mixer, source_tx) = create_test_mixer_and_sender();
+        let mut engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
+        let base_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
+
+        // Sample with no output channels and no output track
+        let mut samples = HashMap::new();
+        samples.insert(
+            "silent".to_string(),
+            SampleDefinition::new(
+                Some("1Channel44.1k.wav".to_string()),
+                vec![], // No output channels
+                crate::config::samples::VelocityConfig::ignore(None),
+                ReleaseBehavior::PlayToCompletion,
+                crate::config::samples::RetriggerBehavior::Cut,
+                None,
+                50,
+            ),
+        );
+        let config = SamplesConfig::new(samples, vec![], 32);
+        engine.load_global_config(&config, &base_path).unwrap();
+
+        // Should still be able to prepare the sample (just won't route anywhere)
+        let event = TriggerEvent {
+            sample_name: "silent".to_string(),
+            velocity: 100,
+            release_group: None,
+        };
+        engine.trigger(&event);
+        assert_eq!(engine.active_voice_count(), 1);
+    }
+
+    #[test]
+    fn test_load_sample_with_max_voices() {
+        let (mixer, source_tx) = create_test_mixer_and_sender();
+        let mut engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
+        let base_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
+
+        let mut samples = HashMap::new();
+        samples.insert(
+            "limited".to_string(),
+            SampleDefinition::new(
+                Some("1Channel44.1k.wav".to_string()),
+                vec![1],
+                crate::config::samples::VelocityConfig::ignore(None),
+                ReleaseBehavior::PlayToCompletion,
+                crate::config::samples::RetriggerBehavior::Polyphonic,
+                Some(2), // Max 2 voices
+                50,
+            ),
+        );
+        let config = SamplesConfig::new(samples, vec![], 32);
+        engine.load_global_config(&config, &base_path).unwrap();
+
+        // Trigger 3 times — only 2 should remain active (oldest stolen)
+        for _ in 0..3 {
+            let event = TriggerEvent {
+                sample_name: "limited".to_string(),
+                velocity: 100,
+                release_group: None,
+            };
+            engine.trigger(&event);
+        }
+
+        assert_eq!(engine.active_voice_count(), 2);
+    }
+
     #[test]
     fn test_engine_memory_usage_empty() {
         let (mixer, source_tx) = create_test_mixer_and_sender();

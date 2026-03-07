@@ -466,6 +466,118 @@ mod tests {
     }
 
     #[test]
+    fn test_release_fade_behavior_stops_voice() {
+        let mut manager = VoiceManager::new(32);
+
+        let voice = make_voice_with_behavior("pad", Some("pad"), 1, ReleaseBehavior::Fade);
+        manager.add_voice(voice, RetriggerBehavior::Polyphonic);
+
+        // Fade currently behaves like Stop
+        let stopped = manager.release("pad");
+        assert_eq!(stopped.len(), 1);
+        assert_eq!(manager.active_count(), 0);
+    }
+
+    #[test]
+    fn test_set_sample_limit_directly() {
+        let mut manager = VoiceManager::new(32);
+        manager.set_sample_limit("snare", 2);
+
+        // Add 2 voices — both allowed
+        let voice1 = make_voice("snare", None, 1);
+        let voice2 = make_voice("snare", None, 2);
+        assert!(manager
+            .add_voice(voice1, RetriggerBehavior::Polyphonic)
+            .is_empty());
+        assert!(manager
+            .add_voice(voice2, RetriggerBehavior::Polyphonic)
+            .is_empty());
+
+        // 3rd voice should steal oldest
+        let voice3 = make_voice("snare", None, 3);
+        let stopped = manager.add_voice(voice3, RetriggerBehavior::Polyphonic);
+        assert_eq!(stopped.len(), 1);
+        assert_eq!(manager.active_count(), 2);
+    }
+
+    #[test]
+    fn test_polyphonic_no_sample_limit_respects_global() {
+        let mut manager = VoiceManager::new(2);
+        // No per-sample limit set
+
+        let voice1 = make_voice("a", None, 1);
+        let voice2 = make_voice("b", None, 2);
+        assert!(manager
+            .add_voice(voice1, RetriggerBehavior::Polyphonic)
+            .is_empty());
+        assert!(manager
+            .add_voice(voice2, RetriggerBehavior::Polyphonic)
+            .is_empty());
+
+        // 3rd voice hits global limit
+        let voice3 = make_voice("c", None, 3);
+        let stopped = manager.add_voice(voice3, RetriggerBehavior::Polyphonic);
+        assert_eq!(stopped.len(), 1);
+        assert_eq!(manager.active_count(), 2);
+    }
+
+    #[test]
+    fn test_cut_retrigger_different_sample_no_cut() {
+        let mut manager = VoiceManager::new(32);
+
+        let voice1 = make_voice("kick", None, 1);
+        manager.add_voice(voice1, RetriggerBehavior::Cut);
+
+        // Different sample name — should not cut the kick
+        let voice2 = make_voice("snare", None, 2);
+        let stopped = manager.add_voice(voice2, RetriggerBehavior::Cut);
+        assert!(stopped.is_empty());
+        assert_eq!(manager.active_count(), 2);
+    }
+
+    #[test]
+    fn test_sweep_finished_multiple() {
+        let mut manager = VoiceManager::new(32);
+
+        let finished1 = Arc::new(AtomicBool::new(false));
+        let finished2 = Arc::new(AtomicBool::new(false));
+        let voice1 = Voice::new(
+            "a".to_string(),
+            None,
+            ReleaseBehavior::Stop,
+            1,
+            CancelHandle::new(),
+            Arc::new(AtomicU64::new(0)),
+            finished1.clone(),
+        );
+        let voice2 = Voice::new(
+            "b".to_string(),
+            None,
+            ReleaseBehavior::Stop,
+            2,
+            CancelHandle::new(),
+            Arc::new(AtomicU64::new(0)),
+            finished2.clone(),
+        );
+        let voice3 = make_voice("c", None, 3);
+
+        manager.add_voice(voice1, RetriggerBehavior::Polyphonic);
+        manager.add_voice(voice2, RetriggerBehavior::Polyphonic);
+        manager.add_voice(voice3, RetriggerBehavior::Polyphonic);
+        assert_eq!(manager.active_count(), 3);
+
+        // Mark first two as finished
+        finished1.store(true, Ordering::Relaxed);
+        finished2.store(true, Ordering::Relaxed);
+
+        // Adding a new voice triggers sweep
+        let voice4 = make_voice("d", None, 4);
+        manager.add_voice(voice4, RetriggerBehavior::Polyphonic);
+        // Only voice3 and voice4 should remain
+        assert_eq!(manager.active_count(), 2);
+    }
+
+    #[test]
     fn test_release_mixed_behaviors_in_same_group() {
         let mut manager = VoiceManager::new(32);
 
