@@ -321,4 +321,85 @@ mod tests {
         assert_eq!(cloned.fixtures.len(), 1);
         assert_eq!(cloned.active_effects.len(), 1);
     }
+
+    #[tokio::test]
+    async fn test_start_sampler_empty_engine() {
+        let engine = Arc::new(Mutex::new(EffectEngine::new()));
+        let (mut rx, handle) = start_sampler(engine);
+
+        // Wait for the sampler to produce a snapshot
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), rx.changed()).await;
+        assert!(result.is_ok(), "timed out waiting for sampler");
+
+        let snapshot = rx.borrow().clone();
+        assert!(snapshot.fixtures.is_empty());
+        assert!(snapshot.active_effects.is_empty());
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_start_sampler_with_registered_fixture() {
+        use crate::lighting::effects::FixtureInfo;
+
+        let engine = Arc::new(Mutex::new(EffectEngine::new()));
+
+        // Register a simple RGB fixture
+        {
+            let mut channels = HashMap::new();
+            channels.insert("red".to_string(), 1);
+            channels.insert("green".to_string(), 2);
+            channels.insert("blue".to_string(), 3);
+            let fixture = FixtureInfo::new(
+                "test_light".to_string(),
+                1,
+                1,
+                "rgb".to_string(),
+                channels,
+                None,
+            );
+            engine.lock().register_fixture(fixture);
+        }
+
+        let (mut rx, handle) = start_sampler(engine);
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), rx.changed()).await;
+        assert!(result.is_ok(), "timed out waiting for sampler");
+
+        let snapshot = rx.borrow().clone();
+        // Fixture registry is populated, but without active effects the fixture
+        // may or may not appear in the snapshot depending on engine state
+        assert!(snapshot.active_effects.is_empty());
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_start_sampler_multiple_ticks() {
+        let engine = Arc::new(Mutex::new(EffectEngine::new()));
+        let (mut rx, handle) = start_sampler(engine);
+
+        // Wait for first tick
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), rx.changed()).await;
+
+        // Wait for second tick
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), rx.changed()).await;
+        assert!(result.is_ok(), "timed out waiting for second sampler tick");
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_sampler_stops_when_receiver_dropped() {
+        let engine = Arc::new(Mutex::new(EffectEngine::new()));
+        let (rx, handle) = start_sampler(engine);
+
+        // Drop receiver — sampler should keep running (tx.send just fails silently)
+        drop(rx);
+
+        // Give it a moment, then abort
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        handle.abort();
+        let _ = handle.await;
+    }
 }

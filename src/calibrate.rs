@@ -1104,4 +1104,127 @@ mod tests {
         assert_eq!(stats.rms, 0.0);
         assert_eq!(stats.low_freq_energy, 0.0);
     }
+
+    #[test]
+    fn test_analyze_noise_floor_short_samples() {
+        // Fewer samples than window_size (44100/100 = 441), triggers line 206
+        let samples: Vec<f32> = (0..200).map(|i| 0.002 * (i as f32 * 0.1).sin()).collect();
+        let stats = analyze_noise_floor(&samples, 44100);
+        assert!(stats.peak > 0.0);
+        assert!(stats.rms > 0.0);
+        // When samples < window_size, low_freq_energy should equal rms
+        assert_eq!(stats.low_freq_energy, stats.rms);
+    }
+
+    #[test]
+    fn test_detect_hits_hit_at_end_of_buffer() {
+        // Hit placed near the very end so holdoff can't complete
+        let total = 5000;
+        let noise = 0.001;
+        let mut samples = vec![0.0f32; total];
+        for (i, s) in samples.iter_mut().enumerate() {
+            *s = noise * (i as f32 * 0.7).sin();
+        }
+        // Place transient starting 100 samples from end
+        let onset = total - 100;
+        for j in 0..50 {
+            let idx = onset + j;
+            if idx < total {
+                samples[idx] = 0.8 * (1.0 - j as f32 / 50.0);
+            }
+        }
+
+        let nf = NoiseFloorStats {
+            peak: noise,
+            rms: noise * 0.7,
+            low_freq_energy: noise * 0.3,
+        };
+        let hits = detect_hits(&samples, &nf, 44100);
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].peak_amplitude > 0.5);
+    }
+
+    #[test]
+    fn test_derive_channel_params_no_hits() {
+        let nf = NoiseFloorStats {
+            peak: 0.003,
+            rms: 0.002,
+            low_freq_energy: 0.0005,
+        };
+        let cal = derive_channel_params(1, &nf, &[], 44100);
+        assert_eq!(cal.gain, 1.0);
+        assert_eq!(cal.scan_time_ms, 5);
+        assert_eq!(cal.retrigger_time_ms, 30);
+        assert_eq!(cal.dynamic_threshold_decay_ms, None);
+        assert_eq!(cal.num_hits_detected, 0);
+    }
+
+    #[test]
+    fn test_derive_channel_params_hits_without_ring() {
+        let nf = NoiseFloorStats {
+            peak: 0.001,
+            rms: 0.0007,
+            low_freq_energy: 0.0002,
+        };
+        let hits = vec![
+            HitEnvelope {
+                peak_amplitude: 0.5,
+                onset_sample: 1000,
+                peak_sample: 1050,
+                decay_sample: 2000,
+                ring_end_sample: None,
+            },
+            HitEnvelope {
+                peak_amplitude: 0.6,
+                onset_sample: 10000,
+                peak_sample: 10040,
+                decay_sample: 11000,
+                ring_end_sample: None,
+            },
+        ];
+        let cal = derive_channel_params(1, &nf, &hits, 44100);
+        assert_eq!(cal.dynamic_threshold_decay_ms, None);
+        assert_eq!(cal.num_hits_detected, 2);
+    }
+
+    #[test]
+    fn test_derive_channel_params_short_ring() {
+        let nf = NoiseFloorStats {
+            peak: 0.001,
+            rms: 0.0007,
+            low_freq_energy: 0.0002,
+        };
+        // Ring duration: (1510-1500)/44100*1000 ≈ 0.23ms, well under 5ms
+        let hits = vec![HitEnvelope {
+            peak_amplitude: 0.6,
+            onset_sample: 1000,
+            peak_sample: 1050,
+            decay_sample: 1500,
+            ring_end_sample: Some(1510),
+        }];
+        let cal = derive_channel_params(1, &nf, &hits, 44100);
+        assert_eq!(cal.dynamic_threshold_decay_ms, None);
+    }
+
+    #[test]
+    fn test_write_yaml_without_crosstalk() {
+        let calibrations = vec![ChannelCalibration {
+            channel: 1,
+            threshold: 0.015,
+            gain: 1.3,
+            scan_time_ms: 3,
+            retrigger_time_ms: 25,
+            highpass_freq: None,
+            dynamic_threshold_decay_ms: None,
+            num_hits_detected: 5,
+            noise_floor_peak: 0.003,
+            max_hit_amplitude: 0.72,
+        }];
+        let crosstalk = CrosstalkCalibration {
+            crosstalk_window_ms: None,
+            crosstalk_threshold: None,
+        };
+        // Should not panic
+        write_yaml("TestDevice", 44100, &calibrations, &crosstalk);
+    }
 }

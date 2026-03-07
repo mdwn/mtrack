@@ -279,4 +279,109 @@ mod tests {
         assert_eq!(report_a.issues.len(), 2);
         assert!(report_a.has_errors());
     }
+
+    fn make_songs(entries: &[(&str, &[&str])]) -> Songs {
+        let mut map = HashMap::new();
+        for (name, tracks) in entries {
+            map.insert(name.to_string(), make_song(name, tracks));
+        }
+        Songs::new(map)
+    }
+
+    #[test]
+    fn test_warn_unmapped_tracks_all_mapped() {
+        let song = make_song("test-song", &["guitar", "bass"]);
+        let mappings = make_mappings(&["guitar", "bass"]);
+        warn_unmapped_tracks(&song, &mappings);
+    }
+
+    #[test]
+    fn test_warn_unmapped_tracks_some_unmapped() {
+        let song = make_song("test-song", &["guitar", "bass", "click"]);
+        let mappings = make_mappings(&["guitar"]);
+        warn_unmapped_tracks(&song, &mappings);
+    }
+
+    #[test]
+    fn test_warn_unmapped_tracks_none_mapped() {
+        let song = make_song("test-song", &["guitar", "bass"]);
+        warn_unmapped_tracks(&song, &HashMap::new());
+    }
+
+    #[test]
+    fn test_warn_unmapped_tracks_empty_tracks() {
+        let song = make_song("test-song", &[]);
+        warn_unmapped_tracks(&song, &HashMap::new());
+    }
+
+    #[test]
+    fn test_print_report_clean() {
+        let songs = make_songs(&[("song-a", &["guitar"]), ("song-b", &["bass"])]);
+        let report = VerificationReport::default();
+        print_report(&report, &songs);
+    }
+
+    #[test]
+    fn test_print_report_warnings_only() {
+        let songs = make_songs(&[("song-a", &["guitar"])]);
+        let report = VerificationReport {
+            issues: vec![Issue {
+                severity: Severity::Warning,
+                category: "track-mappings",
+                song_name: "song-a".to_string(),
+                message: "track \"guitar\" has no mapping".to_string(),
+            }],
+        };
+        print_report(&report, &songs);
+    }
+
+    #[test]
+    fn test_print_report_errors_only() {
+        let songs = make_songs(&[("song-a", &["guitar"])]);
+        let report = VerificationReport {
+            issues: vec![Issue {
+                severity: Severity::Error,
+                category: "track-mappings",
+                song_name: "song-a".to_string(),
+                message: "track \"guitar\" has no mapping".to_string(),
+            }],
+        };
+        print_report(&report, &songs);
+    }
+
+    #[test]
+    fn test_print_report_mixed_songs() {
+        let songs = make_songs(&[("song-a", &["guitar"]), ("song-b", &["bass"])]);
+        let report = VerificationReport {
+            issues: vec![Issue {
+                severity: Severity::Warning,
+                category: "track-mappings",
+                song_name: "song-a".to_string(),
+                message: "unmapped track".to_string(),
+            }],
+        };
+        print_report(&report, &songs);
+    }
+
+    #[test]
+    fn test_print_report_mixed_severities_same_song() {
+        let songs = make_songs(&[("song-a", &["guitar", "bass"])]);
+        let report = VerificationReport {
+            issues: vec![
+                Issue {
+                    severity: Severity::Warning,
+                    category: "track-mappings",
+                    song_name: "song-a".to_string(),
+                    message: "warning issue".to_string(),
+                },
+                Issue {
+                    severity: Severity::Error,
+                    category: "track-mappings",
+                    song_name: "song-a".to_string(),
+                    message: "error issue".to_string(),
+                },
+            ],
+        };
+        print_report(&report, &songs);
+    }
 }

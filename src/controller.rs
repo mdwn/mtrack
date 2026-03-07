@@ -177,6 +177,96 @@ mod test {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn test_controller_new_with_grpc() -> Result<(), Box<dyn Error>> {
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
+        let player = Arc::new(Player::new(
+            songs.clone(),
+            Playlist::new(
+                "playlist",
+                &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
+                songs,
+            )?,
+            &config::Player::new(
+                vec![],
+                Some(config::Audio::new("mock-device")),
+                None,
+                None,
+                HashMap::new(),
+                "assets/songs",
+            ),
+            None,
+        )?);
+
+        // Use port 0 to let the OS pick an available port.
+        let grpc_config = config::GrpcController::new(0);
+        let controller =
+            super::Controller::new(vec![config::Controller::Grpc(grpc_config)], player);
+        assert!(controller.is_ok());
+        controller.unwrap().shutdown();
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_controller_new_empty_config() -> Result<(), Box<dyn Error>> {
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
+        let player = Arc::new(Player::new(
+            songs.clone(),
+            Playlist::new(
+                "playlist",
+                &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
+                songs,
+            )?,
+            &config::Player::new(
+                vec![],
+                Some(config::Audio::new("mock-device")),
+                None,
+                None,
+                HashMap::new(),
+                "assets/songs",
+            ),
+            None,
+        )?);
+
+        // Empty config vec should produce a controller with no drivers.
+        let controller = super::Controller::new(vec![], player);
+        assert!(controller.is_ok());
+        controller.unwrap().shutdown();
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_controller_new_with_osc() -> Result<(), Box<dyn Error>> {
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
+        let player = Arc::new(Player::new(
+            songs.clone(),
+            Playlist::new(
+                "playlist",
+                &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
+                songs,
+            )?,
+            &config::Player::new(
+                vec![],
+                Some(config::Audio::new("mock-device")),
+                None,
+                None,
+                HashMap::new(),
+                "assets/songs",
+            ),
+            None,
+        )?);
+
+        let osc_config = config::OscController::new();
+        let controller =
+            super::Controller::new(vec![config::Controller::Osc(Box::new(osc_config))], player);
+        assert!(controller.is_ok());
+        controller.unwrap().shutdown();
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_controller() -> Result<(), Box<dyn Error>> {
         let songs = songs::get_all_songs(Path::new("assets/songs"))?;
         let player = Arc::new(Player::new(

@@ -2052,4 +2052,247 @@ mod test {
         eventually(|| !device.is_playing(), "Song never stopped playing");
         Ok(())
     }
+
+    #[test]
+    fn wait_for_ok_succeeds_immediately() {
+        let result = Player::wait_for_ok("test", || Ok::<_, String>(42));
+        assert_eq!(result.unwrap(), 42);
+    }
+
+    #[test]
+    fn wait_for_ok_retries_then_fails() {
+        std::env::set_var("MTRACK_DEVICE_RETRY_LIMIT", "2");
+        let attempt = std::sync::atomic::AtomicU32::new(0);
+        let result = Player::wait_for_ok("test device", || {
+            attempt.fetch_add(1, Ordering::Relaxed);
+            Err::<(), String>("boom".into())
+        });
+        assert!(result.is_err());
+        assert!(attempt.load(Ordering::Relaxed) >= 2);
+        std::env::remove_var("MTRACK_DEVICE_RETRY_LIMIT");
+    }
+
+    #[test]
+    fn wait_for_ok_succeeds_after_retry() {
+        std::env::set_var("MTRACK_DEVICE_RETRY_LIMIT", "5");
+        let attempt = std::sync::atomic::AtomicU32::new(0);
+        let result = Player::wait_for_ok("test device", || {
+            let n = attempt.fetch_add(1, Ordering::Relaxed);
+            if n < 2 {
+                Err::<u32, String>("not ready".into())
+            } else {
+                Ok(99)
+            }
+        });
+        assert_eq!(result.unwrap(), 99);
+        std::env::remove_var("MTRACK_DEVICE_RETRY_LIMIT");
+    }
+
+    #[test]
+    fn status_events_new_none() {
+        let result = StatusEvents::new(None).unwrap();
+        assert!(result.is_none());
+    }
+
+    /// Helper to create a player with no subsystems via new_with_devices.
+    fn make_bare_player() -> Result<Player, Box<dyn Error>> {
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
+        let playlist = Playlist::new(
+            "playlist",
+            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
+            songs.clone(),
+        )?;
+        let devices = PlayerDevices {
+            audio: None,
+            mappings: None,
+            midi: None,
+            dmx_engine: None,
+            sample_engine: None,
+            trigger_engine: None,
+        };
+        Ok(Player::new_with_devices(devices, playlist, songs)?)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_process_sample_trigger_no_engine() -> Result<(), Box<dyn Error>> {
+        let player = make_bare_player()?;
+        player.process_sample_trigger(&[0x90, 60, 127]);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_stop_samples_no_engine() -> Result<(), Box<dyn Error>> {
+        let player = make_bare_player()?;
+        player.stop_samples();
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_broadcast_handles_no_dmx() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player()?;
+        assert!(player.broadcast_handles().is_none());
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_effect_engine_no_dmx() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player()?;
+        assert!(player.effect_engine().is_none());
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_set_broadcast_tx_no_dmx() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player()?;
+        let (tx, _rx) = tokio::sync::broadcast::channel(1);
+        player.set_broadcast_tx(tx);
+        Ok(())
+    }
+
+    #[test]
+    fn emit_midi_event_no_device() {
+        let song = Arc::new(Song::new_for_test("test", &[]));
+        Player::emit_midi_event(None, song);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_switch_to_playlist_while_playing_stays() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player()?;
+        let binding = player
+            .audio_device()
+            .expect("audio device should be present");
+        let device = binding.to_mock()?;
+
+        player.switch_to_all_songs().await;
+        assert_eq!(player.get_playlist().name(), "all_songs");
+
+        player.play().await?;
+        eventually(|| device.is_playing(), "Song never started playing");
+
+        player.switch_to_playlist().await;
+        assert_eq!(
+            player.get_playlist().name(),
+            "all_songs",
+            "switch_to_playlist should be a no-op while playing"
+        );
+
+        player.stop().await;
+        eventually(|| !device.is_playing(), "Song never stopped playing");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_prev_and_emit_no_midi() -> Result<(), Box<dyn Error>> {
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
+        let playlist = Playlist::new(
+            "test",
+            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
+            songs.clone(),
+        )?;
+
+        Player::next_and_emit(None, playlist.clone());
+        let song = Player::prev_and_emit(None, playlist);
+        assert_eq!(song.name(), "Song 1");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_new_with_devices_all_none() -> Result<(), Box<dyn Error>> {
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
+        let playlist = Playlist::new(
+            "test",
+            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
+            songs.clone(),
+        )?;
+        let devices = PlayerDevices {
+            audio: None,
+            mappings: None,
+            midi: None,
+            dmx_engine: None,
+            sample_engine: None,
+            trigger_engine: None,
+        };
+        let player = Player::new_with_devices(devices, playlist, songs)?;
+        assert!(player.audio_device().is_none());
+        assert!(player.midi_device().is_none());
+        assert!(player.dmx_engine().is_none());
+        assert!(player.track_mappings().is_none());
+        assert!(player.broadcast_handles().is_none());
+        assert!(player.effect_engine().is_none());
+        assert!(player.format_active_effects().is_none());
+        assert!(player.get_cues().is_empty());
+        assert!(!player.is_playing().await);
+        assert!(player.elapsed().await?.is_none());
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_play_from_while_playing_returns_none() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player()?;
+        let binding = player
+            .audio_device()
+            .expect("audio device should be present");
+        let device = binding.to_mock()?;
+
+        player.play().await?;
+        eventually(|| device.is_playing(), "Song never started playing");
+
+        let result = player.play_from(Duration::from_secs(1)).await?;
+        assert!(
+            result.is_none(),
+            "play_from while playing should return None"
+        );
+
+        player.stop().await;
+        eventually(|| !device.is_playing(), "Song never stopped playing");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_no_subsystem_player_play_and_navigate() -> Result<(), Box<dyn Error>> {
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
+        let playlist = Playlist::new(
+            "playlist",
+            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
+            songs.clone(),
+        )?;
+        let devices = PlayerDevices {
+            audio: None,
+            mappings: None,
+            midi: None,
+            dmx_engine: None,
+            sample_engine: None,
+            trigger_engine: None,
+        };
+        let player = Player::new_with_devices(devices, playlist, songs)?;
+
+        player.process_sample_trigger(&[0x90, 60, 127]);
+        player.stop_samples();
+
+        let song = player.next().await;
+        assert_eq!(song.name(), "Song 3");
+
+        let song = player.prev().await;
+        assert_eq!(song.name(), "Song 1");
+
+        player.play().await?;
+        eventually_async(
+            || async { !player.is_playing().await },
+            "Player never stopped after no-subsystem playback",
+        )
+        .await;
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_midi_device_accessor() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player()?;
+        assert!(player.midi_device().is_some());
+
+        let player =
+            make_test_player_with_config(Some(config::Audio::new("mock-device")), None, None)?;
+        assert!(player.midi_device().is_none());
+        Ok(())
+    }
 }
