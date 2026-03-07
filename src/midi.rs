@@ -81,6 +81,13 @@ mod test {
     use super::*;
 
     #[test]
+    fn list_devices_does_not_panic() {
+        // Exercises list_devices; on systems without a MIDI subsystem it may
+        // return an error, but it must not panic.
+        let _result = list_devices();
+    }
+
+    #[test]
     fn get_device_none_config_returns_none() {
         let result = get_device(None, None).unwrap();
         assert!(result.is_none());

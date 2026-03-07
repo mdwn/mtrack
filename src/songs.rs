@@ -1513,4 +1513,454 @@ mod test {
         assert_eq!(sorted[1].name(), "Bravo");
         assert_eq!(sorted[2].name(), "Charlie");
     }
+
+    #[test]
+    fn song_to_proto() {
+        let mut song = super::Song::new_for_test("Proto Song", &["kick", "snare"]);
+        song.duration = std::time::Duration::from_secs(90);
+        let proto = song.to_proto().unwrap();
+        assert_eq!(proto.name, "Proto Song");
+        assert_eq!(proto.tracks, vec!["kick", "snare"]);
+        let dur = proto.duration.unwrap();
+        assert_eq!(dur.seconds, 90);
+        assert_eq!(dur.nanos, 0);
+    }
+
+    #[test]
+    fn song_to_proto_zero_duration() {
+        let song = super::Song::new_for_test("Zero", &[]);
+        let proto = song.to_proto().unwrap();
+        assert_eq!(proto.name, "Zero");
+        assert!(proto.tracks.is_empty());
+    }
+
+    #[test]
+    fn song_display_no_midi() {
+        let mut song = super::Song::new_for_test("Display Song", &["t1", "t2"]);
+        song.num_channels = 2;
+        song.sample_rate = 44100;
+        song.duration = std::time::Duration::from_secs(65);
+        let display = format!("{song}");
+        assert!(display.contains("Name: Display Song"));
+        assert!(display.contains("Duration: 1:05"));
+        assert!(display.contains("Channels: 2"));
+        assert!(display.contains("Sample Rate: 44100"));
+        assert!(display.contains("Tracks: t1, t2"));
+        assert!(display.contains("Midi Message: None"));
+        assert!(display.contains("Midi File:None"));
+    }
+
+    #[test]
+    fn song_display_with_midi_playback() {
+        let mut song = super::Song::new_for_test("Midi Song", &["bass"]);
+        song.midi_playback = Some(super::MidiPlayback {
+            file: PathBuf::from("/tmp/test.mid"),
+            exclude_midi_channels: vec![],
+        });
+        let display = format!("{song}");
+        assert!(display.contains("Midi File:Some"));
+        assert!(display.contains("test.mid"));
+    }
+
+    #[test]
+    fn song_samples_config_default() {
+        let song = super::Song::new_for_test("test", &["t1"]);
+        let config = song.samples_config();
+        assert!(config.samples().is_empty());
+    }
+
+    #[test]
+    fn song_new_from_config_with_midi() -> Result<(), Box<dyn Error>> {
+        let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
+        let song_config =
+            crate::config::Song::deserialize(assets.join("songs/song1.yaml").as_path())
+                .expect("Failed to deserialize song1.yaml");
+        let start = assets.join("songs").canonicalize()?;
+        let song = super::Song::new(&start, &song_config)?;
+        assert_eq!(song.name(), "Song 1");
+        assert!(song.midi_playback().is_some());
+        assert_eq!(song.tracks().len(), 1);
+        assert_eq!(song.tracks()[0].name(), "track 1");
+        assert!(song.light_shows().is_empty());
+        assert!(song.dsl_lighting_shows().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn song_new_from_config_with_midi_event() -> Result<(), Box<dyn Error>> {
+        let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
+        let song_config =
+            crate::config::Song::deserialize(assets.join("songs/song2.yaml").as_path())
+                .expect("Failed to deserialize song2.yaml");
+        let start = assets.join("songs").canonicalize()?;
+        let song = super::Song::new(&start, &song_config)?;
+        assert_eq!(song.name(), "Song 2");
+        assert!(song.midi_event().is_some());
+        assert!(song.midi_playback().is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn song_new_from_config_multichannel() -> Result<(), Box<dyn Error>> {
+        let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
+        let song_config =
+            crate::config::Song::deserialize(assets.join("songs/song3.yaml").as_path())
+                .expect("Failed to deserialize song3.yaml");
+        let start = assets.join("songs").canonicalize()?;
+        let song = super::Song::new(&start, &song_config)?;
+        assert_eq!(song.name(), "Song 3");
+        assert_eq!(song.tracks().len(), 2);
+        assert_eq!(song.num_channels(), 2);
+        assert!(song.midi_playback().is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn song_new_from_config_eight_channels() -> Result<(), Box<dyn Error>> {
+        let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
+        let song_config =
+            crate::config::Song::deserialize(assets.join("songs/song4.yaml").as_path())
+                .expect("Failed to deserialize song4.yaml");
+        let start = assets.join("songs").canonicalize()?;
+        let song = super::Song::new(&start, &song_config)?;
+        assert_eq!(song.name(), "Song 4");
+        assert_eq!(song.tracks().len(), 8);
+        assert_eq!(song.num_channels(), 8);
+        Ok(())
+    }
+
+    #[test]
+    fn midi_playback_new_file_not_found() {
+        let song_config = crate::config::Song::new(
+            "test",
+            None,
+            Some("nonexistent.mid".to_string()),
+            None,
+            None,
+            None,
+            vec![],
+            std::collections::HashMap::new(),
+            vec![],
+        );
+        let midi_pb = song_config.midi_playback().unwrap();
+        let err = super::MidiPlayback::new(Path::new("/tmp"), midi_pb)
+            .err()
+            .expect("expected error")
+            .to_string();
+        assert!(err.contains("does not exist"), "Error: {err}");
+    }
+
+    #[test]
+    fn midi_playback_midi_sheet_valid() -> Result<(), Box<dyn Error>> {
+        // Create a minimal valid MIDI file
+        let tempdir = tempfile::tempdir()?;
+        let midi_path = tempdir.path().join("test.mid");
+        // Standard MIDI File: header chunk + one empty track
+        let midi_bytes: Vec<u8> = vec![
+            0x4D, 0x54, 0x68, 0x64, // MThd
+            0x00, 0x00, 0x00, 0x06, // chunk length = 6
+            0x00, 0x00, // format 0
+            0x00, 0x01, // 1 track
+            0x00, 0x60, // 96 ticks per beat
+            0x4D, 0x54, 0x72, 0x6B, // MTrk
+            0x00, 0x00, 0x00, 0x04, // chunk length = 4
+            0x00, 0xFF, 0x2F, 0x00, // delta=0, end of track
+        ];
+        fs::write(&midi_path, &midi_bytes)?;
+        let song_config = crate::config::Song::new(
+            "test",
+            None,
+            Some("test.mid".to_string()),
+            None,
+            None,
+            None,
+            vec![],
+            std::collections::HashMap::new(),
+            vec![],
+        );
+        let midi_pb = song_config.midi_playback().unwrap();
+        let playback = super::MidiPlayback::new(tempdir.path(), midi_pb)?;
+        let _sheet = playback.midi_sheet()?;
+        Ok(())
+    }
+
+    #[test]
+    fn midi_playback_exclude_channels() -> Result<(), Box<dyn Error>> {
+        // Create a minimal valid MIDI file for the test
+        let tempdir = tempfile::tempdir()?;
+        let midi_path = tempdir.path().join("test.mid");
+        let midi_bytes: Vec<u8> = vec![
+            0x4D, 0x54, 0x68, 0x64, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x01, 0x00, 0x60,
+            0x4D, 0x54, 0x72, 0x6B, 0x00, 0x00, 0x00, 0x04, 0x00, 0xFF, 0x2F, 0x00,
+        ];
+        fs::write(&midi_path, &midi_bytes)?;
+        let song_config = crate::config::Song::new(
+            "test",
+            None,
+            Some("test.mid".to_string()),
+            None,
+            None,
+            None,
+            vec![],
+            std::collections::HashMap::new(),
+            vec![],
+        );
+        let midi_pb = song_config.midi_playback().unwrap();
+        let playback = super::MidiPlayback::new(tempdir.path(), midi_pb)?;
+        let excluded = playback.exclude_midi_channels();
+        assert!(excluded.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn light_show_new_file_not_found() {
+        let config = crate::config::LightShow::new(
+            "universe".to_string(),
+            "nonexistent.mid".to_string(),
+            None,
+        );
+        let err = super::LightShow::new(Path::new("/tmp"), &config)
+            .err()
+            .expect("expected error")
+            .to_string();
+        assert!(err.contains("does not exist"), "Error: {err}");
+    }
+
+    #[test]
+    fn track_new_file_not_found() {
+        let config =
+            crate::config::Track::new("test track".to_string(), "nonexistent.wav", Some(1));
+        let err = super::Track::new(Path::new("/tmp"), &config)
+            .err()
+            .expect("expected error")
+            .to_string();
+        assert!(err.contains("track \"test track\""), "Error: {err}");
+    }
+
+    #[test]
+    fn track_new_multichannel_without_file_channel() {
+        let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
+        let config = crate::config::Track::new("stereo".to_string(), "2Channel44.1k.wav", None);
+        let err = super::Track::new(&assets, &config)
+            .err()
+            .expect("expected error")
+            .to_string();
+        assert!(err.contains("more than one channel"), "Error: {err}");
+    }
+
+    #[test]
+    fn track_load_tracks_wrong_extension() {
+        let err = super::Track::load_tracks(&PathBuf::from("/tmp/test.mp3"))
+            .err()
+            .expect("expected error")
+            .to_string();
+        assert!(err.contains(".mp3"), "Error: {err}");
+    }
+
+    #[test]
+    fn track_load_tracks_mono() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let wav_path = tempdir.path().join("mono.wav");
+        crate::testutil::write_wav(wav_path.clone(), vec![vec![1_i32, 2, 3, 4, 5]], 44100)?;
+        let tracks = super::Track::load_tracks(&wav_path)?;
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].name(), "mono");
+        assert_eq!(tracks[0].file_channel(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn track_load_tracks_stereo() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let wav_path = tempdir.path().join("stereo.wav");
+        crate::testutil::write_wav(
+            wav_path.clone(),
+            vec![vec![1_i32, 2, 3, 4, 5], vec![5, 4, 3, 2, 1]],
+            44100,
+        )?;
+        let tracks = super::Track::load_tracks(&wav_path)?;
+        assert_eq!(tracks.len(), 2);
+        assert_eq!(tracks[0].name(), "stereo-l");
+        assert_eq!(tracks[0].file_channel(), 1);
+        assert_eq!(tracks[1].name(), "stereo-r");
+        assert_eq!(tracks[1].file_channel(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn track_load_tracks_multichannel() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let wav_path = tempdir.path().join("multi.wav");
+        let channels: Vec<Vec<i32>> = (0..4).map(|i| vec![i; 5]).collect();
+        crate::testutil::write_wav(wav_path.clone(), channels, 44100)?;
+        let tracks = super::Track::load_tracks(&wav_path)?;
+        assert_eq!(tracks.len(), 4);
+        assert_eq!(tracks[0].name(), "multi-0");
+        assert_eq!(tracks[0].file_channel(), 1);
+        assert_eq!(tracks[3].name(), "multi-3");
+        assert_eq!(tracks[3].file_channel(), 4);
+        Ok(())
+    }
+
+    #[test]
+    fn track_get_config() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let wav_path = tempdir.path().join("test.wav");
+        crate::testutil::write_wav(wav_path.clone(), vec![vec![1_i32, 2, 3]], 44100)?;
+        let tracks = super::Track::load_tracks(&wav_path)?;
+        let config = tracks[0].get_config();
+        assert_eq!(config.name(), "test");
+        assert_eq!(config.file_channel(), Some(1));
+        Ok(())
+    }
+
+    #[test]
+    fn dsl_lighting_show_file_not_found() {
+        let config = crate::config::LightingShow::new("nonexistent.dsl".to_string());
+        let err = super::DslLightingShow::new(Path::new("/tmp"), &config)
+            .err()
+            .expect("expected error")
+            .to_string();
+        assert!(err.contains("does not exist"), "Error: {err}");
+    }
+
+    #[test]
+    fn dsl_lighting_show_parse_error() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        fs::write(tempdir.path().join("bad.dsl"), "show {")?;
+        let config = crate::config::LightingShow::new("bad.dsl".to_string());
+        let err = super::DslLightingShow::new(tempdir.path(), &config)
+            .err()
+            .expect("expected error")
+            .to_string();
+        assert!(
+            err.contains("Failed to parse DSL lighting show"),
+            "Error: {err}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn dsl_lighting_show_valid() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        fs::write(tempdir.path().join("valid.dsl"), "# just a comment\n")?;
+        let config = crate::config::LightingShow::new("valid.dsl".to_string());
+        let show = super::DslLightingShow::new(tempdir.path(), &config)?;
+        assert_eq!(show.file_path(), tempdir.path().join("valid.dsl"));
+        assert!(show.shows().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn dsl_lighting_show_absolute_path() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let abs_path = tempdir.path().join("absolute.dsl");
+        fs::write(&abs_path, "")?;
+        let config = crate::config::LightingShow::new(abs_path.to_string_lossy().to_string());
+        let show = super::DslLightingShow::new(Path::new("/some/other/path"), &config)?;
+        assert_eq!(show.file_path(), abs_path);
+        Ok(())
+    }
+
+    #[test]
+    fn song_initialize_with_subdirectory() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("my_song");
+        fs::create_dir(&song_dir)?;
+        fs::create_dir(song_dir.join("subdir"))?;
+        crate::testutil::write_wav(
+            song_dir.join("track.wav"),
+            vec![vec![1_i32, 2, 3, 4, 5]],
+            44100,
+        )?;
+        let song = super::Song::initialize(&song_dir)?;
+        assert_eq!(song.name(), "my_song");
+        assert_eq!(song.tracks().len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn song_initialize_unknown_extension() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("unknown_ext_song");
+        fs::create_dir(&song_dir)?;
+        fs::write(song_dir.join("notes.txt"), "some notes")?;
+        let song = super::Song::initialize(&song_dir)?;
+        assert!(song.tracks().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn song_get_config_roundtrip() -> Result<(), Box<dyn Error>> {
+        let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
+        let song_config =
+            crate::config::Song::deserialize(assets.join("songs/song1.yaml").as_path())
+                .expect("Failed to deserialize song1.yaml");
+        let start = assets.join("songs").canonicalize()?;
+        let song = super::Song::new(&start, &song_config)?;
+        let config = song.get_config();
+        assert_eq!(config.name(), "Song 1");
+        assert_eq!(config.tracks().len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn needs_transcoding_no_tracks() {
+        use crate::audio::TargetFormat;
+        let song = super::Song {
+            tracks: vec![],
+            ..Default::default()
+        };
+        let target = TargetFormat::new(44100, crate::audio::SampleFormat::Int, 16).unwrap();
+        assert!(!song.needs_transcoding(&target));
+    }
+
+    #[test]
+    fn needs_transcoding_bad_file() {
+        use crate::audio::TargetFormat;
+        let song = super::Song {
+            tracks: vec![super::Track {
+                name: "bad".to_string(),
+                file: PathBuf::from("/nonexistent/file.wav"),
+                file_channel: 1,
+                sample_rate: 44100,
+                sample_format: crate::audio::SampleFormat::Int,
+                duration: std::time::Duration::ZERO,
+            }],
+            ..Default::default()
+        };
+        let target = TargetFormat::new(44100, crate::audio::SampleFormat::Int, 16).unwrap();
+        assert!(song.needs_transcoding(&target));
+    }
+
+    #[test]
+    fn get_all_songs_skips_git_directory() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        fs::create_dir(tempdir.path().join(".git"))?;
+        let songs = get_all_songs(tempdir.path())?;
+        assert!(songs.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn get_all_songs_with_song_config() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("my_song");
+        fs::create_dir(&song_dir)?;
+        crate::testutil::write_wav(
+            song_dir.join("track.wav"),
+            vec![vec![1_i32, 2, 3, 4, 5]],
+            44100,
+        )?;
+        initialize_songs(tempdir.path())?;
+        let songs = get_all_songs(tempdir.path())?;
+        assert_eq!(songs.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn get_all_songs_nonexistent_path() {
+        let result = get_all_songs(Path::new("/nonexistent/path"));
+        assert!(result.is_err());
+    }
 }

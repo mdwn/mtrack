@@ -122,3 +122,59 @@ pub fn get_device(config: Option<config::Audio>) -> Result<Arc<dyn Device>, Box<
 
     Ok(Arc::new(cpal::Device::get(config)?))
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn get_device_none_returns_error() {
+        let result = get_device(None);
+        match result {
+            Err(e) => assert!(e.to_string().contains("audio device specified")),
+            Ok(_) => panic!("expected error for None config"),
+        }
+    }
+
+    #[test]
+    fn get_device_mock_returns_ok() {
+        let config = config::Audio::new("mock-device");
+        let result = get_device(Some(config));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn default_mixer_returns_none() {
+        struct Dummy;
+        impl fmt::Display for Dummy {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "dummy")
+            }
+        }
+        impl Device for Dummy {
+            fn play_from(
+                &self,
+                _song: Arc<Song>,
+                _mappings: &HashMap<String, Vec<u16>>,
+                _cancel_handle: CancelHandle,
+                _play_barrier: Arc<Barrier>,
+                _start_time: Duration,
+            ) -> Result<(), Box<dyn Error>> {
+                Ok(())
+            }
+            fn to_mock(&self) -> Result<Arc<mock::Device>, Box<dyn Error>> {
+                Err("not a mock".into())
+            }
+        }
+        let d = Dummy;
+        assert!(d.mixer().is_none());
+        assert!(d.source_sender().is_none());
+    }
+
+    #[test]
+    fn next_source_id_increments() {
+        let id1 = next_source_id();
+        let id2 = next_source_id();
+        assert!(id2 > id1);
+    }
+}
