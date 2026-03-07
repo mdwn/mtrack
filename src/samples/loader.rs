@@ -241,6 +241,7 @@ impl std::fmt::Debug for SampleLoader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::samples::{VelocityConfig, VelocityLayer};
 
     #[test]
     fn test_transcode_samples() {
@@ -367,6 +368,124 @@ mod tests {
         assert!(debug_str.contains("SampleLoader"));
         assert!(debug_str.contains("cached_samples"));
         assert!(debug_str.contains("target_sample_rate"));
+    }
+
+    #[test]
+    fn test_load_wav_file() {
+        let mut loader = SampleLoader::new(44100);
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/1Channel44.1k.wav");
+
+        let sample = loader.load(&path).unwrap();
+        assert_eq!(sample.channel_count(), 1);
+        assert!(sample.memory_size() > 0);
+        assert!(loader.total_memory_usage() > 0);
+    }
+
+    #[test]
+    fn test_load_caches_sample() {
+        let mut loader = SampleLoader::new(44100);
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/1Channel44.1k.wav");
+
+        let sample1 = loader.load(&path).unwrap();
+        let sample2 = loader.load(&path).unwrap();
+
+        // Both should have the same data (Arc sharing)
+        assert_eq!(sample1.memory_size(), sample2.memory_size());
+        // Memory usage should not double
+        assert_eq!(loader.total_memory_usage(), sample1.memory_size());
+    }
+
+    #[test]
+    fn test_load_stereo_file() {
+        let mut loader = SampleLoader::new(44100);
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/2Channel44.1k.wav");
+
+        let sample = loader.load(&path).unwrap();
+        assert_eq!(sample.channel_count(), 2);
+    }
+
+    #[test]
+    fn test_load_with_transcoding() {
+        // Load a 22.05kHz file with a 44.1kHz target — should transcode
+        let mut loader = SampleLoader::new(44100);
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/1Channel22.05k.wav");
+
+        let sample = loader.load(&path).unwrap();
+        assert_eq!(sample.channel_count(), 1);
+        assert!(sample.memory_size() > 0);
+    }
+
+    #[test]
+    fn test_load_nonexistent_file() {
+        let mut loader = SampleLoader::new(44100);
+        let path = PathBuf::from("/nonexistent/file.wav");
+
+        let result = loader.load(&path);
+        assert!(result.is_err());
+        assert!(result
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("Failed to load sample"));
+    }
+
+    #[test]
+    fn test_load_definition_single_file() {
+        let mut loader = SampleLoader::new(44100);
+        let base_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
+        let definition = SampleDefinition::new(
+            Some("1Channel44.1k.wav".to_string()),
+            vec![1],
+            VelocityConfig::ignore(None),
+            crate::config::samples::ReleaseBehavior::PlayToCompletion,
+            crate::config::samples::RetriggerBehavior::Cut,
+            None,
+            50,
+        );
+
+        let loaded = loader.load_definition(&definition, &base_path).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert!(loaded.contains_key(&base_path.join("1Channel44.1k.wav")));
+    }
+
+    #[test]
+    fn test_load_definition_missing_file() {
+        let mut loader = SampleLoader::new(44100);
+        let base_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
+        let definition = SampleDefinition::new(
+            Some("nonexistent.wav".to_string()),
+            vec![1],
+            VelocityConfig::ignore(None),
+            crate::config::samples::ReleaseBehavior::PlayToCompletion,
+            crate::config::samples::RetriggerBehavior::Cut,
+            None,
+            50,
+        );
+
+        let result = loader.load_definition(&definition, &base_path);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_load_definition_with_layers() {
+        let mut loader = SampleLoader::new(44100);
+        let base_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
+        let layers = vec![
+            VelocityLayer::new([1, 80], "1Channel44.1k.wav".to_string()),
+            VelocityLayer::new([81, 127], "2Channel44.1k.wav".to_string()),
+        ];
+        let definition = SampleDefinition::new(
+            None,
+            vec![1],
+            VelocityConfig::with_layers(layers, false),
+            crate::config::samples::ReleaseBehavior::PlayToCompletion,
+            crate::config::samples::RetriggerBehavior::Cut,
+            None,
+            50,
+        );
+
+        let loaded = loader.load_definition(&definition, &base_path).unwrap();
+        assert_eq!(loaded.len(), 2);
     }
 
     #[test]
