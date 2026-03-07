@@ -485,4 +485,22 @@ mod tests {
         assert_eq!(mp.file(), "song.mid");
         assert_eq!(mp.exclude_midi_channels(), vec![9, 15]);
     }
+
+    #[test]
+    fn save_creates_file() {
+        let song = minimal_song();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("song.yaml");
+        song.save(&path).unwrap();
+        assert!(path.exists());
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("Test Song"));
+    }
+
+    #[test]
+    fn save_fails_on_invalid_path() {
+        let song = minimal_song();
+        let result = song.save(Path::new("/nonexistent/directory/song.yaml"));
+        assert!(result.is_err());
+    }
 }
