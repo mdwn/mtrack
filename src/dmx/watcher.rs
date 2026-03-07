@@ -247,3 +247,553 @@ fn resolve_effect_groups(
     }
     effect
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn reload_timeline_with_valid_file_at_zero() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dsl_path = tmp_dir.path().join("show.light");
+        std::fs::write(
+            &dsl_path,
+            r#"show "test" {
+    @00:00.000
+    front_wash: static color: "blue", dimmer: 100%
+}"#,
+        )
+        .unwrap();
+
+        let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
+        let timeline = Arc::new(Mutex::new(None));
+        let song_time = Arc::new(Mutex::new(Duration::ZERO));
+
+        let result = reload_timeline(
+            &[dsl_path],
+            &effect_engine,
+            &timeline,
+            &song_time,
+            None,
+            None,
+        );
+        assert!(result.is_ok());
+        assert!(timeline.lock().is_some());
+    }
+
+    #[test]
+    fn reload_timeline_with_valid_file_at_nonzero() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dsl_path = tmp_dir.path().join("show.light");
+        std::fs::write(
+            &dsl_path,
+            r#"show "test" {
+    @00:00.000
+    front_wash: static color: "blue", dimmer: 100%
+    @00:05.000
+    front_wash: static color: "red", dimmer: 50%
+}"#,
+        )
+        .unwrap();
+
+        let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
+        let timeline = Arc::new(Mutex::new(None));
+        let song_time = Arc::new(Mutex::new(Duration::from_secs(3)));
+
+        let result = reload_timeline(
+            &[dsl_path],
+            &effect_engine,
+            &timeline,
+            &song_time,
+            None,
+            None,
+        );
+        assert!(result.is_ok());
+        assert!(timeline.lock().is_some());
+    }
+
+    #[test]
+    fn reload_timeline_with_missing_file() {
+        let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
+        let timeline = Arc::new(Mutex::new(None));
+        let song_time = Arc::new(Mutex::new(Duration::ZERO));
+
+        let result = reload_timeline(
+            &[PathBuf::from("/nonexistent/show.light")],
+            &effect_engine,
+            &timeline,
+            &song_time,
+            None,
+            None,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn reload_timeline_with_invalid_dsl() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dsl_path = tmp_dir.path().join("bad.light");
+        std::fs::write(&dsl_path, "this is not valid DSL {").unwrap();
+
+        let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
+        let timeline = Arc::new(Mutex::new(None));
+        let song_time = Arc::new(Mutex::new(Duration::ZERO));
+
+        let result = reload_timeline(
+            &[dsl_path],
+            &effect_engine,
+            &timeline,
+            &song_time,
+            None,
+            None,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn reload_timeline_with_validation() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dsl_path = tmp_dir.path().join("show.light");
+        std::fs::write(
+            &dsl_path,
+            r#"show "test" {
+    @00:00.000
+    front_wash: static color: "blue", dimmer: 100%
+}"#,
+        )
+        .unwrap();
+
+        // Lighting config with "front_wash" defined so validation passes
+        let lighting_config = crate::config::Lighting::new(
+            None,
+            Some({
+                let mut fixtures = std::collections::HashMap::new();
+                fixtures.insert("front_wash".to_string(), "Generic_Dimmer @ 1:1".to_string());
+                fixtures
+            }),
+            None,
+            None,
+        );
+
+        let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
+        let timeline = Arc::new(Mutex::new(None));
+        let song_time = Arc::new(Mutex::new(Duration::ZERO));
+
+        let result = reload_timeline(
+            &[dsl_path],
+            &effect_engine,
+            &timeline,
+            &song_time,
+            None,
+            Some(&lighting_config),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn reload_timeline_validation_failure() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dsl_path = tmp_dir.path().join("show.light");
+        std::fs::write(
+            &dsl_path,
+            r#"show "test" {
+    @00:00.000
+    unknown_fixture: static color: "blue", dimmer: 100%
+}"#,
+        )
+        .unwrap();
+
+        // Lighting config WITHOUT "unknown_fixture" — validation will fail
+        let lighting_config = crate::config::Lighting::new(
+            None,
+            Some({
+                let mut fixtures = std::collections::HashMap::new();
+                fixtures.insert("front_wash".to_string(), "Generic_Dimmer @ 1:1".to_string());
+                fixtures
+            }),
+            None,
+            None,
+        );
+
+        let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
+        let timeline = Arc::new(Mutex::new(None));
+        let song_time = Arc::new(Mutex::new(Duration::ZERO));
+
+        let result = reload_timeline(
+            &[dsl_path],
+            &effect_engine,
+            &timeline,
+            &song_time,
+            None,
+            Some(&lighting_config),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn reload_timeline_with_lighting_system() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dsl_path = tmp_dir.path().join("show.light");
+        std::fs::write(
+            &dsl_path,
+            r#"show "test" {
+    @00:00.000
+    front_wash: static color: "blue", dimmer: 100%
+}"#,
+        )
+        .unwrap();
+
+        let mut ls = LightingSystem::new();
+        let _ = ls.load(
+            &crate::config::Lighting::new(None, None, None, None),
+            tmp_dir.path(),
+        );
+        let lighting_system = Arc::new(Mutex::new(ls));
+
+        let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
+        let timeline = Arc::new(Mutex::new(None));
+        let song_time = Arc::new(Mutex::new(Duration::from_secs(1)));
+
+        let result = reload_timeline(
+            &[dsl_path],
+            &effect_engine,
+            &timeline,
+            &song_time,
+            Some(&lighting_system),
+            None,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn reload_timeline_empty_shows_file() {
+        // A DSL file that has no show blocks should give "No shows found" error
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dsl_path = tmp_dir.path().join("empty.light");
+        // Write a valid DSL file but with empty content (no show blocks)
+        std::fs::write(&dsl_path, "// just a comment\n").unwrap();
+
+        let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
+        let timeline = Arc::new(Mutex::new(None));
+        let song_time = Arc::new(Mutex::new(Duration::ZERO));
+
+        let result = reload_timeline(
+            &[dsl_path],
+            &effect_engine,
+            &timeline,
+            &song_time,
+            None,
+            None,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("No shows found"));
+    }
+
+    #[test]
+    fn reload_timeline_at_nonzero_with_layer_commands() {
+        // Use a DSL file with a "clear()" command to cover the layer_commands path
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dsl_path = tmp_dir.path().join("show.light");
+        std::fs::write(
+            &dsl_path,
+            r#"show "test" {
+    @00:00.000
+    front_wash: static color: "blue", dimmer: 100%
+    @00:01.000
+    clear()
+    @00:02.000
+    front_wash: static color: "red", dimmer: 50%
+}"#,
+        )
+        .unwrap();
+
+        let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
+        let timeline = Arc::new(Mutex::new(None));
+        // Set song_time > 0 to exercise the layer_commands/stop_sequences path
+        let song_time = Arc::new(Mutex::new(Duration::from_secs(3)));
+
+        let result = reload_timeline(
+            &[dsl_path],
+            &effect_engine,
+            &timeline,
+            &song_time,
+            None,
+            None,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn reload_timeline_at_nonzero_with_stop_sequence() {
+        // Use a DSL file with a stop sequence command
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dsl_path = tmp_dir.path().join("show.light");
+        std::fs::write(
+            &dsl_path,
+            r#"
+sequence "flash" {
+    @00:00.000
+    front_wash: static color: "white", dimmer: 100%
+    @00:00.500
+    front_wash: static color: "black", dimmer: 0%
+}
+
+show "test" {
+    @00:00.000
+    sequence "flash"
+    @00:01.000
+    stop sequence "flash"
+    @00:02.000
+    front_wash: static color: "red", dimmer: 50%
+}"#,
+        )
+        .unwrap();
+
+        let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
+        let timeline = Arc::new(Mutex::new(None));
+        // Set song_time past the stop sequence cue
+        let song_time = Arc::new(Mutex::new(Duration::from_secs(3)));
+
+        let result = reload_timeline(
+            &[dsl_path],
+            &effect_engine,
+            &timeline,
+            &song_time,
+            None,
+            None,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn resolve_effect_groups_without_system() {
+        let effect = crate::lighting::EffectInstance::new(
+            "test".to_string(),
+            crate::lighting::effects::EffectType::Static {
+                parameters: std::collections::HashMap::new(),
+                duration: None,
+            },
+            vec!["group1".to_string()],
+            None,
+            None,
+            None,
+        );
+
+        let resolved = resolve_effect_groups(None, effect);
+        assert_eq!(resolved.target_fixtures, vec!["group1".to_string()]);
+    }
+
+    #[test]
+    fn resolve_effect_groups_with_system() {
+        let ls = LightingSystem::new();
+        let lighting_system = Arc::new(Mutex::new(ls));
+
+        let effect = crate::lighting::EffectInstance::new(
+            "test".to_string(),
+            crate::lighting::effects::EffectType::Static {
+                parameters: std::collections::HashMap::new(),
+                duration: None,
+            },
+            vec!["group1".to_string()],
+            None,
+            None,
+            None,
+        );
+
+        let _resolved = resolve_effect_groups(Some(&lighting_system), effect);
+    }
+
+    #[test]
+    fn reload_multiple_files() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dsl_path1 = tmp_dir.path().join("show1.light");
+        let dsl_path2 = tmp_dir.path().join("show2.light");
+        std::fs::write(
+            &dsl_path1,
+            r#"show "show1" {
+    @00:00.000
+    front_wash: static color: "blue", dimmer: 100%
+}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            &dsl_path2,
+            r#"show "show2" {
+    @00:01.000
+    rear_wash: static color: "red", dimmer: 50%
+}"#,
+        )
+        .unwrap();
+
+        let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
+        let timeline = Arc::new(Mutex::new(None));
+        let song_time = Arc::new(Mutex::new(Duration::ZERO));
+
+        let result = reload_timeline(
+            &[dsl_path1, dsl_path2],
+            &effect_engine,
+            &timeline,
+            &song_time,
+            None,
+            None,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn start_watching_and_trigger_reload() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dsl_path = tmp_dir.path().join("show.light");
+        std::fs::write(
+            &dsl_path,
+            r#"show "test" {
+    @00:00.000
+    front_wash: static color: "blue", dimmer: 100%
+}"#,
+        )
+        .unwrap();
+
+        let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
+        let timeline = Arc::new(Mutex::new(None));
+        let song_time = Arc::new(Mutex::new(Duration::ZERO));
+        let (tx, mut rx) = broadcast::channel(16);
+
+        let _handle = start_watching(
+            vec![dsl_path.clone()],
+            effect_engine,
+            timeline.clone(),
+            song_time,
+            None,
+            None,
+            tx,
+        )
+        .unwrap();
+
+        // Modify the file to trigger a reload event
+        std::thread::sleep(Duration::from_millis(500));
+        std::fs::write(
+            &dsl_path,
+            r#"show "test" {
+    @00:00.000
+    front_wash: static color: "red", dimmer: 50%
+}"#,
+        )
+        .unwrap();
+
+        // Wait for the debounced event (300ms debounce + processing time)
+        // Check for a broadcast message within a reasonable timeout
+        let start = std::time::Instant::now();
+        let mut received = false;
+        while start.elapsed() < Duration::from_secs(5) {
+            match rx.try_recv() {
+                Ok(msg) => {
+                    assert!(
+                        msg.contains("reload"),
+                        "Expected reload message, got: {}",
+                        msg
+                    );
+                    received = true;
+                    break;
+                }
+                Err(broadcast::error::TryRecvError::Empty) => {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                Err(e) => panic!("Unexpected error: {:?}", e),
+            }
+        }
+        assert!(received, "Should have received a reload broadcast message");
+
+        // Timeline should have been updated
+        assert!(
+            timeline.lock().is_some(),
+            "Timeline should be set after reload"
+        );
+    }
+
+    #[test]
+    fn start_watching_reload_error_path() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dsl_path = tmp_dir.path().join("show.light");
+        std::fs::write(
+            &dsl_path,
+            r#"show "test" {
+    @00:00.000
+    front_wash: static color: "blue", dimmer: 100%
+}"#,
+        )
+        .unwrap();
+
+        let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
+        let timeline = Arc::new(Mutex::new(None));
+        let song_time = Arc::new(Mutex::new(Duration::ZERO));
+        let (tx, mut rx) = broadcast::channel(16);
+
+        let _handle = start_watching(
+            vec![dsl_path.clone()],
+            effect_engine,
+            timeline,
+            song_time,
+            None,
+            None,
+            tx,
+        )
+        .unwrap();
+
+        // Wait for watcher to be established
+        std::thread::sleep(Duration::from_millis(500));
+
+        // Corrupt the file to trigger a reload error
+        std::fs::write(&dsl_path, "invalid DSL content {{{").unwrap();
+
+        // Wait for the error broadcast
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(5) {
+            match rx.try_recv() {
+                Ok(msg) => {
+                    assert!(
+                        msg.contains("error"),
+                        "Expected error reload message, got: {}",
+                        msg
+                    );
+                    break;
+                }
+                Err(broadcast::error::TryRecvError::Empty) => {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                Err(e) => panic!("Unexpected error: {:?}", e),
+            }
+        }
+    }
+
+    #[test]
+    fn start_watching_returns_handle() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let dsl_path = tmp_dir.path().join("show.light");
+        std::fs::write(
+            &dsl_path,
+            r#"show "test" {
+    @00:00.000
+    front_wash: static color: "blue", dimmer: 100%
+}"#,
+        )
+        .unwrap();
+
+        let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
+        let timeline = Arc::new(Mutex::new(None));
+        let song_time = Arc::new(Mutex::new(Duration::ZERO));
+        let (tx, _rx) = broadcast::channel(16);
+
+        let result = start_watching(
+            vec![dsl_path],
+            effect_engine,
+            timeline,
+            song_time,
+            None,
+            None,
+            tx,
+        );
+        assert!(result.is_ok());
+
+        // WatcherHandle drops here, stopping the watcher
+    }
+}

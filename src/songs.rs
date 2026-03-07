@@ -28,16 +28,19 @@ use tracing::{debug, info, warn};
 
 use crate::audio::TargetFormat;
 use crate::config;
+use crate::lighting::parser::LightShow as ParsedLightShow;
 use crate::proto::player;
 use crate::util::filename_display;
 
 const AUDIO_EXTENSIONS: &[&str] = &["wav", "mid"];
 
-/// A resolved DSL lighting show with absolute file path
+/// A resolved DSL lighting show with absolute file path and cached parsed shows.
 #[derive(Debug, Clone)]
 pub struct DslLightingShow {
     /// The absolute path to the DSL file
     file_path: PathBuf,
+    /// Cached parsed light shows from the DSL file
+    shows: HashMap<String, ParsedLightShow>,
 }
 
 impl DslLightingShow {
@@ -67,7 +70,7 @@ impl DslLightingShow {
             )
         })?;
 
-        crate::lighting::parser::parse_light_shows(&content).map_err(|e| {
+        let shows = crate::lighting::parser::parse_light_shows(&content).map_err(|e| {
             // Prepend the file path to the error, preserving newlines in the original error
             format!(
                 "Failed to parse DSL lighting show {}:\n{}",
@@ -76,12 +79,17 @@ impl DslLightingShow {
             )
         })?;
 
-        Ok(DslLightingShow { file_path })
+        Ok(DslLightingShow { file_path, shows })
     }
 
     /// Gets the absolute file path
     pub fn file_path(&self) -> &Path {
         &self.file_path
+    }
+
+    /// Gets the cached parsed light shows
+    pub fn shows(&self) -> &HashMap<String, ParsedLightShow> {
+        &self.shows
     }
 }
 
