@@ -182,6 +182,16 @@ use crate::{
 };
 use std::sync::Barrier;
 
+/// Maps a TargetFormat to the corresponding cpal::SampleFormat.
+fn target_to_cpal_sample_format(format: SampleFormat, bits_per_sample: u16) -> cpal::SampleFormat {
+    match (format, bits_per_sample) {
+        (SampleFormat::Float, _) => cpal::SampleFormat::F32,
+        (SampleFormat::Int, 16) => cpal::SampleFormat::I16,
+        (SampleFormat::Int, 32) => cpal::SampleFormat::I32,
+        _ => cpal::SampleFormat::I32,
+    }
+}
+
 /// Returns the minimum supported output buffer size (frames) for the device and format, if known.
 fn min_supported_buffer_size(
     device: &cpal::Device,
@@ -190,12 +200,8 @@ fn min_supported_buffer_size(
 ) -> Option<u32> {
     use cpal::SupportedBufferSize;
     let rate = target_format.sample_rate;
-    let want_cpal_format = match (target_format.sample_format, target_format.bits_per_sample) {
-        (SampleFormat::Float, _) => cpal::SampleFormat::F32,
-        (SampleFormat::Int, 16) => cpal::SampleFormat::I16,
-        (SampleFormat::Int, 32) => cpal::SampleFormat::I32,
-        _ => cpal::SampleFormat::I32,
-    };
+    let want_cpal_format =
+        target_to_cpal_sample_format(target_format.sample_format, target_format.bits_per_sample);
     let configs = device.supported_output_configs().ok()?;
     let mut best_min = None::<u32>;
     for range in configs {
@@ -253,6 +259,175 @@ fn resolve_buffer_size(
         Some(StreamBufferSize::Default) => None,
         Some(StreamBufferSize::Min) => min_supported.or(Some(fallback_buffer_size)),
         Some(StreamBufferSize::Fixed(n)) => Some(n as u32),
+    }
+}
+
+// ── Output stream abstraction ────────────────────────────────────────
+
+/// A playing audio output stream. Dropping it stops playback.
+/// Wraps the backend-specific stream handle so the lifecycle code in
+/// `start_output_thread` is backend-agnostic.
+pub(crate) trait OutputStream: Send {}
+
+/// Factory that builds output streams for a specific device + format.
+/// Implementations own the device handle and format details; the thread
+/// only asks "give me a new stream" each time recovery is needed.
+pub(crate) trait OutputStreamFactory: Send + 'static {
+    /// Build a new output stream that mixes audio from `mixer`, draining
+    /// new sources from `source_rx`.  The implementation must wire the
+    /// `error_notify` condvar so the lifecycle thread can detect backend
+    /// errors and recreate the stream.
+    fn build_stream(
+        &self,
+        mixer: AudioMixer,
+        source_rx: crossbeam_channel::Receiver<MixerActiveSource>,
+        num_channels: u16,
+        error_notify: Arc<(Mutex<bool>, Condvar)>,
+    ) -> Result<Box<dyn OutputStream>, Box<dyn Error>>;
+}
+
+/// Wraps a `cpal::Stream` so it satisfies `OutputStream`.
+struct CpalOutputStream {
+    _stream: cpal::Stream,
+}
+
+impl OutputStream for CpalOutputStream {}
+
+/// Builds CPAL output streams for a given device, format, and buffer config.
+struct CpalOutputStreamFactory {
+    device: cpal::Device,
+    target_format: TargetFormat,
+    config: cpal::StreamConfig,
+    max_samples: usize,
+}
+
+impl CpalOutputStreamFactory {
+    fn new(
+        device: cpal::Device,
+        target_format: TargetFormat,
+        output_buffer_size: Option<u32>,
+    ) -> Self {
+        let buffer_size = match output_buffer_size {
+            Some(size) => cpal::BufferSize::Fixed(size),
+            None => cpal::BufferSize::Default,
+        };
+        // Template config — num_channels is filled in at build_stream time.
+        let config = cpal::StreamConfig {
+            channels: 0,
+            sample_rate: target_format.sample_rate,
+            buffer_size,
+        };
+        let max_samples = output_buffer_size
+            .map(|f| f as usize * 64)
+            .unwrap_or(4096 * 64);
+
+        Self {
+            device,
+            target_format,
+            config,
+            max_samples,
+        }
+    }
+}
+
+impl OutputStreamFactory for CpalOutputStreamFactory {
+    fn build_stream(
+        &self,
+        mixer: AudioMixer,
+        source_rx: crossbeam_channel::Receiver<MixerActiveSource>,
+        num_channels: u16,
+        error_notify: Arc<(Mutex<bool>, Condvar)>,
+    ) -> Result<Box<dyn OutputStream>, Box<dyn Error>> {
+        // Finalize config with actual channel count / sample rate from mixer.
+        let config = cpal::StreamConfig {
+            channels: num_channels,
+            sample_rate: self.target_format.sample_rate,
+            buffer_size: self.config.buffer_size,
+        };
+        let max_samples = self.max_samples.max(num_channels as usize * 4096);
+
+        let stream = if self.target_format.sample_format == SampleFormat::Float {
+            let mut callback = create_direct_f32_callback(mixer, source_rx, num_channels);
+            let notify = error_notify;
+            self.device.build_output_stream(
+                &config,
+                move |data: &mut [f32], info: &cpal::OutputCallbackInfo| {
+                    callback(data, info);
+                },
+                move |err: cpal::StreamError| {
+                    error!(
+                        "CPAL output stream error: {} (will attempt to recover)",
+                        err
+                    );
+                    let (mutex, condvar) = &*notify;
+                    let mut guard = mutex.lock();
+                    *guard = true;
+                    condvar.notify_one();
+                },
+                None,
+            )?
+        } else {
+            match self.target_format.bits_per_sample {
+                16 => {
+                    let mut callback = create_direct_int_callback::<i16>(
+                        mixer,
+                        source_rx,
+                        num_channels,
+                        max_samples,
+                    );
+                    let notify = error_notify;
+                    self.device.build_output_stream(
+                        &config,
+                        move |data: &mut [i16], info: &cpal::OutputCallbackInfo| {
+                            callback(data, info);
+                        },
+                        move |err: cpal::StreamError| {
+                            error!(
+                                "CPAL output stream error: {} (will attempt to recover)",
+                                err
+                            );
+                            let (mutex, condvar) = &*notify;
+                            let mut guard = mutex.lock();
+                            *guard = true;
+                            condvar.notify_one();
+                        },
+                        None,
+                    )?
+                }
+                32 => {
+                    let mut callback = create_direct_int_callback::<i32>(
+                        mixer,
+                        source_rx,
+                        num_channels,
+                        max_samples,
+                    );
+                    let notify = error_notify;
+                    self.device.build_output_stream(
+                        &config,
+                        move |data: &mut [i32], info: &cpal::OutputCallbackInfo| {
+                            callback(data, info);
+                        },
+                        move |err: cpal::StreamError| {
+                            error!(
+                                "CPAL output stream error: {} (will attempt to recover)",
+                                err
+                            );
+                            let (mutex, condvar) = &*notify;
+                            let mut guard = mutex.lock();
+                            *guard = true;
+                            condvar.notify_one();
+                        },
+                        None,
+                    )?
+                }
+                bits => {
+                    return Err(format!("Unsupported bit depth for integer format: {bits}").into());
+                }
+            }
+        };
+
+        stream.play()?;
+        Ok(Box::new(CpalOutputStream { _stream: stream }))
     }
 }
 
@@ -469,154 +644,49 @@ impl OutputManager {
         Ok(())
     }
 
-    /// Starts the output thread that creates and manages the CPAL stream.
-    /// Uses direct callback mode - no intermediate ring buffer for lowest latency.
-    /// On ALSA/backend errors (e.g. POLLERR), the stream is recreated automatically.
+    /// Starts the output thread that creates and manages the audio stream.
+    /// Uses direct callback mode — no intermediate ring buffer for lowest latency.
+    /// On backend errors (e.g. ALSA POLLERR), the stream is recreated automatically.
     fn start_output_thread(
         &mut self,
-        device: cpal::Device,
-        target_format: TargetFormat,
-        output_buffer_size: Option<u32>,
+        factory: Box<dyn OutputStreamFactory>,
     ) -> Result<(), Box<dyn Error>> {
         let mixer = self.mixer.clone();
         let source_rx = self.source_rx.clone();
         let num_channels = mixer.num_channels();
-        let sample_rate = mixer.sample_rate();
 
-        // Notify the output thread when the CPAL error callback runs (e.g. ALSA POLLERR).
+        // Notify the output thread when the error callback runs (e.g. ALSA POLLERR).
         // The output thread blocks on the condvar and recreates the stream on notification.
         let stream_error_notify = Arc::new((Mutex::new(false), Condvar::new()));
 
         // Shared shutdown signal so drop can wake the output thread.
         let shutdown = self.shutdown_notify.clone();
 
-        // Use a barrier to ensure the first stream is created before we return
+        // Use a barrier to ensure the first stream is created before we return.
         let barrier = Arc::new(Barrier::new(2));
         let barrier_clone = barrier.clone();
 
-        // Start the output thread - create the stream inside the thread, recreate on error
         let output_thread = thread::spawn(move || {
-            let buffer_size = match output_buffer_size {
-                Some(size) => cpal::BufferSize::Fixed(size),
-                None => cpal::BufferSize::Default,
-            };
-            let config = cpal::StreamConfig {
-                channels: num_channels,
-                sample_rate,
-                buffer_size,
-            };
-            let max_samples = output_buffer_size
-                .map(|f| f as usize * num_channels as usize)
-                .unwrap_or(4096 * num_channels as usize);
-
             let mut first_run = true;
 
             loop {
-                let notify = stream_error_notify.clone();
-                let on_error = move |err: cpal::StreamError| {
-                    error!(
-                        "CPAL output stream error: {} (will attempt to recover)",
-                        err
-                    );
-                    let (mutex, condvar) = &*notify;
-                    let mut guard = mutex.lock();
-                    *guard = true;
-                    condvar.notify_one();
-                };
-
-                // Create the output stream with direct mixer callback (no ring buffer)
-                let stream_result = if target_format.sample_format
-                    == crate::audio::SampleFormat::Float
-                {
-                    let mut callback =
-                        create_direct_f32_callback(mixer.clone(), source_rx.clone(), num_channels);
-                    device.build_output_stream(
-                        &config,
-                        move |data: &mut [f32], info: &cpal::OutputCallbackInfo| {
-                            callback(data, info);
-                        },
-                        on_error,
-                        None,
-                    )
-                } else {
-                    match target_format.bits_per_sample {
-                        16 => {
-                            let mut callback = create_direct_int_callback::<i16>(
-                                mixer.clone(),
-                                source_rx.clone(),
-                                num_channels,
-                                max_samples,
-                            );
-                            let on_err = stream_error_notify.clone();
-                            device.build_output_stream(
-                                &config,
-                                move |data: &mut [i16], info: &cpal::OutputCallbackInfo| {
-                                    callback(data, info);
-                                },
-                                move |err: cpal::StreamError| {
-                                    error!(
-                                        "CPAL output stream error: {} (will attempt to recover)",
-                                        err
-                                    );
-                                    let (mutex, condvar) = &*on_err;
-                                    let mut guard = mutex.lock();
-                                    *guard = true;
-                                    condvar.notify_one();
-                                },
-                                None,
-                            )
-                        }
-                        32 => {
-                            let mut callback = create_direct_int_callback::<i32>(
-                                mixer.clone(),
-                                source_rx.clone(),
-                                num_channels,
-                                max_samples,
-                            );
-                            let on_err = stream_error_notify.clone();
-                            device.build_output_stream(
-                                &config,
-                                move |data: &mut [i32], info: &cpal::OutputCallbackInfo| {
-                                    callback(data, info);
-                                },
-                                move |err: cpal::StreamError| {
-                                    error!(
-                                        "CPAL output stream error: {} (will attempt to recover)",
-                                        err
-                                    );
-                                    let (mutex, condvar) = &*on_err;
-                                    let mut guard = mutex.lock();
-                                    *guard = true;
-                                    condvar.notify_one();
-                                },
-                                None,
-                            )
-                        }
-                        _ => {
-                            error!("Unsupported bit depth for integer format");
-                            if first_run {
-                                barrier_clone.wait();
-                            }
-                            return;
-                        }
-                    }
-                };
+                let stream_result = factory.build_stream(
+                    mixer.clone(),
+                    source_rx.clone(),
+                    num_channels,
+                    stream_error_notify.clone(),
+                );
 
                 match stream_result {
                     Ok(stream) => {
-                        if let Err(e) = stream.play() {
-                            error!("Failed to start CPAL stream: {}", e);
-                            if first_run {
-                                barrier_clone.wait();
-                            }
-                            return;
-                        }
                         if first_run {
-                            info!("CPAL output stream started successfully (direct callback mode)");
+                            info!(
+                                "Audio output stream started successfully (direct callback mode)"
+                            );
                             barrier_clone.wait();
                             first_run = false;
                         } else {
-                            info!("CPAL output stream recovered after backend error");
+                            info!("Audio output stream recovered after backend error");
                         }
 
                         // Keep the stream alive; block until either:
@@ -641,11 +711,11 @@ impl OutputManager {
                             err_condvar.wait_for(&mut err_guard, Duration::from_millis(100));
                         }
 
-                        // Drop the stream so we can create a new one
+                        // Drop the stream so we can create a new one.
                         drop(stream);
                     }
                     Err(e) => {
-                        error!("Failed to create CPAL stream: {}", e);
+                        error!("Failed to create audio stream: {}", e);
                         if first_run {
                             barrier_clone.wait();
                         }
@@ -655,7 +725,7 @@ impl OutputManager {
             }
         });
 
-        // Wait for first stream to be created
+        // Wait for first stream to be created.
         barrier.wait();
 
         self.output_thread = Some(output_thread);
@@ -800,11 +870,12 @@ impl Device {
                 }
 
                 // Start the output thread with resolved buffer size
-                output_manager.start_output_thread(
+                let factory = Box::new(CpalOutputStreamFactory::new(
                     device.device.clone(),
                     device.target_format.clone(),
                     output_buffer_size,
-                )?;
+                ));
+                output_manager.start_output_thread(factory)?;
 
                 device.output_manager = Arc::new(output_manager);
                 device.audio_config = config;
@@ -959,6 +1030,232 @@ impl AudioDevice for Device {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    /// A mock output stream that stays alive until dropped.
+    struct MockOutputStream {
+        _alive: Arc<AtomicBool>,
+    }
+
+    impl OutputStream for MockOutputStream {}
+
+    impl Drop for MockOutputStream {
+        fn drop(&mut self) {
+            self._alive.store(false, Ordering::Relaxed);
+        }
+    }
+
+    /// A mock factory that succeeds, creating a MockOutputStream.
+    struct MockOutputStreamFactory {
+        alive: Arc<AtomicBool>,
+    }
+
+    impl MockOutputStreamFactory {
+        fn new() -> (Self, Arc<AtomicBool>) {
+            let alive = Arc::new(AtomicBool::new(false));
+            (
+                Self {
+                    alive: alive.clone(),
+                },
+                alive,
+            )
+        }
+    }
+
+    impl OutputStreamFactory for MockOutputStreamFactory {
+        fn build_stream(
+            &self,
+            _mixer: AudioMixer,
+            _source_rx: crossbeam_channel::Receiver<MixerActiveSource>,
+            _num_channels: u16,
+            _error_notify: Arc<(Mutex<bool>, Condvar)>,
+        ) -> Result<Box<dyn OutputStream>, Box<dyn Error>> {
+            self.alive.store(true, Ordering::Relaxed);
+            Ok(Box::new(MockOutputStream {
+                _alive: self.alive.clone(),
+            }))
+        }
+    }
+
+    /// A factory that always fails to build a stream.
+    struct FailingOutputStreamFactory;
+
+    impl OutputStreamFactory for FailingOutputStreamFactory {
+        fn build_stream(
+            &self,
+            _mixer: AudioMixer,
+            _source_rx: crossbeam_channel::Receiver<MixerActiveSource>,
+            _num_channels: u16,
+            _error_notify: Arc<(Mutex<bool>, Condvar)>,
+        ) -> Result<Box<dyn OutputStream>, Box<dyn Error>> {
+            Err("mock build failure".into())
+        }
+    }
+
+    /// Shared state for ErrorCapturingFactory so tests can trigger error recovery
+    /// after the factory has been moved into the output thread.
+    struct ErrorCapturingState {
+        alive: Arc<AtomicBool>,
+        build_count: std::sync::atomic::AtomicU32,
+        captured_error_notify: std::sync::Mutex<Option<Arc<(Mutex<bool>, Condvar)>>>,
+    }
+
+    /// A factory that captures the error_notify so tests can trigger stream error recovery.
+    struct ErrorCapturingFactory {
+        state: Arc<ErrorCapturingState>,
+    }
+
+    /// Handle returned to test code for inspecting and controlling the factory.
+    struct ErrorCapturingHandle {
+        state: Arc<ErrorCapturingState>,
+    }
+
+    impl ErrorCapturingHandle {
+        fn trigger_error(&self) {
+            if let Some(notify) = self.state.captured_error_notify.lock().unwrap().as_ref() {
+                let (mutex, condvar) = &**notify;
+                let mut guard = mutex.lock();
+                *guard = true;
+                condvar.notify_one();
+            }
+        }
+
+        fn build_count(&self) -> u32 {
+            self.state.build_count.load(Ordering::Relaxed)
+        }
+
+        fn is_alive(&self) -> bool {
+            self.state.alive.load(Ordering::Relaxed)
+        }
+    }
+
+    impl ErrorCapturingFactory {
+        fn new() -> (Self, ErrorCapturingHandle) {
+            let state = Arc::new(ErrorCapturingState {
+                alive: Arc::new(AtomicBool::new(false)),
+                build_count: std::sync::atomic::AtomicU32::new(0),
+                captured_error_notify: std::sync::Mutex::new(None),
+            });
+            let handle = ErrorCapturingHandle {
+                state: state.clone(),
+            };
+            (Self { state }, handle)
+        }
+    }
+
+    impl OutputStreamFactory for ErrorCapturingFactory {
+        fn build_stream(
+            &self,
+            _mixer: AudioMixer,
+            _source_rx: crossbeam_channel::Receiver<MixerActiveSource>,
+            _num_channels: u16,
+            error_notify: Arc<(Mutex<bool>, Condvar)>,
+        ) -> Result<Box<dyn OutputStream>, Box<dyn Error>> {
+            self.state.build_count.fetch_add(1, Ordering::Relaxed);
+            *self.state.captured_error_notify.lock().unwrap() = Some(error_notify);
+            self.state.alive.store(true, Ordering::Relaxed);
+            Ok(Box::new(MockOutputStream {
+                _alive: self.state.alive.clone(),
+            }))
+        }
+    }
+
+    mod start_output_thread {
+        use super::*;
+
+        #[test]
+        fn starts_successfully_with_mock_factory() {
+            let (factory, alive) = MockOutputStreamFactory::new();
+            let mut manager = OutputManager::new(2, 44100).unwrap();
+
+            manager
+                .start_output_thread(Box::new(factory))
+                .expect("should start output thread");
+
+            assert!(
+                manager.output_thread.is_some(),
+                "output thread should be set"
+            );
+            // Stream should be alive.
+            assert!(alive.load(Ordering::Relaxed), "stream should be alive");
+
+            // Dropping the manager should shut down the thread and drop the stream.
+            drop(manager);
+            // Give the thread a moment to finish.
+            thread::sleep(Duration::from_millis(50));
+            assert!(
+                !alive.load(Ordering::Relaxed),
+                "stream should be dropped after shutdown"
+            );
+        }
+
+        #[test]
+        fn handles_build_failure() {
+            let mut manager = OutputManager::new(2, 44100).unwrap();
+
+            // Should not panic even though the factory fails.
+            let result = manager.start_output_thread(Box::new(FailingOutputStreamFactory));
+            assert!(
+                result.is_ok(),
+                "start_output_thread should return Ok even if build fails"
+            );
+            // Thread was spawned but exited after failure.
+            assert!(manager.output_thread.is_some());
+        }
+
+        #[test]
+        fn recovers_from_stream_error() {
+            let (factory, handle) = ErrorCapturingFactory::new();
+            let mut manager = OutputManager::new(2, 44100).unwrap();
+
+            manager
+                .start_output_thread(Box::new(factory))
+                .expect("should start");
+
+            assert!(handle.is_alive(), "initial stream alive");
+            assert_eq!(handle.build_count(), 1, "should have built one stream");
+
+            // Simulate a backend error — the output thread should recreate the stream.
+            handle.trigger_error();
+
+            // Give the thread time to drop old stream and build a new one.
+            thread::sleep(Duration::from_millis(250));
+            assert_eq!(
+                handle.build_count(),
+                2,
+                "should have rebuilt stream after error"
+            );
+            assert!(handle.is_alive(), "recovered stream should be alive");
+
+            // Clean shutdown.
+            drop(manager);
+            thread::sleep(Duration::from_millis(50));
+            assert!(
+                !handle.is_alive(),
+                "stream should be dropped after shutdown"
+            );
+        }
+
+        #[test]
+        fn shutdown_stops_thread() {
+            let (factory, alive) = MockOutputStreamFactory::new();
+            let mut manager = OutputManager::new(2, 44100).unwrap();
+
+            manager.start_output_thread(Box::new(factory)).unwrap();
+            assert!(alive.load(Ordering::Relaxed));
+
+            // Signal shutdown via the notify.
+            let (mutex, condvar) = &*manager.shutdown_notify;
+            *mutex.lock() = true;
+            condvar.notify_all();
+
+            // Give the thread time to see the shutdown signal.
+            thread::sleep(Duration::from_millis(250));
+            assert!(
+                !alive.load(Ordering::Relaxed),
+                "stream should be dropped after shutdown signal"
+            );
+        }
+    }
 
     mod callback_profiler {
         use super::*;
@@ -1135,6 +1432,66 @@ mod test {
             assert!(profiler.max_gap_us >= first_max);
             assert_eq!(profiler.gap_count, 2);
         }
+
+        #[test]
+        fn maybe_log_float_logs_and_resets_after_one_second() {
+            let mut profiler = CallbackProfiler::new(true);
+            // Accumulate some stats.
+            let start = profiler.on_cb_start();
+            profiler.on_mix_done(start);
+
+            // Backdate last_log so should_log() returns true.
+            profiler.last_log = Instant::now() - Duration::from_secs(2);
+
+            profiler.maybe_log_float();
+
+            // After logging, reset should have zeroed stats.
+            assert_eq!(profiler.count, 0);
+            assert_eq!(profiler.sum_mix_us, 0);
+            assert_eq!(profiler.max_mix_us, 0);
+        }
+
+        #[test]
+        fn maybe_log_float_noop_when_disabled() {
+            let mut profiler = CallbackProfiler::new(false);
+            // Manually set stats since on_mix_done is also a noop when disabled.
+            profiler.count = 5;
+            profiler.sum_mix_us = 100;
+            profiler.last_log = Instant::now() - Duration::from_secs(2);
+
+            profiler.maybe_log_float();
+
+            // Stats should not have been reset since logging is disabled.
+            assert_eq!(profiler.count, 5);
+        }
+
+        #[test]
+        fn maybe_log_int_logs_and_resets_after_one_second() {
+            let mut profiler = CallbackProfiler::new(true);
+            let start = profiler.on_cb_start();
+            profiler.on_mix_done(start);
+            profiler.on_convert_done(Some(Instant::now()));
+
+            profiler.last_log = Instant::now() - Duration::from_secs(2);
+
+            profiler.maybe_log_int();
+
+            assert_eq!(profiler.count, 0);
+            assert_eq!(profiler.sum_mix_us, 0);
+            assert_eq!(profiler.sum_convert_us, 0);
+        }
+
+        #[test]
+        fn maybe_log_int_noop_when_disabled() {
+            let mut profiler = CallbackProfiler::new(false);
+            profiler.count = 5;
+            profiler.sum_convert_us = 100;
+            profiler.last_log = Instant::now() - Duration::from_secs(2);
+
+            profiler.maybe_log_int();
+
+            assert_eq!(profiler.count, 5);
+        }
     }
 
     fn make_test_source(
@@ -1199,6 +1556,61 @@ mod test {
         fn drop_cleans_up_without_panic() {
             let manager = OutputManager::new(4, 48000).expect("should create output manager");
             drop(manager);
+        }
+
+        #[test]
+        fn drop_with_active_sources_cleans_up() {
+            let manager = OutputManager::new(2, 44100).expect("should create");
+            let source = make_active_source(make_silent_source(2), HashMap::new());
+            manager.add_source(source).expect("should add");
+            // Drain the source into the mixer so it's "active"
+            drain_pending_sources(&manager.mixer, &manager.source_rx);
+            assert_eq!(manager.mixer.get_active_sources().read().len(), 1);
+            drop(manager); // Should clean up active sources without panic
+        }
+    }
+
+    mod target_to_cpal_sample_format_tests {
+        use super::*;
+
+        #[test]
+        fn float_any_bits() {
+            assert_eq!(
+                target_to_cpal_sample_format(SampleFormat::Float, 32),
+                cpal::SampleFormat::F32
+            );
+            assert_eq!(
+                target_to_cpal_sample_format(SampleFormat::Float, 64),
+                cpal::SampleFormat::F32
+            );
+        }
+
+        #[test]
+        fn int_16_bit() {
+            assert_eq!(
+                target_to_cpal_sample_format(SampleFormat::Int, 16),
+                cpal::SampleFormat::I16
+            );
+        }
+
+        #[test]
+        fn int_32_bit() {
+            assert_eq!(
+                target_to_cpal_sample_format(SampleFormat::Int, 32),
+                cpal::SampleFormat::I32
+            );
+        }
+
+        #[test]
+        fn int_other_defaults_to_i32() {
+            assert_eq!(
+                target_to_cpal_sample_format(SampleFormat::Int, 24),
+                cpal::SampleFormat::I32
+            );
+            assert_eq!(
+                target_to_cpal_sample_format(SampleFormat::Int, 8),
+                cpal::SampleFormat::I32
+            );
         }
     }
 

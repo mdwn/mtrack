@@ -124,3 +124,28 @@ impl fmt::Display for Device {
         write!(f, "{} (Mock)", self.name,)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_includes_name_and_mock() {
+        let device = Device::get("TestDevice");
+        let display = format!("{}", device);
+        assert_eq!(display, "TestDevice (Mock)");
+    }
+
+    #[test]
+    fn get_creates_device_not_playing() {
+        let device = Device::get("test");
+        assert!(!device.is_playing());
+    }
+
+    #[test]
+    fn clone_shares_is_playing_state() {
+        let device = Device::get("test");
+        let cloned = device.clone();
+        assert!(!cloned.is_playing());
+    }
+}

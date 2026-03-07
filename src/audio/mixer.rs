@@ -1494,4 +1494,177 @@ mod tests {
             }
         }
     }
+
+    mod process_frame_tests {
+        use super::*;
+
+        #[test]
+        fn process_frame_source_exhausts() {
+            // Source has 2 mono samples. Processing 3 frames should exhaust it
+            // and trigger the Ok(None) path + finished source cleanup in process_frame.
+            let mixer = AudioMixer::new(2, 44100);
+            let source = create_test_source(vec![0.5, 0.8], 1, vec![vec!["t".to_string()]]);
+            let mut mappings = HashMap::new();
+            mappings.insert("t".to_string(), vec![1]);
+            mixer.add_source(make_active_source(1, source, mappings));
+
+            // First 2 frames produce audio
+            let f1 = mixer.process_frame();
+            assert_eq!(f1[0], 0.5);
+            let f2 = mixer.process_frame();
+            assert_eq!(f2[0], 0.8);
+
+            // Third frame: source returns None → marked finished
+            let f3 = mixer.process_frame();
+            assert_eq!(f3[0], 0.0);
+            assert_eq!(mixer.active_sources.read().len(), 0);
+        }
+
+        #[test]
+        fn process_frame_cancelled_source() {
+            // A source whose cancel_handle is already cancelled before processing.
+            let mixer = AudioMixer::new(2, 44100);
+            let source = create_test_source(vec![0.5; 100], 1, vec![vec!["t".to_string()]]);
+            let mut mappings = HashMap::new();
+            mappings.insert("t".to_string(), vec![1]);
+            let mut active = make_active_source(1, source, mappings);
+            let cancel = active.cancel_handle.clone();
+            mixer.add_source(active);
+
+            // Cancel before processing
+            cancel.cancel();
+
+            let frame = mixer.process_frame();
+            assert_eq!(frame[0], 0.0); // Cancelled → silence
+            assert_eq!(mixer.active_sources.read().len(), 0);
+        }
+
+        #[test]
+        fn process_frame_erroring_source() {
+            // A source that returns Err on next_frame → triggers the Err path.
+            let mixer = AudioMixer::new(2, 44100);
+
+            // ErrorAfterN with 0 remaining errors immediately on next_sample.
+            // Wrap it in a ChannelMappedSource.
+            let error_source = ErroringSource;
+            let source: Box<dyn ChannelMappedSampleSource> =
+                Box::new(crate::audio::sample_source::ChannelMappedSource::new(
+                    Box::new(error_source),
+                    vec![vec!["t".to_string()]],
+                    1,
+                ));
+
+            let mut mappings = HashMap::new();
+            mappings.insert("t".to_string(), vec![1]);
+            mixer.add_source(make_active_source(1, source, mappings));
+
+            let frame = mixer.process_frame();
+            assert_eq!(frame[0], 0.0); // Error → silence
+            assert_eq!(mixer.active_sources.read().len(), 0);
+        }
+
+        #[test]
+        fn process_into_output_start_at_already_passed() {
+            // Source with start_at_sample in the past (already passed).
+            let mixer = AudioMixer::new(2, 44100);
+            let source = create_test_source(vec![0.5; 20], 1, vec![vec!["t".to_string()]]);
+            let mut mappings = HashMap::new();
+            mappings.insert("t".to_string(), vec![1]);
+            let mut active = make_active_source(1, source, mappings);
+            active.start_at_sample = Some(0); // Start at sample 0
+
+            mixer.add_source(active);
+
+            // Advance the counter past the start time
+            let mut warmup = vec![0.0f32; 10 * 2];
+            mixer.process_into_output(&mut warmup, 10);
+            // sample_counter is now 10, start_at is 0 → already passed
+
+            // Next buffer: start_at < current_sample → start_frame = 0
+            let mut output = vec![0.0f32; 4 * 2];
+            mixer.process_into_output(&mut output, 4);
+            // Source should play from the beginning of the buffer
+            assert!(
+                output[0] > 0.0,
+                "source should produce audio when start_at already passed"
+            );
+        }
+
+        #[test]
+        fn process_into_output_erroring_source() {
+            // Tests the read_frames error path in process_into_output.
+            let mixer = AudioMixer::new(2, 44100);
+
+            let error_source = ErroringSource;
+            let source: Box<dyn ChannelMappedSampleSource> =
+                Box::new(crate::audio::sample_source::ChannelMappedSource::new(
+                    Box::new(error_source),
+                    vec![vec!["t".to_string()]],
+                    1,
+                ));
+
+            let mut mappings = HashMap::new();
+            mappings.insert("t".to_string(), vec![1]);
+            mixer.add_source(make_active_source(1, source, mappings));
+
+            let mut output = vec![0.0f32; 4 * 2];
+            mixer.process_into_output(&mut output, 4);
+            // Error → source removed, output is silence
+            assert_eq!(mixer.active_sources.read().len(), 0);
+        }
+
+        #[test]
+        fn process_into_output_cancel_at_beyond_buffer() {
+            // cancel_at_sample set beyond the buffer range → source plays full buffer.
+            let mixer = AudioMixer::new(2, 44100);
+            let source = create_test_source(vec![0.5; 100], 1, vec![vec!["t".to_string()]]);
+            let mut mappings = HashMap::new();
+            mappings.insert("t".to_string(), vec![1]);
+            let mut active = make_active_source(1, source, mappings);
+            active.cancel_at_sample = Some(Arc::new(AtomicU64::new(99999)));
+            mixer.add_source(active);
+
+            let mut output = vec![0.0f32; 8 * 2];
+            mixer.process_into_output(&mut output, 8);
+            // All frames should have audio
+            for i in 0..8 {
+                assert_eq!(output[i * 2], 0.5, "frame {i} should have audio");
+            }
+        }
+    }
+
+    /// A source that always errors on next_sample.
+    struct ErroringSource;
+
+    impl crate::audio::sample_source::traits::SampleSource for ErroringSource {
+        fn next_sample(
+            &mut self,
+        ) -> Result<Option<f32>, crate::audio::sample_source::error::SampleSourceError> {
+            Err(
+                crate::audio::sample_source::error::SampleSourceError::SampleConversionFailed(
+                    "test error".into(),
+                ),
+            )
+        }
+
+        fn channel_count(&self) -> u16 {
+            1
+        }
+
+        fn sample_rate(&self) -> u32 {
+            44100
+        }
+
+        fn bits_per_sample(&self) -> u16 {
+            32
+        }
+
+        fn sample_format(&self) -> crate::audio::SampleFormat {
+            crate::audio::SampleFormat::Float
+        }
+
+        fn duration(&self) -> Option<std::time::Duration> {
+            None
+        }
+    }
 }
