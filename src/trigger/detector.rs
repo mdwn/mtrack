@@ -803,6 +803,83 @@ mod tests {
     }
 
     #[test]
+    fn test_highpass_filter_path() {
+        // Create detector with highpass enabled to cover the Some(hpf) branch
+        let mut det = TriggerDetector::new(
+            44100,
+            0.1,
+            0,
+            0,
+            1.0,
+            VelocityCurve::Linear,
+            127,
+            Some("kick".to_string()),
+            None,
+            TriggerInputAction::Trigger,
+            Some(80.0), // Enable highpass at 80Hz
+            None,
+            None,
+            200,
+        );
+
+        // A strong transient should still trigger through the highpass
+        let result = det.process_sample(0.9);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_logarithmic_velocity_at_threshold() {
+        // Tests the `peak <= threshold` branch returning velocity 1
+        let mut det = TriggerDetector::new(
+            44100,
+            0.1,
+            0,
+            0,
+            1.0,
+            VelocityCurve::Logarithmic,
+            127,
+            Some("kick".to_string()),
+            None,
+            TriggerInputAction::Trigger,
+            None,
+            None,
+            None,
+            200,
+        );
+
+        // Trigger with a sample barely above threshold — the peak recorded
+        // will be just above threshold. The amplitude_to_velocity sees the peak.
+        // With scan=0 and lockout=0, fire() is called with the raw amplitude.
+        let event = expect_trigger(det.process_sample(0.1001));
+        // At threshold, logarithmic returns 1
+        assert!(event.velocity <= 2);
+    }
+
+    #[test]
+    fn test_logarithmic_velocity_threshold_equals_one() {
+        // Tests the `range < EPSILON` branch returning velocity 127
+        let mut det = TriggerDetector::new(
+            44100,
+            1.0, // threshold = 1.0, so range = 1.0 - 1.0 = 0.0
+            0,
+            0,
+            2.0, // gain=2 so amplitude of 0.6 * 2 = 1.2 > threshold 1.0
+            VelocityCurve::Logarithmic,
+            127,
+            Some("kick".to_string()),
+            None,
+            TriggerInputAction::Trigger,
+            None,
+            None,
+            None,
+            200,
+        );
+
+        let event = expect_trigger(det.process_sample(0.6));
+        assert_eq!(event.velocity, 127);
+    }
+
+    #[test]
     fn test_adaptive_noise_floor_recovers_after_noise_drops() {
         let mut det = TriggerDetector::new(
             44100,
