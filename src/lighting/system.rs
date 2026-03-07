@@ -1069,4 +1069,208 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert!(results.contains(&"Wash1".to_string()));
     }
+
+    // ── FallbackTo constraint ────────────────────────────────────────
+
+    #[test]
+    fn test_fallback_to_constraint() {
+        let mut system = LightingSystem::new();
+
+        let mut fixtures = HashMap::new();
+        fixtures.insert(
+            "Wash1".to_string(),
+            Fixture::new(
+                "Wash1".to_string(),
+                "RGBW_Par".to_string(),
+                1,
+                1,
+                vec!["wash".to_string(), "front".to_string()],
+            ),
+        );
+
+        let venue = Venue::new("Test Venue".to_string(), fixtures, HashMap::new());
+        system.venues.insert("Test Venue".to_string(), venue);
+        system.current_venue = Some("Test Venue".to_string());
+
+        // Define a group that requires movers (which don't exist), with FallbackTo wash
+        let primary_group = LogicalGroup::new(
+            "movers".to_string(),
+            vec![
+                GroupConstraint::AllOf(vec!["moving_head".to_string()]),
+                GroupConstraint::MinCount(1),
+                GroupConstraint::FallbackTo("front_wash".to_string()),
+            ],
+        );
+
+        // Define the fallback group
+        let fallback_group = LogicalGroup::new(
+            "front_wash".to_string(),
+            vec![GroupConstraint::AllOf(vec![
+                "wash".to_string(),
+                "front".to_string(),
+            ])],
+        );
+
+        system
+            .logical_groups
+            .insert("movers".to_string(), primary_group);
+        system
+            .logical_groups
+            .insert("front_wash".to_string(), fallback_group);
+
+        // Movers should fall back to front_wash
+        let results = system.resolve_logical_group_graceful("movers");
+        assert_eq!(
+            results.len(),
+            1,
+            "FallbackTo should resolve to fallback group"
+        );
+        assert!(
+            results.contains(&"Wash1".to_string()),
+            "FallbackTo should contain Wash1"
+        );
+    }
+
+    // ── get_group ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_get_group_not_found() {
+        let mut system = LightingSystem::new();
+
+        let fixtures = HashMap::new();
+        let venue = Venue::new("Test Venue".to_string(), fixtures, HashMap::new());
+        system.venues.insert("Test Venue".to_string(), venue);
+        system.current_venue = Some("Test Venue".to_string());
+
+        let result = system.get_group("nonexistent");
+        assert!(result.is_err(), "Should error for missing group");
+        match result {
+            Err(error) => {
+                assert!(
+                    error.to_string().contains("not found"),
+                    "Error should mention 'not found': {}",
+                    error
+                );
+            }
+            Ok(_) => panic!("Expected error for missing group"),
+        }
+    }
+
+    #[test]
+    fn test_get_group_no_venue() {
+        let system = LightingSystem::new();
+
+        let result = system.get_group("some_group");
+        assert!(result.is_err(), "Should error when no venue selected");
+    }
+
+    // ── get_current_venue_fixtures ────────────────────────────
+
+    #[test]
+    fn test_get_current_venue_fixtures_no_venue() {
+        let system = LightingSystem::new();
+        let result = system.get_current_venue_fixtures();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("No current venue"));
+    }
+
+    #[test]
+    fn test_get_current_venue_fixtures_with_fixtures() {
+        let mut system = LightingSystem::new();
+
+        // Register a fixture type
+        let mut channels = HashMap::new();
+        channels.insert("dimmer".to_string(), 1);
+        channels.insert("red".to_string(), 2);
+        let ft = super::super::types::FixtureType::new("Par".to_string(), channels, vec![]);
+        system.fixture_types.insert("Par".to_string(), ft);
+
+        // Create venue with a fixture
+        let mut fixtures = HashMap::new();
+        fixtures.insert(
+            "front1".to_string(),
+            super::super::types::Fixture::new(
+                "front1".to_string(),
+                "Par".to_string(),
+                1,
+                10,
+                vec!["front".to_string()],
+            ),
+        );
+        let venue =
+            super::super::types::Venue::new("TestVenue".to_string(), fixtures, HashMap::new());
+        system.venues.insert("TestVenue".to_string(), venue);
+        system.current_venue = Some("TestVenue".to_string());
+
+        let infos = system.get_current_venue_fixtures().unwrap();
+        assert_eq!(infos.len(), 1);
+        assert_eq!(infos[0].name, "front1");
+        assert_eq!(infos[0].universe, 1);
+        assert_eq!(infos[0].address, 10);
+    }
+
+    #[test]
+    fn test_get_current_venue_fixtures_unknown_type() {
+        let mut system = LightingSystem::new();
+
+        // Create venue with a fixture whose type isn't registered
+        let mut fixtures = HashMap::new();
+        fixtures.insert(
+            "broken".to_string(),
+            super::super::types::Fixture::new(
+                "broken".to_string(),
+                "UnknownType".to_string(),
+                1,
+                1,
+                vec![],
+            ),
+        );
+        let venue =
+            super::super::types::Venue::new("TestVenue".to_string(), fixtures, HashMap::new());
+        system.venues.insert("TestVenue".to_string(), venue);
+        system.current_venue = Some("TestVenue".to_string());
+
+        let result = system.get_current_venue_fixtures();
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Fixture type 'UnknownType' not found"));
+    }
+
+    #[test]
+    fn test_graceful_with_legacy_group_fallback() {
+        let mut system = LightingSystem::new();
+
+        let mut fixtures = HashMap::new();
+        fixtures.insert(
+            "Wash1".to_string(),
+            Fixture::new(
+                "Wash1".to_string(),
+                "RGBW_Par".to_string(),
+                1,
+                1,
+                vec!["wash".to_string()],
+            ),
+        );
+
+        // Create venue with a legacy group definition
+        let mut groups = HashMap::new();
+        groups.insert(
+            "legacy_wash".to_string(),
+            Group::new("legacy_wash".to_string(), vec!["Wash1".to_string()]),
+        );
+
+        let venue = Venue::new("Test Venue".to_string(), fixtures, groups);
+        system.venues.insert("Test Venue".to_string(), venue);
+        system.current_venue = Some("Test Venue".to_string());
+
+        // Don't define legacy_wash as a logical group - it should fall through to legacy
+        let results = system.resolve_logical_group_graceful("legacy_wash");
+        assert_eq!(results.len(), 1, "Legacy fallback should return 1 fixture");
+        assert!(
+            results.contains(&"Wash1".to_string()),
+            "Legacy fallback should contain Wash1"
+        );
+    }
 }

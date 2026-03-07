@@ -177,4 +177,51 @@ mod test {
         let id2 = next_source_id();
         assert!(id2 > id1);
     }
+
+    #[test]
+    fn get_device_mock_prefix_variants() {
+        // Any device starting with "mock" should return a mock device
+        for name in &["mock", "mock-test", "mock_custom", "mockDevice"] {
+            let config = config::Audio::new(name);
+            let result = get_device(Some(config));
+            assert!(result.is_ok(), "mock device '{}' should succeed", name);
+            let device = result.unwrap();
+            let display = format!("{}", device);
+            assert!(
+                display.contains("Mock"),
+                "device '{}' display should contain Mock: {}",
+                name,
+                display
+            );
+        }
+    }
+
+    #[test]
+    fn get_device_display_shows_name() {
+        let config = config::Audio::new("mock-hello");
+        let device = get_device(Some(config)).unwrap();
+        let display = format!("{}", device);
+        assert!(display.contains("mock-hello"));
+    }
+
+    #[test]
+    fn mock_device_to_mock() {
+        let config = config::Audio::new("mock-test");
+        let device = get_device(Some(config)).unwrap();
+        let mock = device
+            .to_mock()
+            .expect("to_mock should work on mock devices");
+        assert_eq!(format!("{}", mock), "mock-test (Mock)");
+    }
+
+    #[test]
+    fn source_id_is_unique_across_calls() {
+        let ids: Vec<u64> = (0..100).map(|_| next_source_id()).collect();
+        for i in 1..ids.len() {
+            assert!(
+                ids[i] > ids[i - 1],
+                "IDs should be monotonically increasing"
+            );
+        }
+    }
 }

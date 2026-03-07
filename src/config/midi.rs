@@ -252,6 +252,17 @@ pub struct Aftertouch {
     velocity: u8,
 }
 
+#[cfg(test)]
+impl Aftertouch {
+    pub fn new(channel: u8, key: u8, velocity: u8) -> Self {
+        Self {
+            channel,
+            key,
+            velocity,
+        }
+    }
+}
+
 impl ToMidiEvent for Aftertouch {
     fn to_midi_event(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
         Ok(LiveEvent::Midi {

@@ -48,13 +48,17 @@ pub fn start_watching(
     lighting_config: Option<crate::config::Lighting>,
     broadcast_tx: broadcast::Sender<String>,
 ) -> Result<WatcherHandle, Box<dyn std::error::Error>> {
-    let paths = file_paths.clone();
+    // Canonicalize paths so they match what the OS reports in events.
+    let paths: Vec<PathBuf> = file_paths
+        .iter()
+        .map(|p| p.canonicalize().unwrap_or_else(|_| p.clone()))
+        .collect();
 
     let (tx, rx) = std::sync::mpsc::channel();
     let mut debouncer = new_debouncer(Duration::from_millis(300), tx)?;
 
     // Watch each file path
-    for path in &file_paths {
+    for path in &paths {
         if let Some(parent) = path.parent() {
             debouncer
                 .watcher()
@@ -73,7 +77,14 @@ pub fn start_watching(
                 Ok(events) => {
                     // Check if any of our watched files changed
                     let relevant = events.iter().any(|event| {
-                        event.kind == DebouncedEventKind::Any && paths.contains(&event.path)
+                        if event.kind != DebouncedEventKind::Any {
+                            return false;
+                        }
+                        let event_path = event
+                            .path
+                            .canonicalize()
+                            .unwrap_or_else(|_| event.path.clone());
+                        paths.contains(&event_path)
                     });
                     if !relevant {
                         continue;

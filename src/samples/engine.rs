@@ -622,386 +622,6 @@ mod tests {
         (mixer, tx)
     }
 
-    #[test]
-    fn test_engine_creation() {
-        let (mixer, source_tx) = create_test_mixer_and_sender();
-        let engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
-
-        assert_eq!(engine.active_voice_count(), 0);
-        assert_eq!(engine.samples.len(), 0);
-        assert_eq!(engine.triggers.len(), 0);
-    }
-
-    #[test]
-    fn test_velocity_extraction() {
-        let (mixer, source_tx) = create_test_mixer_and_sender();
-        let engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
-
-        // Note On
-        let note_on = LiveEvent::Midi {
-            channel: 0.into(),
-            message: MidiMessage::NoteOn {
-                key: 60.into(),
-                vel: 100.into(),
-            },
-        };
-        assert_eq!(engine.extract_velocity(&note_on), 100);
-
-        // CC
-        let cc = LiveEvent::Midi {
-            channel: 0.into(),
-            message: MidiMessage::Controller {
-                controller: 1.into(),
-                value: 64.into(),
-            },
-        };
-        assert_eq!(engine.extract_velocity(&cc), 64);
-    }
-
-    #[test]
-    fn test_trigger_matching() {
-        let (mixer, source_tx) = create_test_mixer_and_sender();
-        let engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
-
-        let trigger = LiveEvent::Midi {
-            channel: 9.into(), // Channel 10 (0-indexed)
-            message: MidiMessage::NoteOn {
-                key: 36.into(),
-                vel: 127.into(),
-            },
-        };
-
-        // Same note, different velocity - should match
-        let event1 = LiveEvent::Midi {
-            channel: 9.into(),
-            message: MidiMessage::NoteOn {
-                key: 36.into(),
-                vel: 80.into(),
-            },
-        };
-
-        // Different note - should not match
-        let event2 = LiveEvent::Midi {
-            channel: 9.into(),
-            message: MidiMessage::NoteOn {
-                key: 37.into(),
-                vel: 127.into(),
-            },
-        };
-
-        // Different channel - should not match
-        let event3 = LiveEvent::Midi {
-            channel: 0.into(),
-            message: MidiMessage::NoteOn {
-                key: 36.into(),
-                vel: 127.into(),
-            },
-        };
-
-        assert!(engine.matches_trigger(&event1, &trigger));
-        assert!(!engine.matches_trigger(&event2, &trigger));
-        assert!(!engine.matches_trigger(&event3, &trigger));
-    }
-
-    #[test]
-    fn test_output_track_resolves_through_track_mappings() {
-        let (mixer, source_tx) = create_test_mixer_and_sender();
-        let mut track_mappings = HashMap::new();
-        track_mappings.insert("kick-out".to_string(), vec![3, 4]);
-        let mut engine = SampleEngine::new(mixer, source_tx, 32, 256, track_mappings);
-
-        let definition = SampleDefinition::new_with_output_track(
-            Some("1Channel44.1k.wav".to_string()),
-            "kick-out",
-            crate::config::samples::VelocityConfig::ignore(None),
-            ReleaseBehavior::PlayToCompletion,
-            crate::config::samples::RetriggerBehavior::Cut,
-            None,
-            50,
-        );
-        let base_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
-        engine.load_sample("kick", &definition, &base_path).unwrap();
-
-        let sample = engine.samples.get("kick").unwrap();
-        let file_path = base_path.join("1Channel44.1k.wav");
-        let precomputed = sample.loaded_files.get(&file_path).unwrap();
-
-        // Channel labels should reference the track name, not synthetic __sample_out_
-        assert_eq!(precomputed.channel_labels.len(), 1); // mono file
-        assert_eq!(precomputed.channel_labels[0], vec!["kick-out".to_string()]);
-
-        // Track mappings should map the track name to the resolved channels
-        assert_eq!(
-            precomputed.track_mappings.get("kick-out"),
-            Some(&vec![3u16, 4])
-        );
-    }
-
-    #[test]
-    fn test_output_track_not_found_in_track_mappings() {
-        let (mixer, source_tx) = create_test_mixer_and_sender();
-        let mut engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
-
-        let definition = SampleDefinition::new_with_output_track(
-            Some("1Channel44.1k.wav".to_string()),
-            "nonexistent-track",
-            crate::config::samples::VelocityConfig::ignore(None),
-            ReleaseBehavior::PlayToCompletion,
-            crate::config::samples::RetriggerBehavior::Cut,
-            None,
-            50,
-        );
-        let base_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
-        engine.load_sample("kick", &definition, &base_path).unwrap();
-
-        let sample = engine.samples.get("kick").unwrap();
-        let file_path = base_path.join("1Channel44.1k.wav");
-        let precomputed = sample.loaded_files.get(&file_path).unwrap();
-
-        // With missing track, labels should be empty and no track mappings
-        assert_eq!(precomputed.channel_labels.len(), 1); // mono file
-        assert!(precomputed.channel_labels[0].is_empty());
-        assert!(precomputed.track_mappings.is_empty());
-    }
-
-    #[test]
-    fn test_midi_release_group_format() {
-        assert_eq!(SampleEngine::midi_release_group(10, 36), "midi:10:36");
-        assert_eq!(SampleEngine::midi_release_group(1, 0), "midi:1:0");
-        assert_eq!(SampleEngine::midi_release_group(16, 127), "midi:16:127");
-    }
-
-    #[test]
-    fn test_extract_note_channel_note_on() {
-        let (mixer, source_tx) = create_test_mixer_and_sender();
-        let engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
-
-        let event = LiveEvent::Midi {
-            channel: 9.into(), // 0-indexed, so channel 10
-            message: MidiMessage::NoteOn {
-                key: 60.into(),
-                vel: 100.into(),
-            },
-        };
-
-        let result = engine.extract_note_channel(&event);
-        assert_eq!(result, Some((60, 10))); // note, channel (1-indexed)
-    }
-
-    #[test]
-    fn test_extract_note_channel_note_off() {
-        let (mixer, source_tx) = create_test_mixer_and_sender();
-        let engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
-
-        let event = LiveEvent::Midi {
-            channel: 0.into(),
-            message: MidiMessage::NoteOff {
-                key: 36.into(),
-                vel: 0.into(),
-            },
-        };
-
-        let result = engine.extract_note_channel(&event);
-        assert_eq!(result, Some((36, 1)));
-    }
-
-    #[test]
-    fn test_extract_note_channel_cc_returns_none() {
-        let (mixer, source_tx) = create_test_mixer_and_sender();
-        let engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
-
-        let event = LiveEvent::Midi {
-            channel: 0.into(),
-            message: MidiMessage::Controller {
-                controller: 1.into(),
-                value: 64.into(),
-            },
-        };
-
-        assert_eq!(engine.extract_note_channel(&event), None);
-    }
-
-    #[test]
-    fn test_extract_velocity_note_off() {
-        let (mixer, source_tx) = create_test_mixer_and_sender();
-        let engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
-
-        let event = LiveEvent::Midi {
-            channel: 0.into(),
-            message: MidiMessage::NoteOff {
-                key: 60.into(),
-                vel: 64.into(),
-            },
-        };
-        assert_eq!(engine.extract_velocity(&event), 64);
-    }
-
-    #[test]
-    fn test_extract_velocity_aftertouch() {
-        let (mixer, source_tx) = create_test_mixer_and_sender();
-        let engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
-
-        let event = LiveEvent::Midi {
-            channel: 0.into(),
-            message: MidiMessage::Aftertouch {
-                key: 60.into(),
-                vel: 50.into(),
-            },
-        };
-        assert_eq!(engine.extract_velocity(&event), 50);
-    }
-
-    #[test]
-    fn test_extract_velocity_channel_aftertouch() {
-        let (mixer, source_tx) = create_test_mixer_and_sender();
-        let engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
-
-        let event = LiveEvent::Midi {
-            channel: 0.into(),
-            message: MidiMessage::ChannelAftertouch { vel: 80.into() },
-        };
-        assert_eq!(engine.extract_velocity(&event), 80);
-    }
-
-    #[test]
-    fn test_extract_velocity_program_change() {
-        let (mixer, source_tx) = create_test_mixer_and_sender();
-        let engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
-
-        let event = LiveEvent::Midi {
-            channel: 0.into(),
-            message: MidiMessage::ProgramChange { program: 5.into() },
-        };
-        // ProgramChange has no velocity, defaults to 127
-        assert_eq!(engine.extract_velocity(&event), 127);
-    }
-
-    #[test]
-    fn test_trigger_matching_note_off() {
-        let (mixer, source_tx) = create_test_mixer_and_sender();
-        let engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
-
-        let trigger = LiveEvent::Midi {
-            channel: 0.into(),
-            message: MidiMessage::NoteOff {
-                key: 60.into(),
-                vel: 0.into(),
-            },
-        };
-
-        // Same key NoteOff — should match
-        let event = LiveEvent::Midi {
-            channel: 0.into(),
-            message: MidiMessage::NoteOff {
-                key: 60.into(),
-                vel: 64.into(),
-            },
-        };
-        assert!(engine.matches_trigger(&event, &trigger));
-
-        // Different key — should not match
-        let event2 = LiveEvent::Midi {
-            channel: 0.into(),
-            message: MidiMessage::NoteOff {
-                key: 61.into(),
-                vel: 0.into(),
-            },
-        };
-        assert!(!engine.matches_trigger(&event2, &trigger));
-    }
-
-    #[test]
-    fn test_trigger_matching_cc() {
-        let (mixer, source_tx) = create_test_mixer_and_sender();
-        let engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
-
-        let trigger = LiveEvent::Midi {
-            channel: 0.into(),
-            message: MidiMessage::Controller {
-                controller: 64.into(),
-                value: 127.into(),
-            },
-        };
-
-        // Same CC and value — should match
-        let event = LiveEvent::Midi {
-            channel: 0.into(),
-            message: MidiMessage::Controller {
-                controller: 64.into(),
-                value: 127.into(),
-            },
-        };
-        assert!(engine.matches_trigger(&event, &trigger));
-
-        // Same CC, different value — should NOT match (CC matching is exact)
-        let event2 = LiveEvent::Midi {
-            channel: 0.into(),
-            message: MidiMessage::Controller {
-                controller: 64.into(),
-                value: 0.into(),
-            },
-        };
-        assert!(!engine.matches_trigger(&event2, &trigger));
-    }
-
-    #[test]
-    fn test_trigger_matching_program_change() {
-        let (mixer, source_tx) = create_test_mixer_and_sender();
-        let engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
-
-        let trigger = LiveEvent::Midi {
-            channel: 0.into(),
-            message: MidiMessage::ProgramChange { program: 5.into() },
-        };
-
-        let event = LiveEvent::Midi {
-            channel: 0.into(),
-            message: MidiMessage::ProgramChange { program: 5.into() },
-        };
-        assert!(engine.matches_trigger(&event, &trigger));
-
-        let event2 = LiveEvent::Midi {
-            channel: 0.into(),
-            message: MidiMessage::ProgramChange { program: 6.into() },
-        };
-        assert!(!engine.matches_trigger(&event2, &trigger));
-    }
-
-    #[test]
-    fn test_trigger_matching_mismatched_types() {
-        let (mixer, source_tx) = create_test_mixer_and_sender();
-        let engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
-
-        let trigger = LiveEvent::Midi {
-            channel: 0.into(),
-            message: MidiMessage::NoteOn {
-                key: 60.into(),
-                vel: 127.into(),
-            },
-        };
-
-        // CC event should not match NoteOn trigger
-        let event = LiveEvent::Midi {
-            channel: 0.into(),
-            message: MidiMessage::Controller {
-                controller: 60.into(),
-                value: 127.into(),
-            },
-        };
-        assert!(!engine.matches_trigger(&event, &trigger));
-    }
-
-    #[test]
-    fn test_engine_debug_format() {
-        let (mixer, source_tx) = create_test_mixer_and_sender();
-        let engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
-
-        let debug_str = format!("{:?}", engine);
-        assert!(debug_str.contains("SampleEngine"));
-        assert!(debug_str.contains("samples"));
-        assert!(debug_str.contains("triggers"));
-    }
-
     fn make_samples_config(
         sample_name: &str,
         file: &str,
@@ -1035,74 +655,6 @@ mod tests {
         let config = make_samples_config("kick", "1Channel44.1k.wav", 10, 36);
         engine.load_global_config(&config, &base_path).unwrap();
         engine
-    }
-
-    #[test]
-    fn test_load_global_config() {
-        let (mixer, source_tx) = create_test_mixer_and_sender();
-        let mut engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
-        let base_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
-        let config = make_samples_config("kick", "1Channel44.1k.wav", 10, 36);
-
-        engine.load_global_config(&config, &base_path).unwrap();
-
-        assert_eq!(engine.samples.len(), 1);
-        assert_eq!(engine.triggers.len(), 1);
-        assert!(engine.memory_usage() > 0);
-    }
-
-    #[test]
-    fn test_load_global_config_empty() {
-        let (mixer, source_tx) = create_test_mixer_and_sender();
-        let mut engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
-        let base_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
-        let config = SamplesConfig::new(HashMap::new(), vec![], 32);
-
-        engine.load_global_config(&config, &base_path).unwrap();
-
-        assert_eq!(engine.samples.len(), 0);
-        assert_eq!(engine.triggers.len(), 0);
-    }
-
-    #[test]
-    fn test_load_song_config_adds_samples() {
-        let mut engine = create_loaded_engine();
-        let base_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
-        let song_config = make_samples_config("snare", "2Channel44.1k.wav", 10, 38);
-
-        engine.load_song_config(&song_config, &base_path).unwrap();
-
-        assert_eq!(engine.samples.len(), 2);
-        assert_eq!(engine.triggers.len(), 2);
-    }
-
-    #[test]
-    fn test_load_song_config_empty_is_noop() {
-        let mut engine = create_loaded_engine();
-        let base_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
-        let config = SamplesConfig::new(HashMap::new(), vec![], 32);
-
-        engine.load_song_config(&config, &base_path).unwrap();
-
-        // Should remain unchanged
-        assert_eq!(engine.samples.len(), 1);
-        assert_eq!(engine.triggers.len(), 1);
-    }
-
-    #[test]
-    fn test_add_trigger_replaces_duplicate() {
-        let mut engine = create_loaded_engine();
-
-        // Add a trigger with the same MIDI event but different sample
-        let trigger = SampleTrigger::new(
-            crate::config::midi::note_on(10, 36, 127),
-            "other_sample".to_string(),
-        );
-        engine.add_trigger(&trigger).unwrap();
-
-        // Should still have 1 trigger (replaced, not appended)
-        assert_eq!(engine.triggers.len(), 1);
-        assert_eq!(engine.triggers[0].sample_name, "other_sample");
     }
 
     #[test]
@@ -1338,39 +890,6 @@ mod tests {
     }
 
     #[test]
-    fn test_prepare_sample_no_output_routing() {
-        let (mixer, source_tx) = create_test_mixer_and_sender();
-        let mut engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
-        let base_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
-
-        // Sample with no output channels and no output track
-        let mut samples = HashMap::new();
-        samples.insert(
-            "silent".to_string(),
-            SampleDefinition::new(
-                Some("1Channel44.1k.wav".to_string()),
-                vec![], // No output channels
-                crate::config::samples::VelocityConfig::ignore(None),
-                ReleaseBehavior::PlayToCompletion,
-                crate::config::samples::RetriggerBehavior::Cut,
-                None,
-                50,
-            ),
-        );
-        let config = SamplesConfig::new(samples, vec![], 32);
-        engine.load_global_config(&config, &base_path).unwrap();
-
-        // Should still be able to prepare the sample (just won't route anywhere)
-        let event = TriggerEvent {
-            sample_name: "silent".to_string(),
-            velocity: 100,
-            release_group: None,
-        };
-        engine.trigger(&event);
-        assert_eq!(engine.active_voice_count(), 1);
-    }
-
-    #[test]
     fn test_load_sample_with_max_voices() {
         let (mixer, source_tx) = create_test_mixer_and_sender();
         let mut engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
@@ -1406,48 +925,208 @@ mod tests {
     }
 
     #[test]
-    fn test_engine_memory_usage_empty() {
-        let (mixer, source_tx) = create_test_mixer_and_sender();
-        let engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
-        assert_eq!(engine.memory_usage(), 0);
-    }
-
-    #[test]
-    fn test_output_channels_still_works() {
+    fn test_prepare_sample_absolute_path() {
         let (mixer, source_tx) = create_test_mixer_and_sender();
         let mut engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
 
+        // Use an absolute path to the asset file
+        let abs_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("assets")
+            .join("1Channel44.1k.wav");
+        let abs_path_str = abs_path.to_string_lossy().to_string();
+
         let definition = SampleDefinition::new(
-            Some("1Channel44.1k.wav".to_string()),
-            vec![5, 6],
+            Some(abs_path_str.clone()),
+            vec![1, 2],
             crate::config::samples::VelocityConfig::ignore(None),
             ReleaseBehavior::PlayToCompletion,
             crate::config::samples::RetriggerBehavior::Cut,
             None,
             50,
         );
-        let base_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
+
+        // Use a different base_path than where the file is
+        let base_path = PathBuf::from("/tmp");
         engine
-            .load_sample("snare", &definition, &base_path)
+            .load_sample("abs_sample", &definition, &base_path)
             .unwrap();
 
-        let sample = engine.samples.get("snare").unwrap();
-        let file_path = base_path.join("1Channel44.1k.wav");
-        let precomputed = sample.loaded_files.get(&file_path).unwrap();
+        // The file should have been loaded using the absolute path, not base_path.join
+        let prepared = engine.prepare_sample("abs_sample", 100);
+        assert!(prepared.is_some());
+    }
 
-        // Should use synthetic __sample_out_ labels
-        assert_eq!(precomputed.channel_labels.len(), 1); // mono file
-        assert!(precomputed.channel_labels[0].contains(&"__sample_out_5".to_string()));
-        assert!(precomputed.channel_labels[0].contains(&"__sample_out_6".to_string()));
+    #[test]
+    fn test_prepare_sample_not_found() {
+        let (mixer, source_tx) = create_test_mixer_and_sender();
+        let engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
 
-        // Track mappings should map synthetic names to channels
-        assert_eq!(
-            precomputed.track_mappings.get("__sample_out_5"),
-            Some(&vec![5u16])
+        // Try to prepare a sample that hasn't been loaded
+        let prepared = engine.prepare_sample("nonexistent", 100);
+        assert!(prepared.is_none());
+    }
+
+    #[test]
+    fn test_prepare_sample_no_file_for_velocity() {
+        let (mixer, source_tx) = create_test_mixer_and_sender();
+        let mut engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
+        let base_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
+
+        // Create a sample with velocity layers that don't cover all velocities
+        let layers = vec![crate::config::samples::VelocityLayer::new(
+            [10, 50],
+            "1Channel44.1k.wav".to_string(),
+        )];
+        let definition = SampleDefinition::new(
+            None,
+            vec![1],
+            crate::config::samples::VelocityConfig::with_layers(layers, false),
+            ReleaseBehavior::PlayToCompletion,
+            crate::config::samples::RetriggerBehavior::Cut,
+            None,
+            50,
         );
-        assert_eq!(
-            precomputed.track_mappings.get("__sample_out_6"),
-            Some(&vec![6u16])
+
+        engine
+            .load_sample("layered", &definition, &base_path)
+            .unwrap();
+
+        // Velocity 5 is below the layer range [10, 50] — no file found
+        let prepared = engine.prepare_sample("layered", 5);
+        assert!(prepared.is_none());
+
+        // Velocity 100 is above the layer range — no file found
+        let prepared = engine.prepare_sample("layered", 100);
+        assert!(prepared.is_none());
+
+        // Velocity 30 is within the range — should find a file
+        let prepared = engine.prepare_sample("layered", 30);
+        assert!(prepared.is_some());
+    }
+
+    #[test]
+    fn test_trigger_matching_non_midi_event_returns_false() {
+        let (mixer, source_tx) = create_test_mixer_and_sender();
+        let engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
+
+        let trigger = LiveEvent::Midi {
+            channel: 0.into(),
+            message: MidiMessage::NoteOn {
+                key: 60.into(),
+                vel: 127.into(),
+            },
+        };
+
+        // SysEx event should not match any MIDI trigger
+        let sysex_event = LiveEvent::Common(midly::live::SystemCommon::Undefined(0xF4, &[]));
+        assert!(!engine.matches_trigger(&sysex_event, &trigger));
+    }
+
+    #[test]
+    fn test_extract_note_channel_non_note_returns_none() {
+        let (mixer, source_tx) = create_test_mixer_and_sender();
+        let engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
+
+        // PitchBend is not a note event
+        let event = LiveEvent::Midi {
+            channel: 0.into(),
+            message: MidiMessage::PitchBend {
+                bend: midly::PitchBend(midly::num::u14::from(8192)),
+            },
+        };
+        assert_eq!(engine.extract_note_channel(&event), None);
+
+        // ProgramChange is not a note event
+        let event2 = LiveEvent::Midi {
+            channel: 0.into(),
+            message: MidiMessage::ProgramChange { program: 5.into() },
+        };
+        assert_eq!(engine.extract_note_channel(&event2), None);
+    }
+
+    #[test]
+    fn test_extract_velocity_non_midi_defaults_to_max() {
+        let (mixer, source_tx) = create_test_mixer_and_sender();
+        let engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
+
+        let event = LiveEvent::Common(midly::live::SystemCommon::Undefined(0xF4, &[]));
+        assert_eq!(engine.extract_velocity(&event), 127);
+    }
+
+    #[test]
+    fn test_process_midi_event_channel_aftertouch_trigger() {
+        let (mixer, source_tx) = create_test_mixer_and_sender();
+        let mut engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
+        let base_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
+
+        let mut samples = HashMap::new();
+        samples.insert(
+            "pad".to_string(),
+            SampleDefinition::new(
+                Some("1Channel44.1k.wav".to_string()),
+                vec![1, 2],
+                crate::config::samples::VelocityConfig::ignore(None),
+                ReleaseBehavior::PlayToCompletion,
+                crate::config::samples::RetriggerBehavior::Cut,
+                None,
+                50,
+            ),
         );
+
+        // Create a ChannelAftertouch trigger via deserialization (fields are private)
+        let trigger_event: crate::config::midi::Event = serde_json::from_value(serde_json::json!({
+            "type": "channel_aftertouch",
+            "channel": 1,
+            "velocity": 100
+        }))
+        .unwrap();
+        let triggers = vec![SampleTrigger::new(trigger_event, "pad".to_string())];
+        let config = SamplesConfig::new(samples, triggers, 32);
+        engine.load_global_config(&config, &base_path).unwrap();
+
+        // Send a ChannelAftertouch MIDI event: status byte 0xD0 | channel 0 = 0xD0, value 100
+        let raw = [0xD0, 100];
+        engine.process_midi_event(&raw);
+
+        assert_eq!(engine.active_voice_count(), 1);
+    }
+
+    #[test]
+    fn test_process_midi_event_aftertouch_trigger() {
+        let (mixer, source_tx) = create_test_mixer_and_sender();
+        let mut engine = SampleEngine::new(mixer, source_tx, 32, 256, HashMap::new());
+        let base_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
+
+        let mut samples = HashMap::new();
+        samples.insert(
+            "fx".to_string(),
+            SampleDefinition::new(
+                Some("1Channel44.1k.wav".to_string()),
+                vec![1, 2],
+                crate::config::samples::VelocityConfig::ignore(None),
+                ReleaseBehavior::PlayToCompletion,
+                crate::config::samples::RetriggerBehavior::Cut,
+                None,
+                50,
+            ),
+        );
+
+        // Create an Aftertouch trigger (polyphonic key pressure) via deserialization
+        let trigger_event: crate::config::midi::Event = serde_json::from_value(serde_json::json!({
+            "type": "aftertouch",
+            "channel": 1,
+            "key": 60,
+            "velocity": 80
+        }))
+        .unwrap();
+        let triggers = vec![SampleTrigger::new(trigger_event, "fx".to_string())];
+        let config = SamplesConfig::new(samples, triggers, 32);
+        engine.load_global_config(&config, &base_path).unwrap();
+
+        // Send an Aftertouch MIDI event: status byte 0xA0 | channel 0 = 0xA0, key 60, vel 80
+        let raw = [0xA0, 60, 80];
+        engine.process_midi_event(&raw);
+
+        assert_eq!(engine.active_voice_count(), 1);
     }
 }

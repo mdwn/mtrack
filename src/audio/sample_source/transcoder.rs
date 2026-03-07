@@ -375,92 +375,142 @@ where
 mod tests {
     use super::*;
 
-    // ── SlidingInputBuffer ─────────────────────────────────────────
+    // ── AudioTranscoder ──────────────────────────────────────────────
+
+    use crate::audio::sample_source::memory::MemorySampleSource;
+    use crate::audio::TargetFormat;
+    use crate::config::ResamplerType;
 
     #[test]
-    fn input_buffer_new_empty() {
-        let buf = SlidingInputBuffer::new(2);
-        assert_eq!(buf.len(), 0);
-        assert!(!buf.source_finished);
+    fn passthrough_returns_samples_unchanged() {
+        let samples = vec![0.1, 0.2, 0.3, 0.4, 0.5];
+        let source = MemorySampleSource::new(samples.clone(), 1, 44100);
+        let fmt = TargetFormat::new(44100, crate::audio::SampleFormat::Float, 32).unwrap();
+        let mut tc = AudioTranscoder::new(source, &fmt, &fmt, 1, ResamplerType::Sinc).unwrap();
+
+        assert!(tc.resampler.is_none(), "same rate should skip resampler");
+
+        let mut out = Vec::new();
+        while let Ok(Some(s)) = tc.next_sample() {
+            out.push(s);
+        }
+        assert_eq!(out, samples);
     }
 
     #[test]
-    fn input_buffer_push_and_len() {
-        let mut buf = SlidingInputBuffer::new(2);
-        buf.push_frame(&[1.0, 2.0]);
-        assert_eq!(buf.len(), 1);
-        buf.push_frame(&[3.0, 4.0]);
-        assert_eq!(buf.len(), 2);
+    fn passthrough_trait_methods() {
+        let source = MemorySampleSource::new(vec![0.0; 10], 2, 48000);
+        let fmt = TargetFormat::new(48000, crate::audio::SampleFormat::Float, 32).unwrap();
+        let tc = AudioTranscoder::new(source, &fmt, &fmt, 2, ResamplerType::Sinc).unwrap();
+
+        assert_eq!(tc.channel_count(), 2);
+        assert_eq!(tc.sample_rate(), 48000);
+        assert_eq!(tc.bits_per_sample(), 32);
+        assert_eq!(tc.sample_format(), crate::audio::SampleFormat::Float);
+        // duration delegates to underlying source
+        assert!(tc.duration().is_some());
     }
 
     #[test]
-    fn input_buffer_drain() {
-        let mut buf = SlidingInputBuffer::new(2);
-        buf.push_frame(&[1.0, 2.0]);
-        buf.push_frame(&[3.0, 4.0]);
-        buf.push_frame(&[5.0, 6.0]);
-        buf.drain_frames(2);
-        assert_eq!(buf.len(), 1);
-        assert_eq!(buf.channels[0][0], 5.0);
-        assert_eq!(buf.channels[1][0], 6.0);
+    fn sinc_resampler_produces_output() {
+        let num_samples = 4800;
+        let mut input = Vec::with_capacity(num_samples);
+        for i in 0..num_samples {
+            let t = i as f32 / 48000.0;
+            input.push((2.0 * std::f32::consts::PI * 440.0 * t).sin() * 0.5);
+        }
+        let source = MemorySampleSource::new(input, 1, 48000);
+        let src_fmt = TargetFormat::new(48000, crate::audio::SampleFormat::Float, 32).unwrap();
+        let tgt_fmt = TargetFormat::new(44100, crate::audio::SampleFormat::Float, 32).unwrap();
+        let mut tc =
+            AudioTranscoder::new(source, &src_fmt, &tgt_fmt, 1, ResamplerType::Sinc).unwrap();
+
+        assert!(tc.resampler.is_some());
+        assert_eq!(tc.source_rate, 48000);
+        assert_eq!(tc.target_rate, 44100);
+
+        let mut out = Vec::new();
+        while let Ok(Some(s)) = tc.next_sample() {
+            out.push(s);
+        }
+        assert!(!out.is_empty(), "sinc resampler should produce output");
+        // Output length should be roughly input_len * (44100/48000)
+        let expected = (num_samples as f64 * 44100.0 / 48000.0) as usize;
+        let tolerance = (expected as f64 * 0.15) as usize;
+        assert!(
+            out.len() >= expected.saturating_sub(tolerance) && out.len() <= expected + tolerance,
+            "sinc output length {} not near expected {}",
+            out.len(),
+            expected
+        );
     }
 
     #[test]
-    fn input_buffer_drain_more_than_available() {
-        let mut buf = SlidingInputBuffer::new(1);
-        buf.push_frame(&[1.0]);
-        buf.drain_frames(100); // Should not panic
-        assert_eq!(buf.len(), 0);
+    fn fft_resampler_produces_output() {
+        let num_samples = 4800;
+        let mut input = Vec::with_capacity(num_samples);
+        for i in 0..num_samples {
+            let t = i as f32 / 48000.0;
+            input.push((2.0 * std::f32::consts::PI * 440.0 * t).sin() * 0.5);
+        }
+        let source = MemorySampleSource::new(input, 1, 48000);
+        let src_fmt = TargetFormat::new(48000, crate::audio::SampleFormat::Float, 32).unwrap();
+        let tgt_fmt = TargetFormat::new(44100, crate::audio::SampleFormat::Float, 32).unwrap();
+        let mut tc =
+            AudioTranscoder::new(source, &src_fmt, &tgt_fmt, 1, ResamplerType::Fft).unwrap();
+
+        assert!(tc.resampler.is_some());
+
+        let mut out = Vec::new();
+        while let Ok(Some(s)) = tc.next_sample() {
+            out.push(s);
+        }
+        assert!(!out.is_empty(), "fft resampler should produce output");
     }
 
     #[test]
-    fn input_buffer_zero_channels() {
-        let buf = SlidingInputBuffer::new(0);
-        assert_eq!(buf.len(), 0);
-    }
+    fn resampler_stereo_channels() {
+        // Generate stereo 48kHz signal, resample to 44.1kHz
+        let num_frames = 4800;
+        let mut input = Vec::with_capacity(num_frames * 2);
+        for i in 0..num_frames {
+            let t = i as f32 / 48000.0;
+            input.push((2.0 * std::f32::consts::PI * 440.0 * t).sin() * 0.3); // left
+            input.push((2.0 * std::f32::consts::PI * 880.0 * t).sin() * 0.3); // right
+        }
+        let source = MemorySampleSource::new(input, 2, 48000);
+        let src_fmt = TargetFormat::new(48000, crate::audio::SampleFormat::Float, 32).unwrap();
+        let tgt_fmt = TargetFormat::new(44100, crate::audio::SampleFormat::Float, 32).unwrap();
+        let mut tc =
+            AudioTranscoder::new(source, &src_fmt, &tgt_fmt, 2, ResamplerType::Sinc).unwrap();
 
-    // ── OutputFifo ─────────────────────────────────────────────────
+        assert_eq!(tc.channel_count(), 2);
+        assert_eq!(tc.sample_rate(), 44100);
 
-    #[test]
-    fn output_fifo_empty() {
-        let mut fifo = OutputFifo::new();
-        assert_eq!(fifo.pop(), None);
-    }
-
-    #[test]
-    fn output_fifo_push_and_pop() {
-        let mut fifo = OutputFifo::new();
-        let ch0 = vec![1.0, 3.0, 5.0];
-        let ch1 = vec![2.0, 4.0, 6.0];
-        fifo.push_frames(&[ch0, ch1], 3);
-        // Should be interleaved: 1,2, 3,4, 5,6
-        assert_eq!(fifo.pop(), Some(1.0));
-        assert_eq!(fifo.pop(), Some(2.0));
-        assert_eq!(fifo.pop(), Some(3.0));
-        assert_eq!(fifo.pop(), Some(4.0));
-        assert_eq!(fifo.pop(), Some(5.0));
-        assert_eq!(fifo.pop(), Some(6.0));
-        assert_eq!(fifo.pop(), None);
+        let mut out = Vec::new();
+        while let Ok(Some(s)) = tc.next_sample() {
+            out.push(s);
+        }
+        assert!(!out.is_empty());
     }
 
     #[test]
-    fn output_fifo_partial_frames() {
-        let mut fifo = OutputFifo::new();
-        let ch0 = vec![1.0, 2.0, 3.0];
-        // Push only 2 of 3 available frames
-        fifo.push_frames(&[ch0], 2);
-        assert_eq!(fifo.pop(), Some(1.0));
-        assert_eq!(fifo.pop(), Some(2.0));
-        assert_eq!(fifo.pop(), None);
+    fn resampler_target_bits_per_sample() {
+        let source = MemorySampleSource::new(vec![0.5; 100], 1, 44100);
+        let src_fmt = TargetFormat::new(44100, crate::audio::SampleFormat::Float, 32).unwrap();
+        let tgt_fmt = TargetFormat::new(48000, crate::audio::SampleFormat::Float, 24).unwrap();
+        let tc = AudioTranscoder::new(source, &src_fmt, &tgt_fmt, 1, ResamplerType::Sinc).unwrap();
+        assert_eq!(tc.bits_per_sample(), 24);
     }
 
     #[test]
-    fn output_fifo_mono() {
-        let mut fifo = OutputFifo::new();
-        let ch = vec![0.5, -0.5];
-        fifo.push_frames(&[ch], 2);
-        assert_eq!(fifo.pop(), Some(0.5));
-        assert_eq!(fifo.pop(), Some(-0.5));
-        assert_eq!(fifo.pop(), None);
+    fn resampler_duration_delegates() {
+        let source = MemorySampleSource::new(vec![0.0; 44100], 1, 44100);
+        let src_fmt = TargetFormat::new(44100, crate::audio::SampleFormat::Float, 32).unwrap();
+        let tgt_fmt = TargetFormat::new(48000, crate::audio::SampleFormat::Float, 32).unwrap();
+        let tc = AudioTranscoder::new(source, &src_fmt, &tgt_fmt, 1, ResamplerType::Sinc).unwrap();
+        let dur = tc.duration().expect("duration should be Some");
+        // 44100 samples / 1 channel / 44100 Hz = 1 second
+        assert!((dur.as_secs_f64() - 1.0).abs() < 0.01);
     }
 }

@@ -148,4 +148,112 @@ mod tests {
         let cloned = device.clone();
         assert!(!cloned.is_playing());
     }
+
+    #[test]
+    fn play_from_zero_duration_completes() {
+        use crate::audio::Device as DeviceTrait;
+        use crate::playsync::CancelHandle;
+        use crate::songs::Song;
+
+        let device = Device::get("mock-zero");
+        // new_for_test creates a song with Duration::ZERO
+        let song = Arc::new(Song::new_for_test("zero-song", &["t1"]));
+        let mappings = std::collections::HashMap::new();
+        let cancel_handle = CancelHandle::new();
+        let barrier = Arc::new(Barrier::new(2));
+
+        let device_clone = device.clone();
+        let cancel_clone = cancel_handle.clone();
+        let barrier_clone = barrier.clone();
+
+        let handle = thread::spawn(move || {
+            // play_from may return an error due to the mock's internal mpsc
+            // channel timing, but the key is that it doesn't panic.
+            let _ = device_clone.play_from(
+                song,
+                &mappings,
+                cancel_clone,
+                barrier_clone,
+                Duration::from_millis(0),
+            );
+        });
+
+        barrier.wait();
+
+        // Wait for completion
+        handle.join().expect("thread should not panic");
+        assert!(
+            !device.is_playing(),
+            "device should not be playing after zero-duration song"
+        );
+    }
+
+    #[test]
+    fn play_from_with_start_time_offset() {
+        use crate::audio::Device as DeviceTrait;
+        use crate::playsync::CancelHandle;
+        use crate::songs::Song;
+
+        let device = Device::get("mock-offset");
+        // new_for_test creates zero-duration song; start_time > duration => saturating_sub → 0
+        let song = Arc::new(Song::new_for_test("offset-song", &["t1"]));
+        let mappings = std::collections::HashMap::new();
+        let cancel_handle = CancelHandle::new();
+        let barrier = Arc::new(Barrier::new(2));
+
+        let device_clone = device.clone();
+        let cancel_clone = cancel_handle.clone();
+        let barrier_clone = barrier.clone();
+
+        let handle = thread::spawn(move || {
+            let _ = device_clone.play_from(
+                song,
+                &mappings,
+                cancel_clone,
+                barrier_clone,
+                Duration::from_secs(1), // Start offset > duration → remaining = 0
+            );
+        });
+
+        barrier.wait();
+        handle.join().expect("thread should not panic");
+        assert!(!device.is_playing());
+    }
+
+    #[test]
+    fn play_from_cancel_before_barrier() {
+        use crate::audio::Device as DeviceTrait;
+        use crate::playsync::CancelHandle;
+        use crate::songs::Song;
+
+        let device = Device::get("mock-precancel");
+        let song = Arc::new(Song::new_for_test("song", &["t1"]));
+        let mappings = std::collections::HashMap::new();
+        let cancel_handle = CancelHandle::new();
+        let barrier = Arc::new(Barrier::new(2));
+
+        // Cancel before starting
+        cancel_handle.cancel();
+
+        let device_clone = device.clone();
+        let cancel_clone = cancel_handle.clone();
+        let barrier_clone = barrier.clone();
+
+        let handle = thread::spawn(move || {
+            let _ = device_clone.play_from(
+                song,
+                &mappings,
+                cancel_clone,
+                barrier_clone,
+                Duration::from_millis(0),
+            );
+        });
+
+        barrier.wait();
+        // Notify to unblock the wait
+        cancel_handle.notify();
+
+        handle.join().expect("thread should not panic");
+        assert!(!device.is_playing());
+    }
 }

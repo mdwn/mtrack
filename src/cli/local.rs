@@ -497,4 +497,753 @@ mod tests {
             assert_eq!(resolve_thread_priority(Some("1")), 1);
         }
     }
+
+    mod songs_tests {
+        use super::*;
+
+        #[test]
+        fn empty_directory_reports_no_songs() {
+            let tmp = tempfile::tempdir().unwrap();
+            assert!(songs(tmp.path().to_str().unwrap(), false).is_ok());
+        }
+
+        #[test]
+        fn lists_songs_with_tracks() {
+            let tmp = tempfile::tempdir().unwrap();
+            let song_dir = tmp.path().join("My Song");
+            std::fs::create_dir(&song_dir).unwrap();
+            crate::testutil::write_wav(
+                song_dir.join("guitar.wav"),
+                vec![vec![1_i32, 2, 3, 4, 5]],
+                44100,
+            )
+            .unwrap();
+            crate::testutil::write_wav(
+                song_dir.join("bass.wav"),
+                vec![vec![1_i32, 2, 3, 4, 5]],
+                44100,
+            )
+            .unwrap();
+            assert!(songs(tmp.path().to_str().unwrap(), false).is_ok());
+        }
+
+        #[test]
+        fn with_init_creates_yaml() {
+            let tmp = tempfile::tempdir().unwrap();
+            let song_dir = tmp.path().join("Init Song");
+            std::fs::create_dir(&song_dir).unwrap();
+            crate::testutil::write_wav(
+                song_dir.join("track.wav"),
+                vec![vec![1_i32, 2, 3, 4, 5]],
+                44100,
+            )
+            .unwrap();
+            assert!(songs(tmp.path().to_str().unwrap(), true).is_ok());
+            // init should have created a song.yaml
+            assert!(song_dir.join("song.yaml").exists());
+        }
+
+        #[test]
+        fn nonexistent_path_returns_error() {
+            assert!(songs("/nonexistent/path/to/songs", false).is_err());
+        }
+
+        #[test]
+        fn multiple_songs_with_overlapping_tracks() {
+            let tmp = tempfile::tempdir().unwrap();
+            // Create two songs that share track names
+            let song1_dir = tmp.path().join("Song One");
+            std::fs::create_dir(&song1_dir).unwrap();
+            crate::testutil::write_wav(
+                song1_dir.join("guitar.wav"),
+                vec![vec![1_i32, 2, 3, 4, 5]],
+                44100,
+            )
+            .unwrap();
+            crate::testutil::write_wav(
+                song1_dir.join("bass.wav"),
+                vec![vec![1_i32, 2, 3, 4, 5]],
+                44100,
+            )
+            .unwrap();
+
+            let song2_dir = tmp.path().join("Song Two");
+            std::fs::create_dir(&song2_dir).unwrap();
+            crate::testutil::write_wav(
+                song2_dir.join("guitar.wav"),
+                vec![vec![1_i32, 2, 3, 4, 5]],
+                44100,
+            )
+            .unwrap();
+            crate::testutil::write_wav(
+                song2_dir.join("drums.wav"),
+                vec![vec![1_i32, 2, 3, 4, 5]],
+                44100,
+            )
+            .unwrap();
+
+            // This exercises the track dedup via HashSet and sorting
+            assert!(songs(tmp.path().to_str().unwrap(), false).is_ok());
+        }
+
+        #[test]
+        fn init_with_multiple_songs() {
+            let tmp = tempfile::tempdir().unwrap();
+            let song1_dir = tmp.path().join("Song A");
+            std::fs::create_dir(&song1_dir).unwrap();
+            crate::testutil::write_wav(
+                song1_dir.join("track1.wav"),
+                vec![vec![1_i32, 2, 3, 4, 5]],
+                44100,
+            )
+            .unwrap();
+
+            let song2_dir = tmp.path().join("Song B");
+            std::fs::create_dir(&song2_dir).unwrap();
+            crate::testutil::write_wav(
+                song2_dir.join("track2.wav"),
+                vec![vec![1_i32, 2, 3, 4, 5]],
+                44100,
+            )
+            .unwrap();
+
+            assert!(songs(tmp.path().to_str().unwrap(), true).is_ok());
+            assert!(song1_dir.join("song.yaml").exists());
+            assert!(song2_dir.join("song.yaml").exists());
+        }
+    }
+
+    mod playlist_tests {
+        use super::*;
+
+        #[test]
+        fn valid_playlist() {
+            let tmp = tempfile::tempdir().unwrap();
+            let song_dir = tmp.path().join("Cool Song");
+            std::fs::create_dir(&song_dir).unwrap();
+            crate::testutil::write_wav(
+                song_dir.join("track.wav"),
+                vec![vec![1_i32, 2, 3, 4, 5]],
+                44100,
+            )
+            .unwrap();
+            crate::songs::initialize_songs(tmp.path()).unwrap();
+
+            let playlist_path = tmp.path().join("playlist.yaml");
+            std::fs::write(&playlist_path, "songs:\n- Cool Song\n").unwrap();
+
+            assert!(playlist(
+                tmp.path().to_str().unwrap(),
+                playlist_path.to_str().unwrap()
+            )
+            .is_ok());
+        }
+
+        #[test]
+        fn invalid_playlist_path() {
+            let tmp = tempfile::tempdir().unwrap();
+            assert!(playlist(tmp.path().to_str().unwrap(), "/nonexistent/playlist.yaml").is_err());
+        }
+    }
+
+    mod calibrate_triggers_tests {
+        use super::*;
+
+        #[test]
+        fn negative_duration_returns_error() {
+            let result = calibrate_triggers("device", None, -1.0, None, None);
+            assert!(result.is_err());
+            assert!(result.unwrap_err().to_string().contains("positive finite"));
+        }
+
+        #[test]
+        fn zero_duration_returns_error() {
+            let result = calibrate_triggers("device", None, 0.0, None, None);
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn infinite_duration_returns_error() {
+            let result = calibrate_triggers("device", None, f32::INFINITY, None, None);
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn nan_duration_returns_error() {
+            let result = calibrate_triggers("device", None, f32::NAN, None, None);
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn invalid_sample_format_returns_error() {
+            let result = calibrate_triggers("device", None, 3.0, Some("invalid".to_string()), None);
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn valid_int_sample_format_passes_validation() {
+            // The sample format "int" is valid, but will fail at calibrate::run
+            // because the device doesn't exist. This exercises the fmt parsing path.
+            let result = calibrate_triggers(
+                "nonexistent-device",
+                None,
+                3.0,
+                Some("int".to_string()),
+                None,
+            );
+            assert!(result.is_err());
+            // The error should NOT be about sample format parsing
+            let err_msg = result.unwrap_err().to_string();
+            assert!(!err_msg.contains("Unsupported sample format"));
+        }
+
+        #[test]
+        fn valid_float_sample_format_passes_validation() {
+            let result = calibrate_triggers(
+                "nonexistent-device",
+                None,
+                3.0,
+                Some("float".to_string()),
+                None,
+            );
+            assert!(result.is_err());
+            let err_msg = result.unwrap_err().to_string();
+            assert!(!err_msg.contains("Unsupported sample format"));
+        }
+
+        #[test]
+        fn neg_infinity_duration_returns_error() {
+            let result = calibrate_triggers("device", None, f32::NEG_INFINITY, None, None);
+            assert!(result.is_err());
+            assert!(result.unwrap_err().to_string().contains("positive finite"));
+        }
+
+        #[test]
+        fn with_sample_rate_and_bits_per_sample() {
+            // Valid parameters but nonexistent device
+            let result = calibrate_triggers(
+                "nonexistent-device",
+                Some(48000),
+                3.0,
+                Some("int".to_string()),
+                Some(16),
+            );
+            assert!(result.is_err());
+        }
+    }
+
+    mod verify_light_show_tests {
+        use super::*;
+
+        #[test]
+        fn nonexistent_file_returns_error() {
+            let result = verify_light_show("/nonexistent/show.light", None);
+            assert!(result.is_err());
+            assert!(result.unwrap_err().to_string().contains("not found"));
+        }
+
+        #[test]
+        fn valid_show_file() {
+            let tmp = tempfile::tempdir().unwrap();
+            let show_path = tmp.path().join("show.light");
+            std::fs::write(
+                &show_path,
+                r#"show "test" {
+    @00:00.000
+    front_wash: static color: "blue", dimmer: 100%
+}"#,
+            )
+            .unwrap();
+            assert!(verify_light_show(show_path.to_str().unwrap(), None).is_ok());
+        }
+
+        #[test]
+        fn invalid_syntax_returns_error() {
+            let tmp = tempfile::tempdir().unwrap();
+            let show_path = tmp.path().join("bad.light");
+            std::fs::write(&show_path, "this is not valid light show syntax {{{").unwrap();
+            assert!(verify_light_show(show_path.to_str().unwrap(), None).is_err());
+        }
+
+        #[test]
+        fn empty_show_file() {
+            let tmp = tempfile::tempdir().unwrap();
+            let show_path = tmp.path().join("empty.light");
+            std::fs::write(&show_path, "").unwrap();
+            // Empty file should parse but produce a warning about no shows
+            assert!(verify_light_show(show_path.to_str().unwrap(), None).is_ok());
+        }
+
+        #[test]
+        fn with_valid_config() {
+            let show_dir = tempfile::tempdir().unwrap();
+            let show_path = show_dir.path().join("show.light");
+            std::fs::write(
+                &show_path,
+                r#"show "test" {
+    @00:00.000
+    front_wash: static color: "blue", dimmer: 100%
+}"#,
+            )
+            .unwrap();
+
+            // Use the example config which has DMX/lighting setup
+            let config_path = PathBuf::from("examples/mtrack.yaml");
+            if config_path.exists() {
+                let result = verify_light_show(
+                    show_path.to_str().unwrap(),
+                    Some(config_path.to_str().unwrap()),
+                );
+                // Result depends on whether the groups match the config; either way it shouldn't panic
+                let _ = result;
+            }
+        }
+
+        #[test]
+        fn with_nonexistent_config() {
+            let show_dir = tempfile::tempdir().unwrap();
+            let show_path = show_dir.path().join("show.light");
+            std::fs::write(
+                &show_path,
+                r#"show "test" {
+    @00:00.000
+    front_wash: static color: "blue", dimmer: 100%
+}"#,
+            )
+            .unwrap();
+
+            // Non-existent config should produce a warning but not fail
+            assert!(verify_light_show(
+                show_path.to_str().unwrap(),
+                Some("/nonexistent/mtrack.yaml")
+            )
+            .is_ok());
+        }
+
+        #[test]
+        fn with_config_missing_dmx() {
+            let tmp = tempfile::tempdir().unwrap();
+            let show_path = tmp.path().join("show.light");
+            std::fs::write(
+                &show_path,
+                r#"show "test" {
+    @00:00.000
+    front_wash: static color: "blue", dimmer: 100%
+}"#,
+            )
+            .unwrap();
+
+            // Config with no DMX section
+            let config_path = tmp.path().join("mtrack.yaml");
+            std::fs::write(&config_path, "songs: songs\naudio:\n  device: mock\n").unwrap();
+
+            assert!(verify_light_show(
+                show_path.to_str().unwrap(),
+                Some(config_path.to_str().unwrap())
+            )
+            .is_ok());
+        }
+
+        #[test]
+        fn multiple_shows_in_file() {
+            let tmp = tempfile::tempdir().unwrap();
+            let show_path = tmp.path().join("multi.light");
+            std::fs::write(
+                &show_path,
+                r#"show "show1" {
+    @00:00.000
+    front_wash: static color: "blue", dimmer: 100%
+}
+
+show "show2" {
+    @00:00.000
+    rear_wash: static color: "red", dimmer: 50%
+}"#,
+            )
+            .unwrap();
+            assert!(verify_light_show(show_path.to_str().unwrap(), None).is_ok());
+        }
+
+        #[test]
+        fn with_config_dmx_but_no_lighting_section() {
+            let tmp = tempfile::tempdir().unwrap();
+            let show_path = tmp.path().join("show.light");
+            std::fs::write(
+                &show_path,
+                r#"show "test" {
+    @00:00.000
+    front_wash: static color: "blue", dimmer: 100%
+}"#,
+            )
+            .unwrap();
+
+            // Config with DMX but no lighting section
+            let config_path = tmp.path().join("mtrack.yaml");
+            std::fs::write(
+                &config_path,
+                "songs: songs\naudio:\n  device: mock\ndmx:\n  universes:\n  - universe: 1\n    name: light-show\n",
+            )
+            .unwrap();
+
+            assert!(verify_light_show(
+                show_path.to_str().unwrap(),
+                Some(config_path.to_str().unwrap())
+            )
+            .is_ok());
+        }
+
+        #[test]
+        fn with_config_having_lighting_and_valid_groups() {
+            let tmp = tempfile::tempdir().unwrap();
+            let show_path = tmp.path().join("show.light");
+            // Use a group name that matches the config
+            std::fs::write(
+                &show_path,
+                r#"show "test" {
+    @00:00.000
+    front_wash: static color: "blue", dimmer: 100%
+}"#,
+            )
+            .unwrap();
+
+            let config_path = tmp.path().join("mtrack.yaml");
+            std::fs::write(
+                &config_path,
+                r#"songs: songs
+audio:
+  device: mock
+dmx:
+  universes:
+    - universe: 1
+      name: light-show
+  lighting:
+    fixtures:
+      front_wash: "Front Wash @ 1:1"
+    groups:
+      front_wash:
+        name: front_wash
+        constraints:
+          - AllOf: ["wash"]
+          - AllowEmpty: true
+"#,
+            )
+            .unwrap();
+
+            let result = verify_light_show(
+                show_path.to_str().unwrap(),
+                Some(config_path.to_str().unwrap()),
+            );
+            // Result depends on validation details, but should not panic
+            let _ = result;
+        }
+
+        #[test]
+        fn with_invalid_config_file_syntax() {
+            let tmp = tempfile::tempdir().unwrap();
+            let show_path = tmp.path().join("show.light");
+            std::fs::write(
+                &show_path,
+                r#"show "test" {
+    @00:00.000
+    front_wash: static color: "blue", dimmer: 100%
+}"#,
+            )
+            .unwrap();
+
+            // Write a config file with invalid YAML
+            let config_path = tmp.path().join("mtrack.yaml");
+            std::fs::write(&config_path, "{{invalid yaml!!").unwrap();
+
+            // Should produce a warning about parsing, but not crash
+            assert!(verify_light_show(
+                show_path.to_str().unwrap(),
+                Some(config_path.to_str().unwrap()),
+            )
+            .is_ok());
+        }
+
+        #[test]
+        fn show_with_no_groups() {
+            let tmp = tempfile::tempdir().unwrap();
+            let show_path = tmp.path().join("show.light");
+            // A show with a cue but no fixture group references
+            std::fs::write(
+                &show_path,
+                r#"show "empty_show" {
+    @00:00.000
+}"#,
+            )
+            .unwrap();
+            assert!(verify_light_show(show_path.to_str().unwrap(), None).is_ok());
+        }
+    }
+
+    mod verify_tests {
+        use super::*;
+
+        #[test]
+        fn empty_songs_dir() {
+            let tmp = tempfile::tempdir().unwrap();
+            let songs_dir = tmp.path().join("songs");
+            std::fs::create_dir(&songs_dir).unwrap();
+            let config_path = tmp.path().join("mtrack.yaml");
+            std::fs::write(&config_path, format!("songs: {}\n", songs_dir.display())).unwrap();
+            assert!(verify(config_path.to_str().unwrap(), None, None).is_ok());
+        }
+
+        #[test]
+        fn invalid_config_path() {
+            assert!(verify("/nonexistent/mtrack.yaml", None, None).is_err());
+        }
+
+        /// Helper: create a songs dir with one song having a given set of track names.
+        fn create_songs_dir(base: &Path, song_name: &str, track_names: &[&str]) -> PathBuf {
+            let songs_dir = base.join("songs");
+            std::fs::create_dir_all(&songs_dir).unwrap();
+            let song_dir = songs_dir.join(song_name);
+            std::fs::create_dir_all(&song_dir).unwrap();
+            for track in track_names {
+                crate::testutil::write_wav(
+                    song_dir.join(format!("{}.wav", track)),
+                    vec![vec![1_i32, 2, 3, 4, 5]],
+                    44100,
+                )
+                .unwrap();
+            }
+            crate::songs::initialize_songs(&songs_dir).unwrap();
+            songs_dir
+        }
+
+        #[test]
+        fn verify_single_profile_with_track_mappings() {
+            let tmp = tempfile::tempdir().unwrap();
+            let songs_dir = create_songs_dir(tmp.path(), "Test Song", &["click", "cue"]);
+            let config_path = tmp.path().join("mtrack.yaml");
+            std::fs::write(
+                &config_path,
+                format!(
+                    "songs: {}\naudio:\n  device: mock\ntrack_mappings:\n  click:\n  - 1\n  cue:\n  - 2\n",
+                    songs_dir.display()
+                ),
+            )
+            .unwrap();
+            // run_all = true (check is None), single profile
+            assert!(verify(config_path.to_str().unwrap(), None, None).is_ok());
+        }
+
+        #[test]
+        fn verify_with_specific_check_track_mappings() {
+            let tmp = tempfile::tempdir().unwrap();
+            let songs_dir = create_songs_dir(tmp.path(), "Test Song", &["click"]);
+            let config_path = tmp.path().join("mtrack.yaml");
+            std::fs::write(
+                &config_path,
+                format!(
+                    "songs: {}\naudio:\n  device: mock\ntrack_mappings:\n  click:\n  - 1\n",
+                    songs_dir.display()
+                ),
+            )
+            .unwrap();
+            // Provide a specific check
+            assert!(verify(
+                config_path.to_str().unwrap(),
+                Some(vec!["track-mappings".to_string()]),
+                None
+            )
+            .is_ok());
+        }
+
+        #[test]
+        fn verify_with_unrelated_check_skips_track_mappings() {
+            let tmp = tempfile::tempdir().unwrap();
+            let songs_dir = create_songs_dir(tmp.path(), "Test Song", &["click"]);
+            let config_path = tmp.path().join("mtrack.yaml");
+            std::fs::write(
+                &config_path,
+                format!(
+                    "songs: {}\naudio:\n  device: mock\ntrack_mappings:\n  click:\n  - 1\n",
+                    songs_dir.display()
+                ),
+            )
+            .unwrap();
+            // Provide a check that doesn't match track-mappings, so that branch is skipped
+            assert!(verify(
+                config_path.to_str().unwrap(),
+                Some(vec!["other-check".to_string()]),
+                None
+            )
+            .is_ok());
+        }
+
+        #[test]
+        fn verify_multi_profile_with_hostname_filter() {
+            let tmp = tempfile::tempdir().unwrap();
+            let songs_dir = create_songs_dir(tmp.path(), "Test Song", &["click", "cue"]);
+            let config_path = tmp.path().join("mtrack.yaml");
+            std::fs::write(
+                &config_path,
+                format!(
+                    r#"songs: {}
+profiles:
+  - hostname: pi-a
+    audio:
+      device: mock-a
+      track_mappings:
+        click:
+          - 1
+        cue:
+          - 2
+  - hostname: pi-b
+    audio:
+      device: mock-b
+      track_mappings:
+        click:
+          - 3
+        cue:
+          - 4
+"#,
+                    songs_dir.display()
+                ),
+            )
+            .unwrap();
+            // Verify with hostname filter matching one profile
+            assert!(verify(
+                config_path.to_str().unwrap(),
+                None,
+                Some("pi-a".to_string())
+            )
+            .is_ok());
+        }
+
+        #[test]
+        fn verify_multi_profile_without_hostname() {
+            let tmp = tempfile::tempdir().unwrap();
+            let songs_dir = create_songs_dir(tmp.path(), "Test Song", &["click", "cue"]);
+            let config_path = tmp.path().join("mtrack.yaml");
+            std::fs::write(
+                &config_path,
+                format!(
+                    r#"songs: {}
+profiles:
+  - hostname: pi-a
+    audio:
+      device: mock-a
+      track_mappings:
+        click:
+          - 1
+        cue:
+          - 2
+  - hostname: pi-b
+    audio:
+      device: mock-b
+      track_mappings:
+        click:
+          - 3
+        cue:
+          - 4
+"#,
+                    songs_dir.display()
+                ),
+            )
+            .unwrap();
+            // Verify without hostname filter - checks all profiles
+            assert!(verify(config_path.to_str().unwrap(), None, None).is_ok());
+        }
+
+        #[test]
+        fn verify_multi_profile_with_nonmatching_hostname() {
+            let tmp = tempfile::tempdir().unwrap();
+            let songs_dir = create_songs_dir(tmp.path(), "Test Song", &["click"]);
+            let config_path = tmp.path().join("mtrack.yaml");
+            std::fs::write(
+                &config_path,
+                format!(
+                    r#"songs: {}
+profiles:
+  - hostname: pi-a
+    audio:
+      device: mock-a
+      track_mappings:
+        click:
+          - 1
+  - hostname: pi-b
+    audio:
+      device: mock-b
+      track_mappings:
+        click:
+          - 3
+"#,
+                    songs_dir.display()
+                ),
+            )
+            .unwrap();
+            // Hostname that doesn't match any profile
+            assert!(verify(
+                config_path.to_str().unwrap(),
+                None,
+                Some("nonexistent-host".to_string())
+            )
+            .is_ok());
+        }
+
+        #[test]
+        fn verify_profile_without_audio_skips() {
+            let tmp = tempfile::tempdir().unwrap();
+            let songs_dir = create_songs_dir(tmp.path(), "Test Song", &["click"]);
+            let config_path = tmp.path().join("mtrack.yaml");
+            std::fs::write(
+                &config_path,
+                format!(
+                    r#"songs: {}
+profiles:
+  - hostname: lighting-node
+    dmx:
+      universes:
+        - universe: 1
+          name: light-show
+  - hostname: audio-node
+    audio:
+      device: mock
+      track_mappings:
+        click:
+          - 1
+"#,
+                    songs_dir.display()
+                ),
+            )
+            .unwrap();
+            // The first profile has no audio, so it should be skipped
+            assert!(verify(config_path.to_str().unwrap(), None, None).is_ok());
+        }
+
+        #[test]
+        fn verify_profile_without_hostname_shows_any_host_label() {
+            let tmp = tempfile::tempdir().unwrap();
+            let songs_dir = create_songs_dir(tmp.path(), "Test Song", &["click"]);
+            let config_path = tmp.path().join("mtrack.yaml");
+            std::fs::write(
+                &config_path,
+                format!(
+                    r#"songs: {}
+profiles:
+  - hostname: pi-a
+    audio:
+      device: mock-a
+      track_mappings:
+        click:
+          - 1
+  - audio:
+      device: fallback
+      track_mappings:
+        click:
+          - 1
+"#,
+                    songs_dir.display()
+                ),
+            )
+            .unwrap();
+            // Second profile has no hostname - exercises the "any host" label path
+            assert!(verify(config_path.to_str().unwrap(), None, None).is_ok());
+        }
+    }
 }

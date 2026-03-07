@@ -612,5 +612,351 @@ mod tests {
         fn unknown_command_fails() {
             assert!(Cli::try_parse_from(["mtrack", "nonexistent"]).is_err());
         }
+
+        #[test]
+        fn parse_playlist_command() {
+            let cli =
+                Cli::try_parse_from(["mtrack", "playlist", "/path/to/songs", "playlist.yaml"])
+                    .unwrap();
+            match cli.command {
+                Commands::Playlist {
+                    repository_path,
+                    playlist_path,
+                } => {
+                    assert_eq!(repository_path, "/path/to/songs");
+                    assert_eq!(playlist_path, "playlist.yaml");
+                }
+                _ => panic!("expected Playlist command"),
+            }
+        }
+
+        #[test]
+        fn parse_playlist_missing_args_fails() {
+            assert!(Cli::try_parse_from(["mtrack", "playlist"]).is_err());
+            assert!(Cli::try_parse_from(["mtrack", "playlist", "/path"]).is_err());
+        }
+
+        #[test]
+        fn parse_previous_command() {
+            let cli = Cli::try_parse_from(["mtrack", "previous"]).unwrap();
+            match cli.command {
+                Commands::Previous { host_port } => {
+                    assert!(host_port.is_none());
+                }
+                _ => panic!("expected Previous command"),
+            }
+        }
+
+        #[test]
+        fn parse_previous_with_host() {
+            let cli = Cli::try_parse_from(["mtrack", "previous", "-H", "localhost:50051"]).unwrap();
+            match cli.command {
+                Commands::Previous { host_port } => {
+                    assert_eq!(host_port.as_deref(), Some("localhost:50051"));
+                }
+                _ => panic!("expected Previous command"),
+            }
+        }
+
+        #[test]
+        fn parse_next_command() {
+            let cli = Cli::try_parse_from(["mtrack", "next"]).unwrap();
+            match cli.command {
+                Commands::Next { host_port } => {
+                    assert!(host_port.is_none());
+                }
+                _ => panic!("expected Next command"),
+            }
+        }
+
+        #[test]
+        fn parse_next_with_short_host_flag() {
+            let cli = Cli::try_parse_from(["mtrack", "next", "-H", "192.168.1.1:43234"]).unwrap();
+            match cli.command {
+                Commands::Next { host_port } => {
+                    assert_eq!(host_port.as_deref(), Some("192.168.1.1:43234"));
+                }
+                _ => panic!("expected Next command"),
+            }
+        }
+
+        #[test]
+        fn parse_stop_command() {
+            let cli = Cli::try_parse_from(["mtrack", "stop"]).unwrap();
+            match cli.command {
+                Commands::Stop { host_port } => {
+                    assert!(host_port.is_none());
+                }
+                _ => panic!("expected Stop command"),
+            }
+        }
+
+        #[test]
+        fn parse_stop_with_host() {
+            let cli =
+                Cli::try_parse_from(["mtrack", "stop", "--host-port", "10.0.0.1:43234"]).unwrap();
+            match cli.command {
+                Commands::Stop { host_port } => {
+                    assert_eq!(host_port.as_deref(), Some("10.0.0.1:43234"));
+                }
+                _ => panic!("expected Stop command"),
+            }
+        }
+
+        #[test]
+        fn parse_status_command() {
+            let cli = Cli::try_parse_from(["mtrack", "status"]).unwrap();
+            match cli.command {
+                Commands::Status { host_port } => {
+                    assert!(host_port.is_none());
+                }
+                _ => panic!("expected Status command"),
+            }
+        }
+
+        #[test]
+        fn parse_status_with_host() {
+            let cli = Cli::try_parse_from(["mtrack", "status", "-H", "localhost:9999"]).unwrap();
+            match cli.command {
+                Commands::Status { host_port } => {
+                    assert_eq!(host_port.as_deref(), Some("localhost:9999"));
+                }
+                _ => panic!("expected Status command"),
+            }
+        }
+
+        #[test]
+        fn parse_active_effects_command() {
+            let cli = Cli::try_parse_from(["mtrack", "active-effects"]).unwrap();
+            match cli.command {
+                Commands::ActiveEffects { host_port } => {
+                    assert!(host_port.is_none());
+                }
+                _ => panic!("expected ActiveEffects command"),
+            }
+        }
+
+        #[test]
+        fn parse_active_effects_with_host() {
+            let cli = Cli::try_parse_from(["mtrack", "active-effects", "--host-port", "host:1234"])
+                .unwrap();
+            match cli.command {
+                Commands::ActiveEffects { host_port } => {
+                    assert_eq!(host_port.as_deref(), Some("host:1234"));
+                }
+                _ => panic!("expected ActiveEffects command"),
+            }
+        }
+
+        #[test]
+        fn parse_cues_command() {
+            let cli = Cli::try_parse_from(["mtrack", "cues"]).unwrap();
+            match cli.command {
+                Commands::Cues { host_port } => {
+                    assert!(host_port.is_none());
+                }
+                _ => panic!("expected Cues command"),
+            }
+        }
+
+        #[test]
+        fn parse_cues_with_host() {
+            let cli = Cli::try_parse_from(["mtrack", "cues", "-H", "server:43234"]).unwrap();
+            match cli.command {
+                Commands::Cues { host_port } => {
+                    assert_eq!(host_port.as_deref(), Some("server:43234"));
+                }
+                _ => panic!("expected Cues command"),
+            }
+        }
+
+        #[test]
+        fn parse_play_no_args() {
+            let cli = Cli::try_parse_from(["mtrack", "play"]).unwrap();
+            match cli.command {
+                Commands::Play { host_port, from } => {
+                    assert!(host_port.is_none());
+                    assert!(from.is_none());
+                }
+                _ => panic!("expected Play command"),
+            }
+        }
+
+        #[test]
+        fn parse_play_with_both_host_and_from() {
+            let cli = Cli::try_parse_from([
+                "mtrack",
+                "play",
+                "-H",
+                "localhost:50051",
+                "--from",
+                "2:30.000",
+            ])
+            .unwrap();
+            match cli.command {
+                Commands::Play { host_port, from } => {
+                    assert_eq!(host_port.as_deref(), Some("localhost:50051"));
+                    assert_eq!(from.as_deref(), Some("2:30.000"));
+                }
+                _ => panic!("expected Play command"),
+            }
+        }
+
+        #[test]
+        fn parse_switch_to_playlist_with_host() {
+            let cli = Cli::try_parse_from([
+                "mtrack",
+                "switch-to-playlist",
+                "-H",
+                "server:43234",
+                "playlist",
+            ])
+            .unwrap();
+            match cli.command {
+                Commands::SwitchToPlaylist {
+                    host_port,
+                    playlist_name,
+                } => {
+                    assert_eq!(host_port.as_deref(), Some("server:43234"));
+                    assert_eq!(playlist_name, "playlist");
+                }
+                _ => panic!("expected SwitchToPlaylist command"),
+            }
+        }
+
+        #[test]
+        fn parse_switch_to_playlist_missing_name_fails() {
+            assert!(Cli::try_parse_from(["mtrack", "switch-to-playlist"]).is_err());
+        }
+
+        #[test]
+        fn parse_verify_light_show_without_config() {
+            let cli = Cli::try_parse_from(["mtrack", "verify-light-show", "show.light"]).unwrap();
+            match cli.command {
+                Commands::VerifyLightShow { show_path, config } => {
+                    assert_eq!(show_path, "show.light");
+                    assert!(config.is_none());
+                }
+                _ => panic!("expected VerifyLightShow command"),
+            }
+        }
+
+        #[test]
+        fn parse_calibrate_triggers_defaults() {
+            let cli = Cli::try_parse_from(["mtrack", "calibrate-triggers", "USB Audio"]).unwrap();
+            match cli.command {
+                Commands::CalibrateTriggers {
+                    device,
+                    sample_rate,
+                    duration,
+                    sample_format,
+                    bits_per_sample,
+                } => {
+                    assert_eq!(device, "USB Audio");
+                    assert!(sample_rate.is_none());
+                    assert_eq!(duration, 3.0); // default
+                    assert!(sample_format.is_none());
+                    assert!(bits_per_sample.is_none());
+                }
+                _ => panic!("expected CalibrateTriggers command"),
+            }
+        }
+
+        #[test]
+        fn parse_calibrate_triggers_with_all_options() {
+            let cli = Cli::try_parse_from([
+                "mtrack",
+                "calibrate-triggers",
+                "USB Audio",
+                "--sample-rate",
+                "48000",
+                "--duration",
+                "5",
+                "--sample-format",
+                "float",
+                "--bits-per-sample",
+                "32",
+            ])
+            .unwrap();
+            match cli.command {
+                Commands::CalibrateTriggers {
+                    device,
+                    sample_rate,
+                    duration,
+                    sample_format,
+                    bits_per_sample,
+                } => {
+                    assert_eq!(device, "USB Audio");
+                    assert_eq!(sample_rate, Some(48000));
+                    assert_eq!(duration, 5.0);
+                    assert_eq!(sample_format.as_deref(), Some("float"));
+                    assert_eq!(bits_per_sample, Some(32));
+                }
+                _ => panic!("expected CalibrateTriggers command"),
+            }
+        }
+
+        #[test]
+        fn parse_verify_without_optional_args() {
+            let cli = Cli::try_parse_from(["mtrack", "verify", "mtrack.yaml"]).unwrap();
+            match cli.command {
+                Commands::Verify {
+                    config,
+                    check,
+                    hostname,
+                } => {
+                    assert_eq!(config, "mtrack.yaml");
+                    assert!(check.is_none());
+                    assert!(hostname.is_none());
+                }
+                _ => panic!("expected Verify command"),
+            }
+        }
+
+        #[test]
+        fn parse_verify_with_multiple_checks() {
+            let cli = Cli::try_parse_from([
+                "mtrack",
+                "verify",
+                "mtrack.yaml",
+                "--check",
+                "track-mappings",
+                "--check",
+                "other-check",
+            ])
+            .unwrap();
+            match cli.command {
+                Commands::Verify { check, .. } => {
+                    let checks = check.unwrap();
+                    assert_eq!(checks.len(), 2);
+                    assert!(checks.contains(&"track-mappings".to_string()));
+                    assert!(checks.contains(&"other-check".to_string()));
+                }
+                _ => panic!("expected Verify command"),
+            }
+        }
+
+        #[test]
+        fn parse_start_with_playlist_path() {
+            let cli =
+                Cli::try_parse_from(["mtrack", "start", "config.yaml", "custom-playlist.yaml"])
+                    .unwrap();
+            match cli.command {
+                Commands::Start {
+                    player_path,
+                    playlist_path,
+                    ..
+                } => {
+                    assert_eq!(player_path, "config.yaml");
+                    assert_eq!(playlist_path.as_deref(), Some("custom-playlist.yaml"));
+                }
+                _ => panic!("expected Start command"),
+            }
+        }
+
+        #[test]
+        fn no_subcommand_fails() {
+            assert!(Cli::try_parse_from(["mtrack"]).is_err());
+        }
     }
 }

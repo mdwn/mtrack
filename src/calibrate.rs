@@ -1207,6 +1207,511 @@ mod tests {
     }
 
     #[test]
+    fn test_detection_threshold_minimum_floor() {
+        // When noise peak is very low, threshold should clamp to 0.005
+        let nf = NoiseFloorStats {
+            peak: 0.0001,
+            rms: 0.00005,
+            low_freq_energy: 0.00002,
+        };
+        let t = detection_threshold(&nf);
+        assert_eq!(t, 0.005); // 0.0001 * 5 = 0.0005 < 0.005, so clamp
+    }
+
+    #[test]
+    fn test_detection_threshold_zero_noise() {
+        let nf = NoiseFloorStats {
+            peak: 0.0,
+            rms: 0.0,
+            low_freq_energy: 0.0,
+        };
+        let t = detection_threshold(&nf);
+        assert_eq!(t, 0.005);
+    }
+
+    #[test]
+    fn test_detection_threshold_high_noise() {
+        let nf = NoiseFloorStats {
+            peak: 0.01,
+            rms: 0.007,
+            low_freq_energy: 0.003,
+        };
+        let t = detection_threshold(&nf);
+        assert!((t - 0.05).abs() < 0.001); // 0.01 * 5 = 0.05 > 0.005
+    }
+
+    #[test]
+    fn test_analyze_noise_floor_constant_signal() {
+        // All samples the same value
+        let samples = vec![0.01; 1000];
+        let stats = analyze_noise_floor(&samples, 44100);
+        assert!((stats.peak - 0.01).abs() < 0.0001);
+        assert!((stats.rms - 0.01).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_analyze_noise_floor_single_sample() {
+        let samples = vec![0.05];
+        let stats = analyze_noise_floor(&samples, 44100);
+        assert!((stats.peak - 0.05).abs() < 0.001);
+        assert!((stats.rms - 0.05).abs() < 0.001);
+        // 1 sample < window_size (441), so low_freq_energy == rms
+        assert_eq!(stats.low_freq_energy, stats.rms);
+    }
+
+    #[test]
+    fn test_analyze_noise_floor_low_sample_rate() {
+        // With sample_rate=100, window_size = 100/100 = 1, so even a small
+        // buffer takes the long-window branch.
+        let samples: Vec<f32> = (0..50).map(|i| 0.003 * (i as f32 * 0.2).sin()).collect();
+        let stats = analyze_noise_floor(&samples, 100);
+        assert!(stats.peak > 0.0);
+        assert!(stats.rms > 0.0);
+        assert!(stats.low_freq_energy >= 0.0);
+    }
+
+    #[test]
+    fn test_analyze_noise_floor_negative_values() {
+        // Samples with negative values -- peak should be absolute max
+        let samples: Vec<f32> = (0..1000).map(|i| -0.005 * (i as f32 * 0.3).sin()).collect();
+        let stats = analyze_noise_floor(&samples, 44100);
+        assert!(stats.peak > 0.0);
+        assert!(stats.peak <= 0.005);
+        assert!(stats.rms > 0.0);
+    }
+
+    #[test]
+    fn test_detect_hits_empty_samples() {
+        let nf = NoiseFloorStats {
+            peak: 0.001,
+            rms: 0.0007,
+            low_freq_energy: 0.0003,
+        };
+        let hits = detect_hits(&[], &nf, 44100);
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn test_detect_hits_all_below_threshold() {
+        // All samples below the minimum threshold of 0.005
+        let samples: Vec<f32> = (0..10000).map(|i| 0.004 * (i as f32 * 0.1).sin()).collect();
+        let nf = NoiseFloorStats {
+            peak: 0.001,
+            rms: 0.0007,
+            low_freq_energy: 0.0003,
+        };
+        let hits = detect_hits(&samples, &nf, 44100);
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn test_detect_hits_decay_not_completed_mid_buffer() {
+        // Hit where the signal stays above threshold most of the time with
+        // brief dips, so holdoff never completes. Exercises the
+        // consecutive_below < holdoff_samples fallback path.
+        let sample_rate: u32 = 44100;
+        let noise = 0.001;
+        let threshold = (noise * 5.0f32).max(0.005);
+        let onset = 100;
+        let above_len = 3000;
+        let total = onset + above_len + 10;
+        let mut samples = vec![0.0f32; total];
+        for (i, s) in samples.iter_mut().enumerate() {
+            *s = noise * 0.1 * (i as f32 * 0.7).sin();
+        }
+        for j in 0..above_len {
+            let idx = onset + j;
+            if idx < total {
+                let level = if j % 100 < 5 {
+                    threshold * 0.5
+                } else {
+                    threshold * 2.0
+                };
+                samples[idx] = level;
+            }
+        }
+
+        let nf = NoiseFloorStats {
+            peak: noise,
+            rms: noise * 0.7,
+            low_freq_energy: noise * 0.3,
+        };
+        let hits = detect_hits(&samples, &nf, sample_rate);
+        assert_eq!(hits.len(), 1);
+    }
+
+    #[test]
+    fn test_detect_hits_ring_end_not_found() {
+        // Create a hit where ring never settles below noise floor peak
+        let sample_rate: u32 = 44100;
+        let holdoff = (sample_rate as f64 * 0.050) as usize;
+        let noise = 0.001;
+        let total = 10000;
+        let mut samples = vec![0.0f32; total];
+        for (i, s) in samples.iter_mut().enumerate() {
+            *s = noise * 0.1 * (i as f32 * 0.7).sin();
+        }
+        let onset = 100;
+        for j in 0..50 {
+            let idx = onset + j;
+            if idx < total {
+                samples[idx] = 0.5 * (1.0 - j as f32 / 50.0);
+            }
+        }
+        // After decay, keep signal above noise floor peak until end
+        let decay_end = onset + 50 + holdoff;
+        for idx in decay_end..total {
+            samples[idx] = 0.002 * (idx as f32 * 3.0).sin();
+        }
+
+        let nf = NoiseFloorStats {
+            peak: noise,
+            rms: noise * 0.7,
+            low_freq_energy: noise * 0.3,
+        };
+        let hits = detect_hits(&samples, &nf, sample_rate);
+        assert_eq!(hits.len(), 1);
+    }
+
+    #[test]
+    fn test_detect_hits_peak_tracking() {
+        // Verify that the peak is correctly tracked when it occurs
+        // later in the transient (not at onset).
+        let sample_rate: u32 = 44100;
+        let total = sample_rate as usize;
+        let mut samples = vec![0.0f32; total];
+
+        let onset = 1000;
+        let ramp_len = 200;
+        let peak_val = 0.9;
+        for j in 0..ramp_len {
+            let idx = onset + j;
+            if idx < total {
+                samples[idx] = peak_val * (j as f32 / ramp_len as f32);
+            }
+        }
+        let peak_pos = onset + ramp_len;
+        for j in 0..100 {
+            let idx = peak_pos + j;
+            if idx < total {
+                samples[idx] = peak_val * (1.0 - j as f32 / 100.0);
+            }
+        }
+
+        let nf = NoiseFloorStats {
+            peak: 0.001,
+            rms: 0.0007,
+            low_freq_energy: 0.0003,
+        };
+        let hits = detect_hits(&samples, &nf, sample_rate);
+        assert_eq!(hits.len(), 1);
+        assert!((hits[0].peak_amplitude - peak_val).abs() < 0.01);
+        assert!(hits[0].peak_sample >= onset + ramp_len - 5);
+        assert!(hits[0].peak_sample <= onset + ramp_len + 5);
+    }
+
+    #[test]
+    fn test_derive_channel_params_gain_clamp_high() {
+        // Very small amplitude should clamp gain to 50.0
+        let nf = NoiseFloorStats {
+            peak: 0.001,
+            rms: 0.0007,
+            low_freq_energy: 0.0002,
+        };
+        let hits = vec![HitEnvelope {
+            peak_amplitude: 0.01,
+            onset_sample: 1000,
+            peak_sample: 1050,
+            decay_sample: 2000,
+            ring_end_sample: None,
+        }];
+        let cal = derive_channel_params(1, &nf, &hits, 44100);
+        assert_eq!(cal.gain, 50.0);
+    }
+
+    #[test]
+    fn test_derive_channel_params_gain_clamp_low() {
+        // Very large amplitude should clamp gain to 0.1
+        let nf = NoiseFloorStats {
+            peak: 0.001,
+            rms: 0.0007,
+            low_freq_energy: 0.0002,
+        };
+        let hits = vec![HitEnvelope {
+            peak_amplitude: 100.0,
+            onset_sample: 1000,
+            peak_sample: 1050,
+            decay_sample: 2000,
+            ring_end_sample: None,
+        }];
+        let cal = derive_channel_params(1, &nf, &hits, 44100);
+        assert_eq!(cal.gain, 0.1);
+    }
+
+    #[test]
+    fn test_derive_channel_params_multiple_hits_median() {
+        let nf = NoiseFloorStats {
+            peak: 0.001,
+            rms: 0.0007,
+            low_freq_energy: 0.0002,
+        };
+        let hits = vec![
+            HitEnvelope {
+                peak_amplitude: 0.5,
+                onset_sample: 1000,
+                peak_sample: 1010,
+                decay_sample: 2000,
+                ring_end_sample: None,
+            },
+            HitEnvelope {
+                peak_amplitude: 0.6,
+                onset_sample: 10000,
+                peak_sample: 10100,
+                decay_sample: 11000,
+                ring_end_sample: None,
+            },
+            HitEnvelope {
+                peak_amplitude: 0.4,
+                onset_sample: 20000,
+                peak_sample: 20050,
+                decay_sample: 21000,
+                ring_end_sample: None,
+            },
+        ];
+        let cal = derive_channel_params(1, &nf, &hits, 44100);
+        assert!(cal.scan_time_ms >= 1);
+        assert_eq!(cal.num_hits_detected, 3);
+        assert!((cal.max_hit_amplitude - 0.6).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_derive_channel_params_zero_rms_no_highpass() {
+        let nf = NoiseFloorStats {
+            peak: 0.0,
+            rms: 0.0,
+            low_freq_energy: 0.0,
+        };
+        let cal = derive_channel_params(1, &nf, &[], 44100);
+        assert_eq!(cal.highpass_freq, None);
+    }
+
+    #[test]
+    fn test_derive_channel_params_multiple_hits_with_mixed_ring() {
+        let nf = NoiseFloorStats {
+            peak: 0.001,
+            rms: 0.0007,
+            low_freq_energy: 0.0002,
+        };
+        let hits = vec![
+            HitEnvelope {
+                peak_amplitude: 0.5,
+                onset_sample: 1000,
+                peak_sample: 1050,
+                decay_sample: 1500,
+                ring_end_sample: Some(1500 + 1000),
+            },
+            HitEnvelope {
+                peak_amplitude: 0.6,
+                onset_sample: 10000,
+                peak_sample: 10040,
+                decay_sample: 10500,
+                ring_end_sample: None,
+            },
+            HitEnvelope {
+                peak_amplitude: 0.4,
+                onset_sample: 20000,
+                peak_sample: 20060,
+                decay_sample: 20500,
+                ring_end_sample: Some(20500 + 500),
+            },
+        ];
+        let cal = derive_channel_params(1, &nf, &hits, 44100);
+        assert!(cal.dynamic_threshold_decay_ms.is_some());
+        assert_eq!(cal.num_hits_detected, 3);
+    }
+
+    #[test]
+    fn test_derive_channel_params_retrigger_minimum() {
+        let nf = NoiseFloorStats {
+            peak: 0.001,
+            rms: 0.0007,
+            low_freq_energy: 0.0002,
+        };
+        let hits = vec![HitEnvelope {
+            peak_amplitude: 0.5,
+            onset_sample: 1000,
+            peak_sample: 1050,
+            decay_sample: 1051,
+            ring_end_sample: None,
+        }];
+        let cal = derive_channel_params(1, &nf, &hits, 44100);
+        assert_eq!(cal.retrigger_time_ms, 5);
+    }
+
+    #[test]
+    fn test_derive_channel_params_scan_time_minimum() {
+        let nf = NoiseFloorStats {
+            peak: 0.001,
+            rms: 0.0007,
+            low_freq_energy: 0.0002,
+        };
+        let hits = vec![HitEnvelope {
+            peak_amplitude: 0.5,
+            onset_sample: 1000,
+            peak_sample: 1000,
+            decay_sample: 2000,
+            ring_end_sample: None,
+        }];
+        let cal = derive_channel_params(1, &nf, &hits, 44100);
+        assert_eq!(cal.scan_time_ms, 1);
+    }
+
+    #[test]
+    fn test_derive_channel_params_threshold_value() {
+        let nf = NoiseFloorStats {
+            peak: 0.002,
+            rms: 0.001,
+            low_freq_energy: 0.0005,
+        };
+        let cal = derive_channel_params(1, &nf, &[], 44100);
+        assert!((cal.threshold - 0.01).abs() < 0.0001);
+        assert_eq!(cal.noise_floor_peak, 0.002);
+        assert_eq!(cal.max_hit_amplitude, 0.0);
+    }
+
+    #[test]
+    fn test_crosstalk_single_channel() {
+        let samples = vec![vec![0.0f32; 44100]];
+        let hits = vec![vec![HitEnvelope {
+            peak_amplitude: 0.8,
+            onset_sample: 5000,
+            peak_sample: 5000,
+            decay_sample: 5100,
+            ring_end_sample: None,
+        }]];
+        let noise_floors = vec![NoiseFloorStats {
+            peak: 0.001,
+            rms: 0.0007,
+            low_freq_energy: 0.0003,
+        }];
+        let ct = analyze_crosstalk(&samples, &hits, &noise_floors, 44100);
+        assert!(ct.crosstalk_window_ms.is_none());
+        assert!(ct.crosstalk_threshold.is_none());
+    }
+
+    #[test]
+    fn test_crosstalk_no_hits() {
+        let samples = vec![vec![0.0f32; 44100], vec![0.0f32; 44100]];
+        let hits: Vec<Vec<HitEnvelope>> = vec![vec![], vec![]];
+        let noise_floors = vec![
+            NoiseFloorStats {
+                peak: 0.001,
+                rms: 0.0007,
+                low_freq_energy: 0.0003,
+            },
+            NoiseFloorStats {
+                peak: 0.001,
+                rms: 0.0007,
+                low_freq_energy: 0.0003,
+            },
+        ];
+        let ct = analyze_crosstalk(&samples, &hits, &noise_floors, 44100);
+        assert!(ct.crosstalk_window_ms.is_none());
+        assert!(ct.crosstalk_threshold.is_none());
+    }
+
+    #[test]
+    fn test_crosstalk_three_channels() {
+        let total = 44100;
+        let mut ch0 = vec![0.0f32; total];
+        let mut ch1 = vec![0.0f32; total];
+        let mut ch2 = vec![0.0f32; total];
+
+        for j in 0..100 {
+            ch0[5000 + j] = 0.8 * (1.0 - j as f32 / 100.0);
+        }
+        for j in 0..30 {
+            ch1[5005 + j] = 0.04 * (1.0 - j as f32 / 30.0);
+        }
+        for j in 0..20 {
+            ch2[5008 + j] = 0.03 * (1.0 - j as f32 / 20.0);
+        }
+
+        let hits0 = vec![HitEnvelope {
+            peak_amplitude: 0.8,
+            onset_sample: 5000,
+            peak_sample: 5000,
+            decay_sample: 5100,
+            ring_end_sample: None,
+        }];
+
+        let ct = analyze_crosstalk(
+            &[ch0, ch1, ch2],
+            &[hits0, vec![], vec![]],
+            &[
+                NoiseFloorStats {
+                    peak: 0.001,
+                    rms: 0.0007,
+                    low_freq_energy: 0.0003,
+                },
+                NoiseFloorStats {
+                    peak: 0.001,
+                    rms: 0.0007,
+                    low_freq_energy: 0.0003,
+                },
+                NoiseFloorStats {
+                    peak: 0.001,
+                    rms: 0.0007,
+                    low_freq_energy: 0.0003,
+                },
+            ],
+            44100,
+        );
+        assert!(ct.crosstalk_window_ms.is_some());
+        assert!(ct.crosstalk_threshold.is_some());
+    }
+
+    #[test]
+    fn test_crosstalk_window_minimum() {
+        let total = 44100;
+        let mut ch0 = vec![0.0f32; total];
+        let mut ch1 = vec![0.0f32; total];
+
+        for j in 0..100 {
+            ch0[5000 + j] = 0.8 * (1.0 - j as f32 / 100.0);
+        }
+        ch1[5000] = 0.05;
+
+        let hits0 = vec![HitEnvelope {
+            peak_amplitude: 0.8,
+            onset_sample: 5000,
+            peak_sample: 5000,
+            decay_sample: 5100,
+            ring_end_sample: None,
+        }];
+
+        let ct = analyze_crosstalk(
+            &[ch0, ch1],
+            &[hits0, vec![]],
+            &[
+                NoiseFloorStats {
+                    peak: 0.001,
+                    rms: 0.0007,
+                    low_freq_energy: 0.0003,
+                },
+                NoiseFloorStats {
+                    peak: 0.001,
+                    rms: 0.0007,
+                    low_freq_energy: 0.0003,
+                },
+            ],
+            44100,
+        );
+        assert!(ct.crosstalk_window_ms.is_some());
+        assert!(ct.crosstalk_window_ms.unwrap() >= 2);
+    }
+
+    #[test]
     fn test_write_yaml_without_crosstalk() {
         let calibrations = vec![ChannelCalibration {
             channel: 1,
@@ -1224,7 +1729,15 @@ mod tests {
             crosstalk_window_ms: None,
             crosstalk_threshold: None,
         };
-        // Should not panic
         write_yaml("TestDevice", 44100, &calibrations, &crosstalk);
+    }
+
+    #[test]
+    fn test_write_yaml_empty_calibrations() {
+        let crosstalk = CrosstalkCalibration {
+            crosstalk_window_ms: None,
+            crosstalk_threshold: None,
+        };
+        write_yaml("EmptyDevice", 48000, &[], &crosstalk);
     }
 }
