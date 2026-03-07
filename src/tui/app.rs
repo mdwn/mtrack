@@ -178,6 +178,11 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
+    use crate::config;
+    use crate::player::PlayerDevices;
+    use crate::playlist;
+    use crate::songs::{Song, Songs};
+
     fn make_fixture(name: &str, channels: &[(&str, u8)]) -> FixtureSnapshot {
         let mut map = HashMap::new();
         for (k, v) in channels {
@@ -187,6 +192,37 @@ mod tests {
             name: name.to_string(),
             channels: map,
         }
+    }
+
+    /// Creates a test Player with no hardware devices.
+    fn test_player(song_names: &[&str]) -> Arc<Player> {
+        let mut map = HashMap::new();
+        for name in song_names {
+            map.insert(
+                name.to_string(),
+                Arc::new(Song::new_for_test(name, &["track1"])),
+            );
+        }
+        let songs = Arc::new(Songs::new(map));
+        let playlist_config =
+            config::Playlist::new(&song_names.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        let playlist = playlist::Playlist::new("test", &playlist_config, songs.clone()).unwrap();
+        let devices = PlayerDevices {
+            audio: None,
+            mappings: None,
+            midi: None,
+            dmx_engine: None,
+            sample_engine: None,
+            trigger_engine: None,
+        };
+        Arc::new(Player::new_with_devices(devices, playlist, songs).unwrap())
+    }
+
+    fn test_app(song_names: &[&str]) -> App {
+        let player = test_player(song_names);
+        let (state_tx, state_rx) = watch::channel(Arc::new(StateSnapshot::default()));
+        let _ = state_tx; // keep alive
+        App::new(player, state_rx)
     }
 
     mod fixture_colors_from_snapshot_tests {
@@ -271,6 +307,192 @@ mod tests {
             let colors = fixture_colors_from_snapshot(&fixtures);
             assert_eq!(colors[0].name, "Front Wash Left");
             assert_eq!(colors[1].name, "Back Spot");
+        }
+    }
+
+    mod app_new_tests {
+        use super::*;
+
+        #[test]
+        fn initializes_playlist_name() {
+            let app = test_app(&["Song A", "Song B"]);
+            assert_eq!(app.playlist_name, "test");
+        }
+
+        #[test]
+        fn initializes_song_names() {
+            let app = test_app(&["Song A", "Song B"]);
+            assert_eq!(app.song_names, vec!["Song A", "Song B"]);
+        }
+
+        #[test]
+        fn initializes_current_song() {
+            let app = test_app(&["Song A", "Song B"]);
+            assert_eq!(app.current_song_name, "Song A");
+        }
+
+        #[test]
+        fn initializes_current_index_zero() {
+            let app = test_app(&["Song A", "Song B"]);
+            assert_eq!(app.current_index, 0);
+        }
+
+        #[test]
+        fn initializes_not_playing() {
+            let app = test_app(&["Song A"]);
+            assert!(!app.is_playing);
+        }
+
+        #[test]
+        fn initializes_elapsed_none() {
+            let app = test_app(&["Song A"]);
+            assert!(app.elapsed.is_none());
+        }
+
+        #[test]
+        fn initializes_empty_fixtures() {
+            let app = test_app(&["Song A"]);
+            assert!(app.fixture_colors.is_empty());
+        }
+
+        #[test]
+        fn initializes_empty_effects() {
+            let app = test_app(&["Song A"]);
+            assert!(app.active_effects.is_empty());
+        }
+
+        #[test]
+        fn initializes_tracks_from_song() {
+            let app = test_app(&["Song A"]);
+            assert_eq!(app.current_song_tracks, vec!["track1"]);
+        }
+    }
+
+    mod handle_key_event_tests {
+        use super::*;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        fn key(code: KeyCode) -> KeyEvent {
+            KeyEvent::new(code, KeyModifiers::NONE)
+        }
+
+        #[tokio::test]
+        async fn quit_on_q() {
+            let mut app = test_app(&["Song A"]);
+            let action = app.handle_key_event(key(KeyCode::Char('q'))).await;
+            assert!(matches!(action, Action::Quit));
+        }
+
+        #[tokio::test]
+        async fn quit_on_esc() {
+            let mut app = test_app(&["Song A"]);
+            let action = app.handle_key_event(key(KeyCode::Esc)).await;
+            assert!(matches!(action, Action::Quit));
+        }
+
+        #[tokio::test]
+        async fn space_toggles_play() {
+            let mut app = test_app(&["Song A"]);
+            let action = app.handle_key_event(key(KeyCode::Char(' '))).await;
+            assert!(matches!(action, Action::None));
+        }
+
+        #[tokio::test]
+        async fn enter_toggles_play() {
+            let mut app = test_app(&["Song A"]);
+            let action = app.handle_key_event(key(KeyCode::Enter)).await;
+            assert!(matches!(action, Action::None));
+        }
+
+        #[tokio::test]
+        async fn right_arrow_next() {
+            let mut app = test_app(&["Song A", "Song B"]);
+            let action = app.handle_key_event(key(KeyCode::Right)).await;
+            assert!(matches!(action, Action::None));
+        }
+
+        #[tokio::test]
+        async fn n_key_next() {
+            let mut app = test_app(&["Song A", "Song B"]);
+            let action = app.handle_key_event(key(KeyCode::Char('n'))).await;
+            assert!(matches!(action, Action::None));
+        }
+
+        #[tokio::test]
+        async fn left_arrow_prev() {
+            let mut app = test_app(&["Song A", "Song B"]);
+            let action = app.handle_key_event(key(KeyCode::Left)).await;
+            assert!(matches!(action, Action::None));
+        }
+
+        #[tokio::test]
+        async fn p_key_prev() {
+            let mut app = test_app(&["Song A", "Song B"]);
+            let action = app.handle_key_event(key(KeyCode::Char('p'))).await;
+            assert!(matches!(action, Action::None));
+        }
+
+        #[tokio::test]
+        async fn a_key_all_songs() {
+            let mut app = test_app(&["Song A"]);
+            let action = app.handle_key_event(key(KeyCode::Char('a'))).await;
+            assert!(matches!(action, Action::None));
+        }
+
+        #[tokio::test]
+        async fn l_key_playlist() {
+            let mut app = test_app(&["Song A"]);
+            let action = app.handle_key_event(key(KeyCode::Char('l'))).await;
+            assert!(matches!(action, Action::None));
+        }
+
+        #[tokio::test]
+        async fn unhandled_key_returns_none() {
+            let mut app = test_app(&["Song A"]);
+            let action = app.handle_key_event(key(KeyCode::Char('z'))).await;
+            assert!(matches!(action, Action::None));
+        }
+    }
+
+    mod tick_tests {
+        use super::*;
+
+        #[tokio::test]
+        async fn tick_updates_state() {
+            let player = test_player(&["Song A", "Song B"]);
+            let snapshot = Arc::new(StateSnapshot {
+                fixtures: vec![make_fixture("spot", &[("red", 255)])],
+                active_effects: vec!["chase".to_string()],
+            });
+            let (_tx, state_rx) = watch::channel(snapshot);
+            let mut app = App::new(player, state_rx);
+
+            app.tick().await;
+
+            assert_eq!(app.fixture_colors.len(), 1);
+            assert_eq!(app.fixture_colors[0].r, 255);
+            assert_eq!(app.active_effects, vec!["chase"]);
+        }
+
+        #[tokio::test]
+        async fn tick_reflects_current_song() {
+            let mut app = test_app(&["Song A", "Song B"]);
+            app.tick().await;
+            assert_eq!(app.current_song_name, "Song A");
+            assert_eq!(app.current_index, 0);
+        }
+
+        #[tokio::test]
+        async fn tick_after_next_updates_song() {
+            let mut app = test_app(&["Song A", "Song B"]);
+            app.handle_key_event(KeyEvent::new(
+                KeyCode::Right,
+                crossterm::event::KeyModifiers::NONE,
+            ))
+            .await;
+            app.tick().await;
+            assert_eq!(app.current_song_name, "Song B");
+            assert_eq!(app.current_index, 1);
         }
     }
 }
