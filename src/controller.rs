@@ -287,4 +287,34 @@ mod test {
 
         Ok(())
     }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_controller_shutdown() -> Result<(), Box<dyn Error>> {
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
+        let player = Arc::new(Player::new(
+            songs.clone(),
+            Playlist::new(
+                "playlist",
+                &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
+                songs,
+            )?,
+            &config::Player::new(
+                vec![],
+                Some(config::Audio::new("mock-device")),
+                None,
+                None,
+                HashMap::new(),
+                "assets/songs",
+            ),
+            None,
+        )?);
+
+        let driver = Arc::new(TestDriver::new(player.clone(), TestEvent::Unset));
+        let controller = super::Controller::new_from_drivers(vec![driver.clone()]);
+
+        // Shutdown should abort all handles without panicking.
+        controller.shutdown();
+
+        Ok(())
+    }
 }

@@ -992,6 +992,264 @@ mod test {
         }
     }
 
+    mod handle_packet_tests {
+        use super::*;
+        use std::{collections::HashMap, path::Path, sync::Arc};
+
+        fn make_player() -> Arc<Player> {
+            let songs = songs::get_all_songs(Path::new("assets/songs")).unwrap();
+            Arc::new(
+                Player::new(
+                    songs.clone(),
+                    Playlist::new(
+                        "playlist",
+                        &config::Playlist::deserialize(Path::new("assets/playlist.yaml")).unwrap(),
+                        songs,
+                    )
+                    .unwrap(),
+                    &config::Player::new(
+                        vec![],
+                        Some(config::Audio::new("mock-device")),
+                        Some(config::Midi::new("mock-midi-device", None)),
+                        None,
+                        HashMap::new(),
+                        "assets/songs",
+                    ),
+                    None,
+                )
+                .unwrap(),
+            )
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn handle_packet_bundle() {
+            let player = make_player();
+            let events = Arc::new(make_default_osc_events());
+
+            // A bundle containing a next message
+            let bundle = OscPacket::Bundle(rosc::OscBundle {
+                timetag: rosc::OscTime {
+                    seconds: 0,
+                    fractional: 0,
+                },
+                content: vec![OscPacket::Message(OscMessage {
+                    addr: "/mtrack/next".to_string(),
+                    args: vec![],
+                })],
+            });
+
+            assert_eq!(player.get_playlist().current().name(), "Song 1");
+            let result = Driver::handle_packet(&player, &events, &bundle).await;
+            assert!(
+                result.unwrap(),
+                "bundle with recognized messages should return true"
+            );
+            assert_eq!(player.get_playlist().current().name(), "Song 3");
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn handle_packet_bundle_unrecognized() {
+            let player = make_player();
+            let events = Arc::new(make_default_osc_events());
+
+            let bundle = OscPacket::Bundle(rosc::OscBundle {
+                timetag: rosc::OscTime {
+                    seconds: 0,
+                    fractional: 0,
+                },
+                content: vec![OscPacket::Message(OscMessage {
+                    addr: "/unknown".to_string(),
+                    args: vec![],
+                })],
+            });
+
+            let result = Driver::handle_packet(&player, &events, &bundle).await;
+            assert!(
+                !result.unwrap(),
+                "bundle with only unrecognized messages should return false"
+            );
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn handle_message_stop_samples() {
+            let player = make_player();
+            let events = Arc::new(make_default_osc_events());
+
+            let packet = OscPacket::Message(OscMessage {
+                addr: "/mtrack/samples/stop".to_string(),
+                args: vec![],
+            });
+
+            let result = Driver::handle_packet(&player, &events, &packet).await;
+            assert!(result.unwrap(), "stop_samples should return true");
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn handle_message_unrecognized_returns_false() {
+            let player = make_player();
+            let events = Arc::new(make_default_osc_events());
+
+            let packet = OscPacket::Message(OscMessage {
+                addr: "/something/unknown".to_string(),
+                args: vec![],
+            });
+
+            let result = Driver::handle_packet(&player, &events, &packet).await;
+            assert!(!result.unwrap(), "unrecognized address should return false");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_osc_monitor_events() -> Result<(), Box<dyn Error>> {
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
+        let player = Arc::new(Player::new(
+            songs.clone(),
+            Playlist::new(
+                "playlist",
+                &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
+                songs,
+            )?,
+            &config::Player::new(
+                vec![],
+                Some(config::Audio::new("mock-device")),
+                Some(config::Midi::new("mock-midi-device", None)),
+                None,
+                HashMap::new(),
+                "assets/songs",
+            ),
+            None,
+        )?);
+        let binding = player
+            .audio_device()
+            .expect("audio device should be present");
+        let device = binding.to_mock()?;
+
+        // Find a free port by binding temporarily.
+        let temp_socket = std::net::UdpSocket::bind("127.0.0.1:0")?;
+        let port = temp_socket.local_addr()?.port();
+        drop(temp_socket);
+
+        // Construct a Driver directly with the free port.
+        let driver = Arc::new(Driver {
+            player: player.clone(),
+            addr: SocketAddr::V4(std::net::SocketAddrV4::new(
+                std::net::Ipv4Addr::UNSPECIFIED,
+                port,
+            )),
+            broadcast_addresses: vec![],
+            osc_events: Arc::new(make_default_osc_events()),
+        });
+
+        let handle = super::super::Driver::monitor_events(&*driver);
+
+        // Give the spawned tasks time to bind and start.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let send_osc = |addr: &str| {
+            let addr = addr.to_string();
+            async move {
+                let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+                let packet = OscPacket::Message(OscMessage { addr, args: vec![] });
+                let encoded = rosc::encoder::encode(&packet).unwrap();
+                client
+                    .send_to(&encoded, format!("127.0.0.1:{}", port))
+                    .await
+                    .unwrap();
+            }
+        };
+
+        // Verify initial state.
+        assert_eq!(player.get_playlist().current().name(), "Song 1");
+
+        // Send a "next" command through the real UDP path.
+        send_osc("/mtrack/next").await;
+        eventually(
+            || player.get_playlist().current().name() == "Song 3",
+            "Player never advanced to Song 3 via monitor_events",
+        );
+
+        // Send play command.
+        send_osc("/mtrack/play").await;
+        eventually(
+            || device.is_playing(),
+            "Song never started playing via monitor_events",
+        );
+
+        // Send stop command.
+        send_osc("/mtrack/stop").await;
+        eventually(
+            || !device.is_playing(),
+            "Song never stopped via monitor_events",
+        );
+
+        handle.abort();
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_osc_monitor_events_with_multicast() -> Result<(), Box<dyn Error>> {
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
+        let player = Arc::new(Player::new(
+            songs.clone(),
+            Playlist::new(
+                "playlist",
+                &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
+                songs,
+            )?,
+            &config::Player::new(
+                vec![],
+                Some(config::Audio::new("mock-device")),
+                Some(config::Midi::new("mock-midi-device", None)),
+                None,
+                HashMap::new(),
+                "assets/songs",
+            ),
+            None,
+        )?);
+
+        // Find a free port.
+        let temp_socket = std::net::UdpSocket::bind("127.0.0.1:0")?;
+        let port = temp_socket.local_addr()?.port();
+        drop(temp_socket);
+
+        // Use a multicast address as a broadcast target to cover the multicast join path.
+        let multicast_addr: SocketAddr = format!("224.0.0.1:{}", port + 1).parse()?;
+
+        let driver = Arc::new(Driver {
+            player: player.clone(),
+            addr: SocketAddr::V4(std::net::SocketAddrV4::new(
+                std::net::Ipv4Addr::UNSPECIFIED,
+                port,
+            )),
+            broadcast_addresses: vec![multicast_addr],
+            osc_events: Arc::new(make_default_osc_events()),
+        });
+
+        let handle = super::super::Driver::monitor_events(&*driver);
+
+        // Give it time to start and join multicast group.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // Send a command to verify the driver is functional.
+        let client = UdpSocket::bind("127.0.0.1:0").await?;
+        let packet = OscPacket::Message(OscMessage {
+            addr: "/mtrack/next".to_string(),
+            args: vec![],
+        });
+        let encoded = rosc::encoder::encode(&packet)?;
+        client
+            .send_to(&encoded, format!("127.0.0.1:{}", port))
+            .await?;
+
+        eventually(
+            || player.get_playlist().current().name() == "Song 3",
+            "Player never advanced via monitor_events with multicast",
+        );
+
+        handle.abort();
+        Ok(())
+    }
+
     mod build_broadcast_packets_tests {
         use super::{build_broadcast_packets, make_default_osc_events};
         use crate::controller::osc::{STATUS_PLAYING, STATUS_STOPPED};
