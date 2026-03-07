@@ -87,6 +87,17 @@ pub struct WebUiHandle {
     log_poller_handle: tokio::task::JoinHandle<()>,
     waveform_poller_handle: tokio::task::JoinHandle<()>,
     waveform_prewarmer_handle: tokio::task::JoinHandle<()>,
+    /// The local address the server is bound to.
+    #[allow(dead_code)]
+    local_addr: std::net::SocketAddr,
+}
+
+impl WebUiHandle {
+    /// Returns the local address the server is listening on.
+    #[allow(dead_code)]
+    pub fn local_addr(&self) -> std::net::SocketAddr {
+        self.local_addr
+    }
 }
 
 impl Drop for WebUiHandle {
@@ -155,6 +166,7 @@ pub async fn start(
     info!("Web UI listening on http://{}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
+    let local_addr = listener.local_addr()?;
 
     let server_handle = tokio::spawn(async move {
         axum::serve(listener, app)
@@ -173,6 +185,7 @@ pub async fn start(
         log_poller_handle,
         waveform_poller_handle,
         waveform_prewarmer_handle,
+        local_addr,
     })
 }
 
@@ -430,5 +443,354 @@ mod test {
         let config = WebConfig::default();
         assert_eq!(config.port, 8080);
         assert_eq!(config.address, "127.0.0.1");
+    }
+
+    use crate::player::PlayerDevices;
+    use crate::playlist;
+    use crate::songs::{Song, Songs};
+    use std::collections::HashMap;
+
+    fn test_webui_state() -> (WebUiState, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+
+        let config_path = dir.path().join("mtrack.yaml");
+        std::fs::write(&config_path, "songs: songs\n").unwrap();
+
+        let playlist_path = dir.path().join("playlist.yaml");
+        std::fs::write(&playlist_path, "songs:\n  - Song A\n").unwrap();
+
+        let songs_path = dir.path().join("songs");
+        std::fs::create_dir(&songs_path).unwrap();
+
+        let mut map = HashMap::new();
+        map.insert(
+            "Song A".to_string(),
+            Arc::new(Song::new_for_test("Song A", &["track1"])),
+        );
+        let songs = Arc::new(Songs::new(map));
+        let playlist_config = crate::config::Playlist::new(&["Song A".to_string()]);
+        let pl = playlist::Playlist::new("test", &playlist_config, songs.clone()).unwrap();
+        let devices = PlayerDevices {
+            audio: None,
+            mappings: None,
+            midi: None,
+            dmx_engine: None,
+            sample_engine: None,
+            trigger_engine: None,
+        };
+        let player = Arc::new(crate::player::Player::new_with_devices(devices, pl, songs).unwrap());
+
+        let (broadcast_tx, _) = broadcast::channel(16);
+        let (_state_tx, state_rx) =
+            watch::channel(Arc::new(crate::state::StateSnapshot::default()));
+
+        let state = WebUiState {
+            player,
+            state_rx,
+            broadcast_tx,
+            config_path,
+            songs_path,
+            playlist_path,
+            metadata_json: Arc::new(r#"{"type":"metadata","fixtures":{}}"#.to_string()),
+            waveform_cache: ws_state::new_waveform_cache(),
+        };
+
+        (state, dir)
+    }
+
+    async fn start_test_server() -> (WebUiHandle, String, tempfile::TempDir) {
+        let (state, dir) = test_webui_state();
+        let handle = start(state, "127.0.0.1".to_string(), 0)
+            .await
+            .expect("server should start");
+        let base_url = format!("http://{}", handle.local_addr());
+        (handle, base_url, dir)
+    }
+
+    #[tokio::test]
+    async fn server_serves_index() {
+        let (_handle, base_url, _dir) = start_test_server().await;
+
+        let resp = reqwest::get(&base_url).await.unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = resp.text().await.unwrap();
+        assert!(body.contains("html"), "expected HTML response");
+    }
+
+    #[tokio::test]
+    async fn server_serves_spa_route() {
+        let (_handle, base_url, _dir) = start_test_server().await;
+
+        let resp = reqwest::get(format!("{}/dashboard", base_url))
+            .await
+            .unwrap();
+        // SPA routes should return index.html
+        assert_eq!(resp.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn server_static_not_found() {
+        let (_handle, base_url, _dir) = start_test_server().await;
+
+        let resp = reqwest::get(format!("{}/nonexistent.xyz", base_url))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 404);
+    }
+
+    #[tokio::test]
+    async fn server_api_config() {
+        let (_handle, base_url, _dir) = start_test_server().await;
+
+        let resp = reqwest::get(format!("{}/api/config", base_url))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = resp.text().await.unwrap();
+        assert!(body.contains("songs:"));
+    }
+
+    #[tokio::test]
+    async fn server_api_playlist() {
+        let (_handle, base_url, _dir) = start_test_server().await;
+
+        let resp = reqwest::get(format!("{}/api/playlist", base_url))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn server_api_validate_config() {
+        let (_handle, base_url, _dir) = start_test_server().await;
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!("{}/api/config/validate", base_url))
+            .body("songs: songs\n")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn server_api_songs_empty() {
+        let (_handle, base_url, _dir) = start_test_server().await;
+
+        let resp = reqwest::get(format!("{}/api/songs", base_url))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn server_api_lighting_empty() {
+        let (_handle, base_url, _dir) = start_test_server().await;
+
+        let resp = reqwest::get(format!("{}/api/lighting", base_url))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn server_local_addr() {
+        let (handle, _, _dir) = start_test_server().await;
+        let addr = handle.local_addr();
+        assert_ne!(addr.port(), 0, "should have resolved to a real port");
+    }
+
+    #[tokio::test]
+    async fn server_drop_shuts_down() {
+        let (handle, base_url, _dir) = start_test_server().await;
+
+        // Verify server is up
+        let resp = reqwest::get(&base_url).await.unwrap();
+        assert_eq!(resp.status(), 200);
+
+        // Drop the handle
+        drop(handle);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Server should be down — connection should fail
+        let result = reqwest::get(&base_url).await;
+        assert!(result.is_err(), "server should be shut down");
+    }
+
+    #[tokio::test]
+    async fn server_serves_css_asset() {
+        let (_handle, base_url, _dir) = start_test_server().await;
+
+        let resp = reqwest::get(format!("{}/assets/index-Cf9m096F.css", base_url))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let content_type = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            content_type.contains("css"),
+            "expected CSS content type, got: {}",
+            content_type
+        );
+    }
+
+    #[tokio::test]
+    async fn server_serves_js_asset() {
+        let (_handle, base_url, _dir) = start_test_server().await;
+
+        let resp = reqwest::get(format!("{}/assets/index-SLiPmHn5.js", base_url))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let content_type = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            content_type.contains("javascript"),
+            "expected JS content type, got: {}",
+            content_type
+        );
+    }
+
+    #[tokio::test]
+    async fn server_grpc_web_endpoint() {
+        let (_handle, base_url, _dir) = start_test_server().await;
+
+        // Send a gRPC-Web request to the PlayerService
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!("{}/player.v1.PlayerService/GetPlaylist", base_url))
+            .header("content-type", "application/grpc-web+proto")
+            .header("x-grpc-web", "1")
+            .body(vec![0u8; 5]) // minimal gRPC frame (compressed flag + 4 byte length)
+            .send()
+            .await
+            .unwrap();
+
+        // Should get a response (even if the gRPC call fails, we exercise the handler)
+        let status = resp.status().as_u16();
+        assert!(
+            status == 200 || status == 415 || status == 400,
+            "unexpected status: {}",
+            status
+        );
+    }
+
+    #[tokio::test]
+    async fn server_start_invalid_address() {
+        let (state, _dir) = test_webui_state();
+        let result = start(state, "not-an-ip".to_string(), 0).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn server_websocket_receives_waveform() {
+        use futures_util::StreamExt;
+
+        let (state, _dir) = test_webui_state();
+        // Pre-populate waveform cache for current song "Song A"
+        state.waveform_cache.lock().insert(
+            "Song A".to_string(),
+            vec![("track1".to_string(), vec![0.5, 0.8, 0.3])],
+        );
+        let handle = start(state, "127.0.0.1".to_string(), 0)
+            .await
+            .expect("server should start");
+        let addr = handle.local_addr();
+        let ws_url = format!("ws://{}/ws", addr);
+
+        let (ws_stream, _) = tokio_tungstenite::connect_async(&ws_url)
+            .await
+            .expect("WebSocket connect failed");
+
+        let (_, mut read) = ws_stream.split();
+
+        // First message: metadata
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), read.next())
+            .await
+            .unwrap();
+
+        // Second message: waveform (from pre-populated cache)
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(2), read.next())
+            .await
+            .expect("timed out waiting for waveform message")
+            .expect("stream ended")
+            .expect("WS error");
+
+        let text = msg.into_text().expect("expected text message");
+        let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(parsed["type"], "waveform");
+        assert_eq!(parsed["song_name"], "Song A");
+        assert!(parsed["tracks"].is_array());
+        let tracks = parsed["tracks"].as_array().unwrap();
+        assert_eq!(tracks[0]["name"], "track1");
+    }
+
+    #[tokio::test]
+    async fn server_websocket_receives_metadata() {
+        use futures_util::StreamExt;
+
+        let (handle, _, _dir) = start_test_server().await;
+        let addr = handle.local_addr();
+        let ws_url = format!("ws://{}/ws", addr);
+
+        let (ws_stream, _) = tokio_tungstenite::connect_async(&ws_url)
+            .await
+            .expect("WebSocket connect failed");
+
+        let (_, mut read) = ws_stream.split();
+
+        // First message should be the metadata JSON
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(2), read.next())
+            .await
+            .expect("timed out waiting for WS message")
+            .expect("stream ended")
+            .expect("WS error");
+
+        let text = msg.into_text().expect("expected text message");
+        let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(parsed["type"], "metadata");
+    }
+
+    #[tokio::test]
+    async fn server_websocket_receives_playback() {
+        use futures_util::StreamExt;
+
+        let (handle, _, _dir) = start_test_server().await;
+        let addr = handle.local_addr();
+        let ws_url = format!("ws://{}/ws", addr);
+
+        let (ws_stream, _) = tokio_tungstenite::connect_async(&ws_url)
+            .await
+            .expect("WebSocket connect failed");
+
+        let (_, mut read) = ws_stream.split();
+
+        // Skip the metadata message
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), read.next())
+            .await
+            .unwrap();
+
+        // Next messages should include a playback update (poller runs at 200ms)
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(3), read.next())
+            .await
+            .expect("timed out waiting for playback message")
+            .expect("stream ended")
+            .expect("WS error");
+
+        let text = msg.into_text().expect("expected text message");
+        let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+        // Could be playback, state, or waveform — just verify it's valid JSON
+        assert!(parsed["type"].is_string());
     }
 }

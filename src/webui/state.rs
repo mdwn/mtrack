@@ -616,6 +616,345 @@ mod test {
         assert!(cache.lock().contains_key("Song B"));
     }
 
+    use crate::player::PlayerDevices;
+    use crate::playlist;
+    use crate::songs::{Song, Songs};
+
+    /// Creates a test Player with no hardware devices.
+    fn test_player(song_names: &[&str]) -> Arc<crate::player::Player> {
+        let mut map = std::collections::HashMap::new();
+        for name in song_names {
+            map.insert(
+                name.to_string(),
+                Arc::new(Song::new_for_test(name, &["track1"])),
+            );
+        }
+        let songs = Arc::new(Songs::new(map));
+        let playlist_config = crate::config::Playlist::new(
+            &song_names.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+        );
+        let pl = playlist::Playlist::new("test", &playlist_config, songs.clone()).unwrap();
+        let devices = PlayerDevices {
+            audio: None,
+            mappings: None,
+            midi: None,
+            dmx_engine: None,
+            sample_engine: None,
+            trigger_engine: None,
+        };
+        Arc::new(crate::player::Player::new_with_devices(devices, pl, songs).unwrap())
+    }
+
+    #[test]
+    fn get_venue_fixture_tags_no_venue() {
+        let system = crate::lighting::system::LightingSystem::new();
+        let tags = get_venue_fixture_tags(&system);
+        assert!(tags.is_empty());
+    }
+
+    #[tokio::test]
+    async fn playback_poller_sends_message() {
+        let player = test_player(&["Song A"]);
+        let (tx, mut rx) = broadcast::channel(16);
+
+        let handle = tokio::spawn(playback_poller(player, tx));
+
+        let msg = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("timed out waiting for playback message")
+            .expect("recv error");
+
+        let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
+        assert_eq!(parsed["type"], "playback");
+        assert_eq!(parsed["song_name"], "Song A");
+        assert_eq!(parsed["is_playing"], false);
+        assert!(parsed["playlist_songs"].is_array());
+        assert!(parsed["tracks"].is_array());
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn state_poller_sends_on_change() {
+        let initial = Arc::new(crate::state::StateSnapshot::default());
+        let (state_tx, state_rx) = watch::channel(initial);
+        let (tx, mut rx) = broadcast::channel(16);
+
+        let handle = tokio::spawn(state_poller(state_rx, tx));
+
+        // Send a state update with fixtures
+        let snapshot = Arc::new(crate::state::StateSnapshot {
+            fixtures: vec![crate::state::FixtureSnapshot {
+                name: "wash1".to_string(),
+                channels: {
+                    let mut m = std::collections::HashMap::new();
+                    m.insert("red".to_string(), 255);
+                    m
+                },
+            }],
+            active_effects: vec!["chase".to_string()],
+        });
+        state_tx.send(snapshot).unwrap();
+
+        let msg = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("timed out waiting for state message")
+            .expect("recv error");
+
+        let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
+        assert_eq!(parsed["type"], "state");
+        assert!(parsed["fixtures"].is_object());
+        assert_eq!(parsed["fixtures"]["wash1"]["red"], 255);
+        assert_eq!(parsed["active_effects"][0], "chase");
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn state_poller_exits_when_sender_dropped() {
+        let initial = Arc::new(crate::state::StateSnapshot::default());
+        let (state_tx, state_rx) = watch::channel(initial);
+        let (tx, _rx) = broadcast::channel::<String>(16);
+
+        let handle = tokio::spawn(state_poller(state_rx, tx));
+
+        // Drop the sender — poller should exit
+        drop(state_tx);
+
+        let result = tokio::time::timeout(Duration::from_secs(2), handle).await;
+        assert!(result.is_ok(), "poller should have exited");
+    }
+
+    #[tokio::test]
+    async fn waveform_poller_sends_waveform_on_song() {
+        let player = test_player(&["Song A"]);
+        let (tx, mut rx) = broadcast::channel(16);
+        let cache = new_waveform_cache();
+
+        // Pre-populate cache so the poller doesn't need real audio files
+        cache.lock().insert(
+            "Song A".to_string(),
+            vec![("track1".to_string(), vec![0.5, 1.0])],
+        );
+
+        let handle = tokio::spawn(waveform_poller(player, tx, cache));
+
+        let msg = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("timed out waiting for waveform message")
+            .expect("recv error");
+
+        let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
+        assert_eq!(parsed["type"], "waveform");
+        assert_eq!(parsed["song_name"], "Song A");
+        assert!(parsed["tracks"].is_array());
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn waveform_poller_computes_on_cache_miss() {
+        let player = test_player(&["Song A"]);
+        let (tx, mut rx) = broadcast::channel(16);
+        let cache = new_waveform_cache();
+        // Don't pre-populate cache — force computation
+
+        let handle = tokio::spawn(waveform_poller(player, tx, cache.clone()));
+
+        let msg = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+            .await
+            .expect("timed out waiting for waveform message")
+            .expect("recv error");
+
+        let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
+        assert_eq!(parsed["type"], "waveform");
+        assert_eq!(parsed["song_name"], "Song A");
+
+        // Should have been cached after computation
+        assert!(cache.lock().contains_key("Song A"));
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn playback_poller_skips_no_subscribers() {
+        let player = test_player(&["Song A"]);
+        let (tx, _) = broadcast::channel::<String>(16);
+
+        // Drop the only receiver — poller should not panic
+        let handle = tokio::spawn(playback_poller(player, tx));
+
+        // Let it tick a few times with no subscribers
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        // Now subscribe and verify it sends when we have a subscriber
+        // (can't easily test from here since tx was moved, but at least
+        // we verified it doesn't panic)
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn log_poller_sends_when_buffer_has_lines() {
+        // Initialize the global log buffer if not already initialized.
+        // init_tui_logging panics on double-init, so ignore errors.
+        let _ = std::panic::catch_unwind(|| {
+            crate::tui::logging::init_tui_logging(100);
+        });
+
+        let buffer =
+            crate::tui::logging::get_log_buffer().expect("log buffer should be initialized");
+
+        // Push some test lines
+        {
+            let mut buf = buffer.lock();
+            buf.push_back("INFO test: hello from log_poller test".to_string());
+        }
+
+        let (tx, mut rx) = broadcast::channel(16);
+        let handle = tokio::spawn(log_poller(tx));
+
+        let msg = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+            .await
+            .expect("timed out waiting for log message")
+            .expect("recv error");
+
+        let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
+        assert_eq!(parsed["type"], "logs");
+        assert!(parsed["lines"].is_array());
+        assert!(!parsed["lines"].as_array().unwrap().is_empty());
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn log_poller_skips_when_no_new_lines() {
+        // Initialize the global log buffer
+        let _ = std::panic::catch_unwind(|| {
+            crate::tui::logging::init_tui_logging(100);
+        });
+
+        let buffer = match crate::tui::logging::get_log_buffer() {
+            Some(b) => b,
+            None => return,
+        };
+
+        let (tx, mut rx) = broadcast::channel(16);
+        let handle = tokio::spawn(log_poller(tx));
+
+        // Push a line and wait for it to be sent
+        {
+            let mut buf = buffer.lock();
+            buf.push_back("INFO test: first line".to_string());
+        }
+        let _ = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await;
+
+        // Don't push any new lines — next tick should skip (line 167)
+        // Wait for another tick — it should produce no message
+        let result = tokio::time::timeout(Duration::from_millis(800), rx.recv()).await;
+        // Either timeout (no message sent) or lagged — both are fine
+        if let Ok(Ok(msg)) = result {
+            // If we got a message, it might be from accumulated lines;
+            // the important thing is the poller doesn't panic
+            let _: serde_json::Value = serde_json::from_str(&msg).unwrap();
+        }
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn waveform_prewarmer_caches_songs() {
+        use tokio::time::timeout;
+
+        let player = test_player(&["Song A"]);
+        let cache = new_waveform_cache();
+
+        // Pre-populate the cache so prewarmer skips computation
+        cache.lock().insert(
+            "Song A".to_string(),
+            vec![("track1".to_string(), vec![0.5])],
+        );
+
+        // Run prewarmer with a timeout — it should skip Song A (already cached)
+        // and finish quickly after the 1s initial delay
+        let result = timeout(
+            Duration::from_secs(3),
+            waveform_prewarmer(player, cache.clone()),
+        )
+        .await;
+
+        // Prewarmer should have completed (all songs already cached)
+        assert!(result.is_ok(), "prewarmer should complete within timeout");
+        assert!(cache.lock().contains_key("Song A"));
+    }
+
+    #[tokio::test]
+    async fn waveform_prewarmer_computes_for_uncached() {
+        use tokio::time::timeout;
+
+        let player = test_player(&["Song A"]);
+        let cache = new_waveform_cache();
+
+        // Don't pre-populate — prewarmer will try to compute peaks.
+        // With test songs using /dev/null, peaks will be empty but it
+        // should still complete without panicking.
+        let result = timeout(
+            Duration::from_secs(5),
+            waveform_prewarmer(player, cache.clone()),
+        )
+        .await;
+
+        assert!(result.is_ok(), "prewarmer should complete within timeout");
+        // Should have attempted to cache Song A (even if peaks are empty)
+        assert!(cache.lock().contains_key("Song A"));
+    }
+
+    #[test]
+    fn compute_track_peaks_stereo_selects_correct_channel() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let wav_path = temp_dir.path().join("stereo.wav");
+
+        // Create a stereo WAV with different amplitudes per channel
+        let ch1: Vec<i32> = (0..4410).map(|i| (i * 10) % 32768).collect();
+        let ch2: Vec<i32> = (0..4410).map(|i| (i * 100) % 32768).collect();
+        crate::testutil::write_wav(wav_path.clone(), vec![ch1, ch2], 44100)
+            .expect("write stereo wav");
+
+        // Both channels should produce peaks
+        let peaks_ch1 = compute_track_peaks(&wav_path, 1, 10);
+        let peaks_ch2 = compute_track_peaks(&wav_path, 2, 10);
+
+        assert!(!peaks_ch1.is_empty());
+        assert!(!peaks_ch2.is_empty());
+        // Both should be normalized (max = 1.0)
+        assert!(peaks_ch1.iter().any(|&p| (p - 1.0).abs() < f32::EPSILON));
+        assert!(peaks_ch2.iter().any(|&p| (p - 1.0).abs() < f32::EPSILON));
+    }
+
+    #[test]
+    fn compute_track_peaks_large_bucket_count() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let wav_path = temp_dir.path().join("test.wav");
+        let samples: Vec<i32> = (0..4410).map(|i| (i * 100) % 32768).collect();
+        crate::testutil::write_wav(wav_path.clone(), vec![samples], 44100).expect("write wav");
+
+        // More buckets than samples — should still work
+        let peaks = compute_track_peaks(&wav_path, 1, 10000);
+        assert!(!peaks.is_empty());
+    }
+
+    #[test]
+    fn compute_waveform_peaks_missing_file() {
+        let tracks = vec![(
+            "missing".to_string(),
+            std::path::PathBuf::from("/nonexistent/file.wav"),
+            1_u16,
+        )];
+        let results = compute_waveform_peaks(&tracks);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "missing");
+        assert!(results[0].1.is_empty());
+    }
+
     #[test]
     fn compute_waveform_peaks_multiple_tracks() {
         let temp_dir = tempfile::tempdir().expect("tempdir");

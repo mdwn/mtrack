@@ -157,4 +157,30 @@ show "test" {
             .join("passwd");
         assert!(validate_path_within(dir.path(), &bad_path).is_err());
     }
+
+    #[test]
+    fn test_validate_path_within_outside_base() {
+        // Create two separate tempdirs so the canonical path exists but is
+        // not under the base directory.
+        let base_dir = tempfile::tempdir().unwrap();
+        let other_dir = tempfile::tempdir().unwrap();
+        let outside_file = other_dir.path().join("secret.txt");
+        std::fs::write(&outside_file, "secret").unwrap();
+
+        let result = validate_path_within(base_dir.path(), &outside_file);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Path outside allowed directory");
+    }
+
+    #[test]
+    fn test_validate_player_config_valid() {
+        let yaml = "songs: songs\n";
+        assert!(validate_player_config(yaml).is_ok());
+    }
+
+    #[test]
+    fn test_validate_player_config_invalid() {
+        let yaml = "this is not valid yaml: [[[";
+        assert!(validate_player_config(yaml).is_err());
+    }
 }
