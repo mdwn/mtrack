@@ -443,4 +443,100 @@ mod tests {
         assert_eq!(midi.events()[2].time, Duration::from_micros(1_000_000));
         assert_eq!(midi.events()[2].channel, 1);
     }
+
+    #[test]
+    fn test_from_events_and_into_events() {
+        let events = vec![
+            TimedMidiEvent {
+                time: Duration::from_millis(0),
+                channel: 0,
+                message: MidiMessage::NoteOn {
+                    key: u7::new(60),
+                    vel: u7::new(100),
+                },
+            },
+            TimedMidiEvent {
+                time: Duration::from_millis(500),
+                channel: 1,
+                message: MidiMessage::NoteOff {
+                    key: u7::new(60),
+                    vel: u7::new(0),
+                },
+            },
+        ];
+
+        let midi = PrecomputedMidi::from_events(events);
+        assert_eq!(midi.len(), 2);
+        assert!(!midi.is_empty());
+        assert_eq!(midi.events()[0].channel, 0);
+        assert_eq!(midi.events()[1].channel, 1);
+
+        let recovered = midi.into_events();
+        assert_eq!(recovered.len(), 2);
+        assert_eq!(recovered[0].time, Duration::from_millis(0));
+        assert_eq!(recovered[1].time, Duration::from_millis(500));
+    }
+
+    #[test]
+    fn test_events_from_boundary() {
+        let tpb = 480;
+        let track = vec![
+            note_on(0, 0, 60, 100),   // t=0
+            note_on(480, 0, 62, 100), // t=0.5s
+            note_on(480, 0, 64, 100), // t=1.0s
+            end_of_track(0),
+        ];
+        let midi = PrecomputedMidi::from_tracks(&[track], tpb, Format::SingleTrack);
+
+        // Exact boundary: events_from at exactly an event time
+        let from_exact = midi.events_from(Duration::from_micros(500_000));
+        assert_eq!(from_exact.len(), 2);
+        assert_eq!(from_exact[0].time, Duration::from_micros(500_000));
+    }
+
+    #[test]
+    fn test_sequential_with_inline_tempo() {
+        // Format 2 with inline tempo change within a track
+        let tpb = 480;
+        let track = vec![
+            note_on(0, 0, 60, 100),      // t=0 at 120 BPM
+            tempo_event(480, 1_000_000), // At beat 1, change to 60 BPM
+            note_on(480, 0, 62, 100),    // t=beat 2 at 60 BPM: 500_000 + 1_000_000
+            end_of_track(0),
+        ];
+
+        let midi = PrecomputedMidi::from_tracks(&[track], tpb, Format::Sequential);
+        assert_eq!(midi.len(), 2);
+        assert_eq!(midi.events()[0].time, Duration::from_micros(0));
+        assert_eq!(midi.events()[1].time, Duration::from_micros(1_500_000));
+    }
+
+    #[test]
+    fn test_parallel_single_track_no_conductor() {
+        // Parallel format with only one track (no conductor track to skip)
+        let tpb = 480;
+        let track0 = vec![note_on(0, 0, 60, 100), end_of_track(0)];
+
+        let midi = PrecomputedMidi::from_tracks(&[track0], tpb, Format::Parallel);
+        // Track 0 is the conductor and is skipped in Parallel format
+        assert_eq!(midi.len(), 0);
+    }
+
+    #[test]
+    fn test_parallel_empty_tracks() {
+        let midi = PrecomputedMidi::from_tracks(&[], 480, Format::Parallel);
+        assert!(midi.is_empty());
+    }
+
+    #[test]
+    fn test_single_track_empty() {
+        let midi = PrecomputedMidi::from_tracks(&[], 480, Format::SingleTrack);
+        assert!(midi.is_empty());
+    }
+
+    #[test]
+    fn test_sequential_empty() {
+        let midi = PrecomputedMidi::from_tracks(&[], 480, Format::Sequential);
+        assert!(midi.is_empty());
+    }
 }

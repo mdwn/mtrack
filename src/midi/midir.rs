@@ -38,6 +38,19 @@ use std::sync::Barrier;
 
 use super::transform::{ControlChangeMapper, MidiTransformer, NoteMapper};
 
+/// Trait abstracting MIDI output so we can test without hardware.
+pub(crate) trait MidiSender: Send {
+    fn send(&mut self, bytes: &[u8]) -> Result<(), Box<dyn Error>>;
+}
+
+/// Real midir implementation.
+impl MidiSender for midir::MidiOutputConnection {
+    fn send(&mut self, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
+        midir::MidiOutputConnection::send(self, bytes)?;
+        Ok(())
+    }
+}
+
 /// Return type for `build_transformers`: DMX channel mappings and MIDI transformers per channel.
 type TransformerConfig = (HashMap<u8, String>, HashMap<u8, Vec<MidiTransformer>>);
 
@@ -209,39 +222,18 @@ impl super::Device for Device {
             let finished = finished.clone();
 
             thread::spawn(move || {
-                play_barrier.wait();
-
-                if cancel_handle.is_cancelled() {
-                    finished.store(true, Ordering::Relaxed);
-                    cancel_handle.notify();
-                    return;
-                }
-
-                // Sleep the playback delay in small increments so we can
-                // respond to cancellation promptly.
-                {
-                    let start = std::time::Instant::now();
-                    while start.elapsed() < playback_delay {
-                        if cancel_handle.is_cancelled() {
-                            finished.store(true, Ordering::Relaxed);
-                            cancel_handle.notify();
-                            return;
-                        }
-                        let remaining = playback_delay.saturating_sub(start.elapsed());
-                        spin_sleep::sleep(remaining.min(Duration::from_millis(50)));
-                    }
-                }
-
-                play_precomputed(
-                    &midi_sheet.precomputed,
-                    start_time,
+                run_playback(
                     &mut connection,
-                    &cancel_handle,
-                    &exclude_midi_channels,
+                    PlaybackContext {
+                        precomputed: &midi_sheet.precomputed,
+                        start_time,
+                        playback_delay,
+                        cancel_handle: &cancel_handle,
+                        play_barrier,
+                        finished,
+                        exclude_channels: &exclude_midi_channels,
+                    },
                 );
-
-                finished.store(true, Ordering::Relaxed);
-                cancel_handle.notify();
             })
         };
 
@@ -512,12 +504,61 @@ fn serialize_midi_event(
     }
 }
 
-/// Plays pre-computed MIDI events through a hardware connection.
+/// Parameters for MIDI playback synchronization and timing.
+struct PlaybackContext<'a> {
+    precomputed: &'a super::playback::PrecomputedMidi,
+    start_time: Duration,
+    playback_delay: Duration,
+    cancel_handle: &'a CancelHandle,
+    play_barrier: Arc<Barrier>,
+    finished: Arc<AtomicBool>,
+    exclude_channels: &'a HashSet<u8>,
+}
+
+/// Runs the MIDI playback thread body: waits on the barrier, sleeps through
+/// the playback delay (checking for cancellation), then plays events.
+fn run_playback(sender: &mut dyn MidiSender, ctx: PlaybackContext<'_>) {
+    ctx.play_barrier.wait();
+
+    if ctx.cancel_handle.is_cancelled() {
+        ctx.finished.store(true, Ordering::Relaxed);
+        ctx.cancel_handle.notify();
+        return;
+    }
+
+    // Sleep the playback delay in small increments so we can
+    // respond to cancellation promptly.
+    {
+        let start = std::time::Instant::now();
+        while start.elapsed() < ctx.playback_delay {
+            if ctx.cancel_handle.is_cancelled() {
+                ctx.finished.store(true, Ordering::Relaxed);
+                ctx.cancel_handle.notify();
+                return;
+            }
+            let remaining = ctx.playback_delay.saturating_sub(start.elapsed());
+            spin_sleep::sleep(remaining.min(Duration::from_millis(50)));
+        }
+    }
+
+    play_precomputed(
+        ctx.precomputed,
+        ctx.start_time,
+        sender,
+        ctx.cancel_handle,
+        ctx.exclude_channels,
+    );
+
+    ctx.finished.store(true, Ordering::Relaxed);
+    ctx.cancel_handle.notify();
+}
+
+/// Plays pre-computed MIDI events through a MIDI sender.
 /// Sleeps between events using spin_sleep for precision without busy-waiting.
 fn play_precomputed(
     precomputed: &super::playback::PrecomputedMidi,
     start_time: Duration,
-    connection: &mut midir::MidiOutputConnection,
+    sender: &mut dyn MidiSender,
     cancel_handle: &CancelHandle,
     exclude_channels: &HashSet<u8>,
 ) {
@@ -540,7 +581,7 @@ fn play_precomputed(
         }
 
         if let Some(bytes) = serialize_midi_event(event, exclude_channels, &mut buf) {
-            if let Err(e) = connection.send(&bytes) {
+            if let Err(e) = sender.send(&bytes) {
                 debug!("MIDI send failed: {:?}", e);
             }
         }
@@ -1043,6 +1084,561 @@ mod test {
         fn exactly_two_matches_fails() {
             let matches = vec![Named("a".to_string()), Named("b".to_string())];
             assert!(validate_device_match("x", &matches).is_err());
+        }
+    }
+
+    #[test]
+    fn to_mock_returns_error() {
+        let device = Device::new_default("test".to_string());
+        let result = <Device as crate::midi::Device>::to_mock(&device);
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(err.to_string().contains("not a mock"));
+    }
+
+    #[test]
+    fn stop_watch_events_without_connection() {
+        let device = Device::new_default("test".to_string());
+        // Should not panic when no connection exists
+        <Device as crate::midi::Device>::stop_watch_events(&device);
+    }
+
+    mod emit_tests {
+        use super::*;
+
+        #[test]
+        fn emit_none_returns_ok() {
+            let device = Device::new_default("test".to_string());
+            let result = <Device as crate::midi::Device>::emit(&device, None);
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn emit_without_output_port_returns_ok() {
+            let device = Device::new_default("test".to_string());
+            assert!(device.output_port.is_none());
+            let event = LiveEvent::Midi {
+                channel: 0.into(),
+                message: midly::MidiMessage::NoteOn {
+                    key: u7::new(60),
+                    vel: u7::new(100),
+                },
+            };
+            // Should return Ok (with a warning logged)
+            let result = <Device as crate::midi::Device>::emit(&device, Some(event));
+            assert!(result.is_ok());
+        }
+    }
+
+    mod play_from_tests {
+        use super::*;
+        use crate::playsync::CancelHandle;
+
+        fn make_song() -> (tempfile::TempDir, Arc<Song>) {
+            let tmp_dir = tempfile::tempdir().unwrap();
+            let wav_path = tmp_dir.path().join("test.wav");
+            crate::testutil::write_wav(wav_path.clone(), vec![vec![1_i32; 44100]], 44100).unwrap();
+
+            let song_config = config::Song::new(
+                "test",
+                None,
+                None,
+                None,
+                None,
+                None,
+                vec![config::Track::new(
+                    "test".to_string(),
+                    wav_path.file_name().unwrap().to_str().unwrap(),
+                    Some(1),
+                )],
+                std::collections::HashMap::new(),
+                Vec::new(),
+            );
+            let song = Arc::new(crate::songs::Song::new(tmp_dir.path(), &song_config).unwrap());
+            (tmp_dir, song)
+        }
+
+        #[test]
+        fn play_from_without_output_port_returns_ok() {
+            let device = Device::new_default("test".to_string());
+            let (_tmp_dir, song) = make_song();
+            let cancel = CancelHandle::new();
+            let barrier = Arc::new(Barrier::new(1));
+            let result = <Device as crate::midi::Device>::play_from(
+                &device,
+                song,
+                cancel,
+                barrier,
+                Duration::ZERO,
+            );
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn play_from_without_midi_playback_returns_ok() {
+            // Song has audio but no MIDI sheet
+            let device = Device::new_default("test".to_string());
+            let (_tmp_dir, song) = make_song();
+            assert!(song.midi_playback().is_none());
+
+            let cancel = CancelHandle::new();
+            let barrier = Arc::new(Barrier::new(1));
+            // Even with no output port, the no-output-port check happens first
+            let result = <Device as crate::midi::Device>::play_from(
+                &device,
+                song,
+                cancel,
+                barrier,
+                Duration::ZERO,
+            );
+            assert!(result.is_ok());
+        }
+    }
+
+    mod play_precomputed_tests {
+        use super::*;
+        use crate::midi::playback::{PrecomputedMidi, TimedMidiEvent};
+        use crate::playsync::CancelHandle;
+        use std::sync::Mutex;
+
+        struct MockSender {
+            sent: Mutex<Vec<Vec<u8>>>,
+            should_fail: bool,
+        }
+
+        impl MockSender {
+            fn new() -> Self {
+                MockSender {
+                    sent: Mutex::new(Vec::new()),
+                    should_fail: false,
+                }
+            }
+
+            fn failing() -> Self {
+                MockSender {
+                    sent: Mutex::new(Vec::new()),
+                    should_fail: true,
+                }
+            }
+        }
+
+        impl MidiSender for MockSender {
+            fn send(&mut self, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
+                if self.should_fail {
+                    return Err("mock send failure".into());
+                }
+                self.sent.lock().unwrap().push(bytes.to_vec());
+                Ok(())
+            }
+        }
+
+        fn make_events(times_ms: &[u64]) -> PrecomputedMidi {
+            let events: Vec<TimedMidiEvent> = times_ms
+                .iter()
+                .enumerate()
+                .map(|(i, &t)| TimedMidiEvent {
+                    time: Duration::from_millis(t),
+                    channel: 0,
+                    message: midly::MidiMessage::NoteOn {
+                        key: u7::new(60 + i as u8),
+                        vel: u7::new(100),
+                    },
+                })
+                .collect();
+            PrecomputedMidi::from_events(events)
+        }
+
+        #[test]
+        fn plays_all_events() {
+            let midi = make_events(&[0, 0, 0]);
+            let cancel = CancelHandle::new();
+            let exclude = HashSet::new();
+            let mut sender = MockSender::new();
+
+            play_precomputed(&midi, Duration::ZERO, &mut sender, &cancel, &exclude);
+
+            let sent = sender.sent.lock().unwrap();
+            assert_eq!(sent.len(), 3);
+        }
+
+        #[test]
+        fn respects_start_time() {
+            // Events at 0ms, 100ms, 200ms. Start from 100ms → skip first event.
+            let midi = make_events(&[0, 100, 200]);
+            let cancel = CancelHandle::new();
+            let exclude = HashSet::new();
+            let mut sender = MockSender::new();
+
+            play_precomputed(
+                &midi,
+                Duration::from_millis(100),
+                &mut sender,
+                &cancel,
+                &exclude,
+            );
+
+            let sent = sender.sent.lock().unwrap();
+            assert_eq!(sent.len(), 2);
+        }
+
+        #[test]
+        fn excludes_channels() {
+            let events = vec![
+                TimedMidiEvent {
+                    time: Duration::ZERO,
+                    channel: 0,
+                    message: midly::MidiMessage::NoteOn {
+                        key: u7::new(60),
+                        vel: u7::new(100),
+                    },
+                },
+                TimedMidiEvent {
+                    time: Duration::ZERO,
+                    channel: 5,
+                    message: midly::MidiMessage::NoteOn {
+                        key: u7::new(62),
+                        vel: u7::new(100),
+                    },
+                },
+                TimedMidiEvent {
+                    time: Duration::ZERO,
+                    channel: 0,
+                    message: midly::MidiMessage::NoteOn {
+                        key: u7::new(64),
+                        vel: u7::new(100),
+                    },
+                },
+            ];
+            let midi = PrecomputedMidi::from_events(events);
+            let cancel = CancelHandle::new();
+            let exclude = HashSet::from([5]);
+            let mut sender = MockSender::new();
+
+            play_precomputed(&midi, Duration::ZERO, &mut sender, &cancel, &exclude);
+
+            let sent = sender.sent.lock().unwrap();
+            assert_eq!(sent.len(), 2); // Channel 5 excluded
+        }
+
+        #[test]
+        fn stops_on_cancel() {
+            // Create events spread over time — cancel before they all play
+            let midi = make_events(&[0, 500, 1000]);
+            let cancel = CancelHandle::new();
+            let exclude = HashSet::new();
+            let mut sender = MockSender::new();
+
+            // Cancel immediately
+            cancel.cancel();
+
+            play_precomputed(&midi, Duration::ZERO, &mut sender, &cancel, &exclude);
+
+            let sent = sender.sent.lock().unwrap();
+            assert_eq!(sent.len(), 0);
+        }
+
+        #[test]
+        fn empty_events() {
+            let midi = PrecomputedMidi::from_events(Vec::new());
+            let cancel = CancelHandle::new();
+            let exclude = HashSet::new();
+            let mut sender = MockSender::new();
+
+            play_precomputed(&midi, Duration::ZERO, &mut sender, &cancel, &exclude);
+
+            let sent = sender.sent.lock().unwrap();
+            assert!(sent.is_empty());
+        }
+
+        #[test]
+        fn send_failure_continues() {
+            let midi = make_events(&[0, 0, 0]);
+            let cancel = CancelHandle::new();
+            let exclude = HashSet::new();
+            let mut sender = MockSender::failing();
+
+            // Should not panic — errors are logged but playback continues
+            play_precomputed(&midi, Duration::ZERO, &mut sender, &cancel, &exclude);
+        }
+
+        #[test]
+        fn serialized_bytes_are_correct() {
+            let events = vec![TimedMidiEvent {
+                time: Duration::ZERO,
+                channel: 3,
+                message: midly::MidiMessage::NoteOn {
+                    key: u7::new(72),
+                    vel: u7::new(64),
+                },
+            }];
+            let midi = PrecomputedMidi::from_events(events);
+            let cancel = CancelHandle::new();
+            let exclude = HashSet::new();
+            let mut sender = MockSender::new();
+
+            play_precomputed(&midi, Duration::ZERO, &mut sender, &cancel, &exclude);
+
+            let sent = sender.sent.lock().unwrap();
+            assert_eq!(sent.len(), 1);
+            assert_eq!(sent[0], vec![0x93, 72, 64]); // NoteOn ch3, key 72, vel 64
+        }
+    }
+
+    mod watch_events_tests {
+        use super::*;
+
+        #[test]
+        fn watch_events_without_input_port_returns_ok() {
+            let device = Device::new_default("test".to_string());
+            assert!(device.input_port.is_none());
+            let (tx, _rx) = tokio::sync::mpsc::channel(10);
+            // Should return Ok (with a warning) when no input port
+            let result = <Device as crate::midi::Device>::watch_events(&device, tx);
+            assert!(result.is_ok());
+        }
+    }
+
+    mod run_playback_tests {
+        use super::*;
+        use crate::midi::playback::PrecomputedMidi;
+        use crate::playsync::CancelHandle;
+        use std::sync::Mutex;
+
+        struct MockSender {
+            sent: Mutex<Vec<Vec<u8>>>,
+        }
+
+        impl MockSender {
+            fn new() -> Self {
+                MockSender {
+                    sent: Mutex::new(Vec::new()),
+                }
+            }
+        }
+
+        impl MidiSender for MockSender {
+            fn send(&mut self, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
+                self.sent.lock().unwrap().push(bytes.to_vec());
+                Ok(())
+            }
+        }
+
+        fn make_events(times_ms: &[u64]) -> PrecomputedMidi {
+            use crate::midi::playback::TimedMidiEvent;
+            let events: Vec<TimedMidiEvent> = times_ms
+                .iter()
+                .enumerate()
+                .map(|(i, &t)| TimedMidiEvent {
+                    time: Duration::from_millis(t),
+                    channel: 0,
+                    message: midly::MidiMessage::NoteOn {
+                        key: u7::new(60 + i as u8),
+                        vel: u7::new(100),
+                    },
+                })
+                .collect();
+            PrecomputedMidi::from_events(events)
+        }
+
+        #[test]
+        fn normal_playback_sets_finished() {
+            let midi = make_events(&[0, 0]);
+            let cancel = CancelHandle::new();
+            let barrier = Arc::new(Barrier::new(1));
+            let finished = Arc::new(AtomicBool::new(false));
+            let exclude = HashSet::new();
+            let mut sender = MockSender::new();
+
+            run_playback(
+                &mut sender,
+                PlaybackContext {
+                    precomputed: &midi,
+                    start_time: Duration::ZERO,
+                    playback_delay: Duration::ZERO,
+                    cancel_handle: &cancel,
+                    play_barrier: barrier,
+                    finished: finished.clone(),
+                    exclude_channels: &exclude,
+                },
+            );
+
+            assert!(finished.load(Ordering::Relaxed));
+            assert_eq!(sender.sent.lock().unwrap().len(), 2);
+        }
+
+        #[test]
+        fn cancel_before_barrier_sets_finished() {
+            let midi = make_events(&[0]);
+            let cancel = CancelHandle::new();
+            cancel.cancel();
+            let barrier = Arc::new(Barrier::new(1));
+            let finished = Arc::new(AtomicBool::new(false));
+            let exclude = HashSet::new();
+            let mut sender = MockSender::new();
+
+            run_playback(
+                &mut sender,
+                PlaybackContext {
+                    precomputed: &midi,
+                    start_time: Duration::ZERO,
+                    playback_delay: Duration::ZERO,
+                    cancel_handle: &cancel,
+                    play_barrier: barrier,
+                    finished: finished.clone(),
+                    exclude_channels: &exclude,
+                },
+            );
+
+            assert!(finished.load(Ordering::Relaxed));
+            // No events should be sent since we cancelled before playback
+            assert!(sender.sent.lock().unwrap().is_empty());
+        }
+
+        #[test]
+        fn cancel_during_delay_sets_finished() {
+            let midi = make_events(&[0]);
+            let cancel = CancelHandle::new();
+            let barrier = Arc::new(Barrier::new(1));
+            let finished = Arc::new(AtomicBool::new(false));
+            let exclude = HashSet::new();
+            let mut sender = MockSender::new();
+
+            // Use a long delay but cancel from another thread
+            let cancel_clone = cancel.clone();
+            let handle = thread::spawn(move || {
+                thread::sleep(Duration::from_millis(50));
+                cancel_clone.cancel();
+            });
+
+            run_playback(
+                &mut sender,
+                PlaybackContext {
+                    precomputed: &midi,
+                    start_time: Duration::ZERO,
+                    playback_delay: Duration::from_secs(10), // Very long delay
+                    cancel_handle: &cancel,
+                    play_barrier: barrier,
+                    finished: finished.clone(),
+                    exclude_channels: &exclude,
+                },
+            );
+
+            handle.join().unwrap();
+            assert!(finished.load(Ordering::Relaxed));
+            // Should have been cancelled during delay, no events sent
+            assert!(sender.sent.lock().unwrap().is_empty());
+        }
+
+        #[test]
+        fn short_delay_completes_and_plays() {
+            let midi = make_events(&[0, 0, 0]);
+            let cancel = CancelHandle::new();
+            let barrier = Arc::new(Barrier::new(1));
+            let finished = Arc::new(AtomicBool::new(false));
+            let exclude = HashSet::new();
+            let mut sender = MockSender::new();
+
+            run_playback(
+                &mut sender,
+                PlaybackContext {
+                    precomputed: &midi,
+                    start_time: Duration::ZERO,
+                    playback_delay: Duration::from_millis(10), // Short delay
+                    cancel_handle: &cancel,
+                    play_barrier: barrier,
+                    finished: finished.clone(),
+                    exclude_channels: &exclude,
+                },
+            );
+
+            assert!(finished.load(Ordering::Relaxed));
+            assert_eq!(sender.sent.lock().unwrap().len(), 3);
+        }
+
+        #[test]
+        fn respects_exclude_channels() {
+            use crate::midi::playback::TimedMidiEvent;
+            let events = vec![
+                TimedMidiEvent {
+                    time: Duration::ZERO,
+                    channel: 0,
+                    message: midly::MidiMessage::NoteOn {
+                        key: u7::new(60),
+                        vel: u7::new(100),
+                    },
+                },
+                TimedMidiEvent {
+                    time: Duration::ZERO,
+                    channel: 9, // Excluded
+                    message: midly::MidiMessage::NoteOn {
+                        key: u7::new(62),
+                        vel: u7::new(100),
+                    },
+                },
+            ];
+            let midi = PrecomputedMidi::from_events(events);
+            let cancel = CancelHandle::new();
+            let barrier = Arc::new(Barrier::new(1));
+            let finished = Arc::new(AtomicBool::new(false));
+            let exclude = HashSet::from([9]);
+            let mut sender = MockSender::new();
+
+            run_playback(
+                &mut sender,
+                PlaybackContext {
+                    precomputed: &midi,
+                    start_time: Duration::ZERO,
+                    playback_delay: Duration::ZERO,
+                    cancel_handle: &cancel,
+                    play_barrier: barrier,
+                    finished: finished.clone(),
+                    exclude_channels: &exclude,
+                },
+            );
+
+            assert_eq!(sender.sent.lock().unwrap().len(), 1);
+        }
+
+        #[test]
+        fn barrier_synchronization_works() {
+            // Barrier with 2 parties — run_playback in a thread, release from main
+            let midi = make_events(&[0]);
+            let cancel = CancelHandle::new();
+            let barrier = Arc::new(Barrier::new(2));
+            let finished = Arc::new(AtomicBool::new(false));
+            let exclude = HashSet::new();
+            let mut sender = MockSender::new();
+
+            let barrier_clone = barrier.clone();
+            let finished_clone = finished.clone();
+            let cancel_clone = cancel.clone();
+
+            let handle = thread::spawn(move || {
+                run_playback(
+                    &mut sender,
+                    PlaybackContext {
+                        precomputed: &midi,
+                        start_time: Duration::ZERO,
+                        playback_delay: Duration::ZERO,
+                        cancel_handle: &cancel_clone,
+                        play_barrier: barrier_clone,
+                        finished: finished_clone,
+                        exclude_channels: &exclude,
+                    },
+                );
+                sender
+            });
+
+            // Small delay to ensure the thread reaches the barrier
+            thread::sleep(Duration::from_millis(10));
+            assert!(!finished.load(Ordering::Relaxed));
+
+            // Release the barrier
+            barrier.wait();
+
+            let sender = handle.join().unwrap();
+            assert!(finished.load(Ordering::Relaxed));
+            assert_eq!(sender.sent.lock().unwrap().len(), 1);
         }
     }
 }
