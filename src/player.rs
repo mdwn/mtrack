@@ -264,6 +264,20 @@ impl Player {
             .ok()
             .and_then(|s| s.parse::<u32>().ok())
             .unwrap_or(0);
+        Self::wait_for_ok_with_limit(name, max_attempts, constructor)
+    }
+
+    /// Wait for constructor function to return an Ok(result) variant.
+    /// If max_attempts is 0, retries indefinitely.
+    fn wait_for_ok_with_limit<T, E, F>(
+        name: &str,
+        max_attempts: u32,
+        constructor: F,
+    ) -> Result<T, Box<dyn Error>>
+    where
+        E: Display + Into<Box<dyn Error>>,
+        F: Fn() -> Result<T, E>,
+    {
         let delay_ms = 500;
         let mut attempt = 0u32;
 
@@ -2061,22 +2075,19 @@ mod test {
 
     #[test]
     fn wait_for_ok_retries_then_fails() {
-        std::env::set_var("MTRACK_DEVICE_RETRY_LIMIT", "2");
         let attempt = std::sync::atomic::AtomicU32::new(0);
-        let result = Player::wait_for_ok("test device", || {
+        let result = Player::wait_for_ok_with_limit("test device", 2, || {
             attempt.fetch_add(1, Ordering::Relaxed);
             Err::<(), String>("boom".into())
         });
         assert!(result.is_err());
         assert!(attempt.load(Ordering::Relaxed) >= 2);
-        std::env::remove_var("MTRACK_DEVICE_RETRY_LIMIT");
     }
 
     #[test]
     fn wait_for_ok_succeeds_after_retry() {
-        std::env::set_var("MTRACK_DEVICE_RETRY_LIMIT", "5");
         let attempt = std::sync::atomic::AtomicU32::new(0);
-        let result = Player::wait_for_ok("test device", || {
+        let result = Player::wait_for_ok_with_limit("test device", 5, || {
             let n = attempt.fetch_add(1, Ordering::Relaxed);
             if n < 2 {
                 Err::<u32, String>("not ready".into())
@@ -2085,7 +2096,6 @@ mod test {
             }
         });
         assert_eq!(result.unwrap(), 99);
-        std::env::remove_var("MTRACK_DEVICE_RETRY_LIMIT");
     }
 
     #[test]
