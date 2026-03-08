@@ -57,6 +57,7 @@ type TransformerConfig = (HashMap<u8, String>, HashMap<u8, Vec<MidiTransformer>>
 pub struct Device {
     name: String,
     playback_delay: Duration,
+    beat_clock_enabled: bool,
     input_port: Option<MidiInputPort>,
     output_port: Option<MidiOutputPort>,
     event_connection: Box<Mutex<Option<MidiInputConnection<()>>>>,
@@ -70,6 +71,7 @@ impl Device {
         Device {
             name,
             playback_delay: Duration::ZERO,
+            beat_clock_enabled: false,
             input_port: None,
             output_port: None,
             event_connection: Box::new(Mutex::new(None)),
@@ -210,12 +212,80 @@ impl super::Device for Device {
             song = song.name(),
             duration = song.duration_string(),
             start_time = ?start_time,
+            beat_clock = self.beat_clock_enabled,
             "Playing song MIDI."
         );
 
         let finished = Arc::new(AtomicBool::new(false));
         let playback_delay = self.playback_delay;
         let mut connection = output.connect(output_port, "mtrack player")?;
+
+        // Optionally set up beat clock on a second connection
+        let beat_clock_handle = if self.beat_clock_enabled {
+            if let Some(ref beat_clock) = midi_sheet.beat_clock {
+                let clock_output = MidiOutput::new("mtrack beat clock output")?;
+                let mut clock_connection =
+                    clock_output.connect(output_port, "mtrack beat clock")?;
+                let clock_cancel = cancel_handle.clone();
+                let clock_playback_delay = playback_delay;
+                let clock_start_time = start_time;
+
+                // Build a small wrapper that owns the PrecomputedBeatClock data we need.
+                // We can't move midi_sheet into the closure since the note thread uses it,
+                // so re-extract the tick data.
+                let ticks: Vec<Duration> = beat_clock.ticks_from(Duration::ZERO).to_vec();
+
+                // Internal barrier to synchronize the beat clock thread with the note
+                // playback thread. The note thread will wait on this after the external
+                // play_barrier releases, so both start sending at the same time.
+                let internal_barrier = Arc::new(Barrier::new(2));
+                let clock_internal_barrier = internal_barrier.clone();
+
+                info!("Starting MIDI beat clock thread.");
+                Some((
+                    thread::spawn(move || {
+                        // Wait for the note thread to signal us after it passes the
+                        // external play_barrier.
+                        clock_internal_barrier.wait();
+
+                        if clock_cancel.is_cancelled() {
+                            return;
+                        }
+
+                        // Sleep the playback delay
+                        {
+                            let start = std::time::Instant::now();
+                            while start.elapsed() < clock_playback_delay {
+                                if clock_cancel.is_cancelled() {
+                                    return;
+                                }
+                                let remaining =
+                                    clock_playback_delay.saturating_sub(start.elapsed());
+                                spin_sleep::sleep(remaining.min(Duration::from_millis(50)));
+                            }
+                        }
+
+                        run_beat_clock(
+                            &mut clock_connection,
+                            &ticks,
+                            clock_start_time,
+                            &clock_cancel,
+                        );
+                    }),
+                    internal_barrier,
+                ))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Extract the internal barrier (if any) for synchronizing the beat clock thread.
+        let (beat_clock_join, beat_clock_internal_barrier) = match beat_clock_handle {
+            Some((handle, barrier)) => (Some(handle), Some(barrier)),
+            None => (None, None),
+        };
 
         let join_handle = {
             let cancel_handle = cancel_handle.clone();
@@ -232,6 +302,7 @@ impl super::Device for Device {
                         play_barrier,
                         finished,
                         exclude_channels: &exclude_midi_channels,
+                        beat_clock_barrier: beat_clock_internal_barrier,
                     },
                 );
             })
@@ -245,6 +316,12 @@ impl super::Device for Device {
 
         if join_handle.join().is_err() {
             return Err("Error while joining thread!".into());
+        }
+
+        if let Some(handle) = beat_clock_join {
+            if handle.join().is_err() {
+                return Err("Error while joining beat clock thread!".into());
+            }
         }
 
         info!("MIDI playback stopped.");
@@ -396,6 +473,7 @@ pub fn get(
 
     let mut midi_device = matches.swap_remove(0);
     midi_device.playback_delay = playback_delay;
+    midi_device.beat_clock_enabled = config.beat_clock();
     midi_device.midi_to_dmx_mappings = midi_to_dmx_mappings;
     midi_device.dmx_engine = dmx_engine;
     midi_device.dmx_midi_transformers = dmx_midi_transformers;
@@ -513,12 +591,18 @@ struct PlaybackContext<'a> {
     play_barrier: Arc<Barrier>,
     finished: Arc<AtomicBool>,
     exclude_channels: &'a HashSet<u8>,
+    beat_clock_barrier: Option<Arc<Barrier>>,
 }
 
 /// Runs the MIDI playback thread body: waits on the barrier, sleeps through
 /// the playback delay (checking for cancellation), then plays events.
 fn run_playback(sender: &mut dyn MidiSender, ctx: PlaybackContext<'_>) {
     ctx.play_barrier.wait();
+
+    // Signal the beat clock thread (if any) to start in sync with us.
+    if let Some(ref barrier) = ctx.beat_clock_barrier {
+        barrier.wait();
+    }
 
     if ctx.cancel_handle.is_cancelled() {
         ctx.finished.store(true, Ordering::Relaxed);
@@ -551,6 +635,69 @@ fn run_playback(sender: &mut dyn MidiSender, ctx: PlaybackContext<'_>) {
 
     ctx.finished.store(true, Ordering::Relaxed);
     ctx.cancel_handle.notify();
+}
+
+/// Serializes a MIDI System Real-Time event to bytes.
+fn realtime_bytes(msg: midly::live::SystemRealtime) -> Vec<u8> {
+    let event = LiveEvent::Realtime(msg);
+    let mut buf = Vec::with_capacity(1);
+    event
+        .write_std(&mut buf)
+        .expect("realtime events are always valid");
+    buf
+}
+
+/// Runs the beat clock on a MIDI sender, sending START/CONTINUE, timing clocks, and STOP.
+fn run_beat_clock(
+    sender: &mut dyn MidiSender,
+    ticks: &[Duration],
+    start_time: Duration,
+    cancel_handle: &CancelHandle,
+) {
+    use midly::live::SystemRealtime;
+
+    // Send START or CONTINUE
+    let start_msg = if start_time == Duration::ZERO {
+        realtime_bytes(SystemRealtime::Start)
+    } else {
+        realtime_bytes(SystemRealtime::Continue)
+    };
+    if let Err(e) = sender.send(&start_msg) {
+        debug!("MIDI beat clock start send failed: {:?}", e);
+    }
+
+    // Find ticks from start_time
+    let idx = ticks.partition_point(|t| *t < start_time);
+    let remaining_ticks = &ticks[idx..];
+
+    let wall_start = std::time::Instant::now();
+    let clock_bytes = realtime_bytes(SystemRealtime::TimingClock);
+    let stop_bytes = realtime_bytes(SystemRealtime::Stop);
+
+    for tick_time in remaining_ticks {
+        if cancel_handle.is_cancelled() {
+            let _ = sender.send(&stop_bytes);
+            return;
+        }
+
+        let target_wall = *tick_time - start_time;
+        let elapsed = wall_start.elapsed();
+        if target_wall > elapsed {
+            spin_sleep::sleep(target_wall - elapsed);
+        }
+
+        if cancel_handle.is_cancelled() {
+            let _ = sender.send(&stop_bytes);
+            return;
+        }
+
+        if let Err(e) = sender.send(&clock_bytes) {
+            debug!("MIDI beat clock send failed: {:?}", e);
+        }
+    }
+
+    // Send STOP when finished
+    let _ = sender.send(&stop_bytes);
 }
 
 /// Plays pre-computed MIDI events through a MIDI sender.
@@ -617,6 +764,7 @@ mod test {
             let device = Device::new_default("my-midi".to_string());
             assert_eq!(device.name, "my-midi");
             assert_eq!(device.playback_delay, Duration::ZERO);
+            assert!(!device.beat_clock_enabled);
             assert!(device.input_port.is_none());
             assert!(device.output_port.is_none());
             assert!(device.midi_to_dmx_mappings.is_empty());
@@ -1459,6 +1607,7 @@ mod test {
                     play_barrier: barrier,
                     finished: finished.clone(),
                     exclude_channels: &exclude,
+                    beat_clock_barrier: None,
                 },
             );
 
@@ -1486,6 +1635,7 @@ mod test {
                     play_barrier: barrier,
                     finished: finished.clone(),
                     exclude_channels: &exclude,
+                    beat_clock_barrier: None,
                 },
             );
 
@@ -1520,6 +1670,7 @@ mod test {
                     play_barrier: barrier,
                     finished: finished.clone(),
                     exclude_channels: &exclude,
+                    beat_clock_barrier: None,
                 },
             );
 
@@ -1548,6 +1699,7 @@ mod test {
                     play_barrier: barrier,
                     finished: finished.clone(),
                     exclude_channels: &exclude,
+                    beat_clock_barrier: None,
                 },
             );
 
@@ -1593,6 +1745,7 @@ mod test {
                     play_barrier: barrier,
                     finished: finished.clone(),
                     exclude_channels: &exclude,
+                    beat_clock_barrier: None,
                 },
             );
 
@@ -1624,6 +1777,7 @@ mod test {
                         play_barrier: barrier_clone,
                         finished: finished_clone,
                         exclude_channels: &exclude,
+                        beat_clock_barrier: None,
                     },
                 );
                 sender
@@ -1639,6 +1793,116 @@ mod test {
             let sender = handle.join().unwrap();
             assert!(finished.load(Ordering::Relaxed));
             assert_eq!(sender.sent.lock().unwrap().len(), 1);
+        }
+    }
+
+    mod run_beat_clock_tests {
+        use super::*;
+        use crate::playsync::CancelHandle;
+        use midly::live::SystemRealtime;
+        use std::sync::Mutex;
+
+        fn start_bytes() -> Vec<u8> {
+            realtime_bytes(SystemRealtime::Start)
+        }
+        fn continue_bytes() -> Vec<u8> {
+            realtime_bytes(SystemRealtime::Continue)
+        }
+        fn stop_bytes() -> Vec<u8> {
+            realtime_bytes(SystemRealtime::Stop)
+        }
+        fn clock_bytes() -> Vec<u8> {
+            realtime_bytes(SystemRealtime::TimingClock)
+        }
+
+        struct MockSender {
+            sent: Mutex<Vec<Vec<u8>>>,
+        }
+
+        impl MockSender {
+            fn new() -> Self {
+                MockSender {
+                    sent: Mutex::new(Vec::new()),
+                }
+            }
+        }
+
+        impl MidiSender for MockSender {
+            fn send(&mut self, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
+                self.sent.lock().unwrap().push(bytes.to_vec());
+                Ok(())
+            }
+        }
+
+        #[test]
+        fn sends_start_clocks_and_stop() {
+            // 1 beat at default 120 BPM = 24 clock ticks
+            let beat_clock = crate::midi::beat_clock::PrecomputedBeatClock::from_tempo_info(
+                &[crate::midi::playback::TempoEntry {
+                    tick: 0,
+                    micros_per_tick: 500_000.0 / 480.0,
+                }],
+                480,
+                480,
+            );
+            let ticks: Vec<Duration> = beat_clock.ticks_from(Duration::ZERO).to_vec();
+            let cancel = CancelHandle::new();
+            let mut sender = MockSender::new();
+
+            run_beat_clock(&mut sender, &ticks, Duration::ZERO, &cancel);
+
+            let sent = sender.sent.lock().unwrap();
+            // START + 24 clock ticks + STOP
+            assert_eq!(sent.len(), 26);
+            assert_eq!(sent[0], start_bytes());
+            for msg in &sent[1..25] {
+                assert_eq!(*msg, clock_bytes());
+            }
+            assert_eq!(sent[25], stop_bytes());
+        }
+
+        #[test]
+        fn sends_continue_when_seeking() {
+            let ticks = vec![Duration::from_millis(500), Duration::from_millis(600)];
+            let cancel = CancelHandle::new();
+            let mut sender = MockSender::new();
+
+            run_beat_clock(&mut sender, &ticks, Duration::from_millis(100), &cancel);
+
+            let sent = sender.sent.lock().unwrap();
+            // CONTINUE + 2 ticks + STOP
+            assert_eq!(sent.len(), 4);
+            assert_eq!(sent[0], continue_bytes());
+        }
+
+        #[test]
+        fn empty_ticks_sends_start_and_stop() {
+            let ticks: Vec<Duration> = Vec::new();
+            let cancel = CancelHandle::new();
+            let mut sender = MockSender::new();
+
+            run_beat_clock(&mut sender, &ticks, Duration::ZERO, &cancel);
+
+            let sent = sender.sent.lock().unwrap();
+            assert_eq!(sent.len(), 2);
+            assert_eq!(sent[0], start_bytes());
+            assert_eq!(sent[1], stop_bytes());
+        }
+
+        #[test]
+        fn cancellation_sends_stop() {
+            let ticks = vec![Duration::from_secs(10), Duration::from_secs(20)];
+            let cancel = CancelHandle::new();
+            cancel.cancel();
+            let mut sender = MockSender::new();
+
+            run_beat_clock(&mut sender, &ticks, Duration::ZERO, &cancel);
+
+            let sent = sender.sent.lock().unwrap();
+            // START + STOP (cancelled before any ticks)
+            assert_eq!(sent.len(), 2);
+            assert_eq!(sent[0], start_bytes());
+            assert_eq!(sent[1], stop_bytes());
         }
     }
 }

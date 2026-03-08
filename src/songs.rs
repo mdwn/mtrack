@@ -609,12 +609,34 @@ fn parse_midi(midi_file: &PathBuf) -> Result<MidiSheet, Box<dyn Error>> {
         midly::Timing::Metrical(tpb) => tpb.as_int(),
         _ => return Err("timecode-based MIDI timing not supported".into()),
     };
+    let (tempo_map, tpb, total_ticks) = crate::midi::playback::PrecomputedMidi::build_tempo_info(
+        &smf.tracks,
+        ticks_per_beat,
+        smf.header.format,
+    );
     let precomputed = crate::midi::playback::PrecomputedMidi::from_tracks(
         &smf.tracks,
         ticks_per_beat,
         smf.header.format,
     );
-    Ok(MidiSheet { precomputed })
+    // Only generate beat clock when the MIDI file contains explicit tempo events.
+    // Files without tempo maps have no tempo opinion, so mtrack stays out of the way
+    // and lets musicians control their own tempo.
+    let beat_clock = if tempo_map.is_empty() {
+        None
+    } else {
+        Some(
+            crate::midi::beat_clock::PrecomputedBeatClock::from_tempo_info(
+                &tempo_map,
+                tpb,
+                total_ticks,
+            ),
+        )
+    };
+    Ok(MidiSheet {
+        precomputed,
+        beat_clock,
+    })
 }
 
 /// A light show for the song.
@@ -816,6 +838,7 @@ impl Track {
 /// Contains a pre-computed MIDI timeline for playback.
 pub struct MidiSheet {
     pub(crate) precomputed: crate::midi::playback::PrecomputedMidi,
+    pub(crate) beat_clock: Option<crate::midi::beat_clock::PrecomputedBeatClock>,
 }
 
 /// A registry of songs for use by the multitrack player.
@@ -1680,7 +1703,46 @@ mod test {
         );
         let midi_pb = song_config.midi_playback().unwrap();
         let playback = super::MidiPlayback::new(tempdir.path(), midi_pb)?;
-        let _sheet = playback.midi_sheet()?;
+        let sheet = playback.midi_sheet()?;
+        // No tempo events in the MIDI file, so beat clock should be None
+        assert!(sheet.beat_clock.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn midi_sheet_with_tempo_has_beat_clock() -> Result<(), Box<dyn Error>> {
+        // Create a MIDI file with an explicit tempo event
+        let tempdir = tempfile::tempdir()?;
+        let midi_path = tempdir.path().join("test.mid");
+        let midi_bytes: Vec<u8> = vec![
+            0x4D, 0x54, 0x68, 0x64, // MThd
+            0x00, 0x00, 0x00, 0x06, // chunk length = 6
+            0x00, 0x00, // format 0
+            0x00, 0x01, // 1 track
+            0x00, 0x60, // 96 ticks per beat
+            0x4D, 0x54, 0x72, 0x6B, // MTrk
+            0x00, 0x00, 0x00, 0x0B, // chunk length = 11
+            0x00, 0xFF, 0x51, 0x03, 0x07, 0xA1,
+            0x20, // delta=0, tempo = 500_000 µs (120 BPM)
+            0x60, 0xFF, 0x2F, 0x00, // delta=96, end of track (1 beat later)
+        ];
+        fs::write(&midi_path, &midi_bytes)?;
+        let song_config = crate::config::Song::new(
+            "test",
+            None,
+            Some("test.mid".to_string()),
+            None,
+            None,
+            None,
+            vec![],
+            std::collections::HashMap::new(),
+            vec![],
+        );
+        let midi_pb = song_config.midi_playback().unwrap();
+        let playback = super::MidiPlayback::new(tempdir.path(), midi_pb)?;
+        let sheet = playback.midi_sheet()?;
+        // Has tempo events, so beat clock should be Some
+        assert!(sheet.beat_clock.is_some());
         Ok(())
     }
 

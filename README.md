@@ -295,6 +295,13 @@ midi:
   # (Optional) Once a song is started, mtrack will wait this amount before triggering the MIDI playback.
   playback_delay: 500ms
 
+  # (Optional) Enable MIDI beat clock output (24 ppqn). When enabled, mtrack sends MIDI System
+  # Real-Time messages (Start, Timing Clock, Stop) to synchronize external gear to the song's
+  # tempo. Beat clock is only sent for songs whose MIDI files contain explicit tempo change events;
+  # songs without a tempo map do not emit beat clock, leaving musicians free to control their own
+  # tempo.
+  beat_clock: true
+
   # (Optional) You can route live MIDI events into the DMX engine with this configuration.
   midi_to_dmx:
   
