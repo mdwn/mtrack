@@ -394,3 +394,176 @@ impl ChannelMappedSampleSource for BufferedSampleSource {
         Some(self.finished_flag.load(Ordering::Relaxed))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::audio::sample_source::traits::ChannelMappedSampleSource;
+    use crate::audio::sample_source::ChannelMappedSource;
+    use crate::audio::sample_source::MemorySampleSource;
+
+    fn create_test_pool() -> Arc<BufferFillPool> {
+        Arc::new(BufferFillPool::new(1).unwrap())
+    }
+
+    fn create_test_inner(
+        samples: Vec<f32>,
+        channels: u16,
+        mappings: Vec<Vec<String>>,
+    ) -> Box<dyn ChannelMappedSampleSource + Send + Sync> {
+        let mem = MemorySampleSource::new(samples, channels, 44100);
+        Box::new(ChannelMappedSource::new(Box::new(mem), mappings, channels))
+    }
+
+    #[test]
+    fn buffer_fill_pool_spawn_runs_job() {
+        let pool = BufferFillPool::new(1).unwrap();
+        let flag = Arc::new(AtomicBool::new(false));
+        let flag_clone = flag.clone();
+        pool.spawn(move || {
+            flag_clone.store(true, Ordering::Relaxed);
+        });
+        // Wait for the job to complete
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(flag.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn buffered_source_reads_all_samples() {
+        let pool = create_test_pool();
+        let inner = create_test_inner(vec![0.5, 0.8, 0.3, 0.6], 1, vec![vec!["test".to_string()]]);
+
+        let mut buffered = BufferedSampleSource::new(inner, pool, 64);
+        assert_eq!(buffered.source_channel_count(), 1);
+
+        let mut samples = Vec::new();
+        loop {
+            match buffered.next_sample() {
+                Ok(Some(s)) => samples.push(s),
+                Ok(None) => break,
+                Err(_) => break,
+            }
+            if samples.len() > 100 {
+                break;
+            }
+        }
+        assert_eq!(samples.len(), 4);
+        assert_eq!(samples[0], 0.5);
+        assert_eq!(samples[1], 0.8);
+        assert_eq!(samples[2], 0.3);
+        assert_eq!(samples[3], 0.6);
+    }
+
+    #[test]
+    fn buffered_source_next_frame() {
+        let pool = create_test_pool();
+        let inner = create_test_inner(
+            vec![0.1, 0.2, 0.3, 0.4],
+            2,
+            vec![vec!["l".to_string()], vec!["r".to_string()]],
+        );
+
+        let mut buffered = BufferedSampleSource::new(inner, pool, 64);
+        assert_eq!(buffered.source_channel_count(), 2);
+
+        let mut frame = vec![0.0f32; 2];
+        let result = buffered.next_frame(&mut frame);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Some(2));
+        assert_eq!(frame[0], 0.1);
+        assert_eq!(frame[1], 0.2);
+    }
+
+    #[test]
+    fn buffered_source_read_frames() {
+        let pool = create_test_pool();
+        // 4 frames of mono data
+        let inner = create_test_inner(vec![0.1, 0.2, 0.3, 0.4], 1, vec![vec!["test".to_string()]]);
+
+        let mut buffered = BufferedSampleSource::new(inner, pool, 64);
+        let mut output = vec![0.0f32; 4];
+        let frames_read = buffered.read_frames(&mut output, 4).unwrap();
+        assert_eq!(frames_read, 4);
+        assert_eq!(output[0], 0.1);
+        assert_eq!(output[1], 0.2);
+        assert_eq!(output[2], 0.3);
+        assert_eq!(output[3], 0.4);
+    }
+
+    #[test]
+    fn buffered_source_is_exhausted() {
+        let pool = create_test_pool();
+        let inner = create_test_inner(vec![0.5, 0.8], 1, vec![vec!["test".to_string()]]);
+
+        let mut buffered = BufferedSampleSource::new(inner, pool, 64);
+
+        // Read all samples
+        while let Ok(Some(_)) = buffered.next_sample() {}
+
+        // After draining, should report exhausted
+        // Need to wait a moment for the fill task to finish
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(buffered.is_exhausted(), Some(true));
+    }
+
+    #[test]
+    fn buffered_source_empty_inner() {
+        let pool = create_test_pool();
+        let inner = create_test_inner(vec![], 1, vec![vec!["test".to_string()]]);
+
+        let mut buffered = BufferedSampleSource::new(inner, pool, 64);
+        let result = buffered.next_sample();
+        assert!(matches!(result, Ok(None)));
+    }
+
+    #[test]
+    fn buffered_source_next_frame_too_small_output() {
+        let pool = create_test_pool();
+        let inner = create_test_inner(
+            vec![0.1, 0.2],
+            2,
+            vec![vec!["l".to_string()], vec!["r".to_string()]],
+        );
+
+        let mut buffered = BufferedSampleSource::new(inner, pool, 64);
+        let mut frame = vec![0.0f32; 1]; // too small for 2 channels
+        let result = buffered.next_frame(&mut frame);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn buffered_source_larger_data_read_frames() {
+        let pool = create_test_pool();
+        let num_samples = 1000;
+        let samples: Vec<f32> = (0..num_samples).map(|i| i as f32 / 1000.0).collect();
+        let inner = create_test_inner(samples.clone(), 1, vec![vec!["test".to_string()]]);
+
+        let mut buffered = BufferedSampleSource::new(inner, pool, 64);
+
+        // Use read_frames to read data in batches. read_frames returns
+        // the actual number of valid frames without producing silence on underrun.
+        let mut output = Vec::new();
+        let batch_size = 128;
+        let mut batch = vec![0.0f32; batch_size];
+        loop {
+            let frames = buffered.read_frames(&mut batch, batch_size).unwrap();
+            if frames == 0 {
+                // Wait briefly for the fill task and try once more
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                let frames = buffered.read_frames(&mut batch, batch_size).unwrap();
+                if frames == 0 {
+                    break;
+                }
+                output.extend_from_slice(&batch[..frames]);
+            } else {
+                output.extend_from_slice(&batch[..frames]);
+            }
+            if output.len() >= num_samples + 100 {
+                break;
+            }
+        }
+        assert_eq!(output.len(), num_samples);
+        assert_eq!(output[0], samples[0]);
+        assert_eq!(output[num_samples - 1], samples[num_samples - 1]);
+    }
+}

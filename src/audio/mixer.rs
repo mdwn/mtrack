@@ -1667,4 +1667,50 @@ mod tests {
             None
         }
     }
+
+    mod process_frame_resize_buffer {
+        use super::*;
+
+        #[test]
+        fn process_frame_handles_large_source_channel_count() {
+            // Source with > 64 channels to exercise the resize path in process_frame
+            let mixer = AudioMixer::new(2, 44100);
+            let channel_count = 70;
+            let mut samples = vec![0.0f32; channel_count];
+            samples[0] = 0.5;
+            let mut mappings_vec: Vec<Vec<String>> = Vec::new();
+            for i in 0..channel_count {
+                mappings_vec.push(vec![format!("ch{}", i)]);
+            }
+            let source = create_test_source(samples, channel_count as u16, mappings_vec);
+            let mut track_mappings = HashMap::new();
+            track_mappings.insert("ch0".to_string(), vec![1]);
+            mixer.add_source(make_active_source(1, source, track_mappings));
+
+            let frame = mixer.process_frame();
+            assert_eq!(frame[0], 0.5);
+        }
+    }
+
+    mod cancel_at_sample_zero_tests {
+        use super::*;
+
+        #[test]
+        fn cancel_at_sample_zero_means_no_cancel() {
+            // cancel_at_sample with value 0 should be treated as "no cancel"
+            let mixer = AudioMixer::new(2, 44100);
+            let samples = vec![0.5; 100];
+            let source = create_test_source(samples, 1, vec![vec!["t".to_string()]]);
+            let mut mappings = HashMap::new();
+            mappings.insert("t".to_string(), vec![1]);
+            let mut active = make_active_source(1, source, mappings);
+            active.cancel_at_sample = Some(Arc::new(AtomicU64::new(0)));
+            mixer.add_source(active);
+
+            let mut output = vec![0.0f32; 8 * 2];
+            mixer.process_into_output(&mut output, 8);
+            // cancel_at = 0 means "don't cancel", so source should still play
+            assert!(output[0] > 0.0, "source should play when cancel_at is 0");
+        }
+    }
 }

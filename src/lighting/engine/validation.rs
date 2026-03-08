@@ -478,4 +478,170 @@ mod tests {
         );
         assert!(validate_effect_compatibility(&registry, &effect).is_ok());
     }
+
+    // ── Strobe with no strobe/dimmer/RGB capability ─────────────────
+
+    #[test]
+    fn strobe_incompatible_with_no_capability() {
+        // A fixture with no strobe, dimmer, or RGB capability should fail for strobe effects
+        let f = make_fixture("generic", "Generic", vec![("pan", 1), ("tilt", 2)]);
+        let registry = registry_with(vec![f]);
+        let effect = make_effect_instance(
+            EffectType::Strobe {
+                frequency: TempoAwareFrequency::Fixed(10.0),
+                duration: None,
+            },
+            vec!["generic"],
+        );
+        let result = validate_effect_compatibility(&registry, &effect);
+        assert!(
+            result.is_err(),
+            "Strobe should be incompatible with fixture lacking strobe/dimmer/RGB"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("Strobe effect not compatible"),
+            "Error should mention strobe incompatibility: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn strobe_ok_with_rgb() {
+        let registry = registry_with(vec![rgb_fixture("par1")]);
+        let effect = make_effect_instance(
+            EffectType::Strobe {
+                frequency: TempoAwareFrequency::Fixed(10.0),
+                duration: None,
+            },
+            vec!["par1"],
+        );
+        assert!(validate_effect_compatibility(&registry, &effect).is_ok());
+    }
+
+    #[test]
+    fn strobe_ok_with_strobe_fixture() {
+        let registry = registry_with(vec![strobe_fixture("s1")]);
+        let effect = make_effect_instance(
+            EffectType::Strobe {
+                frequency: TempoAwareFrequency::Fixed(10.0),
+                duration: None,
+            },
+            vec!["s1"],
+        );
+        assert!(validate_effect_compatibility(&registry, &effect).is_ok());
+    }
+
+    // ── Chase with no RGB/dimmer capability ──────────────────────────
+
+    #[test]
+    fn chase_incompatible_with_no_rgb_or_dimmer() {
+        // A fixture with no RGB or dimmer capability should fail for chase effects
+        let f = make_fixture("generic", "Generic", vec![("pan", 1), ("tilt", 2)]);
+        let registry = registry_with(vec![f]);
+        let effect = make_effect_instance(
+            EffectType::Chase {
+                pattern: ChasePattern::Linear,
+                speed: TempoAwareSpeed::Fixed(1.0),
+                direction: ChaseDirection::LeftToRight,
+                transition: CycleTransition::Snap,
+            },
+            vec!["generic"],
+        );
+        let result = validate_effect_compatibility(&registry, &effect);
+        assert!(
+            result.is_err(),
+            "Chase should be incompatible with fixture lacking RGB/dimmer"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("Chase effect not compatible"),
+            "Error should mention chase incompatibility: {}",
+            err
+        );
+    }
+
+    // ── Rainbow with non-RGB fixture ─────────────────────────────────
+
+    #[test]
+    fn rainbow_ok_with_rgb() {
+        let registry = registry_with(vec![rgb_fixture("par1")]);
+        let effect = make_effect_instance(
+            EffectType::Rainbow {
+                speed: TempoAwareSpeed::Fixed(1.0),
+                saturation: 1.0,
+                brightness: 1.0,
+            },
+            vec!["par1"],
+        );
+        assert!(validate_effect_compatibility(&registry, &effect).is_ok());
+    }
+
+    // ── Validate effect with valid strobe frequency ──────────────────
+
+    #[test]
+    fn validate_strobe_zero_frequency_ok() {
+        let registry = registry_with(vec![strobe_fixture("s1")]);
+        let effect = make_effect_instance(
+            EffectType::Strobe {
+                frequency: TempoAwareFrequency::Fixed(0.0),
+                duration: None,
+            },
+            vec!["s1"],
+        );
+        // Zero frequency is valid (it disables strobing)
+        assert!(validate_effect(&registry, &effect).is_ok());
+    }
+
+    // ── Validate effect with tempo-aware frequency ───────────────────
+
+    #[test]
+    fn validate_strobe_tempo_aware_frequency() {
+        let registry = registry_with(vec![strobe_fixture("s1")]);
+        let effect = make_effect_instance(
+            EffectType::Strobe {
+                frequency: TempoAwareFrequency::Beats(2.0),
+                duration: None,
+            },
+            vec!["s1"],
+        );
+        // Tempo-aware frequencies can't be validated at parse time
+        assert!(validate_effect(&registry, &effect).is_ok());
+    }
+
+    // ── Validate pulse with tempo-aware frequency ────────────────────
+
+    #[test]
+    fn validate_pulse_tempo_aware_frequency() {
+        let registry = registry_with(vec![rgb_fixture("par1")]);
+        let effect = make_effect_instance(
+            EffectType::Pulse {
+                base_level: 0.5,
+                pulse_amplitude: 0.5,
+                frequency: TempoAwareFrequency::Beats(1.0),
+                duration: None,
+            },
+            vec!["par1"],
+        );
+        // Tempo-aware frequencies can't be validated at parse time
+        assert!(validate_effect(&registry, &effect).is_ok());
+    }
+
+    // ── Validate effect with fixture not in registry ─────────────────
+
+    #[test]
+    fn validate_effect_compatibility_unknown_fixture_skipped() {
+        // If a fixture isn't in the registry, validate_effect_compatibility
+        // should still succeed (the fixture check is done in validate_effect separately)
+        let registry = registry_with(vec![rgb_fixture("par1")]);
+        let effect = make_effect_instance(
+            EffectType::Static {
+                parameters: HashMap::new(),
+                duration: None,
+            },
+            vec!["not_in_registry"],
+        );
+        // validate_effect_compatibility doesn't check fixture existence
+        assert!(validate_effect_compatibility(&registry, &effect).is_ok());
+    }
 }

@@ -1963,4 +1963,382 @@ mod test {
         let result = get_all_songs(Path::new("/nonexistent/path"));
         assert!(result.is_err());
     }
+
+    #[test]
+    fn needs_transcoding_different_sample_rate() {
+        use crate::audio::TargetFormat;
+        let song = super::Song {
+            tracks: vec![super::Track {
+                name: "track".to_string(),
+                file: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/1Channel44.1k.wav"),
+                file_channel: 1,
+                sample_rate: 48000,
+                sample_format: crate::audio::SampleFormat::Int,
+                duration: std::time::Duration::ZERO,
+            }],
+            ..Default::default()
+        };
+        let target = TargetFormat::new(44100, crate::audio::SampleFormat::Int, 16).unwrap();
+        assert!(song.needs_transcoding(&target));
+    }
+
+    #[test]
+    fn needs_transcoding_different_sample_format() {
+        use crate::audio::TargetFormat;
+        let song = super::Song {
+            tracks: vec![super::Track {
+                name: "track".to_string(),
+                file: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/1Channel44.1k.wav"),
+                file_channel: 1,
+                sample_rate: 44100,
+                sample_format: crate::audio::SampleFormat::Float,
+                duration: std::time::Duration::ZERO,
+            }],
+            ..Default::default()
+        };
+        let target = TargetFormat::new(44100, crate::audio::SampleFormat::Int, 16).unwrap();
+        assert!(song.needs_transcoding(&target));
+    }
+
+    #[test]
+    fn song_new_with_different_sample_rates() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        crate::testutil::write_wav(
+            tempdir.path().join("track1.wav"),
+            vec![vec![1_i32; 100]],
+            44100,
+        )?;
+        crate::testutil::write_wav(
+            tempdir.path().join("track2.wav"),
+            vec![vec![1_i32; 100]],
+            48000,
+        )?;
+
+        let song_config = crate::config::Song::new(
+            "mixed rates",
+            None,
+            None,
+            None,
+            None,
+            None,
+            vec![
+                crate::config::Track::new("t1".to_string(), "track1.wav", Some(1)),
+                crate::config::Track::new("t2".to_string(), "track2.wav", Some(1)),
+            ],
+            std::collections::HashMap::new(),
+            vec![],
+        );
+        let song = super::Song::new(tempdir.path(), &song_config)?;
+        assert_eq!(song.tracks.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn song_new_with_different_sample_formats() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        crate::testutil::write_wav(
+            tempdir.path().join("track_int.wav"),
+            vec![vec![1_i32; 100]],
+            44100,
+        )?;
+
+        // Create a float WAV file
+        let float_path = tempdir.path().join("track_float.wav");
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 44100,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let mut writer = hound::WavWriter::create(&float_path, spec)?;
+        for i in 0..100 {
+            writer.write_sample(i as f32 / 100.0)?;
+        }
+        writer.finalize()?;
+
+        let song_config = crate::config::Song::new(
+            "mixed formats",
+            None,
+            None,
+            None,
+            None,
+            None,
+            vec![
+                crate::config::Track::new("t_int".to_string(), "track_int.wav", Some(1)),
+                crate::config::Track::new("t_float".to_string(), "track_float.wav", Some(1)),
+            ],
+            std::collections::HashMap::new(),
+            vec![],
+        );
+        let song = super::Song::new(tempdir.path(), &song_config)?;
+        assert_eq!(song.tracks.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn initialize_songs_skips_non_directory_entries() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        // Create a regular file at the top level (not a directory)
+        fs::write(tempdir.path().join("readme.txt"), "hello")?;
+        let count = initialize_songs(tempdir.path())?;
+        assert_eq!(count, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn song_initialize_skips_non_file_entries() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("my_song");
+        fs::create_dir(&song_dir)?;
+        // Create a subdirectory inside the song directory (skipped with warning)
+        fs::create_dir(song_dir.join("subdir"))?;
+        // Also add a real WAV so initialize doesn't fail
+        crate::testutil::write_wav(
+            song_dir.join("track.wav"),
+            vec![vec![1_i32, 2, 3, 4, 5]],
+            44100,
+        )?;
+        let song = super::Song::initialize(&song_dir)?;
+        // Should have the track but not the subdir
+        assert_eq!(song.tracks.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn create_channel_mapped_sources_mono() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let wav_path = tempdir.path().join("track.wav");
+        crate::testutil::write_wav(wav_path, vec![vec![1_i32; 4410]], 44100)?;
+
+        let song_config = crate::config::Song::new(
+            "test",
+            None,
+            None,
+            None,
+            None,
+            None,
+            vec![crate::config::Track::new(
+                "track".to_string(),
+                "track.wav",
+                Some(1),
+            )],
+            std::collections::HashMap::new(),
+            vec![],
+        );
+        let song = super::Song::new(tempdir.path(), &song_config)?;
+        let target = crate::audio::TargetFormat::new(44100, crate::audio::SampleFormat::Int, 16)?;
+        let context = crate::audio::PlaybackContext::new(target, 1024, None, Default::default());
+        let mut mappings = std::collections::HashMap::new();
+        mappings.insert("track".to_string(), vec![1_u16, 2]);
+        let sources = song.create_channel_mapped_sources_from(
+            &context,
+            std::time::Duration::ZERO,
+            &mappings,
+        )?;
+        assert_eq!(sources.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn create_channel_mapped_sources_stereo() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        crate::testutil::write_wav(
+            tempdir.path().join("stereo.wav"),
+            vec![vec![1_i32; 4410], vec![2_i32; 4410]],
+            44100,
+        )?;
+
+        let song_config = crate::config::Song::new(
+            "test",
+            None,
+            None,
+            None,
+            None,
+            None,
+            vec![
+                crate::config::Track::new("left".to_string(), "stereo.wav", Some(1)),
+                crate::config::Track::new("right".to_string(), "stereo.wav", Some(2)),
+            ],
+            std::collections::HashMap::new(),
+            vec![],
+        );
+        let song = super::Song::new(tempdir.path(), &song_config)?;
+        let target = crate::audio::TargetFormat::new(44100, crate::audio::SampleFormat::Int, 16)?;
+        let context = crate::audio::PlaybackContext::new(target, 1024, None, Default::default());
+        let mut mappings = std::collections::HashMap::new();
+        mappings.insert("left".to_string(), vec![1_u16]);
+        mappings.insert("right".to_string(), vec![2_u16]);
+        let sources = song.create_channel_mapped_sources_from(
+            &context,
+            std::time::Duration::ZERO,
+            &mappings,
+        )?;
+        assert_eq!(sources.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn create_channel_mapped_sources_with_start_time() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        crate::testutil::write_wav(
+            tempdir.path().join("track.wav"),
+            vec![vec![1_i32; 44100]],
+            44100,
+        )?;
+
+        let song_config = crate::config::Song::new(
+            "test",
+            None,
+            None,
+            None,
+            None,
+            None,
+            vec![crate::config::Track::new(
+                "track".to_string(),
+                "track.wav",
+                Some(1),
+            )],
+            std::collections::HashMap::new(),
+            vec![],
+        );
+        let song = super::Song::new(tempdir.path(), &song_config)?;
+        let target = crate::audio::TargetFormat::new(44100, crate::audio::SampleFormat::Int, 16)?;
+        let context = crate::audio::PlaybackContext::new(target, 1024, None, Default::default());
+        let mut mappings = std::collections::HashMap::new();
+        mappings.insert("track".to_string(), vec![1_u16]);
+        let sources = song.create_channel_mapped_sources_from(
+            &context,
+            std::time::Duration::from_millis(500),
+            &mappings,
+        )?;
+        assert_eq!(sources.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn create_channel_mapped_sources_unmapped_track() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        crate::testutil::write_wav(
+            tempdir.path().join("track.wav"),
+            vec![vec![1_i32; 4410]],
+            44100,
+        )?;
+
+        let song_config = crate::config::Song::new(
+            "test",
+            None,
+            None,
+            None,
+            None,
+            None,
+            vec![crate::config::Track::new(
+                "track".to_string(),
+                "track.wav",
+                Some(1),
+            )],
+            std::collections::HashMap::new(),
+            vec![],
+        );
+        let song = super::Song::new(tempdir.path(), &song_config)?;
+        let target = crate::audio::TargetFormat::new(44100, crate::audio::SampleFormat::Int, 16)?;
+        let context = crate::audio::PlaybackContext::new(target, 1024, None, Default::default());
+        let mappings = std::collections::HashMap::new();
+        let sources = song.create_channel_mapped_sources_from(
+            &context,
+            std::time::Duration::ZERO,
+            &mappings,
+        )?;
+        assert_eq!(sources.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn create_channel_mapped_sources_multiple_files() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        crate::testutil::write_wav(
+            tempdir.path().join("file_a.wav"),
+            vec![vec![1_i32; 4410]],
+            44100,
+        )?;
+        crate::testutil::write_wav(
+            tempdir.path().join("file_b.wav"),
+            vec![vec![2_i32; 4410]],
+            44100,
+        )?;
+
+        let song_config = crate::config::Song::new(
+            "multi",
+            None,
+            None,
+            None,
+            None,
+            None,
+            vec![
+                crate::config::Track::new("a".to_string(), "file_a.wav", Some(1)),
+                crate::config::Track::new("b".to_string(), "file_b.wav", Some(1)),
+            ],
+            std::collections::HashMap::new(),
+            vec![],
+        );
+        let song = super::Song::new(tempdir.path(), &song_config)?;
+        let target = crate::audio::TargetFormat::new(44100, crate::audio::SampleFormat::Int, 16)?;
+        let context = crate::audio::PlaybackContext::new(target, 1024, None, Default::default());
+        let mut mappings = std::collections::HashMap::new();
+        mappings.insert("a".to_string(), vec![1_u16]);
+        mappings.insert("b".to_string(), vec![2_u16]);
+        let sources = song.create_channel_mapped_sources_from(
+            &context,
+            std::time::Duration::ZERO,
+            &mappings,
+        )?;
+        assert_eq!(sources.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn to_proto_conversion() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        crate::testutil::write_wav(
+            tempdir.path().join("track.wav"),
+            vec![vec![1_i32; 4410]],
+            44100,
+        )?;
+        let song_config = crate::config::Song::new(
+            "proto test",
+            None,
+            None,
+            None,
+            None,
+            None,
+            vec![crate::config::Track::new(
+                "track".to_string(),
+                "track.wav",
+                Some(1),
+            )],
+            std::collections::HashMap::new(),
+            vec![],
+        );
+        let song = super::Song::new(tempdir.path(), &song_config)?;
+        let proto = song.to_proto()?;
+        assert_eq!(proto.name, "proto test");
+        assert_eq!(proto.tracks.len(), 1);
+        assert_eq!(proto.tracks[0], "track");
+        Ok(())
+    }
+
+    #[test]
+    fn get_all_songs_skips_non_song_files() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        // Create a regular file that's not a song config
+        fs::write(tempdir.path().join("readme.txt"), "not a song")?;
+        // Create a WAV file at the top level (should be skipped — no .yaml)
+        crate::testutil::write_wav(
+            tempdir.path().join("random.wav"),
+            vec![vec![1_i32; 100]],
+            44100,
+        )?;
+        let songs = get_all_songs(tempdir.path())?;
+        assert!(songs.is_empty());
+        Ok(())
+    }
 }

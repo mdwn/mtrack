@@ -14,15 +14,19 @@
 ROOT_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 SVELTE_DIR := $(ROOT_DIR)/src/webui/svelte
 
-.PHONY: all build build-ui build-rust test lint lint-ui lint-rust fmt fmt-ui fmt-rust check clean dev-ui
+.PHONY: all build gen-proto build-ui build-rust test lint lint-ui lint-rust fmt fmt-ui fmt-rust check clean dev-ui
 
 all: build
 
 ## Build everything
 build: build-ui build-rust
 
-## Build the Svelte frontend
-build-ui:
+## Generate protobuf TypeScript bindings
+gen-proto:
+	cd $(SVELTE_DIR) && buf generate
+
+## Build the Svelte frontend (generates protobuf bindings first)
+build-ui: gen-proto
 	cd $(SVELTE_DIR) && npm run build
 
 ## Build the Rust binary

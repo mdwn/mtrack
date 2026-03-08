@@ -305,4 +305,25 @@ mod test {
         assert!(display.contains("Song 1"));
         assert!(display.contains("Song 2"));
     }
+
+    #[test]
+    fn display_with_missing_song_shows_error() {
+        // Construct a Playlist directly (bypassing new()'s registry check)
+        // to exercise the Display path for a song not in the registry.
+        let registry = test_registry();
+        let playlist = super::Playlist {
+            name: "broken".to_string(),
+            songs: vec!["Song 1".to_string(), "Ghost Song".to_string()],
+            position: Arc::new(parking_lot::RwLock::new(0)),
+            registry,
+            span: tracing::span!(tracing::Level::INFO, "test"),
+        };
+        let display = format!("{}", playlist);
+        assert!(
+            display.contains("unable to find song"),
+            "display should show error for missing song: {}",
+            display
+        );
+        assert!(display.contains("Ghost Song"));
+    }
 }

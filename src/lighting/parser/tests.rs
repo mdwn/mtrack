@@ -26,6 +26,8 @@ mod parameters_tests;
 #[cfg(test)]
 mod sequences_tests;
 #[cfg(test)]
+mod show_edge_cases_tests;
+#[cfg(test)]
 mod tempo_durations_tests;
 #[cfg(test)]
 mod tempo_end_to_end_tests;

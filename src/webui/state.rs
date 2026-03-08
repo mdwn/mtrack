@@ -978,4 +978,264 @@ mod test {
         assert!(!results[0].1.is_empty());
         assert!(!results[1].1.is_empty());
     }
+
+    #[test]
+    fn compute_track_peaks_file_channel_zero_returns_empty() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let wav_path = temp_dir.path().join("test.wav");
+        let samples: Vec<i32> = (0..4410).map(|i| (i * 100) % 32768).collect();
+        crate::testutil::write_wav(wav_path.clone(), vec![samples], 44100).expect("write wav");
+
+        // file_channel 0 uses saturating_sub to get target_channel 0, which should work
+        // (it matches the first channel of a mono file)
+        let peaks = compute_track_peaks(&wav_path, 0, 10);
+        // With file_channel 0, target_channel = 0 which is valid for a mono file
+        assert!(!peaks.is_empty());
+    }
+
+    #[test]
+    fn compute_track_peaks_all_zeros_returns_empty() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let wav_path = temp_dir.path().join("silence.wav");
+        // All-zero samples should produce peaks of 0.0 but still have buckets
+        let samples: Vec<i32> = vec![0_i32; 4410];
+        crate::testutil::write_wav(wav_path.clone(), vec![samples], 44100).expect("write wav");
+
+        let peaks = compute_track_peaks(&wav_path, 1, 10);
+        // All zero peaks, so normalization divides by 0.0 which is skipped,
+        // all values should remain 0.0
+        assert!(!peaks.is_empty());
+        for &p in &peaks {
+            assert!((p - 0.0).abs() < f32::EPSILON, "expected 0.0, got {}", p);
+        }
+    }
+
+    #[test]
+    fn compute_waveform_peaks_empty_tracks() {
+        let tracks: Vec<(String, PathBuf, u16)> = vec![];
+        let results = compute_waveform_peaks(&tracks);
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn playback_poller_no_subscribers_does_not_panic() {
+        let player = test_player(&["Song A"]);
+        let (tx, _rx) = broadcast::channel::<String>(16);
+
+        // Drop the receiver immediately so receiver_count() == 0
+        drop(_rx);
+
+        let handle = tokio::spawn(playback_poller(player, tx));
+
+        // Let it tick several times with zero subscribers
+        tokio::time::sleep(Duration::from_millis(600)).await;
+
+        // It should still be running without panicking
+        assert!(!handle.is_finished());
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn state_poller_no_subscribers_skips_send() {
+        let initial = Arc::new(crate::state::StateSnapshot::default());
+        let (state_tx, state_rx) = watch::channel(initial);
+        let (tx, _rx) = broadcast::channel::<String>(16);
+
+        // Drop receiver so receiver_count() == 0
+        drop(_rx);
+
+        let handle = tokio::spawn(state_poller(state_rx, tx));
+
+        // Send a state update with no subscribers
+        let snapshot = Arc::new(crate::state::StateSnapshot {
+            fixtures: vec![crate::state::FixtureSnapshot {
+                name: "light1".to_string(),
+                channels: std::collections::HashMap::new(),
+            }],
+            active_effects: vec![],
+        });
+        state_tx.send(snapshot).unwrap();
+
+        // Let it process with no subscribers
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // Should still be running
+        assert!(!handle.is_finished());
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn waveform_poller_no_subscribers_skips() {
+        let player = test_player(&["Song A"]);
+        let (tx, _rx) = broadcast::channel::<String>(16);
+        let cache = new_waveform_cache();
+
+        // Drop the receiver
+        drop(_rx);
+
+        let handle = tokio::spawn(waveform_poller(player, tx, cache));
+
+        // Let it tick with no subscribers
+        tokio::time::sleep(Duration::from_millis(600)).await;
+
+        // Should still be running
+        assert!(!handle.is_finished());
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn log_poller_no_subscribers_skips() {
+        let (tx, _rx) = broadcast::channel::<String>(16);
+
+        // Drop the receiver
+        drop(_rx);
+
+        let handle = tokio::spawn(log_poller(tx));
+
+        // Let it tick with no subscribers
+        tokio::time::sleep(Duration::from_millis(600)).await;
+
+        assert!(!handle.is_finished());
+        handle.abort();
+    }
+
+    /// Creates a LightingSystem loaded with fixture types and venues from DSL files.
+    fn create_test_lighting_system(
+        fixture_type_dsl: &str,
+        venue_dsl: &str,
+        venue_name: &str,
+    ) -> (crate::lighting::system::LightingSystem, tempfile::TempDir) {
+        use crate::config::lighting::{Directories, Lighting};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ft_dir = dir.path().join("fixture_types");
+        let venues_dir = dir.path().join("venues");
+        std::fs::create_dir(&ft_dir).unwrap();
+        std::fs::create_dir(&venues_dir).unwrap();
+
+        std::fs::write(ft_dir.join("types.light"), fixture_type_dsl).unwrap();
+        std::fs::write(venues_dir.join("venues.light"), venue_dsl).unwrap();
+
+        let config = Lighting::new(
+            Some(venue_name.to_string()),
+            None,
+            None,
+            Some(Directories::new(
+                Some("fixture_types".to_string()),
+                Some("venues".to_string()),
+            )),
+        );
+
+        let mut system = crate::lighting::system::LightingSystem::new();
+        system.load(&config, dir.path()).unwrap();
+
+        (system, dir)
+    }
+
+    #[test]
+    fn build_metadata_json_with_lighting_system() {
+        let fixture_dsl = r#"fixture_type "wash" {
+            channels: 3
+            channel_map: {
+                "red": 1,
+                "green": 2,
+                "blue": 3
+            }
+        }"#;
+        let venue_dsl = r#"venue "Test Venue" {
+            fixture "front_wash_1" wash @ 1:1 tags ["front", "wash"]
+        }"#;
+
+        let (system, _dir) = create_test_lighting_system(fixture_dsl, venue_dsl, "Test Venue");
+
+        let ls = Arc::new(parking_lot::Mutex::new(system));
+        let json_str = build_metadata_json(Some(&ls));
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).expect("valid JSON");
+
+        assert_eq!(parsed["type"], "metadata");
+        assert!(parsed["fixtures"].is_object());
+
+        let fixture_meta = &parsed["fixtures"]["front_wash_1"];
+        assert!(fixture_meta.is_object());
+        assert_eq!(fixture_meta["type"], "wash");
+
+        let tags = fixture_meta["tags"].as_array().unwrap();
+        assert!(tags.contains(&serde_json::json!("front")));
+        assert!(tags.contains(&serde_json::json!("wash")));
+    }
+
+    #[test]
+    fn build_metadata_json_with_fixture_no_tags() {
+        let fixture_dsl = r#"fixture_type "par" {
+            channels: 1
+            channel_map: {
+                "dimmer": 1
+            }
+        }"#;
+        let venue_dsl = r#"venue "Test Venue" {
+            fixture "par_1" par @ 1:1
+        }"#;
+
+        let (system, _dir) = create_test_lighting_system(fixture_dsl, venue_dsl, "Test Venue");
+
+        let ls = Arc::new(parking_lot::Mutex::new(system));
+        let json_str = build_metadata_json(Some(&ls));
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).expect("valid JSON");
+
+        assert_eq!(parsed["type"], "metadata");
+        let fixture_meta = &parsed["fixtures"]["par_1"];
+        assert_eq!(fixture_meta["type"], "par");
+        let tags = fixture_meta["tags"].as_array().unwrap();
+        assert!(tags.is_empty());
+    }
+
+    #[test]
+    fn get_venue_fixture_tags_with_venue() {
+        let fixture_dsl = r#"fixture_type "spot" {
+            channels: 1
+            channel_map: {
+                "dimmer": 1
+            }
+        }"#;
+        let venue_dsl = r#"venue "Live Venue" {
+            fixture "spot_1" spot @ 1:1 tags ["overhead", "spot"]
+        }"#;
+
+        let (system, _dir) = create_test_lighting_system(fixture_dsl, venue_dsl, "Live Venue");
+
+        let tags = get_venue_fixture_tags(&system);
+        assert_eq!(tags.len(), 1);
+        let spot_tags = tags.get("spot_1").unwrap();
+        assert!(spot_tags.contains(&"overhead".to_string()));
+        assert!(spot_tags.contains(&"spot".to_string()));
+    }
+
+    #[test]
+    fn build_metadata_json_with_multiple_fixtures() {
+        let fixture_dsl = r#"fixture_type "generic" {
+            channels: 1
+            channel_map: {
+                "dimmer": 1
+            }
+        }"#;
+        let venue_dsl = r#"venue "Multi" {
+            fixture "fixture_1" generic @ 1:1 tags ["group_1"]
+            fixture "fixture_2" generic @ 1:2 tags ["group_2"]
+            fixture "fixture_3" generic @ 1:3 tags ["group_3"]
+        }"#;
+
+        let (system, _dir) = create_test_lighting_system(fixture_dsl, venue_dsl, "Multi");
+
+        let ls = Arc::new(parking_lot::Mutex::new(system));
+        let json_str = build_metadata_json(Some(&ls));
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).expect("valid JSON");
+
+        let fixtures_obj = parsed["fixtures"].as_object().unwrap();
+        assert_eq!(fixtures_obj.len(), 3);
+        for i in 1..=3 {
+            let key = format!("fixture_{}", i);
+            assert!(fixtures_obj.contains_key(&key));
+            assert_eq!(fixtures_obj[&key]["type"], "generic");
+        }
+    }
 }

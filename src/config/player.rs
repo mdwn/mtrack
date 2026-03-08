@@ -1467,4 +1467,52 @@ sample_triggers:
         assert_eq!(profiles.len(), 1);
         assert!(profiles[0].trigger().is_some());
     }
+
+    #[test]
+    fn test_songs_relative_path_no_parent() {
+        // When player_path has no parent (e.g. a bare filename), the songs
+        // path falls back to the raw config value.
+        let player = player_from_yaml(
+            r#"
+songs: my_songs
+"#,
+        );
+        // A path like "" has no parent
+        let result = player.songs(Path::new(""));
+        // With no parent, should return the raw songs path
+        assert_eq!(result, PathBuf::from("my_songs"));
+    }
+
+    #[test]
+    fn test_samples_config_absolute_external_file() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Write the external samples file at an absolute path
+        let samples_path = dir.path().join("abs_samples.yaml");
+        std::fs::write(
+            &samples_path,
+            r#"
+samples:
+  hat:
+    file: hat.wav
+    output_channels: [5, 6]
+"#,
+        )
+        .unwrap();
+
+        // Main config references external file via absolute path
+        let config_path = dir.path().join("mtrack.yaml");
+        std::fs::write(
+            &config_path,
+            format!(
+                "songs: songs\nsamples_file: {}\n",
+                samples_path.to_str().unwrap()
+            ),
+        )
+        .unwrap();
+
+        let player = Player::deserialize(&config_path).unwrap();
+        let sc = player.samples_config(&config_path).unwrap();
+        assert!(sc.samples().contains_key("hat"));
+    }
 }

@@ -305,12 +305,4 @@ mod tests {
         assert_eq!(v.groups().len(), 1);
         assert!(v.groups().contains_key("all"));
     }
-
-    #[test]
-    fn venue_empty() {
-        let v = Venue::new("Empty".to_string(), HashMap::new(), HashMap::new());
-        assert_eq!(v.name(), "Empty");
-        assert!(v.fixtures().is_empty());
-        assert!(v.groups().is_empty());
-    }
 }

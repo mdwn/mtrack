@@ -23,6 +23,8 @@ mod chase_tests;
 #[cfg(test)]
 mod color_cycle_tests;
 #[cfg(test)]
+mod coverage_expansion_tests;
+#[cfg(test)]
 mod dimmer_tests;
 #[cfg(test)]
 mod direct_value_tests;

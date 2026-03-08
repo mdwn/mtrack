@@ -520,3 +520,208 @@ impl SampleSourceTestExt for AudioSampleSource {
         self.is_finished
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::audio::sample_source::traits::SampleSource;
+    use crate::testutil::write_wav;
+
+    #[test]
+    fn from_file_nonexistent_returns_error() {
+        let result = AudioSampleSource::from_file("/no/such/file.wav", None, 1024);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn from_file_reads_wav_successfully() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav_path = dir.path().join("test.wav");
+        // Write a mono 44100 Hz WAV with 100 samples
+        write_wav(wav_path.clone(), vec![vec![0.5f32; 100]], 44100).unwrap();
+
+        let source = AudioSampleSource::from_file(&wav_path, None, 1024).unwrap();
+        assert_eq!(source.channel_count(), 1);
+        assert_eq!(source.sample_rate(), 44100);
+        assert!(source.duration().is_some());
+    }
+
+    #[test]
+    fn from_file_stereo() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav_path = dir.path().join("stereo.wav");
+        write_wav(
+            wav_path.clone(),
+            vec![vec![0.5f32; 100], vec![0.3f32; 100]],
+            44100,
+        )
+        .unwrap();
+
+        let source = AudioSampleSource::from_file(&wav_path, None, 1024).unwrap();
+        assert_eq!(source.channel_count(), 2);
+    }
+
+    #[test]
+    fn next_sample_reads_all_samples() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav_path = dir.path().join("test.wav");
+        let num_samples = 50;
+        write_wav(wav_path.clone(), vec![vec![0.25f32; num_samples]], 44100).unwrap();
+
+        let mut source = AudioSampleSource::from_file(&wav_path, None, 1024).unwrap();
+        let mut count = 0;
+        while let Ok(Some(_)) = source.next_sample() {
+            count += 1;
+            if count > num_samples + 10 {
+                break; // safety valve
+            }
+        }
+        assert_eq!(count, num_samples);
+    }
+
+    #[test]
+    fn from_file_with_start_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav_path = dir.path().join("seek.wav");
+        // Write 1 second of audio at 44100 Hz
+        write_wav(wav_path.clone(), vec![vec![0.5f32; 44100]], 44100).unwrap();
+
+        // Start at 0.5 seconds
+        let mut source = AudioSampleSource::from_file(
+            &wav_path,
+            Some(std::time::Duration::from_millis(500)),
+            1024,
+        )
+        .unwrap();
+
+        // Should get fewer than 44100 samples (roughly half)
+        let mut count = 0;
+        while let Ok(Some(_)) = source.next_sample() {
+            count += 1;
+            if count > 44100 {
+                break;
+            }
+        }
+        assert!(
+            count < 44100,
+            "seeking to 0.5s should produce fewer samples than full file"
+        );
+        assert!(
+            count > 10000,
+            "seeking to 0.5s should still produce many samples, got {}",
+            count
+        );
+    }
+
+    #[test]
+    fn sample_format_is_int_for_pcm_wav() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav_path = dir.path().join("int.wav");
+        // Write 16-bit integer WAV
+        crate::testutil::write_wav_with_bits(wav_path.clone(), vec![vec![1000i16; 50]], 44100, 16)
+            .unwrap();
+
+        let source = AudioSampleSource::from_file(&wav_path, None, 1024).unwrap();
+        assert_eq!(source.sample_format(), crate::audio::SampleFormat::Int);
+        assert_eq!(source.bits_per_sample(), 16);
+    }
+
+    #[test]
+    fn sample_format_is_float_for_float_wav() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav_path = dir.path().join("float.wav");
+        write_wav(wav_path.clone(), vec![vec![0.5f32; 50]], 44100).unwrap();
+
+        let source = AudioSampleSource::from_file(&wav_path, None, 1024).unwrap();
+        assert_eq!(source.sample_format(), crate::audio::SampleFormat::Float);
+    }
+
+    #[test]
+    fn detect_channels_via_env_var() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav_path = dir.path().join("detect.wav");
+        write_wav(wav_path.clone(), vec![vec![0.5f32; 200]], 44100).unwrap();
+
+        // Set the env var to force channel detection path
+        std::env::set_var("MTRACK_FORCE_DETECT_CHANNELS", "1");
+        let source = AudioSampleSource::from_file(&wav_path, None, 1024).unwrap();
+        std::env::remove_var("MTRACK_FORCE_DETECT_CHANNELS");
+
+        assert_eq!(source.channel_count(), 1);
+        // Should still be able to read samples
+        let mut src = source;
+        let mut count = 0;
+        while let Ok(Some(_)) = src.next_sample() {
+            count += 1;
+            if count > 300 {
+                break;
+            }
+        }
+        assert!(count > 0, "should read samples after channel detection");
+    }
+
+    #[test]
+    fn refill_buffer_small_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav_path = dir.path().join("small.wav");
+        write_wav(wav_path.clone(), vec![vec![0.1f32; 3]], 44100).unwrap();
+
+        let mut source = AudioSampleSource::from_file(&wav_path, None, 1024).unwrap();
+        let mut samples = Vec::new();
+        while let Ok(Some(s)) = source.next_sample() {
+            samples.push(s);
+            if samples.len() > 100 {
+                break;
+            }
+        }
+        assert_eq!(samples.len(), 3);
+    }
+
+    #[test]
+    fn is_finished_tracking() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav_path = dir.path().join("fin.wav");
+        write_wav(wav_path.clone(), vec![vec![0.5f32; 5]], 44100).unwrap();
+
+        let mut source = AudioSampleSource::from_file(&wav_path, None, 1024).unwrap();
+        assert!(!SampleSourceTestExt::is_finished(&source));
+
+        while let Ok(Some(_)) = source.next_sample() {}
+        assert!(SampleSourceTestExt::is_finished(&source));
+    }
+
+    #[test]
+    fn next_sample_after_finished_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav_path = dir.path().join("tiny.wav");
+        write_wav(wav_path.clone(), vec![vec![0.5f32; 2]], 44100).unwrap();
+
+        let mut source = AudioSampleSource::from_file(&wav_path, None, 1024).unwrap();
+        // Drain all
+        while let Ok(Some(_)) = source.next_sample() {}
+        // Subsequent calls should keep returning None
+        assert_eq!(source.next_sample().unwrap(), None);
+        assert_eq!(source.next_sample().unwrap(), None);
+    }
+
+    #[test]
+    fn from_file_invalid_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let bad_path = dir.path().join("bad.wav");
+        std::fs::write(&bad_path, b"not a wav file").unwrap();
+        let result = AudioSampleSource::from_file(&bad_path, None, 1024);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn different_sample_rates() {
+        for rate in &[22050u32, 44100, 48000, 96000] {
+            let dir = tempfile::tempdir().unwrap();
+            let wav_path = dir.path().join(format!("rate_{}.wav", rate));
+            write_wav(wav_path.clone(), vec![vec![0.5f32; 100]], *rate).unwrap();
+
+            let source = AudioSampleSource::from_file(&wav_path, None, 1024).unwrap();
+            assert_eq!(source.sample_rate(), *rate);
+        }
+    }
+}

@@ -95,3 +95,69 @@ pub fn create_channel_mapped_sample_source(
         channel_count,
     )))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::audio::sample_source::memory::MemorySampleSource;
+
+    #[test]
+    fn create_channel_mapped_passthrough() {
+        let mem = MemorySampleSource::new(vec![0.5, 0.8], 1, 44100);
+        let fmt = TargetFormat::new(44100, crate::audio::SampleFormat::Float, 32).unwrap();
+        let mappings = vec![vec!["ch".to_string()]];
+        let mut src =
+            create_channel_mapped_sample_source(Box::new(mem), fmt, mappings, ResamplerType::Sinc)
+                .unwrap();
+        assert_eq!(src.next_sample().unwrap(), Some(0.5));
+        assert_eq!(src.next_sample().unwrap(), Some(0.8));
+        assert_eq!(src.next_sample().unwrap(), None);
+    }
+
+    #[test]
+    fn create_channel_mapped_with_resampling() {
+        // Source at 48kHz, target at 44.1kHz - needs transcoding
+        let num = 4800;
+        let mut input = Vec::with_capacity(num);
+        for i in 0..num {
+            let t = i as f32 / 48000.0;
+            input.push((2.0 * std::f32::consts::PI * 440.0 * t).sin() * 0.5);
+        }
+        let mem = MemorySampleSource::new(input, 1, 48000);
+        let target_fmt = TargetFormat::new(44100, crate::audio::SampleFormat::Float, 32).unwrap();
+        let mappings = vec![vec!["ch".to_string()]];
+        let mut src = create_channel_mapped_sample_source(
+            Box::new(mem),
+            target_fmt,
+            mappings,
+            ResamplerType::Sinc,
+        )
+        .unwrap();
+
+        let mut count = 0;
+        while let Ok(Some(_)) = src.next_sample() {
+            count += 1;
+            if count > 10000 {
+                break;
+            }
+        }
+        assert!(count > 0, "resampled source should produce output");
+    }
+
+    #[test]
+    fn channel_mapped_read_frames_default() {
+        let mem = MemorySampleSource::new(vec![0.1, 0.2, 0.3, 0.4], 2, 44100);
+        let mut src = ChannelMappedSource::new(
+            Box::new(mem),
+            vec![vec!["l".to_string()], vec!["r".to_string()]],
+            2,
+        );
+        let mut output = vec![0.0f32; 4];
+        let frames = src.read_frames(&mut output, 2).unwrap();
+        assert_eq!(frames, 2);
+        assert_eq!(output[0], 0.1);
+        assert_eq!(output[1], 0.2);
+        assert_eq!(output[2], 0.3);
+        assert_eq!(output[3], 0.4);
+    }
+}

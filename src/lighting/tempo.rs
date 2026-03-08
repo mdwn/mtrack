@@ -1562,4 +1562,110 @@ mod tests {
         let dur = map.beats_to_duration(4.0, Duration::ZERO, 0.0);
         assert!((dur.as_secs_f64() - 4.0).abs() < 1e-6);
     }
+
+    // ── bpm_at_time: Beats transition ───────────────────────────────
+
+    #[test]
+    fn bpm_at_time_during_beats_transition() {
+        let map = TempoMap::new(
+            Duration::ZERO,
+            120.0,
+            TimeSignature::new(4, 4),
+            vec![TempoChange {
+                position: TempoChangePosition::Time(Duration::from_secs(2)),
+                original_measure_beat: None,
+                bpm: Some(60.0),
+                time_signature: None,
+                transition: TempoTransition::Beats(8.0, TransitionCurve::Linear),
+            }],
+        );
+        // Before change: should be 120
+        let bpm_before = map.bpm_at_time(Duration::from_secs(1), 0.0);
+        assert!((bpm_before - 120.0).abs() < f64::EPSILON);
+
+        // After transition completes: should be 60
+        let bpm_after = map.bpm_at_time(Duration::from_secs(20), 0.0);
+        assert!((bpm_after - 60.0).abs() < f64::EPSILON);
+    }
+
+    // ── bpm_at_time: with offset_secs shifting change ──────────────
+
+    #[test]
+    fn bpm_at_time_with_offset_shifts_change() {
+        let map = TempoMap::new(
+            Duration::ZERO,
+            120.0,
+            TimeSignature::new(4, 4),
+            vec![TempoChange {
+                position: TempoChangePosition::Time(Duration::from_secs(4)),
+                original_measure_beat: None,
+                bpm: Some(60.0),
+                time_signature: None,
+                transition: TempoTransition::Snap,
+            }],
+        );
+        // Without offset: at t=5, should be 60bpm (after change at t=4)
+        let bpm_no_offset = map.bpm_at_time(Duration::from_secs(5), 0.0);
+        assert!((bpm_no_offset - 60.0).abs() < f64::EPSILON);
+
+        // With offset=2: change shifts to t=6, so at t=5 still 120bpm
+        let bpm_with_offset = map.bpm_at_time(Duration::from_secs(5), 2.0);
+        assert!((bpm_with_offset - 120.0).abs() < f64::EPSILON);
+    }
+
+    // ── time_signature_at_time: with ts change ──────────────────────
+
+    #[test]
+    fn time_signature_at_time_with_change() {
+        let map = TempoMap::new(
+            Duration::ZERO,
+            120.0,
+            TimeSignature::new(4, 4),
+            vec![TempoChange {
+                position: TempoChangePosition::Time(Duration::from_secs(5)),
+                original_measure_beat: None,
+                bpm: None,
+                time_signature: Some(TimeSignature::new(3, 4)),
+                transition: TempoTransition::Snap,
+            }],
+        );
+        let ts_before = map.time_signature_at_time(Duration::from_secs(3), 0.0);
+        assert_eq!(ts_before, TimeSignature::new(4, 4));
+
+        let ts_after = map.time_signature_at_time(Duration::from_secs(6), 0.0);
+        assert_eq!(ts_after, TimeSignature::new(3, 4));
+    }
+
+    // ── TempoMap::new: sorting and resolution ───────────────────────
+
+    #[test]
+    fn tempo_map_sorts_changes_by_time() {
+        // Changes given out of order should be sorted
+        let map = TempoMap::new(
+            Duration::ZERO,
+            120.0,
+            TimeSignature::new(4, 4),
+            vec![
+                TempoChange {
+                    position: TempoChangePosition::Time(Duration::from_secs(8)),
+                    original_measure_beat: None,
+                    bpm: Some(180.0),
+                    time_signature: None,
+                    transition: TempoTransition::Snap,
+                },
+                TempoChange {
+                    position: TempoChangePosition::Time(Duration::from_secs(4)),
+                    original_measure_beat: None,
+                    bpm: Some(60.0),
+                    time_signature: None,
+                    transition: TempoTransition::Snap,
+                },
+            ],
+        );
+        // Should respect ordering: 120 -> 60 at t=4 -> 180 at t=8
+        let bpm_5 = map.bpm_at_time(Duration::from_secs(5), 0.0);
+        assert!((bpm_5 - 60.0).abs() < f64::EPSILON);
+        let bpm_9 = map.bpm_at_time(Duration::from_secs(9), 0.0);
+        assert!((bpm_9 - 180.0).abs() < f64::EPSILON);
+    }
 }

@@ -160,3 +160,274 @@ pub async fn cues(host_port: Option<String>) -> Result<(), Box<dyn Error>> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod print_song_tests {
+        use super::*;
+
+        #[test]
+        fn none_song_is_ok() {
+            assert!(print_song(None).is_ok());
+        }
+
+        #[test]
+        fn song_with_fields() {
+            let song = Song {
+                name: "Test Song".to_string(),
+                duration: Some(prost_types::Duration {
+                    seconds: 180,
+                    nanos: 0,
+                }),
+                tracks: vec!["guitar".to_string(), "bass".to_string()],
+            };
+            assert!(print_song(Some(song)).is_ok());
+        }
+
+        #[test]
+        fn song_with_no_duration() {
+            let song = Song {
+                name: "No Duration".to_string(),
+                duration: None,
+                tracks: vec![],
+            };
+            assert!(print_song(Some(song)).is_ok());
+        }
+
+        #[test]
+        fn song_with_empty_tracks() {
+            let song = Song {
+                name: "Empty".to_string(),
+                duration: Some(prost_types::Duration {
+                    seconds: 0,
+                    nanos: 0,
+                }),
+                tracks: vec![],
+            };
+            assert!(print_song(Some(song)).is_ok());
+        }
+    }
+
+    mod connect_tests {
+        use super::*;
+
+        #[tokio::test]
+        async fn connect_to_default_fails_when_no_server() {
+            let result = connect(None).await;
+            assert!(result.is_err());
+        }
+
+        #[tokio::test]
+        async fn connect_with_invalid_host_fails() {
+            let result = connect(Some("127.0.0.1:1".to_string())).await;
+            assert!(result.is_err());
+        }
+    }
+
+    mod remote_command_tests {
+        use super::*;
+
+        #[tokio::test]
+        async fn play_fails_without_server() {
+            // Connect to a port where nothing is listening
+            let result = play(Some("127.0.0.1:1".to_string()), None).await;
+            assert!(result.is_err());
+        }
+
+        #[tokio::test]
+        async fn play_from_fails_without_server() {
+            let result = play(Some("127.0.0.1:1".to_string()), Some("0:30".to_string())).await;
+            assert!(result.is_err());
+        }
+
+        #[tokio::test]
+        async fn play_from_with_minutes_seconds_format() {
+            let result = play(
+                Some("127.0.0.1:1".to_string()),
+                Some("1:23.456".to_string()),
+            )
+            .await;
+            assert!(result.is_err());
+        }
+
+        #[tokio::test]
+        async fn play_from_with_seconds_only_format() {
+            let result = play(Some("127.0.0.1:1".to_string()), Some("45.5s".to_string())).await;
+            assert!(result.is_err());
+        }
+
+        #[tokio::test]
+        async fn next_fails_without_server() {
+            let result = next(Some("127.0.0.1:1".to_string())).await;
+            assert!(result.is_err());
+        }
+
+        #[tokio::test]
+        async fn previous_fails_without_server() {
+            let result = previous(Some("127.0.0.1:1".to_string())).await;
+            assert!(result.is_err());
+        }
+
+        #[tokio::test]
+        async fn stop_fails_without_server() {
+            let result = stop(Some("127.0.0.1:1".to_string())).await;
+            assert!(result.is_err());
+        }
+
+        #[tokio::test]
+        async fn status_fails_without_server() {
+            let result = status(Some("127.0.0.1:1".to_string())).await;
+            assert!(result.is_err());
+        }
+
+        #[tokio::test]
+        async fn switch_to_playlist_fails_without_server() {
+            let result = switch_to_playlist(Some("127.0.0.1:1".to_string()), "all_songs").await;
+            assert!(result.is_err());
+        }
+
+        #[tokio::test]
+        async fn switch_to_playlist_with_different_name() {
+            let result = switch_to_playlist(Some("127.0.0.1:1".to_string()), "playlist").await;
+            assert!(result.is_err());
+        }
+
+        #[tokio::test]
+        async fn active_effects_fails_without_server() {
+            let result = active_effects(Some("127.0.0.1:1".to_string())).await;
+            assert!(result.is_err());
+        }
+
+        #[tokio::test]
+        async fn cues_fails_without_server() {
+            let result = cues(Some("127.0.0.1:1".to_string())).await;
+            assert!(result.is_err());
+        }
+
+        #[tokio::test]
+        async fn play_with_default_host_fails() {
+            // Tests the default host_port path (None -> 127.0.0.1:DEFAULT_GRPC_PORT)
+            let result = play(None, None).await;
+            assert!(result.is_err());
+        }
+
+        #[tokio::test]
+        async fn next_with_default_host_fails() {
+            let result = next(None).await;
+            assert!(result.is_err());
+        }
+
+        #[tokio::test]
+        async fn previous_with_default_host_fails() {
+            let result = previous(None).await;
+            assert!(result.is_err());
+        }
+
+        #[tokio::test]
+        async fn stop_with_default_host_fails() {
+            let result = stop(None).await;
+            assert!(result.is_err());
+        }
+
+        #[tokio::test]
+        async fn status_with_default_host_fails() {
+            let result = status(None).await;
+            assert!(result.is_err());
+        }
+
+        #[tokio::test]
+        async fn active_effects_with_default_host_fails() {
+            let result = active_effects(None).await;
+            assert!(result.is_err());
+        }
+
+        #[tokio::test]
+        async fn cues_with_default_host_fails() {
+            let result = cues(None).await;
+            assert!(result.is_err());
+        }
+
+        #[tokio::test]
+        async fn switch_to_playlist_with_default_host_fails() {
+            let result = switch_to_playlist(None, "all_songs").await;
+            assert!(result.is_err());
+        }
+    }
+
+    mod print_song_edge_cases {
+        use super::*;
+
+        #[test]
+        fn song_with_many_tracks() {
+            let song = Song {
+                name: "Multi Track Song".to_string(),
+                duration: Some(prost_types::Duration {
+                    seconds: 300,
+                    nanos: 500_000_000,
+                }),
+                tracks: vec![
+                    "guitar".to_string(),
+                    "bass".to_string(),
+                    "drums".to_string(),
+                    "vocals".to_string(),
+                    "keys".to_string(),
+                ],
+            };
+            assert!(print_song(Some(song)).is_ok());
+        }
+
+        #[test]
+        fn song_with_zero_duration() {
+            let song = Song {
+                name: "Zero Duration".to_string(),
+                duration: Some(prost_types::Duration {
+                    seconds: 0,
+                    nanos: 0,
+                }),
+                tracks: vec!["track".to_string()],
+            };
+            assert!(print_song(Some(song)).is_ok());
+        }
+
+        #[test]
+        fn song_with_sub_second_duration() {
+            let song = Song {
+                name: "Short".to_string(),
+                duration: Some(prost_types::Duration {
+                    seconds: 0,
+                    nanos: 500_000_000,
+                }),
+                tracks: vec![],
+            };
+            assert!(print_song(Some(song)).is_ok());
+        }
+
+        #[test]
+        fn song_with_long_duration() {
+            let song = Song {
+                name: "Long Song".to_string(),
+                duration: Some(prost_types::Duration {
+                    seconds: 3600,
+                    nanos: 0,
+                }),
+                tracks: vec!["ambient".to_string()],
+            };
+            assert!(print_song(Some(song)).is_ok());
+        }
+
+        #[test]
+        fn song_with_empty_name() {
+            let song = Song {
+                name: "".to_string(),
+                duration: Some(prost_types::Duration {
+                    seconds: 60,
+                    nanos: 0,
+                }),
+                tracks: vec![],
+            };
+            assert!(print_song(Some(song)).is_ok());
+        }
+    }
+}
