@@ -31,6 +31,9 @@ pub struct Midi {
     /// Controls how long to wait before playback of a MIDI file starts.
     playback_delay: Option<String>,
 
+    /// Enable MIDI beat clock output (24 ppqn timing clock).
+    beat_clock: Option<bool>,
+
     /// MIDI to DMX passthrough configurations.
     midi_to_dmx: Option<Vec<MidiToDmx>>,
 }
@@ -41,6 +44,7 @@ impl Midi {
         Midi {
             device: device.to_string(),
             playback_delay,
+            beat_clock: None,
             midi_to_dmx: None,
         }
     }
@@ -56,6 +60,11 @@ impl Midi {
             Some(playback_delay) => Ok(DurationString::from_string(playback_delay.clone())?.into()),
             None => Ok(DEFAULT_MIDI_PLAYBACK_DELAY),
         }
+    }
+
+    /// Returns whether beat clock output is enabled.
+    pub fn beat_clock(&self) -> bool {
+        self.beat_clock.unwrap_or(false)
     }
 
     /// Returns the MIDI to DMX configuration.
@@ -546,6 +555,26 @@ mod test {
     fn midi_to_dmx_empty_default() {
         let midi = super::Midi::new("dev", None);
         assert!(midi.midi_to_dmx().is_empty());
+    }
+
+    #[test]
+    fn beat_clock_default_is_false() {
+        let midi = super::Midi::new("dev", None);
+        assert!(!midi.beat_clock());
+    }
+
+    #[test]
+    fn beat_clock_deserialization() -> Result<(), Box<dyn Error>> {
+        let yaml = r#"
+            device: test
+            beat_clock: true
+        "#;
+        let midi: super::Midi = Config::builder()
+            .add_source(File::from_str(yaml, FileFormat::Yaml))
+            .build()?
+            .try_deserialize()?;
+        assert!(midi.beat_clock());
+        Ok(())
     }
 
     #[test]

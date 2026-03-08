@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **MIDI beat clock output**: mtrack can now send MIDI beat clock (24 ppqn) to synchronize
+  external gear to song tempo. Enable with `beat_clock: true` in the MIDI configuration. When
+  enabled, mtrack sends Start (0xFA), Timing Clock (0xF8), and Stop (0xFC) messages derived
+  from the MIDI file's tempo map. Beat clock is only emitted for songs whose MIDI files contain
+  explicit tempo change events — songs without a tempo map do not emit beat clock, leaving
+  musicians free to control their own tempo. The beat clock runs on a dedicated thread with
+  `spin_sleep` precision and supports mid-song tempo changes and seeking (Continue 0xFB).
+
 ## [0.9.2] - 2026-03-01
 
 ### Fixed

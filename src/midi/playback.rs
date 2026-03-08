@@ -31,9 +31,9 @@ pub(crate) struct PrecomputedMidi {
 }
 
 /// A tempo change at a specific tick position.
-struct TempoEntry {
-    tick: u64,
-    micros_per_tick: f64,
+pub(crate) struct TempoEntry {
+    pub(crate) tick: u64,
+    pub(crate) micros_per_tick: f64,
 }
 
 /// Result of processing a single track: MIDI events and total track duration.
@@ -110,7 +110,7 @@ impl PrecomputedMidi {
     }
 
     /// Extracts a tempo map from a track (tick position → micros_per_tick).
-    fn extract_tempo_map(track: &[TrackEvent<'_>], tpb: f64) -> Vec<TempoEntry> {
+    pub(crate) fn extract_tempo_map(track: &[TrackEvent<'_>], tpb: f64) -> Vec<TempoEntry> {
         let mut tempo_map = Vec::new();
         let mut tick_position: u64 = 0;
         for event in track {
@@ -196,6 +196,58 @@ impl PrecomputedMidi {
         TrackResult {
             events,
             total_duration: Duration::from_micros(elapsed_micros.round() as u64),
+        }
+    }
+
+    /// Builds the tempo map and total duration (in ticks) from parsed tracks.
+    /// Returns (tempo_map, ticks_per_beat, total_ticks).
+    pub(crate) fn build_tempo_info(
+        tracks: &[Vec<TrackEvent<'_>>],
+        ticks_per_beat: u16,
+        format: Format,
+    ) -> (Vec<TempoEntry>, u16, u64) {
+        let tpb = ticks_per_beat as f64;
+
+        match format {
+            Format::SingleTrack => {
+                let (tempo_map, total_ticks) = if let Some(track) = tracks.first() {
+                    let map = Self::extract_tempo_map(track, tpb);
+                    let total = track.iter().map(|e| e.delta.as_int() as u64).sum::<u64>();
+                    (map, total)
+                } else {
+                    (Vec::new(), 0)
+                };
+                (tempo_map, ticks_per_beat, total_ticks)
+            }
+            Format::Parallel => {
+                let tempo_map = tracks
+                    .first()
+                    .map(|track| Self::extract_tempo_map(track, tpb))
+                    .unwrap_or_default();
+                // Total ticks is the max across all tracks
+                let total_ticks = tracks
+                    .iter()
+                    .map(|track| track.iter().map(|e| e.delta.as_int() as u64).sum::<u64>())
+                    .max()
+                    .unwrap_or(0);
+                (tempo_map, ticks_per_beat, total_ticks)
+            }
+            Format::Sequential => {
+                // For sequential, concatenate tempo maps with tick offsets
+                let mut combined_map = Vec::new();
+                let mut total_ticks: u64 = 0;
+                for track in tracks {
+                    let map = Self::extract_tempo_map(track, tpb);
+                    for entry in map {
+                        combined_map.push(TempoEntry {
+                            tick: entry.tick + total_ticks,
+                            micros_per_tick: entry.micros_per_tick,
+                        });
+                    }
+                    total_ticks += track.iter().map(|e| e.delta.as_int() as u64).sum::<u64>();
+                }
+                (combined_map, ticks_per_beat, total_ticks)
+            }
         }
     }
 
@@ -538,5 +590,72 @@ mod tests {
     fn test_sequential_empty() {
         let midi = PrecomputedMidi::from_tracks(&[], 480, Format::Sequential);
         assert!(midi.is_empty());
+    }
+
+    #[test]
+    fn test_build_tempo_info_no_tempo_events() {
+        let tpb = 480;
+        let track = vec![note_on(0, 0, 60, 100), end_of_track(480)];
+        let (tempo_map, returned_tpb, total_ticks) =
+            PrecomputedMidi::build_tempo_info(&[track], tpb, Format::SingleTrack);
+        assert!(tempo_map.is_empty());
+        assert_eq!(returned_tpb, tpb);
+        assert_eq!(total_ticks, 480);
+    }
+
+    #[test]
+    fn test_build_tempo_info_single_track_with_tempo() {
+        let tpb = 480;
+        let track = vec![
+            tempo_event(0, 500_000),
+            note_on(480, 0, 60, 100),
+            end_of_track(480),
+        ];
+        let (tempo_map, _, total_ticks) =
+            PrecomputedMidi::build_tempo_info(&[track], tpb, Format::SingleTrack);
+        assert_eq!(tempo_map.len(), 1);
+        assert_eq!(tempo_map[0].tick, 0);
+        assert_eq!(total_ticks, 960);
+    }
+
+    #[test]
+    fn test_build_tempo_info_parallel_uses_conductor() {
+        let tpb = 480;
+        let track0 = vec![
+            tempo_event(0, 1_000_000),
+            tempo_event(480, 500_000),
+            end_of_track(0),
+        ];
+        let track1 = vec![note_on(0, 0, 60, 100), end_of_track(960)];
+        let (tempo_map, _, total_ticks) =
+            PrecomputedMidi::build_tempo_info(&[track0, track1], tpb, Format::Parallel);
+        assert_eq!(tempo_map.len(), 2);
+        assert_eq!(tempo_map[0].tick, 0);
+        assert_eq!(tempo_map[1].tick, 480);
+        // Max across tracks: track1 has 960 ticks
+        assert_eq!(total_ticks, 960);
+    }
+
+    #[test]
+    fn test_build_tempo_info_sequential_offsets_ticks() {
+        let tpb = 480;
+        let track1 = vec![tempo_event(0, 500_000), end_of_track(480)];
+        let track2 = vec![tempo_event(0, 1_000_000), end_of_track(480)];
+        let (tempo_map, _, total_ticks) =
+            PrecomputedMidi::build_tempo_info(&[track1, track2], tpb, Format::Sequential);
+        assert_eq!(tempo_map.len(), 2);
+        assert_eq!(tempo_map[0].tick, 0);
+        // Second track's tempo change is offset by first track's total ticks
+        assert_eq!(tempo_map[1].tick, 480);
+        assert_eq!(total_ticks, 960);
+    }
+
+    #[test]
+    fn test_build_tempo_info_empty_tracks() {
+        let (tempo_map, tpb, total_ticks) =
+            PrecomputedMidi::build_tempo_info(&[], 480, Format::Parallel);
+        assert!(tempo_map.is_empty());
+        assert_eq!(tpb, 480);
+        assert_eq!(total_ticks, 0);
     }
 }

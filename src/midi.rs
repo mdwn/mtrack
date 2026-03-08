@@ -23,6 +23,7 @@ use tokio::sync::mpsc::Sender;
 
 use crate::{config, dmx::engine::Engine, playsync::CancelHandle, songs::Song};
 
+pub(crate) mod beat_clock;
 pub(crate) mod midir;
 pub(crate) mod mock;
 pub(crate) mod playback;
