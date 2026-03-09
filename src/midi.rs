@@ -11,17 +11,14 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-use std::{
-    any::Any,
-    error::Error,
-    fmt,
-    sync::{Arc, Barrier},
-};
+use std::{any::Any, error::Error, fmt, sync::Arc};
 
 use midly::live::LiveEvent;
 use tokio::sync::mpsc::Sender;
 
-use crate::{config, dmx::engine::Engine, playsync::CancelHandle, songs::Song};
+use crate::{
+    clock::PlaybackClock, config, dmx::engine::Engine, playsync::CancelHandle, songs::Song,
+};
 
 pub(crate) mod beat_clock;
 pub(crate) mod midir;
@@ -39,12 +36,15 @@ pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {
     fn stop_watch_events(&self);
 
     /// Plays the given song through the MIDI interface, starting from a specific time.
+    /// The `ready_tx` sender signals that setup is complete. The implementation should
+    /// then wait for `clock.elapsed() > Duration::ZERO` as the "go" signal.
     fn play_from(
         &self,
         song: Arc<Song>,
         cancel_handle: CancelHandle,
-        play_barrier: Arc<Barrier>,
+        ready_tx: std::sync::mpsc::Sender<()>,
         start_time: std::time::Duration,
+        clock: PlaybackClock,
     ) -> Result<(), Box<dyn Error>>;
 
     /// Emits an event.

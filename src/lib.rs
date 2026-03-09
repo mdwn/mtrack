@@ -14,6 +14,7 @@
 
 pub mod audio;
 pub mod calibrate;
+pub(crate) mod clock;
 pub mod config;
 pub mod controller;
 pub mod dmx;

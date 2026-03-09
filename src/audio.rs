@@ -19,7 +19,6 @@ use crate::config;
 use crate::playsync::CancelHandle;
 use crate::songs::Song;
 use std::collections::HashMap;
-use std::sync::Barrier;
 
 pub mod context;
 pub mod cpal;
@@ -46,12 +45,16 @@ pub type SourceSender = crossbeam_channel::Sender<mixer::ActiveSource>;
 
 pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {
     /// Plays the given song through the audio interface, starting from a specific time.
+    /// The `ready_tx` sender signals that setup is complete. The implementation should
+    /// then wait for `clock.elapsed() > Duration::ZERO` as the "go" signal before
+    /// starting playback.
     fn play_from(
         &self,
         song: Arc<Song>,
         mappings: &HashMap<String, Vec<u16>>,
         cancel_handle: CancelHandle,
-        play_barrier: Arc<Barrier>,
+        ready_tx: std::sync::mpsc::Sender<()>,
+        clock: crate::clock::PlaybackClock,
         start_time: Duration,
     ) -> Result<(), Box<dyn Error>>;
 
@@ -65,6 +68,17 @@ pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {
     /// Returns None if the device doesn't support triggered samples.
     fn source_sender(&self) -> Option<SourceSender> {
         None
+    }
+
+    /// Returns the device's hardware sample counter, if available.
+    /// Used by `PlaybackClock` to derive timing from the audio interface's oscillator.
+    fn sample_counter(&self) -> Option<Arc<AtomicU64>> {
+        self.mixer().map(|m| m.sample_counter())
+    }
+
+    /// Returns the device's sample rate in Hz, if available.
+    fn sample_rate(&self) -> Option<u32> {
+        self.mixer().map(|m| m.sample_rate())
     }
 
     #[cfg(test)]
@@ -157,7 +171,8 @@ mod test {
                 _song: Arc<Song>,
                 _mappings: &HashMap<String, Vec<u16>>,
                 _cancel_handle: CancelHandle,
-                _play_barrier: Arc<Barrier>,
+                _ready_tx: std::sync::mpsc::Sender<()>,
+                _clock: crate::clock::PlaybackClock,
                 _start_time: Duration,
             ) -> Result<(), Box<dyn Error>> {
                 Ok(())
@@ -169,6 +184,8 @@ mod test {
         let d = Dummy;
         assert!(d.mixer().is_none());
         assert!(d.source_sender().is_none());
+        assert!(d.sample_counter().is_none());
+        assert!(d.sample_rate().is_none());
     }
 
     #[test]
@@ -202,6 +219,14 @@ mod test {
         let device = get_device(Some(config)).unwrap();
         let display = format!("{}", device);
         assert!(display.contains("mock-hello"));
+    }
+
+    #[test]
+    fn mock_device_clock_methods_return_none() {
+        let device = mock::Device::get("mock-test");
+        let d: &dyn Device = &device;
+        assert!(d.sample_counter().is_none());
+        assert!(d.sample_rate().is_none());
     }
 
     #[test]
