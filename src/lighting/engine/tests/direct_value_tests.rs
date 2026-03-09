@@ -369,7 +369,7 @@ fn test_stop_all_effects_clears_legacy_store() {
     // Verify they're present
     let _commands = engine.update(Duration::from_millis(23), None).unwrap();
     let states = engine.get_fixture_states();
-    assert!(states.get("wash1").is_some(), "wash1 should have state");
+    assert!(states.contains_key("wash1"), "wash1 should have state");
 
     // stop_all_effects should clear the legacy store
     engine.stop_all_effects();

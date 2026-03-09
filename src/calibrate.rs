@@ -1360,8 +1360,13 @@ mod tests {
         }
         // After decay, keep signal above noise floor peak until end
         let decay_end = onset + 50 + holdoff;
-        for idx in decay_end..total {
-            samples[idx] = 0.002 * (idx as f32 * 3.0).sin();
+        for (idx, sample) in samples
+            .iter_mut()
+            .enumerate()
+            .skip(decay_end)
+            .take(total - decay_end)
+        {
+            *sample = 0.002 * (idx as f32 * 3.0).sin();
         }
 
         let nf = NoiseFloorStats {

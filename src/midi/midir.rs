@@ -798,7 +798,7 @@ mod test {
             // MIDI channel 10 → internal channel 9 (1-indexed to 0-indexed in config)
             assert_eq!(mappings.get(&9), Some(&"main".to_string()));
             // No transformers configured.
-            assert!(transformers.get(&9).map_or(true, |t| t.is_empty()) || transformers.is_empty());
+            assert!(transformers.get(&9).is_none_or(|t| t.is_empty()));
         }
 
         #[test]

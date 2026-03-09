@@ -31,6 +31,9 @@ use super::thread_priority::{
     callback_thread_priority, configure_audio_thread_priority, env_flag, rt_audio_enabled,
 };
 
+/// A shared notify handle: a boolean flag protected by a mutex with a condvar for signaling.
+type ErrorNotify = Arc<(Mutex<bool>, Condvar)>;
+
 struct CallbackProfiler {
     enabled: bool,
     last_log: Instant,
@@ -282,7 +285,7 @@ pub(crate) trait OutputStreamFactory: Send + 'static {
         mixer: AudioMixer,
         source_rx: crossbeam_channel::Receiver<MixerActiveSource>,
         num_channels: u16,
-        error_notify: Arc<(Mutex<bool>, Condvar)>,
+        error_notify: ErrorNotify,
     ) -> Result<Box<dyn OutputStream>, Box<dyn Error>>;
 }
 
@@ -336,7 +339,7 @@ impl OutputStreamFactory for CpalOutputStreamFactory {
         mixer: AudioMixer,
         source_rx: crossbeam_channel::Receiver<MixerActiveSource>,
         num_channels: u16,
-        error_notify: Arc<(Mutex<bool>, Condvar)>,
+        error_notify: ErrorNotify,
     ) -> Result<Box<dyn OutputStream>, Box<dyn Error>> {
         // Finalize config with actual channel count / sample rate from mixer.
         let config = cpal::StreamConfig {
@@ -463,7 +466,7 @@ struct OutputManager {
     /// Handle to the output thread (keeps it alive).
     output_thread: Option<thread::JoinHandle<()>>,
     /// Shared shutdown signal: set to true and notify condvar to stop the output thread.
-    shutdown_notify: Arc<(Mutex<bool>, Condvar)>,
+    shutdown_notify: ErrorNotify,
 }
 
 impl fmt::Display for Device {
@@ -1067,7 +1070,7 @@ mod test {
             _mixer: AudioMixer,
             _source_rx: crossbeam_channel::Receiver<MixerActiveSource>,
             _num_channels: u16,
-            _error_notify: Arc<(Mutex<bool>, Condvar)>,
+            _error_notify: ErrorNotify,
         ) -> Result<Box<dyn OutputStream>, Box<dyn Error>> {
             self.alive.store(true, Ordering::Relaxed);
             Ok(Box::new(MockOutputStream {
@@ -1085,7 +1088,7 @@ mod test {
             _mixer: AudioMixer,
             _source_rx: crossbeam_channel::Receiver<MixerActiveSource>,
             _num_channels: u16,
-            _error_notify: Arc<(Mutex<bool>, Condvar)>,
+            _error_notify: ErrorNotify,
         ) -> Result<Box<dyn OutputStream>, Box<dyn Error>> {
             Err("mock build failure".into())
         }
@@ -1096,7 +1099,7 @@ mod test {
     struct ErrorCapturingState {
         alive: Arc<AtomicBool>,
         build_count: std::sync::atomic::AtomicU32,
-        captured_error_notify: std::sync::Mutex<Option<Arc<(Mutex<bool>, Condvar)>>>,
+        captured_error_notify: std::sync::Mutex<Option<ErrorNotify>>,
     }
 
     /// A factory that captures the error_notify so tests can trigger stream error recovery.
@@ -1148,7 +1151,7 @@ mod test {
             _mixer: AudioMixer,
             _source_rx: crossbeam_channel::Receiver<MixerActiveSource>,
             _num_channels: u16,
-            error_notify: Arc<(Mutex<bool>, Condvar)>,
+            error_notify: ErrorNotify,
         ) -> Result<Box<dyn OutputStream>, Box<dyn Error>> {
             self.state.build_count.fetch_add(1, Ordering::Relaxed);
             *self.state.captured_error_notify.lock().unwrap() = Some(error_notify);

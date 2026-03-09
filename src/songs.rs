@@ -1880,8 +1880,7 @@ mod test {
     fn dsl_lighting_show_file_not_found() {
         let config = crate::config::LightingShow::new("nonexistent.dsl".to_string());
         let err = super::DslLightingShow::new(Path::new("/tmp"), &config)
-            .err()
-            .expect("expected error")
+            .expect_err("expected error")
             .to_string();
         assert!(err.contains("does not exist"), "Error: {err}");
     }
@@ -1892,8 +1891,7 @@ mod test {
         fs::write(tempdir.path().join("bad.dsl"), "show {")?;
         let config = crate::config::LightingShow::new("bad.dsl".to_string());
         let err = super::DslLightingShow::new(tempdir.path(), &config)
-            .err()
-            .expect("expected error")
+            .expect_err("expected error")
             .to_string();
         assert!(
             err.contains("Failed to parse DSL lighting show"),

@@ -21,13 +21,17 @@ use std::time::Duration;
 use serde_json::json;
 use tokio::sync::{broadcast, watch};
 use tokio::time;
-use tracing::warn;
+use tracing::{info, warn};
 
-use crate::audio::sample_source::create_sample_source_from_file;
+use rayon::prelude::*;
+
+use crate::audio::sample_source::audio::AudioSampleSource;
+use crate::audio::sample_source::traits::SampleSource;
 use crate::player::Player;
 use crate::tui::logging::get_log_buffer;
 
 /// Polls the player state at ~5Hz and broadcasts playback status messages.
+#[tracing::instrument(skip_all, name = "playback_poller")]
 pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>) {
     let mut interval = time::interval(Duration::from_millis(200));
     interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
@@ -92,6 +96,7 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
 }
 
 /// Watches the shared state snapshot (fixtures + active effects) and broadcasts changes.
+#[tracing::instrument(skip_all, name = "state_poller")]
 pub async fn state_poller(
     mut state_rx: watch::Receiver<Arc<crate::state::StateSnapshot>>,
     tx: broadcast::Sender<String>,
@@ -132,6 +137,7 @@ pub async fn state_poller(
 }
 
 /// Polls the log ring buffer at ~2Hz and broadcasts log lines.
+#[tracing::instrument(skip_all, name = "log_poller")]
 pub async fn log_poller(tx: broadcast::Sender<String>) {
     let mut interval = time::interval(Duration::from_millis(500));
     interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
@@ -218,6 +224,7 @@ pub fn new_waveform_cache() -> WaveformCache {
 ///
 /// Checks the shared cache first; on a miss, computes peaks on demand via
 /// `spawn_blocking` and inserts the result into the cache.
+#[tracing::instrument(skip_all, name = "waveform_poller")]
 pub async fn waveform_poller(
     player: Arc<Player>,
     tx: broadcast::Sender<String>,
@@ -263,8 +270,15 @@ pub async fn waveform_poller(
                 .collect();
 
             let song_name_for_task = song_name.clone();
+            info!("Computing waveform for '{}'", song_name_for_task);
+            let start = std::time::Instant::now();
             let peaks_result =
                 tokio::task::spawn_blocking(move || compute_waveform_peaks(&track_infos)).await;
+            info!(
+                "Waveform for '{}' computed in {:.1?}",
+                song_name,
+                start.elapsed()
+            );
 
             // Song changed while we were computing — discard stale result
             let current_now = player.get_playlist().current().name().to_string();
@@ -310,12 +324,16 @@ pub async fn waveform_poller(
 /// Iterates through every song in the all-songs playlist, computing waveform
 /// peaks one song at a time. Pauses while a song is playing to avoid competing
 /// with audio playback for CPU and I/O.
+#[tracing::instrument(skip_all, name = "waveform_prewarmer")]
 pub async fn waveform_prewarmer(player: Arc<Player>, cache: WaveformCache) {
     // Small delay before starting so the server can finish initializing
     time::sleep(Duration::from_secs(1)).await;
 
     let all_songs = player.get_all_songs_playlist();
     let song_names: Vec<String> = all_songs.songs().clone();
+    let total_songs = song_names.len();
+    let total_start = std::time::Instant::now();
+    info!("Waveform prewarm starting for {} songs", total_songs);
 
     for song_name in &song_names {
         // Wait until playback stops before computing
@@ -345,24 +363,36 @@ pub async fn waveform_prewarmer(player: Arc<Player>, cache: WaveformCache) {
             })
             .collect();
 
+        info!("Prewarming waveform for '{}'", song_name);
+        let start = std::time::Instant::now();
         let peaks_result =
             tokio::task::spawn_blocking(move || compute_waveform_peaks(&track_infos)).await;
 
         if let Ok(peaks) = peaks_result {
             cache.lock().insert(song_name.clone(), peaks);
+            info!(
+                "Prewarmed waveform for '{}' in {:.1?}",
+                song_name,
+                start.elapsed()
+            );
         }
 
         // Brief pause between songs to keep CPU pressure low
         time::sleep(Duration::from_millis(100)).await;
     }
+    info!(
+        "Waveform prewarm complete for {} songs in {:.1?}",
+        total_songs,
+        total_start.elapsed()
+    );
 }
 
-/// Computes waveform peaks for all tracks. Returns (track_name, peaks) pairs.
+/// Computes waveform peaks for all tracks in parallel. Returns (track_name, peaks) pairs.
 fn compute_waveform_peaks(tracks: &[(String, PathBuf, u16)]) -> Vec<(String, Vec<f32>)> {
     const NUM_BUCKETS: usize = 500;
 
     tracks
-        .iter()
+        .par_iter()
         .map(|(name, file, file_channel)| {
             let peaks = compute_track_peaks(file, *file_channel, NUM_BUCKETS);
             (name.clone(), peaks)
@@ -370,14 +400,12 @@ fn compute_waveform_peaks(tracks: &[(String, PathBuf, u16)]) -> Vec<(String, Vec
         .collect()
 }
 
-/// Computes peak values for a single track by reading the audio file and
-/// extracting the target channel from interleaved samples.
+/// Computes peak values for a single track using bulk buffer reads.
 ///
-/// Uses a streaming approach: estimates total samples from duration and sample
-/// rate, then accumulates peaks directly into buckets without buffering the
-/// entire file.
+/// Uses `AudioSampleSource::read_samples` to read large chunks at a time,
+/// avoiding per-sample virtual dispatch overhead.
 fn compute_track_peaks(file: &std::path::Path, file_channel: u16, num_buckets: usize) -> Vec<f32> {
-    let mut source = match create_sample_source_from_file(file, None, 4096) {
+    let mut source = match AudioSampleSource::from_file(file, None, 4096) {
         Ok(s) => s,
         Err(e) => {
             warn!("Failed to open audio file {}: {}", file.display(), e);
@@ -419,23 +447,27 @@ fn compute_track_peaks(file: &std::path::Path, file_channel: u16, num_buckets: u
     let mut mono_sample_idx: usize = 0;
     let mut interleaved_idx: usize = 0;
 
+    // Read in chunks of ~16K interleaved samples at a time
+    let mut buf = vec![0.0_f32; 16384];
     loop {
-        match source.next_sample() {
-            Ok(Some(sample)) => {
-                let ch = interleaved_idx % channel_count;
-                interleaved_idx += 1;
-
-                if ch == target_channel {
-                    let bucket = (mono_sample_idx / samples_per_bucket).min(num_buckets - 1);
-                    let abs = sample.abs();
-                    if abs > peaks[bucket] {
-                        peaks[bucket] = abs;
-                    }
-                    mono_sample_idx += 1;
-                }
-            }
-            Ok(None) => break,
+        let n = match source.read_samples(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
             Err(_) => break,
+        };
+
+        for &sample in &buf[..n] {
+            let ch = interleaved_idx % channel_count;
+            interleaved_idx += 1;
+
+            if ch == target_channel {
+                let bucket = (mono_sample_idx / samples_per_bucket).min(num_buckets - 1);
+                let abs = sample.abs();
+                if abs > peaks[bucket] {
+                    peaks[bucket] = abs;
+                }
+                mono_sample_idx += 1;
+            }
         }
     }
 
@@ -587,6 +619,44 @@ mod test {
         let peaks = compute_track_peaks(&wav_path, 1, 1);
         assert!(!peaks.is_empty());
         assert!(peaks.len() <= 1);
+    }
+
+    #[test]
+    fn compute_track_peaks_stereo_extracts_correct_channel() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let wav_path = temp_dir.path().join("stereo.wav");
+
+        // Write a properly interleaved stereo WAV: ch1=loud, ch2=silence
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: 44100,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let mut writer = hound::WavWriter::create(&wav_path, spec).expect("create wav");
+        for _ in 0..44100 {
+            writer.write_sample(0.9_f32).unwrap(); // ch1: loud
+            writer.write_sample(0.0_f32).unwrap(); // ch2: silence
+        }
+        writer.finalize().unwrap();
+
+        // file_channel 1 should see the loud signal
+        let ch1_peaks = compute_track_peaks(&wav_path, 1, 10);
+        assert!(!ch1_peaks.is_empty());
+        assert!(
+            ch1_peaks.iter().all(|&p| p > 0.5),
+            "channel 1 should have loud peaks: {:?}",
+            ch1_peaks
+        );
+
+        // file_channel 2 should see silence (all zeros)
+        let ch2_peaks = compute_track_peaks(&wav_path, 2, 10);
+        assert!(!ch2_peaks.is_empty());
+        assert!(
+            ch2_peaks.iter().all(|&p| p == 0.0),
+            "channel 2 should be all zeros: {:?}",
+            ch2_peaks
+        );
     }
 
     #[test]
