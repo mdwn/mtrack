@@ -26,7 +26,7 @@ use midly::live::LiveEvent;
 use tokio::{sync::mpsc::Sender, task::JoinHandle};
 use tracing::{info, span, Level};
 
-use crate::{playsync::CancelHandle, songs::Song};
+use crate::{clock::PlaybackClock, playsync::CancelHandle, songs::Song};
 
 /// A mock device. Doesn't actually play anything.
 #[derive(Clone)]
@@ -130,8 +130,9 @@ impl super::Device for Device {
         &self,
         song: Arc<Song>,
         cancel_handle: CancelHandle,
-        play_barrier: Arc<Barrier>,
+        ready_tx: std::sync::mpsc::Sender<()>,
         start_time: Duration,
+        clock: PlaybackClock,
     ) -> Result<(), Box<dyn Error>> {
         let span = span!(Level::INFO, "play song (mock)");
         let _enter = span.enter();
@@ -151,8 +152,18 @@ impl super::Device for Device {
         let join_handle = {
             let cancel_handle = cancel_handle.clone();
             let finished = finished.clone();
+            let clock = clock.clone();
             thread::spawn(move || {
-                play_barrier.wait();
+                let _ = ready_tx.send(());
+
+                while clock.elapsed() == Duration::ZERO {
+                    if cancel_handle.is_cancelled() {
+                        finished.store(true, Ordering::Relaxed);
+                        cancel_handle.notify();
+                        return;
+                    }
+                    std::hint::spin_loop();
+                }
 
                 if cancel_handle.is_cancelled() {
                     finished.store(true, Ordering::Relaxed);

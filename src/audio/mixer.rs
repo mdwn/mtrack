@@ -99,6 +99,11 @@ impl AudioMixer {
         self.sample_counter.load(Ordering::Relaxed)
     }
 
+    /// Returns a clone of the sample counter Arc for use by the PlaybackClock.
+    pub fn sample_counter(&self) -> Arc<AtomicU64> {
+        self.sample_counter.clone()
+    }
+
     /// Precomputes channel mappings for optimal performance during mixing
     fn precompute_channel_mappings(
         source: &dyn ChannelMappedSampleSource,

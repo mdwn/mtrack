@@ -20,7 +20,7 @@ use std::{
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Receiver},
-        Arc, Barrier,
+        Arc,
     },
     thread::{self, JoinHandle},
     time::Duration,
@@ -405,8 +405,9 @@ impl Engine {
         dmx_engine: Arc<Engine>,
         song: Arc<Song>,
         cancel_handle: CancelHandle,
-        play_barrier: Arc<Barrier>,
+        ready_tx: std::sync::mpsc::Sender<()>,
         start_time: Duration,
+        clock: crate::clock::PlaybackClock,
     ) -> Result<(), Box<dyn Error>> {
         let span = span!(Level::INFO, "play song (dmx)");
         let _enter = span.enter();
@@ -417,6 +418,7 @@ impl Engine {
         let has_lighting = !dsl_lighting_shows.is_empty();
 
         if light_shows.is_empty() && !has_lighting {
+            let _ = ready_tx.send(());
             return Ok(());
         }
 
@@ -511,13 +513,10 @@ impl Engine {
         let universe_ids: HashSet<u16> = dmx_engine.universes.keys().cloned().collect();
 
         let mut dmx_midi_sheets: HashMap<String, (MidiSheet, Vec<u8>)> = HashMap::new();
-        let mut empty_barrier_counter = 0;
         for light_show in song.light_shows().iter() {
             let universe_name = light_show.universe_name();
             if let Some(&universe_id) = dmx_engine.universe_name_to_id.get(&universe_name) {
                 if !universe_ids.contains(&universe_id) {
-                    // Keep track of the number of threads that should just wait on the play barrier.
-                    empty_barrier_counter += 1;
                     continue;
                 }
 
@@ -525,39 +524,14 @@ impl Engine {
                     universe_name.clone(),
                     (light_show.dmx_midi_sheet()?, light_show.midi_channels()),
                 );
-            } else {
-                // Universe name not found in mapping
-                empty_barrier_counter += 1;
-                continue;
             }
         }
 
         if dmx_midi_sheets.is_empty() && !has_lighting {
             info!(song = song.name(), "Song has no matching light shows.");
-
-            // Even though we're returning early, we still need to account for the barrier count.
-            // The barrier count in play_files() includes song.light_shows().len() if
-            // song.light_shows() is not empty. The empty_barrier_counter tracks light shows
-            // that don't have matching universes, so we need to spawn threads for them to
-            // reach the expected barrier count. Otherwise, other threads will hang waiting
-            // for the barrier count to be reached.
-            (0..empty_barrier_counter)
-                .map(|_| {
-                    let play_barrier = play_barrier.clone();
-                    thread::spawn(move || {
-                        play_barrier.wait();
-                    })
-                })
-                .for_each(|join_handle| {
-                    join_handle
-                        .join()
-                        .expect("Empty barrier join handle should join immediately");
-                });
-
+            let _ = ready_tx.send(());
             return Ok(());
         }
-
-        let has_dmx_sheets = !dmx_midi_sheets.is_empty();
 
         // Build legacy MIDI playbacks and store them for effects-loop dispatch.
         // Drain the map to take ownership of MidiSheets (avoids cloning event vecs).
@@ -596,6 +570,7 @@ impl Engine {
             dmx_engine.clone(),
             cancel_handle.clone(),
             start_time,
+            clock.clone(),
         );
 
         // Store the cancel handle so the effects loop can notify when everything finishes
@@ -604,102 +579,46 @@ impl Engine {
             *handle = Some(cancel_handle.clone());
         }
 
-        // Spawn barrier threads for legacy light shows. player.rs allocates
-        // song.light_shows().len() barrier slots for legacy shows, and +1 for DSL lighting.
-        // We must spawn exactly that many threads here:
-        //   - num_legacy_playbacks threads for matched legacy shows
-        //   - empty_barrier_counter threads for unmatched legacy shows
-        //   - 1 thread for DSL lighting (if the song has DSL lighting shows)
-        // The first legacy thread waits for timeline completion to keep the DMX
-        // thread alive while lighting processes; the rest just satisfy the barrier.
-        // It uses a heartbeat-aware timeout so the system can recover if the
-        // effects loop dies.
-        let num_legacy_playbacks = dmx_engine.legacy_midi_playbacks.lock().len();
-        let mut first_legacy = true;
-        let mut join_handles: Vec<JoinHandle<()>> = (0..num_legacy_playbacks)
-            .map(|_| {
-                let play_barrier = play_barrier.clone();
-                if first_legacy {
-                    first_legacy = false;
-                    let cancel_handle = cancel_handle.clone();
-                    let timeline_finished = dmx_engine.timeline_finished.clone();
-                    let heartbeat = dmx_engine.effects_loop_heartbeat.clone();
-                    let phase = dmx_engine.effects_loop_phase.clone();
-                    let subphase = dmx_engine.update_subphase.clone();
-                    thread::spawn(move || {
-                        play_barrier.wait();
-                        Self::wait_for_timeline_with_heartbeat(
-                            &cancel_handle,
-                            timeline_finished,
-                            &heartbeat,
-                            &phase,
-                            &subphase,
-                        );
-                    })
-                } else {
-                    thread::spawn(move || {
-                        play_barrier.wait();
-                    })
-                }
-            })
-            .collect();
+        // Signal readiness — all setup is complete.
+        let _ = ready_tx.send(());
 
-        // If we only have DSL lighting shows (no legacy light shows), we still need
-        // one thread to wait on the barrier and block until the timeline finishes.
-        if !has_dmx_sheets && has_lighting {
-            let cancel_handle_clone = cancel_handle.clone();
+        // Wait for the clock to start (the "go" signal from play_files).
+        while clock.elapsed() == Duration::ZERO {
+            if cancel_handle.is_cancelled() {
+                dmx_engine.timeline_finished.store(true, Ordering::Relaxed);
+                if let Err(e) = song_time_tracker.join() {
+                    error!("Error waiting for song time tracker to stop: {:?}", e);
+                }
+                return Ok(());
+            }
+            std::hint::spin_loop();
+        }
+
+        // Wait for the timeline to finish, using a heartbeat-aware loop that
+        // can recover if the effects loop dies.
+        let timeline_watcher = {
+            let cancel_handle = cancel_handle.clone();
             let timeline_finished = dmx_engine.timeline_finished.clone();
-            let play_barrier_clone = play_barrier.clone();
             let heartbeat = dmx_engine.effects_loop_heartbeat.clone();
             let phase = dmx_engine.effects_loop_phase.clone();
             let subphase = dmx_engine.update_subphase.clone();
-            join_handles.push(thread::spawn(move || {
-                play_barrier_clone.wait();
+            thread::spawn(move || {
                 Self::wait_for_timeline_with_heartbeat(
-                    &cancel_handle_clone,
+                    &cancel_handle,
                     timeline_finished,
                     &heartbeat,
                     &phase,
                     &subphase,
                 );
-            }));
-        }
-
-        // We need to make sure we wait on each available universe, even if it shouldn't
-        // be played, to get to the appropriate barrier count, which is equal to the number
-        // of universes available on the song.
-        (0..empty_barrier_counter)
-            .map(|_| {
-                let play_barrier = play_barrier.clone();
-                thread::spawn(move || {
-                    play_barrier.wait();
-                })
             })
-            .for_each(|join_handle| {
-                join_handle
-                    .join()
-                    .expect("Empty barrier join handle should join immediately");
-            });
+        };
 
-        // When cancelled, drop join handles to avoid hanging if threads are stuck on barrier wait.
-        // Threads will become detached but should exit quickly after barrier wait when they
-        // check for cancellation.
-        if cancel_handle.is_cancelled() {
-            info!(
-                "DMX playback has been cancelled. Dropping thread join handles to avoid deadlock."
-            );
-            drop(join_handles);
-        } else {
-            for (i, join_handle) in join_handles.drain(..).enumerate() {
-                if join_handle.join().is_err() {
-                    error!("Error while joining barrier thread {}!", i);
-                    return Err(format!("Error while joining barrier thread {}!", i).into());
-                }
-            }
+        if let Err(e) = timeline_watcher.join() {
+            error!("Error while joining timeline watcher thread: {:?}", e);
         }
 
-        // Song playback finished - signal the song time tracker to stop
-        // We use timeline_finished flag (not cancel) so we don't cancel audio/MIDI
+        // Song playback finished - signal the song time tracker to stop.
+        // We use timeline_finished flag (not cancel) so we don't cancel audio/MIDI.
         dmx_engine.timeline_finished.store(true, Ordering::Relaxed);
 
         // Wait for song time tracker to finish (will exit now that timeline_finished is set)
@@ -1167,14 +1086,13 @@ impl Engine {
         dmx_engine: Arc<Engine>,
         cancel_handle: CancelHandle,
         start_offset: Duration,
+        clock: crate::clock::PlaybackClock,
     ) -> JoinHandle<()> {
         let timeline_finished = dmx_engine.timeline_finished.clone();
         thread::spawn(move || {
-            let start_time = std::time::Instant::now();
-
             // Run until cancelled OR timeline finished
             while !cancel_handle.is_cancelled() && !timeline_finished.load(Ordering::Relaxed) {
-                let elapsed = start_time.elapsed();
+                let elapsed = clock.elapsed();
                 let song_time = start_offset + elapsed;
 
                 dmx_engine.update_song_time(song_time);
@@ -1279,7 +1197,6 @@ mod test {
     use midly::num::u7;
 
     use crate::playsync::CancelHandle;
-    use std::sync::Barrier;
 
     use super::{config, Engine};
     use crate::dmx::ola_client::OlaClientFactory;
@@ -1748,15 +1665,18 @@ mod test {
         // Test timeline setup
         let song_arc = Arc::new(song);
         let cancel_handle = crate::playsync::CancelHandle::new();
-        let play_barrier = Arc::new(Barrier::new(1));
+        let (ready_tx, _ready_rx) = std::sync::mpsc::channel::<()>();
+        let clock = crate::clock::PlaybackClock::wall();
+        clock.start();
 
         // This should set up the timeline
         Engine::play(
             engine.clone(),
             song_arc,
             cancel_handle,
-            play_barrier,
+            ready_tx,
             std::time::Duration::ZERO,
+            clock,
         )?;
 
         // Verify timeline was created (may be None if no lighting config)
@@ -2025,7 +1945,9 @@ mod test {
             Vec::new(),
         );
         let song = Arc::new(crate::songs::Song::new(tmp_dir.path(), &song_config)?);
-        let play_barrier = Arc::new(Barrier::new(1));
+        let (ready_tx, _ready_rx) = std::sync::mpsc::channel::<()>();
+        let clock = crate::clock::PlaybackClock::wall();
+        clock.start();
 
         // Cancel before play so the DSL-only blocking path exits immediately.
         // The state management is synchronous and runs before any threading.
@@ -2035,8 +1957,9 @@ mod test {
             engine.clone(),
             song,
             cancel_handle,
-            play_barrier,
+            ready_tx,
             std::time::Duration::ZERO,
+            clock,
         )?;
 
         // The tempo map should have been cleared (not inherited from the seeded state).
@@ -2081,14 +2004,17 @@ mod test {
             Vec::new(),
         );
         let song = Arc::new(crate::songs::Song::new(&assets_path, &song_config)?);
-        let play_barrier = Arc::new(Barrier::new(1));
+        let (ready_tx, _ready_rx) = std::sync::mpsc::channel::<()>();
+        let clock = crate::clock::PlaybackClock::wall();
+        clock.start();
 
         Engine::play(
             engine.clone(),
             song,
             cancel_handle,
-            play_barrier,
+            ready_tx,
             std::time::Duration::ZERO,
+            clock,
         )?;
 
         assert_lighting_state_cleared(&engine);
@@ -3121,10 +3047,13 @@ mod test {
                 .timeline_finished
                 .store(false, std::sync::atomic::Ordering::Relaxed);
 
+            let clock = crate::clock::PlaybackClock::wall();
+            clock.start();
             let handle = Engine::start_song_time_tracker_from(
                 engine.clone(),
                 cancel.clone(),
                 std::time::Duration::from_secs(10),
+                clock,
             );
 
             // Wait a bit for the tracker to update
@@ -3151,10 +3080,13 @@ mod test {
                 .timeline_finished
                 .store(false, std::sync::atomic::Ordering::Relaxed);
 
+            let clock = crate::clock::PlaybackClock::wall();
+            clock.start();
             let handle = Engine::start_song_time_tracker_from(
                 engine.clone(),
                 cancel,
                 std::time::Duration::ZERO,
+                clock,
             );
 
             std::thread::sleep(std::time::Duration::from_millis(30));
@@ -3511,14 +3443,17 @@ mod test {
                 std::path::Path::new("/tmp"),
                 &song_config,
             )?);
-            let play_barrier = Arc::new(Barrier::new(1));
+            let (ready_tx, _ready_rx) = std::sync::mpsc::channel::<()>();
+            let clock = crate::clock::PlaybackClock::wall();
+            clock.start();
 
             let result = Engine::play(
                 engine,
                 song,
                 cancel_handle,
-                play_barrier,
+                ready_tx,
                 std::time::Duration::ZERO,
+                clock,
             );
             assert!(result.is_ok());
             Ok(())
@@ -3536,7 +3471,9 @@ mod test {
 }"#,
             )?;
 
-            let play_barrier = Arc::new(Barrier::new(1));
+            let (ready_tx, _ready_rx) = std::sync::mpsc::channel::<()>();
+            let clock = crate::clock::PlaybackClock::wall();
+            clock.start();
 
             // Cancel before play so the blocking path exits immediately
             cancel_handle.cancel();
@@ -3545,8 +3482,9 @@ mod test {
                 engine.clone(),
                 song,
                 cancel_handle,
-                play_barrier,
+                ready_tx,
                 std::time::Duration::ZERO,
+                clock,
             );
             assert!(result.is_ok());
             Ok(())
@@ -3566,7 +3504,9 @@ mod test {
 }"#,
             )?;
 
-            let play_barrier = Arc::new(Barrier::new(1));
+            let (ready_tx, _ready_rx) = std::sync::mpsc::channel::<()>();
+            let clock = crate::clock::PlaybackClock::wall();
+            clock.start();
             cancel_handle.cancel();
 
             // Start at 3 seconds — should process historical cues
@@ -3574,8 +3514,9 @@ mod test {
                 engine.clone(),
                 song,
                 cancel_handle,
-                play_barrier,
+                ready_tx,
                 std::time::Duration::from_secs(3),
+                clock,
             );
             assert!(result.is_ok());
             Ok(())
@@ -3603,14 +3544,17 @@ mod test {
                 Vec::new(),
             );
             let song = Arc::new(crate::songs::Song::new(&assets_path, &song_config)?);
-            let play_barrier = Arc::new(Barrier::new(1));
+            let (ready_tx, _ready_rx) = std::sync::mpsc::channel::<()>();
+            let clock = crate::clock::PlaybackClock::wall();
+            clock.start();
 
             let result = Engine::play(
                 engine.clone(),
                 song,
                 cancel_handle,
-                play_barrier,
+                ready_tx,
                 std::time::Duration::ZERO,
+                clock,
             );
             assert!(result.is_ok());
             Ok(())
@@ -3646,14 +3590,17 @@ mod test {
                 Vec::new(),
             );
             let song = Arc::new(crate::songs::Song::new(&assets_path, &song_config)?);
-            let play_barrier = Arc::new(Barrier::new(1));
+            let (ready_tx, _ready_rx) = std::sync::mpsc::channel::<()>();
+            let clock = crate::clock::PlaybackClock::wall();
+            clock.start();
 
             let result = Engine::play(
                 engine.clone(),
                 song,
                 cancel_handle,
-                play_barrier,
+                ready_tx,
                 std::time::Duration::ZERO,
+                clock,
             );
             assert!(result.is_ok(), "play failed: {:?}", result.err());
             Ok(())
@@ -4311,14 +4258,17 @@ mod test {
                 Vec::new(),
             );
             let song = Arc::new(crate::songs::Song::new(tmp_dir.path(), &song_config)?);
-            let play_barrier = Arc::new(Barrier::new(1));
+            let (ready_tx, _ready_rx) = std::sync::mpsc::channel::<()>();
+            let clock = crate::clock::PlaybackClock::wall();
+            clock.start();
 
             let result = Engine::play(
                 engine.clone(),
                 song,
                 cancel_handle,
-                play_barrier,
+                ready_tx,
                 std::time::Duration::ZERO,
+                clock,
             );
             assert!(result.is_ok(), "play failed: {:?}", result.err());
             Ok(())
@@ -4349,15 +4299,18 @@ mod test {
                 Vec::new(),
             );
             let song = Arc::new(crate::songs::Song::new(tmp_dir.path(), &song_config)?);
-            let play_barrier = Arc::new(Barrier::new(1));
+            let (ready_tx, _ready_rx) = std::sync::mpsc::channel::<()>();
+            let clock = crate::clock::PlaybackClock::wall();
+            clock.start();
 
             // Start at 10 seconds — should seek past all events
             let result = Engine::play(
                 engine.clone(),
                 song,
                 cancel_handle,
-                play_barrier,
+                ready_tx,
                 std::time::Duration::from_secs(10),
+                clock,
             );
             assert!(result.is_ok(), "play failed: {:?}", result.err());
             Ok(())
@@ -4395,14 +4348,17 @@ mod test {
                 Vec::new(),
             );
             let song = Arc::new(crate::songs::Song::new(tmp_dir.path(), &song_config)?);
-            let play_barrier = Arc::new(Barrier::new(1));
+            let (ready_tx, _ready_rx) = std::sync::mpsc::channel::<()>();
+            let clock = crate::clock::PlaybackClock::wall();
+            clock.start();
 
             let result = Engine::play(
                 engine.clone(),
                 song,
                 cancel_handle,
-                play_barrier,
+                ready_tx,
                 std::time::Duration::ZERO,
+                clock,
             );
             assert!(result.is_ok(), "play failed: {:?}", result.err());
             Ok(())
@@ -4467,14 +4423,17 @@ mod test {
                 Vec::new(),
             );
             let song = Arc::new(crate::songs::Song::new(tmp_dir.path(), &song_config)?);
-            let play_barrier = Arc::new(Barrier::new(1));
+            let (ready_tx, _ready_rx) = std::sync::mpsc::channel::<()>();
+            let clock = crate::clock::PlaybackClock::wall();
+            clock.start();
 
             let result = Engine::play(
                 engine.clone(),
                 song,
                 cancel_handle,
-                play_barrier,
+                ready_tx,
                 std::time::Duration::ZERO,
+                clock,
             );
             assert!(result.is_ok(), "play failed: {:?}", result.err());
             Ok(())
@@ -4525,14 +4484,17 @@ mod test {
                 Vec::new(),
             );
             let song = Arc::new(crate::songs::Song::new(tmp_dir.path(), &song_config)?);
-            let play_barrier = Arc::new(Barrier::new(1));
+            let (ready_tx, _ready_rx) = std::sync::mpsc::channel::<()>();
+            let clock = crate::clock::PlaybackClock::wall();
+            clock.start();
 
             let result = Engine::play(
                 engine.clone(),
                 song,
                 cancel_handle,
-                play_barrier,
+                ready_tx,
                 std::time::Duration::ZERO,
+                clock,
             );
             assert!(result.is_ok(), "play failed: {:?}", result.err());
             Ok(())
@@ -4632,7 +4594,9 @@ mod test {
                 Vec::new(),
             );
             let song = Arc::new(crate::songs::Song::new(tmp_dir.path(), &song_config)?);
-            let play_barrier = Arc::new(Barrier::new(1));
+            let (ready_tx, _ready_rx) = std::sync::mpsc::channel::<()>();
+            let clock = crate::clock::PlaybackClock::wall();
+            clock.start();
 
             cancel_handle.cancel();
 
@@ -4640,8 +4604,9 @@ mod test {
                 engine.clone(),
                 song,
                 cancel_handle,
-                play_barrier,
+                ready_tx,
                 std::time::Duration::ZERO,
+                clock,
             );
             assert!(result.is_ok());
             Ok(())

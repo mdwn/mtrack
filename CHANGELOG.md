@@ -16,6 +16,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   explicit tempo change events — songs without a tempo map do not emit beat clock, leaving
   musicians free to control their own tempo. The beat clock runs on a dedicated thread with
   `spin_sleep` precision and supports mid-song tempo changes and seeking (Continue 0xFB).
+- **Unified playback clock**: A new `PlaybackClock` abstraction synchronizes MIDI and DMX
+  timing to the audio interface's hardware sample counter, eliminating drift between subsystems
+  over long songs. When no audio device is present, the clock falls back to `Instant::now()`
+  (system monotonic clock) with no behavioral change. The clock is always passed through to
+  MIDI and DMX regardless of audio presence.
+
+### Changed
+
+- **Replaced barrier synchronization with clock-based coordination**: Playback subsystems
+  (audio, MIDI, DMX) now signal readiness via channels and wait for the `PlaybackClock` to
+  start as the "go" signal, replacing the counted `Barrier` mechanism. This eliminates the
+  fragile barrier count computation, removes dummy barrier threads from the DMX engine, and
+  simplifies the overall synchronization model.
 
 ## [0.9.2] - 2026-03-01
 

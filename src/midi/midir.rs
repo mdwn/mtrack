@@ -29,6 +29,7 @@ use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, info, span, warn, Level};
 
 use crate::{
+    clock::PlaybackClock,
     config,
     dmx::{self, engine::Engine},
     playsync::CancelHandle,
@@ -178,8 +179,9 @@ impl super::Device for Device {
         &self,
         song: Arc<Song>,
         cancel_handle: CancelHandle,
-        play_barrier: Arc<Barrier>,
+        ready_tx: std::sync::mpsc::Sender<()>,
         start_time: Duration,
+        clock: PlaybackClock,
     ) -> Result<(), Box<dyn Error>> {
         let span = span!(Level::INFO, "play song (midir)");
         let _enter = span.enter();
@@ -191,6 +193,7 @@ impl super::Device for Device {
                     song = song.name(),
                     "No MIDI output device configured, cannot play song."
                 );
+                let _ = ready_tx.send(());
                 return Ok(());
             }
         };
@@ -229,6 +232,7 @@ impl super::Device for Device {
                 let clock_cancel = cancel_handle.clone();
                 let clock_playback_delay = playback_delay;
                 let clock_start_time = start_time;
+                let clock_clock = clock.clone();
 
                 // Build a small wrapper that owns the PrecomputedBeatClock data we need.
                 // We can't move midi_sheet into the closure since the note thread uses it,
@@ -254,13 +258,12 @@ impl super::Device for Device {
 
                         // Sleep the playback delay
                         {
-                            let start = std::time::Instant::now();
-                            while start.elapsed() < clock_playback_delay {
+                            while clock_clock.elapsed() < clock_playback_delay {
                                 if clock_cancel.is_cancelled() {
                                     return;
                                 }
                                 let remaining =
-                                    clock_playback_delay.saturating_sub(start.elapsed());
+                                    clock_playback_delay.saturating_sub(clock_clock.elapsed());
                                 spin_sleep::sleep(remaining.min(Duration::from_millis(50)));
                             }
                         }
@@ -270,6 +273,7 @@ impl super::Device for Device {
                             &ticks,
                             clock_start_time,
                             &clock_cancel,
+                            &clock_clock,
                         );
                     }),
                     internal_barrier,
@@ -299,10 +303,11 @@ impl super::Device for Device {
                         start_time,
                         playback_delay,
                         cancel_handle: &cancel_handle,
-                        play_barrier,
+                        ready_tx,
                         finished,
                         exclude_channels: &exclude_midi_channels,
                         beat_clock_barrier: beat_clock_internal_barrier,
+                        clock: &clock,
                     },
                 );
             })
@@ -588,16 +593,28 @@ struct PlaybackContext<'a> {
     start_time: Duration,
     playback_delay: Duration,
     cancel_handle: &'a CancelHandle,
-    play_barrier: Arc<Barrier>,
+    ready_tx: std::sync::mpsc::Sender<()>,
     finished: Arc<AtomicBool>,
     exclude_channels: &'a HashSet<u8>,
     beat_clock_barrier: Option<Arc<Barrier>>,
+    clock: &'a PlaybackClock,
 }
 
-/// Runs the MIDI playback thread body: waits on the barrier, sleeps through
-/// the playback delay (checking for cancellation), then plays events.
+/// Runs the MIDI playback thread body: signals readiness, waits for the clock
+/// to start, sleeps through the playback delay (checking for cancellation),
+/// then plays events.
 fn run_playback(sender: &mut dyn MidiSender, ctx: PlaybackContext<'_>) {
-    ctx.play_barrier.wait();
+    let _ = ctx.ready_tx.send(());
+
+    // Wait for the clock to start (the "go" signal from play_files).
+    while ctx.clock.elapsed() == Duration::ZERO {
+        if ctx.cancel_handle.is_cancelled() {
+            ctx.finished.store(true, Ordering::Relaxed);
+            ctx.cancel_handle.notify();
+            return;
+        }
+        std::hint::spin_loop();
+    }
 
     // Signal the beat clock thread (if any) to start in sync with us.
     if let Some(ref barrier) = ctx.beat_clock_barrier {
@@ -613,14 +630,13 @@ fn run_playback(sender: &mut dyn MidiSender, ctx: PlaybackContext<'_>) {
     // Sleep the playback delay in small increments so we can
     // respond to cancellation promptly.
     {
-        let start = std::time::Instant::now();
-        while start.elapsed() < ctx.playback_delay {
+        while ctx.clock.elapsed() < ctx.playback_delay {
             if ctx.cancel_handle.is_cancelled() {
                 ctx.finished.store(true, Ordering::Relaxed);
                 ctx.cancel_handle.notify();
                 return;
             }
-            let remaining = ctx.playback_delay.saturating_sub(start.elapsed());
+            let remaining = ctx.playback_delay.saturating_sub(ctx.clock.elapsed());
             spin_sleep::sleep(remaining.min(Duration::from_millis(50)));
         }
     }
@@ -631,6 +647,7 @@ fn run_playback(sender: &mut dyn MidiSender, ctx: PlaybackContext<'_>) {
         sender,
         ctx.cancel_handle,
         ctx.exclude_channels,
+        ctx.clock,
     );
 
     ctx.finished.store(true, Ordering::Relaxed);
@@ -653,6 +670,7 @@ fn run_beat_clock(
     ticks: &[Duration],
     start_time: Duration,
     cancel_handle: &CancelHandle,
+    clock: &PlaybackClock,
 ) {
     use midly::live::SystemRealtime;
 
@@ -670,7 +688,6 @@ fn run_beat_clock(
     let idx = ticks.partition_point(|t| *t < start_time);
     let remaining_ticks = &ticks[idx..];
 
-    let wall_start = std::time::Instant::now();
     let clock_bytes = realtime_bytes(SystemRealtime::TimingClock);
     let stop_bytes = realtime_bytes(SystemRealtime::Stop);
 
@@ -681,7 +698,7 @@ fn run_beat_clock(
         }
 
         let target_wall = *tick_time - start_time;
-        let elapsed = wall_start.elapsed();
+        let elapsed = clock.elapsed();
         if target_wall > elapsed {
             spin_sleep::sleep(target_wall - elapsed);
         }
@@ -708,9 +725,9 @@ fn play_precomputed(
     sender: &mut dyn MidiSender,
     cancel_handle: &CancelHandle,
     exclude_channels: &HashSet<u8>,
+    clock: &PlaybackClock,
 ) {
     let events = precomputed.events_from(start_time);
-    let wall_start = std::time::Instant::now();
     let mut buf = Vec::with_capacity(8);
 
     for event in events {
@@ -719,7 +736,7 @@ fn play_precomputed(
         }
 
         let target_wall = event.time - start_time;
-        let elapsed = wall_start.elapsed();
+        let elapsed = clock.elapsed();
         if target_wall > elapsed {
             spin_sleep::sleep(target_wall - elapsed);
         }
@@ -1311,13 +1328,15 @@ mod test {
             let device = Device::new_default("test".to_string());
             let (_tmp_dir, song) = make_song();
             let cancel = CancelHandle::new();
-            let barrier = Arc::new(Barrier::new(1));
+            let (ready_tx, _ready_rx) = std::sync::mpsc::channel::<()>();
+            let clock = PlaybackClock::wall();
             let result = <Device as crate::midi::Device>::play_from(
                 &device,
                 song,
                 cancel,
-                barrier,
+                ready_tx,
                 Duration::ZERO,
+                clock,
             );
             assert!(result.is_ok());
         }
@@ -1330,14 +1349,16 @@ mod test {
             assert!(song.midi_playback().is_none());
 
             let cancel = CancelHandle::new();
-            let barrier = Arc::new(Barrier::new(1));
+            let (ready_tx, _ready_rx) = std::sync::mpsc::channel::<()>();
+            let clock = PlaybackClock::wall();
             // Even with no output port, the no-output-port check happens first
             let result = <Device as crate::midi::Device>::play_from(
                 &device,
                 song,
                 cancel,
-                barrier,
+                ready_tx,
                 Duration::ZERO,
+                clock,
             );
             assert!(result.is_ok());
         }
@@ -1402,8 +1423,16 @@ mod test {
             let cancel = CancelHandle::new();
             let exclude = HashSet::new();
             let mut sender = MockSender::new();
+            let clock = PlaybackClock::wall();
 
-            play_precomputed(&midi, Duration::ZERO, &mut sender, &cancel, &exclude);
+            play_precomputed(
+                &midi,
+                Duration::ZERO,
+                &mut sender,
+                &cancel,
+                &exclude,
+                &clock,
+            );
 
             let sent = sender.sent.lock().unwrap();
             assert_eq!(sent.len(), 3);
@@ -1416,6 +1445,7 @@ mod test {
             let cancel = CancelHandle::new();
             let exclude = HashSet::new();
             let mut sender = MockSender::new();
+            let clock = PlaybackClock::wall();
 
             play_precomputed(
                 &midi,
@@ -1423,6 +1453,7 @@ mod test {
                 &mut sender,
                 &cancel,
                 &exclude,
+                &clock,
             );
 
             let sent = sender.sent.lock().unwrap();
@@ -1461,8 +1492,16 @@ mod test {
             let cancel = CancelHandle::new();
             let exclude = HashSet::from([5]);
             let mut sender = MockSender::new();
+            let clock = PlaybackClock::wall();
 
-            play_precomputed(&midi, Duration::ZERO, &mut sender, &cancel, &exclude);
+            play_precomputed(
+                &midi,
+                Duration::ZERO,
+                &mut sender,
+                &cancel,
+                &exclude,
+                &clock,
+            );
 
             let sent = sender.sent.lock().unwrap();
             assert_eq!(sent.len(), 2); // Channel 5 excluded
@@ -1479,7 +1518,15 @@ mod test {
             // Cancel immediately
             cancel.cancel();
 
-            play_precomputed(&midi, Duration::ZERO, &mut sender, &cancel, &exclude);
+            let clock = PlaybackClock::wall();
+            play_precomputed(
+                &midi,
+                Duration::ZERO,
+                &mut sender,
+                &cancel,
+                &exclude,
+                &clock,
+            );
 
             let sent = sender.sent.lock().unwrap();
             assert_eq!(sent.len(), 0);
@@ -1491,8 +1538,16 @@ mod test {
             let cancel = CancelHandle::new();
             let exclude = HashSet::new();
             let mut sender = MockSender::new();
+            let clock = PlaybackClock::wall();
 
-            play_precomputed(&midi, Duration::ZERO, &mut sender, &cancel, &exclude);
+            play_precomputed(
+                &midi,
+                Duration::ZERO,
+                &mut sender,
+                &cancel,
+                &exclude,
+                &clock,
+            );
 
             let sent = sender.sent.lock().unwrap();
             assert!(sent.is_empty());
@@ -1504,9 +1559,17 @@ mod test {
             let cancel = CancelHandle::new();
             let exclude = HashSet::new();
             let mut sender = MockSender::failing();
+            let clock = PlaybackClock::wall();
 
             // Should not panic — errors are logged but playback continues
-            play_precomputed(&midi, Duration::ZERO, &mut sender, &cancel, &exclude);
+            play_precomputed(
+                &midi,
+                Duration::ZERO,
+                &mut sender,
+                &cancel,
+                &exclude,
+                &clock,
+            );
         }
 
         #[test]
@@ -1523,8 +1586,16 @@ mod test {
             let cancel = CancelHandle::new();
             let exclude = HashSet::new();
             let mut sender = MockSender::new();
+            let clock = PlaybackClock::wall();
 
-            play_precomputed(&midi, Duration::ZERO, &mut sender, &cancel, &exclude);
+            play_precomputed(
+                &midi,
+                Duration::ZERO,
+                &mut sender,
+                &cancel,
+                &exclude,
+                &clock,
+            );
 
             let sent = sender.sent.lock().unwrap();
             assert_eq!(sent.len(), 1);
@@ -1592,10 +1663,12 @@ mod test {
         fn normal_playback_sets_finished() {
             let midi = make_events(&[0, 0]);
             let cancel = CancelHandle::new();
-            let barrier = Arc::new(Barrier::new(1));
+            let (ready_tx, _ready_rx) = std::sync::mpsc::channel::<()>();
             let finished = Arc::new(AtomicBool::new(false));
             let exclude = HashSet::new();
             let mut sender = MockSender::new();
+            let clock = PlaybackClock::wall();
+            clock.start();
 
             run_playback(
                 &mut sender,
@@ -1604,10 +1677,11 @@ mod test {
                     start_time: Duration::ZERO,
                     playback_delay: Duration::ZERO,
                     cancel_handle: &cancel,
-                    play_barrier: barrier,
+                    ready_tx,
                     finished: finished.clone(),
                     exclude_channels: &exclude,
                     beat_clock_barrier: None,
+                    clock: &clock,
                 },
             );
 
@@ -1620,10 +1694,12 @@ mod test {
             let midi = make_events(&[0]);
             let cancel = CancelHandle::new();
             cancel.cancel();
-            let barrier = Arc::new(Barrier::new(1));
+            let (ready_tx, _ready_rx) = std::sync::mpsc::channel::<()>();
             let finished = Arc::new(AtomicBool::new(false));
             let exclude = HashSet::new();
             let mut sender = MockSender::new();
+            let clock = PlaybackClock::wall();
+            clock.start();
 
             run_playback(
                 &mut sender,
@@ -1632,10 +1708,11 @@ mod test {
                     start_time: Duration::ZERO,
                     playback_delay: Duration::ZERO,
                     cancel_handle: &cancel,
-                    play_barrier: barrier,
+                    ready_tx,
                     finished: finished.clone(),
                     exclude_channels: &exclude,
                     beat_clock_barrier: None,
+                    clock: &clock,
                 },
             );
 
@@ -1648,10 +1725,12 @@ mod test {
         fn cancel_during_delay_sets_finished() {
             let midi = make_events(&[0]);
             let cancel = CancelHandle::new();
-            let barrier = Arc::new(Barrier::new(1));
+            let (ready_tx, _ready_rx) = std::sync::mpsc::channel::<()>();
             let finished = Arc::new(AtomicBool::new(false));
             let exclude = HashSet::new();
             let mut sender = MockSender::new();
+            let clock = PlaybackClock::wall();
+            clock.start();
 
             // Use a long delay but cancel from another thread
             let cancel_clone = cancel.clone();
@@ -1667,10 +1746,11 @@ mod test {
                     start_time: Duration::ZERO,
                     playback_delay: Duration::from_secs(10), // Very long delay
                     cancel_handle: &cancel,
-                    play_barrier: barrier,
+                    ready_tx,
                     finished: finished.clone(),
                     exclude_channels: &exclude,
                     beat_clock_barrier: None,
+                    clock: &clock,
                 },
             );
 
@@ -1684,10 +1764,12 @@ mod test {
         fn short_delay_completes_and_plays() {
             let midi = make_events(&[0, 0, 0]);
             let cancel = CancelHandle::new();
-            let barrier = Arc::new(Barrier::new(1));
+            let (ready_tx, _ready_rx) = std::sync::mpsc::channel::<()>();
             let finished = Arc::new(AtomicBool::new(false));
             let exclude = HashSet::new();
             let mut sender = MockSender::new();
+            let clock = PlaybackClock::wall();
+            clock.start();
 
             run_playback(
                 &mut sender,
@@ -1696,10 +1778,11 @@ mod test {
                     start_time: Duration::ZERO,
                     playback_delay: Duration::from_millis(10), // Short delay
                     cancel_handle: &cancel,
-                    play_barrier: barrier,
+                    ready_tx,
                     finished: finished.clone(),
                     exclude_channels: &exclude,
                     beat_clock_barrier: None,
+                    clock: &clock,
                 },
             );
 
@@ -1730,10 +1813,12 @@ mod test {
             ];
             let midi = PrecomputedMidi::from_events(events);
             let cancel = CancelHandle::new();
-            let barrier = Arc::new(Barrier::new(1));
+            let (ready_tx, _ready_rx) = std::sync::mpsc::channel::<()>();
             let finished = Arc::new(AtomicBool::new(false));
             let exclude = HashSet::from([9]);
             let mut sender = MockSender::new();
+            let clock = PlaybackClock::wall();
+            clock.start();
 
             run_playback(
                 &mut sender,
@@ -1742,10 +1827,11 @@ mod test {
                     start_time: Duration::ZERO,
                     playback_delay: Duration::ZERO,
                     cancel_handle: &cancel,
-                    play_barrier: barrier,
+                    ready_tx,
                     finished: finished.clone(),
                     exclude_channels: &exclude,
                     beat_clock_barrier: None,
+                    clock: &clock,
                 },
             );
 
@@ -1753,18 +1839,20 @@ mod test {
         }
 
         #[test]
-        fn barrier_synchronization_works() {
-            // Barrier with 2 parties — run_playback in a thread, release from main
+        fn ready_channel_synchronization_works() {
+            // run_playback sends on ready_tx, then waits for the clock to start.
+            // The test thread receives on ready_rx, then starts the clock.
             let midi = make_events(&[0]);
             let cancel = CancelHandle::new();
-            let barrier = Arc::new(Barrier::new(2));
+            let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
             let finished = Arc::new(AtomicBool::new(false));
             let exclude = HashSet::new();
             let mut sender = MockSender::new();
+            let clock = PlaybackClock::wall();
 
-            let barrier_clone = barrier.clone();
             let finished_clone = finished.clone();
             let cancel_clone = cancel.clone();
+            let clock_clone = clock.clone();
 
             let handle = thread::spawn(move || {
                 run_playback(
@@ -1774,21 +1862,22 @@ mod test {
                         start_time: Duration::ZERO,
                         playback_delay: Duration::ZERO,
                         cancel_handle: &cancel_clone,
-                        play_barrier: barrier_clone,
+                        ready_tx,
                         finished: finished_clone,
                         exclude_channels: &exclude,
                         beat_clock_barrier: None,
+                        clock: &clock_clone,
                     },
                 );
                 sender
             });
 
-            // Small delay to ensure the thread reaches the barrier
-            thread::sleep(Duration::from_millis(10));
+            // Wait for run_playback to signal readiness
+            ready_rx.recv().unwrap();
             assert!(!finished.load(Ordering::Relaxed));
 
-            // Release the barrier
-            barrier.wait();
+            // Start the clock to let playback proceed
+            clock.start();
 
             let sender = handle.join().unwrap();
             assert!(finished.load(Ordering::Relaxed));
@@ -1848,8 +1937,9 @@ mod test {
             let ticks: Vec<Duration> = beat_clock.ticks_from(Duration::ZERO).to_vec();
             let cancel = CancelHandle::new();
             let mut sender = MockSender::new();
+            let clock = PlaybackClock::wall();
 
-            run_beat_clock(&mut sender, &ticks, Duration::ZERO, &cancel);
+            run_beat_clock(&mut sender, &ticks, Duration::ZERO, &cancel, &clock);
 
             let sent = sender.sent.lock().unwrap();
             // START + 24 clock ticks + STOP
@@ -1866,8 +1956,15 @@ mod test {
             let ticks = vec![Duration::from_millis(500), Duration::from_millis(600)];
             let cancel = CancelHandle::new();
             let mut sender = MockSender::new();
+            let clock = PlaybackClock::wall();
 
-            run_beat_clock(&mut sender, &ticks, Duration::from_millis(100), &cancel);
+            run_beat_clock(
+                &mut sender,
+                &ticks,
+                Duration::from_millis(100),
+                &cancel,
+                &clock,
+            );
 
             let sent = sender.sent.lock().unwrap();
             // CONTINUE + 2 ticks + STOP
@@ -1880,8 +1977,9 @@ mod test {
             let ticks: Vec<Duration> = Vec::new();
             let cancel = CancelHandle::new();
             let mut sender = MockSender::new();
+            let clock = PlaybackClock::wall();
 
-            run_beat_clock(&mut sender, &ticks, Duration::ZERO, &cancel);
+            run_beat_clock(&mut sender, &ticks, Duration::ZERO, &cancel, &clock);
 
             let sent = sender.sent.lock().unwrap();
             assert_eq!(sent.len(), 2);
@@ -1895,8 +1993,9 @@ mod test {
             let cancel = CancelHandle::new();
             cancel.cancel();
             let mut sender = MockSender::new();
+            let clock = PlaybackClock::wall();
 
-            run_beat_clock(&mut sender, &ticks, Duration::ZERO, &cancel);
+            run_beat_clock(&mut sender, &ticks, Duration::ZERO, &cancel, &clock);
 
             let sent = sender.sent.lock().unwrap();
             // START + STOP (cancelled before any ticks)

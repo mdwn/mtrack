@@ -14,6 +14,7 @@
 mod audio;
 mod calibrate;
 mod cli;
+mod clock;
 mod config;
 mod controller;
 mod dmx;

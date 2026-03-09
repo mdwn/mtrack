@@ -20,7 +20,7 @@ use std::{
     path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Barrier,
+        Arc,
     },
     thread,
     time::{Duration, SystemTime},
@@ -42,6 +42,33 @@ use crate::{
     songs::Song,
 };
 
+/// Holds the ingredients for constructing a per-song `PlaybackClock`.
+/// When an audio device is present, clocks are derived from its hardware
+/// sample counter. Otherwise, clocks fall back to `Instant::now()`.
+#[derive(Clone)]
+enum ClockSource {
+    Audio {
+        sample_counter: Arc<std::sync::atomic::AtomicU64>,
+        sample_rate: u32,
+    },
+    Wall,
+}
+
+impl ClockSource {
+    fn new_clock(&self) -> crate::clock::PlaybackClock {
+        match self {
+            ClockSource::Audio {
+                sample_counter,
+                sample_rate,
+            } => crate::clock::PlaybackClock::from_sample_counter(
+                sample_counter.clone(),
+                *sample_rate,
+            ),
+            ClockSource::Wall => crate::clock::PlaybackClock::wall(),
+        }
+    }
+}
+
 struct PlayHandles {
     join: JoinHandle<()>,
     cancel: CancelHandle,
@@ -53,6 +80,7 @@ struct PlaybackContext {
     mappings: Option<Arc<HashMap<String, Vec<u16>>>>,
     midi_device: Option<Arc<dyn midi::Device>>,
     dmx_engine: Option<Arc<dmx::engine::Engine>>,
+    clock: crate::clock::PlaybackClock,
     song: Arc<Song>,
     cancel_handle: CancelHandle,
     play_tx: oneshot::Sender<Result<(), String>>,
@@ -86,6 +114,11 @@ pub struct Player {
     /// Held to keep the engine (and its cpal stream + forwarding thread) alive.
     #[allow(dead_code)]
     trigger_engine: Option<Arc<TriggerEngine>>,
+    /// Factory for creating per-song playback clocks. Stored on the Player so
+    /// every song's clock is derived from the same audio hardware sample counter
+    /// (when an audio device is present), keeping all subsystems synchronized.
+    /// A fresh clock is created per song to avoid races during stop/start.
+    clock_source: ClockSource,
     /// The playlist to use.
     playlist: Arc<Playlist>,
     /// The all songs playlist.
@@ -235,6 +268,19 @@ impl Player {
         playlist: Arc<Playlist>,
         songs: Arc<Songs>,
     ) -> Result<Player, Box<dyn Error>> {
+        // Store the clock source so each song can create a fresh PlaybackClock.
+        let clock_source = match devices
+            .audio
+            .as_ref()
+            .and_then(|d| Some((d.sample_counter()?, d.sample_rate()?)))
+        {
+            Some((counter, rate)) => ClockSource::Audio {
+                sample_counter: counter,
+                sample_rate: rate,
+            },
+            None => ClockSource::Wall,
+        };
+
         Ok(Player {
             device: devices.audio,
             mappings: devices.mappings,
@@ -242,6 +288,7 @@ impl Player {
             dmx_engine: devices.dmx_engine,
             sample_engine: devices.sample_engine,
             trigger_engine: devices.trigger_engine,
+            clock_source,
             playlist,
             all_songs: playlist::from_songs(songs)?,
             use_all_songs: Arc::new(AtomicBool::new(false)),
@@ -501,6 +548,7 @@ impl Player {
                 mappings: self.mappings.clone(),
                 midi_device: self.midi_device.clone(),
                 dmx_engine: self.dmx_engine.clone(),
+                clock: self.clock_source.new_clock(),
                 song: song.clone(),
                 cancel_handle: cancel_handle.clone(),
                 play_tx,
@@ -571,26 +619,19 @@ impl Player {
             mappings,
             midi_device,
             dmx_engine,
+            clock,
             song,
             cancel_handle,
             play_tx,
             start_time,
         } = ctx;
 
-        // Set up the play barrier, which will synchronize the subsystem threads.
-        let has_audio = device.is_some();
+        // Check if any subsystems are active.
+        let has_audio = device.is_some() && mappings.is_some();
         let has_midi = song.midi_playback().is_some() && midi_device.is_some();
-        let num_light_shows = if dmx_engine.is_some() {
-            song.light_shows().len()
-        } else {
-            0
-        };
-        let has_dsl_lighting = !song.dsl_lighting_shows().is_empty() && dmx_engine.is_some();
-        let num_barriers =
-            compute_barrier_count(has_audio, has_midi, num_light_shows, has_dsl_lighting);
+        let has_dmx = dmx_engine.is_some();
 
-        // If no subsystems are active, signal success immediately and return.
-        if num_barriers == 0 {
+        if !has_audio && !has_midi && !has_dmx {
             info!(
                 song = song.name(),
                 "No playback subsystems active for this song; completing immediately"
@@ -601,20 +642,26 @@ impl Player {
             return;
         }
 
-        let barrier = Arc::new(Barrier::new(num_barriers));
+        // Each subsystem signals readiness on this channel. Once all have
+        // reported ready, we start the clock as the "go" signal.
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
+        let mut expected_ready: usize = 0;
 
         let audio_outcome: Arc<parking_lot::Mutex<Option<Result<(), String>>>> =
             Arc::new(parking_lot::Mutex::new(None));
 
         let audio_join_handle = if let (Some(device), Some(mappings)) = (device, mappings) {
             let song = song.clone();
-            let barrier = barrier.clone();
             let cancel_handle = cancel_handle.clone();
             let audio_outcome = audio_outcome.clone();
+            let ready_tx = ready_tx.clone();
+            let clock = clock.clone();
+            expected_ready += 1;
 
             Some(thread::spawn(move || {
                 let song_name = song.name().to_string();
-                let result = device.play_from(song, &mappings, cancel_handle, barrier, start_time);
+                let result =
+                    device.play_from(song, &mappings, cancel_handle, ready_tx, clock, start_time);
                 if let Err(ref e) = result {
                     error!(
                         err = e.as_ref(),
@@ -633,15 +680,22 @@ impl Player {
         let dmx_join_handle = dmx_engine.map(|dmx_engine| {
             let dmx_engine = dmx_engine.clone();
             let song = song.clone();
-            let barrier = barrier.clone();
             let cancel_handle = cancel_handle.clone();
+            let clock = clock.clone();
+            let ready_tx = ready_tx.clone();
+            expected_ready += 1;
 
             thread::spawn(move || {
                 let song_name = song.name().to_string();
 
-                if let Err(e) =
-                    dmx::engine::Engine::play(dmx_engine, song, cancel_handle, barrier, start_time)
-                {
+                if let Err(e) = dmx::engine::Engine::play(
+                    dmx_engine,
+                    song,
+                    cancel_handle,
+                    ready_tx,
+                    start_time,
+                    clock,
+                ) {
                     error!(
                         err = e.as_ref(),
                         song = song_name,
@@ -654,13 +708,17 @@ impl Player {
         let midi_join_handle = if let Some(midi_device) = midi_device {
             let midi_device = midi_device.clone();
             let song = song.clone();
-            let barrier = barrier.clone();
             let cancel_handle = cancel_handle.clone();
+            let ready_tx = ready_tx.clone();
+            let clock = clock.clone();
+            expected_ready += 1;
 
             Some(thread::spawn(move || {
                 let song_name = song.name().to_string();
 
-                if let Err(e) = midi_device.play_from(song, cancel_handle, barrier, start_time) {
+                if let Err(e) =
+                    midi_device.play_from(song, cancel_handle, ready_tx, start_time, clock)
+                {
                     error!(
                         err = e.as_ref(),
                         song = song_name,
@@ -671,6 +729,22 @@ impl Player {
         } else {
             None
         };
+
+        // Drop the original sender so the channel closes when all subsystem
+        // clones are dropped (important for error handling).
+        drop(ready_tx);
+
+        // Wait for all subsystems to signal readiness.
+        for _ in 0..expected_ready {
+            if ready_rx.recv().is_err() {
+                // A subsystem dropped its sender without signaling (likely panicked).
+                // Start the clock anyway so other subsystems don't spin forever.
+                break;
+            }
+        }
+
+        // Start the clock — this is the "go" signal for all subsystems.
+        clock.start();
 
         if let Some(audio_join_handle) = audio_join_handle {
             if let Err(e) = audio_join_handle.join() {
@@ -1002,27 +1076,6 @@ impl StatusEvents {
             None => None,
         })
     }
-}
-
-/// Computes the number of barrier participants needed for playback synchronization.
-fn compute_barrier_count(
-    has_audio: bool,
-    has_midi: bool,
-    num_light_shows: usize,
-    has_dsl_lighting: bool,
-) -> usize {
-    let mut count = 0;
-    if has_audio {
-        count += 1;
-    }
-    if has_midi {
-        count += 1;
-    }
-    count += num_light_shows;
-    if has_dsl_lighting {
-        count += 1;
-    }
-    count
 }
 
 /// The result of receiving a playback completion signal.
@@ -1714,6 +1767,7 @@ mod test {
             dmx_engine: None,
             sample_engine: None,
             trigger_engine: None,
+            clock_source: ClockSource::Wall,
             playlist: playlist.clone(),
             all_songs: crate::playlist::from_songs(songs)?,
             use_all_songs: Arc::new(AtomicBool::new(false)),
@@ -1847,49 +1901,6 @@ mod test {
         assert_eq!(player.get_playlist().current().name(), "Song 9");
 
         Ok(())
-    }
-
-    // --- compute_barrier_count tests ---
-
-    #[test]
-    fn barrier_count_no_subsystems() {
-        assert_eq!(compute_barrier_count(false, false, 0, false), 0);
-    }
-
-    #[test]
-    fn barrier_count_audio_only() {
-        assert_eq!(compute_barrier_count(true, false, 0, false), 1);
-    }
-
-    #[test]
-    fn barrier_count_midi_only() {
-        assert_eq!(compute_barrier_count(false, true, 0, false), 1);
-    }
-
-    #[test]
-    fn barrier_count_one_legacy_show() {
-        assert_eq!(compute_barrier_count(false, false, 1, false), 1);
-    }
-
-    #[test]
-    fn barrier_count_three_legacy_shows() {
-        assert_eq!(compute_barrier_count(false, false, 3, false), 3);
-    }
-
-    #[test]
-    fn barrier_count_dsl_lighting_only() {
-        assert_eq!(compute_barrier_count(false, false, 0, true), 1);
-    }
-
-    #[test]
-    fn barrier_count_all_subsystems() {
-        // 1 audio + 1 midi + 2 legacy + 1 dsl = 5
-        assert_eq!(compute_barrier_count(true, true, 2, true), 5);
-    }
-
-    #[test]
-    fn barrier_count_audio_and_midi_no_dmx() {
-        assert_eq!(compute_barrier_count(true, true, 0, false), 2);
     }
 
     // --- resolve_playback_outcome tests ---
