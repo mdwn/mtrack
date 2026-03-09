@@ -163,29 +163,6 @@ impl SampleDefinition {
         }
     }
 
-    /// Creates a new sample definition with output_track (test only).
-    #[allow(clippy::too_many_arguments)]
-    pub fn new_with_output_track(
-        file: Option<String>,
-        output_track: &str,
-        velocity: VelocityConfig,
-        release_behavior: ReleaseBehavior,
-        retrigger: RetriggerBehavior,
-        max_voices: Option<u32>,
-        fade_time_ms: u32,
-    ) -> Self {
-        Self {
-            file,
-            output_channels: Vec::new(),
-            output_track: Some(output_track.to_string()),
-            velocity,
-            release_behavior,
-            retrigger,
-            max_voices,
-            fade_time_ms,
-        }
-    }
-
     /// Gets the audio file path (test only).
     pub fn file(&self) -> Option<&str> {
         self.file.as_deref()

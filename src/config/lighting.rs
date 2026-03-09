@@ -236,7 +236,7 @@ mod tests {
     #[test]
     fn group_constraint_variants() {
         // Just ensure all variants construct properly.
-        let constraints = vec![
+        let constraints = [
             GroupConstraint::AllOf(vec!["a".to_string()]),
             GroupConstraint::AnyOf(vec!["b".to_string()]),
             GroupConstraint::Prefer(vec!["c".to_string()]),

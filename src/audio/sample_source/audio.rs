@@ -302,6 +302,38 @@ impl AudioSampleSource {
         }
     }
 
+    /// Reads up to `buf.len()` interleaved samples into `buf`, returning
+    /// the number of samples actually written. Returns 0 at EOF.
+    /// This avoids per-sample virtual dispatch by copying directly from
+    /// the internal decode buffer.
+    pub fn read_samples(&mut self, buf: &mut [f32]) -> Result<usize, SampleSourceError> {
+        if self.is_finished || buf.is_empty() {
+            return Ok(0);
+        }
+
+        let mut written = 0;
+        while written < buf.len() {
+            // Drain what's available in the current buffer
+            let available = self.sample_buffer.len() - self.buffer_position;
+            if available > 0 {
+                let to_copy = available.min(buf.len() - written);
+                buf[written..written + to_copy].copy_from_slice(
+                    &self.sample_buffer[self.buffer_position..self.buffer_position + to_copy],
+                );
+                self.buffer_position += to_copy;
+                written += to_copy;
+            } else {
+                // Need more data
+                self.refill_buffer()?;
+                if self.sample_buffer.is_empty() {
+                    self.is_finished = true;
+                    break;
+                }
+            }
+        }
+        Ok(written)
+    }
+
     /// Refills the sample buffer by reading a chunk from the audio file
     fn refill_buffer(&mut self) -> Result<(), SampleSourceError> {
         // Clear the buffer and reset position
@@ -711,6 +743,104 @@ mod tests {
         std::fs::write(&bad_path, b"not a wav file").unwrap();
         let result = AudioSampleSource::from_file(&bad_path, None, 1024);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn read_samples_matches_next_sample() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav_path = dir.path().join("bulk.wav");
+        let num_samples = 200;
+        let data: Vec<f32> = (0..num_samples)
+            .map(|i| i as f32 / num_samples as f32)
+            .collect();
+        write_wav(wav_path.clone(), vec![data], 44100).unwrap();
+
+        // Read via next_sample
+        let mut source1 = AudioSampleSource::from_file(&wav_path, None, 64).unwrap();
+        let mut expected = Vec::new();
+        while let Ok(Some(s)) = source1.next_sample() {
+            expected.push(s);
+        }
+
+        // Read via read_samples
+        let mut source2 = AudioSampleSource::from_file(&wav_path, None, 64).unwrap();
+        let mut actual = vec![0.0_f32; num_samples + 10];
+        let n = source2.read_samples(&mut actual).unwrap();
+        actual.truncate(n);
+
+        assert_eq!(expected.len(), actual.len());
+        for (i, (a, b)) in expected.iter().zip(actual.iter()).enumerate() {
+            assert!(
+                (a - b).abs() < f32::EPSILON,
+                "sample {} differs: {} vs {}",
+                i,
+                a,
+                b
+            );
+        }
+    }
+
+    #[test]
+    fn read_samples_partial_buffer() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav_path = dir.path().join("partial.wav");
+        write_wav(wav_path.clone(), vec![vec![0.5f32; 100]], 44100).unwrap();
+
+        let mut source = AudioSampleSource::from_file(&wav_path, None, 1024).unwrap();
+
+        // Read in small chunks
+        let mut all = Vec::new();
+        let mut buf = [0.0_f32; 7]; // odd size to test partial reads
+        loop {
+            let n = source.read_samples(&mut buf).unwrap();
+            if n == 0 {
+                break;
+            }
+            all.extend_from_slice(&buf[..n]);
+        }
+        assert_eq!(all.len(), 100);
+    }
+
+    #[test]
+    fn read_samples_returns_zero_after_eof() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav_path = dir.path().join("eof.wav");
+        write_wav(wav_path.clone(), vec![vec![0.5f32; 5]], 44100).unwrap();
+
+        let mut source = AudioSampleSource::from_file(&wav_path, None, 1024).unwrap();
+
+        // Drain everything
+        let mut buf = [0.0_f32; 100];
+        let n = source.read_samples(&mut buf).unwrap();
+        assert_eq!(n, 5);
+
+        // Subsequent calls should return 0
+        assert_eq!(source.read_samples(&mut buf).unwrap(), 0);
+        assert_eq!(source.read_samples(&mut buf).unwrap(), 0);
+    }
+
+    #[test]
+    fn read_samples_empty_buffer() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav_path = dir.path().join("empty_buf.wav");
+        write_wav(wav_path.clone(), vec![vec![0.5f32; 10]], 44100).unwrap();
+
+        let mut source = AudioSampleSource::from_file(&wav_path, None, 1024).unwrap();
+        let mut buf = [];
+        assert_eq!(source.read_samples(&mut buf).unwrap(), 0);
+    }
+
+    #[test]
+    fn read_samples_tiny_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav_path = dir.path().join("tiny.wav");
+        write_wav(wav_path.clone(), vec![vec![0.25f32; 1]], 44100).unwrap();
+
+        let mut source = AudioSampleSource::from_file(&wav_path, None, 1024).unwrap();
+        let mut buf = [0.0_f32; 100];
+        let n = source.read_samples(&mut buf).unwrap();
+        assert_eq!(n, 1);
+        assert!((buf[0] - 0.25).abs() < 0.01);
     }
 
     #[test]

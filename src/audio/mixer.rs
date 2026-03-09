@@ -883,8 +883,8 @@ mod tests {
         assert_eq!(output[1], 0.0); // Frame 0, Ch 1
         assert_eq!(output[2], 0.9); // Frame 1, Ch 0
         assert_eq!(output[3], 0.0); // Frame 1, Ch 1
-        for i in 4..16 {
-            assert_eq!(output[i], 0.0, "output[{i}] should be silence");
+        for (i, val) in output.iter().enumerate().skip(4) {
+            assert_eq!(*val, 0.0, "output[{i}] should be silence");
         }
 
         // Source should have been marked finished and cleaned up.
@@ -1155,8 +1155,8 @@ mod tests {
 
         assert_eq!(output[0], 0.5);
         assert_eq!(output[2], 0.8);
-        for i in 4..16 {
-            assert_eq!(output[i], 0.0, "output[{i}] should be silence");
+        for (i, val) in output.iter().enumerate().skip(4) {
+            assert_eq!(*val, 0.0, "output[{i}] should be silence");
         }
         assert_eq!(
             mixer.active_sources.read().len(),
@@ -1442,7 +1442,7 @@ mod tests {
             mappings.insert("test".to_string(), vec![5]); // Out of range
             mixer.add_source(make_active_source(1, source, mappings));
 
-            let mut output = vec![0.0f32; 1 * 2];
+            let mut output = vec![0.0f32; 2];
             mixer.process_into_output(&mut output, 1);
 
             // Should not panic, should produce silence

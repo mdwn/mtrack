@@ -53,7 +53,7 @@ mod tests {
     fn is_std_error() {
         let e = ConfigError::Io {
             path: PathBuf::from("test"),
-            source: std::io::Error::new(std::io::ErrorKind::Other, "test"),
+            source: std::io::Error::other("test"),
         };
         let boxed: Box<dyn std::error::Error> = Box::new(e);
         assert!(boxed.to_string().contains("test"));

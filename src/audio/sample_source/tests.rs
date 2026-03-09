@@ -2697,7 +2697,7 @@ mod sample_source_tests {
         assert_eq!(mapped.source_channel_count(), 1);
 
         let mut count = 0;
-        while let Some(_) = mapped.next_sample().unwrap() {
+        while mapped.next_sample().unwrap().is_some() {
             count += 1;
             if count > 50000 {
                 break;
@@ -2771,14 +2771,9 @@ mod sample_source_tests {
 
         let mut read = Vec::new();
         let mut frame = [0.0f32; 2];
-        loop {
-            match buffered.next_frame(&mut frame).unwrap() {
-                Some(_) => {
-                    read.push(frame[0]);
-                    read.push(frame[1]);
-                }
-                None => break,
-            }
+        while buffered.next_frame(&mut frame).unwrap().is_some() {
+            read.push(frame[0]);
+            read.push(frame[1]);
         }
         assert_eq!(read, samples);
     }
@@ -2907,7 +2902,7 @@ mod sample_source_tests {
         let wav_path = tempdir.path().join("factory_seek.wav");
 
         let sample_rate = 44100u32;
-        let samples: Vec<i32> = (0..44100).map(|i| (i * 100) as i32).collect();
+        let samples: Vec<i32> = (0..44100).map(|i| i * 100).collect();
         write_wav(wav_path.clone(), vec![samples], sample_rate).unwrap();
 
         let mut source = create_sample_source_from_file(
@@ -3567,7 +3562,7 @@ mod sample_source_tests {
         let tempdir = tempdir().unwrap();
         let wav_path = tempdir.path().join("detect_channels.wav");
 
-        let samples: Vec<i32> = (0..1000).map(|i| (i * 100) as i32).collect();
+        let samples: Vec<i32> = (0..1000).map(|i| i * 100).collect();
         write_wav(wav_path.clone(), vec![samples], 44100).unwrap();
 
         // Force channel detection by first audio packet instead of metadata

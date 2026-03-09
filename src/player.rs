@@ -1313,7 +1313,7 @@ mod test {
         dmx: Option<config::Dmx>,
     ) -> Result<Player, Box<dyn Error>> {
         let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        Ok(Player::new(
+        Player::new(
             songs.clone(),
             Playlist::new(
                 "playlist",
@@ -1322,7 +1322,7 @@ mod test {
             )?,
             &config::Player::new(vec![], audio, midi, dmx, HashMap::new(), "assets/songs"),
             None,
-        )?)
+        )
     }
 
     /// Helper to create a player with the standard test assets (audio + MIDI).
@@ -2120,7 +2120,7 @@ mod test {
             sample_engine: None,
             trigger_engine: None,
         };
-        Ok(Player::new_with_devices(devices, playlist, songs)?)
+        Player::new_with_devices(devices, playlist, songs)
     }
 
     #[tokio::test(flavor = "multi_thread")]
