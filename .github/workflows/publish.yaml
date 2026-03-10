@@ -4,6 +4,9 @@ on:
     tags:
     - 'v*.*.*'
 
+permissions:
+  contents: write
+
 jobs:
   # Publishes mtrack to crates.io.
   publish:
