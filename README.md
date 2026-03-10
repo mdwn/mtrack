@@ -200,17 +200,6 @@ Songs (count: 23):
   ...
 ```
 
-You can play individual songs by using `mtrack play-direct`:
-
-```
-$ mtrack play-direct -m my-midi-device -s 0.25 -d universe=1,name=light-show my-audio-device click=1,cue=2 /mnt/song-storage "My cool song"
-2024-03-22T21:24:25.588828Z  INFO emit (midir): mtrack::midi::midir: Emitting event. device="my-midi-device:my-midi-device MIDI 1 28:0" event="Midi { channel: u4(15), message: ProgramChange { program: u7(3) } }"
-2024-03-22T21:24:25.589420Z  INFO player: mtrack::player: Waiting for song to finish. song="My cool song"
-2024-03-22T21:24:25.589992Z  INFO play song (rodio): mtrack::audio::rodio: Playing song. device="my-audio-device" song="My cool song" duration="4:14"
-2024-03-22T21:24:25.591112Z  INFO play song (dmx): mtrack::dmx::engine: Playing song DMX. song="My cool song" duration="4:14"
-2024-03-22T21:24:25.676452Z  INFO play song (midir): mtrack::midi::midir: Playing song MIDI. device="my-midi-device:my-midi-device MIDI 1 28:0" song="My cool song" duration="4:14"
-```
-
 #### Generating default song configurations
 
 Song configurations can be generated using the `songs` command as follows:
@@ -490,28 +479,33 @@ track_mappings:
 
 You can start `mtrack` as a process with `mtrack start /path/to/player.yaml`.
 
-### Lighting simulator
+### Web UI
 
-`mtrack` includes a web-based lighting simulator for previewing and designing light shows without
-physical DMX hardware. The simulator visualizes per-fixture color and strobe state in real time,
-processes all layer commands, and supports hot-reload of `.light` DSL files during playback.
+`mtrack` includes a web-based interface for controlling and monitoring the player from a browser.
+The web UI is always available when running `mtrack start`, served at `http://127.0.0.1:8080`
+by default.
 
-Start with the `--simulator` flag:
-
-```
-$ mtrack start /path/to/player.yaml --simulator
-```
-
-The simulator web UI is available at `http://localhost:8080` by default. Use `--simulator-port` to
-change the port:
+Use `--web-port` and `--web-address` to customize:
 
 ```
-$ mtrack start /path/to/player.yaml --simulator --simulator-port 9090
+$ mtrack start /path/to/player.yaml --web-port 9090 --web-address 0.0.0.0
 ```
 
-When the OLA daemon is unavailable, the DMX engine falls back to a null client so the effects
-engine can still run. This allows dedicated lighting design environments without any physical DMX
-hardware or OLA installation.
+The web UI provides:
+
+- **Playback control** — Play/stop/next/prev with a progress bar showing elapsed and total time.
+- **Playlist management** — View and switch between the playlist and all-songs list, select songs.
+- **Waveform visualization** — Per-track waveform peak display for the current song.
+- **Stage view** — Interactive canvas showing fixture positions organized by tags, with real-time
+  DMX channel visualization and color rendering.
+- **Active effects** — Lists currently running lighting effects.
+- **Log panel** — Streaming application logs with auto-scroll.
+- **Lighting simulator** — The stage view doubles as a lighting simulator, allowing you to preview
+  and design light shows without physical DMX hardware. When the OLA daemon is unavailable, the
+  DMX engine falls back to a null client so the effects engine can still run.
+
+The web UI also exposes a REST API for managing configuration, playlists, songs, and lighting
+files, as well as a WebSocket endpoint for real-time state streaming.
 
 ### Hardware profiles
 
@@ -796,9 +790,9 @@ strike me.
 
 ## Terminal UI (TUI)
 
-When `mtrack start` is run from an interactive terminal (TTY), it automatically launches a
-terminal-based user interface built with [ratatui](https://ratatui.rs/). The TUI provides a
-complete view of the player state without requiring any external clients:
+`mtrack start` can optionally launch a terminal-based user interface built with
+[ratatui](https://ratatui.rs/) using the `--tui` flag. The TUI provides a complete view of the
+player state without requiring any external clients:
 
 - **Playlist panel**: Shows the current playlist with the selected song highlighted.
 - **Now Playing panel**: Displays the current song name, a progress bar with elapsed/total
@@ -819,18 +813,17 @@ complete view of the player state without requiring any external clients:
 | `l` | Switch to playlist |
 | `q` / `Esc` | Quit |
 
-### Headless mode
+### Enabling the TUI
 
-When stdin is not a TTY (e.g. running under systemd, in a pipe, or via SSH without a
-terminal), `mtrack` runs in headless mode with log output to stderr, exactly as before.
-You can also force headless mode from an interactive terminal with the `--no-tui` flag:
+Enable the TUI with the `--tui` flag:
 
 ```
-$ mtrack start /path/to/player.yaml --no-tui
+$ mtrack start /path/to/player.yaml --tui
 ```
 
-The TUI runs alongside all configured controllers (gRPC, OSC, MIDI), so you can use the
-keyboard and remote control simultaneously.
+Without `--tui`, `mtrack` runs in headless mode with log output to stderr. The TUI runs
+alongside all configured controllers (gRPC, OSC, MIDI) and the web UI, so you can use
+the keyboard, browser, and remote control simultaneously.
 
 ## gRPC Control
 

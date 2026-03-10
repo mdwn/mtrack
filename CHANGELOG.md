@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Web UI**: A new web-based interface for controlling and monitoring mtrack from a browser.
+  The web UI is always available when running `mtrack start`, served on `http://127.0.0.1:8080`
+  by default. Use `--web-port` and `--web-address` to customize. Features include:
+  - Real-time playback control (play/stop/next/prev) with progress bar
+  - Playlist management with song selection
+  - Per-track waveform visualization
+  - Interactive stage view with fixture positions and real-time DMX state
+  - Active effects display
+  - Streaming log panel
+  - REST API for config, playlist, song, and lighting file management
+  - WebSocket streaming for real-time updates
+  - The lighting simulator is now integrated into the web UI (replaces the previous
+    `--simulator` / `--simulator-port` flags)
 - **MIDI beat clock output**: mtrack can now send MIDI beat clock (24 ppqn) to synchronize
   external gear to song tempo. Enable with `beat_clock: true` in the MIDI configuration. When
   enabled, mtrack sends Start (0xFA), Timing Clock (0xF8), and Stop (0xFC) messages derived
@@ -21,6 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   over long songs. When no audio device is present, the clock falls back to `Instant::now()`
   (system monotonic clock) with no behavioral change. The clock is always passed through to
   MIDI and DMX regardless of audio presence.
+- **Makefile**: A new Makefile provides convenient build targets for the full project
+  (Rust + Svelte frontend), including `build`, `test`, `lint`, `fmt`, `check`, `dev-ui`,
+  and `clean`.
 
 ### Changed
 
@@ -29,6 +45,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   start as the "go" signal, replacing the counted `Barrier` mechanism. This eliminates the
   fragile barrier count computation, removes dummy barrier threads from the DMX engine, and
   simplifies the overall synchronization model.
+- **TUI is now opt-in**: The terminal UI is no longer launched automatically when stdin is a
+  TTY. Use `--tui` to enable it. The `--no-tui` flag has been removed.
+- **Waveform generation speedup**: Waveform peak data generation for the web UI is now
+  significantly faster.
+
+### Fixed
+
+- **MacOS build fixes**: Resolved build issues on macOS.
+
+### Internal
+
+- **Massive test expansion**: Comprehensive test coverage added across all modules including
+  player, audio mixer, sample engine, DMX engine, MIDI, controllers (gRPC, OSC, MIDI), TUI,
+  web UI, triggers, config parsing, and CLI.
+- **CI improvements**: cargo tarpaulin now uses a separate cache to avoid conflicts with
+  regular builds.
 
 ## [0.9.2] - 2026-03-01
 
