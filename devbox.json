@@ -12,6 +12,7 @@
     "buf":                                                                        "1.64.0",
     "cargo-tarpaulin":                                                            "0.35.1",
     "licensure":                                                                  "0.5.1",
+    "mdbook":                                                                     "0.4.44",
     "github:NixOS/nixpkgs/80d901ec0377e19ac3f7bb8c035201e2e098cc97#alsa-lib.dev": {
       "version":   "",
       "platforms":  ["x86_64-linux", "aarch64-linux"]
