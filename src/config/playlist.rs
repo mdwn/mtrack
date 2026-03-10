@@ -107,8 +107,16 @@ songs: []
             "Charlie".to_string(),
         ];
         let p = Playlist::new(&songs);
-        let serialized = serde_yml::to_string(&p).unwrap();
-        let deserialized: Playlist = serde_yml::from_str(&serialized).unwrap();
+        let serialized = crate::util::to_yaml_string(&p).unwrap();
+        let deserialized: Playlist = config::Config::builder()
+            .add_source(config::File::from_str(
+                &serialized,
+                config::FileFormat::Yaml,
+            ))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
         assert_eq!(deserialized.songs().len(), 3);
         assert_eq!(deserialized.songs()[0], "Alpha");
         assert_eq!(deserialized.songs()[1], "Bravo");

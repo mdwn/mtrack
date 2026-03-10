@@ -86,7 +86,7 @@ impl Song {
 
     /// Serialize and save a song configuration struct to a file at given path.
     pub fn save(&self, path: &Path) -> Result<(), Box<dyn Error>> {
-        let serialized = serde_yml::to_string(self)?;
+        let serialized = crate::util::to_yaml_string(self)?;
         info!(serialized);
 
         let mut file = match std::fs::File::create(path) {
