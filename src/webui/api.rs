@@ -48,6 +48,7 @@ pub fn router() -> Router<WebUiState> {
 
 /// GET /api/config — returns the raw YAML content of the player config file.
 async fn get_config_raw(State(state): State<WebUiState>) -> impl IntoResponse {
+    // codeql[rust/path-injection] config_path is set at startup, not from user input.
     match std::fs::read_to_string(&state.config_path) {
         Ok(content) => (
             StatusCode::OK,
@@ -217,9 +218,11 @@ fn find_light_files(
     dir: &std::path::Path,
     results: &mut Vec<serde_json::Value>,
 ) -> Result<(), std::io::Error> {
+    // codeql[rust/path-injection] dir is always state.songs_path, set at startup.
     if !dir.is_dir() {
         return Ok(());
     }
+    // codeql[rust/path-injection] dir is always state.songs_path, set at startup.
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
@@ -294,6 +297,7 @@ async fn get_lighting_file(
         }
     }
 
+    // codeql[rust/path-injection] file_path is validated via canonicalize + starts_with above.
     match std::fs::read_to_string(&file_path) {
         Ok(content) => (
             StatusCode::OK,

@@ -139,6 +139,7 @@ impl Player {
             config_dir.join(&profiles_dir_str)
         };
 
+        // codeql[rust/path-injection] profiles_dir comes from the local config file on disk.
         let entries = std::fs::read_dir(&dir_path).map_err(|source| ConfigError::Io {
             path: dir_path.clone(),
             source,
