@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Web UI**: A new web-based interface for controlling and monitoring mtrack from a browser.
-  The web UI is always available when running `mtrack start`, served on `http://127.0.0.1:8080`
+  The web UI is always available when running `mtrack start`, served on `http://0.0.0.0:8080`
   by default. Use `--web-port` and `--web-address` to customize. Features include:
   - Real-time playback control (play/stop/next/prev) with progress bar
   - Playlist management with song selection
