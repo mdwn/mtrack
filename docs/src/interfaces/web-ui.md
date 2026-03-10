@@ -1,13 +1,13 @@
 # Web UI
 
 `mtrack` includes a web-based interface for controlling and monitoring the player from a browser.
-The web UI is always available when running `mtrack start`, served at `http://127.0.0.1:8080`
-by default.
+The web UI is always available when running `mtrack start`, served on all interfaces at
+port 8080 by default (`http://0.0.0.0:8080`).
 
 Use `--web-port` and `--web-address` to customize:
 
 ```
-$ mtrack start /path/to/player.yaml --web-port 9090 --web-address 0.0.0.0
+$ mtrack start /path/to/player.yaml --web-port 9090 --web-address 127.0.0.1
 ```
 
 The web UI provides:

@@ -50,7 +50,7 @@ Start the player:
 $ mtrack start /path/to/player.yaml
 ```
 
-The web UI will be available at `http://127.0.0.1:8080`.
+The web UI will be available at `http://localhost:8080`.
 
 ## Documentation
 

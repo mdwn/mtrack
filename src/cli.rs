@@ -115,8 +115,8 @@ enum Commands {
         /// Port for the web UI and lighting simulator (default: 8080).
         #[arg(long, default_value = "8080")]
         web_port: u16,
-        /// Bind address for the web UI and lighting simulator (default: 127.0.0.1).
-        #[arg(long, default_value = "127.0.0.1")]
+        /// Bind address for the web UI and lighting simulator (default: 0.0.0.0).
+        #[arg(long, default_value = "0.0.0.0")]
         web_address: String,
     },
     /// Plays the current song in the playlist.
@@ -446,7 +446,7 @@ mod tests {
                     assert!(playlist_path.is_none());
                     assert!(!tui);
                     assert_eq!(web_port, 8080);
-                    assert_eq!(web_address, "127.0.0.1");
+                    assert_eq!(web_address, "0.0.0.0");
                 }
                 _ => panic!("expected Start command"),
             }
