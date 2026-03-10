@@ -113,8 +113,16 @@ cue: [10]
         track_mappings.insert("drums".to_string(), vec![3u16, 4]);
         let tm = TrackMappings { track_mappings };
 
-        let serialized = serde_yml::to_string(&tm).unwrap();
-        let deserialized: TrackMappings = serde_yml::from_str(&serialized).unwrap();
+        let serialized = crate::util::to_yaml_string(&tm).unwrap();
+        let deserialized: TrackMappings = config::Config::builder()
+            .add_source(config::File::from_str(
+                &serialized,
+                config::FileFormat::Yaml,
+            ))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
         assert_eq!(deserialized.track_mappings["vocals"], vec![1u16, 2]);
         assert_eq!(deserialized.track_mappings["drums"], vec![3u16, 4]);
     }

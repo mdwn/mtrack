@@ -30,6 +30,12 @@ use crate::audio::sample_source::traits::SampleSource;
 use crate::player::Player;
 use crate::tui::logging::get_log_buffer;
 
+/// Per-track info needed for waveform computation: (track_name, file_path, file_channel).
+type TrackInfo = (String, PathBuf, u16);
+
+/// Per-track waveform peaks: (track_name, peak_values).
+type TrackPeaks = (String, Vec<f32>);
+
 /// Polls the player state at ~5Hz and broadcasts playback status messages.
 #[tracing::instrument(skip_all, name = "playback_poller")]
 pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>) {
@@ -257,7 +263,7 @@ pub async fn waveform_poller(
             cached
         } else {
             // Collect track info (owned data) for the blocking task
-            let track_infos: Vec<(String, PathBuf, u16)> = current_song
+            let track_infos: Vec<TrackInfo> = current_song
                 .tracks()
                 .iter()
                 .map(|t| {
@@ -339,12 +345,12 @@ pub async fn waveform_prewarmer(player: Arc<Player>, cache: WaveformCache) {
     let total_songs = song_names.len();
 
     // Collect track info for all uncached songs up front
-    let uncached_songs: Vec<(String, Vec<(String, PathBuf, u16)>)> = song_names
+    let uncached_songs: Vec<(String, Vec<TrackInfo>)> = song_names
         .iter()
         .filter(|name| !cache.lock().contains_key(*name))
         .filter_map(|name| {
             let song = all_songs.get_song(name)?;
-            let track_infos: Vec<(String, PathBuf, u16)> = song
+            let track_infos: Vec<TrackInfo> = song
                 .tracks()
                 .iter()
                 .map(|t| {
@@ -372,7 +378,7 @@ pub async fn waveform_prewarmer(player: Arc<Player>, cache: WaveformCache) {
     let total_start = std::time::Instant::now();
 
     // Compute all songs in parallel using rayon
-    let results: Vec<(String, Vec<(String, Vec<f32>)>)> = tokio::task::spawn_blocking(move || {
+    let results: Vec<(String, Vec<TrackPeaks>)> = tokio::task::spawn_blocking(move || {
         uncached_songs
             .into_par_iter()
             .map(|(name, track_infos)| {
@@ -405,7 +411,7 @@ pub async fn waveform_prewarmer(player: Arc<Player>, cache: WaveformCache) {
 }
 
 /// Computes waveform peaks for all tracks in parallel. Returns (track_name, peaks) pairs.
-fn compute_waveform_peaks(tracks: &[(String, PathBuf, u16)]) -> Vec<(String, Vec<f32>)> {
+fn compute_waveform_peaks(tracks: &[TrackInfo]) -> Vec<TrackPeaks> {
     const NUM_BUCKETS: usize = 500;
 
     tracks

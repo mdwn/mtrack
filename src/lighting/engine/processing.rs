@@ -602,7 +602,7 @@ fn calculate_fixture_order(
     match pattern {
         ChasePattern::Random => {
             use rand::rngs::StdRng;
-            use rand::{Rng, SeedableRng};
+            use rand::{RngExt, SeedableRng};
             use std::collections::hash_map::DefaultHasher;
             use std::hash::{Hash, Hasher};
 
@@ -626,7 +626,7 @@ fn calculate_fixture_order(
 
             // Fisher-Yates shuffle with proper random number generator
             for i in (1..fixture_count).rev() {
-                let j = rng.gen_range(0..=i);
+                let j = rng.random_range(0..=i);
                 order.swap(i, j);
             }
 

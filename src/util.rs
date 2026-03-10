@@ -15,6 +15,9 @@
 use std::path::Path;
 use std::time::Duration;
 
+use serde::Serialize;
+use yaml_rust2::{Yaml, YamlEmitter};
+
 /// Extracts a displayable file name from a path, returning a fallback if the name is unreadable.
 pub fn filename_display(path: &Path) -> &str {
     path.file_name()
@@ -27,6 +30,40 @@ pub fn duration_minutes_seconds(duration: Duration) -> String {
     let minutes = duration.as_secs() / 60;
     let secs = duration.as_secs() - minutes * 60;
     format!("{}:{:02}", minutes, secs)
+}
+
+/// Serializes a value to a YAML string using serde_json as an intermediary and yaml-rust2 for
+/// emission.
+pub fn to_yaml_string<T: Serialize>(value: &T) -> Result<String, Box<dyn std::error::Error>> {
+    let json_value = serde_json::to_value(value)?;
+    let yaml = json_to_yaml(&json_value);
+    let mut out = String::new();
+    let mut emitter = YamlEmitter::new(&mut out);
+    emitter.dump(&yaml)?;
+    Ok(out)
+}
+
+fn json_to_yaml(value: &serde_json::Value) -> Yaml {
+    match value {
+        serde_json::Value::Null => Yaml::Null,
+        serde_json::Value::Bool(b) => Yaml::Boolean(*b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Yaml::Integer(i)
+            } else {
+                Yaml::Real(n.to_string())
+            }
+        }
+        serde_json::Value::String(s) => Yaml::String(s.clone()),
+        serde_json::Value::Array(arr) => Yaml::Array(arr.iter().map(json_to_yaml).collect()),
+        serde_json::Value::Object(obj) => {
+            let mut hash = yaml_rust2::yaml::Hash::new();
+            for (k, v) in obj {
+                hash.insert(Yaml::String(k.clone()), json_to_yaml(v));
+            }
+            Yaml::Hash(hash)
+        }
+    }
 }
 
 #[cfg(test)]

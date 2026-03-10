@@ -838,7 +838,12 @@ mod test {
                   - midi_channel: 10
                     universe: "main"
             "#;
-            let config: config::Midi = serde_yml::from_str(yaml).unwrap();
+            let config: config::Midi = ::config::Config::builder()
+                .add_source(::config::File::from_str(yaml, ::config::FileFormat::Yaml))
+                .build()
+                .unwrap()
+                .try_deserialize()
+                .unwrap();
             let (mappings, transformers) = build_transformers(&config).unwrap();
 
             // MIDI channel 10 → internal channel 9 (1-indexed to 0-indexed in config)
@@ -859,7 +864,12 @@ mod test {
                         input_note: 60
                         convert_to_notes: [61, 62]
             "#;
-            let config: config::Midi = serde_yml::from_str(yaml).unwrap();
+            let config: config::Midi = ::config::Config::builder()
+                .add_source(::config::File::from_str(yaml, ::config::FileFormat::Yaml))
+                .build()
+                .unwrap()
+                .try_deserialize()
+                .unwrap();
             let (mappings, transformers) = build_transformers(&config).unwrap();
 
             assert_eq!(mappings.get(&0), Some(&"main".to_string()));
@@ -893,7 +903,12 @@ mod test {
                         input_controller: 1
                         convert_to_controllers: [60, 61]
             "#;
-            let config: config::Midi = serde_yml::from_str(yaml).unwrap();
+            let config: config::Midi = ::config::Config::builder()
+                .add_source(::config::File::from_str(yaml, ::config::FileFormat::Yaml))
+                .build()
+                .unwrap()
+                .try_deserialize()
+                .unwrap();
             let (mappings, transformers) = build_transformers(&config).unwrap();
 
             assert_eq!(mappings.get(&1), Some(&"lights".to_string()));
@@ -925,7 +940,12 @@ mod test {
                   - midi_channel: 10
                     universe: "universe_b"
             "#;
-            let config: config::Midi = serde_yml::from_str(yaml).unwrap();
+            let config: config::Midi = ::config::Config::builder()
+                .add_source(::config::File::from_str(yaml, ::config::FileFormat::Yaml))
+                .build()
+                .unwrap()
+                .try_deserialize()
+                .unwrap();
             let (mappings, transformers) = build_transformers(&config).unwrap();
 
             assert_eq!(mappings.len(), 2);

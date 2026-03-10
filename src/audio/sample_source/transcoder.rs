@@ -14,14 +14,70 @@
 use crate::audio::TargetFormat;
 use crate::config::ResamplerType;
 use parking_lot::Mutex;
+use rubato::audioadapter::{Adapter, AdapterMut};
 use rubato::{
-    FftFixedIn, SincFixedIn, SincInterpolationParameters, SincInterpolationType, VecResampler,
-    WindowFunction,
+    Async, Fft, FixedAsync, FixedSync, Resampler, SincInterpolationParameters,
+    SincInterpolationType, WindowFunction,
 };
 use tracing::info;
 
 use super::error::SampleSourceError;
 use super::traits::SampleSource;
+
+/// Adapter for `&[Vec<f32>]` (channel-major layout) used by rubato's `Resampler` trait.
+struct ChannelBufRef<'a> {
+    buf: &'a [Vec<f32>],
+    frames: usize,
+}
+
+impl<'a> ChannelBufRef<'a> {
+    fn new(buf: &'a [Vec<f32>], frames: usize) -> Self {
+        Self { buf, frames }
+    }
+}
+
+impl<'a> Adapter<'a, f32> for ChannelBufRef<'a> {
+    unsafe fn read_sample_unchecked(&self, channel: usize, frame: usize) -> f32 {
+        *self.buf.get_unchecked(channel).get_unchecked(frame)
+    }
+    fn channels(&self) -> usize {
+        self.buf.len()
+    }
+    fn frames(&self) -> usize {
+        self.frames
+    }
+}
+
+/// Mutable adapter for `&mut [Vec<f32>]` (channel-major layout).
+struct ChannelBufMut<'a> {
+    buf: &'a mut [Vec<f32>],
+    frames: usize,
+}
+
+impl<'a> ChannelBufMut<'a> {
+    fn new(buf: &'a mut [Vec<f32>], frames: usize) -> Self {
+        Self { buf, frames }
+    }
+}
+
+impl<'a> Adapter<'a, f32> for ChannelBufMut<'a> {
+    unsafe fn read_sample_unchecked(&self, channel: usize, frame: usize) -> f32 {
+        *self.buf.get_unchecked(channel).get_unchecked(frame)
+    }
+    fn channels(&self) -> usize {
+        self.buf.len()
+    }
+    fn frames(&self) -> usize {
+        self.frames
+    }
+}
+
+impl<'a> AdapterMut<'a, f32> for ChannelBufMut<'a> {
+    unsafe fn write_sample_unchecked(&mut self, channel: usize, frame: usize, value: &f32) -> bool {
+        *self.buf.get_unchecked_mut(channel).get_unchecked_mut(frame) = *value;
+        false
+    }
+}
 
 // Resampling configuration constants
 /// Input block size for the sinc resampler.
@@ -106,7 +162,7 @@ impl OutputFifo {
 pub struct AudioTranscoder<S: SampleSource> {
     source: S,
     /// Resampler wrapped in Mutex for Sync (contains non-Sync internals)
-    pub resampler: Option<Mutex<Box<dyn VecResampler<f32>>>>,
+    pub resampler: Option<Mutex<Box<dyn Resampler<f32>>>>,
     pub source_rate: u32,
     pub target_rate: u32,
     target_bits_per_sample: u16,
@@ -183,7 +239,7 @@ where
                 target_format.sample_rate as f64 / source_format.sample_rate as f64;
             let num_channels = channels as usize;
 
-            let r: Box<dyn VecResampler<f32>> = match resampler_type {
+            let r: Box<dyn Resampler<f32>> = match resampler_type {
                 ResamplerType::Sinc => {
                     let sinc_params = SincInterpolationParameters {
                         sinc_len: 256,
@@ -193,12 +249,13 @@ where
                         window: WindowFunction::BlackmanHarris2,
                     };
                     Box::new(
-                        SincFixedIn::<f32>::new(
+                        Async::<f32>::new_sinc(
                             resample_ratio,
                             1.0,
-                            sinc_params,
+                            &sinc_params,
                             INPUT_BLOCK_SIZE,
                             num_channels,
+                            FixedAsync::Input,
                         )
                         .map_err(|_e| {
                             SampleSourceError::ResamplingFailed(
@@ -209,12 +266,13 @@ where
                     )
                 }
                 ResamplerType::Fft => Box::new(
-                    FftFixedIn::<f32>::new(
+                    Fft::<f32>::new(
                         source_format.sample_rate as usize,
                         target_format.sample_rate as usize,
                         INPUT_BLOCK_SIZE,
                         2,
                         num_channels,
+                        FixedSync::Input,
                     )
                     .map_err(|_e| {
                         SampleSourceError::ResamplingFailed(
@@ -232,7 +290,8 @@ where
                 "Resampling audio",
             );
 
-            let scratch = r.output_buffer_allocate(true);
+            let max_out = r.output_frames_max();
+            let scratch: Vec<Vec<f32>> = vec![vec![0.0; max_out]; num_channels];
             (Some(Mutex::new(r)), scratch)
         } else {
             (None, Vec::new())
@@ -308,12 +367,15 @@ where
 
             if self.input_buffer.len() >= input_frames_needed {
                 // Process a full chunk
+                let input_frames = self.input_buffer.len();
+                let input_adapter = ChannelBufRef::new(&self.input_buffer.channels, input_frames);
+
+                let output_frames = self.output_scratch[0].len();
+                let mut output_adapter =
+                    ChannelBufMut::new(&mut self.output_scratch, output_frames);
+
                 let (nbr_in, nbr_out) = resampler
-                    .process_into_buffer(
-                        &self.input_buffer.channels,
-                        &mut self.output_scratch,
-                        None,
-                    )
+                    .process_into_buffer(&input_adapter, &mut output_adapter, None)
                     .map_err(|_e| {
                         SampleSourceError::ResamplingFailed(self.source_rate, self.target_rate)
                     })?;
@@ -342,12 +404,22 @@ where
                     return Ok(());
                 }
 
+                let remaining = self.input_buffer.len();
+                let input_adapter = ChannelBufRef::new(&self.input_buffer.channels, remaining);
+
+                let output_frames = self.output_scratch[0].len();
+                let mut output_adapter =
+                    ChannelBufMut::new(&mut self.output_scratch, output_frames);
+
+                let indexing = rubato::Indexing {
+                    input_offset: 0,
+                    output_offset: 0,
+                    partial_len: Some(remaining),
+                    active_channels_mask: None,
+                };
+
                 let (_nbr_in, nbr_out) = resampler
-                    .process_partial_into_buffer(
-                        Some(&self.input_buffer.channels as &[Vec<f32>]),
-                        &mut self.output_scratch,
-                        None,
-                    )
+                    .process_into_buffer(&input_adapter, &mut output_adapter, Some(&indexing))
                     .map_err(|_e| {
                         SampleSourceError::ResamplingFailed(self.source_rate, self.target_rate)
                     })?;

@@ -118,8 +118,16 @@ file: bass.wav
     #[test]
     fn serialize_roundtrip() {
         let t = Track::new("keys".to_string(), "keys.wav", Some(5));
-        let serialized = serde_yml::to_string(&t).unwrap();
-        let deserialized: Track = serde_yml::from_str(&serialized).unwrap();
+        let serialized = crate::util::to_yaml_string(&t).unwrap();
+        let deserialized: Track = config::Config::builder()
+            .add_source(config::File::from_str(
+                &serialized,
+                config::FileFormat::Yaml,
+            ))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
         assert_eq!(deserialized.name(), "keys");
         assert_eq!(deserialized.file(), "keys.wav");
         assert_eq!(deserialized.file_channel(), Some(5));
@@ -128,8 +136,16 @@ file: bass.wav
     #[test]
     fn serialize_roundtrip_no_channel() {
         let t = Track::new("click".to_string(), "click.wav", None);
-        let serialized = serde_yml::to_string(&t).unwrap();
-        let deserialized: Track = serde_yml::from_str(&serialized).unwrap();
+        let serialized = crate::util::to_yaml_string(&t).unwrap();
+        let deserialized: Track = config::Config::builder()
+            .add_source(config::File::from_str(
+                &serialized,
+                config::FileFormat::Yaml,
+            ))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
         assert_eq!(deserialized.name(), "click");
         assert_eq!(deserialized.file(), "click.wav");
         assert_eq!(deserialized.file_channel(), None);
