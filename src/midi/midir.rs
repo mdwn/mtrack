@@ -232,7 +232,12 @@ impl super::Device for Device {
                 let clock_cancel = cancel_handle.clone();
                 let clock_playback_delay = playback_delay;
                 let clock_start_time = start_time;
-                let clock_clock = clock.clone();
+                // Use a dedicated wall clock for beat clock timing instead of
+                // the audio-derived PlaybackClock. The audio clock only updates
+                // once per buffer callback (~23ms at 1024/44.1kHz), causing the
+                // beat clock's spin_sleep to overshoot by variable amounts.
+                // A wall clock provides smooth, sub-millisecond precision.
+                let clock_clock = PlaybackClock::wall();
 
                 // Build a small wrapper that owns the PrecomputedBeatClock data we need.
                 // We can't move midi_sheet into the closure since the note thread uses it,
@@ -248,6 +253,10 @@ impl super::Device for Device {
                 info!("Starting MIDI beat clock thread.");
                 Some((
                     thread::spawn(move || {
+                        // Elevate to real-time thread priority to minimize
+                        // scheduling jitter on clock tick delivery.
+                        promote_to_realtime_thread();
+
                         // Wait for the note thread to signal us after it passes the
                         // external play_barrier.
                         clock_internal_barrier.wait();
@@ -256,17 +265,17 @@ impl super::Device for Device {
                             return;
                         }
 
-                        // Sleep the playback delay
-                        {
-                            while clock_clock.elapsed() < clock_playback_delay {
-                                if clock_cancel.is_cancelled() {
-                                    return;
-                                }
-                                let remaining =
-                                    clock_playback_delay.saturating_sub(clock_clock.elapsed());
-                                spin_sleep::sleep(remaining.min(Duration::from_millis(50)));
-                            }
+                        // Sleep the playback delay using a simple spin_sleep.
+                        if !clock_playback_delay.is_zero() {
+                            spin_sleep::sleep(clock_playback_delay);
                         }
+
+                        if clock_cancel.is_cancelled() {
+                            return;
+                        }
+
+                        // Start the wall clock right before we begin sending.
+                        clock_clock.start();
 
                         run_beat_clock(
                             &mut clock_connection,
@@ -749,6 +758,26 @@ fn play_precomputed(
                 debug!("MIDI send failed: {:?}", e);
             }
         }
+    }
+}
+
+/// Promotes the current thread to real-time priority for low-jitter MIDI clock output.
+///
+/// Uses the shared thread priority utility that sets a high crossplatform priority
+/// and, on Unix systems (Linux and macOS), requests SCHED_FIFO real-time scheduling.
+/// Failures are logged but not fatal — the beat clock will still work, just with
+/// potentially more jitter from OS thread scheduling.
+fn promote_to_realtime_thread() {
+    use crate::thread_priority::{callback_thread_priority, promote_to_realtime, rt_audio_enabled};
+
+    let priority = callback_thread_priority();
+    let rt_enabled = rt_audio_enabled();
+    let mut priority_set = false;
+
+    promote_to_realtime(priority, rt_enabled, &mut priority_set);
+
+    if priority_set {
+        info!("Elevated MIDI beat clock thread priority");
     }
 }
 

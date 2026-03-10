@@ -27,8 +27,8 @@ use std::{
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use tracing::{debug, error, info, span, Level};
 
-use super::thread_priority::{
-    callback_thread_priority, configure_audio_thread_priority, env_flag, rt_audio_enabled,
+use crate::thread_priority::{
+    callback_thread_priority, env_flag, promote_to_realtime, rt_audio_enabled,
 };
 
 /// A shared notify handle: a boolean flag protected by a mutex with a condvar for signaling.
@@ -553,7 +553,7 @@ fn create_direct_f32_callback(
     let mut priority_set = false;
 
     move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-        configure_audio_thread_priority(callback_priority, rt_audio, &mut priority_set);
+        promote_to_realtime(callback_priority, rt_audio, &mut priority_set);
         process_f32_callback(data, &mixer, &source_rx, num_channels, &mut profiler);
     }
 }
@@ -578,7 +578,7 @@ where
     let mut priority_set = false;
 
     move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
-        configure_audio_thread_priority(callback_priority, rt_audio, &mut priority_set);
+        promote_to_realtime(callback_priority, rt_audio, &mut priority_set);
         process_int_callback(
             data,
             &mixer,

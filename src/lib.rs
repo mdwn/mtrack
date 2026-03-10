@@ -29,6 +29,7 @@ pub mod songs;
 pub mod state;
 #[cfg(test)]
 pub mod testutil;
+pub(crate) mod thread_priority;
 pub mod trigger;
 pub mod tui;
 pub mod util;
