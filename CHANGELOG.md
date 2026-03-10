@@ -27,8 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   enabled, mtrack sends Start (0xFA), Timing Clock (0xF8), and Stop (0xFC) messages derived
   from the MIDI file's tempo map. Beat clock is only emitted for songs whose MIDI files contain
   explicit tempo change events — songs without a tempo map do not emit beat clock, leaving
-  musicians free to control their own tempo. The beat clock runs on a dedicated thread with
-  `spin_sleep` precision and supports mid-song tempo changes and seeking (Continue 0xFB).
+  musicians free to control their own tempo. The beat clock runs on a dedicated real-time
+  priority thread with `spin_sleep` precision and supports mid-song tempo changes and seeking
+  (Continue 0xFB). Thread priority can be tuned with `MTRACK_THREAD_PRIORITY` (0–99, default
+  70) or disabled with `MTRACK_DISABLE_RT_AUDIO=1`.
 - **Unified playback clock**: A new `PlaybackClock` abstraction synchronizes MIDI and DMX
   timing to the audio interface's hardware sample counter, eliminating drift between subsystems
   over long songs. When no audio device is present, the clock falls back to `Instant::now()`
@@ -53,12 +55,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **MacOS build fixes**: Resolved build issues on macOS.
+- **MacOS SCHED_FIFO thread priority**: Added clamping of the thread priority to the valid
+  macOS SCHED_FIFO range (15–47) so the default of 70 works on both platforms. SCHED_FIFO
+  failures on macOS CoreAudio threads are now logged at debug level since these threads
+  already use Mach real-time scheduling.
 
 ### Internal
 
 - **Massive test expansion**: Comprehensive test coverage added across all modules including
   player, audio mixer, sample engine, DMX engine, MIDI, controllers (gRPC, OSC, MIDI), TUI,
   web UI, triggers, config parsing, and CLI.
+- **Thread priority module**: Extracted `thread_priority` from `audio/` into a shared
+  top-level module, reused by both the audio callback and MIDI beat clock threads.
+- **Documentation**: Migrated README content into an mdBook documentation site for easier
+  maintenance and hosting.
 - **CI improvements**: cargo tarpaulin now uses a separate cache to avoid conflicts with
   regular builds.
 

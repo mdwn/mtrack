@@ -29,6 +29,7 @@ mod songs;
 mod state;
 #[cfg(test)]
 mod testutil;
+mod thread_priority;
 mod trigger;
 mod tui;
 mod util;

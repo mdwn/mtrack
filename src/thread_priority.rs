@@ -15,8 +15,10 @@
 use thread_priority::{set_current_thread_priority, ThreadPriority, ThreadPriorityValue};
 use tracing::info;
 
-/// Default priority for the audio callback thread when MTRACK_THREAD_PRIORITY is unset.
-const DEFAULT_CALLBACK_THREAD_PRIORITY: u8 = 70;
+/// Default crossplatform thread priority (0-99) when MTRACK_THREAD_PRIORITY is unset.
+/// On Linux SCHED_FIFO this maps directly to the RT priority (range 1-99).
+/// On macOS SCHED_FIFO the valid range is 15-47, so this value is clamped at call time.
+const DEFAULT_THREAD_PRIORITY: u8 = 70;
 
 /// Reads MTRACK_THREAD_PRIORITY (0-99) once; used when building the callback so we don't touch env in the hot path.
 pub fn callback_thread_priority() -> ThreadPriorityValue {
@@ -31,7 +33,7 @@ fn parse_thread_priority(value: Option<&str>) -> ThreadPriorityValue {
             let n = v.parse::<u8>().ok()?;
             (n < 100).then(|| ThreadPriorityValue::try_from(n).ok())?
         })
-        .unwrap_or_else(|| ThreadPriorityValue::try_from(DEFAULT_CALLBACK_THREAD_PRIORITY).unwrap())
+        .unwrap_or_else(|| ThreadPriorityValue::try_from(DEFAULT_THREAD_PRIORITY).unwrap())
 }
 
 pub(crate) fn env_flag(name: &str) -> bool {
@@ -46,15 +48,23 @@ pub(crate) fn env_flag(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Returns whether we should attempt RT (SCHED_FIFO) scheduling for the audio callback thread.
+/// Returns whether we should attempt RT scheduling for real-time threads.
 /// Default: enabled. Advanced users can opt out with MTRACK_DISABLE_RT_AUDIO=1.
 pub fn rt_audio_enabled() -> bool {
     !env_flag("MTRACK_DISABLE_RT_AUDIO")
 }
 
-pub fn configure_audio_thread_priority(
+/// Promotes the current thread to real-time priority.
+///
+/// Sets a high crossplatform priority and, on Unix systems, requests SCHED_FIFO
+/// real-time scheduling. On macOS, the priority is clamped to the valid SCHED_FIFO
+/// range (15-47). Used by both the audio callback thread and the MIDI beat clock thread.
+///
+/// The `priority_set` flag prevents redundant calls (e.g. in the audio callback which
+/// fires repeatedly).
+pub fn promote_to_realtime(
     priority: ThreadPriorityValue,
-    rt_audio: bool,
+    rt_enabled: bool,
     priority_set: &mut bool,
 ) {
     if *priority_set {
@@ -64,11 +74,21 @@ pub fn configure_audio_thread_priority(
     let _ = set_current_thread_priority(tp);
 
     #[cfg(unix)]
-    if rt_audio {
+    if rt_enabled {
         use thread_priority::unix::{
             set_thread_priority_and_policy, thread_native_id, RealtimeThreadSchedulePolicy,
             ThreadSchedulePolicy,
         };
+
+        // On macOS, SCHED_FIFO priorities must be in 15..=47. Clamp the crossplatform
+        // value to that range so users don't have to worry about platform differences.
+        #[cfg(target_os = "macos")]
+        let tp = {
+            let raw: u8 = priority.into();
+            let clamped = raw.clamp(15, 47);
+            ThreadPriority::Crossplatform(ThreadPriorityValue::try_from(clamped).unwrap())
+        };
+
         let tid = thread_native_id();
         match set_thread_priority_and_policy(
             tid,
@@ -76,12 +96,21 @@ pub fn configure_audio_thread_priority(
             ThreadSchedulePolicy::Realtime(RealtimeThreadSchedulePolicy::Fifo),
         ) {
             Ok(()) => {
-                info!("Enabled RT SCHED_FIFO for audio callback thread");
+                info!("Enabled RT SCHED_FIFO for real-time thread");
             }
             Err(e) => {
+                // On macOS, CoreAudio callback threads use Mach THREAD_TIME_CONSTRAINT_POLICY
+                // and don't support POSIX SCHED_FIFO. The crossplatform priority set above is
+                // sufficient, so log at debug level rather than warn.
+                #[cfg(target_os = "macos")]
+                tracing::debug!(
+                    error = %e,
+                    "SCHED_FIFO unavailable (expected on macOS CoreAudio threads)"
+                );
+                #[cfg(not(target_os = "macos"))]
                 tracing::warn!(
                     error = %e,
-                    "Failed to set RT SCHED_FIFO for audio callback thread"
+                    "Failed to set RT SCHED_FIFO for real-time thread"
                 );
             }
         }
@@ -129,7 +158,7 @@ mod test {
         let prio = parse_thread_priority(None);
         assert_eq!(
             prio,
-            ThreadPriorityValue::try_from(DEFAULT_CALLBACK_THREAD_PRIORITY).unwrap()
+            ThreadPriorityValue::try_from(DEFAULT_THREAD_PRIORITY).unwrap()
         );
     }
 
@@ -157,7 +186,7 @@ mod test {
         let prio = parse_thread_priority(Some("100"));
         assert_eq!(
             prio,
-            ThreadPriorityValue::try_from(DEFAULT_CALLBACK_THREAD_PRIORITY).unwrap()
+            ThreadPriorityValue::try_from(DEFAULT_THREAD_PRIORITY).unwrap()
         );
     }
 
@@ -166,7 +195,7 @@ mod test {
         let prio = parse_thread_priority(Some("not_a_number"));
         assert_eq!(
             prio,
-            ThreadPriorityValue::try_from(DEFAULT_CALLBACK_THREAD_PRIORITY).unwrap()
+            ThreadPriorityValue::try_from(DEFAULT_THREAD_PRIORITY).unwrap()
         );
     }
 
@@ -175,20 +204,20 @@ mod test {
         let prio = parse_thread_priority(Some(""));
         assert_eq!(
             prio,
-            ThreadPriorityValue::try_from(DEFAULT_CALLBACK_THREAD_PRIORITY).unwrap()
+            ThreadPriorityValue::try_from(DEFAULT_THREAD_PRIORITY).unwrap()
         );
     }
 
     #[test]
-    fn configure_audio_thread_priority_idempotent() {
-        let prio = ThreadPriorityValue::try_from(50u8).unwrap();
+    fn promote_to_realtime_idempotent() {
+        let prio = ThreadPriorityValue::try_from(47u8).unwrap();
         let mut priority_set = false;
 
-        configure_audio_thread_priority(prio, false, &mut priority_set);
+        promote_to_realtime(prio, false, &mut priority_set);
         assert!(priority_set);
 
         // Second call should be a no-op (the flag is already set).
-        configure_audio_thread_priority(prio, false, &mut priority_set);
+        promote_to_realtime(prio, false, &mut priority_set);
         assert!(priority_set);
     }
 
@@ -218,12 +247,12 @@ mod test {
     }
 
     #[test]
-    fn configure_with_rt_audio() {
-        let prio = ThreadPriorityValue::try_from(50u8).unwrap();
+    fn promote_with_rt_enabled() {
+        let prio = ThreadPriorityValue::try_from(47u8).unwrap();
         let mut priority_set = false;
 
-        // Exercise the RT audio path (may fail to set RT policy in test env, that's fine)
-        configure_audio_thread_priority(prio, true, &mut priority_set);
+        // Exercise the RT path (may fail to set RT policy in test env, that's fine)
+        promote_to_realtime(prio, true, &mut priority_set);
         assert!(priority_set);
     }
 }

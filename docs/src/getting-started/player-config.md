@@ -54,6 +54,13 @@ midi:
   # tempo. Beat clock is only sent for songs whose MIDI files contain explicit tempo change events;
   # songs without a tempo map do not emit beat clock, leaving musicians free to control their own
   # tempo.
+  #
+  # The beat clock thread runs at elevated (real-time) thread priority to minimize timing jitter.
+  # On Linux, this requires CAP_SYS_NICE (granted by the systemd service unit). On macOS, no
+  # special privileges are needed. If real-time scheduling cannot be obtained, the beat clock
+  # still functions but may exhibit more jitter under heavy system load. You can tune the thread
+  # priority with the MTRACK_THREAD_PRIORITY environment variable (0-99, default 70), or disable
+  # real-time scheduling entirely with MTRACK_DISABLE_RT_AUDIO=1.
   beat_clock: true
 
   # (Optional) You can route live MIDI events into the DMX engine with this configuration.

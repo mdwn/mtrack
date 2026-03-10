@@ -6,10 +6,12 @@ privileges. This is the recommended configuration for production deployments.
 **User isolation**: The service runs as the unprivileged `mtrack` user instead of root. The
 `audio` supplementary group provides access to ALSA and MIDI devices under `/dev/snd/`.
 
-**Real-time audio scheduling**: `AmbientCapabilities=CAP_SYS_NICE` allows the `mtrack` user
+**Real-time scheduling**: `AmbientCapabilities=CAP_SYS_NICE` allows the `mtrack` user
 to set elevated thread priorities and use `SCHED_FIFO` real-time scheduling for the audio
-callback thread, without requiring root. `CapabilityBoundingSet=CAP_SYS_NICE` ensures this
-is the only capability the process can ever acquire.
+callback thread and the MIDI beat clock thread, without requiring root.
+`CapabilityBoundingSet=CAP_SYS_NICE` ensures this is the only capability the process can
+ever acquire. Without this capability, the beat clock will still function but may exhibit
+more timing jitter under heavy system load.
 
 **Filesystem restrictions**: `ProtectSystem=strict` makes the entire filesystem hierarchy
 read-only, which is sufficient since `mtrack` does not write to disk (logs are emitted to
