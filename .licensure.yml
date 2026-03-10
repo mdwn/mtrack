@@ -27,6 +27,7 @@ excludes:
   - .*\.json
   - .*\.prettierignore
   - .*\.prettierrc
+  - .*\.md
 licenses:
   - files: any
     ident: GPL-3.0

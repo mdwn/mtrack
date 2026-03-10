@@ -13,8 +13,9 @@
 #
 ROOT_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 SVELTE_DIR := $(ROOT_DIR)/src/webui/svelte
+DOCS_DIR := $(ROOT_DIR)/docs
 
-.PHONY: all build gen-proto build-ui build-rust test lint lint-ui lint-rust fmt fmt-ui fmt-rust check clean dev-ui
+.PHONY: all build gen-proto build-ui build-rust test lint lint-ui lint-rust fmt fmt-ui fmt-rust check clean dev-ui docs docs-serve docs-clean
 
 all: build
 
@@ -68,7 +69,19 @@ check:
 dev-ui:
 	cd $(SVELTE_DIR) && npm run dev
 
+## Build the documentation
+docs:
+	mdbook build $(DOCS_DIR)
+
+## Serve docs locally with live reload
+docs-serve:
+	mdbook serve $(DOCS_DIR)
+
+## Clean documentation build artifacts
+docs-clean:
+	rm -rf $(DOCS_DIR)/book
+
 ## Clean build artifacts
-clean:
+clean: docs-clean
 	cargo clean --manifest-path $(ROOT_DIR)/Cargo.toml
 	rm -rf $(SVELTE_DIR)/dist
