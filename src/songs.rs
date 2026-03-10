@@ -915,6 +915,7 @@ pub fn initialize_songs(start_path: &Path) -> Result<usize, Box<dyn Error>> {
 pub fn get_all_songs(path: &Path) -> Result<Arc<Songs>, Box<dyn Error>> {
     debug!("Getting songs for directory {path:?}");
     let mut songs: HashMap<String, Arc<Song>> = HashMap::new();
+    // codeql[rust/path-injection] path is the songs directory configured at startup.
     for entry in fs::read_dir(path)? {
         let entry = entry?;
         let path = entry.path();
