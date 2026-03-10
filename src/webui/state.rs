@@ -321,68 +321,85 @@ pub async fn waveform_poller(
 
 /// Background pre-warms the waveform cache for all songs.
 ///
-/// Iterates through every song in the all-songs playlist, computing waveform
-/// peaks one song at a time. Pauses while a song is playing to avoid competing
-/// with audio playback for CPU and I/O.
+/// Collects all uncached songs and computes their waveform peaks in parallel
+/// using rayon. Waits for playback to stop before starting computation to
+/// avoid competing with audio playback for CPU and I/O.
 #[tracing::instrument(skip_all, name = "waveform_prewarmer")]
 pub async fn waveform_prewarmer(player: Arc<Player>, cache: WaveformCache) {
     // Small delay before starting so the server can finish initializing
     time::sleep(Duration::from_secs(1)).await;
 
+    // Wait until playback stops before computing
+    while player.is_playing().await {
+        time::sleep(Duration::from_secs(1)).await;
+    }
+
     let all_songs = player.get_all_songs_playlist();
     let song_names: Vec<String> = all_songs.songs().clone();
     let total_songs = song_names.len();
-    let total_start = std::time::Instant::now();
-    info!("Waveform prewarm starting for {} songs", total_songs);
 
-    for song_name in &song_names {
-        // Wait until playback stops before computing
-        while player.is_playing().await {
-            time::sleep(Duration::from_secs(1)).await;
-        }
+    // Collect track info for all uncached songs up front
+    let uncached_songs: Vec<(String, Vec<(String, PathBuf, u16)>)> = song_names
+        .iter()
+        .filter(|name| !cache.lock().contains_key(*name))
+        .filter_map(|name| {
+            let song = all_songs.get_song(name)?;
+            let track_infos: Vec<(String, PathBuf, u16)> = song
+                .tracks()
+                .iter()
+                .map(|t| {
+                    (
+                        t.name().to_string(),
+                        t.file().to_path_buf(),
+                        t.file_channel(),
+                    )
+                })
+                .collect();
+            Some((name.clone(), track_infos))
+        })
+        .collect();
 
-        // Already cached (computed on demand or by an earlier pre-warm run)
-        if cache.lock().contains_key(song_name) {
-            continue;
-        }
-
-        let song = match all_songs.get_song(song_name) {
-            Some(s) => s,
-            None => continue,
-        };
-
-        let track_infos: Vec<(String, PathBuf, u16)> = song
-            .tracks()
-            .iter()
-            .map(|t| {
-                (
-                    t.name().to_string(),
-                    t.file().to_path_buf(),
-                    t.file_channel(),
-                )
-            })
-            .collect();
-
-        info!("Prewarming waveform for '{}'", song_name);
-        let start = std::time::Instant::now();
-        let peaks_result =
-            tokio::task::spawn_blocking(move || compute_waveform_peaks(&track_infos)).await;
-
-        if let Ok(peaks) = peaks_result {
-            cache.lock().insert(song_name.clone(), peaks);
-            info!(
-                "Prewarmed waveform for '{}' in {:.1?}",
-                song_name,
-                start.elapsed()
-            );
-        }
-
-        // Brief pause between songs to keep CPU pressure low
-        time::sleep(Duration::from_millis(100)).await;
+    let uncached_count = uncached_songs.len();
+    if uncached_count == 0 {
+        info!("Waveform prewarm: all {} songs already cached", total_songs);
+        return;
     }
+
+    info!(
+        "Waveform prewarm starting for {} uncached songs ({} total)",
+        uncached_count, total_songs
+    );
+    let total_start = std::time::Instant::now();
+
+    // Compute all songs in parallel using rayon
+    let results: Vec<(String, Vec<(String, Vec<f32>)>)> = tokio::task::spawn_blocking(move || {
+        uncached_songs
+            .into_par_iter()
+            .map(|(name, track_infos)| {
+                let start = std::time::Instant::now();
+                let peaks = compute_waveform_peaks(&track_infos);
+                info!(
+                    "Prewarmed waveform for '{}' in {:.1?}",
+                    name,
+                    start.elapsed()
+                );
+                (name, peaks)
+            })
+            .collect()
+    })
+    .await
+    .unwrap_or_default();
+
+    // Insert all results into cache
+    let mut cache_guard = cache.lock();
+    for (name, peaks) in results {
+        cache_guard.insert(name, peaks);
+    }
+    drop(cache_guard);
+
     info!(
         "Waveform prewarm complete for {} songs in {:.1?}",
-        total_songs,
+        uncached_count,
         total_start.elapsed()
     );
 }

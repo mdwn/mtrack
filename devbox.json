@@ -25,6 +25,7 @@
   "shell": {
     "init_hook": [
       "rustup default stable > /dev/null 2>&1",
+      "rustup update stable > /dev/null 2>&1",
       "rustup component add clippy rustfmt > /dev/null 2>&1"
     ]
   }
