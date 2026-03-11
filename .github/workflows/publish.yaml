@@ -14,16 +14,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-    - name: Update apt
-      run: sudo apt update
-    - name: Install alsa
-      run: sudo apt-get install -y libasound2-dev libudev-dev protobuf-compiler
-    - uses: dtolnay/rust-toolchain@stable
-    - uses: Swatinem/rust-cache@v2
+    - uses: jetify-com/devbox-install-action@v0.12.0
+    - name: Cache node modules
+      uses: actions/cache@v4
+      with:
+        path: src/webui/svelte/node_modules
+        key: node-modules-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+        restore-keys: node-modules-${{ runner.os }}-
+    - name: Build frontend
+      run: devbox run -- bash -c 'cd src/webui/svelte && npm ci && buf generate && npm run build'
     - name: Run publish
       env:
         CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      run: cargo publish
+      run: devbox run -- cargo publish
 
   # Creates a release on Github.
   release:

@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.1] - 2026-03-11
+
+### Fixed
+
+- **`cargo publish` includes web UI assets**: The published crate now includes the pre-built
+  Svelte frontend so that `cargo install mtrack` works without Node.js. The build script no
+  longer creates files in the source tree during packaging.
+- **Publish workflow builds frontend**: The GitHub Actions publish workflow now builds the
+  Svelte frontend before `cargo publish`, using devbox for consistent tooling.
+- **Remote client tests no longer flaky**: gRPC remote client tests now use OS-assigned
+  ephemeral ports instead of the default gRPC port, so they pass even when a local mtrack
+  server is running.
+
 ## [0.10.0] - 2026-03-11
 
 ### Added
