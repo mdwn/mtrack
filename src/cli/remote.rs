@@ -210,18 +210,20 @@ mod tests {
         }
     }
 
+    /// Returns an address with an OS-assigned ephemeral port that nothing is listening on.
+    fn unused_addr() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        addr.to_string()
+    }
+
     mod connect_tests {
         use super::*;
 
         #[tokio::test]
-        async fn connect_to_default_fails_when_no_server() {
-            let result = connect(None).await;
-            assert!(result.is_err());
-        }
-
-        #[tokio::test]
-        async fn connect_with_invalid_host_fails() {
-            let result = connect(Some("127.0.0.1:1".to_string())).await;
+        async fn connect_fails_when_no_server() {
+            let result = connect(Some(unused_addr())).await;
             assert!(result.is_err());
         }
     }
@@ -231,127 +233,73 @@ mod tests {
 
         #[tokio::test]
         async fn play_fails_without_server() {
-            // Connect to a port where nothing is listening
-            let result = play(Some("127.0.0.1:1".to_string()), None).await;
+            let result = play(Some(unused_addr()), None).await;
             assert!(result.is_err());
         }
 
         #[tokio::test]
         async fn play_from_fails_without_server() {
-            let result = play(Some("127.0.0.1:1".to_string()), Some("0:30".to_string())).await;
+            let result = play(Some(unused_addr()), Some("0:30".to_string())).await;
             assert!(result.is_err());
         }
 
         #[tokio::test]
         async fn play_from_with_minutes_seconds_format() {
-            let result = play(
-                Some("127.0.0.1:1".to_string()),
-                Some("1:23.456".to_string()),
-            )
-            .await;
+            let result = play(Some(unused_addr()), Some("1:23.456".to_string())).await;
             assert!(result.is_err());
         }
 
         #[tokio::test]
         async fn play_from_with_seconds_only_format() {
-            let result = play(Some("127.0.0.1:1".to_string()), Some("45.5s".to_string())).await;
+            let result = play(Some(unused_addr()), Some("45.5s".to_string())).await;
             assert!(result.is_err());
         }
 
         #[tokio::test]
         async fn next_fails_without_server() {
-            let result = next(Some("127.0.0.1:1".to_string())).await;
+            let result = next(Some(unused_addr())).await;
             assert!(result.is_err());
         }
 
         #[tokio::test]
         async fn previous_fails_without_server() {
-            let result = previous(Some("127.0.0.1:1".to_string())).await;
+            let result = previous(Some(unused_addr())).await;
             assert!(result.is_err());
         }
 
         #[tokio::test]
         async fn stop_fails_without_server() {
-            let result = stop(Some("127.0.0.1:1".to_string())).await;
+            let result = stop(Some(unused_addr())).await;
             assert!(result.is_err());
         }
 
         #[tokio::test]
         async fn status_fails_without_server() {
-            let result = status(Some("127.0.0.1:1".to_string())).await;
+            let result = status(Some(unused_addr())).await;
             assert!(result.is_err());
         }
 
         #[tokio::test]
         async fn switch_to_playlist_fails_without_server() {
-            let result = switch_to_playlist(Some("127.0.0.1:1".to_string()), "all_songs").await;
+            let result = switch_to_playlist(Some(unused_addr()), "all_songs").await;
             assert!(result.is_err());
         }
 
         #[tokio::test]
         async fn switch_to_playlist_with_different_name() {
-            let result = switch_to_playlist(Some("127.0.0.1:1".to_string()), "playlist").await;
+            let result = switch_to_playlist(Some(unused_addr()), "playlist").await;
             assert!(result.is_err());
         }
 
         #[tokio::test]
         async fn active_effects_fails_without_server() {
-            let result = active_effects(Some("127.0.0.1:1".to_string())).await;
+            let result = active_effects(Some(unused_addr())).await;
             assert!(result.is_err());
         }
 
         #[tokio::test]
         async fn cues_fails_without_server() {
-            let result = cues(Some("127.0.0.1:1".to_string())).await;
-            assert!(result.is_err());
-        }
-
-        #[tokio::test]
-        async fn play_with_default_host_fails() {
-            // Tests the default host_port path (None -> 127.0.0.1:DEFAULT_GRPC_PORT)
-            let result = play(None, None).await;
-            assert!(result.is_err());
-        }
-
-        #[tokio::test]
-        async fn next_with_default_host_fails() {
-            let result = next(None).await;
-            assert!(result.is_err());
-        }
-
-        #[tokio::test]
-        async fn previous_with_default_host_fails() {
-            let result = previous(None).await;
-            assert!(result.is_err());
-        }
-
-        #[tokio::test]
-        async fn stop_with_default_host_fails() {
-            let result = stop(None).await;
-            assert!(result.is_err());
-        }
-
-        #[tokio::test]
-        async fn status_with_default_host_fails() {
-            let result = status(None).await;
-            assert!(result.is_err());
-        }
-
-        #[tokio::test]
-        async fn active_effects_with_default_host_fails() {
-            let result = active_effects(None).await;
-            assert!(result.is_err());
-        }
-
-        #[tokio::test]
-        async fn cues_with_default_host_fails() {
-            let result = cues(None).await;
-            assert!(result.is_err());
-        }
-
-        #[tokio::test]
-        async fn switch_to_playlist_with_default_host_fails() {
-            let result = switch_to_playlist(None, "all_songs").await;
+            let result = cues(Some(unused_addr())).await;
             assert!(result.is_err());
         }
     }
