@@ -40,6 +40,7 @@ use super::state as ws_state;
 
 #[derive(Embed)]
 #[folder = "src/webui/svelte/dist/"]
+#[allow_missing = true]
 struct WebUiAssets;
 
 /// Configuration for the web server (address + port).

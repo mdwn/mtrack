@@ -2,20 +2,22 @@
 name = "mtrack"
 description = "A multitrack audio and MIDI player for live performances."
 license = "GPL-3.0"
-version = "0.10.0"
+version = "0.10.1"
 authors = ["Michael Wilson <mike@mdwn.dev>"]
 edition = "2021"
 repository = "https://github.com/mdwn/mtrack"
 readme = "README.md"
 keywords = ["audio"]
 categories = ["multimedia", "multimedia::audio"]
-exclude = [
-    ".github/*",
-    ".gitignore",
-    ".licensure.yml",
-    "CODE_OF_CONDUCT.md",
-    "assets/*",
-    "examples/*",
+include = [
+    "build.rs",
+    "Cargo.toml",
+    "LICENSE",
+    "README.md",
+    "src/**/*",
+    "!src/webui/svelte/node_modules/**",
+    "!src/webui/svelte/src/**",
+    "!src/webui/svelte/.svelte-kit/**",
 ]
 
 [dependencies]

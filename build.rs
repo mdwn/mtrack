@@ -20,17 +20,5 @@ fn main() -> Result<(), Box<dyn Error>> {
         .file_descriptor_set_path(out_dir.join("player_descriptor.bin"))
         .compile_protos(&["src/proto/player/v1/player.proto"], &["src/proto"])?;
 
-    // Ensure the Svelte dist directory exists so rust-embed compiles without
-    // Node.js. A placeholder index.html is created when the real build output
-    // is missing.
-    let dist_dir = PathBuf::from("src/webui/svelte/dist");
-    if !dist_dir.exists() {
-        std::fs::create_dir_all(&dist_dir)?;
-        std::fs::write(
-            dist_dir.join("index.html"),
-            "<!DOCTYPE html><html><body><p>Run <code>npm run build</code> in src/webui/svelte/ to build the frontend.</p></body></html>",
-        )?;
-    }
-
     Ok(())
 }
