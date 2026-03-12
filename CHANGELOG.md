@@ -20,15 +20,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `GET /api/config/store`, `PUT /api/config/{audio,midi,dmx,controllers}`,
   `POST /api/config/profiles`, `PUT /api/config/profiles/:index`,
   `DELETE /api/config/profiles/:index`. Stale checksums return 409 Conflict.
+- **Config change notifications**: WebSocket clients receive `config_changed` messages when
+  the configuration is mutated, enabling real-time UI updates without polling.
 - **Config round-trip test**: A serialize/deserialize round-trip test validates that
   `config::Player` survives YAML serialization via `yaml-rust2` without data loss.
 
 ### Changed
 
+- Config store checksums use SHA-256 (via `sha2` crate) instead of hand-rolled FNV-1a for
+  clarity and industry-standard collision resistance.
 - `config::Player` and `config::TrackMappings` now derive `Clone`, enabling the config store
   to snapshot the full configuration.
 - `config::Player` gained setter methods (`set_audio`, `set_midi`, `set_dmx`,
   `set_controllers`, `profiles_mut`) for structured config mutations.
+
+### Fixed
+
+- Web UI asset tests now discover embedded filenames dynamically instead of hardcoding
+  hashed filenames that change with every Svelte build.
 
 ## [0.10.1] - 2026-03-11
 

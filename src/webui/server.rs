@@ -88,6 +88,7 @@ pub struct WebUiHandle {
     log_poller_handle: tokio::task::JoinHandle<()>,
     waveform_poller_handle: tokio::task::JoinHandle<()>,
     waveform_prewarmer_handle: tokio::task::JoinHandle<()>,
+    config_watcher_handle: tokio::task::JoinHandle<()>,
     /// The local address the server is bound to.
     #[allow(dead_code)]
     local_addr: std::net::SocketAddr,
@@ -109,6 +110,7 @@ impl Drop for WebUiHandle {
         self.log_poller_handle.abort();
         self.waveform_poller_handle.abort();
         self.waveform_prewarmer_handle.abort();
+        self.config_watcher_handle.abort();
     }
 }
 
@@ -145,6 +147,10 @@ pub async fn start(
     let waveform_prewarmer_handle = tokio::spawn(ws_state::waveform_prewarmer(
         webui_state.player.clone(),
         webui_state.waveform_cache.clone(),
+    ));
+    let config_watcher_handle = tokio::spawn(ws_state::config_watcher(
+        webui_state.player.clone(),
+        webui_state.broadcast_tx.clone(),
     ));
 
     // Build the app router
@@ -186,6 +192,7 @@ pub async fn start(
         log_poller_handle,
         waveform_poller_handle,
         waveform_prewarmer_handle,
+        config_watcher_handle,
         local_addr,
     })
 }

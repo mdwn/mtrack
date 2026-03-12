@@ -325,6 +325,41 @@ pub async fn waveform_poller(
     }
 }
 
+/// Watches the ConfigStore for mutations and broadcasts a signal to WebSocket clients.
+///
+/// This is event-driven (not polling): it waits on the ConfigStore's broadcast channel
+/// and sends a lightweight notification so clients know to re-fetch config.
+#[tracing::instrument(skip_all, name = "config_watcher")]
+pub async fn config_watcher(player: Arc<Player>, tx: broadcast::Sender<String>) {
+    let store = match player.config_store() {
+        Some(s) => s,
+        None => return, // No config store — nothing to watch.
+    };
+
+    let mut rx = store.subscribe();
+
+    loop {
+        match rx.recv().await {
+            Ok(()) => {
+                if tx.receiver_count() == 0 {
+                    continue;
+                }
+                let msg = json!({ "type": "config_changed" });
+                let _ = tx.send(msg.to_string());
+            }
+            Err(broadcast::error::RecvError::Lagged(n)) => {
+                warn!("config_watcher missed {} change notifications", n);
+                // Still send one notification so clients know to re-fetch.
+                if tx.receiver_count() > 0 {
+                    let msg = json!({ "type": "config_changed" });
+                    let _ = tx.send(msg.to_string());
+                }
+            }
+            Err(broadcast::error::RecvError::Closed) => break,
+        }
+    }
+}
+
 /// Background pre-warms the waveform cache for all songs.
 ///
 /// Collects all uncached songs and computes their waveform peaks in parallel
@@ -1330,5 +1365,56 @@ mod test {
             assert!(fixtures_obj.contains_key(&key));
             assert_eq!(fixtures_obj[&key]["type"], "generic");
         }
+    }
+
+    #[tokio::test]
+    async fn config_watcher_sends_on_mutation() {
+        let player = test_player(&["Song A"]);
+
+        // Set up a config store on the player.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+        std::fs::write(&path, "songs: songs\n").unwrap();
+        let cfg = crate::config::Player::deserialize(&path).unwrap();
+        let store = Arc::new(crate::config::ConfigStore::new(cfg, path));
+        player.set_config_store(store.clone());
+
+        let (tx, mut rx) = broadcast::channel(16);
+        let handle = tokio::spawn(config_watcher(player, tx));
+
+        // Yield to let the watcher subscribe before we mutate.
+        tokio::task::yield_now().await;
+
+        // Trigger a mutation so the watcher broadcasts.
+        let snap = store.read().await.unwrap();
+        store
+            .update_midi(
+                Some(crate::config::Midi::new("test-midi", None)),
+                &snap.checksum,
+            )
+            .await
+            .unwrap();
+
+        let msg = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("timed out waiting for config_changed message")
+            .expect("recv error");
+
+        let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
+        assert_eq!(parsed["type"], "config_changed");
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn config_watcher_no_store_exits_immediately() {
+        let player = test_player(&["Song A"]);
+        // No config store set — watcher should return immediately.
+        let (tx, _rx) = broadcast::channel(16);
+        let handle = tokio::spawn(config_watcher(player, tx));
+
+        // Should complete quickly since there's no store.
+        let result = tokio::time::timeout(Duration::from_secs(2), handle).await;
+        assert!(result.is_ok(), "config_watcher should exit when no store");
     }
 }
