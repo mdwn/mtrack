@@ -2261,6 +2261,13 @@ mod sample_source_tests {
         // Use small device buffer size so capacity is also small; this exercises refill logic.
         let mut buffered = BufferedSampleSource::new(inner, pool, 2);
 
+        // Wait for the fill task to fully consume the small inner source before
+        // draining. Without this, the tight read loop can outrun the fill task
+        // and hit the underrun path, which returns silence as valid samples.
+        while buffered.is_exhausted() != Some(true) {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
         let mut read = Vec::new();
         while let Some(sample) = buffered.next_sample().unwrap() {
             read.push(sample);

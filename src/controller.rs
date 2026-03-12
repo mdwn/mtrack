@@ -300,67 +300,67 @@ mod test {
         // Test the controller directing the player.
         println!("Playlist -> Song 1");
         eventually(
-            || playlist.current().name() == "Song 1",
+            || playlist.current().unwrap().name() == "Song 1",
             "Playlist never became Song 1",
         );
         driver.next_event(TestEvent::Next).await;
         println!("Playlist -> Song 3");
         eventually(
-            || playlist.current().name() == "Song 3",
+            || playlist.current().unwrap().name() == "Song 3",
             "Playlist never became Song 3",
         );
         driver.next_event(TestEvent::Next).await;
         println!("Playlist -> Song 5");
         eventually(
-            || playlist.current().name() == "Song 5",
+            || playlist.current().unwrap().name() == "Song 5",
             "Playlist never became Song 5",
         );
         driver.next_event(TestEvent::Next).await;
         println!("Playlist -> Song 7");
         eventually(
-            || playlist.current().name() == "Song 7",
+            || playlist.current().unwrap().name() == "Song 7",
             "Playlist never became Song 7",
         );
         driver.next_event(TestEvent::Prev).await;
         println!("Playlist -> Song 5");
         eventually(
-            || playlist.current().name() == "Song 5",
+            || playlist.current().unwrap().name() == "Song 5",
             "Playlist never became Song 5",
         );
         println!("Switch to AllSongs");
         driver.next_event(TestEvent::AllSongs).await;
         eventually(
-            || player.get_playlist().current().name() == "Song 1",
+            || player.get_playlist().current().unwrap().name() == "Song 1",
             "All Songs Playlist never became Song 1",
         );
         println!("AllSongs -> Song 10");
         driver.next_event(TestEvent::Next).await;
         eventually(
-            || player.get_playlist().current().name() == "Song 10",
+            || player.get_playlist().current().unwrap().name() == "Song 10",
             "All Songs Playlist never became Song 10",
         );
         println!("AllSongs -> Song 2");
         driver.next_event(TestEvent::Next).await;
         eventually(
-            || player.get_playlist().current().name() == "Song 2",
+            || player.get_playlist().current().unwrap().name() == "Song 2",
             "All Songs Playlist never became Song 2",
         );
         println!("AllSongs -> Song 10");
         driver.next_event(TestEvent::Prev).await;
         eventually(
-            || player.get_playlist().current().name() == "Song 10",
+            || player.get_playlist().current().unwrap().name() == "Song 10",
             "All Songs Playlist never became Song 10",
         );
         println!("Switch to Playlist");
         driver.next_event(TestEvent::Playlist).await;
         eventually(
-            || playlist.current().name() == "Song 5",
+            || playlist.current().unwrap().name() == "Song 5",
             "Playlist never became Song 5",
         );
         println!("Playlist -> Song 7");
         driver.next_event(TestEvent::Next).await;
         eventually(
-            || playlist.current().name() == "Song 7",
+            || playlist.current().unwrap().name() == "Song 7",
             "Playlist never became Song 7",
         );
         driver.next_event(TestEvent::Play).await;

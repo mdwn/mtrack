@@ -52,7 +52,6 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
 
         let is_playing = player.is_playing().await;
         let playlist = player.get_playlist();
-        let current_song = playlist.current();
 
         let elapsed_ms = player
             .elapsed()
@@ -62,28 +61,34 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
 
-        let song_name = current_song.name().to_string();
-        let song_duration_ms = current_song.duration().as_millis() as u64;
-
         let playlist_name = playlist.name().to_string();
         let playlist_position = playlist.position();
         let playlist_songs: Vec<String> = playlist.songs().clone();
 
-        let mappings = player.track_mappings();
-        let tracks: Vec<serde_json::Value> = current_song
-            .tracks()
-            .iter()
-            .map(|t| {
-                let output_channels = mappings
-                    .and_then(|m| m.get(t.name()))
-                    .cloned()
-                    .unwrap_or_default();
-                json!({
-                    "name": t.name(),
-                    "output_channels": output_channels,
+        let (song_name, song_duration_ms, tracks) = if let Some(current_song) = playlist.current() {
+            let mappings = player.track_mappings();
+            let tracks: Vec<serde_json::Value> = current_song
+                .tracks()
+                .iter()
+                .map(|t| {
+                    let output_channels = mappings
+                        .and_then(|m| m.get(t.name()))
+                        .cloned()
+                        .unwrap_or_default();
+                    json!({
+                        "name": t.name(),
+                        "output_channels": output_channels,
+                    })
                 })
-            })
-            .collect();
+                .collect();
+            (
+                current_song.name().to_string(),
+                current_song.duration().as_millis() as u64,
+                tracks,
+            )
+        } else {
+            (String::new(), 0, vec![])
+        };
 
         let msg = json!({
             "type": "playback",
@@ -249,7 +254,10 @@ pub async fn waveform_poller(
         }
 
         let playlist = player.get_playlist();
-        let current_song = playlist.current();
+        let current_song = match playlist.current() {
+            Some(song) => song,
+            None => continue,
+        };
         let song_name = current_song.name().to_string();
 
         if song_name == last_song_name {
@@ -287,7 +295,11 @@ pub async fn waveform_poller(
             );
 
             // Song changed while we were computing — discard stale result
-            let current_now = player.get_playlist().current().name().to_string();
+            let current_now = player
+                .get_playlist()
+                .current()
+                .map(|s| s.name().to_string())
+                .unwrap_or_default();
             if current_now != song_name_for_task {
                 last_song_name = String::new(); // Force recompute on next tick
                 continue;

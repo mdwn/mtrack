@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Zero-config start**: `mtrack start mtrack.yaml` now works even when the config file doesn't
+  exist. A default config is created automatically, the songs directory is created if missing,
+  and the player starts idle with the web UI and gRPC available. No playlist file is required —
+  the player falls back to an alphabetized all-songs playlist (which may be empty).
+- **Empty profile fallback**: When no hardware profiles match the current hostname, the player
+  starts with a synthetic empty profile (no audio/MIDI/DMX) instead of exiting with an error.
+- **`Profile::empty()` constructor**: Creates a profile with no hardware configuration.
+- **`config::Player` Default impl**: Produces a minimal config (`songs: songs`) suitable for
+  bootstrapping a new installation.
+
+### Changed
+
+- `Playlist::current()`, `next()`, and `prev()` now return `Option<Arc<Song>>` instead of
+  `Arc<Song>`, returning `None` when the playlist is empty. All callers (player, controllers,
+  web UI, TUI) handle the empty case gracefully — controllers return appropriate error statuses,
+  fire-and-forget handlers skip silently, and the web UI sends minimal "no song" state.
+- The `start` command no longer requires a playlist file to be specified. When absent, it falls
+  back to an all-songs playlist.
+
 - **Mutable configuration store**: A new `ConfigStore` wraps the player configuration in a
   `tokio::sync::RwLock`, enabling runtime config mutations with optimistic concurrency control
   via whole-config checksums. Mutations are persisted atomically to the YAML config file on

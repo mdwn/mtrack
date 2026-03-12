@@ -92,6 +92,11 @@ impl Profile {
         }
     }
 
+    /// Creates an empty profile with no hardware configuration and no hostname constraint.
+    pub fn empty() -> Profile {
+        Profile::new(None, None, None, None)
+    }
+
     /// Returns the optional hostname constraint.
     pub fn hostname(&self) -> Option<&str> {
         self.hostname.as_deref()
