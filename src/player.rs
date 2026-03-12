@@ -134,6 +134,8 @@ pub struct Player {
     stop_run: Arc<AtomicBool>,
     /// The logging span.
     span: Span,
+    /// Mutable configuration store for runtime config changes.
+    config_store: Arc<parking_lot::Mutex<Option<Arc<config::ConfigStore>>>>,
 }
 
 impl Player {
@@ -296,6 +298,7 @@ impl Player {
             join: Arc::new(Mutex::new(None)),
             stop_run: Arc::new(AtomicBool::new(false)),
             span: span!(Level::INFO, "player"),
+            config_store: Arc::new(parking_lot::Mutex::new(None)),
         })
     }
 
@@ -431,6 +434,16 @@ impl Player {
         if let Some(ref engine) = self.dmx_engine {
             engine.set_broadcast_tx(tx);
         }
+    }
+
+    /// Sets the config store on the player. Called once after startup.
+    pub fn set_config_store(&self, store: Arc<config::ConfigStore>) {
+        *self.config_store.lock() = Some(store);
+    }
+
+    /// Returns the config store, if one has been set.
+    pub fn config_store(&self) -> Option<Arc<config::ConfigStore>> {
+        self.config_store.lock().clone()
     }
 
     /// Reports status as MIDI events.
@@ -1775,6 +1788,7 @@ mod test {
             join: Arc::new(Mutex::new(None)),
             stop_run: Arc::new(AtomicBool::new(false)),
             span: span!(Level::INFO, "test"),
+            config_store: Arc::new(parking_lot::Mutex::new(None)),
         };
 
         assert!(player.audio_device().is_none());
@@ -2314,6 +2328,33 @@ mod test {
         let player =
             make_test_player_with_config(Some(config::Audio::new("mock-device")), None, None)?;
         assert!(player.midi_device().is_none());
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_config_store_getter_setter() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player()?;
+
+        // Initially None.
+        assert!(player.config_store().is_none());
+
+        // Set a config store.
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("config.yaml");
+        std::fs::write(&path, "songs: songs\n")?;
+        let cfg = config::Player::deserialize(&path)?;
+        let store = std::sync::Arc::new(config::ConfigStore::new(cfg, path));
+        player.set_config_store(store.clone());
+
+        // Now it should be Some.
+        let retrieved = player.config_store();
+        assert!(retrieved.is_some());
+
+        // Should be the same Arc (read_yaml returns same checksum).
+        let (_, checksum1) = store.read_yaml().await?;
+        let (_, checksum2) = retrieved.unwrap().read_yaml().await?;
+        assert_eq!(checksum1, checksum2);
+
         Ok(())
     }
 }

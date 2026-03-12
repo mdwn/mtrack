@@ -139,6 +139,83 @@ message StopSamplesRequest {}
 // StopSamplesResponse is the response message after stopping triggered samples.
 message StopSamplesResponse {}
 
+// GetConfigRequest is the message for requesting the current configuration.
+message GetConfigRequest {}
+
+// GetConfigResponse is the response containing the current configuration.
+message GetConfigResponse {
+    // The full configuration as a YAML string.
+    string yaml = 1;
+    // Checksum of the current configuration for optimistic concurrency.
+    string checksum = 2;
+}
+
+// UpdateAudioRequest is the message for updating the audio configuration.
+message UpdateAudioRequest {
+    // The audio configuration as a JSON string.
+    string audio_json = 1;
+    // Expected checksum for optimistic concurrency.
+    string expected_checksum = 2;
+}
+
+// UpdateMidiRequest is the message for updating the MIDI configuration.
+message UpdateMidiRequest {
+    // The MIDI configuration as a JSON string.
+    string midi_json = 1;
+    // Expected checksum for optimistic concurrency.
+    string expected_checksum = 2;
+}
+
+// UpdateDmxRequest is the message for updating the DMX configuration.
+message UpdateDmxRequest {
+    // The DMX configuration as a JSON string.
+    string dmx_json = 1;
+    // Expected checksum for optimistic concurrency.
+    string expected_checksum = 2;
+}
+
+// UpdateControllersRequest is the message for updating the controllers configuration.
+message UpdateControllersRequest {
+    // The controllers configuration as a JSON string (array).
+    string controllers_json = 1;
+    // Expected checksum for optimistic concurrency.
+    string expected_checksum = 2;
+}
+
+// AddProfileRequest is the message for adding a new profile.
+message AddProfileRequest {
+    // The profile as a JSON string.
+    string profile_json = 1;
+    // Expected checksum for optimistic concurrency.
+    string expected_checksum = 2;
+}
+
+// UpdateProfileRequest is the message for updating a profile at a specific index.
+message UpdateProfileRequest {
+    // The index of the profile to update.
+    uint32 index = 1;
+    // The profile as a JSON string.
+    string profile_json = 2;
+    // Expected checksum for optimistic concurrency.
+    string expected_checksum = 3;
+}
+
+// RemoveProfileRequest is the message for removing a profile at a specific index.
+message RemoveProfileRequest {
+    // The index of the profile to remove.
+    uint32 index = 1;
+    // Expected checksum for optimistic concurrency.
+    string expected_checksum = 2;
+}
+
+// UpdateConfigResponse is the response after a configuration mutation.
+message UpdateConfigResponse {
+    // The full configuration as a YAML string after the update.
+    string yaml = 1;
+    // New checksum after the update.
+    string checksum = 2;
+}
+
 // PlayerService is a service for controlling the mtrack player.
 service PlayerService {
     // Play will play the current song in the playlist if no other songs
@@ -172,4 +249,28 @@ service PlayerService {
 
     // StopSamples will stop all triggered samples that are currently playing.
     rpc StopSamples(StopSamplesRequest) returns (StopSamplesResponse);
+
+    // GetConfig returns the current configuration as YAML with a checksum.
+    rpc GetConfig(GetConfigRequest) returns (GetConfigResponse);
+
+    // UpdateAudio updates the audio configuration section.
+    rpc UpdateAudio(UpdateAudioRequest) returns (UpdateConfigResponse);
+
+    // UpdateMidi updates the MIDI configuration section.
+    rpc UpdateMidi(UpdateMidiRequest) returns (UpdateConfigResponse);
+
+    // UpdateDmx updates the DMX configuration section.
+    rpc UpdateDmx(UpdateDmxRequest) returns (UpdateConfigResponse);
+
+    // UpdateControllers updates the controllers configuration.
+    rpc UpdateControllers(UpdateControllersRequest) returns (UpdateConfigResponse);
+
+    // AddProfile adds a new hardware profile.
+    rpc AddProfile(AddProfileRequest) returns (UpdateConfigResponse);
+
+    // UpdateProfile updates a profile at a specific index.
+    rpc UpdateProfile(UpdateProfileRequest) returns (UpdateConfigResponse);
+
+    // RemoveProfile removes a profile at a specific index.
+    rpc RemoveProfile(RemoveProfileRequest) returns (UpdateConfigResponse);
 }

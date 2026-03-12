@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Mutable configuration store**: A new `ConfigStore` wraps the player configuration in a
+  `tokio::sync::RwLock`, enabling runtime config mutations with optimistic concurrency control
+  via whole-config checksums. Mutations are persisted atomically to the YAML config file on
+  every change. The store is accessible from the `Player` via `player.config_store()`.
+- **Config gRPC RPCs**: Eight new RPCs on `PlayerService` for reading and mutating configuration
+  at runtime: `GetConfig`, `UpdateAudio`, `UpdateMidi`, `UpdateDmx`, `UpdateControllers`,
+  `AddProfile`, `UpdateProfile`, `RemoveProfile`. Stale checksums return `FAILED_PRECONDITION`.
+- **Config REST endpoints**: New REST API endpoints for config mutations:
+  `GET /api/config/store`, `PUT /api/config/{audio,midi,dmx,controllers}`,
+  `POST /api/config/profiles`, `PUT /api/config/profiles/:index`,
+  `DELETE /api/config/profiles/:index`. Stale checksums return 409 Conflict.
+- **Config round-trip test**: A serialize/deserialize round-trip test validates that
+  `config::Player` survives YAML serialization via `yaml-rust2` without data loss.
+
+### Changed
+
+- `config::Player` and `config::TrackMappings` now derive `Clone`, enabling the config store
+  to snapshot the full configuration.
+- `config::Player` gained setter methods (`set_audio`, `set_midi`, `set_dmx`,
+  `set_controllers`, `profiles_mut`) for structured config mutations.
+
 ## [0.10.1] - 2026-03-11
 
 ### Fixed

@@ -16,7 +16,7 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
-    routing::{get, post},
+    routing::{get, post, put},
     Json, Router,
 };
 use serde_json::json;
@@ -44,6 +44,16 @@ pub fn router() -> Router<WebUiState> {
             get(get_lighting_file).put(put_lighting_file),
         )
         .route("/lighting/validate", post(validate_lighting))
+        .route("/config/store", get(get_config_store))
+        .route("/config/audio", put(put_config_audio))
+        .route("/config/midi", put(put_config_midi))
+        .route("/config/dmx", put(put_config_dmx))
+        .route("/config/controllers", put(put_config_controllers))
+        .route("/config/profiles", post(post_config_profile))
+        .route(
+            "/config/profiles/{index}",
+            put(put_config_profile).delete(delete_config_profile),
+        )
 }
 
 /// GET /api/config — returns the raw YAML content of the player config file.
@@ -338,6 +348,360 @@ async fn validate_config(body: String) -> impl IntoResponse {
             Json(json!({"valid": false, "errors": errors})),
         )
             .into_response(),
+    }
+}
+
+/// Helper to convert a ConfigError into an HTTP response.
+fn config_store_error_response(e: config::ConfigError) -> axum::response::Response {
+    match e {
+        config::ConfigError::StaleChecksum { .. } => {
+            (StatusCode::CONFLICT, Json(json!({"error": e.to_string()}))).into_response()
+        }
+        config::ConfigError::InvalidProfileIndex { .. } => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+        _ => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// Helper to convert a ConfigSnapshot into a JSON response.
+fn config_snapshot_response(
+    snapshot: config::store::ConfigSnapshot,
+    status: StatusCode,
+) -> axum::response::Response {
+    match crate::util::to_yaml_string(&snapshot.config) {
+        Ok(yaml) => (
+            status,
+            Json(json!({"yaml": yaml, "checksum": snapshot.checksum})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("serialization error: {}", e)})),
+        )
+            .into_response(),
+    }
+}
+
+/// Returns the config store from the player, or an error response.
+#[allow(clippy::result_large_err)]
+fn require_config_store(
+    state: &WebUiState,
+) -> Result<std::sync::Arc<crate::config::ConfigStore>, axum::response::Response> {
+    state.player.config_store().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": "config store not available"})),
+        )
+            .into_response()
+    })
+}
+
+/// GET /api/config/store — returns config YAML + checksum via the ConfigStore.
+async fn get_config_store(State(state): State<WebUiState>) -> impl IntoResponse {
+    let store = match require_config_store(&state) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    match store.read_yaml().await {
+        Ok((yaml, checksum)) => (
+            StatusCode::OK,
+            Json(json!({"yaml": yaml, "checksum": checksum})),
+        )
+            .into_response(),
+        Err(e) => config_store_error_response(e),
+    }
+}
+
+/// PUT /api/config/audio — update audio config section.
+async fn put_config_audio(
+    State(state): State<WebUiState>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let checksum = match body.get("expected_checksum").and_then(|v| v.as_str()) {
+        Some(c) => c.to_string(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "missing expected_checksum"})),
+            )
+                .into_response()
+        }
+    };
+
+    let audio: Option<config::Audio> = match body.get("audio") {
+        Some(v) if !v.is_null() => match serde_json::from_value(v.clone()) {
+            Ok(a) => Some(a),
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": format!("invalid audio: {}", e)})),
+                )
+                    .into_response()
+            }
+        },
+        _ => None,
+    };
+
+    let store = match require_config_store(&state) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    match store.update_audio(audio, &checksum).await {
+        Ok(snapshot) => config_snapshot_response(snapshot, StatusCode::OK),
+        Err(e) => config_store_error_response(e),
+    }
+}
+
+/// PUT /api/config/midi — update MIDI config section.
+async fn put_config_midi(
+    State(state): State<WebUiState>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let checksum = match body.get("expected_checksum").and_then(|v| v.as_str()) {
+        Some(c) => c.to_string(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "missing expected_checksum"})),
+            )
+                .into_response()
+        }
+    };
+
+    let midi: Option<config::Midi> = match body.get("midi") {
+        Some(v) if !v.is_null() => match serde_json::from_value(v.clone()) {
+            Ok(m) => Some(m),
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": format!("invalid midi: {}", e)})),
+                )
+                    .into_response()
+            }
+        },
+        _ => None,
+    };
+
+    let store = match require_config_store(&state) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    match store.update_midi(midi, &checksum).await {
+        Ok(snapshot) => config_snapshot_response(snapshot, StatusCode::OK),
+        Err(e) => config_store_error_response(e),
+    }
+}
+
+/// PUT /api/config/dmx — update DMX config section.
+async fn put_config_dmx(
+    State(state): State<WebUiState>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let checksum = match body.get("expected_checksum").and_then(|v| v.as_str()) {
+        Some(c) => c.to_string(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "missing expected_checksum"})),
+            )
+                .into_response()
+        }
+    };
+
+    let dmx: Option<config::Dmx> = match body.get("dmx") {
+        Some(v) if !v.is_null() => match serde_json::from_value(v.clone()) {
+            Ok(d) => Some(d),
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": format!("invalid dmx: {}", e)})),
+                )
+                    .into_response()
+            }
+        },
+        _ => None,
+    };
+
+    let store = match require_config_store(&state) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    match store.update_dmx(dmx, &checksum).await {
+        Ok(snapshot) => config_snapshot_response(snapshot, StatusCode::OK),
+        Err(e) => config_store_error_response(e),
+    }
+}
+
+/// PUT /api/config/controllers — update controllers config.
+async fn put_config_controllers(
+    State(state): State<WebUiState>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let checksum = match body.get("expected_checksum").and_then(|v| v.as_str()) {
+        Some(c) => c.to_string(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "missing expected_checksum"})),
+            )
+                .into_response()
+        }
+    };
+
+    let controllers: Vec<config::Controller> = match body.get("controllers") {
+        Some(v) => match serde_json::from_value(v.clone()) {
+            Ok(c) => c,
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": format!("invalid controllers: {}", e)})),
+                )
+                    .into_response()
+            }
+        },
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "missing controllers field"})),
+            )
+                .into_response()
+        }
+    };
+
+    let store = match require_config_store(&state) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    match store.update_controllers(controllers, &checksum).await {
+        Ok(snapshot) => config_snapshot_response(snapshot, StatusCode::OK),
+        Err(e) => config_store_error_response(e),
+    }
+}
+
+/// POST /api/config/profiles — add a new profile.
+async fn post_config_profile(
+    State(state): State<WebUiState>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let checksum = match body.get("expected_checksum").and_then(|v| v.as_str()) {
+        Some(c) => c.to_string(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "missing expected_checksum"})),
+            )
+                .into_response()
+        }
+    };
+
+    let profile: config::Profile = match body.get("profile") {
+        Some(v) => match serde_json::from_value(v.clone()) {
+            Ok(p) => p,
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": format!("invalid profile: {}", e)})),
+                )
+                    .into_response()
+            }
+        },
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "missing profile field"})),
+            )
+                .into_response()
+        }
+    };
+
+    let store = match require_config_store(&state) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    match store.add_profile(profile, &checksum).await {
+        Ok(snapshot) => config_snapshot_response(snapshot, StatusCode::CREATED),
+        Err(e) => config_store_error_response(e),
+    }
+}
+
+/// PUT /api/config/profiles/:index — update profile at index.
+async fn put_config_profile(
+    State(state): State<WebUiState>,
+    Path(index): Path<usize>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let checksum = match body.get("expected_checksum").and_then(|v| v.as_str()) {
+        Some(c) => c.to_string(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "missing expected_checksum"})),
+            )
+                .into_response()
+        }
+    };
+
+    let profile: config::Profile = match body.get("profile") {
+        Some(v) => match serde_json::from_value(v.clone()) {
+            Ok(p) => p,
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": format!("invalid profile: {}", e)})),
+                )
+                    .into_response()
+            }
+        },
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "missing profile field"})),
+            )
+                .into_response()
+        }
+    };
+
+    let store = match require_config_store(&state) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    match store.update_profile(index, profile, &checksum).await {
+        Ok(snapshot) => config_snapshot_response(snapshot, StatusCode::OK),
+        Err(e) => config_store_error_response(e),
+    }
+}
+
+/// DELETE /api/config/profiles/:index?expected_checksum=... — remove profile at index.
+async fn delete_config_profile(
+    State(state): State<WebUiState>,
+    Path(index): Path<usize>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let checksum = match params.get("expected_checksum") {
+        Some(c) => c.to_string(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "missing expected_checksum query parameter"})),
+            )
+                .into_response()
+        }
+    };
+
+    let store = match require_config_store(&state) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    match store.remove_profile(index, &checksum).await {
+        Ok(snapshot) => config_snapshot_response(snapshot, StatusCode::OK),
+        Err(e) => config_store_error_response(e),
     }
 }
 
@@ -2059,5 +2423,55 @@ show "test" {
             .as_str()
             .unwrap()
             .contains("Failed to scan for lighting files"));
+    }
+
+    #[tokio::test]
+    async fn get_config_store_without_store_returns_503() {
+        let (state, _dir) = test_state();
+        // No config store set on player — should return SERVICE_UNAVAILABLE.
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/config/store")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn get_config_store_with_store_returns_yaml_and_checksum() {
+        let (state, _dir) = test_state();
+
+        // Set up a config store on the player.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store-config.yaml");
+        std::fs::write(&path, "songs: songs\n").unwrap();
+        let cfg = crate::config::Player::deserialize(&path).unwrap();
+        let store = std::sync::Arc::new(crate::config::ConfigStore::new(cfg, path));
+        state.player.set_config_store(store);
+
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/config/store")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(parsed["yaml"].as_str().unwrap().contains("songs"));
+        assert!(!parsed["checksum"].as_str().unwrap().is_empty());
     }
 }
