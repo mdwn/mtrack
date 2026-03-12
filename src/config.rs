@@ -27,6 +27,7 @@ mod profile;
 pub mod samples;
 mod song;
 mod statusevents;
+pub mod store;
 mod track;
 mod trackmappings;
 pub mod trigger;
@@ -56,4 +57,5 @@ pub use self::samples::{
 };
 pub use self::song::{LightShow, LightingShow, MidiPlayback, Song};
 pub use self::statusevents::StatusEvents;
+pub use self::store::ConfigStore;
 pub use self::track::Track;

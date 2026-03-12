@@ -32,6 +32,17 @@ pub enum ConfigError {
         path: PathBuf,
         source: config::ConfigError,
     },
+
+    #[error(
+        "Checksum mismatch: config has changed since last read; re-fetch to get current state"
+    )]
+    StaleChecksum { expected: String, actual: String },
+
+    #[error("Config serialization error: {0}")]
+    StoreSerialization(String),
+
+    #[error("Invalid profile index {index} (have {len} profiles)")]
+    InvalidProfileIndex { index: usize, len: usize },
 }
 
 #[cfg(test)]

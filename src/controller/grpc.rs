@@ -22,10 +22,13 @@ use crate::{
     player::Player,
     proto::player::v1::{
         player_service_server::{PlayerService, PlayerServiceServer},
-        Cue, GetActiveEffectsRequest, GetActiveEffectsResponse, GetCuesRequest, GetCuesResponse,
-        NextRequest, NextResponse, PlayFromRequest, PlayRequest, PlayResponse, PreviousRequest,
-        PreviousResponse, StatusRequest, StatusResponse, StopRequest, StopResponse,
-        StopSamplesRequest, StopSamplesResponse, SwitchToPlaylistRequest, SwitchToPlaylistResponse,
+        AddProfileRequest, Cue, GetActiveEffectsRequest, GetActiveEffectsResponse,
+        GetConfigRequest, GetConfigResponse, GetCuesRequest, GetCuesResponse, NextRequest,
+        NextResponse, PlayFromRequest, PlayRequest, PlayResponse, PreviousRequest,
+        PreviousResponse, RemoveProfileRequest, StatusRequest, StatusResponse, StopRequest,
+        StopResponse, StopSamplesRequest, StopSamplesResponse, SwitchToPlaylistRequest,
+        SwitchToPlaylistResponse, UpdateAudioRequest, UpdateConfigResponse,
+        UpdateControllersRequest, UpdateDmxRequest, UpdateMidiRequest, UpdateProfileRequest,
         FILE_DESCRIPTOR_SET,
     },
 };
@@ -81,7 +84,6 @@ impl super::Driver for Driver {
         let player = self.player.clone();
 
         tokio::spawn(async move {
-            let player = player.clone();
             let reflection_service = tonic_reflection::server::Builder::configure()
                 .register_encoded_file_descriptor_set(FILE_DESCRIPTOR_SET)
                 .build_v1()
@@ -92,9 +94,14 @@ impl super::Driver for Driver {
                 info!("Starting gRPC server");
             }
 
+            let player_server = match player.config_store() {
+                Some(store) => PlayerServer::with_config_store(player, store),
+                None => PlayerServer::new(player),
+            };
+
             Server::builder()
                 .add_service(reflection_service)
-                .add_service(PlayerServiceServer::new(PlayerServer::new(player.clone())))
+                .add_service(PlayerServiceServer::new(player_server))
                 .serve(addr)
                 .await
                 .map_err(io::Error::other)
@@ -106,12 +113,28 @@ impl super::Driver for Driver {
 pub(crate) struct PlayerServer {
     /// The player.
     player: Arc<Player>,
+    /// Mutable configuration store for runtime config changes.
+    config_store: Option<Arc<crate::config::ConfigStore>>,
 }
 
 impl PlayerServer {
     /// Creates a new PlayerServer wrapping the given player.
     pub(crate) fn new(player: Arc<Player>) -> Self {
-        Self { player }
+        Self {
+            player,
+            config_store: None,
+        }
+    }
+
+    /// Creates a new PlayerServer with a config store.
+    pub(crate) fn with_config_store(
+        player: Arc<Player>,
+        config_store: Arc<crate::config::ConfigStore>,
+    ) -> Self {
+        Self {
+            player,
+            config_store: Some(config_store),
+        }
     }
 
     /// Converts a play/play_from result into a gRPC response.
@@ -127,6 +150,35 @@ impl PlayerServer {
             Err(e) => Err(Status::failed_precondition(e.to_string())),
         }
     }
+
+    /// Returns a reference to the config store or a NOT_FOUND error.
+    #[allow(clippy::result_large_err)]
+    fn require_config_store(&self) -> Result<&crate::config::ConfigStore, Status> {
+        self.config_store
+            .as_deref()
+            .ok_or_else(|| Status::unimplemented("config store not available"))
+    }
+}
+
+/// Converts a ConfigError to a gRPC Status.
+fn config_error_to_status(e: config::ConfigError) -> Status {
+    match e {
+        config::ConfigError::StaleChecksum { .. } => Status::failed_precondition(e.to_string()),
+        config::ConfigError::InvalidProfileIndex { .. } => Status::out_of_range(e.to_string()),
+        _ => Status::internal(e.to_string()),
+    }
+}
+
+/// Converts a ConfigSnapshot to an UpdateConfigResponse by serializing to YAML.
+fn snapshot_to_update_response(
+    snapshot: config::store::ConfigSnapshot,
+) -> Result<Response<UpdateConfigResponse>, Status> {
+    let yaml = crate::util::to_yaml_string(&snapshot.config)
+        .map_err(|e| Status::internal(format!("serialization error: {}", e)))?;
+    Ok(Response::new(UpdateConfigResponse {
+        yaml,
+        checksum: snapshot.checksum,
+    }))
 }
 
 #[tonic::async_trait]
@@ -273,6 +325,136 @@ impl PlayerService for PlayerServer {
     ) -> Result<Response<StopSamplesResponse>, Status> {
         self.player.stop_samples();
         Ok(Response::new(StopSamplesResponse {}))
+    }
+
+    async fn get_config(
+        &self,
+        _: Request<GetConfigRequest>,
+    ) -> Result<Response<GetConfigResponse>, Status> {
+        let store = self.require_config_store()?;
+        let (yaml, checksum) = store.read_yaml().await.map_err(config_error_to_status)?;
+        Ok(Response::new(GetConfigResponse { yaml, checksum }))
+    }
+
+    async fn update_audio(
+        &self,
+        request: Request<UpdateAudioRequest>,
+    ) -> Result<Response<UpdateConfigResponse>, Status> {
+        let store = self.require_config_store()?;
+        let req = request.into_inner();
+        let audio: Option<config::Audio> = if req.audio_json.is_empty() {
+            None
+        } else {
+            Some(
+                serde_json::from_str(&req.audio_json)
+                    .map_err(|e| Status::invalid_argument(format!("invalid audio JSON: {}", e)))?,
+            )
+        };
+        let snapshot = store
+            .update_audio(audio, &req.expected_checksum)
+            .await
+            .map_err(config_error_to_status)?;
+        snapshot_to_update_response(snapshot)
+    }
+
+    async fn update_midi(
+        &self,
+        request: Request<UpdateMidiRequest>,
+    ) -> Result<Response<UpdateConfigResponse>, Status> {
+        let store = self.require_config_store()?;
+        let req = request.into_inner();
+        let midi: Option<config::Midi> = if req.midi_json.is_empty() {
+            None
+        } else {
+            Some(
+                serde_json::from_str(&req.midi_json)
+                    .map_err(|e| Status::invalid_argument(format!("invalid MIDI JSON: {}", e)))?,
+            )
+        };
+        let snapshot = store
+            .update_midi(midi, &req.expected_checksum)
+            .await
+            .map_err(config_error_to_status)?;
+        snapshot_to_update_response(snapshot)
+    }
+
+    async fn update_dmx(
+        &self,
+        request: Request<UpdateDmxRequest>,
+    ) -> Result<Response<UpdateConfigResponse>, Status> {
+        let store = self.require_config_store()?;
+        let req = request.into_inner();
+        let dmx: Option<config::Dmx> = if req.dmx_json.is_empty() {
+            None
+        } else {
+            Some(
+                serde_json::from_str(&req.dmx_json)
+                    .map_err(|e| Status::invalid_argument(format!("invalid DMX JSON: {}", e)))?,
+            )
+        };
+        let snapshot = store
+            .update_dmx(dmx, &req.expected_checksum)
+            .await
+            .map_err(config_error_to_status)?;
+        snapshot_to_update_response(snapshot)
+    }
+
+    async fn update_controllers(
+        &self,
+        request: Request<UpdateControllersRequest>,
+    ) -> Result<Response<UpdateConfigResponse>, Status> {
+        let store = self.require_config_store()?;
+        let req = request.into_inner();
+        let controllers: Vec<config::Controller> = serde_json::from_str(&req.controllers_json)
+            .map_err(|e| Status::invalid_argument(format!("invalid controllers JSON: {}", e)))?;
+        let snapshot = store
+            .update_controllers(controllers, &req.expected_checksum)
+            .await
+            .map_err(config_error_to_status)?;
+        snapshot_to_update_response(snapshot)
+    }
+
+    async fn add_profile(
+        &self,
+        request: Request<AddProfileRequest>,
+    ) -> Result<Response<UpdateConfigResponse>, Status> {
+        let store = self.require_config_store()?;
+        let req = request.into_inner();
+        let profile: config::Profile = serde_json::from_str(&req.profile_json)
+            .map_err(|e| Status::invalid_argument(format!("invalid profile JSON: {}", e)))?;
+        let snapshot = store
+            .add_profile(profile, &req.expected_checksum)
+            .await
+            .map_err(config_error_to_status)?;
+        snapshot_to_update_response(snapshot)
+    }
+
+    async fn update_profile(
+        &self,
+        request: Request<UpdateProfileRequest>,
+    ) -> Result<Response<UpdateConfigResponse>, Status> {
+        let store = self.require_config_store()?;
+        let req = request.into_inner();
+        let profile: config::Profile = serde_json::from_str(&req.profile_json)
+            .map_err(|e| Status::invalid_argument(format!("invalid profile JSON: {}", e)))?;
+        let snapshot = store
+            .update_profile(req.index as usize, profile, &req.expected_checksum)
+            .await
+            .map_err(config_error_to_status)?;
+        snapshot_to_update_response(snapshot)
+    }
+
+    async fn remove_profile(
+        &self,
+        request: Request<RemoveProfileRequest>,
+    ) -> Result<Response<UpdateConfigResponse>, Status> {
+        let store = self.require_config_store()?;
+        let req = request.into_inner();
+        let snapshot = store
+            .remove_profile(req.index as usize, &req.expected_checksum)
+            .await
+            .map_err(config_error_to_status)?;
+        snapshot_to_update_response(snapshot)
     }
 }
 

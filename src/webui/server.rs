@@ -209,7 +209,12 @@ async fn grpc_web_handler(
         method, uri, content_type
     );
 
-    let grpc_svc = PlayerServiceServer::new(PlayerServer::new(state.player.clone()));
+    let grpc_svc = match state.player.config_store() {
+        Some(store) => {
+            PlayerServiceServer::new(PlayerServer::with_config_store(state.player.clone(), store))
+        }
+        None => PlayerServiceServer::new(PlayerServer::new(state.player.clone())),
+    };
     let grpc_web = GrpcWebLayer::new().layer(grpc_svc);
 
     match grpc_web.oneshot(request).await {
@@ -621,9 +626,12 @@ mod test {
 
     #[tokio::test]
     async fn server_serves_css_asset() {
+        let css_file = WebUiAssets::iter()
+            .find(|f| f.ends_with(".css"))
+            .expect("no CSS asset found in embedded files");
         let (_handle, base_url, _dir) = start_test_server().await;
 
-        let resp = reqwest::get(format!("{}/assets/index-Cf9m096F.css", base_url))
+        let resp = reqwest::get(format!("{}/{}", base_url, css_file))
             .await
             .unwrap();
         assert_eq!(resp.status(), 200);
@@ -643,9 +651,12 @@ mod test {
 
     #[tokio::test]
     async fn server_serves_js_asset() {
+        let js_file = WebUiAssets::iter()
+            .find(|f| f.ends_with(".js"))
+            .expect("no JS asset found in embedded files");
         let (_handle, base_url, _dir) = start_test_server().await;
 
-        let resp = reqwest::get(format!("{}/assets/index-SLiPmHn5.js", base_url))
+        let resp = reqwest::get(format!("{}/{}", base_url, js_file))
             .await
             .unwrap();
         assert_eq!(resp.status(), 200);

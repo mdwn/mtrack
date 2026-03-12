@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 /// The mappings of tracks to output channels.
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, Clone)]
 pub struct TrackMappings {
     // The individual track mappings.
     #[serde(flatten)]

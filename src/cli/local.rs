@@ -122,6 +122,10 @@ pub async fn start(
     apply_thread_priority();
     let player_path = &Path::new(player_path);
     let player_config = config::Player::deserialize(player_path)?;
+    let config_store = Arc::new(config::ConfigStore::new(
+        player_config.clone(),
+        player_path.to_path_buf(),
+    ));
     let mut playlist_path = playlist_path
         .as_ref()
         .map(PathBuf::from)
@@ -154,6 +158,7 @@ pub async fn start(
         &player_config,
         player_path.parent(),
     )?);
+    player.set_config_store(config_store);
 
     // Start the shared state sampler if a DMX engine (with effect engine) is present.
     // Both the TUI and the simulator subscribe to this channel.

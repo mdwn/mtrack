@@ -34,7 +34,7 @@ use tracing::{error, info, warn};
 static EMPTY_TRACK_MAPPINGS: LazyLock<HashMap<String, Vec<u16>>> = LazyLock::new(HashMap::new);
 
 /// The configuration for the multitrack player.
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, Clone)]
 pub struct Player {
     /// The controller configuration.
     controller: Option<Controller>,
@@ -433,6 +433,35 @@ impl Player {
     /// Gets the maximum sample voices limit.
     pub fn max_sample_voices(&self) -> u32 {
         self.max_sample_voices.unwrap_or(DEFAULT_MAX_SAMPLE_VOICES)
+    }
+
+    /// Sets the audio configuration.
+    pub fn set_audio(&mut self, audio: Option<Audio>) {
+        self.audio = audio;
+    }
+
+    /// Sets the MIDI configuration.
+    pub fn set_midi(&mut self, midi: Option<Midi>) {
+        self.midi = midi;
+    }
+
+    /// Sets the DMX configuration.
+    pub fn set_dmx(&mut self, dmx: Option<Dmx>) {
+        self.dmx = dmx;
+    }
+
+    /// Sets the controllers configuration. Pass an empty vec or None to clear.
+    pub fn set_controllers(&mut self, controllers: Vec<Controller>) {
+        if controllers.is_empty() {
+            self.controllers = None;
+        } else {
+            self.controllers = Some(controllers);
+        }
+    }
+
+    /// Returns a mutable reference to the profiles list.
+    pub fn profiles_mut(&mut self) -> &mut Option<Vec<Profile>> {
+        &mut self.profiles
     }
 }
 
@@ -1515,5 +1544,52 @@ samples:
         let player = Player::deserialize(&config_path).unwrap();
         let sc = player.samples_config(&config_path).unwrap();
         assert!(sc.samples().contains_key("hat"));
+    }
+
+    #[test]
+    fn test_serialize_deserialize_round_trip() {
+        let yaml = r#"
+songs: songs
+profiles:
+  - hostname: pi-a
+    audio:
+      device: mock-device
+      sample_rate: 48000
+      track_mappings:
+        click: [1]
+        cue: [2]
+    midi:
+      device: mock-midi
+      playback_delay: 500ms
+    dmx:
+      universes:
+        - universe: 1
+          name: main
+    controllers:
+      - kind: grpc
+        port: 43234
+      - kind: osc
+  - audio:
+      device: fallback
+      track_mappings:
+        drums: [1, 2]
+"#;
+
+        let player = player_from_yaml(yaml);
+
+        // Serialize to YAML via util::to_yaml_string
+        let serialized =
+            crate::util::to_yaml_string(&player).expect("serialization should succeed");
+
+        // Deserialize the serialized YAML back
+        let mut temp = tempfile::NamedTempFile::with_suffix(".yaml").unwrap();
+        temp.write_all(serialized.as_bytes()).unwrap();
+        let round_tripped =
+            Player::deserialize(temp.path()).expect("round-trip deserialization should succeed");
+
+        // Compare by serializing both to JSON (deterministic field order)
+        let json1 = serde_json::to_value(&player).unwrap();
+        let json2 = serde_json::to_value(&round_tripped).unwrap();
+        assert_eq!(json1, json2, "round-trip should preserve all config values");
     }
 }
