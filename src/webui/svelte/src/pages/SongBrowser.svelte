@@ -12,7 +12,27 @@
      * this program. If not, see <https://www.gnu.org/licenses/>.
      *
      * -->
-<div class="page-placeholder">
-  <h2>Song Browser</h2>
-  <p>Coming in Phase 2.</p>
-</div>
+<script lang="ts">
+  import SongList from "../components/songs/SongList.svelte";
+  import SongDetail from "../components/songs/SongDetail.svelte";
+
+  interface Props {
+    currentHash: string;
+  }
+
+  let { currentHash }: Props = $props();
+
+  let songName = $derived.by(() => {
+    const prefix = "#/songs/";
+    if (currentHash.startsWith(prefix) && currentHash.length > prefix.length) {
+      return decodeURIComponent(currentHash.slice(prefix.length));
+    }
+    return null;
+  });
+</script>
+
+{#if songName}
+  <SongDetail {songName} />
+{:else}
+  <SongList />
+{/if}

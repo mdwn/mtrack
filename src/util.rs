@@ -32,6 +32,50 @@ pub fn duration_minutes_seconds(duration: Duration) -> String {
     format!("{}:{:02}", minutes, secs)
 }
 
+/// Converts a string to kebab-case. Handles spaces, underscores, camelCase,
+/// and PascalCase by inserting hyphens at word boundaries and lowercasing.
+pub fn to_kebab_case(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut result = String::with_capacity(s.len() + 4);
+    let mut prev_was_separator = false;
+
+    for (i, &ch) in chars.iter().enumerate() {
+        if ch == ' ' || ch == '_' || ch == '-' {
+            if !result.is_empty() && !prev_was_separator {
+                result.push('-');
+            }
+            prev_was_separator = true;
+        } else if ch.is_uppercase() {
+            // Insert hyphen before uppercase if preceded by a lowercase letter/digit,
+            // or if preceded by uppercase followed by lowercase (e.g., "XMLParser" -> "xml-parser").
+            if !result.is_empty() && !prev_was_separator {
+                let prev = chars[i - 1];
+                if prev.is_lowercase()
+                    || prev.is_ascii_digit()
+                    || (prev.is_uppercase()
+                        && chars.get(i + 1).is_some_and(|next| next.is_lowercase()))
+                {
+                    result.push('-');
+                }
+            }
+            for lc in ch.to_lowercase() {
+                result.push(lc);
+            }
+            prev_was_separator = false;
+        } else {
+            result.push(ch);
+            prev_was_separator = false;
+        }
+    }
+
+    // Strip trailing hyphen from trailing separators in input.
+    while result.ends_with('-') {
+        result.pop();
+    }
+
+    result
+}
+
 /// Serializes a value to a YAML string using serde_json as an intermediary and yaml-rust2 for
 /// emission.
 pub fn to_yaml_string<T: Serialize>(value: &T) -> Result<String, Box<dyn std::error::Error>> {
@@ -123,5 +167,76 @@ mod test {
             super::filename_display(Path::new("")),
             "unreadable file name"
         );
+    }
+
+    #[test]
+    fn kebab_case_spaces() {
+        assert_eq!(super::to_kebab_case("Backing Track"), "backing-track");
+    }
+
+    #[test]
+    fn kebab_case_underscores() {
+        assert_eq!(super::to_kebab_case("backing_track"), "backing-track");
+    }
+
+    #[test]
+    fn kebab_case_camel() {
+        assert_eq!(super::to_kebab_case("backingTrack"), "backing-track");
+    }
+
+    #[test]
+    fn kebab_case_pascal() {
+        assert_eq!(super::to_kebab_case("BackingTrack"), "backing-track");
+    }
+
+    #[test]
+    fn kebab_case_already_kebab() {
+        assert_eq!(super::to_kebab_case("backing-track"), "backing-track");
+    }
+
+    #[test]
+    fn kebab_case_mixed() {
+        assert_eq!(
+            super::to_kebab_case("My Cool_Song Name"),
+            "my-cool-song-name"
+        );
+    }
+
+    #[test]
+    fn kebab_case_consecutive_separators() {
+        assert_eq!(super::to_kebab_case("a  b__c--d"), "a-b-c-d");
+    }
+
+    #[test]
+    fn kebab_case_all_caps() {
+        assert_eq!(super::to_kebab_case("LOUD"), "loud");
+    }
+
+    #[test]
+    fn kebab_case_acronym_then_word() {
+        assert_eq!(super::to_kebab_case("XMLParser"), "xml-parser");
+    }
+
+    #[test]
+    fn kebab_case_digit_before_upper() {
+        assert_eq!(super::to_kebab_case("v2Track"), "v2-track");
+        assert_eq!(super::to_kebab_case("Part2Guitars"), "part2-guitars");
+    }
+
+    #[test]
+    fn kebab_case_non_ascii() {
+        assert_eq!(super::to_kebab_case("café_backing"), "café-backing");
+        assert_eq!(super::to_kebab_case("Élite Track"), "élite-track");
+    }
+
+    #[test]
+    fn kebab_case_numbers_only() {
+        assert_eq!(super::to_kebab_case("123"), "123");
+    }
+
+    #[test]
+    fn kebab_case_trailing_leading_separators() {
+        assert_eq!(super::to_kebab_case("_hello_"), "hello");
+        assert_eq!(super::to_kebab_case("  spaced  "), "spaced");
     }
 }

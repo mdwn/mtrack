@@ -105,6 +105,11 @@ impl Song {
         &self.name
     }
 
+    /// Sets the name of the song.
+    pub fn set_name(&mut self, name: &str) {
+        self.name = name.to_string();
+    }
+
     /// Gets the MIDI event associated with the song.
     pub fn midi_event(&self) -> Result<Option<LiveEvent<'static>>, Box<dyn Error>> {
         Ok(match &self.midi_event {

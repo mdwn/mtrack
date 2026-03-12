@@ -151,6 +151,34 @@ body {
   border-color: var(--accent);
 }
 
+/* === Inputs === */
+.input {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-input);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.input:focus {
+  border-color: var(--border-focus);
+}
+
+/* === Danger button === */
+.btn-danger {
+  background: var(--red-dim);
+  color: var(--red);
+  border-color: var(--red-dim);
+}
+.btn-danger:hover {
+  background: var(--red);
+  color: #fff;
+  border-color: var(--red);
+}
+
 /* === Placeholder pages === */
 .page-placeholder {
   display: flex;

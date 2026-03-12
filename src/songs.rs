@@ -11,7 +11,7 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -32,8 +32,9 @@ use crate::lighting::parser::LightShow as ParsedLightShow;
 use crate::proto::player;
 use crate::util::filename_display;
 
-/// Audio file extensions supported by symphonia, plus MIDI and lighting DSL.
-const AUDIO_EXTENSIONS: &[&str] = &[
+/// File extensions that are media content (not song config files). Used during
+/// song discovery to skip files that are definitely not song.yaml/song.yml.
+const MEDIA_EXTENSIONS: &[&str] = &[
     "wav", "flac", "mp3", "ogg", "aac", "m4a", "mp4", "aiff", "aif", "mid", "light",
 ];
 
@@ -270,6 +271,9 @@ impl Song {
                 }
             }
         }
+        // Deduplicate track names by appending numeric suffixes on collision.
+        deduplicate_track_names(&mut tracks);
+
         let song = Self {
             name,
             base_path: song_directory.clone(),
@@ -796,7 +800,7 @@ impl Track {
             )
             .into());
         }
-        let track_name = stem.to_string();
+        let track_name = crate::util::to_kebab_case(stem);
         let source = create_sample_source_from_file(track_path, None, 1024).map_err(
             |e| -> Box<dyn Error> { format!("file {}: {}", track_path.display(), e).into() },
         )?;
@@ -833,7 +837,7 @@ impl Track {
             ],
             _ => (0..source.channel_count())
                 .map(|channel| Track {
-                    name: format!("{track_name}-{channel}"),
+                    name: format!("{track_name}-{}", channel + 1),
                     file: track_path.to_path_buf(),
                     file_channel: channel + 1,
                     sample_rate,
@@ -848,6 +852,11 @@ impl Track {
     /// Gets the track name.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Sets the track name.
+    fn set_name(&mut self, name: String) {
+        self.name = name;
     }
 
     /// Gets the path to the audio file for this track.
@@ -866,6 +875,29 @@ impl Track {
             filename_display(&self.file),
             Some(self.file_channel),
         )
+    }
+}
+
+/// Renames tracks in-place so that every name is unique. When two or more tracks
+/// share a name, a `-2`, `-3`, … suffix is appended to duplicates (the first
+/// occurrence keeps its original name). Suffixed names are checked against all
+/// existing names to avoid secondary collisions.
+fn deduplicate_track_names(tracks: &mut [Track]) {
+    let mut seen: HashSet<String> = HashSet::new();
+    for track in tracks.iter_mut() {
+        if seen.insert(track.name().to_string()) {
+            continue;
+        }
+        let base = track.name().to_string();
+        let mut n = 2u32;
+        loop {
+            let candidate = format!("{}-{}", base, n);
+            if seen.insert(candidate.clone()) {
+                track.set_name(candidate);
+                break;
+            }
+            n += 1;
+        }
     }
 }
 
@@ -971,18 +1003,31 @@ pub fn get_all_songs(path: &Path) -> Result<Arc<Songs>, Box<dyn Error>> {
         let extension = path.extension();
         if extension.is_some_and(|ext| {
             ext.to_str()
-                .is_some_and(|ext| !AUDIO_EXTENSIONS.contains(&ext))
+                .is_some_and(|ext| !MEDIA_EXTENSIONS.contains(&ext))
         }) {
-            if let Ok(song) = config::Song::deserialize(path.as_path()) {
-                let song = match path.parent() {
-                    Some(parent) => Song::new(&parent.canonicalize()?, &song)?,
+            if let Ok(song_config) = config::Song::deserialize(path.as_path()) {
+                match path.parent() {
+                    Some(parent) => match parent.canonicalize() {
+                        Ok(canonical_parent) => match Song::new(&canonical_parent, &song_config) {
+                            Ok(song) => {
+                                songs.insert(song.name().to_string(), Arc::new(song));
+                            }
+                            Err(e) => {
+                                warn!("Skipping song at {}: {}", path.display(), e);
+                            }
+                        },
+                        Err(e) => {
+                            warn!(
+                                "Skipping song at {}: failed to canonicalize: {}",
+                                path.display(),
+                                e
+                            );
+                        }
+                    },
                     None => {
-                        return Err(
-                            format!("unable to get parent for path: {}", path.display()).into()
-                        )
+                        warn!("Skipping song at {}: no parent directory", path.display());
                     }
-                };
-                songs.insert(song.name().to_string(), Arc::new(song));
+                }
             }
         }
     }
@@ -1157,7 +1202,7 @@ mod test {
         );
         assert_eq!(first_song.num_channels, 1, "Unexpected number of channels");
         let track = tracks.first().unwrap();
-        assert_eq!(track.name, "mono_track", "Unexpected name");
+        assert_eq!(track.name, "mono-track", "Unexpected name");
         assert!(fs::exists(&track.file).unwrap(), "Track file not found");
         Ok(())
     }
@@ -1892,9 +1937,9 @@ mod test {
         crate::testutil::write_wav(wav_path.clone(), channels, 44100)?;
         let tracks = super::Track::load_tracks(&wav_path)?;
         assert_eq!(tracks.len(), 4);
-        assert_eq!(tracks[0].name(), "multi-0");
+        assert_eq!(tracks[0].name(), "multi-1");
         assert_eq!(tracks[0].file_channel(), 1);
-        assert_eq!(tracks[3].name(), "multi-3");
+        assert_eq!(tracks[3].name(), "multi-4");
         assert_eq!(tracks[3].file_channel(), 4);
         Ok(())
     }
@@ -1909,6 +1954,50 @@ mod test {
         assert_eq!(config.name(), "test");
         assert_eq!(config.file_channel(), Some(1));
         Ok(())
+    }
+
+    #[test]
+    fn deduplicate_track_names_no_collision() {
+        let mut tracks = vec![make_track("click"), make_track("cue")];
+        super::deduplicate_track_names(&mut tracks);
+        assert_eq!(tracks[0].name(), "click");
+        assert_eq!(tracks[1].name(), "cue");
+    }
+
+    #[test]
+    fn deduplicate_track_names_with_collision() {
+        let mut tracks = vec![
+            make_track("backing-track"),
+            make_track("backing-track"),
+            make_track("click"),
+            make_track("backing-track"),
+        ];
+        super::deduplicate_track_names(&mut tracks);
+        assert_eq!(tracks[0].name(), "backing-track");
+        assert_eq!(tracks[1].name(), "backing-track-2");
+        assert_eq!(tracks[2].name(), "click");
+        assert_eq!(tracks[3].name(), "backing-track-3");
+    }
+
+    #[test]
+    fn deduplicate_track_names_suffix_collision() {
+        // "foo-2" already exists, so the duplicate "foo" must skip to "foo-3".
+        let mut tracks = vec![make_track("foo-2"), make_track("foo"), make_track("foo")];
+        super::deduplicate_track_names(&mut tracks);
+        assert_eq!(tracks[0].name(), "foo-2");
+        assert_eq!(tracks[1].name(), "foo");
+        assert_eq!(tracks[2].name(), "foo-3");
+    }
+
+    fn make_track(name: &str) -> super::Track {
+        super::Track {
+            name: name.to_string(),
+            file: PathBuf::from("/dev/null"),
+            file_channel: 1,
+            sample_rate: 44100,
+            sample_format: crate::audio::SampleFormat::Int,
+            duration: std::time::Duration::ZERO,
+        }
     }
 
     #[test]

@@ -14,7 +14,7 @@
 
 use axum::{
     body::Bytes,
-    extract::{Multipart, Path, State},
+    extract::{Multipart, Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post, put},
@@ -24,6 +24,7 @@ use serde_json::json;
 
 use super::config_io;
 use super::server::WebUiState;
+use super::state as ws_state;
 use crate::config;
 use crate::songs;
 
@@ -39,6 +40,10 @@ pub fn router() -> Router<WebUiState> {
         .route("/songs/{name}", get(get_song).post(post_song).put(put_song))
         .route("/songs/{name}/tracks/{filename}", put(upload_track_single))
         .route("/songs/{name}/tracks", post(upload_tracks_multipart))
+        .route("/songs/{name}/waveform", get(get_song_waveform))
+        .route("/songs/{name}/files", get(get_song_files))
+        .route("/browse", get(browse_directory))
+        .route("/browse/create-song", post(create_song_in_directory))
         .route("/playlist", get(get_playlist).put(put_playlist))
         .route("/playlist/validate", post(validate_playlist))
         .route("/lighting", get(get_lighting_files))
@@ -96,9 +101,23 @@ async fn get_config_parsed(State(state): State<WebUiState>) -> impl IntoResponse
     }
 }
 
+/// Returns the project root (parent of mtrack.yaml), falling back to songs_path.
+fn project_root(state: &WebUiState) -> std::path::PathBuf {
+    match state.config_path.canonicalize() {
+        Ok(p) => match p.parent() {
+            Some(parent) => parent.to_path_buf(),
+            None => state.songs_path.clone(),
+        },
+        Err(_) => state.songs_path.clone(),
+    }
+}
+
 /// GET /api/songs — returns a list of all songs with metadata.
+///
+/// Scans the project root (parent of mtrack.yaml) recursively so songs created
+/// anywhere under the project — not just the configured `songs` directory — are found.
 async fn get_songs(State(state): State<WebUiState>) -> impl IntoResponse {
-    match songs::get_all_songs(&state.songs_path) {
+    match songs::get_all_songs(&project_root(&state)) {
         Ok(all_songs) => {
             let song_list: Vec<serde_json::Value> = all_songs
                 .sorted_list()
@@ -112,6 +131,8 @@ async fn get_songs(State(state): State<WebUiState>) -> impl IntoResponse {
                         "sample_format": format!("{}", song.sample_format()),
                         "track_count": song.tracks().len(),
                         "tracks": song.tracks().iter().map(|t| t.name().to_string()).collect::<Vec<_>>(),
+                        "has_midi": song.midi_playback().is_some(),
+                        "has_lighting": !song.light_shows().is_empty() || !song.dsl_lighting_shows().is_empty(),
                     })
                 })
                 .collect();
@@ -127,7 +148,7 @@ async fn get_songs(State(state): State<WebUiState>) -> impl IntoResponse {
 
 /// GET /api/songs/:name — returns a single song's config YAML.
 async fn get_song(State(state): State<WebUiState>, Path(name): Path<String>) -> impl IntoResponse {
-    match songs::get_all_songs(&state.songs_path) {
+    match songs::get_all_songs(&project_root(&state)) {
         Ok(all_songs) => match all_songs.get(&name) {
             Ok(song) => {
                 // Try to read the song's config YAML from its base_path
@@ -185,6 +206,473 @@ async fn get_song(State(state): State<WebUiState>, Path(name): Path<String>) -> 
         )
             .into_response(),
     }
+}
+
+/// GET /api/songs/:name/waveform — returns waveform peaks for a song.
+///
+/// Uses the shared waveform cache; computes on demand if not cached.
+async fn get_song_waveform(
+    State(state): State<WebUiState>,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    // Check cache first
+    {
+        let cache = state.waveform_cache.lock();
+        if let Some(cached) = cache.get(&name) {
+            let tracks: Vec<serde_json::Value> = cached
+                .iter()
+                .map(|(track_name, peaks)| json!({ "name": track_name, "peaks": peaks }))
+                .collect();
+            return (
+                StatusCode::OK,
+                Json(json!({ "song_name": name, "tracks": tracks })),
+            )
+                .into_response();
+        }
+    }
+
+    // Cache miss — load the song and compute peaks
+    let all_songs = match songs::get_all_songs(&project_root(&state)) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("Failed to load songs: {}", e)})),
+            )
+                .into_response();
+        }
+    };
+
+    let song = match all_songs.get(&name) {
+        Ok(s) => s,
+        Err(_) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": format!("Song not found: {}", name)})),
+            )
+                .into_response();
+        }
+    };
+
+    let track_infos: Vec<ws_state::TrackInfo> = song
+        .tracks()
+        .iter()
+        .map(|t| {
+            (
+                t.name().to_string(),
+                t.file().to_path_buf(),
+                t.file_channel(),
+            )
+        })
+        .collect();
+
+    let cache = state.waveform_cache.clone();
+    let song_name = name.clone();
+    let peaks_result = tokio::task::spawn_blocking(move || {
+        let peaks = ws_state::compute_waveform_peaks(&track_infos);
+        cache.lock().insert(song_name, peaks.clone());
+        peaks
+    })
+    .await;
+
+    match peaks_result {
+        Ok(peaks) => {
+            let tracks: Vec<serde_json::Value> = peaks
+                .iter()
+                .map(|(track_name, p)| json!({ "name": track_name, "peaks": p }))
+                .collect();
+            (
+                StatusCode::OK,
+                Json(json!({ "song_name": name, "tracks": tracks })),
+            )
+                .into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("Failed to compute waveform: {}", e)})),
+        )
+            .into_response(),
+    }
+}
+
+/// GET /api/songs/:name/files — lists files in a song's directory.
+///
+/// Returns audio, MIDI, and lighting files with type classification.
+/// Uses the same song lookup as other endpoints to resolve the correct base_path,
+/// supporting songs in nested subdirectories.
+async fn get_song_files(
+    State(state): State<WebUiState>,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    let all_songs = match songs::get_all_songs(&project_root(&state)) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("Failed to load songs: {}", e)})),
+            )
+                .into_response();
+        }
+    };
+
+    let song = match all_songs.get(&name) {
+        Ok(s) => s,
+        Err(_) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": format!("Song not found: {}", name)})),
+            )
+                .into_response();
+        }
+    };
+
+    let song_dir = song.base_path();
+
+    let mut files: Vec<serde_json::Value> = Vec::new();
+    match std::fs::read_dir(song_dir) {
+        Ok(entries) => {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_file() {
+                    continue;
+                }
+                let filename = match path.file_name().and_then(|n| n.to_str()) {
+                    Some(n) => n.to_string(),
+                    None => continue,
+                };
+                // Skip song config files
+                if filename == "song.yaml" || filename == "song.yml" {
+                    continue;
+                }
+                let ext = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+                let file_type = if songs::is_supported_audio_extension(&ext) {
+                    "audio"
+                } else if ext == "mid" {
+                    "midi"
+                } else if ext == "light" {
+                    "lighting"
+                } else {
+                    "other"
+                };
+                files.push(json!({
+                    "name": filename,
+                    "type": file_type,
+                }));
+            }
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("Failed to read directory: {}", e)})),
+            )
+                .into_response();
+        }
+    }
+
+    files.sort_by(|a, b| {
+        a.get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .cmp(b.get("name").and_then(|v| v.as_str()).unwrap_or(""))
+    });
+
+    (StatusCode::OK, Json(json!({"files": files}))).into_response()
+}
+
+/// GET /api/browse?path=... — lists files and directories at a filesystem path.
+///
+/// Restricted to the directory containing mtrack.yaml (the config root).
+/// If no `path` query parameter is provided, defaults to the config root.
+/// Returns entries sorted: directories first, then files alphabetically.
+async fn browse_directory(
+    State(state): State<WebUiState>,
+    Query(params): Query<BrowseParams>,
+) -> impl IntoResponse {
+    // The browsable root is the directory containing mtrack.yaml.
+    // Canonicalize config_path first to handle relative paths (e.g., "mtrack.yaml").
+    let config_canonical = match state.config_path.canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("Failed to resolve config path: {}", e)})),
+            )
+                .into_response();
+        }
+    };
+
+    let root_canonical = match config_canonical.parent() {
+        Some(p) => p.to_path_buf(),
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Unable to determine config root directory"})),
+            )
+                .into_response();
+        }
+    };
+
+    // Resolve the requested path. Paths from the frontend are project-relative
+    // (e.g., "/" = project root, "/songs" = songs subdirectory).
+    let requested = if params.path.is_empty() || params.path == "/" {
+        root_canonical.clone()
+    } else {
+        // Strip leading "/" and join with root to get absolute path.
+        let relative = params.path.strip_prefix('/').unwrap_or(&params.path);
+        root_canonical.join(relative)
+    };
+
+    // Canonicalize the requested path and verify it's under the root before
+    // touching the filesystem, preventing path traversal attacks.
+    let dir_canonical = match requested.canonicalize() {
+        Ok(p) => p,
+        Err(_) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": format!("Not a directory: {}", params.path)})),
+            )
+                .into_response();
+        }
+    };
+
+    if !dir_canonical.starts_with(&root_canonical) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "Access denied: path is outside the project directory",
+            })),
+        )
+            .into_response();
+    }
+
+    if !dir_canonical.is_dir() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": format!("Not a directory: {}", params.path)})),
+        )
+            .into_response();
+    }
+
+    // Convert an absolute path to a project-relative path (e.g., "/songs/foo").
+    let to_relative = |abs: &std::path::Path| -> String {
+        let suffix = abs
+            .strip_prefix(&root_canonical)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if suffix.is_empty() {
+            "/".to_string()
+        } else {
+            format!("/{suffix}")
+        }
+    };
+
+    let mut entries: Vec<serde_json::Value> = Vec::new();
+    match std::fs::read_dir(&dir_canonical) {
+        Ok(iter) => {
+            for entry in iter.flatten() {
+                let path = entry.path();
+                let name = match path.file_name().and_then(|n| n.to_str()) {
+                    Some(n) => n.to_string(),
+                    None => continue,
+                };
+                // Skip hidden files
+                if name.starts_with('.') {
+                    continue;
+                }
+                let is_dir = path.is_dir();
+                let ext = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+                let file_type = if is_dir {
+                    "directory"
+                } else if songs::is_supported_audio_extension(&ext) {
+                    "audio"
+                } else if ext == "mid" {
+                    "midi"
+                } else if ext == "light" {
+                    "lighting"
+                } else {
+                    "other"
+                };
+                entries.push(json!({
+                    "name": name,
+                    "path": to_relative(&path),
+                    "type": file_type,
+                    "is_dir": is_dir,
+                }));
+            }
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("Failed to read directory: {}", e)})),
+            )
+                .into_response();
+        }
+    }
+
+    // Sort: directories first, then alphabetically by name
+    entries.sort_by(|a, b| {
+        let a_dir = a.get("is_dir").and_then(|v| v.as_bool()).unwrap_or(false);
+        let b_dir = b.get("is_dir").and_then(|v| v.as_bool()).unwrap_or(false);
+        b_dir.cmp(&a_dir).then_with(|| {
+            a.get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_lowercase()
+                .cmp(
+                    &b.get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_lowercase(),
+                )
+        })
+    });
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "path": to_relative(&dir_canonical),
+            "root": root_canonical.to_string_lossy(),
+            "entries": entries,
+        })),
+    )
+        .into_response()
+}
+
+#[derive(serde::Deserialize)]
+struct BrowseParams {
+    #[serde(default)]
+    path: String,
+}
+
+/// POST /api/browse/create-song — auto-generates a song.yaml in a project-relative directory.
+///
+/// Expects a JSON body with `path` (project-relative directory, e.g. "/songs/Afar")
+/// and an optional `name` override. The backend scans the directory for audio/MIDI/lighting
+/// files and generates the song config automatically, including per-channel track splitting
+/// for stereo and multichannel audio files.
+async fn create_song_in_directory(
+    State(state): State<WebUiState>,
+    Json(body): Json<CreateSongInDirRequest>,
+) -> impl IntoResponse {
+    // Resolve the project root (same logic as browse_directory).
+    let config_canonical = match state.config_path.canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("Failed to resolve config path: {}", e)})),
+            )
+                .into_response();
+        }
+    };
+    let root_canonical = match config_canonical.parent() {
+        Some(p) => p.to_path_buf(),
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Unable to determine config root directory"})),
+            )
+                .into_response();
+        }
+    };
+
+    // Resolve the target directory from the project-relative path.
+    let relative = body.path.strip_prefix('/').unwrap_or(&body.path);
+    let target_dir = if relative.is_empty() {
+        root_canonical.clone()
+    } else {
+        root_canonical.join(relative)
+    };
+
+    let dir_canonical = match target_dir.canonicalize() {
+        Ok(p) => p,
+        Err(_) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": format!("Directory not found: {}", body.path)})),
+            )
+                .into_response();
+        }
+    };
+
+    if !dir_canonical.starts_with(&root_canonical) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": "Access denied: path is outside the project directory"})),
+        )
+            .into_response();
+    }
+
+    if !dir_canonical.is_dir() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "Path is not a directory"})),
+        )
+            .into_response();
+    }
+
+    let config_path = dir_canonical.join("song.yaml");
+    if config_path.exists() {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error": "song.yaml already exists in this directory"})),
+        )
+            .into_response();
+    }
+
+    // Use Song::initialize to scan the directory and build the config with proper
+    // channel-aware track splitting (stereo → L/R, multichannel → per-channel).
+    let mut song_config = match songs::Song::initialize(&dir_canonical) {
+        Ok(song) => song.get_config(),
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": format!("Failed to scan directory: {}", e)})),
+            )
+                .into_response();
+        }
+    };
+
+    // Apply name override if provided.
+    if let Some(ref name) = body.name {
+        let trimmed = name.trim();
+        if !trimmed.is_empty() {
+            song_config.set_name(trimmed);
+        }
+    }
+
+    match song_config.save(&config_path) {
+        Ok(()) => {
+            // Refresh the player's all-songs playlist so newly imported songs appear.
+            state
+                .player
+                .reload_songs(&project_root(&state), &state.playlist_path);
+            (
+                StatusCode::CREATED,
+                Json(json!({"status": "created", "path": config_path.to_string_lossy()})),
+            )
+                .into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("Failed to save song config: {}", e)})),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct CreateSongInDirRequest {
+    path: String,
+    name: Option<String>,
 }
 
 /// GET /api/playlist — returns the playlist config as JSON.
@@ -758,11 +1246,16 @@ async fn post_song(
     }
 
     match config_io::atomic_write(&config_path, &body) {
-        Ok(()) => (
-            StatusCode::CREATED,
-            Json(json!({"status": "created", "song": name})),
-        )
-            .into_response(),
+        Ok(()) => {
+            state
+                .player
+                .reload_songs(&project_root(&state), &state.playlist_path);
+            (
+                StatusCode::CREATED,
+                Json(json!({"status": "created", "song": name})),
+            )
+                .into_response()
+        }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e}))).into_response(),
     }
 }
@@ -942,6 +1435,9 @@ async fn upload_track_single(
     }
 
     ensure_song_config(&song_dir).map_err(|e| *e)?;
+    state
+        .player
+        .reload_songs(&project_root(&state), &state.playlist_path);
 
     Ok((
         StatusCode::OK,
@@ -1010,6 +1506,9 @@ async fn upload_tracks_multipart(
     }
 
     ensure_song_config(&song_dir).map_err(|e| *e)?;
+    state
+        .player
+        .reload_songs(&project_root(&state), &state.playlist_path);
 
     Ok((
         StatusCode::OK,
@@ -1752,7 +2251,9 @@ show "test" {
     }
 
     #[tokio::test]
-    async fn get_songs_missing_dir() {
+    async fn get_songs_missing_songs_subdir_returns_empty() {
+        // Even if songs_path is nonexistent, get_songs scans from the project root
+        // (parent of config_path), so it returns an empty list, not an error.
         let (mut state, _dir) = test_state();
         state.songs_path = std::path::PathBuf::from("/nonexistent/songs");
         let app = router().with_state(state);
@@ -1767,7 +2268,10 @@ show "test" {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(parsed["songs"].as_array().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -1790,7 +2294,8 @@ show "test" {
     }
 
     #[tokio::test]
-    async fn get_song_missing_songs_dir() {
+    async fn get_song_missing_songs_subdir_returns_not_found() {
+        // Scans from project root; song simply won't be found.
         let (mut state, _dir) = test_state();
         state.songs_path = std::path::PathBuf::from("/nonexistent/songs");
         let app = router().with_state(state);
@@ -1805,7 +2310,7 @@ show "test" {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
@@ -2328,6 +2833,9 @@ show "test" {
     #[tokio::test]
     async fn get_songs_error_body_contains_message() {
         let (mut state, _dir) = test_state();
+        // Both config_path and songs_path must be nonexistent so project_root
+        // falls back to songs_path, which also fails to scan.
+        state.config_path = std::path::PathBuf::from("/nonexistent/mtrack.yaml");
         state.songs_path = std::path::PathBuf::from("/nonexistent/songs");
         let app = router().with_state(state);
 
@@ -2353,6 +2861,7 @@ show "test" {
     #[tokio::test]
     async fn get_song_error_body_contains_message() {
         let (mut state, _dir) = test_state();
+        state.config_path = std::path::PathBuf::from("/nonexistent/mtrack.yaml");
         state.songs_path = std::path::PathBuf::from("/nonexistent/songs");
         let app = router().with_state(state);
 
