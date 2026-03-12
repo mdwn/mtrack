@@ -32,7 +32,7 @@ use tokio::{
 use tracing::{error, info, span, warn, Level, Span};
 
 use crate::samples::SampleEngine;
-use crate::songs::Songs;
+use crate::songs::{self, Songs};
 use crate::trigger::TriggerEngine;
 use crate::{
     audio, config, dmx, midi,
@@ -119,10 +119,12 @@ pub struct Player {
     /// (when an audio device is present), keeping all subsystems synchronized.
     /// A fresh clock is created per song to avoid races during stop/start.
     clock_source: ClockSource,
-    /// The playlist to use.
-    playlist: Arc<Playlist>,
-    /// The all songs playlist.
-    all_songs: Arc<Playlist>,
+    /// The playlist to use. Behind a RwLock so it can be refreshed when the
+    /// active playlist was auto-generated from all songs (zero-config mode).
+    playlist: Arc<parking_lot::RwLock<Arc<Playlist>>>,
+    /// The all songs playlist. Behind a RwLock so it can be refreshed at runtime
+    /// (e.g., after importing a song via the web UI).
+    all_songs: Arc<parking_lot::RwLock<Arc<Playlist>>>,
     /// Switches between the playlist and the all songs playlist.
     use_all_songs: Arc<AtomicBool>,
     /// The time that the last play action occurred.
@@ -299,8 +301,8 @@ impl Player {
             sample_engine: devices.sample_engine,
             trigger_engine: devices.trigger_engine,
             clock_source,
-            playlist,
-            all_songs: playlist::from_songs(songs)?,
+            playlist: Arc::new(parking_lot::RwLock::new(playlist)),
+            all_songs: Arc::new(parking_lot::RwLock::new(playlist::from_songs(songs)?)),
             use_all_songs: Arc::new(AtomicBool::new(false)),
             play_start_time: Arc::new(Mutex::new(None)),
             join: Arc::new(Mutex::new(None)),
@@ -925,16 +927,54 @@ impl Player {
 
     /// Gets the all-songs playlist (every song in the registry).
     pub fn get_all_songs_playlist(&self) -> Arc<Playlist> {
-        self.all_songs.clone()
+        self.all_songs.read().clone()
     }
 
     /// Gets the current playlist used by the player.
     pub fn get_playlist(&self) -> Arc<Playlist> {
         if self.use_all_songs.load(Ordering::Relaxed) {
-            return self.all_songs.clone();
+            return self.all_songs.read().clone();
         }
 
-        self.playlist.clone()
+        self.playlist.read().clone()
+    }
+
+    /// Reinitializes all song-related state by rescanning songs from disk and
+    /// rebuilding both playlists. Call this after any mutation that affects songs
+    /// (import, create, config edit, etc.).
+    pub fn reload_songs(&self, songs_path: &std::path::Path, playlist_path: &std::path::Path) {
+        let new_songs = match songs::get_all_songs(songs_path) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("Failed to rescan songs: {}", e);
+                return;
+            }
+        };
+
+        // Rebuild all-songs playlist.
+        let new_all_songs = match playlist::from_songs(new_songs.clone()) {
+            Ok(p) => p,
+            Err(e) => {
+                warn!("Failed to rebuild all-songs playlist: {}", e);
+                return;
+            }
+        };
+
+        // Rebuild the main playlist from its config file, falling back to all-songs.
+        let new_playlist = match config::Playlist::deserialize(playlist_path) {
+            Ok(playlist_config) => match Playlist::new("playlist", &playlist_config, new_songs) {
+                Ok(p) => p,
+                Err(e) => {
+                    info!("Playlist references missing songs ({}); using all songs", e);
+                    new_all_songs.clone()
+                }
+            },
+            Err(_) => new_all_songs.clone(),
+        };
+
+        *self.playlist.write() = new_playlist;
+        *self.all_songs.write() = new_all_songs;
+        info!("Reloaded song state");
     }
 
     /// Returns true if a song is currently playing.
@@ -1805,8 +1845,10 @@ mod test {
             sample_engine: None,
             trigger_engine: None,
             clock_source: ClockSource::Wall,
-            playlist: playlist.clone(),
-            all_songs: crate::playlist::from_songs(songs)?,
+            playlist: Arc::new(parking_lot::RwLock::new(playlist.clone())),
+            all_songs: Arc::new(parking_lot::RwLock::new(crate::playlist::from_songs(
+                songs,
+            )?)),
             use_all_songs: Arc::new(AtomicBool::new(false)),
             play_start_time: Arc::new(Mutex::new(None)),
             join: Arc::new(Mutex::new(None)),

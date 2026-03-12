@@ -242,7 +242,7 @@ pub async fn start(
     };
 
     // Start the unified web server (dashboard + gRPC-Web + REST API)
-    let _webui_handle = {
+    let webui_handle = {
         // Create a broadcast channel for the web UI (shared by dashboard WS and DMX file watcher)
         let (broadcast_tx, _) = tokio::sync::broadcast::channel::<String>(128);
 
@@ -292,6 +292,12 @@ pub async fn start(
         crate::tui::run(player, controller, state_rx).await?;
     } else {
         controller.join().await?;
+        // If no controllers are configured (e.g. zero-config start), keep
+        // the process alive so the web UI remains accessible.
+        if webui_handle.is_some() {
+            info!("No controllers configured; web UI is running. Press Ctrl+C to stop.");
+            std::future::pending::<()>().await;
+        }
     }
 
     Ok(())

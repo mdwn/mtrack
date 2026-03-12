@@ -31,10 +31,10 @@ use crate::player::Player;
 use crate::tui::logging::get_log_buffer;
 
 /// Per-track info needed for waveform computation: (track_name, file_path, file_channel).
-type TrackInfo = (String, PathBuf, u16);
+pub type TrackInfo = (String, PathBuf, u16);
 
 /// Per-track waveform peaks: (track_name, peak_values).
-type TrackPeaks = (String, Vec<f32>);
+pub type TrackPeaks = (String, Vec<f32>);
 
 /// Polls the player state at ~5Hz and broadcasts playback status messages.
 #[tracing::instrument(skip_all, name = "playback_poller")]
@@ -458,7 +458,7 @@ pub async fn waveform_prewarmer(player: Arc<Player>, cache: WaveformCache) {
 }
 
 /// Computes waveform peaks for all tracks in parallel. Returns (track_name, peaks) pairs.
-fn compute_waveform_peaks(tracks: &[TrackInfo]) -> Vec<TrackPeaks> {
+pub fn compute_waveform_peaks(tracks: &[TrackInfo]) -> Vec<TrackPeaks> {
     const NUM_BUCKETS: usize = 500;
 
     tracks

@@ -38,3 +38,40 @@ export async function put(path: string, body: string): Promise<Response> {
 export async function post(path: string, body?: string): Promise<Response> {
   return request("POST", path, body);
 }
+
+export async function uploadFile(path: string, file: File): Promise<Response> {
+  return fetch(`${BASE}${path}`, {
+    method: "PUT",
+    body: file,
+  });
+}
+
+export async function uploadFiles(
+  path: string,
+  files: File[],
+): Promise<Response> {
+  const form = new FormData();
+  for (const f of files) {
+    form.append("file", f, f.name);
+  }
+  return fetch(`${BASE}${path}`, {
+    method: "POST",
+    body: form,
+  });
+}
+
+export async function putYaml(path: string, body: string): Promise<Response> {
+  return fetch(`${BASE}${path}`, {
+    method: "PUT",
+    headers: { "Content-Type": "text/yaml" },
+    body,
+  });
+}
+
+export async function postYaml(path: string, body: string): Promise<Response> {
+  return fetch(`${BASE}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "text/yaml" },
+    body,
+  });
+}

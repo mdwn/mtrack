@@ -41,7 +41,7 @@
   {:else if currentHash.startsWith("#/config")}
     <ConfigEditor />
   {:else if currentHash.startsWith("#/songs")}
-    <SongBrowser />
+    <SongBrowser {currentHash} />
   {:else if currentHash.startsWith("#/playlists")}
     <PlaylistEditor />
   {:else if currentHash.startsWith("#/lighting")}
