@@ -323,28 +323,34 @@ async fn handle_ws(socket: WebSocket, state: WebUiState) {
 
     // Send cached waveform for the current song on connect
     let waveform_msg = {
-        let song_name = state.player.get_playlist().current().name().to_string();
         state
-            .waveform_cache
-            .lock()
-            .get(&song_name)
-            .cloned()
-            .map(|track_peaks| {
-                let tracks_json: Vec<serde_json::Value> = track_peaks
-                    .into_iter()
-                    .map(|(name, peaks)| {
+            .player
+            .get_playlist()
+            .current()
+            .and_then(|current_song| {
+                let song_name = current_song.name().to_string();
+                state
+                    .waveform_cache
+                    .lock()
+                    .get(&song_name)
+                    .cloned()
+                    .map(|track_peaks| {
+                        let tracks_json: Vec<serde_json::Value> = track_peaks
+                            .into_iter()
+                            .map(|(name, peaks)| {
+                                serde_json::json!({
+                                    "name": name,
+                                    "peaks": peaks,
+                                })
+                            })
+                            .collect();
                         serde_json::json!({
-                            "name": name,
-                            "peaks": peaks,
+                            "type": "waveform",
+                            "song_name": song_name,
+                            "tracks": tracks_json,
                         })
+                        .to_string()
                     })
-                    .collect();
-                serde_json::json!({
-                    "type": "waveform",
-                    "song_name": song_name,
-                    "tracks": tracks_json,
-                })
-                .to_string()
             })
     };
     if let Some(msg) = waveform_msg {

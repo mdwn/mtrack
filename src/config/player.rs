@@ -78,6 +78,33 @@ pub struct Player {
     max_sample_voices: Option<u32>,
 }
 
+impl Default for Player {
+    fn default() -> Self {
+        let mut player = Player {
+            controller: None,
+            controllers: None,
+            audio_device: None,
+            audio: None,
+            track_mappings: None,
+            midi_device: None,
+            midi: None,
+            dmx: None,
+            trigger: None,
+            profiles: None,
+            profiles_dir: None,
+            status_events: None,
+            playlist: None,
+            songs: "songs".to_string(),
+            samples: HashMap::new(),
+            samples_file: None,
+            sample_triggers: Vec::new(),
+            max_sample_voices: None,
+        };
+        player.normalize();
+        player
+    }
+}
+
 impl Player {
     #[cfg(test)]
     pub fn new(

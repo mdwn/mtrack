@@ -71,13 +71,18 @@ impl App {
             playlist_name: playlist.name().to_string(),
             song_names,
             current_index: 0,
-            current_song_name: current.name().to_string(),
-            current_song_duration: current.duration(),
+            current_song_name: current
+                .as_ref()
+                .map(|s| s.name().to_string())
+                .unwrap_or_default(),
+            current_song_duration: current
+                .as_ref()
+                .map(|s| s.duration())
+                .unwrap_or(std::time::Duration::ZERO),
             current_song_tracks: current
-                .tracks()
-                .iter()
-                .map(|t| t.name().to_string())
-                .collect(),
+                .as_ref()
+                .map(|s| s.tracks().iter().map(|t| t.name().to_string()).collect())
+                .unwrap_or_default(),
             is_playing: false,
             elapsed: None,
             fixture_colors: Vec::new(),
@@ -94,14 +99,19 @@ impl App {
         self.song_names = playlist.songs().to_vec();
         self.current_index = playlist.position();
 
-        let current = playlist.current();
-        self.current_song_name = current.name().to_string();
-        self.current_song_duration = current.duration();
-        self.current_song_tracks = current
-            .tracks()
-            .iter()
-            .map(|t| t.name().to_string())
-            .collect();
+        if let Some(current) = playlist.current() {
+            self.current_song_name = current.name().to_string();
+            self.current_song_duration = current.duration();
+            self.current_song_tracks = current
+                .tracks()
+                .iter()
+                .map(|t| t.name().to_string())
+                .collect();
+        } else {
+            self.current_song_name = String::new();
+            self.current_song_duration = std::time::Duration::ZERO;
+            self.current_song_tracks = vec![];
+        }
 
         // Update playback state
         self.is_playing = self.player.is_playing().await;

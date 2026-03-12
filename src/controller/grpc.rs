@@ -206,8 +206,16 @@ impl PlayerService for PlayerServer {
         &self,
         _: Request<PreviousRequest>,
     ) -> Result<Response<PreviousResponse>, Status> {
-        let current_song = self.player.get_playlist().current();
-        let previous_song = self.player.prev().await;
+        let current_song = self
+            .player
+            .get_playlist()
+            .current()
+            .ok_or_else(|| Status::failed_precondition("playlist is empty"))?;
+        let previous_song = self
+            .player
+            .prev()
+            .await
+            .ok_or_else(|| Status::failed_precondition("playlist is empty"))?;
 
         if current_song.name() == previous_song.name() {
             return Err(Status::failed_precondition(
@@ -221,8 +229,16 @@ impl PlayerService for PlayerServer {
     }
 
     async fn next(&self, _: Request<NextRequest>) -> Result<Response<NextResponse>, Status> {
-        let current_song = self.player.get_playlist().current();
-        let next_song = self.player.next().await;
+        let current_song = self
+            .player
+            .get_playlist()
+            .current()
+            .ok_or_else(|| Status::failed_precondition("playlist is empty"))?;
+        let next_song = self
+            .player
+            .next()
+            .await
+            .ok_or_else(|| Status::failed_precondition("playlist is empty"))?;
 
         if current_song.name() == next_song.name() {
             return Err(Status::failed_precondition(
@@ -273,9 +289,14 @@ impl PlayerService for PlayerServer {
             }
         };
 
+        let current_song = match self.player.get_playlist().current() {
+            Some(song) => Some(song.to_proto()?),
+            None => None,
+        };
+
         Ok(Response::new(StatusResponse {
             playlist_name: playlist_name.to_string(),
-            current_song: Some(self.player.get_playlist().current().to_proto()?),
+            current_song,
             playing: elapsed.is_some(),
             elapsed,
         }))
@@ -552,16 +573,16 @@ mod test {
         );
 
         println!("Playlist -> Song 1");
-        assert_eq!(player.get_playlist().current().name(), "Song 1");
+        assert_eq!(player.get_playlist().current().unwrap().name(), "Song 1");
 
         let resp = client.next(NextRequest {}).await?;
         println!("Playlist -> Song 3");
-        assert_eq!(player.get_playlist().current().name(), "Song 3");
+        assert_eq!(player.get_playlist().current().unwrap().name(), "Song 3");
         assert_eq!(resp.into_inner().song.unwrap().name, "Song 3");
 
         let resp = client.previous(PreviousRequest {}).await?;
         println!("Playlist -> Song 1");
-        assert_eq!(player.get_playlist().current().name(), "Song 1");
+        assert_eq!(player.get_playlist().current().unwrap().name(), "Song 1");
         assert_eq!(resp.into_inner().song.unwrap().name, "Song 1");
 
         println!("Switch to AllSongs");
@@ -570,7 +591,7 @@ mod test {
                 playlist_name: ALL_SONGS_NAME.to_string(),
             })
             .await?;
-        assert_eq!(player.get_playlist().current().name(), "Song 1");
+        assert_eq!(player.get_playlist().current().unwrap().name(), "Song 1");
 
         // Verify playlist name changed to "all_songs" in status
         let resp = client.status(StatusRequest {}).await?;
@@ -582,17 +603,17 @@ mod test {
 
         let resp = client.next(NextRequest {}).await?;
         println!("AllSongs -> Song 10");
-        assert_eq!(player.get_playlist().current().name(), "Song 10");
+        assert_eq!(player.get_playlist().current().unwrap().name(), "Song 10");
         assert_eq!(resp.into_inner().song.unwrap().name, "Song 10");
 
         let resp = client.next(NextRequest {}).await?;
         println!("AllSongs -> Song 2");
-        assert_eq!(player.get_playlist().current().name(), "Song 2");
+        assert_eq!(player.get_playlist().current().unwrap().name(), "Song 2");
         assert_eq!(resp.into_inner().song.unwrap().name, "Song 2");
 
         let resp = client.next(NextRequest {}).await?;
         println!("AllSongs -> Song 3");
-        assert_eq!(player.get_playlist().current().name(), "Song 3");
+        assert_eq!(player.get_playlist().current().unwrap().name(), "Song 3");
         assert_eq!(resp.into_inner().song.unwrap().name, "Song 3");
 
         let _ = client
@@ -601,7 +622,7 @@ mod test {
             })
             .await?;
         println!("Switch to Playlist");
-        assert_eq!(player.get_playlist().current().name(), "Song 1");
+        assert_eq!(player.get_playlist().current().unwrap().name(), "Song 1");
 
         // Verify playlist name changed back to "playlist" in status
         let resp = client.status(StatusRequest {}).await?;
@@ -613,7 +634,7 @@ mod test {
 
         let resp = client.next(NextRequest {}).await?;
         println!("Playlist -> Song 3");
-        assert_eq!(player.get_playlist().current().name(), "Song 3");
+        assert_eq!(player.get_playlist().current().unwrap().name(), "Song 3");
         assert_eq!(resp.into_inner().song.unwrap().name, "Song 3");
 
         let resp = client.play(PlayRequest {}).await?;
@@ -621,10 +642,10 @@ mod test {
 
         // Playlist should have moved to next song.
         eventually(
-            || player.get_playlist().current().name() == "Song 5",
+            || player.get_playlist().current().unwrap().name() == "Song 5",
             format!(
                 "Song never moved to next, on song {}",
-                player.get_playlist().current().name()
+                player.get_playlist().current().unwrap().name()
             )
             .as_str(),
         );
@@ -647,7 +668,7 @@ mod test {
         assert_eq!(resp.into_inner().song.unwrap().name, "Song 5");
 
         // Player should not have moved to the next song.
-        assert_eq!(player.get_playlist().current().name(), "Song 5");
+        assert_eq!(player.get_playlist().current().unwrap().name(), "Song 5");
 
         Ok(())
     }

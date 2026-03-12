@@ -95,8 +95,13 @@ impl Playlist {
 
     /// Move to the next element of the playlist. If we're at the end of the playlist, the position will not
     /// increment. The song at the current position will be returned.
-    pub fn next(&self) -> Arc<Song> {
+    /// Returns `None` if the playlist is empty.
+    pub fn next(&self) -> Option<Arc<Song>> {
         let _enter = self.span.enter();
+
+        if self.songs.is_empty() {
+            return None;
+        }
 
         let mut position = self.position.write();
         if *position < self.songs.len() - 1 {
@@ -114,12 +119,17 @@ impl Playlist {
             "Moving to next playlist position."
         );
 
-        current.clone()
+        Some(current.clone())
     }
 
     /// Move to the previous element of the playlist. If we're at the beginning of the playlist, the position
     /// will not decrement. The song at the current position will be returned.
-    pub fn prev(&self) -> Arc<Song> {
+    /// Returns `None` if the playlist is empty.
+    pub fn prev(&self) -> Option<Arc<Song>> {
+        if self.songs.is_empty() {
+            return None;
+        }
+
         let mut position = self.position.write();
         if *position > 0 {
             *position -= 1;
@@ -136,7 +146,7 @@ impl Playlist {
             "Moving to next previous position."
         );
 
-        current.clone()
+        Some(current.clone())
     }
 
     /// Look up a song by name from the underlying registry.
@@ -145,14 +155,18 @@ impl Playlist {
     }
 
     /// Return the song at the current position of the playlist.
-    pub fn current(&self) -> Arc<Song> {
+    /// Returns `None` if the playlist is empty.
+    pub fn current(&self) -> Option<Arc<Song>> {
+        if self.songs.is_empty() {
+            return None;
+        }
         let position = self.position.read();
-        Arc::clone(
+        Some(Arc::clone(
             &self
                 .registry
                 .get(&self.songs[*position])
                 .expect("unable to find song in the registry"),
-        )
+        ))
     }
 }
 
@@ -196,23 +210,23 @@ mod test {
         let playlist = two_song_playlist(test_registry());
 
         // Starts at the first element in the list.
-        assert_eq!("Song 1", playlist.current().name());
+        assert_eq!("Song 1", playlist.current().unwrap().name());
 
         // Previous should just stay at the beginning of the list, since it's at the start.
         playlist.prev();
-        assert_eq!("Song 1", playlist.current().name());
+        assert_eq!("Song 1", playlist.current().unwrap().name());
 
         // Next goes to the next entry.
         playlist.next();
-        assert_eq!("Song 2", playlist.current().name());
+        assert_eq!("Song 2", playlist.current().unwrap().name());
 
         // Next should just stay at the end of the list, since it's at the end.
         playlist.next();
-        assert_eq!("Song 2", playlist.current().name());
+        assert_eq!("Song 2", playlist.current().unwrap().name());
 
         // Prev goes to the previous entry.
         playlist.prev();
-        assert_eq!("Song 1", playlist.current().name());
+        assert_eq!("Song 1", playlist.current().unwrap().name());
     }
 
     #[test]
@@ -225,6 +239,21 @@ mod test {
 
         playlist.prev();
         assert_eq!(playlist.position(), 0);
+    }
+
+    #[test]
+    fn empty_playlist() {
+        let registry = test_registry();
+        let playlist = super::Playlist {
+            name: "empty".to_string(),
+            songs: vec![],
+            position: Arc::new(parking_lot::RwLock::new(0)),
+            registry,
+            span: tracing::span!(tracing::Level::INFO, "test"),
+        };
+        assert!(playlist.current().is_none());
+        assert!(playlist.next().is_none());
+        assert!(playlist.prev().is_none());
     }
 
     #[test]
@@ -285,7 +314,7 @@ mod test {
     #[test]
     fn next_returns_correct_song() {
         let playlist = two_song_playlist(test_registry());
-        let song = playlist.next();
+        let song = playlist.next().unwrap();
         assert_eq!(song.name(), "Song 2");
     }
 
@@ -293,7 +322,7 @@ mod test {
     fn prev_returns_correct_song() {
         let playlist = two_song_playlist(test_registry());
         playlist.next(); // move to Song 2
-        let song = playlist.prev();
+        let song = playlist.prev().unwrap();
         assert_eq!(song.name(), "Song 1");
     }
 

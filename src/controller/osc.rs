@@ -275,7 +275,10 @@ impl Driver {
         tx_sender: &Sender<OscPacket>,
     ) -> Result<(), Box<dyn Error>> {
         let playlist = player.get_playlist();
-        let song = playlist.current();
+        let song = match playlist.current() {
+            Some(song) => song,
+            None => return Ok(()),
+        };
         let elapsed = player.elapsed().await?;
         let status_string = match elapsed {
             Some(_) => STATUS_PLAYING,
@@ -476,48 +479,48 @@ mod test {
 
         // Direct the player.
         println!("Playlist -> Song 1");
-        assert_eq!(player.get_playlist().current().name(), "Song 1");
+        assert_eq!(player.get_playlist().current().unwrap().name(), "Song 1");
 
         osc_packet(next.clone()).await?;
         println!("Playlist -> Song 3");
-        assert_eq!(player.get_playlist().current().name(), "Song 3");
+        assert_eq!(player.get_playlist().current().unwrap().name(), "Song 3");
 
         osc_packet(prev.clone()).await?;
         println!("Playlist -> Song 1");
-        assert_eq!(player.get_playlist().current().name(), "Song 1");
+        assert_eq!(player.get_playlist().current().unwrap().name(), "Song 1");
 
         println!("Switch to AllSongs");
         osc_packet(all_songs.clone()).await?;
-        assert_eq!(player.get_playlist().current().name(), "Song 1");
+        assert_eq!(player.get_playlist().current().unwrap().name(), "Song 1");
 
         osc_packet(next.clone()).await?;
         println!("AllSongs -> Song 10");
-        assert_eq!(player.get_playlist().current().name(), "Song 10");
+        assert_eq!(player.get_playlist().current().unwrap().name(), "Song 10");
 
         osc_packet(next.clone()).await?;
         println!("AllSongs -> Song 2");
-        assert_eq!(player.get_playlist().current().name(), "Song 2");
+        assert_eq!(player.get_playlist().current().unwrap().name(), "Song 2");
 
         osc_packet(next.clone()).await?;
         println!("AllSongs -> Song 3");
-        assert_eq!(player.get_playlist().current().name(), "Song 3");
+        assert_eq!(player.get_playlist().current().unwrap().name(), "Song 3");
 
         osc_packet(playlist.clone()).await?;
         println!("Switch to Playlist");
-        assert_eq!(player.get_playlist().current().name(), "Song 1");
+        assert_eq!(player.get_playlist().current().unwrap().name(), "Song 1");
 
         osc_packet(next.clone()).await?;
         println!("Playlist -> Song 3");
-        assert_eq!(player.get_playlist().current().name(), "Song 3");
+        assert_eq!(player.get_playlist().current().unwrap().name(), "Song 3");
 
         osc_packet(play.clone()).await?;
 
         // Playlist should have moved to next song.
         eventually(
-            || player.get_playlist().current().name() == "Song 5",
+            || player.get_playlist().current().unwrap().name() == "Song 5",
             format!(
                 "Song never moved to next, on song {}",
-                player.get_playlist().current().name()
+                player.get_playlist().current().unwrap().name()
             )
             .as_str(),
         );
@@ -552,7 +555,7 @@ mod test {
         .await;
 
         // Player should not have moved to the next song.
-        assert_eq!(player.get_playlist().current().name(), "Song 5");
+        assert_eq!(player.get_playlist().current().unwrap().name(), "Song 5");
 
         Driver::broadcast(&player, &driver.osc_events, &tx_sender).await?;
 
@@ -1038,13 +1041,13 @@ mod test {
                 })],
             });
 
-            assert_eq!(player.get_playlist().current().name(), "Song 1");
+            assert_eq!(player.get_playlist().current().unwrap().name(), "Song 1");
             let result = Driver::handle_packet(&player, &events, &bundle).await;
             assert!(
                 result.unwrap(),
                 "bundle with recognized messages should return true"
             );
-            assert_eq!(player.get_playlist().current().name(), "Song 3");
+            assert_eq!(player.get_playlist().current().unwrap().name(), "Song 3");
         }
 
         #[tokio::test(flavor = "multi_thread")]
@@ -1159,12 +1162,12 @@ mod test {
         };
 
         // Verify initial state.
-        assert_eq!(player.get_playlist().current().name(), "Song 1");
+        assert_eq!(player.get_playlist().current().unwrap().name(), "Song 1");
 
         // Send a "next" command through the real UDP path.
         send_osc("/mtrack/next").await;
         eventually(
-            || player.get_playlist().current().name() == "Song 3",
+            || player.get_playlist().current().unwrap().name() == "Song 3",
             "Player never advanced to Song 3 via monitor_events",
         );
 
@@ -1242,7 +1245,7 @@ mod test {
             .await?;
 
         eventually(
-            || player.get_playlist().current().name() == "Song 3",
+            || player.get_playlist().current().unwrap().name() == "Song 3",
             "Player never advanced via monitor_events with multicast",
         );
 

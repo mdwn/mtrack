@@ -121,36 +121,96 @@ pub async fn start(
 ) -> Result<(), Box<dyn Error>> {
     apply_thread_priority();
     let player_path = &Path::new(player_path);
-    let player_config = config::Player::deserialize(player_path)?;
+
+    // Load or create config
+    let player_config = match config::Player::deserialize(player_path) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            // Check if this is a file-not-found error
+            if player_path.exists() {
+                return Err(e.into());
+            }
+            info!(
+                "Config file not found at {:?}, creating with defaults",
+                player_path
+            );
+            let default_config = config::Player::default();
+            let yaml = crate::util::to_yaml_string(&default_config)?;
+            // Ensure parent directory exists
+            if let Some(parent) = player_path.parent() {
+                if !parent.exists() {
+                    std::fs::create_dir_all(parent)?;
+                }
+            }
+            std::fs::write(player_path, &yaml)?;
+            default_config
+        }
+    };
+
     let config_store = Arc::new(config::ConfigStore::new(
         player_config.clone(),
         player_path.to_path_buf(),
     ));
+
+    // Ensure songs directory exists
+    let songs_path = player_config.songs(player_path);
+    if !songs_path.exists() {
+        info!("Creating songs directory at {:?}", songs_path);
+        std::fs::create_dir_all(&songs_path)?;
+    }
+
+    let songs = songs::get_all_songs(&songs_path)?;
+
+    // Resolve playlist — gracefully handle missing
     let mut playlist_path = playlist_path
         .as_ref()
         .map(PathBuf::from)
-        .or(player_config.playlist())
-        .ok_or(
-            "Must supply the playlist from the command line or inside the mtrack configuration",
-        )?;
-    if !playlist_path.is_absolute() {
-        playlist_path = if let Some(parent) = player_path.parent() {
-            parent.join(playlist_path)
-        } else {
-            return Err(format!(
-                "Unable to determine playlist path (config base path has no parent): {}. \
-                 Please specify the playlist path using an absolute path.",
-                playlist_path.display()
-            )
-            .into());
-        };
+        .or(player_config.playlist());
+
+    // Make playlist path absolute if relative
+    if let Some(ref mut pp) = playlist_path {
+        if !pp.is_absolute() {
+            *pp = if let Some(parent) = player_path.parent() {
+                parent.join(&pp)
+            } else {
+                return Err(format!(
+                    "Unable to determine playlist path (config base path has no parent): {}. \
+                     Please specify the playlist path using an absolute path.",
+                    pp.display()
+                )
+                .into());
+            };
+        }
+    }
+
+    let playlist = if let Some(ref pp) = playlist_path {
+        match config::Playlist::deserialize(pp.as_path()) {
+            Ok(playlist_config) => {
+                match Playlist::new("playlist", &playlist_config, songs.clone()) {
+                    Ok(pl) => pl,
+                    Err(e) => {
+                        info!("Playlist references missing songs ({}); using all songs", e);
+                        crate::playlist::from_songs(songs.clone())?
+                    }
+                }
+            }
+            Err(_) => {
+                info!("Playlist file not found; using all songs");
+                crate::playlist::from_songs(songs.clone())?
+            }
+        }
+    } else {
+        info!("No playlist configured; using all songs");
+        crate::playlist::from_songs(songs.clone())?
     };
-    let songs = songs::get_all_songs(&player_config.songs(player_path))?;
-    let playlist = Playlist::new(
-        "playlist",
-        &config::Playlist::deserialize(playlist_path.as_path())?,
-        songs.clone(),
-    )?;
+
+    // Default playlist_path for web UI (so config writes have somewhere to go)
+    let playlist_path = playlist_path.unwrap_or_else(|| {
+        player_path
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join("playlist.yaml")
+    });
 
     let player = Arc::new(crate::player::Player::new(
         songs,
