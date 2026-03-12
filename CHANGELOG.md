@@ -18,6 +18,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`Profile::empty()` constructor**: Creates a profile with no hardware configuration.
 - **`config::Player` Default impl**: Produces a minimal config (`songs: songs`) suitable for
   bootstrapping a new installation.
+- **Project directory mode**: `mtrack start` now accepts a project directory instead of a config
+  file path. When given a directory, it looks for `mtrack.yaml` inside it. When given a file
+  (or a path with a `.yaml`/`.yml` extension), it uses it directly for backwards compatibility.
+  The default is `.` (current directory), so bare `mtrack start` works as a zero-config entry point.
+- **Song upload API**: New REST endpoints for uploading track files to songs:
+  - `PUT /api/songs/{name}/tracks/{filename}` — upload a single file (binary body)
+  - `POST /api/songs/{name}/tracks` — upload multiple files via multipart form
+  - Uploading to a new song name auto-creates the song directory and generates `song.yaml`
+  - Subsequent uploads preserve existing `song.yaml` (track names, lighting config, etc.)
+- **Song creation API**: `POST /api/songs/{name}` creates a new song with a user-provided
+  config YAML. This allows setting track names, lighting shows, and MIDI config before
+  uploading any audio files. Returns 409 Conflict if the song already exists.
+- **Broader audio format support**: Song auto-discovery and track uploads now accept all
+  audio formats supported by symphonia (FLAC, MP3, OGG, AAC, M4A, AIFF) in addition to WAV.
+- **Lighting file uploads**: `.light` DSL files can be uploaded alongside audio and MIDI
+  files. `Song::initialize()` now auto-discovers `.light` files and includes them in the
+  generated `song.yaml`.
 
 ### Changed
 
@@ -27,6 +44,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fire-and-forget handlers skip silently, and the web UI sends minimal "no song" state.
 - The `start` command no longer requires a playlist file to be specified. When absent, it falls
   back to an all-songs playlist.
+- The `start` command's positional argument has been renamed from `player_path` to `path` and
+  now defaults to `.` (current directory). Existing usage with a config file path continues to
+  work unchanged.
+- `PUT /api/songs/{name}` now locates songs by directory name rather than requiring audio files
+  to be present. Songs created via `POST /api/songs/{name}` (config-only, no audio yet) can
+  be updated immediately.
+- The systemd service template now uses `$MTRACK_PATH` instead of `$MTRACK_CONFIG` to reflect
+  the new directory-or-file semantics.
 
 - **Mutable configuration store**: A new `ConfigStore` wraps the player configuration in a
   `tokio::sync::RwLock`, enabling runtime config mutations with optimistic concurrency control
