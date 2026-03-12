@@ -32,7 +32,18 @@ use crate::lighting::parser::LightShow as ParsedLightShow;
 use crate::proto::player;
 use crate::util::filename_display;
 
-const AUDIO_EXTENSIONS: &[&str] = &["wav", "mid"];
+/// Audio file extensions supported by symphonia, plus MIDI and lighting DSL.
+const AUDIO_EXTENSIONS: &[&str] = &[
+    "wav", "flac", "mp3", "ogg", "aac", "m4a", "mp4", "aiff", "aif", "mid", "light",
+];
+
+/// Returns true if the extension is a supported audio (non-MIDI) format.
+pub fn is_supported_audio_extension(ext: &str) -> bool {
+    matches!(
+        ext,
+        "wav" | "flac" | "mp3" | "ogg" | "aac" | "m4a" | "mp4" | "aiff" | "aif"
+    )
+}
 
 /// A resolved DSL lighting show with absolute file path and cached parsed shows.
 #[derive(Debug, Clone)]
@@ -199,11 +210,12 @@ impl Song {
     }
 
     /// Create a song from a directory without a configuration file
-    fn initialize(song_directory: &PathBuf) -> Result<Self, Box<dyn Error>> {
+    pub fn initialize(song_directory: &PathBuf) -> Result<Self, Box<dyn Error>> {
         let song_files = fs::read_dir(song_directory)?;
         let name = filename_display(song_directory).to_string();
 
         let mut light_shows = vec![];
+        let mut dsl_lighting_shows = vec![];
         let mut midi_playback = None;
         let mut tracks = vec![];
         for song_file in song_files {
@@ -243,7 +255,13 @@ impl Song {
                         })
                     }
                 }
-                "wav" => {
+                "light" => {
+                    dsl_lighting_shows.push(DslLightingShow {
+                        file_path: path,
+                        shows: HashMap::new(), // Parsed on demand during playback
+                    });
+                }
+                ext if is_supported_audio_extension(ext) => {
                     let mut new_tracks = Track::load_tracks(&path)?;
                     tracks.append(&mut new_tracks);
                 }
@@ -257,7 +275,7 @@ impl Song {
             base_path: song_directory.clone(),
             midi_playback,
             light_shows,
-            dsl_lighting_shows: Vec::new(), // No DSL lighting in auto-discovered songs
+            dsl_lighting_shows,
             tracks,
             samples_config: config::SamplesConfig::default(),
             ..Default::default()
@@ -296,7 +314,20 @@ impl Song {
             midi_file,
             midi_playback,
             light_shows,
-            None, // No DSL lighting shows in config - they're handled separately
+            if self.dsl_lighting_shows.is_empty() {
+                None
+            } else {
+                Some(
+                    self.dsl_lighting_shows
+                        .iter()
+                        .map(|show| {
+                            config::LightingShow::new(
+                                filename_display(show.file_path()).to_string(),
+                            )
+                        })
+                        .collect(),
+                )
+            },
             tracks,
             std::collections::HashMap::new(), // No sample overrides when creating from Song
             Vec::new(),                       // No sample trigger overrides
@@ -757,10 +788,13 @@ impl Track {
             .and_then(|extension| extension.to_str())
             .unwrap_or("Unreadable file extension");
 
-        if extension != "wav" {
-            return Err(
-                format!("Expected file name to end in '.wav', got '.{}'", extension).into(),
-            );
+        if !is_supported_audio_extension(extension) {
+            return Err(format!(
+                "Unsupported audio format '.{}' for file '{}'",
+                extension,
+                track_path.display()
+            )
+            .into());
         }
         let track_name = stem.to_string();
         let source = create_sample_source_from_file(track_path, None, 1024).map_err(

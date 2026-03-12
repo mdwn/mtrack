@@ -236,7 +236,6 @@ pub struct LightingShow {
 
 impl LightingShow {
     /// Creates a new DSL lighting show.
-    #[cfg(test)]
     pub fn new(file: String) -> Self {
         Self { file }
     }

@@ -114,13 +114,22 @@ pub fn playlist(repository_path: &str, playlist_path: &str) -> Result<(), Box<dy
 }
 
 pub async fn start(
-    player_path: &str,
+    path: &str,
     playlist_path: Option<String>,
     web_config: crate::webui::server::WebConfig,
     tui_mode: bool,
 ) -> Result<(), Box<dyn Error>> {
     apply_thread_priority();
-    let player_path = &Path::new(player_path);
+
+    // Resolve path: if it's a file or has a YAML extension, use it directly (legacy).
+    // Otherwise treat it as a project directory and look for mtrack.yaml inside.
+    let input = Path::new(path);
+    let player_path =
+        &if input.is_file() || input.extension().is_some_and(|e| e == "yaml" || e == "yml") {
+            input.to_path_buf()
+        } else {
+            input.join("mtrack.yaml")
+        };
 
     // Load or create config
     let player_config = match config::Player::deserialize(player_path) {

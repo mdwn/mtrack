@@ -65,7 +65,7 @@ sha2 = "0.10"
 ratatui = "0.30"
 crossterm = "0.29"
 
-axum = { version = "0.8", features = ["ws"] }
+axum = { version = "0.8", features = ["ws", "multipart"] }
 http = "1"
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }

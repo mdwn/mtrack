@@ -30,7 +30,7 @@ Description=multitrack player
 Type=simple
 Restart=on-failure
 EnvironmentFile=-/etc/default/mtrack
-ExecStart={{ CURRENT_EXECUTABLE }} start "$MTRACK_CONFIG"
+ExecStart={{ CURRENT_EXECUTABLE }} start "$MTRACK_PATH"
 ExecReload=/bin/kill -HUP $MAINPID
 
 # User and group. Create with:
@@ -105,8 +105,11 @@ enum Commands {
     },
     /// Start will start the multitrack player.
     Start {
-        /// The path to the player config.
-        player_path: String,
+        /// Path to a project directory or config file. If a directory, looks for
+        /// mtrack.yaml inside it. If a file (or has .yaml/.yml extension), uses it
+        /// directly. Defaults to the current directory.
+        #[arg(default_value = ".")]
+        path: String,
         /// The path to the playlist. Must be specified if the playlist is not specified in the player config.
         playlist_path: Option<String>,
         /// Enable the terminal UI.
@@ -247,7 +250,7 @@ pub async fn run(tui_mode: bool) -> Result<(), Box<dyn Error>> {
             playlist_path,
         } => local::playlist(&repository_path, &playlist_path)?,
         Commands::Start {
-            player_path,
+            path,
             playlist_path,
             tui,
             web_port,
@@ -258,7 +261,7 @@ pub async fn run(tui_mode: bool) -> Result<(), Box<dyn Error>> {
                 address: web_address,
             };
             let effective_tui = tui_mode && tui;
-            local::start(&player_path, playlist_path, web_config, effective_tui).await?
+            local::start(&path, playlist_path, web_config, effective_tui).await?
         }
         Commands::Play { host_port, from } => remote::play(host_port, from).await?,
         Commands::Previous { host_port } => remote::previous(host_port).await?,
@@ -436,13 +439,13 @@ mod tests {
             let cli = Cli::try_parse_from(["mtrack", "start", "config.yaml"]).unwrap();
             match cli.command {
                 Commands::Start {
-                    player_path,
+                    path,
                     playlist_path,
                     tui,
                     web_port,
                     web_address,
                 } => {
-                    assert_eq!(player_path, "config.yaml");
+                    assert_eq!(path, "config.yaml");
                     assert!(playlist_path.is_none());
                     assert!(!tui);
                     assert_eq!(web_port, 8080);
@@ -468,13 +471,13 @@ mod tests {
             .unwrap();
             match cli.command {
                 Commands::Start {
-                    player_path,
+                    path,
                     playlist_path,
                     tui,
                     web_port,
                     web_address,
                 } => {
-                    assert_eq!(player_path, "config.yaml");
+                    assert_eq!(path, "config.yaml");
                     assert_eq!(playlist_path.as_deref(), Some("playlist.yaml"));
                     assert!(tui);
                     assert_eq!(web_port, 9090);
@@ -604,8 +607,18 @@ mod tests {
         #[test]
         fn missing_required_args_fails() {
             assert!(Cli::try_parse_from(["mtrack", "songs"]).is_err());
-            assert!(Cli::try_parse_from(["mtrack", "start"]).is_err());
             assert!(Cli::try_parse_from(["mtrack", "verify"]).is_err());
+        }
+
+        #[test]
+        fn start_defaults_to_current_dir() {
+            let cli = Cli::try_parse_from(["mtrack", "start"]).unwrap();
+            match cli.command {
+                Commands::Start { path, .. } => {
+                    assert_eq!(path, ".");
+                }
+                _ => panic!("expected Start command"),
+            }
         }
 
         #[test]
@@ -943,11 +956,11 @@ mod tests {
                     .unwrap();
             match cli.command {
                 Commands::Start {
-                    player_path,
+                    path,
                     playlist_path,
                     ..
                 } => {
-                    assert_eq!(player_path, "config.yaml");
+                    assert_eq!(path, "config.yaml");
                     assert_eq!(playlist_path.as_deref(), Some("custom-playlist.yaml"));
                 }
                 _ => panic!("expected Start command"),
