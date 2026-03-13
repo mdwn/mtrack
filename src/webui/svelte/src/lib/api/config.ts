@@ -14,6 +14,29 @@
 
 import { get, post, put, del } from "./rest";
 
+// Calibration types
+export interface NoiseFloorResult {
+  peak: number;
+  rms: number;
+  low_freq_energy: number;
+  channel: number;
+  sample_rate: number;
+  device_channels: number;
+}
+
+export interface ChannelCalibration {
+  channel: number;
+  threshold: number;
+  gain: number;
+  scan_time_ms: number;
+  retrigger_time_ms: number;
+  highpass_freq?: number;
+  dynamic_threshold_decay_ms?: number;
+  num_hits_detected: number;
+  noise_floor_peak: number;
+  max_hit_amplitude: number;
+}
+
 export interface SupportedFormat {
   sample_format: string;
   bits_per_sample: number;
@@ -99,4 +122,42 @@ export async function deleteProfile(
     throw new Error(body.error || `Failed to delete profile: ${res.status}`);
   }
   return res.json();
+}
+
+// Calibration API
+
+export async function startCalibration(
+  device: string,
+  channel: number,
+  duration?: number,
+): Promise<NoiseFloorResult> {
+  const body: Record<string, unknown> = { device, channel };
+  if (duration !== undefined) body.duration = duration;
+  const res = await post("/calibrate/start", JSON.stringify(body));
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || `Calibration start failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function startCapture(): Promise<void> {
+  const res = await post("/calibrate/capture");
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || `Capture start failed: ${res.status}`);
+  }
+}
+
+export async function stopCapture(): Promise<ChannelCalibration> {
+  const res = await post("/calibrate/stop");
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || `Capture stop failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function cancelCalibration(): Promise<void> {
+  await del("/calibrate");
 }

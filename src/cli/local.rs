@@ -259,6 +259,7 @@ pub async fn start(
             songs_path: player_config.songs(player_path),
             playlist_path: playlist_path.clone(),
             waveform_cache: crate::webui::state::new_waveform_cache(),
+            calibration: std::sync::Arc::new(parking_lot::Mutex::new(None)),
         };
 
         match crate::webui::server::start(webui_state, web_config.address.clone(), web_config.port)

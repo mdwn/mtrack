@@ -73,6 +73,8 @@ pub struct WebUiState {
     pub playlist_path: PathBuf,
     /// Shared waveform cache (sent to each WebSocket client on connect).
     pub waveform_cache: ws_state::WaveformCache,
+    /// Active calibration session (at most one at a time).
+    pub(crate) calibration: Arc<parking_lot::Mutex<Option<super::api::CalibrationSession>>>,
 }
 
 /// Handle to a running web UI server, returned so callers can shut it down.
@@ -516,6 +518,7 @@ mod test {
             songs_path,
             playlist_path,
             waveform_cache: ws_state::new_waveform_cache(),
+            calibration: Arc::new(parking_lot::Mutex::new(None)),
         };
 
         (state, dir)

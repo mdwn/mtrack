@@ -18,6 +18,7 @@
   import AudioSection from "./AudioSection.svelte";
   import MidiSection from "./MidiSection.svelte";
   import DmxSection from "./DmxSection.svelte";
+  import TriggerSection from "./TriggerSection.svelte";
   import ControllersSection from "./ControllersSection.svelte";
 
   interface Props {
@@ -49,11 +50,13 @@
       if (section === "audio") profile.audio = { device: "" };
       else if (section === "midi") profile.midi = { device: "" };
       else if (section === "dmx") profile.dmx = { universes: [] };
+      else if (section === "trigger") profile.trigger = { inputs: [] };
       else if (section === "controllers") profile.controllers = [];
     } else {
       if (section === "audio") delete profile.audio;
       else if (section === "midi") delete profile.midi;
       else if (section === "dmx") delete profile.dmx;
+      else if (section === "trigger") delete profile.trigger;
       else if (section === "controllers") delete profile.controllers;
     }
     onchange();
@@ -62,6 +65,7 @@
   let hasAudio = $derived(profile.audio != null);
   let hasMidi = $derived(profile.midi != null);
   let hasDmx = $derived(profile.dmx != null);
+  let hasTrigger = $derived(profile.trigger != null);
   let hasControllers = $derived(profile.controllers != null);
 </script>
 
@@ -174,6 +178,37 @@
     {#if hasDmx && !collapsed.dmx}
       <div class="section-body">
         <DmxSection bind:dmx={profile.dmx} {onchange} />
+      </div>
+    {/if}
+  </div>
+
+  <!-- Trigger Section -->
+  <div class="section-card">
+    <button class="section-header" onclick={() => toggleCollapse("trigger")}>
+      <span class="section-title">Triggers</span>
+      <div class="section-controls">
+        <span class="toggle-wrap">
+          <input
+            id="toggle-trigger"
+            type="checkbox"
+            checked={hasTrigger}
+            onclick={(e: MouseEvent) => e.stopPropagation()}
+            onchange={(e) =>
+              toggleSection("trigger", (e.target as HTMLInputElement).checked)}
+          />
+          <label for="toggle-trigger">Enable</label>
+        </span>
+        <span class="collapse-icon">{collapsed.trigger ? "+" : "-"}</span>
+      </div>
+    </button>
+    {#if hasTrigger && !collapsed.trigger}
+      <div class="section-body">
+        <TriggerSection
+          bind:trigger={profile.trigger}
+          {audioDevices}
+          onrefresh={onrefreshDevices}
+          {onchange}
+        />
       </div>
     {/if}
   </div>
