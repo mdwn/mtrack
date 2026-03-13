@@ -398,6 +398,44 @@ impl fmt::Display for Device {
     }
 }
 
+/// Serializable info about a MIDI device for the web UI.
+#[derive(serde::Serialize)]
+pub struct MidiDeviceInfo {
+    pub name: String,
+    pub has_input: bool,
+    pub has_output: bool,
+}
+
+/// Lists MIDI devices as simple info structs (no trait objects).
+pub fn list_device_info() -> Result<Vec<MidiDeviceInfo>, Box<dyn Error>> {
+    let input = MidiInput::new("mtrack input listing")?;
+    let output = MidiOutput::new("mtrack output listing")?;
+    let input_ports = input.ports();
+    let output_ports = output.ports();
+
+    let mut devices: HashMap<String, (bool, bool)> = HashMap::new();
+
+    for port in input_ports {
+        let name = input.port_name(&port)?;
+        devices.entry(name).or_insert((false, false)).0 = true;
+    }
+    for port in output_ports {
+        let name = output.port_name(&port)?;
+        devices.entry(name).or_insert((false, false)).1 = true;
+    }
+
+    let mut infos: Vec<MidiDeviceInfo> = devices
+        .into_iter()
+        .map(|(name, (has_input, has_output))| MidiDeviceInfo {
+            name,
+            has_input,
+            has_output,
+        })
+        .collect();
+    infos.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(infos)
+}
+
 /// Lists midir devices and produces the Device trait.
 pub fn list() -> Result<Vec<Box<dyn super::Device>>, Box<dyn Error>> {
     Ok(list_midir_devices()?

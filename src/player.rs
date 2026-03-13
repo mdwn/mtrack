@@ -16,8 +16,7 @@ use parking_lot::RwLock;
 use std::{
     collections::HashMap,
     error::Error,
-    fmt::Display,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -29,6 +28,7 @@ use tokio::{
     sync::{oneshot, Mutex},
     task::JoinHandle,
 };
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info, span, warn, Level, Span};
 
 use crate::samples::SampleEngine;
@@ -69,6 +69,23 @@ impl ClockSource {
     }
 }
 
+/// Groups all hardware device state so it can be atomically swapped on reload.
+#[derive(Clone)]
+struct HardwareState {
+    device: Option<Arc<dyn audio::Device>>,
+    mappings: Option<Arc<HashMap<String, Vec<u16>>>>,
+    midi_device: Option<Arc<dyn midi::Device>>,
+    dmx_engine: Option<Arc<dmx::engine::Engine>>,
+    sample_engine: Option<Arc<RwLock<SampleEngine>>>,
+    trigger_engine: Option<Arc<TriggerEngine>>,
+    clock_source: ClockSource,
+}
+
+/// Alias for the shared state sampler sender stored on Player.
+type StateTx = Arc<
+    parking_lot::Mutex<Option<Arc<tokio::sync::watch::Sender<Arc<crate::state::StateSnapshot>>>>>,
+>;
+
 struct PlayHandles {
     join: JoinHandle<()>,
     cancel: CancelHandle,
@@ -100,25 +117,10 @@ pub struct PlayerDevices {
 /// Plays back individual wav files as multichannel audio for the configured audio interface.
 #[derive(Clone)]
 pub struct Player {
-    /// The device to play audio through (optional if absent from profile).
-    device: Option<Arc<dyn audio::Device>>,
-    /// Mappings of tracks to output channels (optional if no audio configured).
-    mappings: Option<Arc<HashMap<String, Vec<u16>>>>,
-    /// The MIDI device to play MIDI back through.
-    midi_device: Option<Arc<dyn midi::Device>>,
-    /// The DMX engine to use.
-    dmx_engine: Option<Arc<dmx::engine::Engine>>,
-    /// The sample engine for MIDI-triggered samples.
-    sample_engine: Option<Arc<RwLock<SampleEngine>>>,
-    /// The audio trigger engine for piezo triggers.
-    /// Held to keep the engine (and its cpal stream + forwarding thread) alive.
-    #[allow(dead_code)]
-    trigger_engine: Option<Arc<TriggerEngine>>,
-    /// Factory for creating per-song playback clocks. Stored on the Player so
-    /// every song's clock is derived from the same audio hardware sample counter
-    /// (when an audio device is present), keeping all subsystems synchronized.
-    /// A fresh clock is created per song to avoid races during stop/start.
-    clock_source: ClockSource,
+    /// All hardware device state, behind a lock so it can be atomically swapped on reload.
+    hardware: Arc<parking_lot::RwLock<HardwareState>>,
+    /// Base path for resolving sample/DMX config files. None in test paths.
+    base_path: Option<PathBuf>,
     /// The playlist to use. Behind a RwLock so it can be refreshed when the
     /// active playlist was auto-generated from all songs (zero-config mode).
     playlist: Arc<parking_lot::RwLock<Arc<Playlist>>>,
@@ -138,31 +140,79 @@ pub struct Player {
     span: Span,
     /// Mutable configuration store for runtime config changes.
     config_store: Arc<parking_lot::Mutex<Option<Arc<config::ConfigStore>>>>,
+    /// Cancellation token for the current hardware init round. On reload,
+    /// the old token is cancelled and a new one is created.
+    init_cancel: Arc<parking_lot::Mutex<CancellationToken>>,
+    /// Broadcast channel sender, stored so async init can wire DMX engine.
+    broadcast_tx: Arc<parking_lot::Mutex<Option<tokio::sync::broadcast::Sender<String>>>>,
+    /// Watch channel to signal hardware init completion.
+    init_done_tx: Arc<tokio::sync::watch::Sender<bool>>,
+    /// State sampler watch sender. Shared so async init can start the sampler
+    /// when the DMX engine becomes available, and restart it on reload.
+    state_tx: StateTx,
 }
 
 impl Player {
-    /// Creates a new player by discovering hardware devices from the config.
+    /// Creates a new player and spawns asynchronous hardware discovery.
+    ///
+    /// Returns immediately with no hardware initialized. Device discovery
+    /// runs in background tasks that retry perpetually until each device is
+    /// found or the init round is cancelled (via `reload_hardware`). Use
+    /// `await_hardware_ready()` to wait for init to complete (mainly useful
+    /// in tests).
     pub fn new(
         songs: Arc<Songs>,
         playlist: Arc<Playlist>,
         config: &config::Player,
         base_path: Option<&Path>,
     ) -> Result<Player, Box<dyn Error>> {
-        let span = span!(Level::INFO, "player");
-        let _enter = span.enter();
+        let devices = PlayerDevices {
+            audio: None,
+            mappings: None,
+            midi: None,
+            dmx_engine: None,
+            sample_engine: None,
+            trigger_engine: None,
+        };
+
+        let player = Self::new_with_devices(devices, playlist, songs, base_path)?;
+
+        // Mark as not ready — async init will set to true when complete.
+        // Use send_modify() because send() is a no-op when no receivers exist yet.
+        player.init_done_tx.send_modify(|v| *v = false);
+
+        // Spawn async hardware init.
+        let init_player = player.clone();
+        let config = config.clone();
+        let bp = base_path.map(Path::to_path_buf);
+        tokio::spawn(async move {
+            init_player.init_hardware_async(config, bp).await;
+        });
+
+        Ok(player)
+    }
+
+    /// Asynchronously discovers and initializes all hardware devices.
+    ///
+    /// Retries each device perpetually until found or cancelled. Devices are
+    /// written to `HardwareState` as they become available, so playback can
+    /// use whatever hardware is ready. Respects dependency ordering:
+    ///   Phase 1: Audio + DMX (parallel)
+    ///   Phase 2: MIDI (needs DMX), Sample engine (needs Audio) — parallel
+    ///   Phase 3: Trigger engine (needs Sample engine), status reporting
+    async fn init_hardware_async(&self, config: config::Player, base_path: Option<PathBuf>) {
+        let cancel = self.init_cancel.lock().clone();
 
         let hostname = config::resolve_hostname();
         info!(hostname = %hostname, "Resolved hostname for hardware profiles");
 
-        // Get the first matching profile, or use an empty profile if none match
         let profiles = config.profiles(&hostname);
-        let empty_profile;
         let profile = match profiles.first() {
-            Some(p) => *p,
+            Some(p) => (*p).clone(),
             None => {
                 info!("No matching hardware profile found; starting with no hardware");
-                empty_profile = config::Profile::empty();
-                &empty_profile
+                self.init_done_tx.send_modify(|v| *v = true);
+                return;
             }
         };
 
@@ -175,92 +225,177 @@ impl Player {
             "Using hardware profile"
         );
 
-        // Audio: if present in profile, required. If absent, optional.
-        let (device, mappings, resolved_audio) = if let Some(audio_config) = profile.audio_config()
-        {
-            let (device, mappings, resolved_audio) = Self::wait_for_ok("audio device", || {
-                match audio::get_device(Some(audio_config.audio().clone())) {
-                    Ok(device) => {
-                        info!(
-                            device = audio_config.audio().device(),
-                            "Audio device initialized"
-                        );
-                        Ok((
-                            device.clone(),
-                            audio_config.track_mappings().clone(),
-                            audio_config.audio().clone(),
-                        ))
+        // Phase 1: Audio + DMX in parallel (independent subsystems).
+        let audio_config = profile.audio_config().cloned();
+        let dmx_config = profile.dmx().cloned();
+        let bp = base_path.clone();
+        let cancel1 = cancel.clone();
+        let cancel2 = cancel.clone();
+
+        let (audio_result, dmx_result) =
+            tokio::join!(
+                async {
+                    if let Some(audio_config) = audio_config {
+                        Self::retry_until_ready("audio device", cancel1, move || {
+                            match audio::get_device(Some(audio_config.audio().clone())) {
+                                Ok(device) => {
+                                    info!(
+                                        device = audio_config.audio().device(),
+                                        "Audio device initialized"
+                                    );
+                                    Ok((
+                                        device.clone(),
+                                        audio_config.track_mappings_hash(),
+                                        audio_config.audio().clone(),
+                                    ))
+                                }
+                                Err(e) => Err(format!("audio device: {}", e)),
+                            }
+                        })
+                        .await
+                    } else {
+                        info!("Audio not configured in profile; proceeding without audio");
+                        None
                     }
-                    Err(e) => Err(format!("audio device: {}", e)),
+                },
+                async {
+                    if let Some(dmx_config) = dmx_config {
+                        let bp = bp.clone();
+                        Self::retry_until_ready("dmx engine", cancel2, move || {
+                            dmx::create_engine(Some(&dmx_config), bp.as_deref())
+                                .map_err(|e| e.to_string())
+                        })
+                        .await
+                        .flatten()
+                    } else {
+                        info!("DMX not configured in profile; proceeding without DMX");
+                        None
+                    }
                 }
-            })?;
-            (Some(device), Some(mappings), Some(resolved_audio))
-        } else {
-            info!("Audio not configured in profile; proceeding without audio");
-            (None, None, None)
+            );
+
+        if cancel.is_cancelled() {
+            return;
+        }
+
+        // Write Phase 1 results to hardware state.
+        let (device, mappings, resolved_audio) = match audio_result {
+            Some((device, mappings, resolved_audio)) => {
+                let clock_source = match device.sample_counter().zip(device.sample_rate()) {
+                    Some((counter, rate)) => ClockSource::Audio {
+                        sample_counter: counter,
+                        sample_rate: rate,
+                    },
+                    None => ClockSource::Wall,
+                };
+
+                let mut hw = self.hardware.write();
+                hw.device = Some(device.clone());
+                hw.mappings = Some(Arc::new(mappings.clone()));
+                hw.clock_source = clock_source;
+                (Some(device), Some(mappings), Some(resolved_audio))
+            }
+            None => (None, None, None),
         };
 
-        // DMX: if present in profile, required. If absent, optional.
-        // Always allows null OLA fallback so the web UI / simulator can run without hardware.
-        let dmx_engine = if let Some(dmx_config) = profile.dmx() {
-            Self::wait_for_ok("dmx engine", || {
-                dmx::create_engine(Some(dmx_config), base_path)
-            })?
-        } else {
-            info!("DMX not configured in profile; proceeding without DMX");
-            None
-        };
+        if let Some(ref dmx_engine) = dmx_result {
+            self.hardware.write().dmx_engine = Some(dmx_engine.clone());
+            // Wire the broadcast channel if one has been set.
+            if let Some(ref tx) = *self.broadcast_tx.lock() {
+                dmx_engine.set_broadcast_tx(tx.clone());
+            }
+            // Start the state sampler if a sender was provided. The cancel
+            // token ensures this sampler stops when hardware is reloaded.
+            if let Some(ref state_tx) = *self.state_tx.lock() {
+                let effect_engine = dmx_engine.effect_engine();
+                crate::state::start_sampler_cancellable(
+                    effect_engine,
+                    state_tx.clone(),
+                    cancel.clone(),
+                );
+            }
+        }
 
-        // MIDI: if present in profile, required. If absent, optional.
-        let midi_device = if let Some(midi_config) = profile.midi() {
-            Self::wait_for_ok("midi device", || {
-                midi::get_device(Some(midi_config.clone()), dmx_engine.clone())
-            })?
-        } else {
-            info!("MIDI not configured in profile; proceeding without MIDI");
-            None
-        };
+        if cancel.is_cancelled() {
+            return;
+        }
 
-        let status_events = Self::wait_for_ok("status events", || {
-            StatusEvents::new(config.status_events())
-        })?;
+        // Phase 2: MIDI (needs DMX) + Sample engine (needs Audio) — parallel.
+        let midi_config = profile.midi().cloned();
+        let cancel3 = cancel.clone();
+        let dmx_engine_for_midi = dmx_result.clone();
 
-        let sample_engine = init_sample_engine(
-            &device,
-            &mappings,
-            resolved_audio.as_ref(),
-            config,
-            profile,
-            base_path,
+        let (midi_result, sample_engine) = tokio::join!(
+            async {
+                if let Some(midi_config) = midi_config {
+                    Self::retry_until_ready("midi device", cancel3, move || {
+                        midi::get_device(Some(midi_config.clone()), dmx_engine_for_midi.clone())
+                            .map_err(|e| e.to_string())
+                    })
+                    .await
+                    .flatten()
+                } else {
+                    info!("MIDI not configured in profile; proceeding without MIDI");
+                    None
+                }
+            },
+            async {
+                // Sample engine init is synchronous and doesn't need retries.
+                init_sample_engine(
+                    &device,
+                    &mappings,
+                    resolved_audio.as_ref(),
+                    &config,
+                    &profile,
+                    base_path.as_deref(),
+                )
+            }
         );
 
-        let trigger_engine = init_trigger_engine(profile, &sample_engine)?;
+        if cancel.is_cancelled() {
+            return;
+        }
 
-        let devices = PlayerDevices {
-            audio: device,
-            mappings: mappings.map(Arc::new),
-            midi: midi_device,
-            dmx_engine,
-            sample_engine,
-            trigger_engine,
+        // Write Phase 2 results.
+        if let Some(ref midi_device) = midi_result {
+            self.hardware.write().midi_device = Some(midi_device.clone());
+        }
+        if let Some(ref se) = sample_engine {
+            self.hardware.write().sample_engine = Some(se.clone());
+        }
+
+        // Phase 3: Trigger engine (needs sample engine) + post-init wiring.
+        let trigger_engine = match init_trigger_engine(&profile, &sample_engine) {
+            Ok(te) => te,
+            Err(e) => {
+                warn!(error = %e, "Failed to initialize trigger engine");
+                None
+            }
         };
+        if let Some(ref te) = trigger_engine {
+            self.hardware.write().trigger_engine = Some(te.clone());
+        }
 
-        let player = Self::new_with_devices(devices, playlist, songs)?;
-
-        if player.midi_device.is_some() {
-            // Emit the event for the first track if needed.
-            if let Some(song) = player.get_playlist().current() {
-                Player::emit_midi_event(player.midi_device.clone(), song);
+        // MIDI post-init: emit initial track event + start status reporting.
+        if midi_result.is_some() {
+            if let Some(song) = self.get_playlist().current() {
+                Player::emit_midi_event(midi_result.clone(), song);
             }
 
+            let status_events = match StatusEvents::new(config.status_events()) {
+                Ok(se) => se,
+                Err(e) => {
+                    warn!(error = %e, "Failed to create status events");
+                    None
+                }
+            };
+
             if let Some(status_events) = status_events {
-                let midi_device = player
-                    .midi_device
-                    .clone()
-                    .expect("MIDI device must be present");
-                let join = player.join.clone();
+                let midi_device = midi_result.clone().expect("MIDI device must be present");
+                let join = self.join.clone();
+                let span = self.span.clone();
                 tokio::spawn(Player::report_status(
-                    span.clone(),
+                    span,
                     midi_device,
                     join,
                     status_events,
@@ -268,7 +403,48 @@ impl Player {
             }
         }
 
-        Ok(player)
+        self.init_done_tx.send_modify(|v| *v = true);
+        info!("Hardware initialization complete");
+    }
+
+    /// Retries a device constructor perpetually until it succeeds or the
+    /// cancellation token is triggered. Device construction runs in a
+    /// blocking task since hardware discovery does blocking I/O.
+    async fn retry_until_ready<T, E, F>(
+        name: &str,
+        cancel: CancellationToken,
+        constructor: F,
+    ) -> Option<T>
+    where
+        T: Send + 'static,
+        E: std::fmt::Display + Send + Sync + 'static,
+        F: Fn() -> Result<T, E> + Send + Sync + 'static,
+    {
+        let name = name.to_string();
+        let constructor = Arc::new(constructor);
+
+        loop {
+            let ctor = constructor.clone();
+            let result = tokio::task::spawn_blocking(move || ctor()).await;
+
+            match result {
+                Ok(Ok(value)) => return Some(value),
+                Ok(Err(e)) => {
+                    warn!("Could not get {name}: {e}");
+                }
+                Err(e) => {
+                    error!("Device init task panicked for {name}: {e}");
+                }
+            }
+
+            tokio::select! {
+                _ = cancel.cancelled() => {
+                    info!("Hardware init cancelled for {name}");
+                    return None;
+                }
+                _ = tokio::time::sleep(Duration::from_millis(500)) => {}
+            }
+        }
     }
 
     /// Creates a new player with pre-constructed devices.
@@ -279,6 +455,7 @@ impl Player {
         devices: PlayerDevices,
         playlist: Arc<Playlist>,
         songs: Arc<Songs>,
+        base_path: Option<&Path>,
     ) -> Result<Player, Box<dyn Error>> {
         // Store the clock source so each song can create a fresh PlaybackClock.
         let clock_source = match devices
@@ -293,7 +470,7 @@ impl Player {
             None => ClockSource::Wall,
         };
 
-        Ok(Player {
+        let hw = HardwareState {
             device: devices.audio,
             mappings: devices.mappings,
             midi_device: devices.midi,
@@ -301,6 +478,13 @@ impl Player {
             sample_engine: devices.sample_engine,
             trigger_engine: devices.trigger_engine,
             clock_source,
+        };
+
+        let (init_done_tx, _init_done_rx) = tokio::sync::watch::channel(true);
+
+        Ok(Player {
+            hardware: Arc::new(parking_lot::RwLock::new(hw)),
+            base_path: base_path.map(Path::to_path_buf),
             playlist: Arc::new(parking_lot::RwLock::new(playlist)),
             all_songs: Arc::new(parking_lot::RwLock::new(playlist::from_songs(songs)?)),
             use_all_songs: Arc::new(AtomicBool::new(false)),
@@ -309,55 +493,20 @@ impl Player {
             stop_run: Arc::new(AtomicBool::new(false)),
             span: span!(Level::INFO, "player"),
             config_store: Arc::new(parking_lot::Mutex::new(None)),
+            init_cancel: Arc::new(parking_lot::Mutex::new(CancellationToken::new())),
+            broadcast_tx: Arc::new(parking_lot::Mutex::new(None)),
+            init_done_tx: Arc::new(init_done_tx),
+            state_tx: Arc::new(parking_lot::Mutex::new(None)),
         })
     }
 
-    /// Wait for constructor function to return an Ok(result) variant.
-    /// Respects MTRACK_DEVICE_RETRY_LIMIT: if set to N, tries at most N times then returns
-    /// the last error. If unset or 0, retries indefinitely (original behavior).
-    fn wait_for_ok<T, E, F>(name: &str, constructor: F) -> Result<T, Box<dyn Error>>
-    where
-        E: Display + Into<Box<dyn Error>>,
-        F: Fn() -> Result<T, E>,
-    {
-        let max_attempts = std::env::var("MTRACK_DEVICE_RETRY_LIMIT")
-            .ok()
-            .and_then(|s| s.parse::<u32>().ok())
-            .unwrap_or(0);
-        Self::wait_for_ok_with_limit(name, max_attempts, constructor)
-    }
-
-    /// Wait for constructor function to return an Ok(result) variant.
-    /// If max_attempts is 0, retries indefinitely.
-    fn wait_for_ok_with_limit<T, E, F>(
-        name: &str,
-        max_attempts: u32,
-        constructor: F,
-    ) -> Result<T, Box<dyn Error>>
-    where
-        E: Display + Into<Box<dyn Error>>,
-        F: Fn() -> Result<T, E>,
-    {
-        let delay_ms = 500;
-        let mut attempt = 0u32;
-
-        loop {
-            match constructor() {
-                Ok(ok) => return Ok(ok),
-                Err(err) => {
-                    warn!("Could not get {name}! {err}");
-                    attempt += 1;
-                    if max_attempts > 0 && attempt >= max_attempts {
-                        error!(
-                            attempt = attempt,
-                            limit = max_attempts,
-                            "Retry limit reached, giving up"
-                        );
-                        return Err(err.into());
-                    }
-                    info!("Retrying after delay.");
-                    thread::sleep(Duration::from_millis(delay_ms));
-                }
+    /// Waits until hardware initialization is complete. Mainly useful in tests.
+    #[cfg(test)]
+    pub async fn await_hardware_ready(&self) {
+        let mut rx = self.init_done_tx.subscribe();
+        while !*rx.borrow_and_update() {
+            if rx.changed().await.is_err() {
+                break;
             }
         }
     }
@@ -365,19 +514,20 @@ impl Player {
     /// Gets the audio device currently in use by the player.
     #[cfg(test)]
     pub fn audio_device(&self) -> Option<Arc<dyn audio::Device>> {
-        self.device.clone()
+        self.hardware.read().device.clone()
     }
 
     /// Gets the MIDI device currently in use by the player.
     pub fn midi_device(&self) -> Option<Arc<dyn midi::Device>> {
-        self.midi_device.clone()
+        self.hardware.read().midi_device.clone()
     }
 
     /// Processes a MIDI event for triggered samples.
     /// This should be called by the MIDI controller when events are received.
     /// Uses std::sync::RwLock for minimal latency (no async overhead).
     pub fn process_sample_trigger(&self, raw_event: &[u8]) {
-        if let Some(ref sample_engine) = self.sample_engine {
+        let sample_engine = self.hardware.read().sample_engine.clone();
+        if let Some(ref sample_engine) = sample_engine {
             let engine = sample_engine.read();
             engine.process_midi_event(raw_event);
         }
@@ -387,7 +537,8 @@ impl Player {
     /// This preloads samples for the song so they're ready for instant playback.
     /// Note: Active voices continue playing through song transitions.
     fn load_song_samples(&self, song: &Song) {
-        if let Some(ref sample_engine) = self.sample_engine {
+        let sample_engine = self.hardware.read().sample_engine.clone();
+        if let Some(ref sample_engine) = sample_engine {
             // Load the new song's sample config if it has one
             let samples_config = song.samples_config();
             if !samples_config.samples().is_empty() || !samples_config.sample_triggers().is_empty()
@@ -413,7 +564,8 @@ impl Player {
 
     /// Stops all triggered sample playback.
     pub fn stop_samples(&self) {
-        if let Some(ref sample_engine) = self.sample_engine {
+        let sample_engine = self.hardware.read().sample_engine.clone();
+        if let Some(ref sample_engine) = sample_engine {
             let engine = sample_engine.read();
             engine.stop_all();
         }
@@ -422,12 +574,13 @@ impl Player {
     /// Gets the DMX engine currently in use by the player (for testing).
     #[cfg(test)]
     pub fn dmx_engine(&self) -> Option<Arc<dmx::engine::Engine>> {
-        self.dmx_engine.clone()
+        self.hardware.read().dmx_engine.clone()
     }
 
     /// Gets all cues from the current song's lighting timeline.
     pub fn get_cues(&self) -> Vec<(Duration, usize)> {
-        if let Some(ref dmx_engine) = self.dmx_engine {
+        let dmx_engine = self.hardware.read().dmx_engine.clone();
+        if let Some(ref dmx_engine) = dmx_engine {
             dmx_engine.get_timeline_cues()
         } else {
             Vec::new()
@@ -436,14 +589,28 @@ impl Player {
 
     /// Returns handles needed for reading lighting state, or None if no DMX engine is configured.
     pub fn broadcast_handles(&self) -> Option<dmx::engine::BroadcastHandles> {
-        self.dmx_engine.as_ref().map(|e| e.broadcast_handles())
+        self.hardware
+            .read()
+            .dmx_engine
+            .clone()
+            .map(|e| e.broadcast_handles())
     }
 
-    /// Passes the broadcast channel to the DmxEngine for file watcher hot-reload.
+    /// Stores the broadcast channel and wires it to the DMX engine if one exists.
+    /// If the DMX engine hasn't initialized yet, the channel is stored and will
+    /// be wired when the engine comes up during async init.
     pub fn set_broadcast_tx(&self, tx: tokio::sync::broadcast::Sender<String>) {
-        if let Some(ref engine) = self.dmx_engine {
-            engine.set_broadcast_tx(tx);
+        let dmx_engine = self.hardware.read().dmx_engine.clone();
+        if let Some(ref engine) = dmx_engine {
+            engine.set_broadcast_tx(tx.clone());
         }
+        *self.broadcast_tx.lock() = Some(tx);
+    }
+
+    /// Stores the state sampler watch sender. When the DMX engine comes up
+    /// during async init, the sampler will be started using this sender.
+    pub fn set_state_tx(&self, tx: tokio::sync::watch::Sender<Arc<crate::state::StateSnapshot>>) {
+        *self.state_tx.lock() = Some(Arc::new(tx));
     }
 
     /// Sets the config store on the player. Called once after startup.
@@ -454,6 +621,52 @@ impl Player {
     /// Returns the config store, if one has been set.
     pub fn config_store(&self) -> Option<Arc<config::ConfigStore>> {
         self.config_store.lock().clone()
+    }
+
+    /// Reinitializes all hardware devices from the current config.
+    ///
+    /// Rejects the request if the player is currently playing. Cancels any
+    /// in-flight init, resets hardware to empty, and spawns a new async init
+    /// round. Returns immediately — does not wait for devices to be found.
+    pub async fn reload_hardware(&self) -> Result<(), Box<dyn Error>> {
+        if self.is_playing().await {
+            return Err("Cannot reload hardware during playback".into());
+        }
+
+        let config = self
+            .config_store()
+            .ok_or("No config store available")?
+            .read_config()
+            .await;
+
+        // Cancel the previous init round.
+        {
+            let mut cancel = self.init_cancel.lock();
+            cancel.cancel();
+            *cancel = CancellationToken::new();
+        }
+
+        // Reset hardware to empty.
+        *self.hardware.write() = HardwareState {
+            device: None,
+            mappings: None,
+            midi_device: None,
+            dmx_engine: None,
+            sample_engine: None,
+            trigger_engine: None,
+            clock_source: ClockSource::Wall,
+        };
+        self.init_done_tx.send_modify(|v| *v = false);
+
+        // Spawn new async init.
+        let init_player = self.clone();
+        let bp = self.base_path.clone();
+        tokio::spawn(async move {
+            init_player.init_hardware_async(config, bp).await;
+        });
+
+        info!("Hardware reload initiated");
+        Ok(())
     }
 
     /// Reports status as MIDI events.
@@ -548,8 +761,11 @@ impl Player {
         // Load samples for this song (if not already loaded)
         self.load_song_samples(&song);
 
+        // Clone hardware Arcs under a short read lock.
+        let hw = self.hardware.read().clone();
+
         // Validate lighting shows before starting playback
-        if let Some(ref dmx_engine) = self.dmx_engine {
+        if let Some(ref dmx_engine) = hw.dmx_engine {
             if let Err(e) = dmx_engine.validate_song_lighting(&song) {
                 error!(
                     song = song.name(),
@@ -561,7 +777,7 @@ impl Player {
         }
 
         // Warn about tracks with no mapping in the config.
-        if let Some(ref mappings) = self.mappings {
+        if let Some(ref mappings) = hw.mappings {
             crate::verify::warn_unmapped_tracks(&song, mappings);
         }
 
@@ -573,11 +789,11 @@ impl Player {
 
         let join_handle = {
             let ctx = PlaybackContext {
-                device: self.device.clone(),
-                mappings: self.mappings.clone(),
-                midi_device: self.midi_device.clone(),
-                dmx_engine: self.dmx_engine.clone(),
-                clock: self.clock_source.new_clock(),
+                device: hw.device.clone(),
+                mappings: hw.mappings.clone(),
+                midi_device: hw.midi_device.clone(),
+                dmx_engine: hw.dmx_engine.clone(),
+                clock: hw.clock_source.new_clock(),
                 song: song.clone(),
                 cancel_handle: cancel_handle.clone(),
                 play_tx,
@@ -601,7 +817,7 @@ impl Player {
             let join_mutex = self.join.clone();
             let stop_run = self.stop_run.clone();
             let song = song.clone();
-            let midi_device = self.midi_device.clone();
+            let midi_device = hw.midi_device.clone();
             tokio::spawn(async move {
                 let result = match play_rx.await {
                     Ok(Ok(())) => PlaybackResult::Success,
@@ -824,7 +1040,8 @@ impl Player {
             return Some(current);
         }
         let playlist = self.get_playlist();
-        let song = nav_fn(self.midi_device.clone(), playlist)?;
+        let midi_device = self.hardware.read().midi_device.clone();
+        let song = nav_fn(midi_device, playlist)?;
         self.load_song_samples(&song);
         Some(song)
     }
@@ -906,7 +1123,8 @@ impl Player {
 
         self.use_all_songs.store(use_all_songs, Ordering::Relaxed);
         if let Some(song) = self.get_playlist().current() {
-            Player::emit_midi_event(self.midi_device.clone(), song);
+            let midi_device = self.hardware.read().midi_device.clone();
+            Player::emit_midi_event(midi_device, song);
         }
     }
 
@@ -921,8 +1139,13 @@ impl Player {
     }
 
     /// Returns the track-to-output-channel mappings, if audio is configured.
-    pub fn track_mappings(&self) -> Option<&HashMap<String, Vec<u16>>> {
-        self.mappings.as_deref()
+    pub fn track_mappings(&self) -> Option<Arc<HashMap<String, Vec<u16>>>> {
+        self.hardware.read().mappings.clone()
+    }
+
+    /// Returns the song registry from the all-songs playlist.
+    pub fn songs(&self) -> Arc<Songs> {
+        self.all_songs.read().registry().clone()
     }
 
     /// Gets the all-songs playlist (every song in the registry).
@@ -983,8 +1206,13 @@ impl Player {
     }
 
     /// Returns the effect engine, if a DMX engine is configured.
+    #[cfg(test)]
     pub fn effect_engine(&self) -> Option<Arc<parking_lot::Mutex<crate::lighting::EffectEngine>>> {
-        self.dmx_engine.as_ref().map(|e| e.effect_engine())
+        self.hardware
+            .read()
+            .dmx_engine
+            .clone()
+            .map(|e| e.effect_engine())
     }
 
     /// Gets the elapsed time from the play start time.
@@ -998,8 +1226,10 @@ impl Player {
 
     /// Gets a formatted string listing all active lighting effects
     pub fn format_active_effects(&self) -> Option<String> {
-        self.dmx_engine
-            .as_ref()
+        self.hardware
+            .read()
+            .dmx_engine
+            .clone()
             .map(|engine| engine.format_active_effects())
     }
 
@@ -1241,6 +1471,7 @@ mod test {
             ),
             None,
         )?;
+        player.await_hardware_ready().await;
         let binding = player
             .audio_device()
             .expect("audio device should be present");
@@ -1424,6 +1655,7 @@ mod test {
             ),
             Some(temp_path),
         )?;
+        player.await_hardware_ready().await;
 
         // Try to play the song - it should fail due to invalid lighting show
         let result = player.play().await;
@@ -1436,14 +1668,14 @@ mod test {
     }
 
     /// Flexible helper to create a player with the standard test assets and
-    /// optional subsystem configs.
-    fn make_test_player_with_config(
+    /// optional subsystem configs. Waits for hardware init to complete.
+    async fn make_test_player_with_config(
         audio: Option<config::Audio>,
         midi: Option<config::Midi>,
         dmx: Option<config::Dmx>,
     ) -> Result<Player, Box<dyn Error>> {
         let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        Player::new(
+        let player = Player::new(
             songs.clone(),
             Playlist::new(
                 "playlist",
@@ -1452,21 +1684,24 @@ mod test {
             )?,
             &config::Player::new(vec![], audio, midi, dmx, HashMap::new(), "assets/songs"),
             None,
-        )
+        )?;
+        player.await_hardware_ready().await;
+        Ok(player)
     }
 
     /// Helper to create a player with the standard test assets (audio + MIDI).
-    fn make_test_player() -> Result<Player, Box<dyn Error>> {
+    async fn make_test_player() -> Result<Player, Box<dyn Error>> {
         make_test_player_with_config(
             Some(config::Audio::new("mock-device")),
             Some(config::Midi::new("mock-midi-device", None)),
             None,
         )
+        .await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_stop_when_not_playing() -> Result<(), Box<dyn Error>> {
-        let player = make_test_player()?;
+        let player = make_test_player().await?;
 
         // stop() when nothing is playing should return None.
         let result = player.stop().await;
@@ -1476,7 +1711,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_is_playing() -> Result<(), Box<dyn Error>> {
-        let player = make_test_player()?;
+        let player = make_test_player().await?;
         let binding = player
             .audio_device()
             .expect("audio device should be present");
@@ -1496,7 +1731,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_elapsed_stopped() -> Result<(), Box<dyn Error>> {
-        let player = make_test_player()?;
+        let player = make_test_player().await?;
 
         // elapsed() when not playing should be Ok(None).
         let elapsed = player.elapsed().await?;
@@ -1506,7 +1741,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_elapsed_while_playing() -> Result<(), Box<dyn Error>> {
-        let player = make_test_player()?;
+        let player = make_test_player().await?;
         let binding = player
             .audio_device()
             .expect("audio device should be present");
@@ -1528,7 +1763,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_concurrent_play_returns_none() -> Result<(), Box<dyn Error>> {
-        let player = make_test_player()?;
+        let player = make_test_player().await?;
         let binding = player
             .audio_device()
             .expect("audio device should be present");
@@ -1550,7 +1785,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_navigation() -> Result<(), Box<dyn Error>> {
-        let player = make_test_player()?;
+        let player = make_test_player().await?;
 
         assert_eq!(player.get_playlist().current().unwrap().name(), "Song 1");
 
@@ -1567,7 +1802,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_switch_playlists() -> Result<(), Box<dyn Error>> {
-        let player = make_test_player()?;
+        let player = make_test_player().await?;
 
         assert_eq!(player.get_playlist().name(), "playlist");
         player.switch_to_all_songs().await;
@@ -1580,7 +1815,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_get_all_songs_playlist() -> Result<(), Box<dyn Error>> {
-        let player = make_test_player()?;
+        let player = make_test_player().await?;
         let all = player.get_all_songs_playlist();
         assert_eq!(all.name(), "all_songs");
         assert!(!all.songs().is_empty());
@@ -1589,7 +1824,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_format_active_effects_no_dmx() -> Result<(), Box<dyn Error>> {
-        let player = make_test_player()?;
+        let player = make_test_player().await?;
         // No DMX engine configured, should return None.
         assert!(player.format_active_effects().is_none());
         Ok(())
@@ -1597,14 +1832,14 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_dmx_engine_none_without_config() -> Result<(), Box<dyn Error>> {
-        let player = make_test_player()?;
+        let player = make_test_player().await?;
         assert!(player.dmx_engine().is_none());
         Ok(())
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_get_cues_empty_without_lighting() -> Result<(), Box<dyn Error>> {
-        let player = make_test_player()?;
+        let player = make_test_player().await?;
         let cues = player.get_cues();
         assert!(cues.is_empty());
         Ok(())
@@ -1691,6 +1926,7 @@ mod test {
             ),
             Some(temp_path),
         )?;
+        player.await_hardware_ready().await;
 
         // Try to play the song - it should fail due to invalid lighting show groups
         let result = player.play().await;
@@ -1704,7 +1940,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_stop_returns_current_song() -> Result<(), Box<dyn Error>> {
-        let player = make_test_player()?;
+        let player = make_test_player().await?;
         let binding = player
             .audio_device()
             .expect("audio device should be present");
@@ -1723,7 +1959,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_play_from_nonzero_start() -> Result<(), Box<dyn Error>> {
-        let player = make_test_player()?;
+        let player = make_test_player().await?;
         let binding = player
             .audio_device()
             .expect("audio device should be present");
@@ -1741,7 +1977,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_play_after_stop_restarts() -> Result<(), Box<dyn Error>> {
-        let player = make_test_player()?;
+        let player = make_test_player().await?;
         let binding = player
             .audio_device()
             .expect("audio device should be present");
@@ -1769,7 +2005,8 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_audio_only_no_midi() -> Result<(), Box<dyn Error>> {
         let player =
-            make_test_player_with_config(Some(config::Audio::new("mock-device")), None, None)?;
+            make_test_player_with_config(Some(config::Audio::new("mock-device")), None, None)
+                .await?;
         let binding = player
             .audio_device()
             .expect("audio device should be present");
@@ -1805,7 +2042,8 @@ mod test {
             None,
             Some(config::Midi::new("mock-midi-device", None)),
             None,
-        )?;
+        )
+        .await?;
 
         assert!(
             player.audio_device().is_none(),
@@ -1837,25 +2075,15 @@ mod test {
             &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
             songs.clone(),
         )?;
-        let player = Player {
-            device: None,
+        let devices = PlayerDevices {
+            audio: None,
             mappings: None,
-            midi_device: None,
+            midi: None,
             dmx_engine: None,
             sample_engine: None,
             trigger_engine: None,
-            clock_source: ClockSource::Wall,
-            playlist: Arc::new(parking_lot::RwLock::new(playlist.clone())),
-            all_songs: Arc::new(parking_lot::RwLock::new(crate::playlist::from_songs(
-                songs,
-            )?)),
-            use_all_songs: Arc::new(AtomicBool::new(false)),
-            play_start_time: Arc::new(Mutex::new(None)),
-            join: Arc::new(Mutex::new(None)),
-            stop_run: Arc::new(AtomicBool::new(false)),
-            span: span!(Level::INFO, "test"),
-            config_store: Arc::new(parking_lot::Mutex::new(None)),
         };
+        let player = Player::new_with_devices(devices, playlist, songs, None)?;
 
         assert!(player.audio_device().is_none());
         assert!(player.midi_device().is_none());
@@ -1875,7 +2103,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_natural_finish_clears_play_state() -> Result<(), Box<dyn Error>> {
-        let player = make_test_player()?;
+        let player = make_test_player().await?;
 
         // Song 1 is short (~0.7s). Let it finish naturally.
         player.play().await?;
@@ -1909,7 +2137,8 @@ mod test {
             Some(config::Audio::new("mock-device")),
             None,
             Some(dmx_config),
-        )?;
+        )
+        .await?;
 
         assert!(
             player.dmx_engine().is_some(),
@@ -1931,7 +2160,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_switch_playlist_while_playing_stays() -> Result<(), Box<dyn Error>> {
-        let player = make_test_player()?;
+        let player = make_test_player().await?;
         let binding = player
             .audio_device()
             .expect("audio device should be present");
@@ -1957,7 +2186,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_playlist_clamps_at_end_on_natural_finish() -> Result<(), Box<dyn Error>> {
-        let player = make_test_player()?;
+        let player = make_test_player().await?;
 
         // Navigate to Song 9 (last in playlist).
         // Playlist: Song 1, Song 3, Song 5, Song 7, Song 9
@@ -2065,7 +2294,8 @@ mod test {
             Some(config::Audio::new("mock-device")),
             None,
             Some(dmx_config),
-        )?;
+        )
+        .await?;
 
         // get_cues() with DMX engine present (no timeline loaded → empty)
         let cues = player.get_cues();
@@ -2099,7 +2329,7 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_track_mappings() -> Result<(), Box<dyn Error>> {
         // Player with audio → track_mappings is Some
-        let player = make_test_player()?;
+        let player = make_test_player().await?;
         assert!(
             player.track_mappings().is_some(),
             "track_mappings should be Some when audio is configured"
@@ -2110,7 +2340,8 @@ mod test {
             None,
             Some(config::Midi::new("mock-midi-device", None)),
             None,
-        )?;
+        )
+        .await?;
         assert!(
             player.track_mappings().is_none(),
             "track_mappings should be None without audio"
@@ -2121,7 +2352,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_next_while_playing_returns_current() -> Result<(), Box<dyn Error>> {
-        let player = make_test_player()?;
+        let player = make_test_player().await?;
         let binding = player
             .audio_device()
             .expect("audio device should be present");
@@ -2159,37 +2390,6 @@ mod test {
     }
 
     #[test]
-    fn wait_for_ok_succeeds_immediately() {
-        let result = Player::wait_for_ok("test", || Ok::<_, String>(42));
-        assert_eq!(result.unwrap(), 42);
-    }
-
-    #[test]
-    fn wait_for_ok_retries_then_fails() {
-        let attempt = std::sync::atomic::AtomicU32::new(0);
-        let result = Player::wait_for_ok_with_limit("test device", 2, || {
-            attempt.fetch_add(1, Ordering::Relaxed);
-            Err::<(), String>("boom".into())
-        });
-        assert!(result.is_err());
-        assert!(attempt.load(Ordering::Relaxed) >= 2);
-    }
-
-    #[test]
-    fn wait_for_ok_succeeds_after_retry() {
-        let attempt = std::sync::atomic::AtomicU32::new(0);
-        let result = Player::wait_for_ok_with_limit("test device", 5, || {
-            let n = attempt.fetch_add(1, Ordering::Relaxed);
-            if n < 2 {
-                Err::<u32, String>("not ready".into())
-            } else {
-                Ok(99)
-            }
-        });
-        assert_eq!(result.unwrap(), 99);
-    }
-
-    #[test]
     fn status_events_new_none() {
         let result = StatusEvents::new(None).unwrap();
         assert!(result.is_none());
@@ -2211,7 +2411,7 @@ mod test {
             sample_engine: None,
             trigger_engine: None,
         };
-        Player::new_with_devices(devices, playlist, songs)
+        Player::new_with_devices(devices, playlist, songs, None)
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2230,21 +2430,21 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_broadcast_handles_no_dmx() -> Result<(), Box<dyn Error>> {
-        let player = make_test_player()?;
+        let player = make_test_player().await?;
         assert!(player.broadcast_handles().is_none());
         Ok(())
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_effect_engine_no_dmx() -> Result<(), Box<dyn Error>> {
-        let player = make_test_player()?;
+        let player = make_test_player().await?;
         assert!(player.effect_engine().is_none());
         Ok(())
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_set_broadcast_tx_no_dmx() -> Result<(), Box<dyn Error>> {
-        let player = make_test_player()?;
+        let player = make_test_player().await?;
         let (tx, _rx) = tokio::sync::broadcast::channel(1);
         player.set_broadcast_tx(tx);
         Ok(())
@@ -2258,7 +2458,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_switch_to_playlist_while_playing_stays() -> Result<(), Box<dyn Error>> {
-        let player = make_test_player()?;
+        let player = make_test_player().await?;
         let binding = player
             .audio_device()
             .expect("audio device should be present");
@@ -2313,7 +2513,7 @@ mod test {
             sample_engine: None,
             trigger_engine: None,
         };
-        let player = Player::new_with_devices(devices, playlist, songs)?;
+        let player = Player::new_with_devices(devices, playlist, songs, None)?;
         assert!(player.audio_device().is_none());
         assert!(player.midi_device().is_none());
         assert!(player.dmx_engine().is_none());
@@ -2329,7 +2529,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_play_from_while_playing_returns_none() -> Result<(), Box<dyn Error>> {
-        let player = make_test_player()?;
+        let player = make_test_player().await?;
         let binding = player
             .audio_device()
             .expect("audio device should be present");
@@ -2365,7 +2565,7 @@ mod test {
             sample_engine: None,
             trigger_engine: None,
         };
-        let player = Player::new_with_devices(devices, playlist, songs)?;
+        let player = Player::new_with_devices(devices, playlist, songs, None)?;
 
         player.process_sample_trigger(&[0x90, 60, 127]);
         player.stop_samples();
@@ -2388,18 +2588,19 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_midi_device_accessor() -> Result<(), Box<dyn Error>> {
-        let player = make_test_player()?;
+        let player = make_test_player().await?;
         assert!(player.midi_device().is_some());
 
         let player =
-            make_test_player_with_config(Some(config::Audio::new("mock-device")), None, None)?;
+            make_test_player_with_config(Some(config::Audio::new("mock-device")), None, None)
+                .await?;
         assert!(player.midi_device().is_none());
         Ok(())
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_config_store_getter_setter() -> Result<(), Box<dyn Error>> {
-        let player = make_test_player()?;
+        let player = make_test_player().await?;
 
         // Initially None.
         assert!(player.config_store().is_none());
@@ -2420,6 +2621,81 @@ mod test {
         let (_, checksum1) = store.read_yaml().await?;
         let (_, checksum2) = retrieved.unwrap().read_yaml().await?;
         assert_eq!(checksum1, checksum2);
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_reload_hardware_when_idle() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        assert!(player.audio_device().is_some());
+
+        // Set up a config store with a profile that has no audio.
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("config.yaml");
+        let yaml = "songs: songs\nprofiles:\n  - midi:\n      device: mock-midi-device\n";
+        std::fs::write(&path, yaml)?;
+        let cfg = config::Player::deserialize(&path)?;
+        let store = std::sync::Arc::new(config::ConfigStore::new(cfg, path));
+        player.set_config_store(store);
+
+        // Reload should swap hardware — audio device should now be None.
+        player.reload_hardware().await?;
+        player.await_hardware_ready().await;
+        assert!(
+            player.audio_device().is_none(),
+            "Audio device should be None after reload with no audio profile"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_reload_hardware_during_playback_rejected() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        let binding = player
+            .audio_device()
+            .expect("audio device should be present");
+        let device = binding.to_mock()?;
+
+        // Set up config store (needed for reload_hardware).
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("config.yaml");
+        let yaml = "songs: songs\nprofiles:\n  - audio:\n      device: mock-device\n      track_mappings:\n        click: [1]\n";
+        std::fs::write(&path, yaml)?;
+        let cfg = config::Player::deserialize(&path)?;
+        let store = std::sync::Arc::new(config::ConfigStore::new(cfg, path));
+        player.set_config_store(store);
+
+        player.play().await?;
+        eventually(|| device.is_playing(), "Song never started playing");
+
+        // reload_hardware should fail during playback.
+        let result = player.reload_hardware().await;
+        assert!(
+            result.is_err(),
+            "reload_hardware should fail during playback"
+        );
+        assert!(
+            result.unwrap_err().to_string().contains("during playback"),
+            "error should mention playback"
+        );
+
+        player.stop().await;
+        eventually(|| !device.is_playing(), "Song never stopped playing");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_reload_hardware_no_config_store() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+
+        // No config store set — reload should fail.
+        let result = player.reload_hardware().await;
+        assert!(
+            result.is_err(),
+            "reload_hardware should fail without config store"
+        );
 
         Ok(())
     }

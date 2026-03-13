@@ -60,6 +60,10 @@ export async function uploadFiles(
   });
 }
 
+export async function del(path: string): Promise<Response> {
+  return request("DELETE", path);
+}
+
 export async function putYaml(path: string, body: string): Promise<Response> {
   return fetch(`${BASE}${path}`, {
     method: "PUT",

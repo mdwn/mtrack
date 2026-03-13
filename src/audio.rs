@@ -29,6 +29,7 @@ pub mod sample_source;
 
 // Re-export the format types for backward compatibility
 pub use context::PlaybackContext;
+pub use cpal::AudioDeviceInfo;
 pub use format::{SampleFormat, TargetFormat};
 
 /// Global source ID counter shared by song playback and sample triggers so IDs are unique.
@@ -114,6 +115,11 @@ pub(crate) fn find_input_device(name: &str) -> Result<::cpal::Device, Box<dyn Er
     }
 
     Err(format!("No input device found with name '{}'", name).into())
+}
+
+/// Lists audio devices as simple info structs for the web UI.
+pub fn list_device_info() -> Result<Vec<AudioDeviceInfo>, Box<dyn Error>> {
+    cpal::list_device_info()
 }
 
 /// Lists devices known to cpal.

@@ -24,14 +24,10 @@ use config::{Config, File};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
 
 use super::error::ConfigError;
 use std::error::Error;
 use tracing::{error, info, warn};
-
-/// Empty track mappings used as a fallback reference.
-static EMPTY_TRACK_MAPPINGS: LazyLock<HashMap<String, Vec<u16>>> = LazyLock::new(HashMap::new);
 
 /// The configuration for the multitrack player.
 #[derive(Deserialize, Serialize, Clone)]
@@ -120,7 +116,9 @@ impl Player {
             controllers: Some(controllers),
             audio_device: None,
             audio,
-            track_mappings: Some(TrackMappings { track_mappings }),
+            track_mappings: Some(TrackMappings {
+                track_mappings: track_mappings.into_iter().collect(),
+            }),
             midi_device: None,
             midi,
             dmx,
@@ -359,17 +357,18 @@ impl Player {
     }
 
     /// Gets the track mapping configuration from the first profile.
-    /// Kept for backward compatibility.
-    pub fn track_mappings(&self) -> &HashMap<String, Vec<u16>> {
+    /// Kept for backward compatibility. Returns a HashMap since callers
+    /// (verify, CLI) don't need insertion-order preservation.
+    pub fn track_mappings(&self) -> HashMap<String, Vec<u16>> {
         if let Some(profiles) = &self.profiles {
             if let Some(first) = profiles.first() {
                 if let Some(audio_config) = first.audio_config() {
-                    return audio_config.track_mappings();
+                    return audio_config.track_mappings_hash();
                 }
             }
         }
 
-        &EMPTY_TRACK_MAPPINGS
+        HashMap::new()
     }
 
     /// Gets the MIDI configuration from the first profile.
@@ -405,6 +404,11 @@ impl Player {
     /// Gets the path to the playlist.
     pub fn playlist(&self) -> Option<PathBuf> {
         self.playlist.as_ref().map(PathBuf::from)
+    }
+
+    /// Sets the songs path (relative or absolute).
+    pub fn set_songs(&mut self, path: &str) {
+        self.songs = path.to_string();
     }
 
     /// Gets the path to the song definitions.

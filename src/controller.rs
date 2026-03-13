@@ -196,6 +196,7 @@ mod test {
             ),
             None,
         )?);
+        player.await_hardware_ready().await;
 
         // Use port 0 to let the OS pick an available port.
         let grpc_config = config::GrpcController::new(0);
@@ -227,6 +228,7 @@ mod test {
             ),
             None,
         )?);
+        player.await_hardware_ready().await;
 
         // Empty config vec should produce a controller with no drivers.
         let controller = super::Controller::new(vec![], player);
@@ -256,6 +258,7 @@ mod test {
             ),
             None,
         )?);
+        player.await_hardware_ready().await;
 
         let osc_config = config::OscController::new();
         let controller =
@@ -286,6 +289,7 @@ mod test {
             ),
             None,
         )?);
+        player.await_hardware_ready().await;
         let playlist = player.get_playlist();
         let binding = player
             .audio_device()
@@ -398,6 +402,7 @@ mod test {
             ),
             None,
         )?);
+        player.await_hardware_ready().await;
 
         let driver = Arc::new(TestDriver::new(player.clone(), TestEvent::Unset));
         let controller = super::Controller::new_from_drivers(vec![driver.clone()]);

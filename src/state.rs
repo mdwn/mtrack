@@ -40,6 +40,7 @@ pub struct StateSnapshot {
 /// Starts a 20Hz sampler that produces `StateSnapshot` values via a `watch` channel.
 ///
 /// Returns the receiver and a join handle for the sampler task.
+#[cfg(test)]
 pub fn start_sampler(
     effect_engine: Arc<Mutex<EffectEngine>>,
 ) -> (watch::Receiver<Arc<StateSnapshot>>, JoinHandle<()>) {
@@ -50,6 +51,17 @@ pub fn start_sampler(
     (rx, handle)
 }
 
+/// Starts a sampler using a shared watch sender and a cancellation token.
+/// The sampler stops when the token is cancelled (e.g. on hardware reload).
+pub fn start_sampler_cancellable(
+    effect_engine: Arc<Mutex<EffectEngine>>,
+    tx: Arc<watch::Sender<Arc<StateSnapshot>>>,
+    cancel: tokio_util::sync::CancellationToken,
+) -> JoinHandle<()> {
+    tokio::spawn(sampler_loop_cancellable(effect_engine, tx, cancel))
+}
+
+#[cfg(test)]
 async fn sampler_loop(
     effect_engine: Arc<Mutex<EffectEngine>>,
     tx: watch::Sender<Arc<StateSnapshot>>,
@@ -110,6 +122,60 @@ async fn sampler_loop(
         });
 
         // Send fails only when all receivers are dropped; ignore.
+        let _ = tx.send(snapshot);
+    }
+}
+
+/// Cancellable variant of `sampler_loop`. Stops when the token is cancelled.
+async fn sampler_loop_cancellable(
+    effect_engine: Arc<Mutex<EffectEngine>>,
+    tx: Arc<watch::Sender<Arc<StateSnapshot>>>,
+    cancel: tokio_util::sync::CancellationToken,
+) {
+    let mut interval = time::interval(Duration::from_millis(50));
+    interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+
+    let has_dimmer_map: HashMap<String, bool> = {
+        let engine_ref = effect_engine.clone();
+        tokio::task::spawn_blocking(move || {
+            let engine = engine_ref.lock();
+            engine
+                .get_fixture_registry()
+                .iter()
+                .map(|(name, info)| (name.clone(), info.channels.contains_key("dimmer")))
+                .collect()
+        })
+        .await
+        .unwrap_or_default()
+    };
+
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => break,
+            _ = interval.tick() => {}
+        }
+
+        let engine_ref = effect_engine.clone();
+        let (states, mut active_effects) = match tokio::task::spawn_blocking(move || {
+            let engine = engine_ref.lock();
+            let states = engine.get_fixture_states();
+            let effects: Vec<String> = engine.get_active_effects().keys().cloned().collect();
+            (states, effects)
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => continue,
+        };
+
+        active_effects.sort();
+        let fixtures = compute_fixture_snapshots(&states, &has_dimmer_map);
+
+        let snapshot = Arc::new(StateSnapshot {
+            fixtures,
+            active_effects,
+        });
+
         let _ = tx.send(snapshot);
     }
 }

@@ -15,7 +15,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the player falls back to an alphabetized all-songs playlist (which may be empty).
 - **Empty profile fallback**: When no hardware profiles match the current hostname, the player
   starts with a synthetic empty profile (no audio/MIDI/DMX) instead of exiting with an error.
-- **`Profile::empty()` constructor**: Creates a profile with no hardware configuration.
 - **`config::Player` Default impl**: Produces a minimal config (`songs: songs`) suitable for
   bootstrapping a new installation.
 - **Project directory mode**: `mtrack start` now accepts a project directory instead of a config
@@ -35,6 +34,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Lighting file uploads**: `.light` DSL files can be uploaded alongside audio and MIDI
   files. `Song::initialize()` now auto-discovers `.light` files and includes them in the
   generated `song.yaml`.
+- **Hardware profile editor UI**: The web UI config page now includes a full hardware profile
+  editor. Profiles can be created, edited, and deleted with dedicated sections for audio
+  (device, sample rate, format, buffer size, track mappings), MIDI (device, beat clock),
+  DMX (OLA host/port, universe mappings), and controllers (gRPC, OSC). Changes are saved
+  with optimistic concurrency and trigger automatic hardware reinitialization.
+- **Song browser UI**: A new song management page in the web UI provides:
+  - Song list with create/delete
+  - Song detail view with track editor (rename tracks, assign lighting shows)
+  - Per-track waveform visualization
+  - File upload (drag-and-drop or file picker) for audio, MIDI, and lighting files
+  - Server-side file browser for importing songs from the local filesystem
+  - Bulk song import from a directory
+- **Non-blocking hardware initialization**: Audio, MIDI, and DMX devices are now discovered
+  asynchronously in the background at startup. The player, web UI, and gRPC server become
+  available immediately while hardware init retries perpetually until devices are found.
+  This eliminates startup delays when hardware is slow to enumerate or temporarily
+  unavailable (e.g. USB devices not yet plugged in).
+- **Hardware hot-reload on profile save**: Saving a hardware profile through the config
+  editor web UI now automatically reinitializes all hardware from the updated configuration.
+  The old hardware is torn down and new devices are discovered asynchronously, just like at
+  startup. Hardware reload is rejected during active playback (returns 409 Conflict).
 
 ### Changed
 

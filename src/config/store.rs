@@ -33,8 +33,15 @@ use crate::util::to_yaml_string;
 use crate::webui::config_io::atomic_write;
 
 /// A snapshot of the current configuration with its checksum.
+///
+/// The `yaml` field holds the exact serialized YAML string whose SHA-256
+/// produces `checksum`. Consumers must use this string directly rather
+/// than re-serializing `config`, because `HashMap` iteration order is
+/// non-deterministic and a second serialization may produce different
+/// key ordering — breaking the checksum invariant.
 pub struct ConfigSnapshot {
     pub config: Player,
+    pub yaml: String,
     pub checksum: String,
 }
 
@@ -85,8 +92,14 @@ impl ConfigStore {
         let checksum = compute_checksum(&yaml);
         Ok(ConfigSnapshot {
             config: guard.clone(),
+            yaml,
             checksum,
         })
+    }
+
+    /// Returns a clone of the current config.
+    pub async fn read_config(&self) -> Player {
+        self.inner.read().await.clone()
     }
 
     /// Returns the serialized YAML and checksum without cloning the config.
@@ -174,13 +187,14 @@ impl ConfigStore {
             to_yaml_string(&*guard).map_err(|e| ConfigError::StoreSerialization(e.to_string()))?;
         let new_checksum = compute_checksum(&new_yaml);
 
-        atomic_write(&self.path, &new_yaml).map_err(ConfigError::StoreSerialization)?;
+        atomic_write(&self.path, &new_yaml).map_err(ConfigError::StoreIo)?;
 
         // Broadcast change (ignore error if no receivers).
         let _ = self.change_tx.send(());
 
         Ok(ConfigSnapshot {
             config: guard.clone(),
+            yaml: new_yaml,
             checksum: new_checksum,
         })
     }

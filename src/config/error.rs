@@ -41,6 +41,9 @@ pub enum ConfigError {
     #[error("Config serialization error: {0}")]
     StoreSerialization(String),
 
+    #[error("Config I/O error: {0}")]
+    StoreIo(String),
+
     #[error("Invalid profile index {index} (have {len} profiles)")]
     InvalidProfileIndex { index: usize, len: usize },
 }

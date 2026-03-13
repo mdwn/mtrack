@@ -409,7 +409,7 @@ mod tests {
                 trigger_engine: None,
             };
             let player = std::sync::Arc::new(
-                crate::player::Player::new_with_devices(devices, playlist, songs).unwrap(),
+                crate::player::Player::new_with_devices(devices, playlist, songs, None).unwrap(),
             );
             let (_tx, state_rx) =
                 watch::channel(std::sync::Arc::new(crate::state::StateSnapshot::default()));

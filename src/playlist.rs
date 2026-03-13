@@ -149,6 +149,11 @@ impl Playlist {
         Some(current.clone())
     }
 
+    /// Returns the underlying song registry.
+    pub fn registry(&self) -> &Arc<Songs> {
+        &self.registry
+    }
+
     /// Look up a song by name from the underlying registry.
     pub fn get_song(&self, name: &str) -> Option<Arc<Song>> {
         self.registry.get(name).ok()

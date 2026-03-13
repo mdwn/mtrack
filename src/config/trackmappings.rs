@@ -11,16 +11,19 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-use std::collections::HashMap;
+use indexmap::IndexMap;
 
 use serde::{Deserialize, Serialize};
 
 /// The mappings of tracks to output channels.
+///
+/// Uses `IndexMap` so insertion order is preserved through serialize/deserialize
+/// round-trips — important for the web UI config editor.
 #[derive(Deserialize, Serialize, Clone)]
 pub struct TrackMappings {
     // The individual track mappings.
     #[serde(flatten)]
-    pub track_mappings: HashMap<String, Vec<u16>>,
+    pub track_mappings: IndexMap<String, Vec<u16>>,
 }
 
 #[cfg(test)]
@@ -108,7 +111,7 @@ cue: [10]
 
     #[test]
     fn serialize_roundtrip() {
-        let mut track_mappings = HashMap::new();
+        let mut track_mappings = IndexMap::new();
         track_mappings.insert("vocals".to_string(), vec![1u16, 2]);
         track_mappings.insert("drums".to_string(), vec![3u16, 4]);
         let tm = TrackMappings { track_mappings };

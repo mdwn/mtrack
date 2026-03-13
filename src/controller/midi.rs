@@ -232,6 +232,7 @@ mod test {
             ),
             None,
         )?);
+        player.await_hardware_ready().await;
         let playlist = player.get_playlist();
         let binding = player
             .audio_device()

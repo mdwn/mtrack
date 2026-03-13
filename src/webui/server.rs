@@ -71,8 +71,6 @@ pub struct WebUiState {
     pub songs_path: PathBuf,
     /// Resolved path to the playlist file.
     pub playlist_path: PathBuf,
-    /// Fixture metadata JSON (sent to each WebSocket client on connect).
-    pub metadata_json: Arc<String>,
     /// Shared waveform cache (sent to each WebSocket client on connect).
     pub waveform_cache: ws_state::WaveformCache,
 }
@@ -312,9 +310,15 @@ async fn ws_handler(ws: WebSocketUpgrade, State(state): State<WebUiState>) -> im
 async fn handle_ws(socket: WebSocket, state: WebUiState) {
     let (mut sender, mut receiver) = socket.split();
 
-    // Send metadata on connect (fixture tags, types for stage layout)
+    // Send metadata on connect (fixture tags, types for stage layout).
+    // Computed on-demand so it reflects the current DMX engine state
+    // (which may have changed via hot-reload since startup).
+    let metadata_json = match state.player.broadcast_handles() {
+        Some(handles) => ws_state::build_metadata_json(handles.lighting_system.as_ref()),
+        None => ws_state::build_metadata_json(None),
+    };
     if sender
-        .send(Message::Text((*state.metadata_json).clone().into()))
+        .send(Message::Text(metadata_json.into()))
         .await
         .is_err()
     {
@@ -497,7 +501,8 @@ mod test {
             sample_engine: None,
             trigger_engine: None,
         };
-        let player = Arc::new(crate::player::Player::new_with_devices(devices, pl, songs).unwrap());
+        let player =
+            Arc::new(crate::player::Player::new_with_devices(devices, pl, songs, None).unwrap());
 
         let (broadcast_tx, _) = broadcast::channel(16);
         let (_state_tx, state_rx) =
@@ -510,7 +515,6 @@ mod test {
             config_path,
             songs_path,
             playlist_path,
-            metadata_json: Arc::new(r#"{"type":"metadata","fixtures":{}}"#.to_string()),
             waveform_cache: ws_state::new_waveform_cache(),
         };
 

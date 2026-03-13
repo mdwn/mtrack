@@ -54,6 +54,13 @@ pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {
     fn to_mock(&self) -> Result<Arc<mock::Device>, Box<dyn Error>>;
 }
 
+pub use midir::MidiDeviceInfo;
+
+/// Lists MIDI devices as simple info structs for the web UI.
+pub fn list_device_info() -> Result<Vec<MidiDeviceInfo>, Box<dyn Error>> {
+    midir::list_device_info()
+}
+
 /// Lists devices known to midir.
 pub fn list_devices() -> Result<Vec<Box<dyn Device>>, Box<dyn Error>> {
     midir::list()
