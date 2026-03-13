@@ -225,7 +225,7 @@ mod tests {
             sample_engine: None,
             trigger_engine: None,
         };
-        Arc::new(Player::new_with_devices(devices, playlist, songs).unwrap())
+        Arc::new(Player::new_with_devices(devices, playlist, songs, None).unwrap())
     }
 
     fn test_app(song_names: &[&str]) -> App {

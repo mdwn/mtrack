@@ -13,6 +13,7 @@
 //
 use std::collections::HashMap;
 
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
 use super::audio::Audio;
@@ -22,16 +23,19 @@ use super::midi::Midi;
 use super::trigger::TriggerConfig;
 
 /// Audio configuration with track mappings.
+///
+/// Uses `IndexMap` so insertion order is preserved through serialize/deserialize
+/// round-trips — important for the web UI config editor.
 #[derive(Deserialize, Serialize, Clone)]
 pub struct AudioConfig {
     #[serde(flatten)]
     audio: Audio,
-    track_mappings: HashMap<String, Vec<u16>>,
+    track_mappings: IndexMap<String, Vec<u16>>,
 }
 
 impl AudioConfig {
     /// Creates a new AudioConfig.
-    pub fn new(audio: Audio, track_mappings: HashMap<String, Vec<u16>>) -> Self {
+    pub fn new(audio: Audio, track_mappings: IndexMap<String, Vec<u16>>) -> Self {
         AudioConfig {
             audio,
             track_mappings,
@@ -43,9 +47,18 @@ impl AudioConfig {
         &self.audio
     }
 
-    /// Returns the track mappings.
-    pub fn track_mappings(&self) -> &HashMap<String, Vec<u16>> {
+    /// Returns the track mappings as an IndexMap (preserves insertion order).
+    #[cfg(test)]
+    pub fn track_mappings(&self) -> &IndexMap<String, Vec<u16>> {
         &self.track_mappings
+    }
+
+    /// Returns the track mappings as a HashMap (for runtime use where order doesn't matter).
+    pub fn track_mappings_hash(&self) -> HashMap<String, Vec<u16>> {
+        self.track_mappings
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
     }
 }
 
@@ -90,11 +103,6 @@ impl Profile {
             trigger: None,
             controllers: Vec::new(),
         }
-    }
-
-    /// Creates an empty profile with no hardware configuration and no hostname constraint.
-    pub fn empty() -> Profile {
-        Profile::new(None, None, None, None)
     }
 
     /// Returns the optional hostname constraint.
@@ -240,7 +248,7 @@ mod tests {
     #[test]
     fn test_profile_with_all_subsystems() {
         let audio = Audio::new("test-device");
-        let track_mappings = HashMap::from([("drums".to_string(), vec![1, 2])]);
+        let track_mappings = IndexMap::from([("drums".to_string(), vec![1, 2])]);
         let audio_config = AudioConfig::new(audio, track_mappings);
         let midi = Some(Midi::new("midi-device", None));
         let dmx = Some(Dmx::new(None, None, None, vec![], None));
@@ -256,7 +264,7 @@ mod tests {
     #[test]
     fn test_profile_without_midi_dmx() {
         let audio = Audio::new("test-device");
-        let track_mappings = HashMap::from([("drums".to_string(), vec![1])]);
+        let track_mappings = IndexMap::from([("drums".to_string(), vec![1])]);
         let audio_config = AudioConfig::new(audio, track_mappings);
 
         let profile = Profile::new(None, Some(audio_config), None, None);
@@ -274,7 +282,7 @@ mod tests {
                 Some("pi-a".to_string()),
                 Some(AudioConfig::new(
                     Audio::new("device-a"),
-                    HashMap::from([("drums".to_string(), vec![1])]),
+                    IndexMap::from([("drums".to_string(), vec![1])]),
                 )),
                 None,
                 None,
@@ -283,7 +291,7 @@ mod tests {
                 Some("pi-b".to_string()),
                 Some(AudioConfig::new(
                     Audio::new("device-b"),
-                    HashMap::from([("drums".to_string(), vec![11])]),
+                    IndexMap::from([("drums".to_string(), vec![11])]),
                 )),
                 None,
                 None,
@@ -292,7 +300,7 @@ mod tests {
                 None,
                 Some(AudioConfig::new(
                     Audio::new("fallback"),
-                    HashMap::from([("drums".to_string(), vec![1])]),
+                    IndexMap::from([("drums".to_string(), vec![1])]),
                 )),
                 None,
                 None,

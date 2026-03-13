@@ -530,6 +530,7 @@ mod test {
             ),
             None,
         )?);
+        player.await_hardware_ready().await;
         let binding = player
             .audio_device()
             .expect("audio device should be present");
@@ -700,6 +701,7 @@ mod test {
             ),
             None,
         )?);
+        player.await_hardware_ready().await;
         let device = player.audio_device().expect("audio device").to_mock()?;
 
         let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0));

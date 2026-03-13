@@ -459,6 +459,7 @@ mod test {
             ),
             None,
         )?);
+        player.await_hardware_ready().await;
         let binding = player
             .audio_device()
             .expect("audio device should be present");
@@ -605,7 +606,7 @@ mod test {
     async fn test_osc_client_tracking() -> Result<(), Box<dyn Error>> {
         // Set up a player (not used directly, but needed for Driver initialization)
         let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let _player = Arc::new(Player::new(
+        let player = Arc::new(Player::new(
             songs.clone(),
             Playlist::new(
                 "playlist",
@@ -622,6 +623,8 @@ mod test {
             ),
             None,
         )?);
+        player.await_hardware_ready().await;
+        let _player = player;
 
         // Test the client tracking by directly testing the handle_udp_comms logic
         // with a controlled setup
@@ -726,7 +729,7 @@ mod test {
     async fn test_osc_multiple_clients() -> Result<(), Box<dyn Error>> {
         // Test that multiple clients can connect and all receive broadcasts
         let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let _player = Arc::new(Player::new(
+        let player = Arc::new(Player::new(
             songs.clone(),
             Playlist::new(
                 "playlist",
@@ -743,6 +746,8 @@ mod test {
             ),
             None,
         )?);
+        player.await_hardware_ready().await;
+        let _player = player;
 
         // Create test UDP sockets
         let server_socket = UdpSocket::bind("127.0.0.1:0").await?;
@@ -999,9 +1004,9 @@ mod test {
         use super::*;
         use std::{collections::HashMap, path::Path, sync::Arc};
 
-        fn make_player() -> Arc<Player> {
+        async fn make_player() -> Arc<Player> {
             let songs = songs::get_all_songs(Path::new("assets/songs")).unwrap();
-            Arc::new(
+            let player = Arc::new(
                 Player::new(
                     songs.clone(),
                     Playlist::new(
@@ -1021,12 +1026,14 @@ mod test {
                     None,
                 )
                 .unwrap(),
-            )
+            );
+            player.await_hardware_ready().await;
+            player
         }
 
         #[tokio::test(flavor = "multi_thread")]
         async fn handle_packet_bundle() {
-            let player = make_player();
+            let player = make_player().await;
             let events = Arc::new(make_default_osc_events());
 
             // A bundle containing a next message
@@ -1052,7 +1059,7 @@ mod test {
 
         #[tokio::test(flavor = "multi_thread")]
         async fn handle_packet_bundle_unrecognized() {
-            let player = make_player();
+            let player = make_player().await;
             let events = Arc::new(make_default_osc_events());
 
             let bundle = OscPacket::Bundle(rosc::OscBundle {
@@ -1075,7 +1082,7 @@ mod test {
 
         #[tokio::test(flavor = "multi_thread")]
         async fn handle_message_stop_samples() {
-            let player = make_player();
+            let player = make_player().await;
             let events = Arc::new(make_default_osc_events());
 
             let packet = OscPacket::Message(OscMessage {
@@ -1089,7 +1096,7 @@ mod test {
 
         #[tokio::test(flavor = "multi_thread")]
         async fn handle_message_unrecognized_returns_false() {
-            let player = make_player();
+            let player = make_player().await;
             let events = Arc::new(make_default_osc_events());
 
             let packet = OscPacket::Message(OscMessage {
@@ -1122,6 +1129,7 @@ mod test {
             ),
             None,
         )?);
+        player.await_hardware_ready().await;
         let binding = player
             .audio_device()
             .expect("audio device should be present");
@@ -1209,6 +1217,7 @@ mod test {
             ),
             None,
         )?);
+        player.await_hardware_ready().await;
 
         // Find a free port.
         let temp_socket = std::net::UdpSocket::bind("127.0.0.1:0")?;

@@ -22,11 +22,12 @@ use axum::{
 };
 use serde_json::json;
 
+use tracing::warn;
+
 use super::config_io;
 use super::server::WebUiState;
 use super::state as ws_state;
-use crate::config;
-use crate::songs;
+use crate::{audio, config, midi, songs};
 
 /// Builds the API router for config read/write endpoints.
 ///
@@ -62,6 +63,8 @@ pub fn router() -> Router<WebUiState> {
             "/config/profiles/{index}",
             put(put_config_profile).delete(delete_config_profile),
         )
+        .route("/devices/audio", get(get_audio_devices))
+        .route("/devices/midi", get(get_midi_devices))
 }
 
 /// GET /api/config — returns the raw YAML content of the player config file.
@@ -101,108 +104,83 @@ async fn get_config_parsed(State(state): State<WebUiState>) -> impl IntoResponse
     }
 }
 
-/// Returns the project root (parent of mtrack.yaml), falling back to songs_path.
-fn project_root(state: &WebUiState) -> std::path::PathBuf {
-    match state.config_path.canonicalize() {
-        Ok(p) => match p.parent() {
-            Some(parent) => parent.to_path_buf(),
-            None => state.songs_path.clone(),
-        },
-        Err(_) => state.songs_path.clone(),
-    }
-}
-
 /// GET /api/songs — returns a list of all songs with metadata.
 ///
-/// Scans the project root (parent of mtrack.yaml) recursively so songs created
-/// anywhere under the project — not just the configured `songs` directory — are found.
+/// Uses the player's song registry rather than rescanning disk, so the API
+/// is always consistent with what the player knows about.
 async fn get_songs(State(state): State<WebUiState>) -> impl IntoResponse {
-    match songs::get_all_songs(&project_root(&state)) {
-        Ok(all_songs) => {
-            let song_list: Vec<serde_json::Value> = all_songs
-                .sorted_list()
-                .iter()
-                .map(|song| {
-                    json!({
-                        "name": song.name(),
-                        "duration_ms": song.duration().as_millis() as u64,
-                        "duration_display": song.duration_string(),
-                        "num_channels": song.num_channels(),
-                        "sample_format": format!("{}", song.sample_format()),
-                        "track_count": song.tracks().len(),
-                        "tracks": song.tracks().iter().map(|t| t.name().to_string()).collect::<Vec<_>>(),
-                        "has_midi": song.midi_playback().is_some(),
-                        "has_lighting": !song.light_shows().is_empty() || !song.dsl_lighting_shows().is_empty(),
-                    })
-                })
-                .collect();
-            (StatusCode::OK, Json(json!({"songs": song_list}))).into_response()
-        }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to load songs: {}", e)})),
-        )
-            .into_response(),
-    }
+    let all_songs = state.player.songs();
+    let song_list: Vec<serde_json::Value> = all_songs
+        .sorted_list()
+        .iter()
+        .map(|song| {
+            json!({
+                "name": song.name(),
+                "duration_ms": song.duration().as_millis() as u64,
+                "duration_display": song.duration_string(),
+                "num_channels": song.num_channels(),
+                "sample_format": format!("{}", song.sample_format()),
+                "track_count": song.tracks().len(),
+                "tracks": song.tracks().iter().map(|t| t.name().to_string()).collect::<Vec<_>>(),
+                "has_midi": song.midi_playback().is_some(),
+                "has_lighting": !song.light_shows().is_empty() || !song.dsl_lighting_shows().is_empty(),
+            })
+        })
+        .collect();
+    (StatusCode::OK, Json(json!({"songs": song_list}))).into_response()
 }
 
 /// GET /api/songs/:name — returns a single song's config YAML.
 async fn get_song(State(state): State<WebUiState>, Path(name): Path<String>) -> impl IntoResponse {
-    match songs::get_all_songs(&project_root(&state)) {
-        Ok(all_songs) => match all_songs.get(&name) {
-            Ok(song) => {
-                // Try to read the song's config YAML from its base_path
-                let config_path = song.base_path().join("song.yaml");
-                let alt_config_path = song.base_path().join("song.yml");
-                let yaml_path = if config_path.exists() {
-                    Some(config_path)
-                } else if alt_config_path.exists() {
-                    Some(alt_config_path)
-                } else {
-                    None
-                };
+    let all_songs = state.player.songs();
+    match all_songs.get(&name) {
+        Ok(song) => {
+            // Try to read the song's config YAML from its base_path
+            let config_path = song.base_path().join("song.yaml");
+            let alt_config_path = song.base_path().join("song.yml");
+            let yaml_path = if config_path.exists() {
+                Some(config_path)
+            } else if alt_config_path.exists() {
+                Some(alt_config_path)
+            } else {
+                None
+            };
 
-                match yaml_path {
-                    Some(path) => match std::fs::read_to_string(&path) {
-                        Ok(content) => (
-                            StatusCode::OK,
-                            [("content-type", "text/yaml; charset=utf-8")],
-                            content,
-                        )
-                            .into_response(),
-                        Err(e) => (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(json!({"error": format!("Failed to read song config: {}", e)})),
-                        )
-                            .into_response(),
-                    },
-                    None => {
-                        // Return a JSON summary if no config file found
-                        (
-                            StatusCode::OK,
-                            Json(json!({
-                                "name": song.name(),
-                                "duration_ms": song.duration().as_millis() as u64,
-                                "duration_display": song.duration_string(),
-                                "num_channels": song.num_channels(),
-                                "sample_format": format!("{}", song.sample_format()),
-                                "tracks": song.tracks().iter().map(|t| t.name().to_string()).collect::<Vec<_>>(),
-                                "config_file": false,
-                            })),
-                        )
-                            .into_response()
-                    }
+            match yaml_path {
+                Some(path) => match std::fs::read_to_string(&path) {
+                    Ok(content) => (
+                        StatusCode::OK,
+                        [("content-type", "text/yaml; charset=utf-8")],
+                        content,
+                    )
+                        .into_response(),
+                    Err(e) => (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({"error": format!("Failed to read song config: {}", e)})),
+                    )
+                        .into_response(),
+                },
+                None => {
+                    // Return a JSON summary if no config file found
+                    (
+                        StatusCode::OK,
+                        Json(json!({
+                            "name": song.name(),
+                            "duration_ms": song.duration().as_millis() as u64,
+                            "duration_display": song.duration_string(),
+                            "num_channels": song.num_channels(),
+                            "sample_format": format!("{}", song.sample_format()),
+                            "tracks": song.tracks().iter().map(|t| t.name().to_string()).collect::<Vec<_>>(),
+                            "config_file": false,
+                        })),
+                    )
+                        .into_response()
                 }
             }
-            Err(_) => (
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": format!("Song not found: {}", name)})),
-            )
-                .into_response(),
-        },
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to load songs: {}", e)})),
+        }
+        Err(_) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": format!("Song not found: {}", name)})),
         )
             .into_response(),
     }
@@ -231,18 +209,8 @@ async fn get_song_waveform(
         }
     }
 
-    // Cache miss — load the song and compute peaks
-    let all_songs = match songs::get_all_songs(&project_root(&state)) {
-        Ok(s) => s,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("Failed to load songs: {}", e)})),
-            )
-                .into_response();
-        }
-    };
-
+    // Cache miss — look up song from the player's registry
+    let all_songs = state.player.songs();
     let song = match all_songs.get(&name) {
         Ok(s) => s,
         Err(_) => {
@@ -304,17 +272,7 @@ async fn get_song_files(
     State(state): State<WebUiState>,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    let all_songs = match songs::get_all_songs(&project_root(&state)) {
-        Ok(s) => s,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("Failed to load songs: {}", e)})),
-            )
-                .into_response();
-        }
-    };
-
+    let all_songs = state.player.songs();
     let song = match all_songs.get(&name) {
         Ok(s) => s,
         Err(_) => {
@@ -654,7 +612,7 @@ async fn create_song_in_directory(
             // Refresh the player's all-songs playlist so newly imported songs appear.
             state
                 .player
-                .reload_songs(&project_root(&state), &state.playlist_path);
+                .reload_songs(&state.songs_path, &state.playlist_path);
             (
                 StatusCode::CREATED,
                 Json(json!({"status": "created", "path": config_path.to_string_lossy()})),
@@ -866,18 +824,11 @@ fn config_snapshot_response(
     snapshot: config::store::ConfigSnapshot,
     status: StatusCode,
 ) -> axum::response::Response {
-    match crate::util::to_yaml_string(&snapshot.config) {
-        Ok(yaml) => (
-            status,
-            Json(json!({"yaml": yaml, "checksum": snapshot.checksum})),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("serialization error: {}", e)})),
-        )
-            .into_response(),
-    }
+    (
+        status,
+        Json(json!({"yaml": snapshot.yaml, "checksum": snapshot.checksum})),
+    )
+        .into_response()
 }
 
 /// Returns the config store from the player, or an error response.
@@ -892,6 +843,30 @@ fn require_config_store(
         )
             .into_response()
     })
+}
+
+/// Returns a 409 Conflict response if the player is currently playing.
+async fn reject_if_playing(state: &WebUiState) -> Option<axum::response::Response> {
+    if state.player.is_playing().await {
+        Some(
+            (
+                StatusCode::CONFLICT,
+                Json(json!({"error": "Cannot modify hardware config during playback"})),
+            )
+                .into_response(),
+        )
+    } else {
+        None
+    }
+}
+
+/// Reloads hardware from the updated config. Non-blocking — spawns async
+/// device discovery and returns immediately. The broadcast channel is already
+/// stored on the Player and will be wired when the DMX engine comes up.
+async fn reload_hardware_after_mutation(state: &WebUiState) {
+    if let Err(e) = state.player.reload_hardware().await {
+        warn!("Hardware reload failed: {}", e);
+    }
 }
 
 /// GET /api/config/store — returns config YAML + checksum via the ConfigStore.
@@ -915,6 +890,10 @@ async fn put_config_audio(
     State(state): State<WebUiState>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
+    if let Some(resp) = reject_if_playing(&state).await {
+        return resp;
+    }
+
     let checksum = match body.get("expected_checksum").and_then(|v| v.as_str()) {
         Some(c) => c.to_string(),
         None => {
@@ -945,7 +924,10 @@ async fn put_config_audio(
         Err(e) => return e,
     };
     match store.update_audio(audio, &checksum).await {
-        Ok(snapshot) => config_snapshot_response(snapshot, StatusCode::OK),
+        Ok(snapshot) => {
+            reload_hardware_after_mutation(&state).await;
+            config_snapshot_response(snapshot, StatusCode::OK)
+        }
         Err(e) => config_store_error_response(e),
     }
 }
@@ -955,6 +937,10 @@ async fn put_config_midi(
     State(state): State<WebUiState>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
+    if let Some(resp) = reject_if_playing(&state).await {
+        return resp;
+    }
+
     let checksum = match body.get("expected_checksum").and_then(|v| v.as_str()) {
         Some(c) => c.to_string(),
         None => {
@@ -985,7 +971,10 @@ async fn put_config_midi(
         Err(e) => return e,
     };
     match store.update_midi(midi, &checksum).await {
-        Ok(snapshot) => config_snapshot_response(snapshot, StatusCode::OK),
+        Ok(snapshot) => {
+            reload_hardware_after_mutation(&state).await;
+            config_snapshot_response(snapshot, StatusCode::OK)
+        }
         Err(e) => config_store_error_response(e),
     }
 }
@@ -995,6 +984,10 @@ async fn put_config_dmx(
     State(state): State<WebUiState>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
+    if let Some(resp) = reject_if_playing(&state).await {
+        return resp;
+    }
+
     let checksum = match body.get("expected_checksum").and_then(|v| v.as_str()) {
         Some(c) => c.to_string(),
         None => {
@@ -1025,7 +1018,10 @@ async fn put_config_dmx(
         Err(e) => return e,
     };
     match store.update_dmx(dmx, &checksum).await {
-        Ok(snapshot) => config_snapshot_response(snapshot, StatusCode::OK),
+        Ok(snapshot) => {
+            reload_hardware_after_mutation(&state).await;
+            config_snapshot_response(snapshot, StatusCode::OK)
+        }
         Err(e) => config_store_error_response(e),
     }
 }
@@ -1035,6 +1031,10 @@ async fn put_config_controllers(
     State(state): State<WebUiState>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
+    if let Some(resp) = reject_if_playing(&state).await {
+        return resp;
+    }
+
     let checksum = match body.get("expected_checksum").and_then(|v| v.as_str()) {
         Some(c) => c.to_string(),
         None => {
@@ -1071,7 +1071,10 @@ async fn put_config_controllers(
         Err(e) => return e,
     };
     match store.update_controllers(controllers, &checksum).await {
-        Ok(snapshot) => config_snapshot_response(snapshot, StatusCode::OK),
+        Ok(snapshot) => {
+            reload_hardware_after_mutation(&state).await;
+            config_snapshot_response(snapshot, StatusCode::OK)
+        }
         Err(e) => config_store_error_response(e),
     }
 }
@@ -1081,6 +1084,10 @@ async fn post_config_profile(
     State(state): State<WebUiState>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
+    if let Some(resp) = reject_if_playing(&state).await {
+        return resp;
+    }
+
     let checksum = match body.get("expected_checksum").and_then(|v| v.as_str()) {
         Some(c) => c.to_string(),
         None => {
@@ -1117,7 +1124,10 @@ async fn post_config_profile(
         Err(e) => return e,
     };
     match store.add_profile(profile, &checksum).await {
-        Ok(snapshot) => config_snapshot_response(snapshot, StatusCode::CREATED),
+        Ok(snapshot) => {
+            reload_hardware_after_mutation(&state).await;
+            config_snapshot_response(snapshot, StatusCode::CREATED)
+        }
         Err(e) => config_store_error_response(e),
     }
 }
@@ -1128,6 +1138,10 @@ async fn put_config_profile(
     Path(index): Path<usize>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
+    if let Some(resp) = reject_if_playing(&state).await {
+        return resp;
+    }
+
     let checksum = match body.get("expected_checksum").and_then(|v| v.as_str()) {
         Some(c) => c.to_string(),
         None => {
@@ -1164,7 +1178,10 @@ async fn put_config_profile(
         Err(e) => return e,
     };
     match store.update_profile(index, profile, &checksum).await {
-        Ok(snapshot) => config_snapshot_response(snapshot, StatusCode::OK),
+        Ok(snapshot) => {
+            reload_hardware_after_mutation(&state).await;
+            config_snapshot_response(snapshot, StatusCode::OK)
+        }
         Err(e) => config_store_error_response(e),
     }
 }
@@ -1175,6 +1192,10 @@ async fn delete_config_profile(
     Path(index): Path<usize>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
+    if let Some(resp) = reject_if_playing(&state).await {
+        return resp;
+    }
+
     let checksum = match params.get("expected_checksum") {
         Some(c) => c.to_string(),
         None => {
@@ -1191,8 +1212,47 @@ async fn delete_config_profile(
         Err(e) => return e,
     };
     match store.remove_profile(index, &checksum).await {
-        Ok(snapshot) => config_snapshot_response(snapshot, StatusCode::OK),
+        Ok(snapshot) => {
+            reload_hardware_after_mutation(&state).await;
+            config_snapshot_response(snapshot, StatusCode::OK)
+        }
         Err(e) => config_store_error_response(e),
+    }
+}
+
+/// GET /api/devices/audio — lists available audio devices.
+async fn get_audio_devices() -> impl IntoResponse {
+    match tokio::task::spawn_blocking(|| audio::list_device_info().map_err(|e| e.to_string())).await
+    {
+        Ok(Ok(devices)) => (StatusCode::OK, Json(json!(devices))).into_response(),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("failed to list audio devices: {}", e)})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("task failed: {}", e)})),
+        )
+            .into_response(),
+    }
+}
+
+/// GET /api/devices/midi — lists available MIDI devices.
+async fn get_midi_devices() -> impl IntoResponse {
+    match tokio::task::spawn_blocking(|| midi::list_device_info().map_err(|e| e.to_string())).await
+    {
+        Ok(Ok(devices)) => (StatusCode::OK, Json(json!(devices))).into_response(),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("failed to list MIDI devices: {}", e)})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("task failed: {}", e)})),
+        )
+            .into_response(),
     }
 }
 
@@ -1249,7 +1309,7 @@ async fn post_song(
         Ok(()) => {
             state
                 .player
-                .reload_songs(&project_root(&state), &state.playlist_path);
+                .reload_songs(&state.songs_path, &state.playlist_path);
             (
                 StatusCode::CREATED,
                 Json(json!({"status": "created", "song": name})),
@@ -1437,7 +1497,7 @@ async fn upload_track_single(
     ensure_song_config(&song_dir).map_err(|e| *e)?;
     state
         .player
-        .reload_songs(&project_root(&state), &state.playlist_path);
+        .reload_songs(&state.songs_path, &state.playlist_path);
 
     Ok((
         StatusCode::OK,
@@ -1508,7 +1568,7 @@ async fn upload_tracks_multipart(
     ensure_song_config(&song_dir).map_err(|e| *e)?;
     state
         .player
-        .reload_songs(&project_root(&state), &state.playlist_path);
+        .reload_songs(&state.songs_path, &state.playlist_path);
 
     Ok((
         StatusCode::OK,
@@ -1607,11 +1667,26 @@ mod test {
     use tower::ServiceExt;
 
     /// Creates a WebUiState with a test player and temp directories.
+    /// The player's song registry contains "Song A" (in-memory only, not on disk).
     fn test_state() -> (WebUiState, tempfile::TempDir) {
-        use crate::player::PlayerDevices;
-        use crate::playlist;
         use crate::songs::{Song, Songs};
         use std::collections::HashMap;
+
+        let mut map = HashMap::new();
+        map.insert(
+            "Song A".to_string(),
+            std::sync::Arc::new(Song::new_for_test("Song A", &["kick", "snare"])),
+        );
+        let songs = std::sync::Arc::new(Songs::new(map));
+        test_state_with_registry(songs)
+    }
+
+    /// Creates a WebUiState with the given song registry.
+    fn test_state_with_registry(
+        songs: std::sync::Arc<crate::songs::Songs>,
+    ) -> (WebUiState, tempfile::TempDir) {
+        use crate::player::PlayerDevices;
+        use crate::playlist;
         use tokio::sync::{broadcast, watch};
 
         let dir = tempfile::tempdir().unwrap();
@@ -1622,20 +1697,13 @@ mod test {
 
         // Create a minimal playlist file
         let playlist_path = dir.path().join("playlist.yaml");
-        std::fs::write(&playlist_path, "songs:\n  - Song A\n").unwrap();
+        std::fs::write(&playlist_path, "songs: []\n").unwrap();
 
-        // Create songs directory with a song
+        // Create songs directory
         let songs_path = dir.path().join("songs");
         std::fs::create_dir(&songs_path).unwrap();
 
-        let mut map = HashMap::new();
-        map.insert(
-            "Song A".to_string(),
-            std::sync::Arc::new(Song::new_for_test("Song A", &["kick", "snare"])),
-        );
-        let songs = std::sync::Arc::new(Songs::new(map));
-        let playlist_config = crate::config::Playlist::new(&["Song A".to_string()]);
-        let playlist = playlist::Playlist::new("test", &playlist_config, songs.clone()).unwrap();
+        let all_songs_playlist = playlist::from_songs(songs.clone()).unwrap();
 
         let devices = PlayerDevices {
             audio: None,
@@ -1646,7 +1714,8 @@ mod test {
             trigger_engine: None,
         };
         let player = std::sync::Arc::new(
-            crate::player::Player::new_with_devices(devices, playlist, songs).unwrap(),
+            crate::player::Player::new_with_devices(devices, all_songs_playlist, songs, None)
+                .unwrap(),
         );
 
         let (broadcast_tx, _) = broadcast::channel(16);
@@ -1660,7 +1729,6 @@ mod test {
             config_path,
             songs_path,
             playlist_path,
-            metadata_json: std::sync::Arc::new("{}".to_string()),
             waveform_cache: super::super::state::new_waveform_cache(),
         };
 
@@ -2229,8 +2297,9 @@ show "test" {
     }
 
     #[tokio::test]
-    async fn get_songs_empty_dir() {
-        let (state, _dir) = test_state();
+    async fn get_songs_empty_registry() {
+        let songs = std::sync::Arc::new(crate::songs::Songs::new(std::collections::HashMap::new()));
+        let (state, _dir) = test_state_with_registry(songs);
         let app = router().with_state(state);
 
         let response = app
@@ -2251,11 +2320,8 @@ show "test" {
     }
 
     #[tokio::test]
-    async fn get_songs_missing_songs_subdir_returns_empty() {
-        // Even if songs_path is nonexistent, get_songs scans from the project root
-        // (parent of config_path), so it returns an empty list, not an error.
-        let (mut state, _dir) = test_state();
-        state.songs_path = std::path::PathBuf::from("/nonexistent/songs");
+    async fn get_songs_returns_registry_contents() {
+        let (state, _dir) = test_state();
         let app = router().with_state(state);
 
         let response = app
@@ -2271,7 +2337,9 @@ show "test" {
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_body(response).await;
         let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert!(parsed["songs"].as_array().unwrap().is_empty());
+        let songs = parsed["songs"].as_array().unwrap();
+        assert_eq!(songs.len(), 1);
+        assert_eq!(songs[0]["name"], "Song A");
     }
 
     #[tokio::test]
@@ -2283,27 +2351,6 @@ show "test" {
             .oneshot(
                 http::Request::builder()
                     .uri("/songs/nonexistent")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        // Song doesn't exist on disk, so get_all_songs returns empty, so NOT_FOUND
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    }
-
-    #[tokio::test]
-    async fn get_song_missing_songs_subdir_returns_not_found() {
-        // Scans from project root; song simply won't be found.
-        let (mut state, _dir) = test_state();
-        state.songs_path = std::path::PathBuf::from("/nonexistent/songs");
-        let app = router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .uri("/songs/anything")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -2366,6 +2413,11 @@ show "test" {
         )
         .unwrap();
 
+        // Reload the player's registry from disk so the new song is visible.
+        state
+            .player
+            .reload_songs(&state.songs_path, &state.playlist_path);
+
         let app = router().with_state(state);
 
         let response = app
@@ -2397,6 +2449,9 @@ show "test" {
         let song_yaml = "name: MySong\ntracks:\n  - name: track1\n    file: track1.wav\n";
         std::fs::write(song_dir.join("song.yaml"), song_yaml).unwrap();
 
+        state
+            .player
+            .reload_songs(&state.songs_path, &state.playlist_path);
         let app = router().with_state(state);
 
         let response = app
@@ -2417,9 +2472,8 @@ show "test" {
     #[tokio::test]
     async fn get_song_no_config_file_returns_json_summary() {
         let (state, _dir) = test_state();
-        // Create a song directory with only a WAV file (no song.yaml)
-        // We need song.yaml for get_all_songs to discover it, but then
-        // we can delete it before calling get_song.
+        // Create a song and load it into the registry, then remove the config
+        // file so get_song falls back to a JSON summary.
         let song_dir = state.songs_path.join("NoConfig");
         std::fs::create_dir(&song_dir).unwrap();
         crate::testutil::write_wav(song_dir.join("track1.wav"), vec![vec![0_i32; 4410]], 44100)
@@ -2430,12 +2484,14 @@ show "test" {
         )
         .unwrap();
 
-        // The song needs to be discoverable by get_all_songs, but we want
-        // the config file to be absent when get_song reads it.
-        // We'll rename it so it's not song.yaml or song.yml.
+        // Load the song into the player's registry while the config exists.
+        state
+            .player
+            .reload_songs(&state.songs_path, &state.playlist_path);
+
+        // Now remove the config so get_song can't read it.
         std::fs::rename(song_dir.join("song.yaml"), song_dir.join("song.bak")).unwrap();
 
-        // Song won't be found since get_all_songs needs the config
         let app = router().with_state(state);
         let response = app
             .oneshot(
@@ -2447,8 +2503,12 @@ show "test" {
             .await
             .unwrap();
 
-        // Song won't be found at all since config was removed
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        // Song is in the registry but config file is gone → returns JSON summary
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["config_file"], false);
+        assert_eq!(parsed["name"], "NoConfig");
     }
 
     #[tokio::test]
@@ -2462,6 +2522,9 @@ show "test" {
         // Use .yml extension
         std::fs::write(song_dir.join("song.yml"), song_yaml).unwrap();
 
+        state
+            .player
+            .reload_songs(&state.songs_path, &state.playlist_path);
         let app = router().with_state(state);
         let response = app
             .oneshot(
@@ -2550,6 +2613,10 @@ show "test" {
         )
         .unwrap();
 
+        // get_all_songs discovers config.yaml (any non-media-extension file)
+        state
+            .player
+            .reload_songs(&state.songs_path, &state.playlist_path);
         let app = router().with_state(state);
         let response = app
             .oneshot(
@@ -2583,6 +2650,9 @@ show "test" {
         )
         .unwrap();
 
+        state
+            .player
+            .reload_songs(&state.songs_path, &state.playlist_path);
         let app = router().with_state(state);
         let response = app
             .oneshot(
@@ -2831,38 +2901,8 @@ show "test" {
     }
 
     #[tokio::test]
-    async fn get_songs_error_body_contains_message() {
-        let (mut state, _dir) = test_state();
-        // Both config_path and songs_path must be nonexistent so project_root
-        // falls back to songs_path, which also fails to scan.
-        state.config_path = std::path::PathBuf::from("/nonexistent/mtrack.yaml");
-        state.songs_path = std::path::PathBuf::from("/nonexistent/songs");
-        let app = router().with_state(state);
-
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .uri("/songs")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        let body = response_body(response).await;
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert!(parsed["error"]
-            .as_str()
-            .unwrap()
-            .contains("Failed to load songs"));
-    }
-
-    #[tokio::test]
-    async fn get_song_error_body_contains_message() {
-        let (mut state, _dir) = test_state();
-        state.config_path = std::path::PathBuf::from("/nonexistent/mtrack.yaml");
-        state.songs_path = std::path::PathBuf::from("/nonexistent/songs");
+    async fn get_song_not_in_registry_returns_not_found() {
+        let (state, _dir) = test_state();
         let app = router().with_state(state);
 
         let response = app
@@ -2875,13 +2915,10 @@ show "test" {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
         let body = response_body(response).await;
         let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert!(parsed["error"]
-            .as_str()
-            .unwrap()
-            .contains("Failed to load songs"));
+        assert!(parsed["error"].as_str().unwrap().contains("Song not found"));
     }
 
     #[tokio::test]
@@ -2909,17 +2946,6 @@ show "test" {
     #[tokio::test]
     async fn get_song_not_found_body_contains_name() {
         let (state, _dir) = test_state();
-        // Create a song so get_all_songs succeeds, then look up a different name
-        let song_dir = state.songs_path.join("RealSong");
-        std::fs::create_dir(&song_dir).unwrap();
-        crate::testutil::write_wav(song_dir.join("track1.wav"), vec![vec![0_i32; 4410]], 44100)
-            .unwrap();
-        std::fs::write(
-            song_dir.join("song.yaml"),
-            "name: RealSong\ntracks:\n  - name: track1\n    file: track1.wav\n",
-        )
-        .unwrap();
-
         let app = router().with_state(state);
         let response = app
             .oneshot(
@@ -3089,17 +3115,6 @@ show "test" {
     #[tokio::test]
     async fn put_song_not_found_body_contains_name() {
         let (state, _dir) = test_state();
-        // Create a song so get_all_songs succeeds
-        let song_dir = state.songs_path.join("Exists");
-        std::fs::create_dir(&song_dir).unwrap();
-        crate::testutil::write_wav(song_dir.join("track1.wav"), vec![vec![0_i32; 4410]], 44100)
-            .unwrap();
-        std::fs::write(
-            song_dir.join("song.yaml"),
-            "name: Exists\ntracks:\n  - name: track1\n    file: track1.wav\n",
-        )
-        .unwrap();
-
         let app = router().with_state(state);
         let response = app
             .oneshot(

@@ -143,14 +143,21 @@ pub async fn start(
                 "Config file not found at {:?}, creating with defaults",
                 player_path
             );
-            let default_config = config::Player::default();
-            let yaml = crate::util::to_yaml_string(&default_config)?;
-            // Ensure parent directory exists
+            let mut default_config = config::Player::default();
+            // If the project root already has discoverable songs, point songs
+            // at "." instead of creating an empty "songs" subdirectory.
             if let Some(parent) = player_path.parent() {
                 if !parent.exists() {
                     std::fs::create_dir_all(parent)?;
                 }
+                if !songs::get_all_songs(parent)
+                    .map(|s| s.is_empty())
+                    .unwrap_or(true)
+                {
+                    default_config.set_songs(".");
+                }
             }
+            let yaml = crate::util::to_yaml_string(&default_config)?;
             std::fs::write(player_path, &yaml)?;
             default_config
         }
@@ -229,34 +236,20 @@ pub async fn start(
     )?);
     player.set_config_store(config_store);
 
-    // Start the shared state sampler if a DMX engine (with effect engine) is present.
-    // Both the TUI and the simulator subscribe to this channel.
-    let (state_rx, _sampler_handle) = if let Some(effect_engine) = player.effect_engine() {
-        let (rx, handle) = crate::state::start_sampler(effect_engine);
-        (rx, Some(handle))
-    } else {
-        let (_, rx) = tokio::sync::watch::channel(std::sync::Arc::new(
-            crate::state::StateSnapshot::default(),
-        ));
-        (rx, None)
-    };
+    // Create the state watch channel upfront. The sampler will be started
+    // by init_hardware_async when the DMX engine becomes available.
+    let (state_tx, state_rx) =
+        tokio::sync::watch::channel(std::sync::Arc::new(crate::state::StateSnapshot::default()));
+    player.set_state_tx(state_tx);
 
     // Start the unified web server (dashboard + gRPC-Web + REST API)
     let webui_handle = {
         // Create a broadcast channel for the web UI (shared by dashboard WS and DMX file watcher)
         let (broadcast_tx, _) = tokio::sync::broadcast::channel::<String>(128);
 
-        // Build metadata JSON and wire the broadcast channel to the DMX engine
-        let metadata_json = if let Some(handles) = player.broadcast_handles() {
-            let metadata =
-                crate::webui::state::build_metadata_json(handles.lighting_system.as_ref());
-            // Pass the broadcast channel to the DmxEngine for file watcher hot-reload
-            player.set_broadcast_tx(broadcast_tx.clone());
-            metadata
-        } else {
-            // No DMX engine — empty metadata
-            crate::webui::state::build_metadata_json(None)
-        };
+        // Store the broadcast channel on the player so async init can wire
+        // it to the DMX engine when it comes up.
+        player.set_broadcast_tx(broadcast_tx.clone());
 
         let webui_state = crate::webui::server::WebUiState {
             player: player.clone(),
@@ -265,7 +258,6 @@ pub async fn start(
             config_path: player_path.to_path_buf(),
             songs_path: player_config.songs(player_path),
             playlist_path: playlist_path.clone(),
-            metadata_json: std::sync::Arc::new(metadata_json),
             waveform_cache: crate::webui::state::new_waveform_cache(),
         };
 
@@ -491,13 +483,13 @@ pub fn verify(
                 };
                 println!("Checking track mappings for {}...", label);
                 let track_report =
-                    verify::check_all_track_mappings(&songs, audio_config.track_mappings());
+                    verify::check_all_track_mappings(&songs, &audio_config.track_mappings_hash());
                 report.merge(track_report);
             }
         } else {
             // Single profile (legacy or single profile): verify as before.
             let track_report =
-                verify::check_all_track_mappings(&songs, player_config.track_mappings());
+                verify::check_all_track_mappings(&songs, &player_config.track_mappings());
             report.merge(track_report);
         }
     }

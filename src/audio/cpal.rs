@@ -736,6 +736,102 @@ impl OutputManager {
     }
 }
 
+/// A supported sample format for an audio device.
+#[derive(serde::Serialize, Clone, PartialEq, Eq, Hash)]
+pub struct SupportedFormat {
+    pub sample_format: String,
+    pub bits_per_sample: u32,
+}
+
+/// Standard sample rates to check against device-reported ranges.
+const STANDARD_SAMPLE_RATES: &[u32] = &[
+    8000, 11025, 16000, 22050, 44100, 48000, 88200, 96000, 176400, 192000,
+];
+
+/// Serializable info about an audio device for the web UI.
+#[derive(serde::Serialize)]
+pub struct AudioDeviceInfo {
+    pub name: String,
+    pub max_channels: u16,
+    pub host_name: String,
+    pub supported_sample_rates: Vec<u32>,
+    pub supported_formats: Vec<SupportedFormat>,
+}
+
+/// Maps a cpal SampleFormat to mtrack's (sample_format, bits_per_sample) representation.
+fn map_cpal_format(fmt: cpal::SampleFormat) -> SupportedFormat {
+    let (sample_format, bits_per_sample) = if fmt.is_float() {
+        ("float", fmt.bits_per_sample())
+    } else {
+        ("int", fmt.bits_per_sample())
+    };
+    SupportedFormat {
+        sample_format: sample_format.to_string(),
+        bits_per_sample,
+    }
+}
+
+/// Lists audio devices as simple info structs (no trait objects).
+pub fn list_device_info() -> Result<Vec<AudioDeviceInfo>, Box<dyn Error>> {
+    // Suppress noisy output here.
+    let _shh_stdout = shh::stdout()?;
+    let _shh_stderr = shh::stderr()?;
+
+    let mut infos: Vec<AudioDeviceInfo> = Vec::new();
+    for host_id in cpal::available_hosts() {
+        let host_devices = match cpal::host_from_id(host_id)?.devices() {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        for device in host_devices {
+            let mut max_channels = 0u16;
+            let output_configs = match device.supported_output_configs() {
+                Ok(configs) => configs,
+                Err(_) => continue,
+            };
+
+            let mut sample_rates = std::collections::BTreeSet::new();
+            let mut formats = std::collections::BTreeSet::new();
+
+            for cfg in output_configs {
+                if max_channels < cfg.channels() {
+                    max_channels = cfg.channels();
+                }
+
+                let min_rate = cfg.min_sample_rate();
+                let max_rate = cfg.max_sample_rate();
+                for &rate in STANDARD_SAMPLE_RATES {
+                    if rate >= min_rate && rate <= max_rate {
+                        sample_rates.insert(rate);
+                    }
+                }
+
+                let mapped = map_cpal_format(cfg.sample_format());
+                formats.insert((mapped.sample_format.clone(), mapped.bits_per_sample));
+            }
+            if max_channels > 0 {
+                if let Ok(id) = device.id() {
+                    infos.push(AudioDeviceInfo {
+                        name: id.to_string(),
+                        max_channels,
+                        host_name: host_id.name().to_string(),
+                        supported_sample_rates: sample_rates.into_iter().collect(),
+                        supported_formats: formats
+                            .into_iter()
+                            .map(|(sample_format, bits_per_sample)| SupportedFormat {
+                                sample_format,
+                                bits_per_sample,
+                            })
+                            .collect(),
+                    });
+                }
+            }
+        }
+    }
+    infos.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(infos)
+}
+
 impl Device {
     /// Lists cpal devices and produces the Device trait.
     pub fn list() -> Result<Vec<Box<dyn AudioDevice>>, Box<dyn Error>> {

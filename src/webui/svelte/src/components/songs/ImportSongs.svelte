@@ -190,7 +190,7 @@
           <div class="entry-list">
             {#if !atRoot}
               <button class="entry" onclick={() => navigate(parentPath())}>
-                <span class="entry-icon">\u2B06\uFE0F</span>
+                <span class="entry-icon">⬆️</span>
                 <span class="entry-name">..</span>
               </button>
             {/if}

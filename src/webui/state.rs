@@ -72,6 +72,7 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
                 .iter()
                 .map(|t| {
                     let output_channels = mappings
+                        .as_ref()
                         .and_then(|m| m.get(t.name()))
                         .cloned()
                         .unwrap_or_default();
@@ -782,7 +783,7 @@ mod test {
             sample_engine: None,
             trigger_engine: None,
         };
-        Arc::new(crate::player::Player::new_with_devices(devices, pl, songs).unwrap())
+        Arc::new(crate::player::Player::new_with_devices(devices, pl, songs, None).unwrap())
     }
 
     #[test]

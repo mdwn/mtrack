@@ -181,7 +181,7 @@
       <div class="entry-list">
         {#if !atRoot}
           <button class="entry" onclick={() => navigate(parentPath())}>
-            <span class="entry-icon">\u2B06\uFE0F</span>
+            <span class="entry-icon">⬆️</span>
             <span class="entry-name">..</span>
           </button>
         {/if}
@@ -195,7 +195,7 @@
             <span class="entry-icon">{typeIcon(entry.type)}</span>
             <span class="entry-name">{entry.name}</span>
             {#if !entry.is_dir && selected.has(entry.path)}
-              <span class="check">\u2713</span>
+              <span class="check">✓</span>
             {/if}
           </button>
         {/each}
