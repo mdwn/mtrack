@@ -36,49 +36,53 @@ pub struct CalibrationConfig {
 }
 
 /// Shared capture buffer for the cpal input callback.
-struct CaptureBuffer {
-    channels: Vec<Mutex<Vec<f32>>>,
-    active: AtomicBool,
+pub struct CaptureBuffer {
+    pub channels: Vec<Mutex<Vec<f32>>>,
+    pub active: AtomicBool,
 }
 
 /// Noise floor statistics for a single channel.
-struct NoiseFloorStats {
-    peak: f32,
-    rms: f32,
-    low_freq_energy: f32,
+#[derive(serde::Serialize)]
+pub struct NoiseFloorStats {
+    pub peak: f32,
+    pub rms: f32,
+    pub low_freq_energy: f32,
 }
 
 /// A detected hit envelope on a single channel.
-struct HitEnvelope {
-    peak_amplitude: f32,
-    onset_sample: usize,
-    peak_sample: usize,
-    decay_sample: usize,
-    ring_end_sample: Option<usize>,
+pub struct HitEnvelope {
+    pub peak_amplitude: f32,
+    pub onset_sample: usize,
+    pub peak_sample: usize,
+    pub decay_sample: usize,
+    pub ring_end_sample: Option<usize>,
 }
 
 /// Calibrated parameters for a single channel.
-struct ChannelCalibration {
-    channel: u16,
-    threshold: f32,
-    gain: f32,
-    scan_time_ms: u32,
-    retrigger_time_ms: u32,
-    highpass_freq: Option<f32>,
-    dynamic_threshold_decay_ms: Option<u32>,
-    num_hits_detected: usize,
-    noise_floor_peak: f32,
-    max_hit_amplitude: f32,
+#[derive(serde::Serialize)]
+pub struct ChannelCalibration {
+    pub channel: u16,
+    pub threshold: f32,
+    pub gain: f32,
+    pub scan_time_ms: u32,
+    pub retrigger_time_ms: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub highpass_freq: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dynamic_threshold_decay_ms: Option<u32>,
+    pub num_hits_detected: usize,
+    pub noise_floor_peak: f32,
+    pub max_hit_amplitude: f32,
 }
 
 /// Calibrated crosstalk parameters.
-struct CrosstalkCalibration {
+pub struct CrosstalkCalibration {
     crosstalk_window_ms: Option<u32>,
     crosstalk_threshold: Option<f32>,
 }
 
 /// Resolves stream parameters (channels, sample rate, format) from device and config.
-fn resolve_stream_params(
+pub fn resolve_stream_params(
     device: &cpal::Device,
     config: &CalibrationConfig,
 ) -> Result<(u16, u32, cpal::SampleFormat), Box<dyn Error>> {
@@ -120,7 +124,7 @@ fn resolve_stream_params(
 }
 
 /// Builds a cpal input stream that captures samples into the buffer.
-fn build_capture_stream(
+pub fn build_capture_stream(
     device: &cpal::Device,
     stream_config: &cpal::StreamConfig,
     buffer: Arc<CaptureBuffer>,
@@ -172,7 +176,7 @@ where
 }
 
 /// Analyzes the noise floor from captured samples.
-fn analyze_noise_floor(samples: &[f32], sample_rate: u32) -> NoiseFloorStats {
+pub fn analyze_noise_floor(samples: &[f32], sample_rate: u32) -> NoiseFloorStats {
     if samples.is_empty() {
         return NoiseFloorStats {
             peak: 0.0,
@@ -225,7 +229,7 @@ fn detection_threshold(noise_floor: &NoiseFloorStats) -> f32 {
 /// threshold for `holdoff_samples` consecutive samples before the hit is
 /// considered finished. This prevents oscillating/ringing signals from being
 /// split into multiple spurious hits.
-fn detect_hits(
+pub fn detect_hits(
     samples: &[f32],
     noise_floor: &NoiseFloorStats,
     sample_rate: u32,
@@ -324,7 +328,7 @@ fn detect_hits(
 }
 
 /// Derives calibration parameters for a channel from its noise floor and detected hits.
-fn derive_channel_params(
+pub fn derive_channel_params(
     channel: u16,
     noise_floor: &NoiseFloorStats,
     hits: &[HitEnvelope],
