@@ -27,7 +27,7 @@ use tracing::warn;
 use super::config_io;
 use super::server::WebUiState;
 use super::state as ws_state;
-use crate::{audio, calibrate, config, midi, songs};
+use crate::{audio, calibrate, config, lighting, midi, songs};
 
 /// Builds the API router for config read/write endpoints.
 ///
@@ -71,6 +71,18 @@ pub fn router() -> Router<WebUiState> {
         .route("/calibrate/capture", post(post_calibrate_capture))
         .route("/calibrate/stop", post(post_calibrate_stop))
         .route("/calibrate", delete(delete_calibrate))
+        .route("/lighting/fixture-types", get(get_fixture_types))
+        .route(
+            "/lighting/fixture-types/{name}",
+            get(get_fixture_type)
+                .put(put_fixture_type)
+                .delete(delete_fixture_type),
+        )
+        .route("/lighting/venues", get(get_venues))
+        .route(
+            "/lighting/venues/{name}",
+            get(get_venue).put(put_venue).delete(delete_venue),
+        )
 }
 
 /// GET /api/config — returns the raw YAML content of the player config file.
@@ -2102,6 +2114,631 @@ async fn put_lighting_file(
         Ok(()) => (StatusCode::OK, Json(json!({"status": "saved"}))).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e}))).into_response(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Fixture Type & Venue CRUD endpoints
+// ---------------------------------------------------------------------------
+
+/// Default directory for fixture type definitions, relative to project root.
+const DEFAULT_FIXTURE_TYPES_DIR: &str = "lighting/fixture_types";
+
+/// Default directory for venue definitions, relative to project root.
+const DEFAULT_VENUES_DIR: &str = "lighting/venues";
+
+/// Resolves a lighting directory path relative to the project root.
+/// Uses the provided override (from query param) or falls back to the default.
+/// Returns an error response if the project root cannot be canonicalized or the
+/// resolved path would escape it.
+#[allow(clippy::result_large_err)]
+fn resolve_lighting_dir(
+    config_path: &std::path::Path,
+    override_dir: Option<&str>,
+    default: &str,
+) -> Result<std::path::PathBuf, axum::response::Response> {
+    let project_root = config_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    // Canonicalize the project root so all derived paths are anchored to a
+    // verified absolute base, preventing path traversal via the dir override.
+    let root_canonical = project_root.canonicalize().map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("Failed to resolve project root: {}", e)})),
+        )
+            .into_response()
+    })?;
+    let relative = match override_dir {
+        Some(d) if !d.is_empty() => d,
+        _ => default,
+    };
+    // Reject absolute overrides — directories must be relative to the project root.
+    if std::path::Path::new(relative).is_absolute() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "Directory must be a relative path"})),
+        )
+            .into_response());
+    }
+    let resolved = root_canonical.join(relative);
+    // If the directory already exists, canonicalize and verify containment.
+    if resolved.exists() {
+        let canonical = resolved.canonicalize().map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("Failed to resolve directory: {}", e)})),
+            )
+                .into_response()
+        })?;
+        if !canonical.starts_with(&root_canonical) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "Directory must be within the project root"})),
+            )
+                .into_response());
+        }
+        Ok(canonical)
+    } else {
+        // Directory doesn't exist yet — verify no ".." components escape the root
+        // by checking lexically. The directory will be created later if needed.
+        let mut normalized = root_canonical.clone();
+        for component in std::path::Path::new(relative).components() {
+            match component {
+                std::path::Component::Normal(c) => normalized.push(c),
+                std::path::Component::ParentDir => {
+                    normalized.pop();
+                    if !normalized.starts_with(&root_canonical) {
+                        return Err((
+                            StatusCode::BAD_REQUEST,
+                            Json(json!({"error": "Directory must be within the project root"})),
+                        )
+                            .into_response());
+                    }
+                }
+                std::path::Component::CurDir => {}
+                _ => {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({"error": "Invalid directory path"})),
+                    )
+                        .into_response());
+                }
+            }
+        }
+        Ok(normalized)
+    }
+}
+
+/// Query parameters for lighting endpoints — allows overriding the directory.
+#[derive(serde::Deserialize, Default)]
+struct LightingDirQuery {
+    dir: Option<String>,
+}
+
+/// Validates that a fixture type or venue name is safe for use as a filename.
+#[allow(clippy::result_large_err)]
+fn validate_lighting_name(name: &str) -> Result<(), axum::response::Response> {
+    if name.is_empty()
+        || name.contains("..")
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains('\0')
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "Invalid name"})),
+        )
+            .into_response());
+    }
+    Ok(())
+}
+
+/// GET /api/lighting/fixture-types — lists all fixture types from the directory.
+async fn get_fixture_types(
+    State(state): State<WebUiState>,
+    Query(query): Query<LightingDirQuery>,
+) -> impl IntoResponse {
+    let dir = resolve_lighting_dir(
+        &state.config_path,
+        query.dir.as_deref(),
+        DEFAULT_FIXTURE_TYPES_DIR,
+    )
+    .map_err(|e| e.into_response())?;
+    if !dir.is_dir() {
+        return Ok::<_, axum::response::Response>(
+            (StatusCode::OK, Json(json!({"fixture_types": {}}))).into_response(),
+        );
+    }
+    let mut all = std::collections::HashMap::new();
+    if let Err(e) =
+        load_light_files_from_dir(&dir, |content| match lighting::parser::parse_fixture_types(
+            content,
+        ) {
+            Ok(types) => {
+                all.extend(types);
+                Ok(())
+            }
+            Err(e) => Err(e),
+        })
+    {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("Failed to load fixture types: {}", e)})),
+        )
+            .into_response());
+    }
+    Ok((StatusCode::OK, Json(json!({"fixture_types": all}))).into_response())
+}
+
+/// GET /api/lighting/fixture-types/:name — returns a single fixture type.
+async fn get_fixture_type(
+    State(state): State<WebUiState>,
+    Path(name): Path<String>,
+    Query(query): Query<LightingDirQuery>,
+) -> impl IntoResponse {
+    validate_lighting_name(&name)?;
+    let dir = resolve_lighting_dir(
+        &state.config_path,
+        query.dir.as_deref(),
+        DEFAULT_FIXTURE_TYPES_DIR,
+    )?;
+    let file_path = dir.join(format!("{}.light", sanitize_filename(&name)));
+    if !file_path.is_file() {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": format!("Fixture type not found: {}", name)})),
+        )
+            .into_response());
+    }
+    let content = std::fs::read_to_string(&file_path).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("Failed to read file: {}", e)})),
+        )
+            .into_response()
+    })?;
+    let types = lighting::parser::parse_fixture_types(&content).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("Failed to parse fixture type: {}", e)})),
+        )
+            .into_response()
+    })?;
+    match types.get(&name) {
+        Some(ft) => Ok((
+            StatusCode::OK,
+            Json(json!({"fixture_type": ft, "dsl": content})),
+        )
+            .into_response()),
+        None => Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": format!("Fixture type '{}' not found in file", name)})),
+        )
+            .into_response()),
+    }
+}
+
+/// PUT /api/lighting/fixture-types/:name — creates or updates a fixture type.
+///
+/// Accepts either JSON (structured) or plain text (raw DSL).
+async fn put_fixture_type(
+    State(state): State<WebUiState>,
+    Path(name): Path<String>,
+    Query(query): Query<LightingDirQuery>,
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> impl IntoResponse {
+    validate_lighting_name(&name)?;
+    let dir = resolve_lighting_dir(
+        &state.config_path,
+        query.dir.as_deref(),
+        DEFAULT_FIXTURE_TYPES_DIR,
+    )?;
+
+    let content_type = headers
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    let dsl = if content_type.contains("application/json") {
+        // Parse JSON body and convert to DSL
+        let json_body: serde_json::Value = serde_json::from_slice(&body).map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": format!("Invalid JSON: {}", e)})),
+            )
+                .into_response()
+        })?;
+        fixture_type_json_to_dsl(&name, &json_body)
+            .map_err(|e| (StatusCode::BAD_REQUEST, Json(json!({"error": e}))).into_response())?
+    } else {
+        // Treat as raw DSL text
+        String::from_utf8(body.to_vec()).map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "Invalid UTF-8"})),
+            )
+                .into_response()
+        })?
+    };
+
+    // Validate the DSL parses correctly
+    lighting::parser::parse_fixture_types(&dsl).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": format!("Invalid fixture type DSL: {}", e)})),
+        )
+            .into_response()
+    })?;
+
+    // Ensure directory exists
+    ensure_lighting_dir(&dir)?;
+
+    let file_path = dir.join(format!("{}.light", sanitize_filename(&name)));
+    std::fs::write(&file_path, &dsl).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("Failed to write file: {}", e)})),
+        )
+            .into_response()
+    })?;
+
+    Ok::<_, axum::response::Response>(
+        (
+            StatusCode::OK,
+            Json(json!({"status": "saved", "name": name})),
+        )
+            .into_response(),
+    )
+}
+
+/// DELETE /api/lighting/fixture-types/:name — deletes a fixture type file.
+async fn delete_fixture_type(
+    State(state): State<WebUiState>,
+    Path(name): Path<String>,
+    Query(query): Query<LightingDirQuery>,
+) -> impl IntoResponse {
+    validate_lighting_name(&name)?;
+    let dir = resolve_lighting_dir(
+        &state.config_path,
+        query.dir.as_deref(),
+        DEFAULT_FIXTURE_TYPES_DIR,
+    )?;
+    let file_path = dir.join(format!("{}.light", sanitize_filename(&name)));
+    if !file_path.is_file() {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": format!("Fixture type not found: {}", name)})),
+        )
+            .into_response());
+    }
+    std::fs::remove_file(&file_path).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("Failed to delete file: {}", e)})),
+        )
+            .into_response()
+    })?;
+    Ok::<_, axum::response::Response>(
+        (
+            StatusCode::OK,
+            Json(json!({"status": "deleted", "name": name})),
+        )
+            .into_response(),
+    )
+}
+
+/// GET /api/lighting/venues — lists all venues from the directory.
+async fn get_venues(
+    State(state): State<WebUiState>,
+    Query(query): Query<LightingDirQuery>,
+) -> impl IntoResponse {
+    let dir = resolve_lighting_dir(&state.config_path, query.dir.as_deref(), DEFAULT_VENUES_DIR)
+        .map_err(|e| e.into_response())?;
+    if !dir.is_dir() {
+        return Ok::<_, axum::response::Response>(
+            (StatusCode::OK, Json(json!({"venues": {}}))).into_response(),
+        );
+    }
+    let mut all = std::collections::HashMap::new();
+    if let Err(e) =
+        load_light_files_from_dir(&dir, |content| {
+            match lighting::parser::parse_venues(content) {
+                Ok(venues) => {
+                    all.extend(venues);
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            }
+        })
+    {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("Failed to load venues: {}", e)})),
+        )
+            .into_response());
+    }
+    Ok((StatusCode::OK, Json(json!({"venues": all}))).into_response())
+}
+
+/// GET /api/lighting/venues/:name — returns a single venue.
+async fn get_venue(
+    State(state): State<WebUiState>,
+    Path(name): Path<String>,
+    Query(query): Query<LightingDirQuery>,
+) -> impl IntoResponse {
+    validate_lighting_name(&name)?;
+    let dir = resolve_lighting_dir(&state.config_path, query.dir.as_deref(), DEFAULT_VENUES_DIR)?;
+    let file_path = dir.join(format!("{}.light", sanitize_filename(&name)));
+    if !file_path.is_file() {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": format!("Venue not found: {}", name)})),
+        )
+            .into_response());
+    }
+    let content = std::fs::read_to_string(&file_path).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("Failed to read file: {}", e)})),
+        )
+            .into_response()
+    })?;
+    let venues = lighting::parser::parse_venues(&content).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("Failed to parse venue: {}", e)})),
+        )
+            .into_response()
+    })?;
+    match venues.get(&name) {
+        Some(v) => Ok((StatusCode::OK, Json(json!({"venue": v, "dsl": content}))).into_response()),
+        None => Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": format!("Venue '{}' not found in file", name)})),
+        )
+            .into_response()),
+    }
+}
+
+/// PUT /api/lighting/venues/:name — creates or updates a venue.
+async fn put_venue(
+    State(state): State<WebUiState>,
+    Path(name): Path<String>,
+    Query(query): Query<LightingDirQuery>,
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> impl IntoResponse {
+    validate_lighting_name(&name)?;
+    let dir = resolve_lighting_dir(&state.config_path, query.dir.as_deref(), DEFAULT_VENUES_DIR)?;
+
+    let content_type = headers
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    let dsl = if content_type.contains("application/json") {
+        let json_body: serde_json::Value = serde_json::from_slice(&body).map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": format!("Invalid JSON: {}", e)})),
+            )
+                .into_response()
+        })?;
+        venue_json_to_dsl(&name, &json_body)
+            .map_err(|e| (StatusCode::BAD_REQUEST, Json(json!({"error": e}))).into_response())?
+    } else {
+        String::from_utf8(body.to_vec()).map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "Invalid UTF-8"})),
+            )
+                .into_response()
+        })?
+    };
+
+    // Validate the DSL parses correctly
+    lighting::parser::parse_venues(&dsl).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": format!("Invalid venue DSL: {}", e)})),
+        )
+            .into_response()
+    })?;
+
+    ensure_lighting_dir(&dir)?;
+
+    let file_path = dir.join(format!("{}.light", sanitize_filename(&name)));
+    std::fs::write(&file_path, &dsl).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("Failed to write file: {}", e)})),
+        )
+            .into_response()
+    })?;
+
+    Ok::<_, axum::response::Response>(
+        (
+            StatusCode::OK,
+            Json(json!({"status": "saved", "name": name})),
+        )
+            .into_response(),
+    )
+}
+
+/// DELETE /api/lighting/venues/:name — deletes a venue file.
+async fn delete_venue(
+    State(state): State<WebUiState>,
+    Path(name): Path<String>,
+    Query(query): Query<LightingDirQuery>,
+) -> impl IntoResponse {
+    validate_lighting_name(&name)?;
+    let dir = resolve_lighting_dir(&state.config_path, query.dir.as_deref(), DEFAULT_VENUES_DIR)?;
+    let file_path = dir.join(format!("{}.light", sanitize_filename(&name)));
+    if !file_path.is_file() {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": format!("Venue not found: {}", name)})),
+        )
+            .into_response());
+    }
+    std::fs::remove_file(&file_path).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("Failed to delete file: {}", e)})),
+        )
+            .into_response()
+    })?;
+    Ok::<_, axum::response::Response>(
+        (
+            StatusCode::OK,
+            Json(json!({"status": "deleted", "name": name})),
+        )
+            .into_response(),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Lighting helpers
+// ---------------------------------------------------------------------------
+
+/// Reads all .light files from a directory, calling the processor for each.
+fn load_light_files_from_dir(
+    dir: &std::path::Path,
+    mut processor: impl FnMut(&str) -> Result<(), Box<dyn std::error::Error>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("light") {
+            let content = std::fs::read_to_string(&path)?;
+            processor(&content)?;
+        }
+    }
+    Ok(())
+}
+
+/// Ensures a lighting directory exists, creating it if necessary.
+#[allow(clippy::result_large_err)]
+fn ensure_lighting_dir(dir: &std::path::Path) -> Result<(), axum::response::Response> {
+    if !dir.exists() {
+        std::fs::create_dir_all(dir).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("Failed to create directory: {}", e)})),
+            )
+                .into_response()
+        })?;
+    }
+    Ok(())
+}
+
+/// Converts a name to a safe filename (lowercase, spaces to underscores).
+fn sanitize_filename(name: &str) -> String {
+    name.chars()
+        .map(|c| match c {
+            ' ' => '_',
+            c if c.is_alphanumeric() || c == '_' || c == '-' => c,
+            _ => '_',
+        })
+        .collect::<String>()
+        .to_lowercase()
+}
+
+/// Converts a JSON fixture type definition to DSL format.
+fn fixture_type_json_to_dsl(name: &str, json: &serde_json::Value) -> Result<String, String> {
+    let channels = json
+        .get("channels")
+        .and_then(|v| v.as_object())
+        .ok_or("Missing 'channels' object")?;
+
+    let mut dsl = format!("fixture_type \"{name}\" {{\n");
+    dsl.push_str(&format!("  channels: {}\n", channels.len()));
+    dsl.push_str("  channel_map: {\n");
+
+    let mut entries: Vec<(&String, &serde_json::Value)> = channels.iter().collect();
+    entries.sort_by_key(|(_, v)| v.as_u64().unwrap_or(0));
+    for (i, (ch_name, ch_offset)) in entries.iter().enumerate() {
+        let offset = ch_offset
+            .as_u64()
+            .ok_or(format!("Channel '{}' offset must be a number", ch_name))?;
+        let comma = if i + 1 < entries.len() { "," } else { "" };
+        dsl.push_str(&format!("    \"{ch_name}\": {offset}{comma}\n"));
+    }
+    dsl.push_str("  }\n");
+
+    if let Some(v) = json.get("max_strobe_frequency").and_then(|v| v.as_f64()) {
+        dsl.push_str(&format!("  max_strobe_frequency: {v}\n"));
+    }
+    if let Some(v) = json.get("min_strobe_frequency").and_then(|v| v.as_f64()) {
+        dsl.push_str(&format!("  min_strobe_frequency: {v}\n"));
+    }
+    if let Some(v) = json.get("strobe_dmx_offset").and_then(|v| v.as_u64()) {
+        dsl.push_str(&format!("  strobe_dmx_offset: {v}\n"));
+    }
+
+    dsl.push_str("}\n");
+    Ok(dsl)
+}
+
+/// Converts a JSON venue definition to DSL format.
+fn venue_json_to_dsl(name: &str, json: &serde_json::Value) -> Result<String, String> {
+    let fixtures = json
+        .get("fixtures")
+        .and_then(|v| v.as_array())
+        .ok_or("Missing 'fixtures' array")?;
+
+    let mut dsl = format!("venue \"{name}\" {{\n");
+
+    for fix in fixtures {
+        let fix_name = fix
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or("Fixture missing 'name'")?;
+        let fix_type = fix
+            .get("fixture_type")
+            .and_then(|v| v.as_str())
+            .ok_or("Fixture missing 'fixture_type'")?;
+        let universe = fix
+            .get("universe")
+            .and_then(|v| v.as_u64())
+            .ok_or("Fixture missing 'universe'")?;
+        let start_channel = fix
+            .get("start_channel")
+            .and_then(|v| v.as_u64())
+            .ok_or("Fixture missing 'start_channel'")?;
+
+        dsl.push_str(&format!(
+            "  fixture \"{fix_name}\" {fix_type} @ {universe}:{start_channel}"
+        ));
+
+        if let Some(tags) = fix.get("tags").and_then(|v| v.as_array()) {
+            let tag_strs: Vec<String> = tags
+                .iter()
+                .filter_map(|t| t.as_str())
+                .map(|t| format!("\"{t}\""))
+                .collect();
+            if !tag_strs.is_empty() {
+                dsl.push_str(&format!(" tags [{}]", tag_strs.join(", ")));
+            }
+        }
+        dsl.push('\n');
+    }
+
+    if let Some(groups) = json.get("groups").and_then(|v| v.as_object()) {
+        for (group_name, group_fixtures) in groups {
+            if let Some(fixture_list) = group_fixtures.as_array() {
+                let names: Vec<&str> = fixture_list.iter().filter_map(|v| v.as_str()).collect();
+                dsl.push_str(&format!(
+                    "  group \"{group_name}\" = {}\n",
+                    names.join(", ")
+                ));
+            }
+        }
+    }
+
+    dsl.push_str("}\n");
+    Ok(dsl)
 }
 
 /// POST /api/lighting/validate — validates lighting DSL content without saving.
