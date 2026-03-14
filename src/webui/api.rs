@@ -58,6 +58,8 @@ pub fn router() -> Router<WebUiState> {
         .route("/config/midi", put(put_config_midi))
         .route("/config/dmx", put(put_config_dmx))
         .route("/config/controllers", put(put_config_controllers))
+        .route("/config/samples", put(put_config_samples))
+        .route("/samples/upload/{filename}", put(upload_sample_file))
         .route("/config/profiles", post(post_config_profile))
         .route(
             "/config/profiles/{index}",
@@ -1083,6 +1085,60 @@ async fn put_config_controllers(
     }
 }
 
+/// PUT /api/config/samples — replace all sample definitions.
+async fn put_config_samples(
+    State(state): State<WebUiState>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    if let Some(resp) = reject_if_playing(&state).await {
+        return resp;
+    }
+
+    let checksum = match body.get("expected_checksum").and_then(|v| v.as_str()) {
+        Some(c) => c.to_string(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "missing expected_checksum"})),
+            )
+                .into_response()
+        }
+    };
+
+    let samples: std::collections::HashMap<String, config::SampleDefinition> =
+        match body.get("samples") {
+            Some(v) => match serde_json::from_value(v.clone()) {
+                Ok(s) => s,
+                Err(e) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({"error": format!("invalid samples: {}", e)})),
+                    )
+                        .into_response()
+                }
+            },
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": "missing samples field"})),
+                )
+                    .into_response()
+            }
+        };
+
+    let store = match require_config_store(&state) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    match store.update_samples(samples, &checksum).await {
+        Ok(snapshot) => {
+            reload_hardware_after_mutation(&state).await;
+            config_snapshot_response(snapshot, StatusCode::OK)
+        }
+        Err(e) => config_store_error_response(e),
+    }
+}
+
 /// POST /api/config/profiles — add a new profile.
 async fn post_config_profile(
     State(state): State<WebUiState>,
@@ -1776,6 +1832,102 @@ fn validate_track_filename(filename: &str) -> Result<(), Box<axum::response::Res
     }
 
     Ok(())
+}
+
+/// Validates that a filename has a supported audio extension (for sample uploads).
+fn validate_sample_filename(filename: &str) -> Result<(), Box<axum::response::Response>> {
+    if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
+        return Err(Box::new(
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "Invalid filename"})),
+            )
+                .into_response(),
+        ));
+    }
+
+    let ext = std::path::Path::new(filename)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    if !songs::is_supported_audio_extension(ext) {
+        return Err(Box::new(
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": format!("Unsupported audio file type: .{}", ext)})),
+            )
+                .into_response(),
+        ));
+    }
+
+    Ok(())
+}
+
+/// PUT /api/samples/upload/:filename — uploads a sample audio file.
+///
+/// The file is stored in a `samples/` directory next to the config file.
+/// Returns the relative path `samples/{filename}` for use in sample definitions.
+async fn upload_sample_file(
+    State(state): State<WebUiState>,
+    Path(filename): Path<String>,
+    body: Bytes,
+) -> impl IntoResponse {
+    validate_sample_filename(&filename).map_err(|e| *e)?;
+
+    // Canonicalize the project root first, then build the samples path from
+    // the canonical root so that all filesystem operations use a verified base.
+    let project_root = state
+        .config_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let root_canonical = project_root.canonicalize().map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("Failed to resolve project root: {}", e)})),
+        )
+            .into_response()
+    })?;
+    let samples_dir = root_canonical.join("samples");
+
+    if !samples_dir.exists() {
+        std::fs::create_dir_all(&samples_dir).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("Failed to create samples directory: {}", e)})),
+            )
+                .into_response()
+        })?;
+    }
+
+    let file_path = samples_dir.join(&filename);
+    if !file_path.starts_with(&root_canonical) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "Invalid filename"})),
+        )
+            .into_response());
+    }
+
+    std::fs::write(&file_path, &body).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("Failed to write file: {}", e)})),
+        )
+            .into_response()
+    })?;
+
+    let relative_path = format!("samples/{}", filename);
+    Ok::<_, axum::response::Response>(
+        (
+            StatusCode::OK,
+            Json(json!({
+                "status": "uploaded",
+                "file": filename,
+                "path": relative_path,
+            })),
+        )
+            .into_response(),
+    )
 }
 
 /// PUT /api/songs/:name/tracks/:filename — uploads a single track file.
@@ -3890,5 +4042,214 @@ show "test" {
         let path = dir.path().join("test.wav");
         crate::testutil::write_wav(path.clone(), vec![vec![0_i32; 4410]], 44100).unwrap();
         std::fs::read(&path).unwrap()
+    }
+
+    /// Helper: create a test state with a config store for mutation tests.
+    fn test_state_with_store() -> (WebUiState, tempfile::TempDir) {
+        let (state, dir) = test_state();
+        let path = state.config_path.clone();
+        let cfg = crate::config::Player::deserialize(&path).unwrap();
+        let store = std::sync::Arc::new(crate::config::ConfigStore::new(cfg, path));
+        state.player.set_config_store(store);
+        (state, dir)
+    }
+
+    #[tokio::test]
+    async fn put_config_samples_updates_samples() {
+        let (state, _dir) = test_state_with_store();
+        let app = router().with_state(state.clone());
+
+        // Get the current checksum.
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/config/store")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let store_data: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let checksum = store_data["checksum"].as_str().unwrap();
+
+        // Update samples.
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/config/samples")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&serde_json::json!({
+                            "expected_checksum": checksum,
+                            "samples": {
+                                "kick": { "file": "samples/kick.wav" },
+                                "snare": { "file": "samples/snare.wav", "retrigger": "polyphonic" }
+                            }
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let result: serde_json::Value = serde_json::from_str(&body).unwrap();
+        // Should return updated yaml containing our samples.
+        let yaml = result["yaml"].as_str().unwrap();
+        assert!(yaml.contains("kick"));
+        assert!(yaml.contains("snare"));
+        assert!(!result["checksum"].as_str().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn put_config_samples_missing_checksum() {
+        let (state, _dir) = test_state_with_store();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/config/samples")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&serde_json::json!({
+                            "samples": {}
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_body(response).await;
+        assert!(body.contains("missing expected_checksum"));
+    }
+
+    #[tokio::test]
+    async fn put_config_samples_missing_samples_field() {
+        let (state, _dir) = test_state_with_store();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/config/samples")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&serde_json::json!({
+                            "expected_checksum": "abc"
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_body(response).await;
+        assert!(body.contains("missing samples field"));
+    }
+
+    #[tokio::test]
+    async fn put_config_samples_no_store_returns_503() {
+        let (state, _dir) = test_state();
+        // No config store set.
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/config/samples")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&serde_json::json!({
+                            "expected_checksum": "abc",
+                            "samples": {}
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn upload_sample_file_creates_samples_dir() {
+        let (state, _dir) = test_state();
+        let wav_bytes = create_test_wav();
+        let app = router().with_state(state.clone());
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/samples/upload/kick.wav")
+                    .body(Body::from(wav_bytes))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["status"], "uploaded");
+        assert_eq!(parsed["file"], "kick.wav");
+        assert_eq!(parsed["path"], "samples/kick.wav");
+
+        // Verify file was created in samples/ directory next to config.
+        let samples_dir = state.config_path.parent().unwrap().join("samples");
+        assert!(samples_dir.join("kick.wav").exists());
+    }
+
+    #[tokio::test]
+    async fn upload_sample_file_path_traversal_rejected() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/samples/upload/..%2F..%2Fetc%2Fpasswd")
+                    .body(Body::from("bad"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn upload_sample_file_unsupported_extension() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/samples/upload/readme.txt")
+                    .body(Body::from("data"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_body(response).await;
+        assert!(body.contains("Unsupported audio file type"));
     }
 }

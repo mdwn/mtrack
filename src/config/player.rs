@@ -494,6 +494,11 @@ impl Player {
     pub fn profiles_mut(&mut self) -> &mut Option<Vec<Profile>> {
         &mut self.profiles
     }
+
+    /// Sets the inline sample definitions.
+    pub fn set_samples(&mut self, samples: HashMap<String, SampleDefinition>) {
+        self.samples = samples;
+    }
 }
 
 #[cfg(test)]

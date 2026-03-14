@@ -247,6 +247,18 @@ impl ConfigStore {
         .await
     }
 
+    /// Updates the inline sample definitions.
+    pub async fn update_samples(
+        &self,
+        samples: std::collections::HashMap<String, super::samples::SampleDefinition>,
+        checksum: &str,
+    ) -> Result<ConfigSnapshot, ConfigError> {
+        self.mutate(checksum, |config| {
+            config.set_samples(samples);
+        })
+        .await
+    }
+
     /// Adds a profile.
     pub async fn add_profile(
         &self,
