@@ -55,6 +55,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   editor web UI now automatically reinitializes all hardware from the updated configuration.
   The old hardware is torn down and new devices are discovered asynchronously, just like at
   startup. Hardware reload is rejected during active playback (returns 409 Conflict).
+- **Samples configuration UI**: The config editor now includes a Samples section for managing
+  the `samples` map in the player configuration. Each sample can be configured with file path,
+  output channels, output track, release behavior, retrigger mode, max voices, fade time, and
+  velocity settings (ignore/scale/layers with per-layer configuration). Samples are saved with
+  the same optimistic concurrency as hardware profiles.
+- **Sample file upload and browse**: Sample audio files can be uploaded via drag-and-drop or
+  file picker, or imported from the server filesystem using the file browser. Uploaded files
+  are stored in a `samples/` directory alongside the config file. Supports WAV, FLAC, MP3,
+  OGG, AAC, M4A, AIFF formats. New REST endpoints: `PUT /api/config/samples` for updating
+  sample definitions, `PUT /api/samples/upload/{filename}` for uploading sample files.
 
 ### Changed
 

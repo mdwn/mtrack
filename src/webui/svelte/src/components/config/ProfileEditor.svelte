@@ -26,6 +26,7 @@
     audioDevices: AudioDeviceInfo[];
     midiDevices: MidiDeviceInfo[];
     trackNames: string[];
+    sampleNames: string[];
     onrefreshDevices: () => void;
     onchange: () => void;
   }
@@ -35,6 +36,7 @@
     audioDevices,
     midiDevices,
     trackNames,
+    sampleNames,
     onrefreshDevices,
     onchange,
   }: Props = $props();
@@ -206,6 +208,7 @@
         <TriggerSection
           bind:trigger={profile.trigger}
           {audioDevices}
+          {sampleNames}
           onrefresh={onrefreshDevices}
           {onchange}
         />

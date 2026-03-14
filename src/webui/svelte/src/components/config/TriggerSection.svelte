@@ -29,6 +29,7 @@
   interface Props {
     trigger: any;
     audioDevices: AudioDeviceInfo[];
+    sampleNames: string[];
     onrefresh: () => void;
     onchange: () => void;
   }
@@ -36,6 +37,7 @@
   let {
     trigger = $bindable(),
     audioDevices,
+    sampleNames,
     onrefresh,
     onchange,
   }: Props = $props();
@@ -214,6 +216,12 @@
 </script>
 
 <div class="section-fields">
+  <datalist id="sample-names-list">
+    {#each sampleNames as name (name)}
+      <option value={name}></option>
+    {/each}
+  </datalist>
+
   <div class="field">
     <label for="trigger-device">Audio Input Device</label>
     <div class="field-row">
@@ -508,6 +516,7 @@
                 <input
                   id="trigger-sample-{i}"
                   class="input"
+                  list="sample-names-list"
                   placeholder="Sample name"
                   value={input.sample ?? ""}
                   onchange={(e) =>
@@ -802,6 +811,7 @@
               <input
                 id="trigger-midi-sample-{i}"
                 class="input"
+                list="sample-names-list"
                 placeholder="Sample name"
                 value={input.sample ?? ""}
                 onchange={(e) =>

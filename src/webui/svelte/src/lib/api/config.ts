@@ -12,7 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-import { get, post, put, del } from "./rest";
+import { get, post, put, del, uploadFile } from "./rest";
 
 // Calibration types
 export interface NoiseFloorResult {
@@ -120,6 +120,43 @@ export async function deleteProfile(
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error || `Failed to delete profile: ${res.status}`);
+  }
+  return res.json();
+}
+
+// Samples API
+
+export async function updateSamples(
+  samples: Record<string, unknown>,
+  checksum: string,
+): Promise<ConfigSnapshot> {
+  const res = await put(
+    "/config/samples",
+    JSON.stringify({ expected_checksum: checksum, samples }),
+  );
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `Failed to update samples: ${res.status}`);
+  }
+  return res.json();
+}
+
+export interface SampleUploadResult {
+  status: string;
+  file: string;
+  path: string;
+}
+
+export async function uploadSampleFile(
+  file: File,
+): Promise<SampleUploadResult> {
+  const res = await uploadFile(
+    `/samples/upload/${encodeURIComponent(file.name)}`,
+    file,
+  );
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `Failed to upload sample: ${res.status}`);
   }
   return res.json();
 }

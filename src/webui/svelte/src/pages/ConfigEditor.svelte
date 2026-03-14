@@ -23,12 +23,17 @@
     addProfile,
     updateProfile,
     deleteProfile,
+    updateSamples,
     type AudioDeviceInfo,
     type MidiDeviceInfo,
   } from "../lib/api/config";
   import { fetchSongs } from "../lib/api/songs";
   import ProfileCard from "../components/config/ProfileCard.svelte";
   import ProfileEditor from "../components/config/ProfileEditor.svelte";
+  import SamplesSection, {
+    type SampleBrowseTarget,
+  } from "../components/config/SamplesSection.svelte";
+  import FileBrowser from "../components/songs/FileBrowser.svelte";
 
   let configYaml = $state("");
   let checksum = $state("");
@@ -62,12 +67,32 @@
     }
   }
 
+  let sampleNames = $state<string[]>([]);
+  let samplesMap = $state<Record<string, any>>({});
+  let samplesDirty = $state(false);
+  let samplesSaving = $state(false);
+  let samplesSaveMsg = $state("");
+  let samplesSnapshot = $state("");
+
   function parseProfiles() {
     try {
       const parsed = YAML.parse(configYaml);
       profiles = parsed?.profiles || [];
+      // Extract sample definitions from the config's samples map
+      const samples = parsed?.samples;
+      if (samples && typeof samples === "object") {
+        samplesMap = samples;
+        sampleNames = Object.keys(samples).sort();
+      } else {
+        samplesMap = {};
+        sampleNames = [];
+      }
+      samplesSnapshot = JSON.stringify(samplesMap);
+      samplesDirty = false;
     } catch {
       profiles = [];
+      samplesMap = {};
+      sampleNames = [];
     }
   }
 
@@ -186,6 +211,48 @@
     }
   }
 
+  function onSamplesChange() {
+    samplesDirty = JSON.stringify(samplesMap) !== samplesSnapshot;
+    // Update sampleNames for trigger dropdowns
+    sampleNames = Object.keys(samplesMap).sort();
+  }
+
+  async function saveSamples() {
+    samplesSaving = true;
+    samplesSaveMsg = "";
+    try {
+      const snapshot = await updateSamples(samplesMap, checksum);
+      applySnapshot(snapshot);
+      samplesSnapshot = JSON.stringify(samplesMap);
+      samplesDirty = false;
+      samplesSaveMsg = "Saved";
+      setTimeout(() => (samplesSaveMsg = ""), 2000);
+    } catch (e: any) {
+      samplesSaveMsg = e.message;
+    } finally {
+      samplesSaving = false;
+    }
+  }
+
+  // Sample file browser state
+  let sampleBrowseTarget = $state<SampleBrowseTarget | null>(null);
+  let samplesRef: SamplesSection | undefined = $state();
+
+  function onSampleBrowse(target: SampleBrowseTarget) {
+    sampleBrowseTarget = target;
+  }
+
+  function onSampleBrowseSelect(paths: string[]) {
+    if (paths.length > 0 && sampleBrowseTarget && samplesRef) {
+      samplesRef.applyBrowseResult(sampleBrowseTarget, paths[0]);
+    }
+    sampleBrowseTarget = null;
+  }
+
+  function closeSampleBrowser() {
+    sampleBrowseTarget = null;
+  }
+
   $effect(() => {
     loadConfig();
     loadDevices();
@@ -241,6 +308,7 @@
       {audioDevices}
       {midiDevices}
       {trackNames}
+      {sampleNames}
       onrefreshDevices={loadDevices}
       onchange={onProfileChange}
     />
@@ -267,6 +335,45 @@
         {/each}
       </div>
     {/if}
+
+    <!-- Samples Section -->
+    <div class="samples-top-section">
+      <div class="list-header">
+        <h2>Samples</h2>
+        <div class="toolbar-actions">
+          {#if samplesSaveMsg}
+            <span class="save-msg" class:save-error={samplesSaveMsg !== "Saved"}
+              >{samplesSaveMsg}</span
+            >
+          {/if}
+          <button
+            class="btn btn-primary"
+            onclick={saveSamples}
+            disabled={samplesSaving || !samplesDirty}
+          >
+            {samplesSaving ? "Saving..." : "Save Samples"}
+          </button>
+        </div>
+      </div>
+      <SamplesSection
+        bind:this={samplesRef}
+        bind:samples={samplesMap}
+        onchange={onSamplesChange}
+        onbrowse={onSampleBrowse}
+      />
+    </div>
+  </div>
+{/if}
+
+{#if sampleBrowseTarget}
+  <div class="browser-overlay">
+    <div class="browser-modal">
+      <FileBrowser
+        filter={["audio"]}
+        onselect={onSampleBrowseSelect}
+        oncancel={closeSampleBrowser}
+      />
+    </div>
   </div>
 {/if}
 
@@ -334,6 +441,33 @@
   }
   .save-error {
     color: var(--red);
+  }
+  .samples-top-section {
+    margin-top: 16px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .browser-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 200;
+    padding: 24px;
+  }
+  .browser-modal {
+    width: 100%;
+    max-width: 700px;
+    max-height: 90vh;
+    overflow: hidden;
   }
   @media (max-width: 600px) {
     .profile-grid {
