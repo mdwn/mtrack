@@ -13,9 +13,12 @@
 //
 
 use std::collections::HashMap;
+use std::fmt;
+
+use serde::Serialize;
 
 /// A fixture type definition.
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
 pub struct FixtureType {
     /// The name of the fixture type.
     name: String,
@@ -75,8 +78,33 @@ impl FixtureType {
     }
 }
 
+impl fmt::Display for FixtureType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "fixture_type \"{}\" {{", self.name)?;
+        writeln!(f, "  channels: {}", self.channels.len())?;
+        writeln!(f, "  channel_map: {{")?;
+        let mut entries: Vec<_> = self.channels.iter().collect();
+        entries.sort_by_key(|(_, v)| *v);
+        for (i, (name, offset)) in entries.iter().enumerate() {
+            let comma = if i + 1 < entries.len() { "," } else { "" };
+            writeln!(f, "    \"{}\": {}{}", name, offset, comma)?;
+        }
+        writeln!(f, "  }}")?;
+        if let Some(v) = self.max_strobe_frequency {
+            writeln!(f, "  max_strobe_frequency: {v}")?;
+        }
+        if let Some(v) = self.min_strobe_frequency {
+            writeln!(f, "  min_strobe_frequency: {v}")?;
+        }
+        if let Some(v) = self.strobe_dmx_offset {
+            writeln!(f, "  strobe_dmx_offset: {v}")?;
+        }
+        write!(f, "}}")
+    }
+}
+
 /// A fixture definition.
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
 pub struct Fixture {
     /// The name of the fixture.
     name: String,
@@ -139,7 +167,7 @@ impl Fixture {
 }
 
 /// A group definition.
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
 pub struct Group {
     /// The name of the group.
     name: String,
@@ -166,7 +194,7 @@ impl Group {
 }
 
 /// A venue definition.
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
 pub struct Venue {
     /// The name of the venue.
     name: String,
@@ -205,6 +233,37 @@ impl Venue {
     /// Gets the groups.
     pub fn groups(&self) -> &HashMap<String, Group> {
         &self.groups
+    }
+}
+
+impl fmt::Display for Venue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "venue \"{}\" {{", self.name)?;
+        let mut fixtures: Vec<_> = self.fixtures.values().collect();
+        fixtures.sort_by_key(|fix| (fix.universe, fix.start_channel));
+        for fix in &fixtures {
+            write!(
+                f,
+                "  fixture \"{}\" {} @ {}:{}",
+                fix.name, fix.fixture_type, fix.universe, fix.start_channel
+            )?;
+            if !fix.tags.is_empty() {
+                let tags: Vec<String> = fix.tags.iter().map(|t| format!("\"{t}\"")).collect();
+                write!(f, " tags [{}]", tags.join(", "))?;
+            }
+            writeln!(f)?;
+        }
+        let mut groups: Vec<_> = self.groups.values().collect();
+        groups.sort_by_key(|g| g.name());
+        for group in &groups {
+            writeln!(
+                f,
+                "  group \"{}\" = {}",
+                group.name,
+                group.fixtures.join(", ")
+            )?;
+        }
+        write!(f, "}}")
     }
 }
 

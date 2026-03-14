@@ -20,6 +20,7 @@
   import DmxSection from "./DmxSection.svelte";
   import TriggerSection from "./TriggerSection.svelte";
   import ControllersSection from "./ControllersSection.svelte";
+  import LightingSection from "./LightingSection.svelte";
 
   interface Props {
     profile: any;
@@ -41,14 +42,35 @@
     onchange,
   }: Props = $props();
 
-  let collapsed: Record<string, boolean> = $state({});
+  const tabs = [
+    { key: "audio", label: "Audio" },
+    { key: "midi", label: "MIDI" },
+    { key: "dmx", label: "DMX" },
+    { key: "lighting", label: "Lighting" },
+    { key: "trigger", label: "Triggers" },
+    { key: "controllers", label: "Controllers" },
+  ] as const;
 
-  function toggleCollapse(section: string) {
-    collapsed[section] = !collapsed[section];
+  type TabKey = (typeof tabs)[number]["key"];
+
+  let activeTab = $state<TabKey>("audio");
+
+  function isEnabled(key: string): boolean {
+    if (key === "lighting") {
+      return profile.dmx?.lighting != null;
+    }
+    return profile[key] != null;
   }
 
   function toggleSection(section: string, enabled: boolean) {
-    if (enabled) {
+    if (section === "lighting") {
+      if (enabled) {
+        if (!profile.dmx) profile.dmx = { universes: [] };
+        profile.dmx.lighting = {};
+      } else {
+        if (profile.dmx) delete profile.dmx.lighting;
+      }
+    } else if (enabled) {
       if (section === "audio") profile.audio = { device: "" };
       else if (section === "midi") profile.midi = { device: "" };
       else if (section === "dmx") profile.dmx = { universes: [] };
@@ -63,12 +85,6 @@
     }
     onchange();
   }
-
-  let hasAudio = $derived(profile.audio != null);
-  let hasMidi = $derived(profile.midi != null);
-  let hasDmx = $derived(profile.dmx != null);
-  let hasTrigger = $derived(profile.trigger != null);
-  let hasControllers = $derived(profile.controllers != null);
 </script>
 
 <div class="editor">
@@ -95,27 +111,41 @@
     >
   </div>
 
-  <!-- Audio Section -->
-  <div class="section-card">
-    <button class="section-header" onclick={() => toggleCollapse("audio")}>
-      <span class="section-title">Audio</span>
-      <div class="section-controls">
-        <span class="toggle-wrap">
-          <input
-            id="toggle-audio"
-            type="checkbox"
-            checked={hasAudio}
-            onclick={(e: MouseEvent) => e.stopPropagation()}
-            onchange={(e) =>
-              toggleSection("audio", (e.target as HTMLInputElement).checked)}
-          />
-          <label for="toggle-audio">Enable</label>
-        </span>
-        <span class="collapse-icon">{collapsed.audio ? "+" : "-"}</span>
-      </div>
-    </button>
-    {#if hasAudio && !collapsed.audio}
-      <div class="section-body">
+  <div class="tab-bar" role="tablist">
+    {#each tabs as tab (tab.key)}
+      <button
+        class="tab"
+        class:active={activeTab === tab.key}
+        role="tab"
+        aria-selected={activeTab === tab.key}
+        onclick={() => (activeTab = tab.key)}
+      >
+        {tab.label}
+        {#if isEnabled(tab.key)}
+          <span class="tab-dot"></span>
+        {/if}
+      </button>
+    {/each}
+  </div>
+
+  <div class="tab-panel" role="tabpanel">
+    <div class="panel-header">
+      <label class="enable-toggle">
+        <input
+          type="checkbox"
+          checked={isEnabled(activeTab)}
+          onchange={(e) =>
+            toggleSection(activeTab, (e.target as HTMLInputElement).checked)}
+        />
+        Enable {tabs.find((t) => t.key === activeTab)?.label}
+      </label>
+      {#if activeTab === "lighting" && !profile.dmx}
+        <span class="panel-note">Enabling lighting will also enable DMX.</span>
+      {/if}
+    </div>
+
+    {#if activeTab === "audio" && profile.audio}
+      <div class="panel-body">
         <AudioSection
           bind:audio={profile.audio}
           devices={audioDevices}
@@ -124,30 +154,8 @@
           {onchange}
         />
       </div>
-    {/if}
-  </div>
-
-  <!-- MIDI Section -->
-  <div class="section-card">
-    <button class="section-header" onclick={() => toggleCollapse("midi")}>
-      <span class="section-title">MIDI</span>
-      <div class="section-controls">
-        <span class="toggle-wrap">
-          <input
-            id="toggle-midi"
-            type="checkbox"
-            checked={hasMidi}
-            onclick={(e: MouseEvent) => e.stopPropagation()}
-            onchange={(e) =>
-              toggleSection("midi", (e.target as HTMLInputElement).checked)}
-          />
-          <label for="toggle-midi">Enable</label>
-        </span>
-        <span class="collapse-icon">{collapsed.midi ? "+" : "-"}</span>
-      </div>
-    </button>
-    {#if hasMidi && !collapsed.midi}
-      <div class="section-body">
+    {:else if activeTab === "midi" && profile.midi}
+      <div class="panel-body">
         <MidiSection
           bind:midi={profile.midi}
           devices={midiDevices}
@@ -155,56 +163,16 @@
           {onchange}
         />
       </div>
-    {/if}
-  </div>
-
-  <!-- DMX Section -->
-  <div class="section-card">
-    <button class="section-header" onclick={() => toggleCollapse("dmx")}>
-      <span class="section-title">DMX</span>
-      <div class="section-controls">
-        <span class="toggle-wrap">
-          <input
-            id="toggle-dmx"
-            type="checkbox"
-            checked={hasDmx}
-            onclick={(e: MouseEvent) => e.stopPropagation()}
-            onchange={(e) =>
-              toggleSection("dmx", (e.target as HTMLInputElement).checked)}
-          />
-          <label for="toggle-dmx">Enable</label>
-        </span>
-        <span class="collapse-icon">{collapsed.dmx ? "+" : "-"}</span>
-      </div>
-    </button>
-    {#if hasDmx && !collapsed.dmx}
-      <div class="section-body">
+    {:else if activeTab === "dmx" && profile.dmx}
+      <div class="panel-body">
         <DmxSection bind:dmx={profile.dmx} {onchange} />
       </div>
-    {/if}
-  </div>
-
-  <!-- Trigger Section -->
-  <div class="section-card">
-    <button class="section-header" onclick={() => toggleCollapse("trigger")}>
-      <span class="section-title">Triggers</span>
-      <div class="section-controls">
-        <span class="toggle-wrap">
-          <input
-            id="toggle-trigger"
-            type="checkbox"
-            checked={hasTrigger}
-            onclick={(e: MouseEvent) => e.stopPropagation()}
-            onchange={(e) =>
-              toggleSection("trigger", (e.target as HTMLInputElement).checked)}
-          />
-          <label for="toggle-trigger">Enable</label>
-        </span>
-        <span class="collapse-icon">{collapsed.trigger ? "+" : "-"}</span>
+    {:else if activeTab === "lighting" && profile.dmx?.lighting}
+      <div class="panel-body">
+        <LightingSection bind:lighting={profile.dmx.lighting} {onchange} />
       </div>
-    </button>
-    {#if hasTrigger && !collapsed.trigger}
-      <div class="section-body">
+    {:else if activeTab === "trigger" && profile.trigger}
+      <div class="panel-body">
         <TriggerSection
           bind:trigger={profile.trigger}
           {audioDevices}
@@ -213,37 +181,16 @@
           {onchange}
         />
       </div>
-    {/if}
-  </div>
-
-  <!-- Controllers Section -->
-  <div class="section-card">
-    <button
-      class="section-header"
-      onclick={() => toggleCollapse("controllers")}
-    >
-      <span class="section-title">Controllers</span>
-      <div class="section-controls">
-        <span class="toggle-wrap">
-          <input
-            id="toggle-controllers"
-            type="checkbox"
-            checked={hasControllers}
-            onclick={(e: MouseEvent) => e.stopPropagation()}
-            onchange={(e) =>
-              toggleSection(
-                "controllers",
-                (e.target as HTMLInputElement).checked,
-              )}
-          />
-          <label for="toggle-controllers">Enable</label>
-        </span>
-        <span class="collapse-icon">{collapsed.controllers ? "+" : "-"}</span>
-      </div>
-    </button>
-    {#if hasControllers && !collapsed.controllers}
-      <div class="section-body">
+    {:else if activeTab === "controllers" && profile.controllers}
+      <div class="panel-body">
         <ControllersSection bind:controllers={profile.controllers} {onchange} />
+      </div>
+    {:else if !isEnabled(activeTab)}
+      <div class="panel-empty">
+        <p>
+          {tabs.find((t) => t.key === activeTab)?.label} is not enabled for this profile.
+        </p>
+        <p>Toggle the checkbox above to configure it.</p>
       </div>
     {/if}
   </div>
@@ -271,60 +218,85 @@
     font-size: 11px;
     color: var(--text-dim);
   }
-  .section-card {
+  .tab-bar {
+    display: flex;
+    gap: 0;
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+  }
+  .tab {
+    position: relative;
+    padding: 10px 16px;
+    font-size: 13px;
+    font-weight: 500;
+    font-family: var(--sans);
+    color: var(--text-muted);
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+    white-space: nowrap;
+    transition:
+      color 0.15s,
+      border-color 0.15s;
+  }
+  .tab:hover {
+    color: var(--text);
+  }
+  .tab.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+  }
+  .tab-dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--green);
+    margin-left: 6px;
+    vertical-align: middle;
+  }
+  .tab-panel {
     background: var(--bg-card);
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
     overflow: hidden;
   }
-  .section-header {
+  .panel-header {
     display: flex;
-    justify-content: space-between;
     align-items: center;
+    gap: 16px;
     padding: 12px 16px;
-    cursor: pointer;
-    background: none;
-    border: none;
-    width: 100%;
-    text-align: left;
-    font-family: var(--sans);
-    transition: background 0.15s;
+    border-bottom: 1px solid var(--border);
   }
-  .section-header:hover {
-    background: var(--bg-card-hover);
-  }
-  .section-title {
+  .enable-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     font-size: 13px;
-    font-weight: 600;
-    color: var(--text);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-  }
-  .section-controls {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-  }
-  .toggle-wrap {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-  .toggle-wrap label {
-    font-size: 12px;
     color: var(--text-muted);
     cursor: pointer;
   }
-  .collapse-icon {
-    font-family: var(--mono);
-    font-size: 14px;
+  .panel-note {
+    font-size: 11px;
     color: var(--text-dim);
-    width: 16px;
-    text-align: center;
   }
-  .section-body {
-    padding: 0 16px 16px;
-    border-top: 1px solid var(--border);
-    padding-top: 12px;
+  .panel-body {
+    padding: 16px;
+  }
+  .panel-empty {
+    padding: 40px 20px;
+    text-align: center;
+    color: var(--text-dim);
+  }
+  .panel-empty p {
+    margin-bottom: 4px;
+    font-size: 13px;
+  }
+  @media (max-width: 600px) {
+    .tab {
+      padding: 8px 12px;
+      font-size: 12px;
+    }
   }
 </style>

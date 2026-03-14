@@ -198,3 +198,160 @@ export async function stopCapture(): Promise<ChannelCalibration> {
 export async function cancelCalibration(): Promise<void> {
   await del("/calibrate");
 }
+
+// Lighting fixture type & venue API
+
+export interface FixtureTypeData {
+  name: string;
+  channels: Record<string, number>;
+  max_strobe_frequency: number | null;
+  min_strobe_frequency: number | null;
+  strobe_dmx_offset: number | null;
+}
+
+export interface FixtureData {
+  name: string;
+  fixture_type: string;
+  universe: number;
+  start_channel: number;
+  tags: string[];
+}
+
+export interface VenueData {
+  name: string;
+  fixtures: Record<string, FixtureData>;
+  groups: Record<string, { name: string; fixtures: string[] }>;
+}
+
+export async function fetchFixtureTypes(
+  dir?: string,
+): Promise<Record<string, FixtureTypeData>> {
+  const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
+  const res = await get(`/lighting/fixture-types${params}`);
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(
+      data.error || `Failed to fetch fixture types: ${res.status}`,
+    );
+  }
+  const data = await res.json();
+  return data.fixture_types;
+}
+
+export async function fetchFixtureType(
+  name: string,
+  dir?: string,
+): Promise<{ fixture_type: FixtureTypeData; dsl: string }> {
+  const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
+  const res = await get(
+    `/lighting/fixture-types/${encodeURIComponent(name)}${params}`,
+  );
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(
+      data.error || `Failed to fetch fixture type: ${res.status}`,
+    );
+  }
+  return res.json();
+}
+
+export async function saveFixtureType(
+  name: string,
+  data: {
+    channels: Record<string, number>;
+    max_strobe_frequency?: number | null;
+    min_strobe_frequency?: number | null;
+    strobe_dmx_offset?: number | null;
+  },
+  dir?: string,
+): Promise<void> {
+  const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
+  const res = await put(
+    `/lighting/fixture-types/${encodeURIComponent(name)}${params}`,
+    JSON.stringify(data),
+  );
+  if (!res.ok) {
+    const d = await res.json().catch(() => ({}));
+    throw new Error(d.error || `Failed to save fixture type: ${res.status}`);
+  }
+}
+
+export async function deleteFixtureType(
+  name: string,
+  dir?: string,
+): Promise<void> {
+  const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
+  const res = await del(
+    `/lighting/fixture-types/${encodeURIComponent(name)}${params}`,
+  );
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(
+      data.error || `Failed to delete fixture type: ${res.status}`,
+    );
+  }
+}
+
+export async function fetchVenues(
+  dir?: string,
+): Promise<Record<string, VenueData>> {
+  const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
+  const res = await get(`/lighting/venues${params}`);
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || `Failed to fetch venues: ${res.status}`);
+  }
+  const data = await res.json();
+  return data.venues;
+}
+
+export async function fetchVenue(
+  name: string,
+  dir?: string,
+): Promise<{ venue: VenueData; dsl: string }> {
+  const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
+  const res = await get(
+    `/lighting/venues/${encodeURIComponent(name)}${params}`,
+  );
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || `Failed to fetch venue: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function saveVenue(
+  name: string,
+  data: {
+    fixtures: {
+      name: string;
+      fixture_type: string;
+      universe: number;
+      start_channel: number;
+      tags: string[];
+    }[];
+    groups?: Record<string, string[]>;
+  },
+  dir?: string,
+): Promise<void> {
+  const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
+  const res = await put(
+    `/lighting/venues/${encodeURIComponent(name)}${params}`,
+    JSON.stringify(data),
+  );
+  if (!res.ok) {
+    const d = await res.json().catch(() => ({}));
+    throw new Error(d.error || `Failed to save venue: ${res.status}`);
+  }
+}
+
+export async function deleteVenue(name: string, dir?: string): Promise<void> {
+  const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
+  const res = await del(
+    `/lighting/venues/${encodeURIComponent(name)}${params}`,
+  );
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || `Failed to delete venue: ${res.status}`);
+  }
+}

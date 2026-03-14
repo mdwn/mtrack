@@ -65,6 +65,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are stored in a `samples/` directory alongside the config file. Supports WAV, FLAC, MP3,
   OGG, AAC, M4A, AIFF formats. New REST endpoints: `PUT /api/config/samples` for updating
   sample definitions, `PUT /api/samples/upload/{filename}` for uploading sample files.
+- **Trigger configuration UI**: The profile editor now includes a Triggers tab for configuring
+  audio and MIDI trigger inputs. Each input can be configured with device, channel, threshold,
+  gain, scan/retrigger timing, velocity curve, sample assignment, and release groups. Audio
+  inputs support calibration directly from the UI.
+- **Lighting configuration UI**: Fixture types and venues can now be created, edited, renamed,
+  and deleted directly from the web UI without a text editor. The profile editor's Lighting tab
+  provides three sub-views:
+  - **Fixture Types**: Visual editor for channel maps (name + DMX offset) and strobe settings
+  - **Venues**: Visual editor for fixtures (type, universe, channel, tags) with fixture type
+    dropdowns populated from loaded definitions
+  - **Profile Settings**: Directory overrides, current venue selection, inline fixtures, and
+    logical group configuration with constraint editors (AllOf, AnyOf, Prefer, MinCount,
+    MaxCount, FallbackTo, AllowEmpty)
+- **Lighting REST API**: Ten new endpoints for fixture type and venue CRUD:
+  `GET/PUT/DELETE /api/lighting/fixture-types/{name}`,
+  `GET /api/lighting/fixture-types`,
+  `GET/PUT/DELETE /api/lighting/venues/{name}`,
+  `GET /api/lighting/venues`. All endpoints accept an optional `?dir=` parameter for
+  directory overrides. PUT endpoints accept structured JSON (converted to `.light` DSL) or
+  raw DSL text, and validate by parsing before writing.
+- **Tag input component**: A reusable chip-style tag editor used in venue fixture tags and
+  lighting group constraints. Supports typing (Enter/comma to add), backspace to remove,
+  paste with auto-split, and sanitizes input to `[a-z0-9_-]` to prevent syntax errors.
+- **Profile editor tab layout**: The hardware profile editor now uses horizontal tabs
+  (Audio, MIDI, DMX, Lighting, Triggers, Controllers) instead of stacked collapsible
+  sections, reducing visual clutter. Each tab shows a green dot when that section is enabled.
+- **Song creation UI**: Songs can now be created from the web UI song browser with a name
+  and optional configuration.
 
 ### Changed
 
@@ -110,6 +138,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Sample upload path injection**: The sample file upload endpoint now canonicalizes the
+  project root before constructing filesystem paths, preventing path traversal via crafted
+  filenames.
 - Web UI asset tests now discover embedded filenames dynamically instead of hardcoding
   hashed filenames that change with every Svelte build.
 
