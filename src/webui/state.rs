@@ -91,6 +91,9 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
             (String::new(), 0, vec![])
         };
 
+        let available_playlists = player.list_playlists();
+        let persisted_playlist_name = player.persisted_playlist_name();
+
         let msg = json!({
             "type": "playback",
             "is_playing": is_playing,
@@ -101,6 +104,8 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
             "playlist_position": playlist_position,
             "playlist_songs": playlist_songs,
             "tracks": tracks,
+            "available_playlists": available_playlists,
+            "persisted_playlist_name": persisted_playlist_name,
         });
 
         let _ = tx.send(msg.to_string());
@@ -783,7 +788,16 @@ mod test {
             sample_engine: None,
             trigger_engine: None,
         };
-        Arc::new(crate::player::Player::new_with_devices(devices, pl, songs, None).unwrap())
+        let mut playlists = HashMap::new();
+        playlists.insert(
+            "all_songs".to_string(),
+            playlist::from_songs(songs.clone()).unwrap(),
+        );
+        playlists.insert(pl.name().to_string(), pl);
+        Arc::new(
+            crate::player::Player::new_with_devices(devices, playlists, "test".to_string(), None)
+                .unwrap(),
+        )
     }
 
     #[test]

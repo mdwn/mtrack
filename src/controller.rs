@@ -87,7 +87,9 @@ mod test {
     };
     use tracing::error;
 
-    use crate::{config, player::Player, playlist::Playlist, songs, testutil::eventually};
+    use crate::{
+        config, player::Player, playlist, playlist::Playlist, songs, testutil::eventually,
+    };
 
     use super::Driver;
 
@@ -163,10 +165,10 @@ mod test {
                             player.stop().await;
                         }
                         TestEvent::AllSongs => {
-                            player.switch_to_all_songs().await;
+                            player.switch_to_playlist("all_songs").await.unwrap();
                         }
                         TestEvent::Playlist => {
-                            player.switch_to_playlist().await;
+                            player.switch_to_playlist("playlist").await.unwrap();
                         }
                         TestEvent::Close => return Ok(()),
                     }
@@ -179,13 +181,20 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_controller_new_with_grpc() -> Result<(), Box<dyn Error>> {
         let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let player = Arc::new(Player::new(
+        let playlist = Playlist::new(
+            "playlist",
+            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
             songs.clone(),
-            Playlist::new(
-                "playlist",
-                &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-                songs,
-            )?,
+        )?;
+        let mut playlists = HashMap::new();
+        playlists.insert(
+            "all_songs".to_string(),
+            playlist::from_songs(songs.clone())?,
+        );
+        playlists.insert("playlist".to_string(), playlist);
+        let player = Arc::new(Player::new(
+            playlists,
+            "playlist".to_string(),
             &config::Player::new(
                 vec![],
                 Some(config::Audio::new("mock-device")),
@@ -211,13 +220,20 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_controller_new_empty_config() -> Result<(), Box<dyn Error>> {
         let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let player = Arc::new(Player::new(
+        let playlist = Playlist::new(
+            "playlist",
+            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
             songs.clone(),
-            Playlist::new(
-                "playlist",
-                &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-                songs,
-            )?,
+        )?;
+        let mut playlists = HashMap::new();
+        playlists.insert(
+            "all_songs".to_string(),
+            playlist::from_songs(songs.clone())?,
+        );
+        playlists.insert("playlist".to_string(), playlist);
+        let player = Arc::new(Player::new(
+            playlists,
+            "playlist".to_string(),
             &config::Player::new(
                 vec![],
                 Some(config::Audio::new("mock-device")),
@@ -241,13 +257,20 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_controller_new_with_osc() -> Result<(), Box<dyn Error>> {
         let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let player = Arc::new(Player::new(
+        let playlist = Playlist::new(
+            "playlist",
+            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
             songs.clone(),
-            Playlist::new(
-                "playlist",
-                &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-                songs,
-            )?,
+        )?;
+        let mut playlists = HashMap::new();
+        playlists.insert(
+            "all_songs".to_string(),
+            playlist::from_songs(songs.clone())?,
+        );
+        playlists.insert("playlist".to_string(), playlist);
+        let player = Arc::new(Player::new(
+            playlists,
+            "playlist".to_string(),
             &config::Player::new(
                 vec![],
                 Some(config::Audio::new("mock-device")),
@@ -272,13 +295,20 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_controller() -> Result<(), Box<dyn Error>> {
         let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let player = Arc::new(Player::new(
+        let playlist = Playlist::new(
+            "playlist",
+            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
             songs.clone(),
-            Playlist::new(
-                "playlist",
-                &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-                songs,
-            )?,
+        )?;
+        let mut playlists = HashMap::new();
+        playlists.insert(
+            "all_songs".to_string(),
+            playlist::from_songs(songs.clone())?,
+        );
+        playlists.insert("playlist".to_string(), playlist);
+        let player = Arc::new(Player::new(
+            playlists,
+            "playlist".to_string(),
             &config::Player::new(
                 vec![],
                 Some(config::Audio::new("mock-device")),
@@ -385,13 +415,20 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_controller_shutdown() -> Result<(), Box<dyn Error>> {
         let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let player = Arc::new(Player::new(
+        let playlist = Playlist::new(
+            "playlist",
+            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
             songs.clone(),
-            Playlist::new(
-                "playlist",
-                &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-                songs,
-            )?,
+        )?;
+        let mut playlists = HashMap::new();
+        playlists.insert(
+            "all_songs".to_string(),
+            playlist::from_songs(songs.clone())?,
+        );
+        playlists.insert("playlist".to_string(), playlist);
+        let player = Arc::new(Player::new(
+            playlists,
+            "playlist".to_string(),
             &config::Player::new(
                 vec![],
                 Some(config::Audio::new("mock-device")),

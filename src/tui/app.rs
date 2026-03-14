@@ -153,11 +153,12 @@ impl App {
                 Action::None
             }
             KeyCode::Char('a') => {
-                self.player.switch_to_all_songs().await;
+                let _ = self.player.switch_to_playlist("all_songs").await;
                 Action::None
             }
             KeyCode::Char('l') => {
-                self.player.switch_to_playlist().await;
+                let name = self.player.persisted_playlist_name();
+                let _ = self.player.switch_to_playlist(&name).await;
                 Action::None
             }
             _ => Action::None,
@@ -216,7 +217,7 @@ mod tests {
         let songs = Arc::new(Songs::new(map));
         let playlist_config =
             config::Playlist::new(&song_names.iter().map(|s| s.to_string()).collect::<Vec<_>>());
-        let playlist = playlist::Playlist::new("test", &playlist_config, songs.clone()).unwrap();
+        let pl = playlist::Playlist::new("test", &playlist_config, songs.clone()).unwrap();
         let devices = PlayerDevices {
             audio: None,
             mappings: None,
@@ -225,7 +226,13 @@ mod tests {
             sample_engine: None,
             trigger_engine: None,
         };
-        Arc::new(Player::new_with_devices(devices, playlist, songs, None).unwrap())
+        let mut playlists = HashMap::new();
+        playlists.insert(
+            "all_songs".to_string(),
+            playlist::from_songs(songs.clone()).unwrap(),
+        );
+        playlists.insert(pl.name().to_string(), pl);
+        Arc::new(Player::new_with_devices(devices, playlists, "test".to_string(), None).unwrap())
     }
 
     fn test_app(song_names: &[&str]) -> App {

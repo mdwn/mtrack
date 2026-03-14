@@ -121,14 +121,13 @@ pub struct Player {
     hardware: Arc<parking_lot::RwLock<HardwareState>>,
     /// Base path for resolving sample/DMX config files. None in test paths.
     base_path: Option<PathBuf>,
-    /// The playlist to use. Behind a RwLock so it can be refreshed when the
-    /// active playlist was auto-generated from all songs (zero-config mode).
-    playlist: Arc<parking_lot::RwLock<Arc<Playlist>>>,
-    /// The all songs playlist. Behind a RwLock so it can be refreshed at runtime
-    /// (e.g., after importing a song via the web UI).
-    all_songs: Arc<parking_lot::RwLock<Arc<Playlist>>>,
-    /// Switches between the playlist and the all songs playlist.
-    use_all_songs: Arc<AtomicBool>,
+    /// All playlists keyed by name. Always includes "all_songs".
+    playlists: Arc<parking_lot::RwLock<HashMap<String, Arc<Playlist>>>>,
+    /// The name of the currently active playlist.
+    active_playlist: Arc<parking_lot::RwLock<String>>,
+    /// The persisted active playlist name (last non-all_songs choice). Used by
+    /// MIDI/OSC `Playlist` action to return to the user's "real" playlist.
+    persisted_playlist: Arc<parking_lot::RwLock<String>>,
     /// The time that the last play action occurred.
     play_start_time: Arc<Mutex<Option<SystemTime>>>,
     /// Keeps track of the player joins. There should only be one task on here at a time.
@@ -161,8 +160,8 @@ impl Player {
     /// `await_hardware_ready()` to wait for init to complete (mainly useful
     /// in tests).
     pub fn new(
-        songs: Arc<Songs>,
-        playlist: Arc<Playlist>,
+        playlists: HashMap<String, Arc<Playlist>>,
+        active_playlist: String,
         config: &config::Player,
         base_path: Option<&Path>,
     ) -> Result<Player, Box<dyn Error>> {
@@ -175,7 +174,7 @@ impl Player {
             trigger_engine: None,
         };
 
-        let player = Self::new_with_devices(devices, playlist, songs, base_path)?;
+        let player = Self::new_with_devices(devices, playlists, active_playlist, base_path)?;
 
         // Mark as not ready — async init will set to true when complete.
         // Use send_modify() because send() is a no-op when no receivers exist yet.
@@ -453,8 +452,8 @@ impl Player {
     /// and can be called directly in tests with mock devices.
     pub fn new_with_devices(
         devices: PlayerDevices,
-        playlist: Arc<Playlist>,
-        songs: Arc<Songs>,
+        playlists: HashMap<String, Arc<Playlist>>,
+        active_playlist: String,
         base_path: Option<&Path>,
     ) -> Result<Player, Box<dyn Error>> {
         // Store the clock source so each song can create a fresh PlaybackClock.
@@ -482,12 +481,25 @@ impl Player {
 
         let (init_done_tx, _init_done_rx) = tokio::sync::watch::channel(true);
 
+        // Resolve the active playlist: use the requested name if it exists, else fall back to all_songs.
+        let resolved_active = if playlists.contains_key(&active_playlist) {
+            active_playlist
+        } else {
+            "all_songs".to_string()
+        };
+
         Ok(Player {
             hardware: Arc::new(parking_lot::RwLock::new(hw)),
             base_path: base_path.map(Path::to_path_buf),
-            playlist: Arc::new(parking_lot::RwLock::new(playlist)),
-            all_songs: Arc::new(parking_lot::RwLock::new(playlist::from_songs(songs)?)),
-            use_all_songs: Arc::new(AtomicBool::new(false)),
+            playlists: Arc::new(parking_lot::RwLock::new(playlists)),
+            active_playlist: Arc::new(parking_lot::RwLock::new(resolved_active.clone())),
+            persisted_playlist: Arc::new(parking_lot::RwLock::new(
+                if resolved_active == "all_songs" {
+                    "playlist".to_string()
+                } else {
+                    resolved_active
+                },
+            )),
             play_start_time: Arc::new(Mutex::new(None)),
             join: Arc::new(Mutex::new(None)),
             stop_run: Arc::new(AtomicBool::new(false)),
@@ -1111,31 +1123,63 @@ impl Player {
         Some(song)
     }
 
-    /// Switches the active playlist if the player is idle.
-    async fn switch_playlist(&self, use_all_songs: bool, label: &str) {
+    /// Switches the active playlist by name. Returns an error if the name
+    /// doesn't exist in the map or if the player is currently playing.
+    /// Switching to "all_songs" is session-only (not persisted to config).
+    pub async fn switch_to_playlist(&self, name: &str) -> Result<(), String> {
         if let Some(current) = self.if_playing_then_current_song().await {
             info!(
                 current_song = current.name(),
-                "Can't switch to {}, player is active.", label
+                "Can't switch to {}, player is active.", name
             );
-            return;
+            return Err("Cannot switch playlist while playing".to_string());
         }
 
-        self.use_all_songs.store(use_all_songs, Ordering::Relaxed);
+        // Validate the name exists.
+        {
+            let playlists = self.playlists.read();
+            if !playlists.contains_key(name) {
+                return Err(format!("Playlist '{}' not found", name));
+            }
+        }
+
+        *self.active_playlist.write() = name.to_string();
+
+        // Persist the choice to the config store, unless it's "all_songs" (session-only).
+        if name != "all_songs" {
+            *self.persisted_playlist.write() = name.to_string();
+            if let Some(store) = self.config_store() {
+                if let Err(e) = store.set_active_playlist(name.to_string()).await {
+                    warn!("Failed to persist active playlist: {}", e);
+                }
+            }
+        }
+
         if let Some(song) = self.get_playlist().current() {
             let midi_device = self.hardware.read().midi_device.clone();
             Player::emit_midi_event(midi_device, song);
         }
+
+        Ok(())
     }
 
-    /// Switch to the all songs playlist.
-    pub async fn switch_to_all_songs(&self) {
-        self.switch_playlist(true, "all songs").await;
+    /// Returns the persisted active playlist name (the last non-all_songs choice).
+    /// This is what MIDI/OSC `Playlist` action uses to "go back to my real playlist".
+    pub fn persisted_playlist_name(&self) -> String {
+        self.persisted_playlist.read().clone()
     }
 
-    /// Switch to the regular playlist.
-    pub async fn switch_to_playlist(&self) {
-        self.switch_playlist(false, "playlist").await;
+    /// Returns a sorted list of all playlist names.
+    pub fn list_playlists(&self) -> Vec<String> {
+        let playlists = self.playlists.read();
+        let mut names: Vec<String> = playlists.keys().cloned().collect();
+        names.sort();
+        names
+    }
+
+    /// Returns a snapshot of all playlists.
+    pub fn playlists_snapshot(&self) -> HashMap<String, Arc<Playlist>> {
+        self.playlists.read().clone()
     }
 
     /// Returns the track-to-output-channel mappings, if audio is configured.
@@ -1145,27 +1189,43 @@ impl Player {
 
     /// Returns the song registry from the all-songs playlist.
     pub fn songs(&self) -> Arc<Songs> {
-        self.all_songs.read().registry().clone()
+        let playlists = self.playlists.read();
+        playlists
+            .get("all_songs")
+            .expect("all_songs must always be present")
+            .registry()
+            .clone()
     }
 
     /// Gets the all-songs playlist (every song in the registry).
     pub fn get_all_songs_playlist(&self) -> Arc<Playlist> {
-        self.all_songs.read().clone()
+        let playlists = self.playlists.read();
+        playlists
+            .get("all_songs")
+            .expect("all_songs must always be present")
+            .clone()
     }
 
     /// Gets the current playlist used by the player.
     pub fn get_playlist(&self) -> Arc<Playlist> {
-        if self.use_all_songs.load(Ordering::Relaxed) {
-            return self.all_songs.read().clone();
-        }
-
-        self.playlist.read().clone()
+        let name = self.active_playlist.read().clone();
+        let playlists = self.playlists.read();
+        playlists
+            .get(&name)
+            .or_else(|| playlists.get("all_songs"))
+            .expect("all_songs must always be present")
+            .clone()
     }
 
     /// Reinitializes all song-related state by rescanning songs from disk and
-    /// rebuilding both playlists. Call this after any mutation that affects songs
+    /// rebuilding all playlists. Call this after any mutation that affects songs
     /// (import, create, config edit, etc.).
-    pub fn reload_songs(&self, songs_path: &std::path::Path, playlist_path: &std::path::Path) {
+    pub fn reload_songs(
+        &self,
+        songs_path: &std::path::Path,
+        playlists_dir: Option<&std::path::Path>,
+        legacy_playlist_path: Option<&std::path::Path>,
+    ) {
         let new_songs = match songs::get_all_songs(songs_path) {
             Ok(s) => s,
             Err(e) => {
@@ -1174,29 +1234,24 @@ impl Player {
             }
         };
 
-        // Rebuild all-songs playlist.
-        let new_all_songs = match playlist::from_songs(new_songs.clone()) {
-            Ok(p) => p,
-            Err(e) => {
-                warn!("Failed to rebuild all-songs playlist: {}", e);
-                return;
-            }
-        };
-
-        // Rebuild the main playlist from its config file, falling back to all-songs.
-        let new_playlist = match config::Playlist::deserialize(playlist_path) {
-            Ok(playlist_config) => match Playlist::new("playlist", &playlist_config, new_songs) {
+        let new_playlists =
+            match load_playlists(playlists_dir, legacy_playlist_path, new_songs.clone()) {
                 Ok(p) => p,
                 Err(e) => {
-                    info!("Playlist references missing songs ({}); using all songs", e);
-                    new_all_songs.clone()
+                    warn!("Failed to rebuild playlists: {}", e);
+                    return;
                 }
-            },
-            Err(_) => new_all_songs.clone(),
-        };
+            };
 
-        *self.playlist.write() = new_playlist;
-        *self.all_songs.write() = new_all_songs;
+        // Preserve active playlist name if it still exists; fall back to all_songs.
+        {
+            let mut active = self.active_playlist.write();
+            if !new_playlists.contains_key(active.as_str()) {
+                *active = "all_songs".to_string();
+            }
+        }
+
+        *self.playlists.write() = new_playlists;
         info!("Reloaded song state");
     }
 
@@ -1438,6 +1493,90 @@ fn resolve_playback_outcome(
     }
 }
 
+/// Loads all playlists from a directory and/or legacy playlist path.
+/// Always includes the computed "all_songs" playlist.
+pub fn load_playlists(
+    playlists_dir: Option<&Path>,
+    legacy_playlist_path: Option<&Path>,
+    songs: Arc<Songs>,
+) -> Result<HashMap<String, Arc<Playlist>>, Box<dyn Error>> {
+    let mut playlists = HashMap::new();
+
+    // Always create all_songs.
+    playlists.insert(
+        "all_songs".to_string(),
+        playlist::from_songs(songs.clone())?,
+    );
+
+    // Load playlists from directory.
+    if let Some(dir) = playlists_dir {
+        if dir.is_dir() {
+            let mut entries: Vec<_> = std::fs::read_dir(dir)?
+                .filter_map(|e| e.ok())
+                .filter(|e| {
+                    e.path().is_file()
+                        && e.path()
+                            .extension()
+                            .is_some_and(|ext| ext == "yaml" || ext == "yml")
+                })
+                .collect();
+            entries.sort_by_key(|e| e.file_name());
+
+            for entry in entries {
+                let path = entry.path();
+                let name = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or_default()
+                    .to_string();
+                if name.is_empty() || name == "all_songs" {
+                    continue;
+                }
+                match config::Playlist::deserialize(&path) {
+                    Ok(playlist_config) => {
+                        match Playlist::new(&name, &playlist_config, songs.clone()) {
+                            Ok(pl) => {
+                                info!(name = %name, "Loaded playlist from directory");
+                                playlists.insert(name, pl);
+                            }
+                            Err(e) => {
+                                warn!(name = %name, error = %e, "Playlist references missing songs, skipping");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!(path = ?path, error = %e, "Failed to parse playlist file, skipping");
+                    }
+                }
+            }
+        }
+    }
+
+    // Load legacy playlist file as name "playlist" (if not already loaded from dir).
+    if let Some(legacy_path) = legacy_playlist_path {
+        if !playlists.contains_key("playlist") {
+            match config::Playlist::deserialize(legacy_path) {
+                Ok(playlist_config) => {
+                    match Playlist::new("playlist", &playlist_config, songs.clone()) {
+                        Ok(pl) => {
+                            info!("Loaded legacy playlist");
+                            playlists.insert("playlist".to_string(), pl);
+                        }
+                        Err(e) => {
+                            info!("Legacy playlist references missing songs ({}); skipping", e);
+                        }
+                    }
+                }
+                Err(_) => {
+                    info!("Legacy playlist file not found or invalid; skipping");
+                }
+            }
+        }
+    }
+
+    Ok(playlists)
+}
+
 #[cfg(test)]
 mod test {
     use std::{collections::HashMap, error::Error, fs, path::Path, sync::Arc};
@@ -1451,16 +1590,31 @@ mod test {
 
     use super::*;
 
+    /// Test helper: builds a playlists map from a single playlist + songs registry.
+    fn test_playlists(
+        playlist: Arc<Playlist>,
+        songs: Arc<Songs>,
+    ) -> HashMap<String, Arc<Playlist>> {
+        let mut playlists = HashMap::new();
+        playlists.insert(
+            "all_songs".to_string(),
+            playlist::from_songs(songs).unwrap(),
+        );
+        playlists.insert("playlist".to_string(), playlist);
+        playlists
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn test_player() -> Result<(), Box<dyn Error>> {
         let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let player = Player::new(
+        let playlist = Playlist::new(
+            "playlist",
+            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
             songs.clone(),
-            Playlist::new(
-                "playlist",
-                &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-                songs,
-            )?,
+        )?;
+        let player = Player::new(
+            test_playlists(playlist, songs.clone()),
+            "playlist".to_string(),
             &config::Player::new(
                 vec![],
                 Some(config::Audio::new("mock-device")),
@@ -1494,7 +1648,7 @@ mod test {
         assert_eq!(player.get_playlist().current().unwrap().name(), "Song 1");
 
         println!("Switch to AllSongs");
-        player.switch_to_all_songs().await;
+        player.switch_to_playlist("all_songs").await.unwrap();
         assert_eq!(player.get_playlist().current().unwrap().name(), "Song 1");
 
         player.next().await;
@@ -1526,7 +1680,7 @@ mod test {
 
         assert!(midi_device.get_emitted_event().is_none());
 
-        player.switch_to_playlist().await;
+        player.switch_to_playlist("playlist").await.unwrap();
         println!("Switch to Playlist");
         assert_eq!(player.get_playlist().current().unwrap().name(), "Song 1");
 
@@ -1643,8 +1797,8 @@ mod test {
 
         // Create player with DMX engine that has lighting config
         let player = Player::new(
-            songs,
-            playlist,
+            test_playlists(playlist, songs.clone()),
+            "playlist".to_string(),
             &config::Player::new(
                 vec![],
                 Some(config::Audio::new("mock-device")),
@@ -1675,13 +1829,14 @@ mod test {
         dmx: Option<config::Dmx>,
     ) -> Result<Player, Box<dyn Error>> {
         let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let player = Player::new(
+        let playlist = Playlist::new(
+            "playlist",
+            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
             songs.clone(),
-            Playlist::new(
-                "playlist",
-                &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-                songs,
-            )?,
+        )?;
+        let player = Player::new(
+            test_playlists(playlist, songs),
+            "playlist".to_string(),
             &config::Player::new(vec![], audio, midi, dmx, HashMap::new(), "assets/songs"),
             None,
         )?;
@@ -1805,9 +1960,9 @@ mod test {
         let player = make_test_player().await?;
 
         assert_eq!(player.get_playlist().name(), "playlist");
-        player.switch_to_all_songs().await;
+        player.switch_to_playlist("all_songs").await.unwrap();
         assert_eq!(player.get_playlist().name(), "all_songs");
-        player.switch_to_playlist().await;
+        player.switch_to_playlist("playlist").await.unwrap();
         assert_eq!(player.get_playlist().name(), "playlist");
 
         Ok(())
@@ -1914,8 +2069,8 @@ mod test {
 
         // Create player with DMX engine that has lighting config
         let player = Player::new(
-            songs,
-            playlist,
+            test_playlists(playlist, songs.clone()),
+            "playlist".to_string(),
             &config::Player::new(
                 vec![],
                 Some(config::Audio::new("mock-device")),
@@ -2022,7 +2177,7 @@ mod test {
         player.get_playlist().next(); // Song 3
         player.get_playlist().next(); // Song 5
                                       // Use the all songs playlist to reach Song 2 more easily.
-        player.switch_to_all_songs().await;
+        player.switch_to_playlist("all_songs").await.unwrap();
         // all_songs starts at Song 1, navigate to Song 2.
         player.get_playlist().next(); // Song 10
         player.get_playlist().next(); // Song 2
@@ -2083,7 +2238,12 @@ mod test {
             sample_engine: None,
             trigger_engine: None,
         };
-        let player = Player::new_with_devices(devices, playlist, songs, None)?;
+        let player = Player::new_with_devices(
+            devices,
+            test_playlists(playlist, songs),
+            "playlist".to_string(),
+            None,
+        )?;
 
         assert!(player.audio_device().is_none());
         assert!(player.midi_device().is_none());
@@ -2171,12 +2331,16 @@ mod test {
         player.play().await?;
         eventually(|| device.is_playing(), "Song never started playing");
 
-        // Attempt switch while playing — should be a no-op.
-        player.switch_to_all_songs().await;
+        // Attempt switch while playing — should return error.
+        let result = player.switch_to_playlist("all_songs").await;
+        assert!(
+            result.is_err(),
+            "switch_to_playlist should fail while playing"
+        );
         assert_eq!(
             player.get_playlist().name(),
             "playlist",
-            "switch_to_all_songs should be a no-op while playing"
+            "playlist should not change while playing"
         );
 
         player.stop().await;
@@ -2411,7 +2575,12 @@ mod test {
             sample_engine: None,
             trigger_engine: None,
         };
-        Player::new_with_devices(devices, playlist, songs, None)
+        Player::new_with_devices(
+            devices,
+            test_playlists(playlist, songs),
+            "playlist".to_string(),
+            None,
+        )
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2464,17 +2633,21 @@ mod test {
             .expect("audio device should be present");
         let device = binding.to_mock()?;
 
-        player.switch_to_all_songs().await;
+        player.switch_to_playlist("all_songs").await.unwrap();
         assert_eq!(player.get_playlist().name(), "all_songs");
 
         player.play().await?;
         eventually(|| device.is_playing(), "Song never started playing");
 
-        player.switch_to_playlist().await;
+        let result = player.switch_to_playlist("playlist").await;
+        assert!(
+            result.is_err(),
+            "switch_to_playlist should fail while playing"
+        );
         assert_eq!(
             player.get_playlist().name(),
             "all_songs",
-            "switch_to_playlist should be a no-op while playing"
+            "playlist should not change while playing"
         );
 
         player.stop().await;
@@ -2513,7 +2686,12 @@ mod test {
             sample_engine: None,
             trigger_engine: None,
         };
-        let player = Player::new_with_devices(devices, playlist, songs, None)?;
+        let player = Player::new_with_devices(
+            devices,
+            test_playlists(playlist, songs),
+            "test".to_string(),
+            None,
+        )?;
         assert!(player.audio_device().is_none());
         assert!(player.midi_device().is_none());
         assert!(player.dmx_engine().is_none());
@@ -2565,7 +2743,12 @@ mod test {
             sample_engine: None,
             trigger_engine: None,
         };
-        let player = Player::new_with_devices(devices, playlist, songs, None)?;
+        let player = Player::new_with_devices(
+            devices,
+            test_playlists(playlist, songs),
+            "playlist".to_string(),
+            None,
+        )?;
 
         player.process_sample_trigger(&[0x90, 60, 127]);
         player.stop_samples();

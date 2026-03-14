@@ -33,32 +33,6 @@ use crate::{
     },
 };
 
-// Playlist name constants.
-const PLAYLIST_NAME: &str = "playlist";
-const ALL_SONGS_NAME: &str = "all_songs";
-
-/// Recognized playlist switch targets.
-#[derive(Debug, PartialEq)]
-enum PlaylistTarget {
-    Playlist,
-    AllSongs,
-}
-
-/// Classifies a playlist name string into a known target, or returns an error Status.
-#[allow(clippy::result_large_err)]
-fn classify_playlist_name(name: &str) -> Result<PlaylistTarget, Status> {
-    if name == PLAYLIST_NAME {
-        Ok(PlaylistTarget::Playlist)
-    } else if name == ALL_SONGS_NAME {
-        Ok(PlaylistTarget::AllSongs)
-    } else {
-        Err(Status::unimplemented(format!(
-            "only {} and {} are supported for now",
-            ALL_SONGS_NAME, PLAYLIST_NAME
-        )))
-    }
-}
-
 /// A controller that controls a player using gRPC.
 pub struct Driver {
     /// The player.
@@ -264,10 +238,17 @@ impl PlayerService for PlayerServer {
         &self,
         request: Request<SwitchToPlaylistRequest>,
     ) -> Result<Response<SwitchToPlaylistResponse>, Status> {
-        match classify_playlist_name(&request.into_inner().playlist_name)? {
-            PlaylistTarget::Playlist => self.player.switch_to_playlist().await,
-            PlaylistTarget::AllSongs => self.player.switch_to_all_songs().await,
-        }
+        let playlist_name = request.into_inner().playlist_name;
+        self.player
+            .switch_to_playlist(&playlist_name)
+            .await
+            .map_err(|e| {
+                if e.contains("not found") {
+                    Status::not_found(e)
+                } else {
+                    Status::failed_precondition(e)
+                }
+            })?;
         Ok(Response::new(SwitchToPlaylistResponse {}))
     }
 
@@ -495,10 +476,8 @@ mod test {
 
     use crate::{
         config,
-        controller::{
-            grpc::{Driver, ALL_SONGS_NAME, PLAYLIST_NAME},
-            Driver as _,
-        },
+        controller::{grpc::Driver, Driver as _},
+        playlist,
         playlist::Playlist,
         proto::player::v1::{
             player_service_client::PlayerServiceClient, NextRequest, PlayRequest, PreviousRequest,
@@ -513,13 +492,20 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_grpc() -> Result<(), Box<dyn Error>> {
         let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let player = Arc::new(Player::new(
+        let pl = Playlist::new(
+            "playlist",
+            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
             songs.clone(),
-            Playlist::new(
-                "playlist",
-                &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-                songs,
-            )?,
+        )?;
+        let mut playlists = HashMap::new();
+        playlists.insert(
+            "all_songs".to_string(),
+            playlist::from_songs(songs.clone())?,
+        );
+        playlists.insert("playlist".to_string(), pl);
+        let player = Arc::new(Player::new(
+            playlists,
+            "playlist".to_string(),
             &config::Player::new(
                 vec![],
                 Some(config::Audio::new("mock-device")),
@@ -589,7 +575,7 @@ mod test {
         println!("Switch to AllSongs");
         let _ = client
             .switch_to_playlist(SwitchToPlaylistRequest {
-                playlist_name: ALL_SONGS_NAME.to_string(),
+                playlist_name: "all_songs".to_string(),
             })
             .await?;
         assert_eq!(player.get_playlist().current().unwrap().name(), "Song 1");
@@ -619,7 +605,7 @@ mod test {
 
         let _ = client
             .switch_to_playlist(SwitchToPlaylistRequest {
-                playlist_name: PLAYLIST_NAME.to_string(),
+                playlist_name: "playlist".to_string(),
             })
             .await?;
         println!("Switch to Playlist");
@@ -684,13 +670,20 @@ mod test {
         Box<dyn Error>,
     > {
         let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let player = Arc::new(Player::new(
+        let pl = Playlist::new(
+            "playlist",
+            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
             songs.clone(),
-            Playlist::new(
-                "playlist",
-                &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-                songs,
-            )?,
+        )?;
+        let mut playlists = HashMap::new();
+        playlists.insert(
+            "all_songs".to_string(),
+            playlist::from_songs(songs.clone())?,
+        );
+        playlists.insert("playlist".to_string(), pl);
+        let player = Arc::new(Player::new(
+            playlists,
+            "playlist".to_string(),
             &config::Player::new(
                 vec![],
                 Some(config::Audio::new("mock-device")),
@@ -774,7 +767,7 @@ mod test {
             .await;
         assert!(result.is_err());
         let status = result.unwrap_err();
-        assert_eq!(status.code(), tonic::Code::Unimplemented);
+        assert_eq!(status.code(), tonic::Code::NotFound);
 
         Ok(())
     }
@@ -928,44 +921,5 @@ mod test {
         client.stop(StopRequest {}).await?;
         eventually(|| !device.is_playing(), "Song never stopped");
         Ok(())
-    }
-
-    mod classify_playlist_name_tests {
-        use super::super::{classify_playlist_name, PlaylistTarget};
-
-        #[test]
-        fn recognizes_playlist() {
-            assert_eq!(
-                classify_playlist_name("playlist").unwrap(),
-                PlaylistTarget::Playlist
-            );
-        }
-
-        #[test]
-        fn recognizes_all_songs() {
-            assert_eq!(
-                classify_playlist_name("all_songs").unwrap(),
-                PlaylistTarget::AllSongs
-            );
-        }
-
-        #[test]
-        fn unknown_name_returns_error() {
-            let result = classify_playlist_name("nonexistent");
-            assert!(result.is_err());
-            let status = result.unwrap_err();
-            assert_eq!(status.code(), tonic::Code::Unimplemented);
-        }
-
-        #[test]
-        fn empty_name_returns_error() {
-            assert!(classify_playlist_name("").is_err());
-        }
-
-        #[test]
-        fn case_sensitive() {
-            assert!(classify_playlist_name("Playlist").is_err());
-            assert!(classify_playlist_name("ALL_SONGS").is_err());
-        }
     }
 }

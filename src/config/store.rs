@@ -321,6 +321,19 @@ impl ConfigStore {
         })
         .await
     }
+
+    /// Sets the active playlist name without requiring a checksum.
+    /// This is called internally when switching playlists, not from the
+    /// config editor UI, so optimistic concurrency isn't needed.
+    pub async fn set_active_playlist(&self, name: String) -> Result<(), ConfigError> {
+        let mut guard = self.inner.write().await;
+        guard.set_active_playlist(name);
+        let new_yaml =
+            to_yaml_string(&*guard).map_err(|e| ConfigError::StoreSerialization(e.to_string()))?;
+        atomic_write(&self.path, &new_yaml).map_err(ConfigError::StoreIo)?;
+        let _ = self.change_tx.send(());
+        Ok(())
+    }
 }
 
 #[cfg(test)]

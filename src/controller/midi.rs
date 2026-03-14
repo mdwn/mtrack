@@ -159,8 +159,17 @@ impl super::Driver for Driver {
                     MidiAction::Stop => {
                         player.stop().await;
                     }
-                    MidiAction::AllSongs => player.switch_to_all_songs().await,
-                    MidiAction::Playlist => player.switch_to_playlist().await,
+                    MidiAction::AllSongs => {
+                        if let Err(e) = player.switch_to_playlist("all_songs").await {
+                            error!("Failed to switch to all_songs: {}", e);
+                        }
+                    }
+                    MidiAction::Playlist => {
+                        let name = player.persisted_playlist_name();
+                        if let Err(e) = player.switch_to_playlist(&name).await {
+                            error!("Failed to switch to playlist {}: {}", name, e);
+                        }
+                    }
                     MidiAction::Unrecognized => {}
                 }
             }
@@ -177,6 +186,7 @@ mod test {
         controller::Controller,
         midi::Device,
         player::Player,
+        playlist,
         playlist::Playlist,
         songs,
         testutil::eventually,
@@ -215,13 +225,20 @@ mod test {
         unrecognized_event.write(&mut unrecognized_buf)?;
 
         let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let player = Arc::new(Player::new(
+        let pl = Playlist::new(
+            "playlist",
+            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
             songs.clone(),
-            Playlist::new(
-                "playlist",
-                &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-                songs,
-            )?,
+        )?;
+        let mut playlists = HashMap::new();
+        playlists.insert(
+            "all_songs".to_string(),
+            playlist::from_songs(songs.clone())?,
+        );
+        playlists.insert("playlist".to_string(), pl);
+        let player = Arc::new(Player::new(
+            playlists,
+            "playlist".to_string(),
             &config::Player::new(
                 vec![],
                 Some(config::Audio::new("mock-device")),

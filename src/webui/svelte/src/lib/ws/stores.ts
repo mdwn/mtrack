@@ -31,6 +31,8 @@ export interface PlaybackState {
   playlist_position: number;
   playlist_songs: string[];
   tracks: TrackInfo[];
+  available_playlists: string[];
+  persisted_playlist_name: string;
 }
 
 export interface FixtureChannels {
@@ -71,6 +73,8 @@ export const playbackStore = writable<PlaybackState>({
   playlist_position: 0,
   playlist_songs: [],
   tracks: [],
+  available_playlists: [],
+  persisted_playlist_name: "",
 });
 
 export const fixtureStore = writable<Record<string, FixtureChannels>>({});
@@ -106,6 +110,8 @@ on("playback", (msg) => {
     playlist_position: m.playlist_position,
     playlist_songs: m.playlist_songs,
     tracks: m.tracks ?? [],
+    available_playlists: m.available_playlists ?? [],
+    persisted_playlist_name: m.persisted_playlist_name ?? "",
   });
 });
 
