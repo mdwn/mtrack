@@ -22,6 +22,8 @@ use axum::{
 };
 use serde_json::json;
 
+use std::path::PathBuf;
+
 use tracing::warn;
 
 use super::config_io;
@@ -47,6 +49,14 @@ pub fn router() -> Router<WebUiState> {
         .route("/browse/create-song", post(create_song_in_directory))
         .route("/playlist", get(get_playlist).put(put_playlist))
         .route("/playlist/validate", post(validate_playlist))
+        .route("/playlists", get(get_playlists))
+        .route(
+            "/playlists/{name}",
+            get(get_playlist_by_name)
+                .put(put_playlist_by_name)
+                .delete(delete_playlist_by_name),
+        )
+        .route("/playlists/{name}/activate", post(activate_playlist))
         .route("/lighting", get(get_lighting_files))
         .route(
             "/lighting/{name}",
@@ -628,9 +638,11 @@ async fn create_song_in_directory(
     match song_config.save(&config_path) {
         Ok(()) => {
             // Refresh the player's all-songs playlist so newly imported songs appear.
-            state
-                .player
-                .reload_songs(&state.songs_path, &state.playlist_path);
+            state.player.reload_songs(
+                &state.songs_path,
+                state.playlists_dir.as_deref(),
+                state.legacy_playlist_path.as_deref(),
+            );
             (
                 StatusCode::CREATED,
                 Json(json!({"status": "created", "path": config_path.to_string_lossy()})),
@@ -651,9 +663,28 @@ struct CreateSongInDirRequest {
     name: Option<String>,
 }
 
-/// GET /api/playlist — returns the playlist config as JSON.
+/// Resolves the path for the legacy `/api/playlist` endpoints.
+/// Prefers `legacy_playlist_path`, falls back to `playlists_dir/playlist.yaml`.
+fn resolve_legacy_playlist_path(state: &WebUiState) -> Option<PathBuf> {
+    if let Some(ref p) = state.legacy_playlist_path {
+        return Some(p.clone());
+    }
+    state
+        .playlists_dir
+        .as_ref()
+        .map(|d| d.join("playlist.yaml"))
+}
+
+/// GET /api/playlist — returns the playlist config as JSON (backward compat).
 async fn get_playlist(State(state): State<WebUiState>) -> impl IntoResponse {
-    match config::Playlist::deserialize(&state.playlist_path) {
+    let Some(path) = resolve_legacy_playlist_path(&state) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "No playlist configured"})),
+        )
+            .into_response();
+    };
+    match config::Playlist::deserialize(&path) {
         Ok(playlist) => match serde_json::to_value(&playlist) {
             Ok(json_val) => (StatusCode::OK, Json(json_val)).into_response(),
             Err(e) => (
@@ -1680,9 +1711,11 @@ async fn post_song(
 
     match config_io::atomic_write(&config_path, &body) {
         Ok(()) => {
-            state
-                .player
-                .reload_songs(&state.songs_path, &state.playlist_path);
+            state.player.reload_songs(
+                &state.songs_path,
+                state.playlists_dir.as_deref(),
+                state.legacy_playlist_path.as_deref(),
+            );
             (
                 StatusCode::CREATED,
                 Json(json!({"status": "created", "song": name})),
@@ -1701,7 +1734,12 @@ async fn put_song(
     Path(name): Path<String>,
     body: String,
 ) -> impl IntoResponse {
-    if name.contains("..") || name.contains('/') || name.contains('\\') {
+    if name.is_empty()
+        || name.contains("..")
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains('\0')
+    {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({"error": "Invalid song name"})),
@@ -1709,7 +1747,18 @@ async fn put_song(
             .into_response();
     }
 
-    let song_dir = state.songs_path.join(&name);
+    // Canonicalize songs_path and verify the song directory stays within it.
+    let songs_canonical = match state.songs_path.canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("Failed to resolve songs path: {}", e)})),
+            )
+                .into_response();
+        }
+    };
+    let song_dir = songs_canonical.join(&name);
     if !song_dir.is_dir() {
         return (
             StatusCode::NOT_FOUND,
@@ -1717,6 +1766,24 @@ async fn put_song(
         )
             .into_response();
     }
+    // codeql[rust/path-injection] Path verified via canonicalize + starts_with.
+    let song_dir = match song_dir.canonicalize() {
+        Ok(p) if p.starts_with(&songs_canonical) => p,
+        Ok(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "Invalid song name"})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("Failed to resolve song path: {}", e)})),
+            )
+                .into_response();
+        }
+    };
 
     let config_path = song_dir.join("song.yaml");
 
@@ -1759,8 +1826,13 @@ fn ensure_song_dir(
     songs_path: &std::path::Path,
     name: &str,
 ) -> Result<std::path::PathBuf, Box<axum::response::Response>> {
-    // Reject path traversal
-    if name.contains("..") || name.contains('/') || name.contains('\\') {
+    // Reject path traversal characters.
+    if name.is_empty()
+        || name.contains("..")
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains('\0')
+    {
         return Err(Box::new(
             (
                 StatusCode::BAD_REQUEST,
@@ -1770,7 +1842,19 @@ fn ensure_song_dir(
         ));
     }
 
-    let song_dir = songs_path.join(name);
+    // Canonicalize the songs directory so all derived paths are anchored to a
+    // verified absolute base.
+    let songs_canonical = songs_path.canonicalize().map_err(|e| {
+        Box::new(
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("Failed to resolve songs path: {}", e)})),
+            )
+                .into_response(),
+        )
+    })?;
+
+    let song_dir = songs_canonical.join(name);
 
     if !song_dir.exists() {
         std::fs::create_dir_all(&song_dir).map_err(|e| {
@@ -1784,7 +1868,28 @@ fn ensure_song_dir(
         })?;
     }
 
-    Ok(song_dir)
+    // Canonicalize the result and verify containment within songs directory.
+    // codeql[rust/path-injection] Path verified via canonicalize + starts_with.
+    let song_canonical = song_dir.canonicalize().map_err(|e| {
+        Box::new(
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("Failed to resolve song directory: {}", e)})),
+            )
+                .into_response(),
+        )
+    })?;
+    if !song_canonical.starts_with(&songs_canonical) {
+        return Err(Box::new(
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "Invalid song name"})),
+            )
+                .into_response(),
+        ));
+    }
+
+    Ok(song_canonical)
 }
 
 /// Generates song.yaml for a song directory if one doesn't already exist.
@@ -1964,9 +2069,11 @@ async fn upload_track_single(
     }
 
     ensure_song_config(&song_dir).map_err(|e| *e)?;
-    state
-        .player
-        .reload_songs(&state.songs_path, &state.playlist_path);
+    state.player.reload_songs(
+        &state.songs_path,
+        state.playlists_dir.as_deref(),
+        state.legacy_playlist_path.as_deref(),
+    );
 
     Ok((
         StatusCode::OK,
@@ -2035,9 +2142,11 @@ async fn upload_tracks_multipart(
     }
 
     ensure_song_config(&song_dir).map_err(|e| *e)?;
-    state
-        .player
-        .reload_songs(&state.songs_path, &state.playlist_path);
+    state.player.reload_songs(
+        &state.songs_path,
+        state.playlists_dir.as_deref(),
+        state.legacy_playlist_path.as_deref(),
+    );
 
     Ok((
         StatusCode::OK,
@@ -2049,13 +2158,20 @@ async fn upload_tracks_multipart(
     ))
 }
 
-/// PUT /api/playlist — validates and atomically writes the playlist.
+/// PUT /api/playlist — validates and atomically writes the playlist (backward compat).
 async fn put_playlist(State(state): State<WebUiState>, body: String) -> impl IntoResponse {
+    let Some(path) = resolve_legacy_playlist_path(&state) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "No playlist configured"})),
+        )
+            .into_response();
+    };
     if let Err(errors) = config_io::validate_playlist(&body) {
         return (StatusCode::BAD_REQUEST, Json(json!({"errors": errors}))).into_response();
     }
 
-    match config_io::atomic_write(&state.playlist_path, &body) {
+    match config_io::atomic_write(&path, &body) {
         Ok(()) => (StatusCode::OK, Json(json!({"status": "saved"}))).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e}))).into_response(),
     }
@@ -2070,6 +2186,289 @@ async fn validate_playlist(body: String) -> impl IntoResponse {
             Json(json!({"valid": false, "errors": errors})),
         )
             .into_response(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Playlist CRUD endpoints
+// ---------------------------------------------------------------------------
+
+/// Validates a playlist name for use in file paths.
+#[allow(clippy::result_large_err)]
+fn validate_playlist_name(name: &str) -> Result<(), axum::response::Response> {
+    if name.is_empty()
+        || name == "all_songs"
+        || name.contains("..")
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains('\0')
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "Invalid playlist name"})),
+        )
+            .into_response());
+    }
+    Ok(())
+}
+
+/// Returns the playlists directory, or an error response if not configured.
+#[allow(clippy::result_large_err)]
+fn require_playlists_dir(state: &WebUiState) -> Result<PathBuf, axum::response::Response> {
+    state.playlists_dir.clone().ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "No playlists directory configured"})),
+        )
+            .into_response()
+    })
+}
+
+/// Resolves a playlist file path within the playlists directory, verifying
+/// that the result does not escape the directory via symlinks or other tricks.
+/// The playlists directory must exist before calling this function.
+/// Returns the validated path or an error response.
+#[allow(clippy::result_large_err)]
+fn resolve_playlist_path(
+    playlists_dir: &std::path::Path,
+    name: &str,
+    ext: &str,
+) -> Result<PathBuf, axum::response::Response> {
+    // Canonicalize the directory itself (must exist) so the resulting path
+    // is anchored to a verified absolute base.
+    let dir_canonical = playlists_dir.canonicalize().map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("Failed to resolve playlists dir: {}", e)})),
+        )
+            .into_response()
+    })?;
+    let file_path = dir_canonical.join(format!("{}.{}", name, ext));
+    // If the file already exists, canonicalize it and verify it stayed inside.
+    // This catches symlink escapes.
+    if file_path.exists() {
+        let canonical = file_path.canonicalize().map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("Failed to resolve path: {}", e)})),
+            )
+                .into_response()
+        })?;
+        if !canonical.starts_with(&dir_canonical) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "Invalid playlist path"})),
+            )
+                .into_response());
+        }
+        Ok(canonical)
+    } else {
+        // File doesn't exist yet. Verify the parent of the constructed path
+        // is still the canonical directory (defense in depth beyond name validation).
+        let parent = file_path.parent().ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "Invalid playlist path"})),
+            )
+                .into_response()
+        })?;
+        if parent != dir_canonical {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "Invalid playlist path"})),
+            )
+                .into_response());
+        }
+        Ok(file_path)
+    }
+}
+
+/// GET /api/playlists — list all playlists with name, song count, and active status.
+async fn get_playlists(State(state): State<WebUiState>) -> impl IntoResponse {
+    let playlists = state.player.list_playlists();
+    let active = {
+        let active_playlist = state.player.get_playlist();
+        active_playlist.name().to_string()
+    };
+    let items: Vec<serde_json::Value> = playlists
+        .iter()
+        .map(|name| {
+            let playlist_map = state.player.playlists_snapshot();
+            let song_count = playlist_map.get(name).map(|p| p.songs().len()).unwrap_or(0);
+            json!({
+                "name": name,
+                "song_count": song_count,
+                "is_active": name == &active,
+            })
+        })
+        .collect();
+    (StatusCode::OK, Json(json!(items))).into_response()
+}
+
+/// GET /api/playlists/:name — get a playlist's songs and available songs.
+async fn get_playlist_by_name(
+    State(state): State<WebUiState>,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    let playlists = state.player.playlists_snapshot();
+    let Some(pl) = playlists.get(&name) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": format!("Playlist '{}' not found", name)})),
+        )
+            .into_response();
+    };
+    let all_songs: Vec<String> = state
+        .player
+        .songs()
+        .sorted_list()
+        .iter()
+        .map(|s| s.name().to_string())
+        .collect();
+    (
+        StatusCode::OK,
+        Json(json!({
+            "name": name,
+            "songs": pl.songs(),
+            "available_songs": all_songs,
+        })),
+    )
+        .into_response()
+}
+
+#[derive(serde::Deserialize)]
+struct PlaylistBody {
+    songs: Vec<String>,
+}
+
+/// PUT /api/playlists/:name — create or update a playlist.
+async fn put_playlist_by_name(
+    State(state): State<WebUiState>,
+    Path(name): Path<String>,
+    Json(body): Json<PlaylistBody>,
+) -> impl IntoResponse {
+    validate_playlist_name(&name)?;
+    let playlists_dir = require_playlists_dir(&state)?;
+
+    // Write the playlist YAML file.
+    let playlist_config = config::Playlist::new(&body.songs);
+    let yaml = match crate::util::to_yaml_string(&playlist_config) {
+        Ok(y) => y,
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("Failed to serialize playlist: {}", e)})),
+            )
+                .into_response());
+        }
+    };
+
+    // Ensure the playlists directory exists.
+    if let Err(e) = std::fs::create_dir_all(&playlists_dir) {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("Failed to create playlists directory: {}", e)})),
+        )
+            .into_response());
+    }
+
+    // codeql[rust/path-injection] name is validated by validate_playlist_name; path is
+    // verified via canonicalize + starts_with containment in resolve_playlist_path.
+    let file_path = resolve_playlist_path(&playlists_dir, &name, "yaml")?;
+    if let Err(e) = config_io::atomic_write(&file_path, &yaml) {
+        return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e}))).into_response());
+    }
+
+    // Reload songs to pick up the new playlist.
+    state.player.reload_songs(
+        &state.songs_path,
+        state.playlists_dir.as_deref(),
+        state.legacy_playlist_path.as_deref(),
+    );
+
+    Ok::<_, axum::response::Response>(
+        (
+            StatusCode::OK,
+            Json(json!({"status": "saved", "name": name})),
+        )
+            .into_response(),
+    )
+}
+
+/// DELETE /api/playlists/:name — delete a playlist.
+async fn delete_playlist_by_name(
+    State(state): State<WebUiState>,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    validate_playlist_name(&name)?;
+    let playlists_dir = require_playlists_dir(&state)?;
+
+    // codeql[rust/path-injection] name is validated by validate_playlist_name; path is
+    // verified via canonicalize + starts_with containment in resolve_playlist_path.
+    let file_path = resolve_playlist_path(&playlists_dir, &name, "yaml")?;
+    if !file_path.is_file() {
+        // Also check .yml extension.
+        let yml_path = resolve_playlist_path(&playlists_dir, &name, "yml")?;
+        if yml_path.is_file() {
+            std::fs::remove_file(&yml_path).map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": format!("Failed to delete file: {}", e)})),
+                )
+                    .into_response()
+            })?;
+        } else {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": format!("Playlist '{}' not found", name)})),
+            )
+                .into_response());
+        }
+    } else {
+        std::fs::remove_file(&file_path).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("Failed to delete file: {}", e)})),
+            )
+                .into_response()
+        })?;
+    }
+
+    // Reload songs to remove the playlist.
+    state.player.reload_songs(
+        &state.songs_path,
+        state.playlists_dir.as_deref(),
+        state.legacy_playlist_path.as_deref(),
+    );
+
+    Ok::<_, axum::response::Response>(
+        (
+            StatusCode::OK,
+            Json(json!({"status": "deleted", "name": name})),
+        )
+            .into_response(),
+    )
+}
+
+/// POST /api/playlists/:name/activate — switch the active playlist.
+async fn activate_playlist(
+    State(state): State<WebUiState>,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    match state.player.switch_to_playlist(&name).await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(json!({"status": "activated", "name": name})),
+        )
+            .into_response(),
+        Err(e) => {
+            let status = if e.contains("not found") {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::CONFLICT
+            };
+            (status, Json(json!({"error": e}))).into_response()
+        }
     }
 }
 
@@ -2807,9 +3206,16 @@ mod test {
             sample_engine: None,
             trigger_engine: None,
         };
+        let mut playlists = std::collections::HashMap::new();
+        playlists.insert("all_songs".to_string(), all_songs_playlist);
         let player = std::sync::Arc::new(
-            crate::player::Player::new_with_devices(devices, all_songs_playlist, songs, None)
-                .unwrap(),
+            crate::player::Player::new_with_devices(
+                devices,
+                playlists,
+                "all_songs".to_string(),
+                None,
+            )
+            .unwrap(),
         );
 
         let (broadcast_tx, _) = broadcast::channel(16);
@@ -2822,7 +3228,8 @@ mod test {
             broadcast_tx,
             config_path,
             songs_path,
-            playlist_path,
+            playlists_dir: Some(dir.path().to_path_buf()),
+            legacy_playlist_path: Some(playlist_path),
             waveform_cache: super::super::state::new_waveform_cache(),
             calibration: std::sync::Arc::new(parking_lot::Mutex::new(None)),
         };
@@ -3026,7 +3433,8 @@ mod test {
     #[tokio::test]
     async fn get_playlist_missing_file() {
         let (mut state, _dir) = test_state();
-        state.playlist_path = std::path::PathBuf::from("/nonexistent/playlist.yaml");
+        state.legacy_playlist_path = Some(std::path::PathBuf::from("/nonexistent/playlist.yaml"));
+        state.playlists_dir = None;
         let app = router().with_state(state);
 
         let response = app
@@ -3083,7 +3491,7 @@ mod test {
     #[tokio::test]
     async fn put_playlist_valid() {
         let (state, _dir) = test_state();
-        let playlist_path = state.playlist_path.clone();
+        let playlist_path = state.legacy_playlist_path.clone().unwrap();
         let app = router().with_state(state);
 
         let response = app
@@ -3472,7 +3880,7 @@ show "test" {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     #[tokio::test]
@@ -3509,9 +3917,11 @@ show "test" {
         .unwrap();
 
         // Reload the player's registry from disk so the new song is visible.
-        state
-            .player
-            .reload_songs(&state.songs_path, &state.playlist_path);
+        state.player.reload_songs(
+            &state.songs_path,
+            state.playlists_dir.as_deref(),
+            state.legacy_playlist_path.as_deref(),
+        );
 
         let app = router().with_state(state);
 
@@ -3544,9 +3954,11 @@ show "test" {
         let song_yaml = "name: MySong\ntracks:\n  - name: track1\n    file: track1.wav\n";
         std::fs::write(song_dir.join("song.yaml"), song_yaml).unwrap();
 
-        state
-            .player
-            .reload_songs(&state.songs_path, &state.playlist_path);
+        state.player.reload_songs(
+            &state.songs_path,
+            state.playlists_dir.as_deref(),
+            state.legacy_playlist_path.as_deref(),
+        );
         let app = router().with_state(state);
 
         let response = app
@@ -3580,9 +3992,11 @@ show "test" {
         .unwrap();
 
         // Load the song into the player's registry while the config exists.
-        state
-            .player
-            .reload_songs(&state.songs_path, &state.playlist_path);
+        state.player.reload_songs(
+            &state.songs_path,
+            state.playlists_dir.as_deref(),
+            state.legacy_playlist_path.as_deref(),
+        );
 
         // Now remove the config so get_song can't read it.
         std::fs::rename(song_dir.join("song.yaml"), song_dir.join("song.bak")).unwrap();
@@ -3617,9 +4031,11 @@ show "test" {
         // Use .yml extension
         std::fs::write(song_dir.join("song.yml"), song_yaml).unwrap();
 
-        state
-            .player
-            .reload_songs(&state.songs_path, &state.playlist_path);
+        state.player.reload_songs(
+            &state.songs_path,
+            state.playlists_dir.as_deref(),
+            state.legacy_playlist_path.as_deref(),
+        );
         let app = router().with_state(state);
         let response = app
             .oneshot(
@@ -3709,9 +4125,11 @@ show "test" {
         .unwrap();
 
         // get_all_songs discovers config.yaml (any non-media-extension file)
-        state
-            .player
-            .reload_songs(&state.songs_path, &state.playlist_path);
+        state.player.reload_songs(
+            &state.songs_path,
+            state.playlists_dir.as_deref(),
+            state.legacy_playlist_path.as_deref(),
+        );
         let app = router().with_state(state);
         let response = app
             .oneshot(
@@ -3745,9 +4163,11 @@ show "test" {
         )
         .unwrap();
 
-        state
-            .player
-            .reload_songs(&state.songs_path, &state.playlist_path);
+        state.player.reload_songs(
+            &state.songs_path,
+            state.playlists_dir.as_deref(),
+            state.legacy_playlist_path.as_deref(),
+        );
         let app = router().with_state(state);
         let response = app
             .oneshot(
@@ -3973,7 +4393,8 @@ show "test" {
     #[tokio::test]
     async fn get_playlist_error_body_contains_message() {
         let (mut state, _dir) = test_state();
-        state.playlist_path = std::path::PathBuf::from("/nonexistent/playlist.yaml");
+        state.legacy_playlist_path = Some(std::path::PathBuf::from("/nonexistent/playlist.yaml"));
+        state.playlists_dir = None;
         let app = router().with_state(state);
 
         let response = app
@@ -4167,7 +4588,9 @@ show "test" {
     #[tokio::test]
     async fn put_playlist_write_failure_returns_500() {
         let (mut state, _dir) = test_state();
-        state.playlist_path = std::path::PathBuf::from("/nonexistent/dir/playlist.yaml");
+        state.legacy_playlist_path =
+            Some(std::path::PathBuf::from("/nonexistent/dir/playlist.yaml"));
+        state.playlists_dir = None;
         let app = router().with_state(state);
 
         let response = app
@@ -4188,7 +4611,7 @@ show "test" {
     }
 
     #[tokio::test]
-    async fn put_song_songs_dir_failure_returns_404() {
+    async fn put_song_songs_dir_failure_returns_500() {
         let (mut state, _dir) = test_state();
         state.songs_path = std::path::PathBuf::from("/nonexistent/songs");
         let app = router().with_state(state);
@@ -4204,7 +4627,7 @@ show "test" {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     #[tokio::test]

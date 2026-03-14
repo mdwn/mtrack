@@ -355,3 +355,59 @@ export async function deleteVenue(name: string, dir?: string): Promise<void> {
     throw new Error(data.error || `Failed to delete venue: ${res.status}`);
   }
 }
+
+// ---- Playlist CRUD ----
+
+export interface PlaylistInfo {
+  name: string;
+  song_count: number;
+  is_active: boolean;
+}
+
+export interface PlaylistData {
+  name: string;
+  songs: string[];
+  available_songs: string[];
+}
+
+export async function fetchPlaylists(): Promise<PlaylistInfo[]> {
+  const res = await get("/playlists");
+  if (!res.ok) throw new Error(`Failed to fetch playlists: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchPlaylist(name: string): Promise<PlaylistData> {
+  const res = await get(`/playlists/${encodeURIComponent(name)}`);
+  if (!res.ok) throw new Error(`Failed to fetch playlist: ${res.status}`);
+  return res.json();
+}
+
+export async function savePlaylist(
+  name: string,
+  songs: string[],
+): Promise<void> {
+  const res = await put(
+    `/playlists/${encodeURIComponent(name)}`,
+    JSON.stringify({ songs }),
+  );
+  if (!res.ok) {
+    const d = await res.json().catch(() => ({}));
+    throw new Error(d.error || `Failed to save playlist: ${res.status}`);
+  }
+}
+
+export async function deletePlaylist(name: string): Promise<void> {
+  const res = await del(`/playlists/${encodeURIComponent(name)}`);
+  if (!res.ok) {
+    const d = await res.json().catch(() => ({}));
+    throw new Error(d.error || `Failed to delete playlist: ${res.status}`);
+  }
+}
+
+export async function activatePlaylist(name: string): Promise<void> {
+  const res = await post(`/playlists/${encodeURIComponent(name)}/activate`);
+  if (!res.ok) {
+    const d = await res.json().catch(() => ({}));
+    throw new Error(d.error || `Failed to activate playlist: ${res.status}`);
+  }
+}

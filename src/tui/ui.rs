@@ -398,8 +398,7 @@ mod tests {
             let songs = std::sync::Arc::new(Songs::new(map));
             let playlist_config =
                 config::Playlist::new(&["Song A".to_string(), "Song B".to_string()]);
-            let playlist =
-                playlist::Playlist::new("My Set", &playlist_config, songs.clone()).unwrap();
+            let pl = playlist::Playlist::new("My Set", &playlist_config, songs.clone()).unwrap();
             let devices = PlayerDevices {
                 audio: None,
                 mappings: None,
@@ -408,8 +407,20 @@ mod tests {
                 sample_engine: None,
                 trigger_engine: None,
             };
+            let mut playlists = HashMap::new();
+            playlists.insert(
+                "all_songs".to_string(),
+                playlist::from_songs(songs.clone()).unwrap(),
+            );
+            playlists.insert(pl.name().to_string(), pl);
             let player = std::sync::Arc::new(
-                crate::player::Player::new_with_devices(devices, playlist, songs, None).unwrap(),
+                crate::player::Player::new_with_devices(
+                    devices,
+                    playlists,
+                    "My Set".to_string(),
+                    None,
+                )
+                .unwrap(),
             );
             let (_tx, state_rx) =
                 watch::channel(std::sync::Arc::new(crate::state::StateSnapshot::default()));

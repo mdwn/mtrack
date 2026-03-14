@@ -177,14 +177,19 @@ pub async fn start(
 
     let songs = songs::get_all_songs(&songs_path)?;
 
-    // Resolve playlist — gracefully handle missing
-    let mut playlist_path = playlist_path
+    // Resolve playlists directory from config, defaulting to {config_dir}/playlists/.
+    let playlists_dir = player_config
+        .playlists_dir(player_path)
+        .or_else(|| player_path.parent().map(|p| p.join("playlists")));
+
+    // Resolve legacy playlist path.
+    let mut legacy_playlist_path = playlist_path
         .as_ref()
         .map(PathBuf::from)
         .or(player_config.playlist());
 
-    // Make playlist path absolute if relative
-    if let Some(ref mut pp) = playlist_path {
+    // Make legacy playlist path absolute if relative.
+    if let Some(ref mut pp) = legacy_playlist_path {
         if !pp.is_absolute() {
             *pp = if let Some(parent) = player_path.parent() {
                 parent.join(&pp)
@@ -199,29 +204,17 @@ pub async fn start(
         }
     }
 
-    let playlist = if let Some(ref pp) = playlist_path {
-        match config::Playlist::deserialize(pp.as_path()) {
-            Ok(playlist_config) => {
-                match Playlist::new("playlist", &playlist_config, songs.clone()) {
-                    Ok(pl) => pl,
-                    Err(e) => {
-                        info!("Playlist references missing songs ({}); using all songs", e);
-                        crate::playlist::from_songs(songs.clone())?
-                    }
-                }
-            }
-            Err(_) => {
-                info!("Playlist file not found; using all songs");
-                crate::playlist::from_songs(songs.clone())?
-            }
-        }
-    } else {
-        info!("No playlist configured; using all songs");
-        crate::playlist::from_songs(songs.clone())?
-    };
+    // Load all playlists from directory + legacy file.
+    let playlists = crate::player::load_playlists(
+        playlists_dir.as_deref(),
+        legacy_playlist_path.as_deref(),
+        songs.clone(),
+    )?;
 
-    // Default playlist_path for web UI (so config writes have somewhere to go)
-    let playlist_path = playlist_path.unwrap_or_else(|| {
+    let active_playlist = player_config.active_playlist().to_string();
+
+    // Default legacy_playlist_path for web UI backward compat (so config writes have somewhere to go).
+    let legacy_playlist_path = legacy_playlist_path.unwrap_or_else(|| {
         player_path
             .parent()
             .unwrap_or(Path::new("."))
@@ -229,8 +222,8 @@ pub async fn start(
     });
 
     let player = Arc::new(crate::player::Player::new(
-        songs,
-        playlist,
+        playlists,
+        active_playlist,
         &player_config,
         player_path.parent(),
     )?);
@@ -257,7 +250,8 @@ pub async fn start(
             broadcast_tx,
             config_path: player_path.to_path_buf(),
             songs_path: player_config.songs(player_path),
-            playlist_path: playlist_path.clone(),
+            playlists_dir: playlists_dir.clone(),
+            legacy_playlist_path: Some(legacy_playlist_path.clone()),
             waveform_cache: crate::webui::state::new_waveform_cache(),
             calibration: std::sync::Arc::new(parking_lot::Mutex::new(None)),
         };

@@ -29,6 +29,10 @@ use super::error::ConfigError;
 use std::error::Error;
 use tracing::{error, info, warn};
 
+fn default_active_playlist() -> String {
+    "playlist".to_string()
+}
+
 /// The configuration for the multitrack player.
 #[derive(Deserialize, Serialize, Clone)]
 pub struct Player {
@@ -60,6 +64,11 @@ pub struct Player {
     status_events: Option<StatusEvents>,
     /// The path to the playlist.
     playlist: Option<String>,
+    /// Directory containing playlist YAML files.
+    playlists_dir: Option<String>,
+    /// The active playlist name (persisted across restarts).
+    #[serde(default = "default_active_playlist")]
+    active_playlist: String,
     /// The path to the song definitions.
     songs: String,
     /// Inline sample definitions.
@@ -90,6 +99,8 @@ impl Default for Player {
             profiles_dir: None,
             status_events: None,
             playlist: None,
+            playlists_dir: None,
+            active_playlist: default_active_playlist(),
             songs: "songs".to_string(),
             samples: HashMap::new(),
             samples_file: None,
@@ -127,6 +138,8 @@ impl Player {
             profiles_dir: None,
             status_events: None,
             playlist: None,
+            playlists_dir: None,
+            active_playlist: default_active_playlist(),
             songs: songs.to_string(),
             samples: HashMap::new(),
             samples_file: None,
@@ -404,6 +417,28 @@ impl Player {
     /// Gets the path to the playlist.
     pub fn playlist(&self) -> Option<PathBuf> {
         self.playlist.as_ref().map(PathBuf::from)
+    }
+
+    /// Gets the playlists directory, resolved relative to the given config path.
+    pub fn playlists_dir(&self, config_path: &Path) -> Option<PathBuf> {
+        let dir_str = self.playlists_dir.as_ref()?;
+        let dir_path = PathBuf::from(dir_str);
+        if dir_path.is_absolute() {
+            Some(dir_path)
+        } else {
+            let config_dir = config_path.parent().unwrap_or(Path::new("."));
+            Some(config_dir.join(dir_path))
+        }
+    }
+
+    /// Gets the active playlist name.
+    pub fn active_playlist(&self) -> &str {
+        &self.active_playlist
+    }
+
+    /// Sets the active playlist name (for config store mutations).
+    pub fn set_active_playlist(&mut self, name: String) {
+        self.active_playlist = name;
     }
 
     /// Sets the songs path (relative or absolute).

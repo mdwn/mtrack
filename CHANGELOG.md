@@ -93,6 +93,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sections, reducing visual clutter. Each tab shows a green dot when that section is enabled.
 - **Song creation UI**: Songs can now be created from the web UI song browser with a name
   and optional configuration.
+- **Multiple playlist support**: The player now supports multiple user-defined playlists
+  stored as individual YAML files in a `playlists/` directory (default: `{config_dir}/playlists/`).
+  Playlists are named after their filename stem. The `all_songs` playlist remains always
+  present and auto-generated. Switching to `all_songs` is session-only (not persisted across
+  restarts), acting as a temporary escape hatch. The persisted active playlist is stored in
+  `mtrack.yaml` via the `active_playlist` field (defaults to `"playlist"` for backward
+  compatibility). MIDI/OSC `Playlist` action returns to the persisted active playlist,
+  regardless of its name.
+- **Playlist REST API**: Five new endpoints for playlist CRUD:
+  `GET /api/playlists` (list all with song count and active status),
+  `GET /api/playlists/{name}` (songs + available songs),
+  `PUT /api/playlists/{name}` (create or update),
+  `DELETE /api/playlists/{name}` (delete, refuses `all_songs`),
+  `POST /api/playlists/{name}/activate` (switch active playlist).
+  Legacy `/api/playlist` GET/PUT endpoints remain as backward-compatible aliases.
+- **Playlist editor UI**: The web UI playlist page is now a full editor with a left panel
+  for browsing, creating, and deleting playlists, and a right panel for editing song order
+  (reorder, add, remove) with a searchable available-songs list. Playlists can be activated
+  directly from the editor.
+- **Dashboard playlist selector**: The dashboard playlist card now shows a dropdown of all
+  available playlists instead of a hardcoded Playlist/All Songs toggle. The available
+  playlists and active playlist name are broadcast via WebSocket.
 
 ### Changed
 
@@ -110,6 +132,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   be updated immediately.
 - The systemd service template now uses `$MTRACK_PATH` instead of `$MTRACK_CONFIG` to reflect
   the new directory-or-file semantics.
+- The `Player` struct now uses a `HashMap<String, Arc<Playlist>>` internally instead of
+  separate `playlist` / `all_songs` / `use_all_songs` fields. `switch_to_playlist()` accepts
+  any playlist name (not just `"playlist"` or `"all_songs"`). The gRPC `SwitchToPlaylist` RPC
+  accepts arbitrary playlist names — invalid names return `NOT_FOUND` instead of
+  `UNIMPLEMENTED`.
 
 - **Mutable configuration store**: A new `ConfigStore` wraps the player configuration in a
   `tokio::sync::RwLock`, enabling runtime config mutations with optimistic concurrency control

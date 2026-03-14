@@ -69,8 +69,10 @@ pub struct WebUiState {
     pub config_path: PathBuf,
     /// Resolved path to the songs directory.
     pub songs_path: PathBuf,
-    /// Resolved path to the playlist file.
-    pub playlist_path: PathBuf,
+    /// Resolved path to the playlists directory (if configured).
+    pub playlists_dir: Option<PathBuf>,
+    /// Resolved path to the legacy playlist file (for backward compat).
+    pub legacy_playlist_path: Option<PathBuf>,
     /// Shared waveform cache (sent to each WebSocket client on connect).
     pub waveform_cache: ws_state::WaveformCache,
     /// Active calibration session (at most one at a time).
@@ -503,8 +505,16 @@ mod test {
             sample_engine: None,
             trigger_engine: None,
         };
-        let player =
-            Arc::new(crate::player::Player::new_with_devices(devices, pl, songs, None).unwrap());
+        let mut playlists = std::collections::HashMap::new();
+        playlists.insert(
+            "all_songs".to_string(),
+            playlist::from_songs(songs.clone()).unwrap(),
+        );
+        playlists.insert(pl.name().to_string(), pl);
+        let player = Arc::new(
+            crate::player::Player::new_with_devices(devices, playlists, "test".to_string(), None)
+                .unwrap(),
+        );
 
         let (broadcast_tx, _) = broadcast::channel(16);
         let (_state_tx, state_rx) =
@@ -516,7 +526,8 @@ mod test {
             broadcast_tx,
             config_path,
             songs_path,
-            playlist_path,
+            playlists_dir: None,
+            legacy_playlist_path: Some(playlist_path),
             waveform_cache: ws_state::new_waveform_cache(),
             calibration: Arc::new(parking_lot::Mutex::new(None)),
         };

@@ -24,26 +24,25 @@
     }
   }
 
-  let isPlaylistMode = $derived($playbackStore.playlist_name === "playlist");
+  let playlists = $derived($playbackStore.available_playlists);
+  let currentPlaylist = $derived($playbackStore.playlist_name);
 </script>
 
 <div class="card">
   <div class="card-header">
     <span class="card-title">Playlist</span>
-    <div class="btn-group">
-      <button
-        class="btn"
-        class:active={isPlaylistMode}
-        onclick={() => switchPlaylist("playlist")}>Playlist</button
+    {#if playlists.length > 0}
+      <select
+        class="playlist-select"
+        value={currentPlaylist}
+        onchange={(e) => switchPlaylist(e.currentTarget.value)}
       >
-      <button
-        class="btn"
-        class:active={!isPlaylistMode}
-        onclick={() => switchPlaylist("all_songs")}>All Songs</button
-      >
-    </div>
+        {#each playlists as name (name)}
+          <option value={name}>{name}</option>
+        {/each}
+      </select>
+    {/if}
   </div>
-  <div class="playlist-name">{$playbackStore.playlist_name}</div>
   <ul class="playlist-songs">
     {#each $playbackStore.playlist_songs as song, i (song)}
       <li class:current={i === $playbackStore.playlist_position}>{song}</li>
@@ -52,11 +51,14 @@
 </div>
 
 <style>
-  .playlist-name {
-    font-size: 13px;
-    font-weight: 600;
+  .playlist-select {
+    font-size: 12px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    background: var(--bg-secondary);
     color: var(--text);
-    margin-bottom: 8px;
+    cursor: pointer;
   }
   .playlist-songs {
     list-style: none;
