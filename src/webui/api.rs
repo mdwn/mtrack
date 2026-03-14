@@ -45,6 +45,7 @@ pub fn router() -> Router<WebUiState> {
         .route("/songs/{name}/tracks", post(upload_tracks_multipart))
         .route("/songs/{name}/waveform", get(get_song_waveform))
         .route("/songs/{name}/files", get(get_song_files))
+        .route("/songs/{name}/import", post(import_file_to_song))
         .route("/browse", get(browse_directory))
         .route("/browse/create-song", post(create_song_in_directory))
         .route("/playlist", get(get_playlist).put(put_playlist))
@@ -142,6 +143,39 @@ async fn get_songs(State(state): State<WebUiState>) -> impl IntoResponse {
         .sorted_list()
         .iter()
         .map(|song| {
+            // Compute the song's directory path relative to the songs root,
+            // so the frontend can construct lighting API paths.
+            let base_dir = song
+                .base_path()
+                .strip_prefix(&state.songs_path)
+                .unwrap_or(std::path::Path::new(""))
+                .to_string_lossy()
+                .to_string();
+
+            // Collect DSL lighting show file paths relative to the songs root.
+            let lighting_files: Vec<String> = song
+                .dsl_lighting_shows()
+                .iter()
+                .filter_map(|show| {
+                    show.file_path()
+                        .strip_prefix(&state.songs_path)
+                        .ok()
+                        .map(|p| p.to_string_lossy().to_string())
+                })
+                .collect();
+
+            // Collect legacy MIDI DMX file paths relative to the songs root.
+            let legacy_lighting_files: Vec<String> = song
+                .light_shows()
+                .iter()
+                .filter_map(|show| {
+                    show.dmx_file_path()
+                        .strip_prefix(&state.songs_path)
+                        .ok()
+                        .map(|p| p.to_string_lossy().to_string())
+                })
+                .collect();
+
             json!({
                 "name": song.name(),
                 "duration_ms": song.duration().as_millis() as u64,
@@ -152,6 +186,9 @@ async fn get_songs(State(state): State<WebUiState>) -> impl IntoResponse {
                 "tracks": song.tracks().iter().map(|t| t.name().to_string()).collect::<Vec<_>>(),
                 "has_midi": song.midi_playback().is_some(),
                 "has_lighting": !song.light_shows().is_empty() || !song.dsl_lighting_shows().is_empty(),
+                "base_dir": base_dir,
+                "lighting_files": lighting_files,
+                "legacy_lighting_files": legacy_lighting_files,
             })
         })
         .collect();
@@ -212,6 +249,119 @@ async fn get_song(State(state): State<WebUiState>, Path(name): Path<String>) -> 
         )
             .into_response(),
     }
+}
+
+/// POST /api/songs/:name/import — copies a file from the server filesystem into a song directory.
+///
+/// Expects a JSON body with `path` (absolute filesystem path) and optional `filename` override.
+/// The file extension must be supported (audio, MIDI, or .light).
+/// The source path must resolve to within the project root (the directory containing mtrack.yaml)
+/// to prevent arbitrary file reads.
+async fn import_file_to_song(
+    State(state): State<WebUiState>,
+    Path(name): Path<String>,
+    Json(body): Json<ImportFileRequest>,
+) -> impl IntoResponse {
+    // Determine the project root (same as the browse endpoint).
+    let config_canonical = match state.config_path.canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("Failed to resolve config path: {}", e)})),
+            )
+                .into_response();
+        }
+    };
+    let project_root = match config_canonical.parent() {
+        Some(p) => p.to_path_buf(),
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Unable to determine project root"})),
+            )
+                .into_response();
+        }
+    };
+
+    // Canonicalize the source path to resolve symlinks and verify it exists.
+    // codeql[rust/path-injection] Path is canonicalized and verified against project_root below.
+    let source_canonical = match std::path::Path::new(&body.path).canonicalize() {
+        Ok(p) => p,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "Source file does not exist or is invalid"})),
+            )
+                .into_response();
+        }
+    };
+    if !source_canonical.starts_with(&project_root) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "Source path is outside the project directory"})),
+        )
+            .into_response();
+    }
+    if !source_canonical.is_file() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "Source path is not a file"})),
+        )
+            .into_response();
+    }
+
+    let filename = body
+        .filename
+        .as_deref()
+        .or_else(|| source_canonical.file_name().and_then(|n| n.to_str()))
+        .unwrap_or("unknown");
+
+    if let Err(e) = validate_track_filename(filename) {
+        return *e;
+    }
+
+    let song_dir = match ensure_song_dir(&state.songs_path, &name) {
+        Ok(d) => d,
+        Err(e) => return *e,
+    };
+
+    // codeql[rust/path-injection] dest_path is under song_dir (verified by ensure_song_dir),
+    // filename is validated by validate_track_filename (no .. or / allowed).
+    let dest_path = song_dir.join(filename);
+    if let Err(e) = std::fs::copy(&source_canonical, &dest_path) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("Failed to copy file: {}", e)})),
+        )
+            .into_response();
+    }
+
+    if let Err(e) = ensure_song_config(&song_dir) {
+        return *e;
+    }
+
+    state.player.reload_songs(
+        &state.songs_path,
+        state.playlists_dir.as_deref(),
+        state.legacy_playlist_path.as_deref(),
+    );
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "status": "imported",
+            "file": filename,
+            "song": name,
+        })),
+    )
+        .into_response()
+}
+
+#[derive(serde::Deserialize)]
+struct ImportFileRequest {
+    path: String,
+    filename: Option<String>,
 }
 
 /// GET /api/songs/:name/waveform — returns waveform peaks for a song.
