@@ -186,6 +186,15 @@ impl super::Device for Device {
         let span = span!(Level::INFO, "play song (midir)");
         let _enter = span.enter();
 
+        let midi_playback = match song.midi_playback() {
+            Some(midi_playback) => midi_playback,
+            None => {
+                info!(song = song.name(), "Song has no MIDI sheet.");
+                let _ = ready_tx.send(());
+                return Ok(());
+            }
+        };
+
         let output_port = match self.output_port.as_ref() {
             Some(output_port) => output_port,
             None => {
@@ -194,14 +203,6 @@ impl super::Device for Device {
                     "No MIDI output device configured, cannot play song."
                 );
                 let _ = ready_tx.send(());
-                return Ok(());
-            }
-        };
-
-        let midi_playback = match song.midi_playback() {
-            Some(midi_playback) => midi_playback,
-            None => {
-                info!(song = song.name(), "Song has no MIDI sheet.");
                 return Ok(());
             }
         };
@@ -1438,7 +1439,7 @@ mod test {
             let cancel = CancelHandle::new();
             let (ready_tx, _ready_rx) = std::sync::mpsc::channel::<()>();
             let clock = PlaybackClock::wall();
-            // Even with no output port, the no-output-port check happens first
+            // The no-MIDI-sheet check happens before the output-port check
             let result = <Device as crate::midi::Device>::play_from(
                 &device,
                 song,
@@ -1448,6 +1449,34 @@ mod test {
                 clock,
             );
             assert!(result.is_ok());
+        }
+
+        #[test]
+        fn play_from_without_midi_playback_sends_ready() {
+            // When a MIDI device exists but the song has no MIDI sheet,
+            // play_from must still send the ready signal so the playback
+            // clock starts. Without this, all subsystems (audio, DMX)
+            // spin forever waiting for the clock.
+            let device = Device::new_default("test".to_string());
+            let (_tmp_dir, song) = make_song();
+            assert!(song.midi_playback().is_none());
+
+            let cancel = CancelHandle::new();
+            let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
+            let clock = PlaybackClock::wall();
+            let result = <Device as crate::midi::Device>::play_from(
+                &device,
+                song,
+                cancel,
+                ready_tx,
+                Duration::ZERO,
+                clock,
+            );
+            assert!(result.is_ok());
+            assert!(
+                ready_rx.try_recv().is_ok(),
+                "play_from must send ready signal even when the song has no MIDI playback"
+            );
         }
     }
 
