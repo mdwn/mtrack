@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.2] - 2026-03-14
+
+### Fixed
+
+- **Songs without MIDI freeze playback**: When a MIDI device was configured but a song had no
+  MIDI file, the MIDI subsystem returned without signaling readiness, preventing the playback
+  clock from starting. All subsystems (audio, DMX, MIDI) would spin indefinitely waiting for
+  the clock, resulting in no audio or lighting output.
+
 ## [0.10.1] - 2026-03-11
 
 ### Fixed

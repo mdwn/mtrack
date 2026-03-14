@@ -202,6 +202,7 @@ impl super::Device for Device {
             Some(midi_playback) => midi_playback,
             None => {
                 info!(song = song.name(), "Song has no MIDI sheet.");
+                let _ = ready_tx.send(());
                 return Ok(());
             }
         };
