@@ -24,8 +24,13 @@
     updateProfile,
     deleteProfile,
     updateSamples,
+    fetchProfileFiles,
+    fetchProfileFile,
+    saveProfileFile,
+    deleteProfileFile,
     type AudioDeviceInfo,
     type MidiDeviceInfo,
+    type ProfileFileInfo,
   } from "../lib/api/config";
   import { fetchSongs } from "../lib/api/songs";
   import ProfileCard from "../components/config/ProfileCard.svelte";
@@ -52,6 +57,14 @@
   // Snapshot of the profile at load time for dirty tracking
   let savedSnapshot = $state("");
 
+  // File-based profiles mode
+  let profilesDir = $state<string | null>(null);
+  let profileFiles = $state<ProfileFileInfo[]>([]);
+  let selectedFilename = $state<string | null>(null);
+
+  // Samples file awareness
+  let samplesFile = $state<string | null>(null);
+
   async function loadConfig() {
     try {
       loading = true;
@@ -60,6 +73,9 @@
       configYaml = snapshot.yaml;
       checksum = snapshot.checksum;
       parseProfiles();
+      if (profilesDir) {
+        await loadProfileFiles();
+      }
     } catch (e: any) {
       error = e.message;
     } finally {
@@ -77,7 +93,11 @@
   function parseProfiles() {
     try {
       const parsed = YAML.parse(configYaml);
-      profiles = parsed?.profiles || [];
+      profilesDir = parsed?.profiles_dir || null;
+      samplesFile = parsed?.samples_file || null;
+      if (!profilesDir) {
+        profiles = parsed?.profiles || [];
+      }
       // Extract sample definitions from the config's samples map
       const samples = parsed?.samples;
       if (samples && typeof samples === "object") {
@@ -93,6 +113,15 @@
       profiles = [];
       samplesMap = {};
       sampleNames = [];
+    }
+  }
+
+  async function loadProfileFiles() {
+    try {
+      profileFiles = await fetchProfileFiles();
+    } catch (e: any) {
+      console.error("Failed to load profile files:", e);
+      profileFiles = [];
     }
   }
 
@@ -127,6 +156,86 @@
       console.error("Failed to load track names:", e);
     }
   }
+
+  // --- File-based profile operations ---
+
+  async function selectFileProfile(filename: string) {
+    saving = false;
+    saveMsg = "";
+    dirty = false;
+    isNew = false;
+    try {
+      const data = await fetchProfileFile(filename);
+      selectedFilename = filename;
+      selectedIndex = 0;
+      profiles = [data.profile as any];
+      savedSnapshot = JSON.stringify(data.profile);
+    } catch (e: any) {
+      error = e.message;
+    }
+  }
+
+  function addNewFileProfile() {
+    const name = prompt("Profile filename (without extension):");
+    if (!name) return;
+    const empty: any = {};
+    profiles = [empty];
+    selectedIndex = 0;
+    selectedFilename = name;
+    isNew = true;
+    savedSnapshot = JSON.stringify(empty);
+    dirty = false;
+    saveMsg = "";
+  }
+
+  async function saveFileProfile() {
+    if (selectedIndex === null || !selectedFilename) return;
+    saving = true;
+    saveMsg = "";
+    try {
+      await saveProfileFile(selectedFilename, profiles[selectedIndex]);
+      savedSnapshot = JSON.stringify(profiles[selectedIndex]);
+      isNew = false;
+      dirty = false;
+      saveMsg = "Saved";
+      setTimeout(() => (saveMsg = ""), 2000);
+      await loadProfileFiles();
+    } catch (e: any) {
+      saveMsg = e.message;
+    } finally {
+      saving = false;
+    }
+  }
+
+  async function removeFileProfile() {
+    if (!selectedFilename) return;
+    if (!confirm("Delete this profile?")) return;
+    saving = true;
+    saveMsg = "";
+    try {
+      await deleteProfileFile(selectedFilename);
+      selectedIndex = null;
+      selectedFilename = null;
+      isNew = false;
+      dirty = false;
+      await loadProfileFiles();
+    } catch (e: any) {
+      saveMsg = e.message;
+    } finally {
+      saving = false;
+    }
+  }
+
+  function goBackFile() {
+    if (dirty && !confirm("Discard unsaved changes?")) return;
+    selectedIndex = null;
+    selectedFilename = null;
+    isNew = false;
+    dirty = false;
+    saveMsg = "";
+  }
+
+  // --- Inline profile operations ---
 
   function selectProfile(index: number) {
     selectedIndex = index;
@@ -273,8 +382,130 @@
       <button class="btn" onclick={() => (error = "")}>Dismiss</button>
     </div>
   </div>
+{:else if profilesDir}
+  <!-- File-based profiles mode -->
+  {#if selectedIndex !== null && profiles[selectedIndex]}
+    <!-- Detail View (file-based) -->
+    <div class="detail-view">
+      <div class="detail-toolbar">
+        <button class="btn" onclick={goBackFile}>Back</button>
+        <span class="detail-title">
+          {isNew ? "New Profile" : selectedFilename || "Profile"}
+        </span>
+        <div class="toolbar-actions">
+          {#if saveMsg}
+            <span class="save-msg" class:save-error={saveMsg !== "Saved"}
+              >{saveMsg}</span
+            >
+          {/if}
+          {#if !isNew}
+            <button
+              class="btn btn-danger"
+              onclick={removeFileProfile}
+              disabled={saving}>Delete</button
+            >
+          {/if}
+          <button
+            class="btn btn-primary"
+            onclick={saveFileProfile}
+            disabled={saving || !dirty}
+          >
+            {saving ? "Saving..." : "Save"}
+          </button>
+        </div>
+      </div>
+
+      <ProfileEditor
+        bind:profile={profiles[selectedIndex]}
+        {audioDevices}
+        {midiDevices}
+        {trackNames}
+        {sampleNames}
+        onrefreshDevices={loadDevices}
+        onchange={onProfileChange}
+      />
+    </div>
+  {:else}
+    <!-- List View (file-based) -->
+    <div class="list-view">
+      <div class="list-header">
+        <h2>Hardware Profiles</h2>
+        <div class="toolbar-actions">
+          <span class="info-badge">profiles_dir</span>
+          <button class="btn btn-primary" onclick={addNewFileProfile}
+            >Add Profile</button
+          >
+        </div>
+      </div>
+
+      {#if profileFiles.length === 0}
+        <div class="empty-state">
+          <p>No profiles in directory.</p>
+          <p>Add a profile to configure audio, MIDI, DMX, and controllers.</p>
+        </div>
+      {:else}
+        <div class="profile-grid">
+          {#each profileFiles as pf (pf.filename)}
+            <button
+              class="profile-file-card"
+              onclick={() => selectFileProfile(pf.filename)}
+            >
+              <div class="pf-name">{pf.filename}</div>
+              {#if pf.hostname}
+                <div class="pf-hostname">{pf.hostname}</div>
+              {/if}
+              <div class="pf-badges">
+                {#if pf.has_audio}<span class="pf-badge">Audio</span>{/if}
+                {#if pf.has_midi}<span class="pf-badge">MIDI</span>{/if}
+                {#if pf.has_dmx}<span class="pf-badge">DMX</span>{/if}
+              </div>
+            </button>
+          {/each}
+        </div>
+      {/if}
+
+      <!-- Samples Section -->
+      <div class="samples-top-section">
+        <div class="list-header">
+          <h2>Samples</h2>
+          <div class="toolbar-actions">
+            {#if samplesFile}
+              <span class="info-badge">from {samplesFile}</span>
+            {:else}
+              {#if samplesSaveMsg}
+                <span
+                  class="save-msg"
+                  class:save-error={samplesSaveMsg !== "Saved"}
+                  >{samplesSaveMsg}</span
+                >
+              {/if}
+              <button
+                class="btn btn-primary"
+                onclick={saveSamples}
+                disabled={samplesSaving || !samplesDirty}
+              >
+                {samplesSaving ? "Saving..." : "Save Samples"}
+              </button>
+            {/if}
+          </div>
+        </div>
+        {#if samplesFile}
+          <div class="info-banner">
+            Samples loaded from <code>{samplesFile}</code>. Edit the file
+            directly to make changes.
+          </div>
+        {/if}
+        <SamplesSection
+          bind:this={samplesRef}
+          bind:samples={samplesMap}
+          onchange={onSamplesChange}
+          onbrowse={onSampleBrowse}
+        />
+      </div>
+    </div>
+  {/if}
 {:else if selectedIndex !== null && profiles[selectedIndex]}
-  <!-- Detail View -->
+  <!-- Detail View (inline) -->
   <div class="detail-view">
     <div class="detail-toolbar">
       <button class="btn" onclick={goBack}>Back</button>
@@ -317,7 +548,7 @@
     />
   </div>
 {:else}
-  <!-- List View -->
+  <!-- List View (inline) -->
   <div class="list-view">
     <div class="list-header">
       <h2>Hardware Profiles</h2>
@@ -344,20 +575,32 @@
       <div class="list-header">
         <h2>Samples</h2>
         <div class="toolbar-actions">
-          {#if samplesSaveMsg}
-            <span class="save-msg" class:save-error={samplesSaveMsg !== "Saved"}
-              >{samplesSaveMsg}</span
+          {#if samplesFile}
+            <span class="info-badge">from {samplesFile}</span>
+          {:else}
+            {#if samplesSaveMsg}
+              <span
+                class="save-msg"
+                class:save-error={samplesSaveMsg !== "Saved"}
+                >{samplesSaveMsg}</span
+              >
+            {/if}
+            <button
+              class="btn btn-primary"
+              onclick={saveSamples}
+              disabled={samplesSaving || !samplesDirty}
             >
+              {samplesSaving ? "Saving..." : "Save Samples"}
+            </button>
           {/if}
-          <button
-            class="btn btn-primary"
-            onclick={saveSamples}
-            disabled={samplesSaving || !samplesDirty}
-          >
-            {samplesSaving ? "Saving..." : "Save Samples"}
-          </button>
         </div>
       </div>
+      {#if samplesFile}
+        <div class="info-banner">
+          Samples loaded from <code>{samplesFile}</code>. Edit the file directly
+          to make changes.
+        </div>
+      {/if}
       <SamplesSection
         bind:this={samplesRef}
         bind:samples={samplesMap}
@@ -458,6 +701,63 @@
     display: flex;
     flex-direction: column;
     gap: 16px;
+  }
+  .info-badge {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: var(--bg-hover);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+  }
+  .info-banner {
+    font-size: 13px;
+    padding: 10px 14px;
+    border-radius: var(--radius);
+    background: var(--bg-hover);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+  }
+  .info-banner code {
+    font-weight: 600;
+    color: var(--text);
+  }
+  .profile-file-card {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 16px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    cursor: pointer;
+    text-align: left;
+    color: var(--text);
+    font: inherit;
+    transition: border-color 0.15s;
+  }
+  .profile-file-card:hover {
+    border-color: var(--accent);
+  }
+  .pf-name {
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .pf-hostname {
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  .pf-badges {
+    display: flex;
+    gap: 4px;
+    margin-top: 4px;
+  }
+  .pf-badge {
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: var(--bg-hover);
+    color: var(--text-dim);
   }
   .browser-overlay {
     position: fixed;

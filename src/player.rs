@@ -79,6 +79,10 @@ struct HardwareState {
     sample_engine: Option<Arc<RwLock<SampleEngine>>>,
     trigger_engine: Option<Arc<TriggerEngine>>,
     clock_source: ClockSource,
+    /// The hostname of the active hardware profile (None if no profile matched).
+    profile_name: Option<String>,
+    /// The resolved machine hostname used for profile matching.
+    hostname: Option<String>,
 }
 
 /// Alias for the shared state sampler sender stored on Player.
@@ -112,6 +116,25 @@ pub struct PlayerDevices {
     pub dmx_engine: Option<Arc<dmx::engine::Engine>>,
     pub sample_engine: Option<Arc<RwLock<SampleEngine>>>,
     pub trigger_engine: Option<Arc<TriggerEngine>>,
+}
+
+/// Status of a single hardware subsystem.
+#[derive(Clone, serde::Serialize)]
+pub struct SubsystemStatus {
+    pub status: String,
+    pub name: Option<String>,
+}
+
+/// Snapshot of all hardware subsystem statuses.
+#[derive(Clone, serde::Serialize)]
+pub struct HardwareStatusSnapshot {
+    pub init_done: bool,
+    pub hostname: Option<String>,
+    pub profile: Option<String>,
+    pub audio: SubsystemStatus,
+    pub midi: SubsystemStatus,
+    pub dmx: SubsystemStatus,
+    pub trigger: SubsystemStatus,
 }
 
 /// Plays back individual wav files as multichannel audio for the configured audio interface.
@@ -210,10 +233,21 @@ impl Player {
             Some(p) => (*p).clone(),
             None => {
                 info!("No matching hardware profile found; starting with no hardware");
+                {
+                    let mut hw = self.hardware.write();
+                    hw.hostname = Some(hostname);
+                }
                 self.init_done_tx.send_modify(|v| *v = true);
                 return;
             }
         };
+
+        // Store the active profile name and hostname.
+        {
+            let mut hw = self.hardware.write();
+            hw.profile_name = Some(profile.hostname().unwrap_or("default").to_string());
+            hw.hostname = Some(hostname);
+        }
 
         info!(
             hostname = profile.hostname().unwrap_or("default"),
@@ -477,6 +511,8 @@ impl Player {
             sample_engine: devices.sample_engine,
             trigger_engine: devices.trigger_engine,
             clock_source,
+            profile_name: None,
+            hostname: None,
         };
 
         let (init_done_tx, _init_done_rx) = tokio::sync::watch::channel(true);
@@ -532,6 +568,55 @@ impl Player {
     /// Gets the MIDI device currently in use by the player.
     pub fn midi_device(&self) -> Option<Arc<dyn midi::Device>> {
         self.hardware.read().midi_device.clone()
+    }
+
+    /// Returns a snapshot of all hardware subsystem statuses.
+    pub fn hardware_status(&self) -> HardwareStatusSnapshot {
+        let init_done = *self.init_done_tx.borrow();
+        let hw = self.hardware.read();
+
+        let status_for = |present: bool, name: Option<String>| -> SubsystemStatus {
+            if present {
+                SubsystemStatus {
+                    status: "connected".to_string(),
+                    name,
+                }
+            } else if !init_done {
+                SubsystemStatus {
+                    status: "initializing".to_string(),
+                    name: None,
+                }
+            } else {
+                SubsystemStatus {
+                    status: "not_connected".to_string(),
+                    name: None,
+                }
+            }
+        };
+
+        HardwareStatusSnapshot {
+            init_done,
+            hostname: hw.hostname.clone(),
+            profile: hw.profile_name.clone(),
+            audio: status_for(
+                hw.device.is_some(),
+                hw.device.as_ref().map(|d| d.to_string()),
+            ),
+            midi: status_for(
+                hw.midi_device.is_some(),
+                hw.midi_device.as_ref().map(|d| d.to_string()),
+            ),
+            dmx: status_for(
+                hw.dmx_engine.is_some(),
+                hw.dmx_engine.as_ref().map(|_| "DMX Engine".to_string()),
+            ),
+            trigger: status_for(
+                hw.trigger_engine.is_some(),
+                hw.trigger_engine
+                    .as_ref()
+                    .map(|_| "Trigger Engine".to_string()),
+            ),
+        }
     }
 
     /// Processes a MIDI event for triggered samples.
@@ -667,6 +752,8 @@ impl Player {
             sample_engine: None,
             trigger_engine: None,
             clock_source: ClockSource::Wall,
+            profile_name: None,
+            hostname: None,
         };
         self.init_done_tx.send_modify(|v| *v = false);
 
@@ -2879,6 +2966,38 @@ mod test {
             result.is_err(),
             "reload_hardware should fail without config store"
         );
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_hardware_status_no_devices() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player_with_config(None, None, None).await?;
+        let status = player.hardware_status();
+
+        assert!(status.init_done);
+        assert_eq!(status.audio.status, "not_connected");
+        assert_eq!(status.midi.status, "not_connected");
+        assert_eq!(status.dmx.status, "not_connected");
+        assert_eq!(status.trigger.status, "not_connected");
+        assert!(status.audio.name.is_none());
+        assert!(status.midi.name.is_none());
+        assert!(status.dmx.name.is_none());
+        assert!(status.trigger.name.is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_hardware_status_with_devices() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        let status = player.hardware_status();
+
+        assert!(status.init_done);
+        assert_eq!(status.audio.status, "connected");
+        assert!(status.audio.name.is_some());
+        assert_eq!(status.midi.status, "connected");
+        assert!(status.midi.name.is_some());
 
         Ok(())
     }

@@ -125,6 +125,11 @@ impl Profile {
         self.dmx.as_ref()
     }
 
+    /// Returns a mutable reference to the DMX configuration.
+    pub fn dmx_mut(&mut self) -> Option<&mut Dmx> {
+        self.dmx.as_mut()
+    }
+
     /// Returns the trigger configuration, if present.
     pub fn trigger(&self) -> Option<&TriggerConfig> {
         self.trigger.as_ref()
@@ -148,11 +153,8 @@ impl Profile {
 
 /// Filters profiles by hostname. Returns profiles that either have no hostname
 /// constraint or whose hostname matches the given value.
-pub fn filter_by_hostname<'a, P, F>(
-    profiles: &'a [P],
-    hostname: &str,
-    get_hostname: F,
-) -> Vec<&'a P>
+#[cfg(test)]
+fn filter_by_hostname<'a, P, F>(profiles: &'a [P], hostname: &str, get_hostname: F) -> Vec<&'a P>
 where
     F: Fn(&'a P) -> Option<&'a str>,
 {

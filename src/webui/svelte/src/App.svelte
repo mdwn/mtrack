@@ -19,6 +19,7 @@
   import SongBrowser from "./pages/SongBrowser.svelte";
   import PlaylistEditor from "./pages/PlaylistEditor.svelte";
   import LightingEditor from "./pages/LightingEditor.svelte";
+  import StatusPage from "./pages/StatusPage.svelte";
   import NotFound from "./pages/NotFound.svelte";
   import { playbackStore } from "./lib/ws/stores";
 
@@ -40,6 +41,7 @@
       "#/songs": "Songs",
       "#/playlists": "Playlists",
       "#/lighting": "Lighting",
+      "#/status": "Status",
     };
     const base = "mtrack";
     const route = Object.keys(titles).find((k) =>
@@ -73,6 +75,8 @@
     <PlaylistEditor />
   {:else if currentHash.startsWith("#/lighting")}
     <LightingEditor />
+  {:else if currentHash.startsWith("#/status")}
+    <StatusPage />
   {:else}
     <NotFound />
   {/if}

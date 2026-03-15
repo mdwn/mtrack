@@ -13,6 +13,7 @@
 //
 
 mod local;
+mod migrate;
 mod remote;
 
 use crate::audio;
@@ -202,6 +203,15 @@ enum Commands {
         #[arg(long)]
         bits_per_sample: Option<u16>,
     },
+    /// Migrate inline config to directory-based files.
+    Migrate {
+        /// Path to a project directory or config file.
+        #[arg(default_value = ".")]
+        path: String,
+        /// Actually write changes (default is dry-run).
+        #[arg(long)]
+        apply: bool,
+    },
     /// Verifies songs in a repository against the player config.
     Verify {
         /// The path to the mtrack.yaml player config file.
@@ -301,6 +311,7 @@ pub async fn run(tui_mode: bool) -> Result<(), Box<dyn Error>> {
             local::verify_light_show(&show_path, config.as_deref())?
         }
         Commands::Cues { host_port } => remote::cues(host_port).await?,
+        Commands::Migrate { path, apply } => migrate::migrate(&path, apply)?,
         Commands::Verify {
             config,
             check,
@@ -964,6 +975,31 @@ mod tests {
                     assert_eq!(playlist_path.as_deref(), Some("custom-playlist.yaml"));
                 }
                 _ => panic!("expected Start command"),
+            }
+        }
+
+        #[test]
+        fn parse_migrate_defaults() {
+            let cli = Cli::try_parse_from(["mtrack", "migrate"]).unwrap();
+            match cli.command {
+                Commands::Migrate { path, apply } => {
+                    assert_eq!(path, ".");
+                    assert!(!apply);
+                }
+                _ => panic!("expected Migrate command"),
+            }
+        }
+
+        #[test]
+        fn parse_migrate_with_path_and_apply() {
+            let cli =
+                Cli::try_parse_from(["mtrack", "migrate", "/path/to/project", "--apply"]).unwrap();
+            match cli.command {
+                Commands::Migrate { path, apply } => {
+                    assert_eq!(path, "/path/to/project");
+                    assert!(apply);
+                }
+                _ => panic!("expected Migrate command"),
             }
         }
 

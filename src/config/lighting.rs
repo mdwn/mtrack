@@ -119,6 +119,29 @@ impl Lighting {
     pub fn directories(&self) -> Option<&Directories> {
         self.directories.as_ref()
     }
+
+    /// Returns the raw inline fixtures map (without cloning).
+    pub fn inline_fixtures_raw(&self) -> Option<&HashMap<String, String>> {
+        self.fixtures.as_ref()
+    }
+
+    /// Clears inline fixtures.
+    pub fn clear_inline_fixtures(&mut self) {
+        self.fixtures = None;
+    }
+
+    /// Sets the venues directory, creating the directories struct if needed.
+    pub fn set_venues_dir(&mut self, dir: String) {
+        match &mut self.directories {
+            Some(dirs) => dirs.venues = Some(dir),
+            None => {
+                self.directories = Some(Directories {
+                    fixture_types: None,
+                    venues: Some(dir),
+                })
+            }
+        }
+    }
 }
 
 impl Directories {

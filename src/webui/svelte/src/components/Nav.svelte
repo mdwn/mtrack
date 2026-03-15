@@ -28,6 +28,7 @@
     { hash: "#/songs", label: "Songs" },
     { hash: "#/playlists", label: "Playlists" },
     { hash: "#/lighting", label: "Lighting" },
+    { hash: "#/status", label: "Status" },
   ];
 
   function isActive(hash: string): boolean {

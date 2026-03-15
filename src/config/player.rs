@@ -14,8 +14,9 @@
 use super::audio::Audio;
 use super::controller::Controller;
 use super::dmx::Dmx;
+use super::lighting::Lighting;
 use super::midi::Midi;
-use super::profile::{filter_by_hostname, AudioConfig, Profile};
+use super::profile::{AudioConfig, Profile};
 use super::samples::{SampleDefinition, SampleTrigger, SamplesConfig, DEFAULT_MAX_SAMPLE_VOICES};
 use super::statusevents::StatusEvents;
 use super::trackmappings::TrackMappings;
@@ -163,7 +164,8 @@ impl Player {
     }
 
     /// Loads profiles from the profiles_dir, if configured.
-    /// Directory profiles are prepended before any inline profiles.
+    /// Directory profiles replace inline profiles entirely. If the directory is
+    /// empty, inline profiles are kept as a fallback.
     fn load_profiles_dir(&mut self, config_path: &Path) -> Result<(), ConfigError> {
         let profiles_dir_str = match &self.profiles_dir {
             Some(dir) => dir.clone(),
@@ -214,18 +216,27 @@ impl Player {
         }
 
         if !dir_profiles.is_empty() {
-            match &mut self.profiles {
-                Some(existing) => {
-                    dir_profiles.append(existing);
-                    *existing = dir_profiles;
-                }
-                None => {
-                    self.profiles = Some(dir_profiles);
-                }
+            // Directory profiles win — replace any inline profiles entirely.
+            if self.profiles.is_some() {
+                warn!("inline 'profiles' ignored; using profiles_dir");
             }
+            self.profiles = Some(dir_profiles);
         }
+        // If directory is empty, fall back to inline profiles (backward compat).
 
         Ok(())
+    }
+
+    /// Gets the profiles directory, resolved relative to the given config path.
+    pub fn profiles_dir_resolved(&self, config_path: &Path) -> Option<PathBuf> {
+        let dir_str = self.profiles_dir.as_ref()?;
+        let dir_path = PathBuf::from(dir_str);
+        if dir_path.is_absolute() {
+            Some(dir_path)
+        } else {
+            let config_dir = config_path.parent().unwrap_or(Path::new("."));
+            Some(config_dir.join(dir_path))
+        }
     }
 
     /// Normalizes legacy configuration fields into profiles.
@@ -343,7 +354,13 @@ impl Player {
     /// The first matching profile should be used.
     pub fn profiles(&self, hostname: &str) -> Vec<&Profile> {
         match &self.profiles {
-            Some(profiles) => filter_by_hostname(profiles, hostname, |p| p.hostname()),
+            Some(profiles) => profiles
+                .iter()
+                .filter(|p| match p.hostname() {
+                    Some(h) => h == hostname,
+                    None => true,
+                })
+                .collect(),
             None => vec![],
         }
     }
@@ -533,6 +550,99 @@ impl Player {
     /// Sets the inline sample definitions.
     pub fn set_samples(&mut self, samples: HashMap<String, SampleDefinition>) {
         self.samples = samples;
+    }
+
+    /// Returns the raw `profiles_dir` value (before path resolution).
+    pub fn profiles_dir_raw(&self) -> Option<&str> {
+        self.profiles_dir.as_deref()
+    }
+
+    /// Returns the raw `playlist` value (before path resolution).
+    pub fn playlist_raw(&self) -> Option<&str> {
+        self.playlist.as_deref()
+    }
+
+    /// Returns the raw inline profiles (may be None if not set or already cleared).
+    pub fn inline_profiles(&self) -> Option<&[Profile]> {
+        self.profiles.as_deref()
+    }
+
+    /// Sets the profiles_dir field.
+    pub fn set_profiles_dir(&mut self, dir: String) {
+        self.profiles_dir = Some(dir);
+    }
+
+    /// Clears inline profiles.
+    pub fn clear_inline_profiles(&mut self) {
+        self.profiles = None;
+    }
+
+    /// Sets the playlists_dir field.
+    pub fn set_playlists_dir_value(&mut self, dir: String) {
+        self.playlists_dir = Some(dir);
+    }
+
+    /// Clears the playlist field.
+    pub fn clear_playlist(&mut self) {
+        self.playlist = None;
+    }
+
+    /// Clears all legacy top-level fields that have been normalized into profiles.
+    pub fn clear_legacy_fields(&mut self) {
+        self.audio_device = None;
+        self.audio = None;
+        self.midi_device = None;
+        self.midi = None;
+        self.dmx = None;
+        self.trigger = None;
+        self.track_mappings = None;
+        self.controller = None;
+        self.controllers = None;
+        self.sample_triggers = Vec::new();
+    }
+
+    /// Returns a mutable reference to the DMX config's lighting section.
+    pub fn lighting_mut(&mut self) -> Option<&mut Lighting> {
+        self.dmx.as_mut().and_then(|d| d.lighting_mut())
+    }
+
+    /// Returns a reference to the DMX config's lighting section (through all profiles).
+    /// Checks the first profile's DMX config for lighting.
+    pub fn lighting_from_profiles(&self) -> Option<&Lighting> {
+        self.profiles
+            .as_ref()
+            .and_then(|ps| ps.first())
+            .and_then(|p| p.dmx())
+            .and_then(|d| d.lighting())
+    }
+
+    /// Deserializes a config file without running normalize() or loading profiles_dir.
+    /// Used by the migrate command to inspect raw inline fields.
+    pub fn deserialize_raw(path: &Path) -> Result<Player, ConfigError> {
+        let player = Config::builder()
+            .add_source(File::from(path))
+            .build()?
+            .try_deserialize::<Player>()?;
+        Ok(player)
+    }
+
+    /// Returns the raw top-level DMX field (before normalization into profiles).
+    pub fn dmx_raw(&self) -> Option<&Dmx> {
+        self.dmx.as_ref()
+    }
+
+    /// Returns whether there are any legacy top-level fields set.
+    pub fn has_legacy_fields(&self) -> bool {
+        self.audio_device.is_some()
+            || self.audio.is_some()
+            || self.midi_device.is_some()
+            || self.midi.is_some()
+            || self.dmx.is_some()
+            || self.trigger.is_some()
+            || self.track_mappings.is_some()
+            || self.controller.is_some()
+            || self.controllers.is_some()
+            || !self.sample_triggers.is_empty()
     }
 }
 
@@ -1130,7 +1240,7 @@ profiles:
     }
 
     #[test]
-    fn test_profiles_dir_prepended_before_inline() {
+    fn test_profiles_dir_replaces_inline() {
         let player = player_with_dir(
             concat!(
                 "songs: songs\n",
@@ -1152,19 +1262,90 @@ profiles:
         );
 
         let profiles = player.all_profiles();
-        assert_eq!(profiles.len(), 2);
-        // Directory profile comes first.
+        // Directory profiles replace inline entirely.
+        assert_eq!(profiles.len(), 1);
         assert_eq!(
             profiles[0].audio_config().unwrap().audio().device(),
             "dir-device"
         );
         assert_eq!(profiles[0].hostname(), Some("pi-a"));
-        // Inline profile comes second.
-        assert_eq!(
-            profiles[1].audio_config().unwrap().audio().device(),
-            "inline-fallback"
+    }
+
+    #[test]
+    fn test_profiles_dir_no_duplication_on_roundtrip() {
+        // Regression test: serializing and re-deserializing a config with
+        // profiles_dir must not duplicate the directory-loaded profiles.
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("mtrack.yaml");
+        std::fs::write(&config_path, "songs: songs\nprofiles_dir: profiles/\n").unwrap();
+        std::fs::create_dir(dir.path().join("profiles")).unwrap();
+        write_profile(
+            &dir.path().join("profiles"),
+            "pi-a.yaml",
+            "hostname: pi-a\naudio:\n  device: dir-device\n  track_mappings:\n    drums: [1]\n",
         );
-        assert_eq!(profiles[1].hostname(), None);
+
+        let player = Player::deserialize(&config_path).unwrap();
+        assert_eq!(player.all_profiles().len(), 1);
+
+        // Serialize and write back (simulates config store save).
+        let yaml = crate::util::to_yaml_string(&player).unwrap();
+        std::fs::write(&config_path, &yaml).unwrap();
+
+        // Re-deserialize: should still have exactly 1 profile, not 2.
+        let player2 = Player::deserialize(&config_path).unwrap();
+        assert_eq!(
+            player2.all_profiles().len(),
+            1,
+            "profiles should not be duplicated after roundtrip"
+        );
+
+        assert_eq!(
+            player2.all_profiles()[0]
+                .audio_config()
+                .unwrap()
+                .audio()
+                .device(),
+            "dir-device"
+        );
+    }
+
+    #[test]
+    fn test_profiles_dir_only_serializes_correctly() {
+        // When the config has profiles_dir but no inline profiles, the
+        // directory profiles should appear in serialized YAML output.
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("mtrack.yaml");
+        std::fs::write(&config_path, "songs: songs\nprofiles_dir: profiles/\n").unwrap();
+        std::fs::create_dir(dir.path().join("profiles")).unwrap();
+        write_profile(
+            &dir.path().join("profiles"),
+            "pi-a.yaml",
+            "hostname: pi-a\naudio:\n  device: device-a\n  track_mappings:\n    drums: [1]\n",
+        );
+
+        let player = Player::deserialize(&config_path).unwrap();
+        assert_eq!(player.all_profiles().len(), 1);
+
+        // Serialized YAML must include the profile from the directory.
+        let yaml = crate::util::to_yaml_string(&player).unwrap();
+        assert!(
+            yaml.contains("pi-a"),
+            "serialized YAML should contain dir profile hostname"
+        );
+        assert!(
+            yaml.contains("device-a"),
+            "serialized YAML should contain dir profile device"
+        );
+
+        // Roundtrip: re-deserialize should still have exactly 1 profile.
+        std::fs::write(&config_path, &yaml).unwrap();
+        let player2 = Player::deserialize(&config_path).unwrap();
+        assert_eq!(
+            player2.all_profiles().len(),
+            1,
+            "profiles should not be duplicated after roundtrip"
+        );
     }
 
     #[test]
@@ -1295,6 +1476,8 @@ profiles:
 
     #[test]
     fn test_profiles_dir_with_hostname_filtering() {
+        // With profiles_dir set, directory profiles replace inline entirely.
+        // Hostname filtering works on the directory profiles only.
         let player = player_with_dir(
             concat!(
                 "songs: songs\n",
@@ -1309,41 +1492,47 @@ profiles:
                 std::fs::create_dir(dir.join("profiles")).unwrap();
                 write_profile(
                     &dir.join("profiles"),
-                    "pi-a.yaml",
+                    "01-pi-a.yaml",
                     "hostname: pi-a\naudio:\n  device: device-a\n  track_mappings:\n    drums: [1]\n",
                 );
                 write_profile(
                     &dir.join("profiles"),
-                    "pi-b.yaml",
+                    "02-pi-b.yaml",
                     "hostname: pi-b\naudio:\n  device: device-b\n  track_mappings:\n    drums: [11]\n",
+                );
+                // A fallback profile with no hostname in the directory.
+                write_profile(
+                    &dir.join("profiles"),
+                    "99-fallback.yaml",
+                    "audio:\n  device: dir-fallback\n  track_mappings:\n    drums: [1]\n",
                 );
             },
         );
 
-        // pi-a sees its directory profile + inline fallback.
+        // pi-a sees its directory profile + dir fallback.
         let pi_a = player.profiles("pi-a");
         assert_eq!(pi_a.len(), 2);
         assert_eq!(pi_a[0].audio_config().unwrap().audio().device(), "device-a");
         assert_eq!(
             pi_a[1].audio_config().unwrap().audio().device(),
-            "inline-fallback"
+            "dir-fallback"
         );
 
-        // pi-b sees its directory profile + inline fallback.
+        // pi-b sees its directory profile + dir fallback.
         let pi_b = player.profiles("pi-b");
         assert_eq!(pi_b.len(), 2);
         assert_eq!(pi_b[0].audio_config().unwrap().audio().device(), "device-b");
         assert_eq!(
             pi_b[1].audio_config().unwrap().audio().device(),
-            "inline-fallback"
+            "dir-fallback"
         );
 
-        // Unknown host sees only inline fallback.
+        // Unknown host sees only dir fallback.
         let unknown = player.profiles("pi-c");
         assert_eq!(unknown.len(), 1);
         assert_eq!(
             unknown[0].audio_config().unwrap().audio().device(),
-            "inline-fallback"
+            "dir-fallback"
         );
     }
 

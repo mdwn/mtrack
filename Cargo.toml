@@ -84,6 +84,7 @@ serial_test = "3.4.0"
 tokio-tungstenite = "0.28"
 
 [build-dependencies]
+jiff = "0.2"
 tonic-build = "0.14"
 tonic-prost-build = "0.14"
 
