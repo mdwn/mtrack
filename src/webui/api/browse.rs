@@ -1,0 +1,318 @@
+// Copyright (C) 2026 Michael Wilson <mike@mdwn.dev>
+//
+// This program is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free Software
+// Foundation, version 3.
+//
+// This program is distributed in the hope that it will be useful, but WITHOUT
+// ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License along with
+// this program. If not, see <https://www.gnu.org/licenses/>.
+//
+
+use axum::{
+    extract::{Query, State},
+    http::StatusCode,
+    response::IntoResponse,
+    Json,
+};
+use serde_json::json;
+
+use super::super::server::WebUiState;
+use crate::songs;
+
+/// GET /api/browse?path=... — lists files and directories at a filesystem path.
+///
+/// Restricted to the directory containing mtrack.yaml (the config root).
+/// If no `path` query parameter is provided, defaults to the config root.
+/// Returns entries sorted: directories first, then files alphabetically.
+pub(super) async fn browse_directory(
+    State(state): State<WebUiState>,
+    Query(params): Query<BrowseParams>,
+) -> impl IntoResponse {
+    // The browsable root is the directory containing mtrack.yaml.
+    // Canonicalize config_path first to handle relative paths (e.g., "mtrack.yaml").
+    let config_canonical = match state.config_path.canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("Failed to resolve config path: {}", e)})),
+            )
+                .into_response();
+        }
+    };
+
+    let root_canonical = match config_canonical.parent() {
+        Some(p) => p.to_path_buf(),
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Unable to determine config root directory"})),
+            )
+                .into_response();
+        }
+    };
+
+    // Resolve the requested path. Paths from the frontend are project-relative
+    // (e.g., "/" = project root, "/songs" = songs subdirectory).
+    let requested = if params.path.is_empty() || params.path == "/" {
+        root_canonical.clone()
+    } else {
+        // Strip leading "/" and join with root to get absolute path.
+        let relative = params.path.strip_prefix('/').unwrap_or(&params.path);
+        root_canonical.join(relative)
+    };
+
+    // Canonicalize the requested path and verify it's under the root before
+    // touching the filesystem, preventing path traversal attacks.
+    let dir_canonical = match requested.canonicalize() {
+        Ok(p) => p,
+        Err(_) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": format!("Not a directory: {}", params.path)})),
+            )
+                .into_response();
+        }
+    };
+
+    if !dir_canonical.starts_with(&root_canonical) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "Access denied: path is outside the project directory",
+            })),
+        )
+            .into_response();
+    }
+
+    if !dir_canonical.is_dir() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": format!("Not a directory: {}", params.path)})),
+        )
+            .into_response();
+    }
+
+    // Convert an absolute path to a project-relative path (e.g., "/songs/foo").
+    let to_relative = |abs: &std::path::Path| -> String {
+        let suffix = abs
+            .strip_prefix(&root_canonical)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if suffix.is_empty() {
+            "/".to_string()
+        } else {
+            format!("/{suffix}")
+        }
+    };
+
+    let mut entries: Vec<serde_json::Value> = Vec::new();
+    match std::fs::read_dir(&dir_canonical) {
+        Ok(iter) => {
+            for entry in iter.flatten() {
+                let path = entry.path();
+                let name = match path.file_name().and_then(|n| n.to_str()) {
+                    Some(n) => n.to_string(),
+                    None => continue,
+                };
+                // Skip hidden files
+                if name.starts_with('.') {
+                    continue;
+                }
+                let is_dir = path.is_dir();
+                let ext = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+                let file_type = if is_dir {
+                    "directory"
+                } else if songs::is_supported_audio_extension(&ext) {
+                    "audio"
+                } else if ext == "mid" {
+                    "midi"
+                } else if ext == "light" {
+                    "lighting"
+                } else {
+                    "other"
+                };
+                entries.push(json!({
+                    "name": name,
+                    "path": to_relative(&path),
+                    "type": file_type,
+                    "is_dir": is_dir,
+                }));
+            }
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("Failed to read directory: {}", e)})),
+            )
+                .into_response();
+        }
+    }
+
+    // Sort: directories first, then alphabetically by name
+    entries.sort_by(|a, b| {
+        let a_dir = a.get("is_dir").and_then(|v| v.as_bool()).unwrap_or(false);
+        let b_dir = b.get("is_dir").and_then(|v| v.as_bool()).unwrap_or(false);
+        b_dir.cmp(&a_dir).then_with(|| {
+            a.get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_lowercase()
+                .cmp(
+                    &b.get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_lowercase(),
+                )
+        })
+    });
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "path": to_relative(&dir_canonical),
+            "root": root_canonical.to_string_lossy(),
+            "entries": entries,
+        })),
+    )
+        .into_response()
+}
+
+#[derive(serde::Deserialize)]
+pub(super) struct BrowseParams {
+    #[serde(default)]
+    path: String,
+}
+
+/// POST /api/browse/create-song — auto-generates a song.yaml in a project-relative directory.
+///
+/// Expects a JSON body with `path` (project-relative directory, e.g. "/songs/Afar")
+/// and an optional `name` override. The backend scans the directory for audio/MIDI/lighting
+/// files and generates the song config automatically, including per-channel track splitting
+/// for stereo and multichannel audio files.
+pub(super) async fn create_song_in_directory(
+    State(state): State<WebUiState>,
+    Json(body): Json<CreateSongInDirRequest>,
+) -> impl IntoResponse {
+    // Resolve the project root (same logic as browse_directory).
+    let config_canonical = match state.config_path.canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("Failed to resolve config path: {}", e)})),
+            )
+                .into_response();
+        }
+    };
+    let root_canonical = match config_canonical.parent() {
+        Some(p) => p.to_path_buf(),
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Unable to determine config root directory"})),
+            )
+                .into_response();
+        }
+    };
+
+    // Resolve the target directory from the project-relative path.
+    let relative = body.path.strip_prefix('/').unwrap_or(&body.path);
+    let target_dir = if relative.is_empty() {
+        root_canonical.clone()
+    } else {
+        root_canonical.join(relative)
+    };
+
+    let dir_canonical = match target_dir.canonicalize() {
+        Ok(p) => p,
+        Err(_) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": format!("Directory not found: {}", body.path)})),
+            )
+                .into_response();
+        }
+    };
+
+    if !dir_canonical.starts_with(&root_canonical) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": "Access denied: path is outside the project directory"})),
+        )
+            .into_response();
+    }
+
+    if !dir_canonical.is_dir() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "Path is not a directory"})),
+        )
+            .into_response();
+    }
+
+    let config_path = dir_canonical.join("song.yaml");
+    if config_path.exists() {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error": "song.yaml already exists in this directory"})),
+        )
+            .into_response();
+    }
+
+    // Use Song::initialize to scan the directory and build the config with proper
+    // channel-aware track splitting (stereo -> L/R, multichannel -> per-channel).
+    let mut song_config = match songs::Song::initialize(&dir_canonical) {
+        Ok(song) => song.get_config(),
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": format!("Failed to scan directory: {}", e)})),
+            )
+                .into_response();
+        }
+    };
+
+    // Apply name override if provided.
+    if let Some(ref name) = body.name {
+        let trimmed = name.trim();
+        if !trimmed.is_empty() {
+            song_config.set_name(trimmed);
+        }
+    }
+
+    match song_config.save(&config_path) {
+        Ok(()) => {
+            // Refresh the player's all-songs playlist so newly imported songs appear.
+            state.player.reload_songs(
+                &state.songs_path,
+                state.playlists_dir.as_deref(),
+                state.legacy_playlist_path.as_deref(),
+            );
+            (
+                StatusCode::CREATED,
+                Json(json!({"status": "created", "path": config_path.to_string_lossy()})),
+            )
+                .into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("Failed to save song config: {}", e)})),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub(super) struct CreateSongInDirRequest {
+    path: String,
+    name: Option<String>,
+}

@@ -76,7 +76,8 @@ pub struct WebUiState {
     /// Shared waveform cache (sent to each WebSocket client on connect).
     pub waveform_cache: ws_state::WaveformCache,
     /// Active calibration session (at most one at a time).
-    pub(crate) calibration: Arc<parking_lot::Mutex<Option<super::api::CalibrationSession>>>,
+    pub(crate) calibration:
+        Arc<parking_lot::Mutex<Option<super::api::devices::CalibrationSession>>>,
 }
 
 /// Handle to a running web UI server, returned so callers can shut it down.
