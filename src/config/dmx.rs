@@ -110,6 +110,11 @@ impl Dmx {
     pub fn null_client(&self) -> bool {
         self.null_client
     }
+
+    /// Returns a mutable reference to the lighting configuration.
+    pub fn lighting_mut(&mut self) -> Option<&mut Lighting> {
+        self.lighting.as_mut()
+    }
 }
 
 /// A YAML representation of a DMX universe configuration.

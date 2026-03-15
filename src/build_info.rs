@@ -12,27 +12,6 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-pub mod audio;
-pub mod build_info;
-pub mod calibrate;
-pub(crate) mod clock;
-pub mod config;
-pub mod controller;
-pub mod dmx;
-pub mod lighting;
-pub mod midi;
-pub mod player;
-pub mod playlist;
-pub mod playsync;
-pub mod proto;
-pub mod samples;
-pub mod songs;
-pub mod state;
-#[cfg(test)]
-pub mod testutil;
-pub(crate) mod thread_priority;
-pub mod trigger;
-pub mod tui;
-pub mod util;
-pub mod verify;
-pub mod webui;
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const GIT_HASH: &str = env!("MTRACK_GIT_HASH");
+pub const BUILD_TIME: &str = env!("MTRACK_BUILD_TIME");

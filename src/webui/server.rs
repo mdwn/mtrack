@@ -75,6 +75,8 @@ pub struct WebUiState {
     pub legacy_playlist_path: Option<PathBuf>,
     /// Shared waveform cache (sent to each WebSocket client on connect).
     pub waveform_cache: ws_state::WaveformCache,
+    /// Resolved path to the profiles directory (if configured).
+    pub profiles_dir: Option<PathBuf>,
     /// Active calibration session (at most one at a time).
     pub(crate) calibration:
         Arc<parking_lot::Mutex<Option<super::api::devices::CalibrationSession>>>,
@@ -529,6 +531,7 @@ mod test {
             songs_path,
             playlists_dir: None,
             legacy_playlist_path: Some(playlist_path),
+            profiles_dir: None,
             waveform_cache: ws_state::new_waveform_cache(),
             calibration: Arc::new(parking_lot::Mutex::new(None)),
         };

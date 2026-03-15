@@ -244,6 +244,8 @@ pub async fn start(
         // it to the DMX engine when it comes up.
         player.set_broadcast_tx(broadcast_tx.clone());
 
+        let profiles_dir = player_config.profiles_dir_resolved(player_path);
+
         let webui_state = crate::webui::server::WebUiState {
             player: player.clone(),
             state_rx: state_rx.clone(),
@@ -252,6 +254,7 @@ pub async fn start(
             songs_path: player_config.songs(player_path),
             playlists_dir: playlists_dir.clone(),
             legacy_playlist_path: Some(legacy_playlist_path.clone()),
+            profiles_dir,
             waveform_cache: crate::webui::state::new_waveform_cache(),
             calibration: std::sync::Arc::new(parking_lot::Mutex::new(None)),
         };

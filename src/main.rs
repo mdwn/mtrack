@@ -12,6 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 mod audio;
+mod build_info;
 mod calibrate;
 mod cli;
 mod clock;

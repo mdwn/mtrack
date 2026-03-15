@@ -133,7 +133,7 @@ fn require_config_store(
 }
 
 /// Returns a 409 Conflict response if the player is currently playing.
-async fn reject_if_playing(state: &WebUiState) -> Option<axum::response::Response> {
+pub(super) async fn reject_if_playing(state: &WebUiState) -> Option<axum::response::Response> {
     if state.player.is_playing().await {
         Some(
             (
@@ -150,7 +150,7 @@ async fn reject_if_playing(state: &WebUiState) -> Option<axum::response::Respons
 /// Reloads hardware from the updated config. Non-blocking — spawns async
 /// device discovery and returns immediately. The broadcast channel is already
 /// stored on the Player and will be wired when the DMX engine comes up.
-async fn reload_hardware_after_mutation(state: &WebUiState) {
+pub(super) async fn reload_hardware_after_mutation(state: &WebUiState) {
     if let Err(e) = state.player.reload_hardware().await {
         warn!("Hardware reload failed: {}", e);
     }

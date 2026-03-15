@@ -124,6 +124,55 @@ export async function deleteProfile(
   return res.json();
 }
 
+// ---- File-based Profiles API (profiles_dir) ----
+
+export interface ProfileFileInfo {
+  filename: string;
+  hostname: string | null;
+  has_audio: boolean;
+  has_midi: boolean;
+  has_dmx: boolean;
+}
+
+export async function fetchProfileFiles(): Promise<ProfileFileInfo[]> {
+  const res = await get("/profiles");
+  if (!res.ok) throw new Error(`Failed to fetch profiles: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchProfileFile(
+  filename: string,
+): Promise<{ profile: object; yaml: string }> {
+  const res = await get(`/profiles/${encodeURIComponent(filename)}`);
+  if (!res.ok) {
+    const d = await res.json().catch(() => ({}));
+    throw new Error(d.error || `Failed to fetch profile: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function saveProfileFile(
+  filename: string,
+  profile: object,
+): Promise<void> {
+  const res = await put(
+    `/profiles/${encodeURIComponent(filename)}`,
+    JSON.stringify(profile),
+  );
+  if (!res.ok) {
+    const d = await res.json().catch(() => ({}));
+    throw new Error(d.error || `Failed to save profile: ${res.status}`);
+  }
+}
+
+export async function deleteProfileFile(filename: string): Promise<void> {
+  const res = await del(`/profiles/${encodeURIComponent(filename)}`);
+  if (!res.ok) {
+    const d = await res.json().catch(() => ({}));
+    throw new Error(d.error || `Failed to delete profile: ${res.status}`);
+  }
+}
+
 // Samples API
 
 export async function updateSamples(

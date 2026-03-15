@@ -17,7 +17,9 @@ pub(crate) mod config_api;
 pub(crate) mod devices;
 pub(crate) mod lighting_api;
 pub(crate) mod playlists;
+pub(crate) mod profiles;
 pub(crate) mod songs_api;
+pub(crate) mod status;
 
 use axum::{
     body::Bytes,
@@ -103,6 +105,14 @@ pub fn router() -> Router<WebUiState> {
             "/config/profiles/{index}",
             put(config_api::put_config_profile).delete(config_api::delete_config_profile),
         )
+        .route("/profiles", get(profiles::get_profiles))
+        .route(
+            "/profiles/{filename}",
+            get(profiles::get_profile)
+                .put(profiles::put_profile)
+                .delete(profiles::delete_profile_file),
+        )
+        .route("/status", get(status::get_status))
         .route("/devices/audio", get(devices::get_audio_devices))
         .route("/devices/midi", get(devices::get_midi_devices))
         .route("/calibrate/start", post(devices::post_calibrate_start))
@@ -300,6 +310,7 @@ pub(super) mod test_helpers {
             songs_path,
             playlists_dir: Some(dir.path().to_path_buf()),
             legacy_playlist_path: Some(playlist_path),
+            profiles_dir: None,
             waveform_cache: super::super::state::new_waveform_cache(),
             calibration: std::sync::Arc::new(parking_lot::Mutex::new(None)),
         };
