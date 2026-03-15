@@ -257,9 +257,20 @@ impl Song {
                     }
                 }
                 "light" => {
+                    let content = std::fs::read_to_string(&path).map_err(|e| {
+                        format!("Failed to read DSL lighting show {}: {}", path.display(), e)
+                    })?;
+                    let shows =
+                        crate::lighting::parser::parse_light_shows(&content).map_err(|e| {
+                            format!(
+                                "Failed to parse DSL lighting show {}:\n{}",
+                                path.display(),
+                                e
+                            )
+                        })?;
                     dsl_lighting_shows.push(DslLightingShow {
                         file_path: path,
-                        shows: HashMap::new(), // Parsed on demand during playback
+                        shows,
                     });
                 }
                 ext if is_supported_audio_extension(ext) => {
@@ -701,6 +712,11 @@ impl LightShow {
             dmx_file,
             midi_channels: config.midi_channels(),
         })
+    }
+
+    /// Gets the absolute file path of the DMX MIDI file.
+    pub fn dmx_file_path(&self) -> &Path {
+        &self.dmx_file
     }
 
     /// Gets the universe name associated with the DMX playback.

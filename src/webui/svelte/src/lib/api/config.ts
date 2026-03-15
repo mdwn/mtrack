@@ -12,7 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-import { get, post, put, del, uploadFile } from "./rest";
+import { get, post, put, del, uploadFile, putText, postText } from "./rest";
 
 // Calibration types
 export interface NoiseFloorResult {
@@ -410,4 +410,45 @@ export async function activatePlaylist(name: string): Promise<void> {
     const d = await res.json().catch(() => ({}));
     throw new Error(d.error || `Failed to activate playlist: ${res.status}`);
   }
+}
+
+// ---- Lighting Show Files ----
+
+export interface LightFileInfo {
+  path: string;
+  name: string;
+}
+
+export async function fetchLightingFiles(): Promise<LightFileInfo[]> {
+  const res = await get("/lighting");
+  if (!res.ok) throw new Error(`Failed to fetch lighting files: ${res.status}`);
+  const data = await res.json();
+  return data.files;
+}
+
+export async function fetchLightingFile(name: string): Promise<string> {
+  const res = await get(`/lighting/${encodeURIComponent(name)}`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch lighting file: ${res.status}`);
+  }
+  return res.text();
+}
+
+export async function saveLightingFile(
+  name: string,
+  content: string,
+): Promise<void> {
+  const res = await putText(`/lighting/${encodeURIComponent(name)}`, content);
+  if (!res.ok) {
+    const d = await res.json().catch(() => ({}));
+    const errors = d.errors ? d.errors.join("; ") : d.error;
+    throw new Error(errors || `Failed to save lighting file: ${res.status}`);
+  }
+}
+
+export async function validateLighting(
+  content: string,
+): Promise<{ valid: boolean; errors?: string[] }> {
+  const res = await postText("/lighting/validate", content);
+  return res.json();
 }

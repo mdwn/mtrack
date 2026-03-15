@@ -22,10 +22,13 @@
   let { controllers = $bindable(), onchange }: Props = $props();
 
   let showOscAdvanced: Record<number, boolean> = $state({});
-  let nextId = $state(0);
+  let nextId = $state(controllers.length);
 
   // Assign stable keys to controllers for Svelte's keyed each block.
-  let controllerKeys = $state<number[]>([]);
+  // Initialize synchronously to avoid undefined keys on first render.
+  let controllerKeys = $state<number[]>(
+    Array.from({ length: controllers.length }, (_, i) => i),
+  );
   $effect(() => {
     while (controllerKeys.length < controllers.length) {
       controllerKeys.push(nextId++);

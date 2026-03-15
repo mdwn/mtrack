@@ -24,6 +24,12 @@ export interface SongSummary {
   tracks: string[];
   has_midi: boolean;
   has_lighting: boolean;
+  /** Song directory path relative to the songs root */
+  base_dir: string;
+  /** DSL lighting file paths relative to the songs root */
+  lighting_files: string[];
+  /** Legacy MIDI DMX file paths relative to the songs root */
+  legacy_lighting_files: string[];
 }
 
 export interface WaveformTrack {
@@ -78,6 +84,17 @@ export async function uploadTracks(
   files: File[],
 ): Promise<Response> {
   return uploadFiles(`/songs/${encodeURIComponent(songName)}/tracks`, files);
+}
+
+export async function importFileToSong(
+  songName: string,
+  sourcePath: string,
+  filename?: string,
+): Promise<Response> {
+  return post(
+    `/songs/${encodeURIComponent(songName)}/import`,
+    JSON.stringify({ path: sourcePath, filename }),
+  );
 }
 
 export async function fetchWaveform(name: string): Promise<WaveformData> {

@@ -79,3 +79,19 @@ export async function postYaml(path: string, body: string): Promise<Response> {
     body,
   });
 }
+
+export async function putText(path: string, body: string): Promise<Response> {
+  return fetch(`${BASE}${path}`, {
+    method: "PUT",
+    headers: { "Content-Type": "text/plain" },
+    body,
+  });
+}
+
+export async function postText(path: string, body: string): Promise<Response> {
+  return fetch(`${BASE}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain" },
+    body,
+  });
+}
