@@ -141,8 +141,8 @@
       const x = msToPixel(line.ms, pixelsPerMs) - scrollLeft;
       ctx.strokeStyle =
         line.type === "measure"
-          ? "rgba(91, 91, 214, 0.15)"
-          : "rgba(91, 91, 214, 0.06)";
+          ? "rgba(94, 202, 234, 0.15)"
+          : "rgba(94, 202, 234, 0.06)";
       ctx.lineWidth = line.type === "measure" ? 1 : 0.5;
       ctx.beginPath();
       ctx.moveTo(x, 0);
@@ -197,7 +197,7 @@
     border-bottom: 1px solid var(--border);
   }
   .show-lane.sequence {
-    background: rgba(139, 92, 246, 0.03);
+    background: rgba(239, 96, 163, 0.03);
   }
   .lane-label {
     width: 80px;

@@ -521,6 +521,7 @@
   }
   .detail {
     max-width: 800px;
+    margin: 0 auto;
   }
   .back-link {
     display: inline-block;
@@ -579,6 +580,9 @@
     background: var(--bg-card);
     border: 1px solid var(--border);
     transition: border-color 0.15s;
+    position: sticky;
+    top: 48px;
+    z-index: 10;
   }
   .save-bar.dirty {
     border-color: var(--accent);

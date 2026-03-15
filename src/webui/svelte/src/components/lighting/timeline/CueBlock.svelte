@@ -205,7 +205,7 @@
     color: var(--yellow);
   }
   .seq-badge {
-    background: rgba(139, 92, 246, 0.2);
-    color: #a78bfa;
+    background: rgba(239, 96, 163, 0.2);
+    color: var(--pink);
   }
 </style>

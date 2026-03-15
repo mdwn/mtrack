@@ -674,7 +674,7 @@
     overflow-y: auto;
   }
   .list-panel {
-    width: 240px;
+    width: 280px;
     flex-shrink: 0;
   }
   .detail-panel {
@@ -738,7 +738,7 @@
     padding: 1px;
   }
   .song-list li.selected {
-    background: rgba(91, 91, 214, 0.12);
+    background: rgba(94, 202, 234, 0.12);
   }
   .song-item {
     width: 100%;
@@ -792,7 +792,8 @@
   .detail-toolbar {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 8px;
+    row-gap: 8px;
     padding-bottom: 12px;
     border-bottom: 1px solid var(--border);
     margin-bottom: 12px;

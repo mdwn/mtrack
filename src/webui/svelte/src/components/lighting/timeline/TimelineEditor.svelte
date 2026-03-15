@@ -499,8 +499,8 @@
     gap: 6px;
   }
   .seq-chip {
-    background: rgba(139, 92, 246, 0.1);
-    border: 1px solid rgba(139, 92, 246, 0.3);
+    background: var(--pink-dim);
+    border: 1px solid rgba(239, 96, 163, 0.3);
     border-radius: var(--radius);
     padding: 4px 10px;
     cursor: pointer;
@@ -511,8 +511,8 @@
     font-size: 12px;
   }
   .seq-chip:hover {
-    background: rgba(139, 92, 246, 0.2);
-    border-color: rgba(139, 92, 246, 0.5);
+    background: rgba(239, 96, 163, 0.2);
+    border-color: rgba(239, 96, 163, 0.5);
   }
   .seq-chip-name {
     font-weight: 500;

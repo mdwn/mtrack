@@ -72,7 +72,7 @@
     border-radius: 4px;
   }
   .playlist-songs li.current {
-    background: rgba(91, 91, 214, 0.15);
+    background: rgba(94, 202, 234, 0.12);
     color: var(--text);
     font-weight: 500;
   }

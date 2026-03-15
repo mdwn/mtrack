@@ -142,7 +142,7 @@
       w - 2 * PADDING + 40,
       h - 2 * PADDING + 40,
     );
-    ctx.strokeStyle = "#333";
+    ctx.strokeStyle = "#3a3a3e";
     ctx.lineWidth = 1;
     ctx.strokeRect(
       PADDING - 20,
@@ -364,7 +364,9 @@
   .stage-viewport {
     position: relative;
     width: 100%;
-    height: 300px;
+    min-height: 200px;
+    height: 35vh;
+    max-height: 450px;
     background: #111;
     border-radius: var(--radius);
     overflow: hidden;

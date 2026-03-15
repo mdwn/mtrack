@@ -98,7 +98,7 @@
       for (const line of gridLines) {
         const x = msToPixel(line.ms, pixelsPerMs) - scrollLeft;
         if (line.type === "measure") {
-          ctx.strokeStyle = "rgba(91, 91, 214, 0.5)";
+          ctx.strokeStyle = "rgba(94, 202, 234, 0.5)";
           ctx.lineWidth = 1;
           ctx.beginPath();
           ctx.moveTo(x, 0);
@@ -106,13 +106,13 @@
           ctx.stroke();
 
           if (line.label) {
-            ctx.fillStyle = "rgba(91, 91, 214, 0.9)";
+            ctx.fillStyle = "rgba(94, 202, 234, 0.9)";
             ctx.font = "9px monospace";
             ctx.textAlign = "center";
             ctx.fillText(line.label, x, 10);
           }
         } else {
-          ctx.strokeStyle = "rgba(91, 91, 214, 0.2)";
+          ctx.strokeStyle = "rgba(94, 202, 234, 0.2)";
           ctx.lineWidth = 0.5;
           ctx.beginPath();
           ctx.moveTo(x, 4);

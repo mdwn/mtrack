@@ -430,7 +430,7 @@
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
     position: sticky;
-    top: 0;
+    top: 48px;
     z-index: 10;
   }
   .detail-title {

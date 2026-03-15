@@ -33,12 +33,12 @@
   --bg-card-hover: #1e1e22;
   --bg-input: #111114;
   --border: #2a2a2e;
-  --border-focus: #5b5bd6;
+  --border-focus: #5ecaea;
   --text: #e4e4e7;
-  --text-muted: #71717a;
-  --text-dim: #52525b;
-  --accent: #5b5bd6;
-  --accent-hover: #6e6ede;
+  --text-muted: #9b9a9a;
+  --text-dim: #636464;
+  --accent: #5ecaea;
+  --accent-hover: #7dd4f0;
   --green: #22c55e;
   --green-dim: #166534;
   --red: #ef4444;
@@ -46,12 +46,22 @@
   --yellow: #eab308;
   --yellow-dim: #713f12;
   --blue: #3b82f6;
+  --pink: #ef60a3;
+  --pink-dim: rgba(239, 96, 163, 0.15);
   --mono:
     "SF Mono", "Cascadia Code", "Fira Code", "JetBrains Mono", Consolas,
     monospace;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --radius: 6px;
   --radius-lg: 10px;
+
+  /* Spacing */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
 }
 
 body {

@@ -456,7 +456,7 @@
     padding: 2px;
   }
   .playlist-list li.selected {
-    background: rgba(91, 91, 214, 0.12);
+    background: rgba(94, 202, 234, 0.12);
   }
   .playlist-list li.all-songs {
     opacity: 0.6;
