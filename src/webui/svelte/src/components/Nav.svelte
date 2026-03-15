@@ -13,7 +13,7 @@
      *
      * -->
 <script lang="ts">
-  import { wsConnected } from "../lib/ws/stores";
+  import { wsConnected, playbackStore } from "../lib/ws/stores";
 
   interface Props {
     currentHash: string;
@@ -63,11 +63,22 @@
       </a>
     {/each}
   </div>
+  {#if $playbackStore.song_name}
+    <div class="now-playing">
+      <span class="now-playing-icon"
+        >{$playbackStore.is_playing ? "▶" : "⏸"}</span
+      >
+      <span class="now-playing-song">{$playbackStore.song_name}</span>
+    </div>
+  {/if}
   <div class="nav-status">
     <div
       class="status-indicator"
       class:connected={$wsConnected}
       class:disconnected={!$wsConnected}
+      title={$wsConnected ? "Connected" : "Disconnected"}
+      role="status"
+      aria-label={$wsConnected ? "Server connected" : "Server disconnected"}
     ></div>
   </div>
 </nav>
@@ -134,6 +145,24 @@
     color: var(--text);
     background: rgba(91, 91, 214, 0.15);
   }
+  .now-playing {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--text-muted);
+    min-width: 0;
+  }
+  .now-playing-icon {
+    flex-shrink: 0;
+    font-size: 10px;
+  }
+  .now-playing-song {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 150px;
+  }
   .nav-status {
     display: flex;
     align-items: center;
@@ -156,6 +185,9 @@
   @media (max-width: 600px) {
     .hamburger {
       display: flex;
+    }
+    .now-playing {
+      display: none;
     }
     .nav-status {
       margin-left: 12px;

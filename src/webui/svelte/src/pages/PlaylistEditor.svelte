@@ -36,6 +36,8 @@
   let showNewInput = $state(false);
   let searchQuery = $state("");
   let confirmDelete = $state<string | null>(null);
+  let dragIndex = $state<number | null>(null);
+  let dragOverIndex = $state<number | null>(null);
 
   let availableSongs = $derived(
     detail
@@ -149,6 +151,38 @@
     dirty = true;
   }
 
+  function handleDragStart(e: DragEvent, index: number) {
+    dragIndex = index;
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", String(index));
+    }
+  }
+
+  function handleDragOver(e: DragEvent, index: number) {
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+    dragOverIndex = index;
+  }
+
+  function handleDrop(e: DragEvent, targetIndex: number) {
+    e.preventDefault();
+    if (dragIndex === null || dragIndex === targetIndex) return;
+
+    const songs = [...editSongs];
+    const [moved] = songs.splice(dragIndex, 1);
+    songs.splice(targetIndex, 0, moved);
+    editSongs = songs;
+    dirty = true;
+    dragIndex = null;
+    dragOverIndex = null;
+  }
+
+  function handleDragEnd() {
+    dragIndex = null;
+    dragOverIndex = null;
+  }
+
   loadPlaylists();
 </script>
 
@@ -240,7 +274,12 @@
 
   <div class="panel detail-panel">
     {#if error}
-      <div class="error-banner">{error}</div>
+      <div class="error-banner">
+        {error}
+        <button class="error-dismiss" onclick={() => (error = "")}
+          >&#10005;</button
+        >
+      </div>
     {/if}
 
     {#if !selected}
@@ -269,7 +308,14 @@
           {:else}
             <ul class="song-list">
               {#each editSongs as song, i (song + i)}
-                <li>
+                <li
+                  draggable="true"
+                  ondragstart={(e) => handleDragStart(e, i)}
+                  ondragover={(e) => handleDragOver(e, i)}
+                  ondrop={(e) => handleDrop(e, i)}
+                  ondragend={handleDragEnd}
+                  class:drag-over={dragOverIndex === i}
+                >
                   <div class="reorder-btns">
                     <button
                       class="btn-icon small"
@@ -377,6 +423,23 @@
     border-radius: 6px;
     font-size: 13px;
     margin-bottom: 12px;
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .error-dismiss {
+    background: none;
+    border: none;
+    color: inherit;
+    cursor: pointer;
+    font-size: 14px;
+    padding: 0 4px;
+    margin-left: 8px;
+    opacity: 0.7;
+  }
+  .error-dismiss:hover {
+    opacity: 1;
   }
 
   /* Playlist list */
@@ -506,5 +569,35 @@
     display: flex;
     flex-direction: column;
     gap: 0;
+  }
+  .song-list li[draggable="true"] {
+    cursor: grab;
+  }
+  .song-list li[draggable="true"]:active {
+    cursor: grabbing;
+  }
+  .drag-over {
+    border-top: 2px solid var(--accent);
+  }
+
+  @media (max-width: 768px) {
+    .playlist-editor {
+      flex-direction: column;
+      height: auto;
+    }
+    .list-panel {
+      width: 100%;
+      max-height: 300px;
+    }
+    .song-columns {
+      flex-direction: column;
+    }
+    .btn-icon.small {
+      min-width: 44px;
+      min-height: 44px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
   }
 </style>

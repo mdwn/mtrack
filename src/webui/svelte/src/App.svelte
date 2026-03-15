@@ -20,6 +20,7 @@
   import PlaylistEditor from "./pages/PlaylistEditor.svelte";
   import LightingEditor from "./pages/LightingEditor.svelte";
   import NotFound from "./pages/NotFound.svelte";
+  import { playbackStore } from "./lib/ws/stores";
 
   let currentHash = $state(window.location.hash || "#/");
 
@@ -30,6 +31,32 @@
   $effect(() => {
     window.addEventListener("hashchange", onHashChange);
     return () => window.removeEventListener("hashchange", onHashChange);
+  });
+
+  $effect(() => {
+    const titles: Record<string, string> = {
+      "#/": "Dashboard",
+      "#/config": "Config",
+      "#/songs": "Songs",
+      "#/playlists": "Playlists",
+      "#/lighting": "Lighting",
+    };
+    const base = "mtrack";
+    const route = Object.keys(titles).find((k) =>
+      k === "#/"
+        ? currentHash === "#/" || currentHash === ""
+        : currentHash.startsWith(k),
+    );
+    const pageTitle = route ? titles[route] : "";
+
+    const song = $playbackStore.song_name;
+    const playing = $playbackStore.is_playing;
+
+    if (playing && song) {
+      document.title = `\u25B6 ${song} - ${base}`;
+    } else {
+      document.title = pageTitle ? `${pageTitle} - ${base}` : base;
+    }
   });
 </script>
 

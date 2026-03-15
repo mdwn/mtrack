@@ -17,35 +17,82 @@
   import { playerClient } from "../../lib/grpc/client";
   import { formatMs } from "../../lib/util/format";
 
+  let errorMsg = $state("");
+
+  function showError(msg: string) {
+    errorMsg = msg;
+    setTimeout(() => (errorMsg = ""), 3000);
+  }
+
   async function play() {
+    loading = true;
     try {
       await playerClient.play({});
     } catch (e) {
       console.error("play failed:", e);
+      showError("Play failed");
+    } finally {
+      loading = false;
     }
   }
 
   async function stop() {
+    loading = true;
     try {
       await playerClient.stop({});
     } catch (e) {
       console.error("stop failed:", e);
+      showError("Stop failed");
+    } finally {
+      loading = false;
     }
   }
 
   async function next() {
+    loading = true;
     try {
       await playerClient.next({});
     } catch (e) {
       console.error("next failed:", e);
+      showError("Next failed");
+    } finally {
+      loading = false;
     }
   }
 
   async function previous() {
+    loading = true;
     try {
       await playerClient.previous({});
     } catch (e) {
       console.error("previous failed:", e);
+      showError("Previous failed");
+    } finally {
+      loading = false;
+    }
+  }
+
+  let loading = $state(false);
+
+  function handleKeydown(e: KeyboardEvent) {
+    // Don't intercept when typing in form fields
+    const tag = (e.target as HTMLElement)?.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+
+    switch (e.code) {
+      case "Space":
+        e.preventDefault();
+        if ($playbackStore.is_playing) stop();
+        else play();
+        break;
+      case "ArrowRight":
+        e.preventDefault();
+        next();
+        break;
+      case "ArrowLeft":
+        e.preventDefault();
+        previous();
+        break;
     }
   }
 
@@ -55,6 +102,8 @@
       : 0,
   );
 </script>
+
+<svelte:window onkeydown={handleKeydown} />
 
 <div class="card card-full">
   <div class="card-header">
@@ -68,24 +117,50 @@
       <span class="stopped">Stopped</span>
     {/if}
   </div>
-  <div class="progress-bar">
+  <div
+    class="progress-bar"
+    role="progressbar"
+    aria-valuenow={progressPct}
+    aria-valuemin={0}
+    aria-valuemax={100}
+    aria-label="Song progress"
+  >
     <div class="progress-fill" style:width="{progressPct}%"></div>
   </div>
   <div class="progress-time">
     <span>{formatMs($playbackStore.elapsed_ms)}</span>
     <span>{formatMs($playbackStore.song_duration_ms)}</span>
   </div>
+  {#if errorMsg}
+    <div class="playback-error">{errorMsg}</div>
+  {/if}
   <div class="controls">
-    <button class="btn" onclick={previous} disabled={$playbackStore.is_playing}
-      >Prev</button
+    <button
+      class="btn"
+      onclick={previous}
+      disabled={$playbackStore.is_playing || loading}
+      title="Previous (Left Arrow)">Prev</button
     >
     {#if $playbackStore.is_playing}
-      <button class="btn btn-primary" onclick={stop}>Stop</button>
+      <button
+        class="btn btn-primary"
+        onclick={stop}
+        disabled={loading}
+        title="Stop (Space)">Stop</button
+      >
     {:else}
-      <button class="btn btn-primary" onclick={play}>Play</button>
+      <button
+        class="btn btn-primary"
+        onclick={play}
+        disabled={loading}
+        title="Play (Space)">Play</button
+      >
     {/if}
-    <button class="btn" onclick={next} disabled={$playbackStore.is_playing}
-      >Next</button
+    <button
+      class="btn"
+      onclick={next}
+      disabled={$playbackStore.is_playing || loading}
+      title="Next (Right Arrow)">Next</button
     >
   </div>
 </div>
@@ -127,6 +202,12 @@
     font-family: var(--mono);
     font-size: 11px;
     color: var(--text-dim);
+  }
+  .playback-error {
+    font-size: 11px;
+    color: var(--red);
+    text-align: center;
+    padding: 2px 0;
   }
   .controls {
     display: flex;

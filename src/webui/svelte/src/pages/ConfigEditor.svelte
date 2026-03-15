@@ -268,7 +268,10 @@
   <div class="page-placeholder">
     <h2>Error</h2>
     <p>{error}</p>
-    <button class="btn" onclick={loadConfig}>Retry</button>
+    <div class="error-actions">
+      <button class="btn" onclick={loadConfig}>Retry</button>
+      <button class="btn" onclick={() => (error = "")}>Dismiss</button>
+    </div>
   </div>
 {:else if selectedIndex !== null && profiles[selectedIndex]}
   <!-- Detail View -->
@@ -378,6 +381,12 @@
 {/if}
 
 <style>
+  .error-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+    margin-top: 8px;
+  }
   .list-view {
     display: flex;
     flex-direction: column;

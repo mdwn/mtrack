@@ -44,8 +44,8 @@
   </div>
   <div class="log-container" bind:this={container} onscroll={handleScroll}>
     {#each $logStore as line, i (i)}
-      <div class="log-line">
-        <span class="level-{line.level}">{line.level}</span>
+      <div class="log-line level-{line.level}">
+        <span class="log-level">{line.level}</span>
         <span class="log-target">{line.target}</span>:
         <span class="log-message">{line.message}</span>
       </div>
@@ -67,18 +67,39 @@
   .log-line {
     white-space: pre-wrap;
     word-break: break-all;
+    padding-left: 8px;
+    border-left: 3px solid transparent;
   }
-  .log-line :global(.level-ERROR) {
+  .log-line.level-ERROR {
+    background: rgba(239, 68, 68, 0.1);
+    border-left: 3px solid var(--red);
+  }
+  .log-line.level-ERROR .log-level {
     color: var(--red);
+    font-weight: bold;
   }
-  .log-line :global(.level-WARN) {
+  .log-line.level-WARN {
+    background: rgba(234, 179, 8, 0.08);
+    border-left: 3px solid var(--yellow);
+  }
+  .log-line.level-WARN .log-level {
     color: var(--yellow);
   }
-  .log-line :global(.level-INFO) {
+  .log-line.level-INFO {
+    border-left: 3px solid var(--blue);
+  }
+  .log-line.level-INFO .log-level {
     color: var(--blue);
   }
-  .log-line :global(.level-DEBUG) {
+  .log-line.level-DEBUG .log-level {
     color: var(--text-dim);
+  }
+  .log-line.level-TRACE .log-level {
+    color: var(--text-dim);
+    opacity: 0.6;
+  }
+  .log-line.level-TRACE {
+    opacity: 0.7;
   }
   .log-target {
     color: var(--text-dim);

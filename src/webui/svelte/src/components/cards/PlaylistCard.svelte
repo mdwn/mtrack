@@ -56,7 +56,7 @@
     padding: 2px 6px;
     border-radius: 4px;
     border: 1px solid var(--border);
-    background: var(--bg-secondary);
+    background: var(--bg-input);
     color: var(--text);
     cursor: pointer;
   }

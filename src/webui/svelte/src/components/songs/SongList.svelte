@@ -29,6 +29,13 @@
   let error = $state("");
   let showCreate = $state(false);
   let showImport = $state(false);
+  let searchQuery = $state("");
+
+  function getFilteredSongs(): SongSummary[] {
+    if (!searchQuery.trim()) return songs;
+    const q = searchQuery.toLowerCase();
+    return songs.filter((s) => s.name.toLowerCase().includes(q));
+  }
 
   function compositePeaks(waveform: WaveformData): number[] {
     if (waveform.tracks.length === 0) return [];
@@ -121,8 +128,25 @@
       No songs yet. Create one or import audio files from the filesystem.
     </div>
   {:else}
+    {@const filteredSongs = getFilteredSongs()}
+    <div class="search-bar">
+      <input
+        type="text"
+        class="search-input"
+        placeholder="Search songs..."
+        bind:value={searchQuery}
+      />
+      {#if searchQuery}
+        <button class="search-clear" onclick={() => (searchQuery = "")}
+          >&#10005;</button
+        >
+      {/if}
+      <span class="search-count"
+        >{filteredSongs.length} of {songs.length} songs</span
+      >
+    </div>
     <div class="grid">
-      {#each songs as song (song.name)}
+      {#each filteredSongs as song (song.name)}
         <button class="card song-card" onclick={() => navigate(song.name)}>
           <div class="song-header">
             <div class="song-name">{song.name}</div>
@@ -173,6 +197,42 @@
   }
   .status.error {
     color: var(--red);
+  }
+  .search-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+  .search-input {
+    flex: 1;
+    padding: 6px 10px;
+    font-size: 13px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg);
+    color: var(--text);
+    outline: none;
+  }
+  .search-input:focus {
+    border-color: var(--accent);
+  }
+  .search-clear {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 14px;
+    padding: 4px;
+    line-height: 1;
+  }
+  .search-clear:hover {
+    color: var(--text);
+  }
+  .search-count {
+    font-size: 12px;
+    color: var(--text-muted);
+    white-space: nowrap;
   }
   .grid {
     display: grid;
