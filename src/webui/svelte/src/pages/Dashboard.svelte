@@ -30,8 +30,10 @@
     </div>
   </div>
   <StageView />
-  <EffectsCard />
-  <LogsCard />
+  <div class="card-pair-bottom">
+    <EffectsCard />
+    <LogsCard />
+  </div>
 </div>
 
 <style>
@@ -44,19 +46,30 @@
     grid-column: 1 / -1;
     display: flex;
     gap: 16px;
+    height: 280px;
   }
   .card-pair > :global(:first-child) {
     flex: 1;
     min-width: 0;
+    overflow-y: auto;
   }
   .card-pair-follower {
     flex: 1;
     min-width: 0;
-    position: relative;
+    overflow-y: auto;
   }
-  .card-pair-follower > :global(*) {
-    position: absolute;
-    inset: 0;
+  .card-pair-bottom {
+    grid-column: 1 / -1;
+    display: flex;
+    gap: 16px;
+  }
+  .card-pair-bottom > :global(:first-child) {
+    width: 280px;
+    flex-shrink: 0;
+  }
+  .card-pair-bottom > :global(:last-child) {
+    flex: 1;
+    min-width: 0;
   }
   @media (max-width: 768px) {
     .dashboard-grid {
@@ -67,6 +80,12 @@
     }
     .card-pair-follower {
       min-height: 200px;
+    }
+    .card-pair-bottom {
+      flex-direction: column;
+    }
+    .card-pair-bottom > :global(:first-child) {
+      width: 100%;
     }
   }
 </style>

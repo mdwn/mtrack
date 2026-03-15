@@ -109,73 +109,90 @@
   <div class="card-header">
     <span class="card-title">Playback</span>
   </div>
-  <div class="playback-song">{$playbackStore.song_name || "No song"}</div>
-  <div class="playback-status">
-    {#if $playbackStore.is_playing}
-      <span class="playing">Playing</span>
-    {:else}
-      <span class="stopped">Stopped</span>
-    {/if}
-  </div>
-  <div
-    class="progress-bar"
-    role="progressbar"
-    aria-valuenow={progressPct}
-    aria-valuemin={0}
-    aria-valuemax={100}
-    aria-label="Song progress"
-  >
-    <div class="progress-fill" style:width="{progressPct}%"></div>
-  </div>
-  <div class="progress-time">
-    <span>{formatMs($playbackStore.elapsed_ms)}</span>
-    <span>{formatMs($playbackStore.song_duration_ms)}</span>
+  <div class="transport">
+    <div class="transport-info">
+      <div class="playback-song">{$playbackStore.song_name || "No song"}</div>
+      <div class="playback-status">
+        {#if $playbackStore.is_playing}
+          <span class="playing">Playing</span>
+        {:else}
+          <span class="stopped">Stopped</span>
+        {/if}
+      </div>
+    </div>
+    <div class="transport-progress">
+      <div
+        class="progress-bar"
+        role="progressbar"
+        aria-valuenow={progressPct}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-label="Song progress"
+      >
+        <div class="progress-fill" style:width="{progressPct}%"></div>
+      </div>
+      <div class="progress-time">
+        <span>{formatMs($playbackStore.elapsed_ms)}</span>
+        <span>{formatMs($playbackStore.song_duration_ms)}</span>
+      </div>
+    </div>
+    <div class="controls">
+      <button
+        class="btn"
+        onclick={previous}
+        disabled={$playbackStore.is_playing || loading}
+        title="Previous (Left Arrow)">Prev</button
+      >
+      {#if $playbackStore.is_playing}
+        <button
+          class="btn btn-primary"
+          onclick={stop}
+          disabled={loading}
+          title="Stop (Space)">Stop</button
+        >
+      {:else}
+        <button
+          class="btn btn-primary"
+          onclick={play}
+          disabled={loading}
+          title="Play (Space)">Play</button
+        >
+      {/if}
+      <button
+        class="btn"
+        onclick={next}
+        disabled={$playbackStore.is_playing || loading}
+        title="Next (Right Arrow)">Next</button
+      >
+    </div>
   </div>
   {#if errorMsg}
     <div class="playback-error">{errorMsg}</div>
   {/if}
-  <div class="controls">
-    <button
-      class="btn"
-      onclick={previous}
-      disabled={$playbackStore.is_playing || loading}
-      title="Previous (Left Arrow)">Prev</button
-    >
-    {#if $playbackStore.is_playing}
-      <button
-        class="btn btn-primary"
-        onclick={stop}
-        disabled={loading}
-        title="Stop (Space)">Stop</button
-      >
-    {:else}
-      <button
-        class="btn btn-primary"
-        onclick={play}
-        disabled={loading}
-        title="Play (Space)">Play</button
-      >
-    {/if}
-    <button
-      class="btn"
-      onclick={next}
-      disabled={$playbackStore.is_playing || loading}
-      title="Next (Right Arrow)">Next</button
-    >
-  </div>
 </div>
 
 <style>
+  .transport {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+  }
+  .transport-info {
+    flex-shrink: 0;
+    min-width: 120px;
+  }
+  .transport-progress {
+    flex: 1;
+    min-width: 0;
+  }
   .playback-song {
-    font-size: 20px;
+    font-size: 16px;
     font-weight: 600;
-    margin-bottom: 4px;
     color: var(--text);
   }
   .playback-status {
     font-size: 13px;
     color: var(--text-muted);
-    margin-bottom: 12px;
   }
   .playback-status .playing {
     color: var(--green);
@@ -211,8 +228,7 @@
   }
   .controls {
     display: flex;
-    justify-content: center;
     gap: 8px;
-    margin-top: 12px;
+    flex-shrink: 0;
   }
 </style>

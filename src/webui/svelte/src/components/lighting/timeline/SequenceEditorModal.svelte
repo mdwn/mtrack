@@ -268,7 +268,7 @@
   .seq-modal-title {
     font-size: 14px;
     font-weight: 600;
-    color: #a78bfa;
+    color: var(--pink);
   }
   .seq-modal-info {
     font-size: 12px;

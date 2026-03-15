@@ -97,9 +97,9 @@
     z-index: 100;
   }
   .nav-brand {
-    font-family: var(--mono);
-    font-weight: 700;
-    font-size: 15px;
+    font-family: var(--sans);
+    font-weight: 600;
+    font-size: 16px;
     color: var(--accent);
     letter-spacing: -0.5px;
   }
@@ -143,7 +143,7 @@
   }
   .nav-link.active {
     color: var(--text);
-    background: rgba(91, 91, 214, 0.15);
+    background: rgba(94, 202, 234, 0.12);
   }
   .now-playing {
     display: flex;
@@ -156,6 +156,7 @@
   .now-playing-icon {
     flex-shrink: 0;
     font-size: 10px;
+    color: var(--pink, #ef60a3);
   }
   .now-playing-song {
     white-space: nowrap;
@@ -187,7 +188,11 @@
       display: flex;
     }
     .now-playing {
-      display: none;
+      max-width: 100px;
+      font-size: 11px;
+    }
+    .now-playing-song {
+      max-width: 70px;
     }
     .nav-status {
       margin-left: 12px;

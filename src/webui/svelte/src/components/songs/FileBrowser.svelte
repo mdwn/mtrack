@@ -269,7 +269,7 @@
     font-family: var(--mono);
   }
   .crumb:hover {
-    background: rgba(91, 91, 214, 0.1);
+    background: rgba(94, 202, 234, 0.1);
   }
   .sep {
     color: var(--text-dim);
@@ -312,7 +312,7 @@
     background: var(--bg-card-hover);
   }
   .entry.selected {
-    background: rgba(91, 91, 214, 0.12);
+    background: rgba(94, 202, 234, 0.12);
   }
   .entry.dir .entry-name {
     color: var(--accent);

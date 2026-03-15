@@ -339,7 +339,7 @@
     font-family: var(--mono);
   }
   .crumb:hover {
-    background: rgba(91, 91, 214, 0.1);
+    background: rgba(94, 202, 234, 0.1);
   }
   .sep {
     color: var(--text-dim);

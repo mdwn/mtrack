@@ -68,7 +68,7 @@
           const peaks = waveformTrack.peaks;
           const barWidth = w / peaks.length;
 
-          ctx.fillStyle = "rgba(91, 91, 214, 0.4)";
+          ctx.fillStyle = "rgba(94, 202, 234, 0.35)";
           for (let i = 0; i < peaks.length; i++) {
             const barHeight = peaks[i] * h;
             const x = i * barWidth;
@@ -77,7 +77,7 @@
           }
         } else {
           // No waveform data yet — draw a flat line
-          ctx.strokeStyle = "rgba(91, 91, 214, 0.2)";
+          ctx.strokeStyle = "rgba(94, 202, 234, 0.2)";
           ctx.beginPath();
           ctx.moveTo(0, h / 2);
           ctx.lineTo(w, h / 2);

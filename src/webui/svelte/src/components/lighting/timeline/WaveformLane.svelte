@@ -43,7 +43,7 @@
     const viewStartMs = scrollLeft / pixelsPerMs;
     const mid = h / 2;
 
-    ctx.fillStyle = "rgba(91, 91, 214, 0.4)";
+    ctx.fillStyle = "rgba(94, 202, 234, 0.35)";
     ctx.beginPath();
     ctx.moveTo(0, mid);
 
@@ -85,7 +85,7 @@
     ctx.fill();
 
     // Center line
-    ctx.strokeStyle = "rgba(91, 91, 214, 0.2)";
+    ctx.strokeStyle = "rgba(94, 202, 234, 0.2)";
     ctx.lineWidth = 0.5;
     ctx.beginPath();
     ctx.moveTo(0, mid);

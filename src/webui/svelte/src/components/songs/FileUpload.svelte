@@ -89,7 +89,7 @@
   .drop-zone:hover,
   .drop-zone.dragover {
     border-color: var(--accent);
-    background: rgba(91, 91, 214, 0.05);
+    background: rgba(94, 202, 234, 0.05);
   }
   .drop-label {
     font-size: 13px;

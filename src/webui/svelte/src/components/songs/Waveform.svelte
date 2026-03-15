@@ -22,7 +22,7 @@
   let {
     peaks,
     height = 32,
-    color = "rgba(91, 91, 214, 0.5)",
+    color = "rgba(94, 202, 234, 0.4)",
   }: Props = $props();
   let canvas: HTMLCanvasElement | undefined = $state();
 
@@ -57,7 +57,7 @@
           ctx.fillRect(x, y, Math.max(barWidth - 0.5, 1), barHeight);
         }
       } else {
-        ctx.strokeStyle = "rgba(91, 91, 214, 0.2)";
+        ctx.strokeStyle = "rgba(94, 202, 234, 0.2)";
         ctx.beginPath();
         ctx.moveTo(0, h / 2);
         ctx.lineTo(w, h / 2);
