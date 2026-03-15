@@ -2882,4 +2882,116 @@ mod test {
 
         Ok(())
     }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_list_playlists() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        let names = player.list_playlists();
+        // Should contain at least "all_songs" and "playlist", sorted.
+        assert!(names.contains(&"all_songs".to_string()));
+        assert!(names.contains(&"playlist".to_string()));
+        assert_eq!(
+            names,
+            {
+                let mut sorted = names.clone();
+                sorted.sort();
+                sorted
+            },
+            "list_playlists should return sorted names"
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_persisted_playlist_name() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        // Active playlist is "playlist", so persisted should also be "playlist".
+        assert_eq!(player.persisted_playlist_name(), "playlist");
+
+        // After switching to all_songs, persisted should still be "playlist".
+        player.switch_to_playlist("all_songs").await.unwrap();
+        assert_eq!(player.persisted_playlist_name(), "playlist");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_playlists_snapshot() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        let snapshot = player.playlists_snapshot();
+        assert!(snapshot.contains_key("all_songs"));
+        assert!(snapshot.contains_key("playlist"));
+        assert_eq!(snapshot.len(), 2);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_reload_songs() -> Result<(), Box<dyn Error>> {
+        let player = make_bare_player()?;
+        let initial_count = player.songs().len();
+
+        // Create a temp directory that mirrors assets/ layout with an extra song.
+        let temp_dir = tempfile::tempdir()?;
+        let songs_dir = temp_dir.path().join("songs");
+        fs::create_dir_all(&songs_dir)?;
+
+        // Copy existing song YAML configs into temp songs dir.
+        let src = Path::new("assets/songs");
+        for entry in fs::read_dir(src)? {
+            let entry = entry?;
+            if entry.path().extension().is_some_and(|e| e == "yaml") {
+                fs::copy(entry.path(), songs_dir.join(entry.file_name()))?;
+            }
+        }
+
+        // Copy required audio/MIDI assets into the temp parent (songs configs use ../ paths).
+        let assets = Path::new("assets");
+        for entry in fs::read_dir(assets)? {
+            let entry = entry?;
+            if entry.path().is_file() {
+                fs::copy(entry.path(), temp_dir.path().join(entry.file_name()))?;
+            }
+        }
+
+        // Add a new song config referencing a copied audio file.
+        let new_song_yaml =
+            "name: \"New Test Song\"\ntracks:\n  - name: click\n    file: ../1Channel44.1k.wav\n";
+        fs::write(songs_dir.join("newsong.yaml"), new_song_yaml)?;
+
+        player.reload_songs(&songs_dir, None, None);
+        assert!(
+            player.songs().len() > initial_count,
+            "reload_songs should discover the new song (was {}, now {})",
+            initial_count,
+            player.songs().len(),
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_load_playlists_standalone() -> Result<(), Box<dyn Error>> {
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
+
+        // Load with legacy playlist only.
+        let playlists =
+            super::load_playlists(None, Some(Path::new("assets/playlist.yaml")), songs.clone())?;
+        assert!(playlists.contains_key("all_songs"));
+        assert!(playlists.contains_key("playlist"));
+        assert_eq!(playlists["playlist"].songs().len(), 5);
+
+        // Load with no playlists dir and no legacy — just all_songs.
+        let playlists = super::load_playlists(None, None, songs.clone())?;
+        assert!(playlists.contains_key("all_songs"));
+        assert_eq!(playlists.len(), 1);
+
+        // Load from a playlists directory.
+        let temp_dir = tempfile::tempdir()?;
+        let pl_dir = temp_dir.path();
+        fs::write(pl_dir.join("my_set.yaml"), "songs:\n- Song 1\n- Song 3\n")?;
+        let playlists = super::load_playlists(Some(pl_dir), None, songs)?;
+        assert!(playlists.contains_key("all_songs"));
+        assert!(playlists.contains_key("my_set"));
+        assert_eq!(playlists["my_set"].songs().len(), 2);
+
+        Ok(())
+    }
 }

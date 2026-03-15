@@ -354,3 +354,225 @@ pub(super) async fn delete_calibrate(State(state): State<WebUiState>) -> impl In
     }
     (StatusCode::OK, Json(json!({"status": "cancelled"}))).into_response()
 }
+
+#[cfg(test)]
+mod test {
+    use super::super::router;
+    use super::super::test_helpers::*;
+    use axum::body::Body;
+    use axum::http::StatusCode;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn get_audio_devices_returns_array() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/devices/audio")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(parsed.is_array(), "expected array, got {parsed}");
+    }
+
+    #[tokio::test]
+    async fn get_midi_devices_returns_array_or_error() {
+        // MIDI device listing may fail on systems without MIDI support (e.g. CI).
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/devices/midi")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let status = response.status();
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+        if status == StatusCode::OK {
+            assert!(parsed.is_array(), "expected array, got {parsed}");
+        } else {
+            assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+            assert!(parsed["error"].is_string());
+        }
+    }
+
+    #[tokio::test]
+    async fn calibrate_start_without_device_returns_error() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/calibrate/start")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"device": "nonexistent", "channel": 1}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let status = response.status();
+        assert!(
+            status == StatusCode::BAD_REQUEST || status == StatusCode::INTERNAL_SERVER_ERROR,
+            "expected 400 or 500, got {status}"
+        );
+    }
+
+    #[tokio::test]
+    async fn calibrate_stop_without_session_returns_error() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/calibrate/stop")
+                    .header("content-type", "application/json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn calibrate_delete_without_session_returns_ok() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("DELETE")
+                    .uri("/calibrate")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["status"], "cancelled");
+    }
+
+    #[tokio::test]
+    async fn calibrate_start_missing_fields() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        // Missing required "device" and "channel" fields.
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/calibrate/start")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Axum returns 422 when JSON deserialization fails (missing required fields).
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn calibrate_start_invalid_channel() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        // Channel 0 is invalid (must be >= 1).
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/calibrate/start")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"device": "nonexistent", "channel": 0}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["error"], "channel must be >= 1");
+    }
+
+    #[tokio::test]
+    async fn calibrate_capture_no_session_returns_error_body() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/calibrate/capture")
+                    .header("content-type", "application/json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(parsed["error"]
+            .as_str()
+            .unwrap()
+            .contains("No calibration session"));
+    }
+
+    #[tokio::test]
+    async fn calibrate_stop_returns_error_body() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/calibrate/stop")
+                    .header("content-type", "application/json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(parsed["error"]
+            .as_str()
+            .unwrap()
+            .contains("No calibration session"));
+    }
+}

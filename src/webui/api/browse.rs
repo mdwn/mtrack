@@ -316,3 +316,265 @@ pub(super) struct CreateSongInDirRequest {
     path: String,
     name: Option<String>,
 }
+
+#[cfg(test)]
+mod test {
+    use super::super::router;
+    use super::super::test_helpers::*;
+    use axum::body::Body;
+    use axum::http::StatusCode;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn browse_directory_default_lists_project_root() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/browse")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(parsed.get("path").is_some());
+        assert!(parsed.get("root").is_some());
+        assert!(parsed.get("entries").is_some());
+        assert!(parsed["entries"].is_array());
+    }
+
+    #[tokio::test]
+    async fn browse_directory_with_path() {
+        let (state, _dir) = test_state();
+        // Create a subdirectory inside the project root.
+        let subdir = _dir.path().join("subdir");
+        std::fs::create_dir(&subdir).unwrap();
+        std::fs::write(subdir.join("file.txt"), "hello").unwrap();
+
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/browse?path=/subdir")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let entries = parsed["entries"].as_array().unwrap();
+        assert!(!entries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn browse_directory_path_traversal_rejected() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/browse?path=/../../../etc")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // The server should reject this with FORBIDDEN or NOT_FOUND.
+        let status = response.status();
+        assert!(
+            status == StatusCode::FORBIDDEN || status == StatusCode::NOT_FOUND,
+            "expected 403 or 404, got {status}"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_song_in_directory_success() {
+        let (state, _dir) = test_state();
+        // Create a directory with a WAV file inside the project root.
+        let song_dir = _dir.path().join("songs").join("mysong");
+        std::fs::create_dir_all(&song_dir).unwrap();
+        let wav_bytes = create_test_wav();
+        std::fs::write(song_dir.join("track.wav"), &wav_bytes).unwrap();
+
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/browse/create-song")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"path": "/songs/mysong"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["status"], "created");
+    }
+
+    #[tokio::test]
+    async fn create_song_in_directory_conflict() {
+        let (state, _dir) = test_state();
+        // Create a directory that already has song.yaml.
+        let song_dir = _dir.path().join("songs").join("existing");
+        std::fs::create_dir_all(&song_dir).unwrap();
+        std::fs::write(song_dir.join("song.yaml"), "name: existing\ntracks: []\n").unwrap();
+
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/browse/create-song")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"path": "/songs/existing"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn browse_directory_classifies_file_types() {
+        let (state, _dir) = test_state();
+        let subdir = _dir.path().join("typedir");
+        std::fs::create_dir(&subdir).unwrap();
+        let wav_bytes = create_test_wav();
+        std::fs::write(subdir.join("track.wav"), &wav_bytes).unwrap();
+        std::fs::write(subdir.join("notes.mid"), "midi data").unwrap();
+        std::fs::write(subdir.join("show.light"), "light data").unwrap();
+        std::fs::write(subdir.join("readme.txt"), "text data").unwrap();
+
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/browse?path=/typedir")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let entries = parsed["entries"].as_array().unwrap();
+
+        let find_entry = |name: &str| entries.iter().find(|e| e["name"] == name).unwrap();
+        assert_eq!(find_entry("track.wav")["type"], "audio");
+        assert_eq!(find_entry("notes.mid")["type"], "midi");
+        assert_eq!(find_entry("show.light")["type"], "lighting");
+        assert_eq!(find_entry("readme.txt")["type"], "other");
+    }
+
+    #[tokio::test]
+    async fn create_song_in_directory_with_name_override() {
+        let (state, _dir) = test_state();
+        let song_dir = _dir.path().join("songs").join("override_test");
+        std::fs::create_dir_all(&song_dir).unwrap();
+        let wav_bytes = create_test_wav();
+        std::fs::write(song_dir.join("track.wav"), &wav_bytes).unwrap();
+
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/browse/create-song")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"path": "/songs/override_test", "name": "Custom Name"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let config_content = std::fs::read_to_string(song_dir.join("song.yaml")).unwrap();
+        assert!(
+            config_content.contains("Custom Name"),
+            "song.yaml should contain the custom name, got: {}",
+            config_content
+        );
+    }
+
+    #[tokio::test]
+    async fn create_song_in_directory_nonexistent_path() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/browse/create-song")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"path": "/nonexistent/dir"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn browse_directory_sorts_dirs_first() {
+        let (state, _dir) = test_state();
+        let subdir = _dir.path().join("sorttest");
+        std::fs::create_dir(&subdir).unwrap();
+        // Create files and directories
+        std::fs::write(subdir.join("aaa_file.txt"), "data").unwrap();
+        std::fs::create_dir(subdir.join("zzz_dir")).unwrap();
+        std::fs::write(subdir.join("bbb_file.wav"), &create_test_wav()).unwrap();
+        std::fs::create_dir(subdir.join("aaa_dir")).unwrap();
+
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/browse?path=/sorttest")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let entries = parsed["entries"].as_array().unwrap();
+
+        // Directories should come first
+        assert_eq!(entries.len(), 4);
+        assert!(entries[0]["is_dir"].as_bool().unwrap());
+        assert!(entries[1]["is_dir"].as_bool().unwrap());
+        assert!(!entries[2]["is_dir"].as_bool().unwrap());
+        assert!(!entries[3]["is_dir"].as_bool().unwrap());
+
+        // Within groups, sorted alphabetically
+        assert_eq!(entries[0]["name"], "aaa_dir");
+        assert_eq!(entries[1]["name"], "zzz_dir");
+    }
+}

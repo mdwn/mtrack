@@ -922,4 +922,84 @@ mod test {
         eventually(|| !device.is_playing(), "Song never stopped");
         Ok(())
     }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_grpc_switch_to_playlist() -> Result<(), Box<dyn Error>> {
+        let (player, mut client, _device) = setup_grpc().await?;
+
+        // Start on "playlist", switch to "all_songs" successfully.
+        assert_eq!(player.get_playlist().name(), "playlist");
+        let resp = client
+            .switch_to_playlist(SwitchToPlaylistRequest {
+                playlist_name: "all_songs".to_string(),
+            })
+            .await;
+        assert!(
+            resp.is_ok(),
+            "switch_to_playlist with valid name should succeed"
+        );
+        assert_eq!(player.get_playlist().name(), "all_songs");
+
+        // Switch back to "playlist".
+        client
+            .switch_to_playlist(SwitchToPlaylistRequest {
+                playlist_name: "playlist".to_string(),
+            })
+            .await?;
+        assert_eq!(player.get_playlist().name(), "playlist");
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_grpc_get_config_no_store() -> Result<(), Box<dyn Error>> {
+        use crate::proto::player::v1::GetConfigRequest;
+
+        let (_player, mut client, _device) = setup_grpc().await?;
+
+        // The test setup creates a PlayerServer without a config store,
+        // so get_config should return UNIMPLEMENTED.
+        let result = client.get_config(GetConfigRequest {}).await;
+        assert!(
+            result.is_err(),
+            "get_config without config store should fail"
+        );
+        let status = result.unwrap_err();
+        assert_eq!(
+            status.code(),
+            tonic::Code::Unimplemented,
+            "Expected UNIMPLEMENTED when no config store is available"
+        );
+        assert!(status.message().contains("config store not available"));
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_grpc_update_audio_no_store() -> Result<(), Box<dyn Error>> {
+        use crate::proto::player::v1::UpdateAudioRequest;
+
+        let (_player, mut client, _device) = setup_grpc().await?;
+
+        // Without a config store, update_audio should return UNIMPLEMENTED.
+        let result = client
+            .update_audio(UpdateAudioRequest {
+                audio_json: String::new(),
+                expected_checksum: String::new(),
+            })
+            .await;
+        assert!(
+            result.is_err(),
+            "update_audio without config store should fail"
+        );
+        let status = result.unwrap_err();
+        assert_eq!(
+            status.code(),
+            tonic::Code::Unimplemented,
+            "Expected UNIMPLEMENTED when no config store is available"
+        );
+        assert!(status.message().contains("config store not available"));
+
+        Ok(())
+    }
 }

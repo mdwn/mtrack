@@ -558,4 +558,389 @@ mod test {
         let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert!(parsed["error"].is_string());
     }
+
+    #[tokio::test]
+    async fn get_playlists_returns_list() {
+        let (state, _dir) = test_state();
+        // Create a playlist file with an empty songs list so it loads without
+        // requiring actual song directories on disk.
+        let playlists_dir = state.playlists_dir.clone().unwrap();
+        std::fs::write(playlists_dir.join("mylist.yaml"), "songs: []\n").unwrap();
+        // Reload songs so the player picks up the new playlist.
+        state.player.reload_songs(
+            &state.songs_path,
+            state.playlists_dir.as_deref(),
+            state.legacy_playlist_path.as_deref(),
+        );
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/playlists")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(parsed.is_array());
+        let arr = parsed.as_array().unwrap();
+        // Should contain at least the playlist we created.
+        assert!(arr.iter().any(|v| v["name"] == "mylist"));
+    }
+
+    #[tokio::test]
+    async fn get_playlist_by_name_not_found() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/playlists/nonexistent")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn put_playlist_by_name_creates_file() {
+        let (state, _dir) = test_state();
+        let playlists_dir = state.playlists_dir.clone().unwrap();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/playlists/mylist")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"songs": ["Song A"]}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(playlists_dir.join("mylist.yaml").exists());
+    }
+
+    #[tokio::test]
+    async fn put_playlist_by_name_invalid_name_rejected() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/playlists/all_songs")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"songs": ["Song A"]}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn put_playlist_by_name_path_traversal_rejected() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/playlists/..%2Fevil")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"songs": ["Song A"]}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn delete_playlist_by_name_success() {
+        let (state, _dir) = test_state();
+        let playlists_dir = state.playlists_dir.clone().unwrap();
+        // Create a playlist file first.
+        std::fs::write(
+            playlists_dir.join("mylist.yaml"),
+            "songs:\n  - \"Song A\"\n",
+        )
+        .unwrap();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("DELETE")
+                    .uri("/playlists/mylist")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!playlists_dir.join("mylist.yaml").exists());
+    }
+
+    #[tokio::test]
+    async fn delete_playlist_by_name_all_songs_rejected() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("DELETE")
+                    .uri("/playlists/all_songs")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn delete_playlist_by_name_not_found() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("DELETE")
+                    .uri("/playlists/nonexistent")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn activate_playlist_success() {
+        let (state, _dir) = test_state();
+        // "all_songs" is always present in the player's playlists map.
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/playlists/all_songs/activate")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn activate_playlist_not_found() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/playlists/nonexistent/activate")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn validate_playlist_name_rejects_empty() {
+        assert!(super::validate_playlist_name("").is_err());
+    }
+
+    #[test]
+    fn validate_playlist_name_rejects_dots() {
+        assert!(super::validate_playlist_name("..").is_err());
+        assert!(super::validate_playlist_name("foo/..").is_err());
+        assert!(super::validate_playlist_name("a\\b").is_err());
+    }
+
+    #[tokio::test]
+    async fn get_playlist_legacy_success() {
+        let (state, _dir) = test_state();
+        // The test_state already creates a playlist.yaml; verify JSON response.
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/playlist")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(parsed.get("songs").is_some());
+    }
+
+    #[tokio::test]
+    async fn put_playlist_legacy_success() {
+        let (state, _dir) = test_state();
+        let playlist_path = state.legacy_playlist_path.clone().unwrap();
+        let app = router().with_state(state);
+
+        let yaml = "songs:\n  - Song X\n  - Song Y\n";
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/playlist")
+                    .body(Body::from(yaml))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let content = std::fs::read_to_string(&playlist_path).unwrap();
+        assert!(content.contains("Song X"));
+        assert!(content.contains("Song Y"));
+    }
+
+    #[tokio::test]
+    async fn put_playlist_legacy_invalid() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/playlist")
+                    .body(Body::from("not valid: [[["))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn get_playlist_by_name_success() {
+        let (state, _dir) = test_state();
+        let playlists_dir = state.playlists_dir.clone().unwrap();
+        // Use an empty song list so the playlist loads without requiring actual songs on disk.
+        std::fs::write(playlists_dir.join("testlist.yaml"), "songs: []\n").unwrap();
+
+        state.player.reload_songs(
+            &state.songs_path,
+            state.playlists_dir.as_deref(),
+            state.legacy_playlist_path.as_deref(),
+        );
+
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/playlists/testlist")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["name"], "testlist");
+        assert!(parsed["songs"].is_array());
+        assert!(parsed["available_songs"].is_array());
+    }
+
+    #[tokio::test]
+    async fn get_playlist_by_name_yml_extension() {
+        let (state, _dir) = test_state();
+        let playlists_dir = state.playlists_dir.clone().unwrap();
+        // Write a .yml file (not .yaml) with an empty song list.
+        std::fs::write(playlists_dir.join("ymllist.yml"), "songs: []\n").unwrap();
+
+        state.player.reload_songs(
+            &state.songs_path,
+            state.playlists_dir.as_deref(),
+            state.legacy_playlist_path.as_deref(),
+        );
+
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/playlists/ymllist")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["name"], "ymllist");
+    }
+
+    #[tokio::test]
+    async fn get_playlists_with_active() {
+        let (state, _dir) = test_state();
+        // all_songs should be the active playlist by default.
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/playlists")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let arr = parsed.as_array().unwrap();
+        // Find the all_songs entry and verify it's marked active.
+        let all_songs = arr
+            .iter()
+            .find(|v| v["name"] == "all_songs")
+            .expect("all_songs should be present");
+        assert_eq!(all_songs["is_active"], true);
+    }
 }
