@@ -274,6 +274,38 @@
     }
   }
 
+  function touchCoords(e: TouchEvent): { x: number; y: number } {
+    const rect = canvasEl!.getBoundingClientRect();
+    const touch = e.touches[0] || e.changedTouches[0];
+    return { x: touch.clientX - rect.left, y: touch.clientY - rect.top };
+  }
+
+  function onTouchStart(e: TouchEvent) {
+    if (e.touches.length !== 1) return;
+    const pt = touchCoords(e);
+    const name = fixtureAt(pt.x, pt.y);
+    if (name) {
+      dragFixture = name;
+      dragOffsetX = pt.x - layoutPositions[name].x;
+      dragOffsetY = pt.y - layoutPositions[name].y;
+      e.preventDefault();
+    }
+  }
+
+  function onTouchMove(e: TouchEvent) {
+    if (!dragFixture || e.touches.length !== 1) return;
+    const pt = touchCoords(e);
+    const newX = pt.x - dragOffsetX;
+    const newY = pt.y - dragOffsetY;
+    layoutPositions[dragFixture] = { x: newX, y: newY };
+    manualPositions[dragFixture] = { x: newX, y: newY };
+    e.preventDefault();
+  }
+
+  function onTouchEnd() {
+    dragFixture = null;
+  }
+
   function onMouseLeave() {
     if (dragFixture) {
       dragFixture = null;
@@ -318,6 +350,9 @@
       onmousemove={onMouseMove}
       onmouseup={onMouseUp}
       onmouseleave={onMouseLeave}
+      ontouchstart={onTouchStart}
+      ontouchmove={onTouchMove}
+      ontouchend={onTouchEnd}
     ></canvas>
   </div>
 </div>

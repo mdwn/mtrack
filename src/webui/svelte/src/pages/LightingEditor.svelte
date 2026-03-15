@@ -464,7 +464,12 @@
 
   <div class="panel detail-panel">
     {#if error}
-      <div class="error-banner">{error}</div>
+      <div class="error-banner">
+        {error}
+        <button class="error-dismiss" onclick={() => (error = "")}
+          >&#10005;</button
+        >
+      </div>
     {/if}
 
     {#if !selectedSongName}
@@ -703,6 +708,23 @@
     border-radius: 6px;
     font-size: 13px;
     margin-bottom: 12px;
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .error-dismiss {
+    background: none;
+    border: none;
+    color: inherit;
+    cursor: pointer;
+    font-size: 14px;
+    padding: 0 4px;
+    margin-left: 8px;
+    opacity: 0.7;
+  }
+  .error-dismiss:hover {
+    opacity: 1;
   }
 
   /* Song list */
