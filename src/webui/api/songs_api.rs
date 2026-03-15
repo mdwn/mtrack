@@ -1604,4 +1604,582 @@ mod test {
         assert!(content.contains("My Custom Song"));
         assert!(content.contains("Lead Guitar"));
     }
+
+    // ── import_file_to_song tests ────────────────────────────────────
+
+    #[tokio::test]
+    async fn import_file_to_song_success() {
+        let (state, dir) = test_state();
+
+        // Create a WAV file in the project root (outside songs/).
+        let wav_bytes = create_test_wav();
+        let source_path = dir.path().join("import_me.wav");
+        std::fs::write(&source_path, &wav_bytes).unwrap();
+
+        let app = router().with_state(state.clone());
+        let body =
+            serde_json::json!({ "path": source_path.canonicalize().unwrap().to_str().unwrap() });
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/songs/TestSong/import")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let resp_body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&resp_body).unwrap();
+        assert_eq!(parsed["status"], "imported");
+        assert_eq!(parsed["file"], "import_me.wav");
+        assert_eq!(parsed["song"], "TestSong");
+
+        // Verify the file was copied into the song directory.
+        assert!(state.songs_path.join("TestSong/import_me.wav").exists());
+    }
+
+    #[tokio::test]
+    async fn import_file_to_song_outside_project_rejected() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let body = serde_json::json!({ "path": "/etc/hosts" });
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/songs/TestSong/import")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let resp_body = response_body(response).await;
+        assert!(resp_body.contains("outside the project directory"));
+    }
+
+    #[tokio::test]
+    async fn import_file_to_song_nonexistent_source() {
+        let (state, dir) = test_state();
+        let app = router().with_state(state);
+
+        let nonexistent = dir.path().join("does_not_exist.wav");
+        let body = serde_json::json!({ "path": nonexistent.to_str().unwrap() });
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/songs/TestSong/import")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let resp_body = response_body(response).await;
+        assert!(resp_body.contains("does not exist"));
+    }
+
+    #[tokio::test]
+    async fn import_file_to_song_renames_with_dmx_prefix() {
+        let (state, dir) = test_state();
+
+        // Create a .mid file in the project root.
+        let source_path = dir.path().join("original.mid");
+        let midi_bytes = std::fs::read(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/song.mid"),
+        )
+        .unwrap();
+        std::fs::write(&source_path, &midi_bytes).unwrap();
+
+        let app = router().with_state(state.clone());
+        let body = serde_json::json!({
+            "path": source_path.canonicalize().unwrap().to_str().unwrap(),
+            "filename": "dmx_lightshow.mid"
+        });
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/songs/TestSong/import")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let resp_body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&resp_body).unwrap();
+        assert_eq!(parsed["file"], "dmx_lightshow.mid");
+
+        // Verify the file was saved with the overridden name.
+        assert!(state.songs_path.join("TestSong/dmx_lightshow.mid").exists());
+    }
+
+    #[tokio::test]
+    async fn import_file_to_song_rejects_unsupported_extension() {
+        let (state, dir) = test_state();
+
+        // Create a source file (extension doesn't matter for the source, but
+        // the override filename is what gets validated).
+        let source_path = dir.path().join("notes.wav");
+        std::fs::write(&source_path, &create_test_wav()).unwrap();
+
+        let app = router().with_state(state);
+        let body = serde_json::json!({
+            "path": source_path.canonicalize().unwrap().to_str().unwrap(),
+            "filename": "readme.txt"
+        });
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/songs/TestSong/import")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let resp_body = response_body(response).await;
+        assert!(resp_body.contains("Unsupported file type"));
+    }
+
+    #[tokio::test]
+    async fn import_file_to_song_directory_rejected() {
+        let (state, dir) = test_state();
+
+        // Create a subdirectory in the project root.
+        let subdir = dir.path().join("a_directory");
+        std::fs::create_dir(&subdir).unwrap();
+
+        let app = router().with_state(state);
+        let body = serde_json::json!({ "path": subdir.canonicalize().unwrap().to_str().unwrap() });
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/songs/TestSong/import")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let resp_body = response_body(response).await;
+        assert!(resp_body.contains("not a file"));
+    }
+
+    // ── get_songs response field tests ───────────────────────────────
+
+    #[tokio::test]
+    async fn get_songs_includes_base_dir() {
+        let (mut state, _dir) = test_state();
+        // Canonicalize songs_path so strip_prefix works with canonicalized song base_paths.
+        state.songs_path = state.songs_path.canonicalize().unwrap();
+
+        // Create a song on disk so that it appears in the response.
+        let song_dir = state.songs_path.join("BaseDirSong");
+        std::fs::create_dir(&song_dir).unwrap();
+        crate::testutil::write_wav(song_dir.join("track1.wav"), vec![vec![0_i32; 4410]], 44100)
+            .unwrap();
+        std::fs::write(
+            song_dir.join("song.yaml"),
+            "name: BaseDirSong\ntracks:\n  - name: track1\n    file: track1.wav\n",
+        )
+        .unwrap();
+
+        state.player.reload_songs(
+            &state.songs_path,
+            state.playlists_dir.as_deref(),
+            state.legacy_playlist_path.as_deref(),
+        );
+
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/songs")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let songs = parsed["songs"].as_array().unwrap();
+        let base_dir_song = songs
+            .iter()
+            .find(|s| s["name"] == "BaseDirSong")
+            .expect("BaseDirSong should be in the response");
+        assert!(
+            base_dir_song.get("base_dir").is_some(),
+            "Response should include base_dir field"
+        );
+        assert_eq!(base_dir_song["base_dir"], "BaseDirSong");
+    }
+
+    #[tokio::test]
+    async fn get_songs_includes_lighting_files() {
+        let (mut state, _dir) = test_state();
+        state.songs_path = state.songs_path.canonicalize().unwrap();
+
+        // Create a song with a DSL lighting show.
+        let song_dir = state.songs_path.join("LitSong");
+        std::fs::create_dir(&song_dir).unwrap();
+        crate::testutil::write_wav(song_dir.join("track1.wav"), vec![vec![0_i32; 4410]], 44100)
+            .unwrap();
+        std::fs::write(song_dir.join("show.light"), "show \"Test\" {\n}\n").unwrap();
+        std::fs::write(
+            song_dir.join("song.yaml"),
+            "name: LitSong\ntracks:\n  - name: track1\n    file: track1.wav\nlighting:\n  - file: show.light\n",
+        )
+        .unwrap();
+
+        state.player.reload_songs(
+            &state.songs_path,
+            state.playlists_dir.as_deref(),
+            state.legacy_playlist_path.as_deref(),
+        );
+
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/songs")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let songs = parsed["songs"].as_array().unwrap();
+        let lit_song = songs
+            .iter()
+            .find(|s| s["name"] == "LitSong")
+            .expect("LitSong should be in the response");
+        let lighting_files = lit_song["lighting_files"].as_array().unwrap();
+        assert!(
+            !lighting_files.is_empty(),
+            "lighting_files should be populated"
+        );
+        assert!(
+            lighting_files[0].as_str().unwrap().contains("show.light"),
+            "lighting_files should contain the .light file path"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_songs_includes_legacy_lighting_files() {
+        let (mut state, _dir) = test_state();
+        state.songs_path = state.songs_path.canonicalize().unwrap();
+
+        // Create a song with a legacy dmx_*.mid light show.
+        let song_dir = state.songs_path.join("LegacySong");
+        std::fs::create_dir(&song_dir).unwrap();
+        crate::testutil::write_wav(song_dir.join("track1.wav"), vec![vec![0_i32; 4410]], 44100)
+            .unwrap();
+
+        // Copy a real MIDI file from assets to serve as the dmx file.
+        let midi_source =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/song.mid");
+        std::fs::copy(&midi_source, song_dir.join("dmx_show.mid")).unwrap();
+
+        std::fs::write(
+            song_dir.join("song.yaml"),
+            "name: LegacySong\ntracks:\n  - name: track1\n    file: track1.wav\nlight_shows:\n  - universe_name: default\n    dmx_file: dmx_show.mid\n",
+        )
+        .unwrap();
+
+        state.player.reload_songs(
+            &state.songs_path,
+            state.playlists_dir.as_deref(),
+            state.legacy_playlist_path.as_deref(),
+        );
+
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/songs")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let songs = parsed["songs"].as_array().unwrap();
+        let legacy_song = songs
+            .iter()
+            .find(|s| s["name"] == "LegacySong")
+            .expect("LegacySong should be in the response");
+        let legacy_files = legacy_song["legacy_lighting_files"].as_array().unwrap();
+        assert!(
+            !legacy_files.is_empty(),
+            "legacy_lighting_files should be populated"
+        );
+        assert!(
+            legacy_files[0].as_str().unwrap().contains("dmx_show.mid"),
+            "legacy_lighting_files should contain the dmx MIDI file path"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_song_waveform_success() {
+        let (state, _dir) = test_state();
+        let song_dir = state.songs_path.join("WaveSong");
+        std::fs::create_dir(&song_dir).unwrap();
+        crate::testutil::write_wav(song_dir.join("track1.wav"), vec![vec![0_i32; 4410]], 44100)
+            .unwrap();
+        std::fs::write(
+            song_dir.join("song.yaml"),
+            "name: WaveSong\ntracks:\n  - name: track1\n    file: track1.wav\n",
+        )
+        .unwrap();
+
+        state.player.reload_songs(
+            &state.songs_path,
+            state.playlists_dir.as_deref(),
+            state.legacy_playlist_path.as_deref(),
+        );
+
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/songs/WaveSong/waveform")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["song_name"], "WaveSong");
+        assert!(parsed["tracks"].is_array());
+    }
+
+    #[tokio::test]
+    async fn get_song_waveform_not_found() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/songs/nonexistent/waveform")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn get_song_waveform_cached() {
+        let (state, _dir) = test_state();
+        let song_dir = state.songs_path.join("CachedSong");
+        std::fs::create_dir(&song_dir).unwrap();
+        crate::testutil::write_wav(song_dir.join("track1.wav"), vec![vec![0_i32; 4410]], 44100)
+            .unwrap();
+        std::fs::write(
+            song_dir.join("song.yaml"),
+            "name: CachedSong\ntracks:\n  - name: track1\n    file: track1.wav\n",
+        )
+        .unwrap();
+
+        state.player.reload_songs(
+            &state.songs_path,
+            state.playlists_dir.as_deref(),
+            state.legacy_playlist_path.as_deref(),
+        );
+
+        // First call — computes and caches.
+        let app = router().with_state(state.clone());
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/songs/CachedSong/waveform")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Second call — served from cache.
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/songs/CachedSong/waveform")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["song_name"], "CachedSong");
+        assert!(parsed["tracks"].is_array());
+    }
+
+    #[tokio::test]
+    async fn get_song_files_success() {
+        let (state, _dir) = test_state();
+        let song_dir = state.songs_path.join("FilesSong");
+        std::fs::create_dir(&song_dir).unwrap();
+        crate::testutil::write_wav(song_dir.join("track1.wav"), vec![vec![0_i32; 4410]], 44100)
+            .unwrap();
+        // Copy a real MIDI file from assets.
+        let midi_source =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/song.mid");
+        std::fs::copy(&midi_source, song_dir.join("notes.mid")).unwrap();
+        std::fs::write(song_dir.join("show.light"), "show \"Test\" {}\n").unwrap();
+        std::fs::write(song_dir.join("readme.txt"), "hello").unwrap();
+        std::fs::write(
+            song_dir.join("song.yaml"),
+            "name: FilesSong\ntracks:\n  - name: track1\n    file: track1.wav\n",
+        )
+        .unwrap();
+
+        state.player.reload_songs(
+            &state.songs_path,
+            state.playlists_dir.as_deref(),
+            state.legacy_playlist_path.as_deref(),
+        );
+
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/songs/FilesSong/files")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let files = parsed["files"].as_array().unwrap();
+
+        // Should have track1.wav, notes.mid, show.light, readme.txt (song.yaml is skipped)
+        assert_eq!(files.len(), 4);
+
+        // Verify type classification
+        let find_file = |name: &str| files.iter().find(|f| f["name"] == name).unwrap();
+        assert_eq!(find_file("track1.wav")["type"], "audio");
+        assert_eq!(find_file("notes.mid")["type"], "midi");
+        assert_eq!(find_file("show.light")["type"], "lighting");
+        assert_eq!(find_file("readme.txt")["type"], "other");
+    }
+
+    #[tokio::test]
+    async fn get_song_files_not_found() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/songs/nonexistent/files")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn upload_track_single_midi_file() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state.clone());
+
+        let midi_bytes = std::fs::read(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/song.mid"),
+        )
+        .unwrap();
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/songs/MidiSong/tracks/notes.mid")
+                    .body(Body::from(midi_bytes))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["status"], "uploaded");
+        assert_eq!(parsed["file"], "notes.mid");
+        assert!(state.songs_path.join("MidiSong/notes.mid").exists());
+    }
+
+    #[tokio::test]
+    async fn upload_track_single_light_file() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state.clone());
+
+        let light_content = b"show \"Test\" {}\n";
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/songs/LightSong/tracks/show.light")
+                    .body(Body::from(light_content.as_slice()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["status"], "uploaded");
+        assert_eq!(parsed["file"], "show.light");
+        assert!(state.songs_path.join("LightSong/show.light").exists());
+    }
 }

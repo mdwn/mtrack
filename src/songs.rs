@@ -2541,4 +2541,163 @@ mod test {
         assert!(songs.is_empty());
         Ok(())
     }
+
+    #[test]
+    fn initialize_with_light_file() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("light_song");
+        fs::create_dir(&song_dir)?;
+
+        // Create a WAV file so the song has at least one track.
+        crate::testutil::write_wav(
+            song_dir.join("track.wav"),
+            vec![vec![1_i32, 2, 3, 4, 5]],
+            44100,
+        )?;
+
+        // Create a valid .light DSL file.
+        let dsl = r#"show "test" {
+    @00:00.000
+    front: static color: "blue"
+}"#;
+        fs::write(song_dir.join("lighting.light"), dsl)?;
+
+        let song = super::Song::initialize(&song_dir)?;
+        assert_eq!(song.tracks().len(), 1, "Expected one audio track");
+        assert!(
+            !song.dsl_lighting_shows().is_empty(),
+            "Expected at least one DSL lighting show"
+        );
+        let dsl_show = &song.dsl_lighting_shows()[0];
+        assert!(
+            !dsl_show.shows().is_empty(),
+            "Expected parsed shows to be non-empty"
+        );
+        assert!(
+            dsl_show.shows().contains_key("test"),
+            "Expected a show named 'test'"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn initialize_with_invalid_light_file() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("bad_light_song");
+        fs::create_dir(&song_dir)?;
+
+        crate::testutil::write_wav(
+            song_dir.join("track.wav"),
+            vec![vec![1_i32, 2, 3, 4, 5]],
+            44100,
+        )?;
+
+        // Write invalid DSL content.
+        fs::write(song_dir.join("bad.light"), "show {")?;
+
+        let result = super::Song::initialize(&song_dir);
+        assert!(result.is_err(), "Expected an error for invalid .light file");
+        let err = result.err().unwrap().to_string();
+        assert!(
+            err.contains("Failed to parse DSL lighting show"),
+            "Error: {err}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn light_show_dmx_file_path() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let dmx_path = tempdir.path().join("dmx_show.mid");
+        fs::write(&dmx_path, "")?;
+
+        let light_show = super::LightShow {
+            universe_name: "test_universe".to_string(),
+            dmx_file: dmx_path.clone(),
+            midi_channels: vec![],
+        };
+        assert_eq!(light_show.dmx_file_path(), dmx_path.as_path());
+        Ok(())
+    }
+
+    #[test]
+    fn is_supported_audio_extension_accepted() {
+        for ext in &["wav", "mp3", "flac", "ogg", "aac", "m4a", "aiff"] {
+            assert!(
+                super::is_supported_audio_extension(ext),
+                "Expected '{ext}' to be a supported audio extension"
+            );
+        }
+    }
+
+    #[test]
+    fn is_supported_audio_extension_rejected() {
+        for ext in &["txt", "yaml", "mid", "light", ""] {
+            assert!(
+                !super::is_supported_audio_extension(ext),
+                "Expected '{ext}' to NOT be a supported audio extension"
+            );
+        }
+    }
+
+    #[test]
+    fn initialize_with_mixed_files() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("mixed_song");
+        fs::create_dir(&song_dir)?;
+
+        // Audio track
+        crate::testutil::write_wav(
+            song_dir.join("track.wav"),
+            vec![vec![1_i32, 2, 3, 4, 5]],
+            44100,
+        )?;
+
+        // MIDI playback file (regular .mid)
+        let midi_bytes: Vec<u8> = vec![
+            0x4D, 0x54, 0x68, 0x64, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x01, 0x00, 0x60,
+            0x4D, 0x54, 0x72, 0x6B, 0x00, 0x00, 0x00, 0x04, 0x00, 0xFF, 0x2F, 0x00,
+        ];
+        fs::write(song_dir.join("song.mid"), &midi_bytes)?;
+
+        // Legacy DMX light show file (dmx_ prefix)
+        fs::write(song_dir.join("dmx_light.mid"), &midi_bytes)?;
+
+        // DSL lighting show file
+        let dsl = r#"show "mixed" {
+    @00:00.000
+    front: static color: "blue"
+}"#;
+        fs::write(song_dir.join("show.light"), dsl)?;
+
+        let song = super::Song::initialize(&song_dir)?;
+
+        // Should have one audio track from the WAV file.
+        assert_eq!(song.tracks().len(), 1, "Expected one audio track");
+
+        // Should have MIDI playback from song.mid.
+        assert!(
+            song.midi_playback().is_some(),
+            "Expected MIDI playback from song.mid"
+        );
+
+        // Should have one legacy light show from dmx_light.mid.
+        assert_eq!(
+            song.light_shows().len(),
+            1,
+            "Expected one legacy light show from dmx_light.mid"
+        );
+
+        // Should have one DSL lighting show from show.light.
+        assert_eq!(
+            song.dsl_lighting_shows().len(),
+            1,
+            "Expected one DSL lighting show from show.light"
+        );
+        assert!(
+            song.dsl_lighting_shows()[0].shows().contains_key("mixed"),
+            "Expected parsed show named 'mixed'"
+        );
+        Ok(())
+    }
 }

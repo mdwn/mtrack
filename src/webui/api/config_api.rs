@@ -985,4 +985,435 @@ mod test {
             .unwrap();
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
+
+    /// Helper: GET /config/store to retrieve the current checksum.
+    async fn get_checksum(state: &crate::webui::server::WebUiState) -> String {
+        let app = router().with_state(state.clone());
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/config/store")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        parsed["checksum"].as_str().unwrap().to_string()
+    }
+
+    #[tokio::test]
+    async fn put_config_audio_success() {
+        let (state, _dir) = test_state_with_store();
+        let checksum = get_checksum(&state).await;
+
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/config/audio")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&serde_json::json!({
+                            "expected_checksum": checksum,
+                            "audio": { "device": "test-device" }
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let result: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(result["yaml"].is_string());
+        assert!(result["checksum"].is_string());
+        assert!(!result["checksum"].as_str().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn put_config_audio_stale_checksum() {
+        let (state, _dir) = test_state_with_store();
+
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/config/audio")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&serde_json::json!({
+                            "expected_checksum": "wrong-checksum",
+                            "audio": { "device": "test-device" }
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn put_config_audio_no_store() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/config/audio")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&serde_json::json!({
+                            "expected_checksum": "abc",
+                            "audio": { "device": "test" }
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn put_config_midi_success() {
+        let (state, _dir) = test_state_with_store();
+        let checksum = get_checksum(&state).await;
+
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/config/midi")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&serde_json::json!({
+                            "expected_checksum": checksum,
+                            "midi": { "device": "test-midi-device" }
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let result: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(result["yaml"].is_string());
+        assert!(!result["checksum"].as_str().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn put_config_dmx_success() {
+        let (state, _dir) = test_state_with_store();
+        let checksum = get_checksum(&state).await;
+
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/config/dmx")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&serde_json::json!({
+                            "expected_checksum": checksum,
+                            "dmx": { "dim_speed_modifier": 1.0, "universes": [] }
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let result: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(result["yaml"].is_string());
+        assert!(!result["checksum"].as_str().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn put_config_controllers_success() {
+        let (state, _dir) = test_state_with_store();
+        let checksum = get_checksum(&state).await;
+
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/config/controllers")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&serde_json::json!({
+                            "expected_checksum": checksum,
+                            "controllers": []
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let result: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(result["yaml"].is_string());
+        assert!(!result["checksum"].as_str().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn post_config_profile_success() {
+        let (state, _dir) = test_state_with_store();
+        let checksum = get_checksum(&state).await;
+
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/config/profiles")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&serde_json::json!({
+                            "expected_checksum": checksum,
+                            "profile": { "hostname": "test-host" }
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = response_body(response).await;
+        let result: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(result["yaml"].as_str().unwrap().contains("test-host"));
+        assert!(!result["checksum"].as_str().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn post_config_profile_stale_checksum() {
+        let (state, _dir) = test_state_with_store();
+
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/config/profiles")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&serde_json::json!({
+                            "expected_checksum": "wrong-checksum",
+                            "profile": { "hostname": "test-host" }
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn put_config_profile_success() {
+        let (state, _dir) = test_state_with_store();
+
+        // First, add a profile so index 0 exists.
+        let checksum = get_checksum(&state).await;
+        let app = router().with_state(state.clone());
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/config/profiles")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&serde_json::json!({
+                            "expected_checksum": checksum,
+                            "profile": { "hostname": "original" }
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = response_body(response).await;
+        let result: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let new_checksum = result["checksum"].as_str().unwrap();
+
+        // Now update that profile at index 0.
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/config/profiles/0")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&serde_json::json!({
+                            "expected_checksum": new_checksum,
+                            "profile": { "hostname": "updated" }
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let result: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(result["yaml"].as_str().unwrap().contains("updated"));
+    }
+
+    #[tokio::test]
+    async fn put_config_profile_invalid_index() {
+        let (state, _dir) = test_state_with_store();
+        let checksum = get_checksum(&state).await;
+
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/config/profiles/999")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&serde_json::json!({
+                            "expected_checksum": checksum,
+                            "profile": { "hostname": "test" }
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_body(response).await;
+        let result: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(result["error"].as_str().unwrap().contains("index"));
+    }
+
+    #[tokio::test]
+    async fn delete_config_profile_success() {
+        let (state, _dir) = test_state_with_store();
+
+        // First, add a profile so index 0 exists.
+        let checksum = get_checksum(&state).await;
+        let app = router().with_state(state.clone());
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/config/profiles")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&serde_json::json!({
+                            "expected_checksum": checksum,
+                            "profile": { "hostname": "to-delete" }
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = response_body(response).await;
+        let result: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let new_checksum = result["checksum"].as_str().unwrap();
+
+        // Delete that profile.
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("DELETE")
+                    .uri(&format!(
+                        "/config/profiles/0?expected_checksum={}",
+                        new_checksum
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let result: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(!result["yaml"].as_str().unwrap().contains("to-delete"));
+        assert!(!result["checksum"].as_str().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn delete_config_profile_stale_checksum() {
+        let (state, _dir) = test_state_with_store();
+
+        // Add a profile first.
+        let checksum = get_checksum(&state).await;
+        let app = router().with_state(state.clone());
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/config/profiles")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&serde_json::json!({
+                            "expected_checksum": checksum,
+                            "profile": { "hostname": "stale-test" }
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        // Delete with a wrong checksum.
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("DELETE")
+                    .uri("/config/profiles/0?expected_checksum=wrong-checksum")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
 }

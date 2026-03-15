@@ -91,6 +91,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Profile editor tab layout**: The hardware profile editor now uses horizontal tabs
   (Audio, MIDI, DMX, Lighting, Triggers, Controllers) instead of stacked collapsible
   sections, reducing visual clutter. Each tab shows a green dot when that section is enabled.
+- **Lighting timeline editor**: A DAW-style visual editor for lighting cue authoring,
+  replacing the previous form-based editor. The editor is song-driven — the left panel lists
+  songs, and selecting one loads its waveform and all associated `.light` files into a
+  horizontal scrollable timeline. Features include:
+  - Time ruler with absolute timestamps and measure/beat grid (when tempo is defined)
+  - Song waveform reference track
+  - Per-show cue lanes with color-coded draggable cue blocks
+  - Click to select, double-click to add, drag to reposition with snap-to-grid
+  - Compact single-line effect display that expands for full editing
+  - Sequence editing in a dedicated modal with its own timeline
+  - Legacy MIDI DMX file management (upload and import from server filesystem)
+  - Zoom, fit-to-view, and beat/measure snap controls
+- **Song file import API**: New `POST /api/songs/{name}/import` endpoint copies a file from
+  the server filesystem into a song directory. Source paths are validated against the project
+  root to prevent path traversal.
 - **Song creation UI**: Songs can now be created from the web UI song browser with a name
   and optional configuration.
 - **Multiple playlist support**: The player now supports multiple user-defined playlists

@@ -1403,4 +1403,1175 @@ show "test" {
             .unwrap()
             .contains("Failed to scan for lighting files"));
     }
+
+    // -----------------------------------------------------------------------
+    // Helper function to create a fixture type DSL string for tests.
+    // -----------------------------------------------------------------------
+    fn sample_fixture_type_dsl(name: &str) -> String {
+        format!(
+            r#"fixture_type "{name}" {{
+  channels: 3
+  channel_map: {{
+    "red": 1,
+    "green": 2,
+    "blue": 3
+  }}
+}}"#
+        )
+    }
+
+    // Helper function to create a venue DSL string for tests.
+    fn sample_venue_dsl(name: &str) -> String {
+        format!(
+            r#"venue "{name}" {{
+  fixture "Spot1" GenericPar @ 1:1
+  fixture "Spot2" GenericPar @ 1:5
+}}"#
+        )
+    }
+
+    // -----------------------------------------------------------------------
+    // Unit tests: sanitize_filename
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn sanitize_filename_removes_special_chars() {
+        assert_eq!(sanitize_filename("hello world"), "hello_world");
+        assert_eq!(sanitize_filename("My-Fixture_01"), "my-fixture_01");
+        assert_eq!(sanitize_filename("a/b\\c.d!e"), "a_b_c_d_e");
+        assert_eq!(sanitize_filename("UPPER"), "upper");
+        assert_eq!(sanitize_filename(""), "");
+    }
+
+    // -----------------------------------------------------------------------
+    // Unit tests: validate_lighting_name
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn validate_lighting_name_valid() {
+        assert!(validate_lighting_name("my-fixture").is_ok());
+        assert!(validate_lighting_name("Venue_01").is_ok());
+        assert!(validate_lighting_name("simple").is_ok());
+    }
+
+    #[test]
+    fn validate_lighting_name_invalid_empty() {
+        assert!(validate_lighting_name("").is_err());
+    }
+
+    #[test]
+    fn validate_lighting_name_invalid_dots() {
+        assert!(validate_lighting_name("..").is_err());
+        assert!(validate_lighting_name("a/../b").is_err());
+    }
+
+    #[test]
+    fn validate_lighting_name_invalid_slashes() {
+        assert!(validate_lighting_name("a/b").is_err());
+        assert!(validate_lighting_name("a\\b").is_err());
+    }
+
+    #[test]
+    fn validate_lighting_name_invalid_null() {
+        assert!(validate_lighting_name("a\0b").is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Unit tests: fixture_type_json_to_dsl
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn fixture_type_json_to_dsl_basic() {
+        let json = serde_json::json!({
+            "channels": {
+                "red": 1,
+                "green": 2,
+                "blue": 3
+            }
+        });
+        let dsl = fixture_type_json_to_dsl("TestFixture", &json).unwrap();
+        assert!(dsl.contains("fixture_type \"TestFixture\""));
+        assert!(dsl.contains("channels: 3"));
+        assert!(dsl.contains("\"red\": 1"));
+        assert!(dsl.contains("\"green\": 2"));
+        assert!(dsl.contains("\"blue\": 3"));
+        // Verify the DSL actually parses.
+        let types = lighting::parser::parse_fixture_types(&dsl).unwrap();
+        assert!(types.contains_key("TestFixture"));
+    }
+
+    #[test]
+    fn fixture_type_json_to_dsl_with_strobe() {
+        let json = serde_json::json!({
+            "channels": {
+                "dimmer": 1,
+                "strobe": 2
+            },
+            "max_strobe_frequency": 25.0,
+            "min_strobe_frequency": 0.5,
+            "strobe_dmx_offset": 10
+        });
+        let dsl = fixture_type_json_to_dsl("StrobeLight", &json).unwrap();
+        assert!(dsl.contains("max_strobe_frequency: 25"));
+        assert!(dsl.contains("min_strobe_frequency: 0.5"));
+        assert!(dsl.contains("strobe_dmx_offset: 10"));
+        // Verify the DSL actually parses.
+        let types = lighting::parser::parse_fixture_types(&dsl).unwrap();
+        let ft = types.get("StrobeLight").unwrap();
+        assert_eq!(ft.max_strobe_frequency(), Some(25.0));
+    }
+
+    #[test]
+    fn fixture_type_json_to_dsl_missing_channels() {
+        let json = serde_json::json!({"foo": "bar"});
+        assert!(fixture_type_json_to_dsl("Bad", &json).is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Unit tests: venue_json_to_dsl
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn venue_json_to_dsl_basic() {
+        let json = serde_json::json!({
+            "fixtures": [
+                {
+                    "name": "Spot1",
+                    "fixture_type": "GenericPar",
+                    "universe": 1,
+                    "start_channel": 1
+                }
+            ]
+        });
+        let dsl = venue_json_to_dsl("TestVenue", &json).unwrap();
+        assert!(dsl.contains("venue \"TestVenue\""));
+        assert!(dsl.contains("fixture \"Spot1\" GenericPar @ 1:1"));
+        // Verify the DSL actually parses.
+        let venues = lighting::parser::parse_venues(&dsl).unwrap();
+        assert!(venues.contains_key("TestVenue"));
+    }
+
+    #[test]
+    fn venue_json_to_dsl_with_tags() {
+        let json = serde_json::json!({
+            "fixtures": [
+                {
+                    "name": "Wash1",
+                    "fixture_type": "Par",
+                    "universe": 1,
+                    "start_channel": 1,
+                    "tags": ["front", "wash"]
+                }
+            ]
+        });
+        let dsl = venue_json_to_dsl("Tagged", &json).unwrap();
+        assert!(dsl.contains("tags [\"front\", \"wash\"]"));
+        // Verify the DSL actually parses.
+        let venues = lighting::parser::parse_venues(&dsl).unwrap();
+        let v = venues.get("Tagged").unwrap();
+        let w1 = v.fixtures().get("Wash1").unwrap();
+        assert_eq!(w1.tags(), &["front", "wash"]);
+    }
+
+    #[test]
+    fn venue_json_to_dsl_with_groups() {
+        let json = serde_json::json!({
+            "fixtures": [
+                {
+                    "name": "L1",
+                    "fixture_type": "Par",
+                    "universe": 1,
+                    "start_channel": 1
+                },
+                {
+                    "name": "L2",
+                    "fixture_type": "Par",
+                    "universe": 1,
+                    "start_channel": 5
+                }
+            ],
+            "groups": {
+                "front": ["L1", "L2"]
+            }
+        });
+        let dsl = venue_json_to_dsl("Grouped", &json).unwrap();
+        assert!(dsl.contains("group \"front\" = L1, L2"));
+        // Verify the DSL actually parses.
+        let venues = lighting::parser::parse_venues(&dsl).unwrap();
+        let v = venues.get("Grouped").unwrap();
+        assert!(v.groups().contains_key("front"));
+    }
+
+    #[test]
+    fn venue_json_to_dsl_missing_fixtures() {
+        let json = serde_json::json!({"foo": "bar"});
+        assert!(venue_json_to_dsl("Bad", &json).is_err());
+    }
+
+    #[test]
+    fn venue_json_to_dsl_fixture_missing_name() {
+        let json = serde_json::json!({
+            "fixtures": [
+                {
+                    "fixture_type": "Par",
+                    "universe": 1,
+                    "start_channel": 1
+                }
+            ]
+        });
+        assert!(venue_json_to_dsl("Bad", &json).is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Unit tests: load_light_files_from_dir
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn load_light_files_from_dir_processes_light_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("a.light"),
+            &sample_fixture_type_dsl("TypeA"),
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("b.txt"), "not a light file").unwrap();
+
+        let mut count = 0;
+        load_light_files_from_dir(dir.path(), |_content| {
+            count += 1;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn load_light_files_from_dir_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut count = 0;
+        load_light_files_from_dir(dir.path(), |_content| {
+            count += 1;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Unit tests: ensure_lighting_dir
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn ensure_lighting_dir_creates_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("new_subdir");
+        assert!(!sub.exists());
+        ensure_lighting_dir(&sub).unwrap();
+        assert!(sub.is_dir());
+    }
+
+    #[test]
+    fn ensure_lighting_dir_existing_is_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_lighting_dir(dir.path()).unwrap();
+        assert!(dir.path().is_dir());
+    }
+
+    // -----------------------------------------------------------------------
+    // Fixture Types endpoint tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn get_fixture_types_empty() {
+        let (state, _dir) = test_state();
+        let ft_dir = _dir.path().join("ft_empty");
+        std::fs::create_dir(&ft_dir).unwrap();
+        let rel = ft_dir.strip_prefix(_dir.path()).unwrap().to_str().unwrap();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri(format!("/lighting/fixture-types?dir={}", rel))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(parsed["fixture_types"].is_object());
+        assert_eq!(parsed["fixture_types"].as_object().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn get_fixture_types_nonexistent_dir() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/lighting/fixture-types?dir=nonexistent_dir")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["fixture_types"].as_object().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn get_fixture_types_with_files() {
+        let (state, _dir) = test_state();
+        let ft_dir = _dir.path().join("ft_test");
+        std::fs::create_dir(&ft_dir).unwrap();
+        std::fs::write(
+            ft_dir.join("led_par.light"),
+            &sample_fixture_type_dsl("LED_Par"),
+        )
+        .unwrap();
+        let rel = ft_dir.strip_prefix(_dir.path()).unwrap().to_str().unwrap();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri(format!("/lighting/fixture-types?dir={}", rel))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(parsed["fixture_types"]["LED_Par"].is_object());
+    }
+
+    #[tokio::test]
+    async fn get_fixture_type_success() {
+        let (state, _dir) = test_state();
+        let ft_dir = _dir.path().join("ft_get");
+        std::fs::create_dir(&ft_dir).unwrap();
+        std::fs::write(
+            ft_dir.join("led_par.light"),
+            &sample_fixture_type_dsl("LED_Par"),
+        )
+        .unwrap();
+        let rel = ft_dir.strip_prefix(_dir.path()).unwrap().to_str().unwrap();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri(format!("/lighting/fixture-types/LED_Par?dir={}", rel))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(parsed["fixture_type"].is_object());
+        assert!(parsed["dsl"].is_string());
+    }
+
+    #[tokio::test]
+    async fn get_fixture_type_not_found() {
+        let (state, _dir) = test_state();
+        let ft_dir = _dir.path().join("ft_notfound");
+        std::fs::create_dir(&ft_dir).unwrap();
+        let rel = ft_dir.strip_prefix(_dir.path()).unwrap().to_str().unwrap();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri(format!("/lighting/fixture-types/nonexistent?dir={}", rel))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn put_fixture_type_raw_dsl() {
+        let (state, _dir) = test_state();
+        let rel = "ft_put_raw";
+        let app = router().with_state(state);
+
+        let dsl = sample_fixture_type_dsl("MyFixture");
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri(format!("/lighting/fixture-types/MyFixture?dir={}", rel))
+                    .header("content-type", "text/plain")
+                    .body(Body::from(dsl))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["status"], "saved");
+        assert_eq!(parsed["name"], "MyFixture");
+
+        // Verify file was created.
+        let file_path = _dir.path().join(rel).join("myfixture.light");
+        assert!(file_path.exists());
+    }
+
+    #[tokio::test]
+    async fn put_fixture_type_json() {
+        let (state, _dir) = test_state();
+        let rel = "ft_put_json";
+        let app = router().with_state(state);
+
+        let json_body = serde_json::json!({
+            "channels": {
+                "red": 1,
+                "green": 2,
+                "blue": 3
+            }
+        });
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri(format!("/lighting/fixture-types/JSONFixture?dir={}", rel))
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&json_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["status"], "saved");
+
+        // Verify the file was created and contains valid DSL.
+        let file_path = _dir.path().join(rel).join("jsonfixture.light");
+        assert!(file_path.exists());
+        let content = std::fs::read_to_string(&file_path).unwrap();
+        let types = lighting::parser::parse_fixture_types(&content).unwrap();
+        assert!(types.contains_key("JSONFixture"));
+    }
+
+    #[tokio::test]
+    async fn put_fixture_type_invalid_name() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        // Empty name won't match the route, so test path traversal.
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/lighting/fixture-types/..%2Fevil?dir=ft_test")
+                    .header("content-type", "text/plain")
+                    .body(Body::from("content"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn put_fixture_type_invalid_dsl() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/lighting/fixture-types/BadDSL?dir=ft_bad")
+                    .header("content-type", "text/plain")
+                    .body(Body::from("invalid {{{ content"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn put_fixture_type_invalid_json() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/lighting/fixture-types/BadJSON?dir=ft_badjson")
+                    .header("content-type", "application/json")
+                    .body(Body::from("not valid json"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn delete_fixture_type_success() {
+        let (state, _dir) = test_state();
+        let ft_dir = _dir.path().join("ft_del");
+        std::fs::create_dir(&ft_dir).unwrap();
+        let file_path = ft_dir.join("todelete.light");
+        std::fs::write(&file_path, &sample_fixture_type_dsl("ToDelete")).unwrap();
+        let rel = ft_dir.strip_prefix(_dir.path()).unwrap().to_str().unwrap();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/lighting/fixture-types/ToDelete?dir={}", rel))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["status"], "deleted");
+        assert!(!file_path.exists());
+    }
+
+    #[tokio::test]
+    async fn delete_fixture_type_not_found() {
+        let (state, _dir) = test_state();
+        let ft_dir = _dir.path().join("ft_del_nf");
+        std::fs::create_dir(&ft_dir).unwrap();
+        let rel = ft_dir.strip_prefix(_dir.path()).unwrap().to_str().unwrap();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/lighting/fixture-types/nonexistent?dir={}", rel))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    // -----------------------------------------------------------------------
+    // Venues endpoint tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn get_venues_empty() {
+        let (state, _dir) = test_state();
+        let v_dir = _dir.path().join("v_empty");
+        std::fs::create_dir(&v_dir).unwrap();
+        let rel = v_dir.strip_prefix(_dir.path()).unwrap().to_str().unwrap();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri(format!("/lighting/venues?dir={}", rel))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(parsed["venues"].is_object());
+        assert_eq!(parsed["venues"].as_object().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn get_venues_nonexistent_dir() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/lighting/venues?dir=nonexistent_venues")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["venues"].as_object().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn get_venues_with_files() {
+        let (state, _dir) = test_state();
+        let v_dir = _dir.path().join("v_test");
+        std::fs::create_dir(&v_dir).unwrap();
+        std::fs::write(v_dir.join("club.light"), &sample_venue_dsl("Club")).unwrap();
+        let rel = v_dir.strip_prefix(_dir.path()).unwrap().to_str().unwrap();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri(format!("/lighting/venues?dir={}", rel))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(parsed["venues"]["Club"].is_object());
+    }
+
+    #[tokio::test]
+    async fn get_venue_success() {
+        let (state, _dir) = test_state();
+        let v_dir = _dir.path().join("v_get");
+        std::fs::create_dir(&v_dir).unwrap();
+        std::fs::write(v_dir.join("club.light"), &sample_venue_dsl("Club")).unwrap();
+        let rel = v_dir.strip_prefix(_dir.path()).unwrap().to_str().unwrap();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri(format!("/lighting/venues/Club?dir={}", rel))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(parsed["venue"].is_object());
+        assert!(parsed["dsl"].is_string());
+    }
+
+    #[tokio::test]
+    async fn get_venue_not_found() {
+        let (state, _dir) = test_state();
+        let v_dir = _dir.path().join("v_notfound");
+        std::fs::create_dir(&v_dir).unwrap();
+        let rel = v_dir.strip_prefix(_dir.path()).unwrap().to_str().unwrap();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri(format!("/lighting/venues/nonexistent?dir={}", rel))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn put_venue_raw_dsl() {
+        let (state, _dir) = test_state();
+        let rel = "v_put_raw";
+        let app = router().with_state(state);
+
+        let dsl = sample_venue_dsl("MyVenue");
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri(format!("/lighting/venues/MyVenue?dir={}", rel))
+                    .header("content-type", "text/plain")
+                    .body(Body::from(dsl))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["status"], "saved");
+        assert_eq!(parsed["name"], "MyVenue");
+
+        // Verify file was created.
+        let file_path = _dir.path().join(rel).join("myvenue.light");
+        assert!(file_path.exists());
+    }
+
+    #[tokio::test]
+    async fn put_venue_json() {
+        let (state, _dir) = test_state();
+        let rel = "v_put_json";
+        let app = router().with_state(state);
+
+        let json_body = serde_json::json!({
+            "fixtures": [
+                {
+                    "name": "Spot1",
+                    "fixture_type": "GenericPar",
+                    "universe": 1,
+                    "start_channel": 1
+                },
+                {
+                    "name": "Spot2",
+                    "fixture_type": "GenericPar",
+                    "universe": 1,
+                    "start_channel": 5
+                }
+            ]
+        });
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri(format!("/lighting/venues/JSONVenue?dir={}", rel))
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&json_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["status"], "saved");
+
+        // Verify the file was created and contains valid DSL.
+        let file_path = _dir.path().join(rel).join("jsonvenue.light");
+        assert!(file_path.exists());
+        let content = std::fs::read_to_string(&file_path).unwrap();
+        let venues = lighting::parser::parse_venues(&content).unwrap();
+        assert!(venues.contains_key("JSONVenue"));
+    }
+
+    #[tokio::test]
+    async fn put_venue_invalid_name() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/lighting/venues/..%2Fevil?dir=v_test")
+                    .header("content-type", "text/plain")
+                    .body(Body::from("content"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn put_venue_invalid_dsl() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/lighting/venues/BadDSL?dir=v_bad")
+                    .header("content-type", "text/plain")
+                    .body(Body::from("invalid {{{ content"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn put_venue_invalid_json() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri("/lighting/venues/BadJSON?dir=v_badjson")
+                    .header("content-type", "application/json")
+                    .body(Body::from("not valid json"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn delete_venue_success() {
+        let (state, _dir) = test_state();
+        let v_dir = _dir.path().join("v_del");
+        std::fs::create_dir(&v_dir).unwrap();
+        let file_path = v_dir.join("todelete.light");
+        std::fs::write(&file_path, &sample_venue_dsl("ToDelete")).unwrap();
+        let rel = v_dir.strip_prefix(_dir.path()).unwrap().to_str().unwrap();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/lighting/venues/ToDelete?dir={}", rel))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["status"], "deleted");
+        assert!(!file_path.exists());
+    }
+
+    #[tokio::test]
+    async fn delete_venue_not_found() {
+        let (state, _dir) = test_state();
+        let v_dir = _dir.path().join("v_del_nf");
+        std::fs::create_dir(&v_dir).unwrap();
+        let rel = v_dir.strip_prefix(_dir.path()).unwrap().to_str().unwrap();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/lighting/venues/nonexistent?dir={}", rel))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    // -----------------------------------------------------------------------
+    // Fixture types / venues: round-trip tests (PUT then GET)
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn put_then_get_fixture_type() {
+        let (state, _dir) = test_state();
+        let rel = "ft_roundtrip";
+        let dsl = sample_fixture_type_dsl("RoundTrip");
+
+        // PUT
+        let app = router().with_state(state.clone());
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri(format!("/lighting/fixture-types/RoundTrip?dir={}", rel))
+                    .header("content-type", "text/plain")
+                    .body(Body::from(dsl))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // GET
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri(format!("/lighting/fixture-types/RoundTrip?dir={}", rel))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(parsed["fixture_type"].is_object());
+    }
+
+    #[tokio::test]
+    async fn put_then_get_venue() {
+        let (state, _dir) = test_state();
+        let rel = "v_roundtrip";
+        let dsl = sample_venue_dsl("RoundTrip");
+
+        // PUT
+        let app = router().with_state(state.clone());
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri(format!("/lighting/venues/RoundTrip?dir={}", rel))
+                    .header("content-type", "text/plain")
+                    .body(Body::from(dsl))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // GET
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri(format!("/lighting/venues/RoundTrip?dir={}", rel))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(parsed["venue"].is_object());
+    }
+
+    #[tokio::test]
+    async fn put_then_delete_fixture_type() {
+        let (state, _dir) = test_state();
+        let rel = "ft_put_del";
+        let dsl = sample_fixture_type_dsl("Deletable");
+
+        // PUT
+        let app = router().with_state(state.clone());
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri(format!("/lighting/fixture-types/Deletable?dir={}", rel))
+                    .header("content-type", "text/plain")
+                    .body(Body::from(dsl))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // DELETE
+        let app = router().with_state(state.clone());
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/lighting/fixture-types/Deletable?dir={}", rel))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // GET should now 404
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri(format!("/lighting/fixture-types/Deletable?dir={}", rel))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn put_then_delete_venue() {
+        let (state, _dir) = test_state();
+        let rel = "v_put_del";
+        let dsl = sample_venue_dsl("Deletable");
+
+        // PUT
+        let app = router().with_state(state.clone());
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("PUT")
+                    .uri(format!("/lighting/venues/Deletable?dir={}", rel))
+                    .header("content-type", "text/plain")
+                    .body(Body::from(dsl))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // DELETE
+        let app = router().with_state(state.clone());
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/lighting/venues/Deletable?dir={}", rel))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // GET should now 404
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri(format!("/lighting/venues/Deletable?dir={}", rel))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_lighting_dir: absolute path rejected
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn get_fixture_types_absolute_dir_rejected() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/lighting/fixture-types?dir=%2Ftmp%2Fevil")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn get_venues_absolute_dir_rejected() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/lighting/venues?dir=%2Ftmp%2Fevil")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // -----------------------------------------------------------------------
+    // Multiple fixture types in listing
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn get_fixture_types_multiple_files() {
+        let (state, _dir) = test_state();
+        let ft_dir = _dir.path().join("ft_multi");
+        std::fs::create_dir(&ft_dir).unwrap();
+        std::fs::write(ft_dir.join("a.light"), &sample_fixture_type_dsl("TypeA")).unwrap();
+        std::fs::write(ft_dir.join("b.light"), &sample_fixture_type_dsl("TypeB")).unwrap();
+        let rel = ft_dir.strip_prefix(_dir.path()).unwrap().to_str().unwrap();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri(format!("/lighting/fixture-types?dir={}", rel))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let types = parsed["fixture_types"].as_object().unwrap();
+        assert_eq!(types.len(), 2);
+        assert!(types.contains_key("TypeA"));
+        assert!(types.contains_key("TypeB"));
+    }
+
+    #[tokio::test]
+    async fn get_venues_multiple_files() {
+        let (state, _dir) = test_state();
+        let v_dir = _dir.path().join("v_multi");
+        std::fs::create_dir(&v_dir).unwrap();
+        std::fs::write(v_dir.join("a.light"), &sample_venue_dsl("VenueA")).unwrap();
+        std::fs::write(v_dir.join("b.light"), &sample_venue_dsl("VenueB")).unwrap();
+        let rel = v_dir.strip_prefix(_dir.path()).unwrap().to_str().unwrap();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri(format!("/lighting/venues?dir={}", rel))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let venues = parsed["venues"].as_object().unwrap();
+        assert_eq!(venues.len(), 2);
+        assert!(venues.contains_key("VenueA"));
+        assert!(venues.contains_key("VenueB"));
+    }
 }
