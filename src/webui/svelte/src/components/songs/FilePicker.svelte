@@ -46,7 +46,7 @@
   }
   .picker-label {
     display: block;
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.5px;
@@ -60,7 +60,7 @@
   }
   .file-btn {
     padding: 4px 10px;
-    font-size: 12px;
+    font-size: 13px;
     font-family: var(--mono);
     background: var(--bg-input);
     border: 1px solid var(--border);

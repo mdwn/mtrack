@@ -79,12 +79,12 @@
   }
   .row-index {
     font-family: var(--mono);
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-dim);
     flex-shrink: 0;
   }
   .row-hostname {
-    font-size: 14px;
+    font-size: 15px;
     font-weight: 600;
     color: var(--text);
     flex-shrink: 0;
@@ -95,7 +95,7 @@
     flex-shrink: 0;
   }
   .badge {
-    font-size: 9px;
+    font-size: 11px;
     font-weight: 600;
     letter-spacing: 0.5px;
     padding: 2px 5px;
@@ -123,7 +123,7 @@
   }
   .row-devices {
     margin-left: auto;
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-dim);
     font-family: var(--mono);
     overflow: hidden;

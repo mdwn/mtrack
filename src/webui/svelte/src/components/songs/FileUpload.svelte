@@ -92,7 +92,7 @@
     background: rgba(94, 202, 234, 0.05);
   }
   .drop-label {
-    font-size: 13px;
+    font-size: 14px;
     color: var(--text-muted);
   }
   .hidden-input {

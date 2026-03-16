@@ -695,7 +695,7 @@
   }
   .muted {
     color: var(--text-muted);
-    font-size: 13px;
+    font-size: 14px;
   }
   .center {
     text-align: center;
@@ -706,7 +706,7 @@
     color: #ef4444;
     padding: 8px 12px;
     border-radius: 6px;
-    font-size: 13px;
+    font-size: 14px;
     margin-bottom: 12px;
     position: relative;
     display: flex;
@@ -718,7 +718,7 @@
     border: none;
     color: inherit;
     cursor: pointer;
-    font-size: 14px;
+    font-size: 15px;
     padding: 0 4px;
     margin-left: 8px;
     opacity: 0.7;
@@ -749,7 +749,7 @@
     border: none;
     color: var(--text);
     padding: 6px 8px;
-    font-size: 13px;
+    font-size: 14px;
     cursor: pointer;
     border-radius: 4px;
     text-align: left;
@@ -766,7 +766,7 @@
   }
   .song-meta {
     color: var(--text-dim);
-    font-size: 11px;
+    font-size: 12px;
     font-family: var(--mono);
     display: flex;
     align-items: center;
@@ -800,7 +800,7 @@
     flex-wrap: wrap;
   }
   .detail-title {
-    font-size: 15px;
+    font-size: 16px;
     font-weight: 600;
   }
   .tab-btns {
@@ -814,7 +814,7 @@
     background: var(--bg-input);
     border: none;
     color: var(--text-muted);
-    font-size: 12px;
+    font-size: 13px;
     padding: 4px 12px;
     cursor: pointer;
   }
@@ -826,7 +826,7 @@
     background: rgba(255, 255, 255, 0.06);
   }
   .file-info {
-    font-size: 12px;
+    font-size: 13px;
     color: var(--text-muted);
     display: flex;
     align-items: center;
@@ -869,10 +869,10 @@
   }
   .modal-header h3 {
     margin: 0;
-    font-size: 14px;
+    font-size: 15px;
   }
   .modal-song {
-    font-size: 12px;
+    font-size: 13px;
     color: var(--text-muted);
     flex: 1;
   }
@@ -889,7 +889,7 @@
     gap: 8px;
   }
   .modal-section-label {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.5px;
@@ -901,7 +901,7 @@
     gap: 4px;
   }
   .legacy-file {
-    font-size: 11px;
+    font-size: 12px;
     font-family: var(--mono);
     color: var(--text-muted);
     background: rgba(255, 255, 255, 0.04);
@@ -917,10 +917,10 @@
   }
   .save-msg.success {
     color: var(--green);
-    font-size: 12px;
+    font-size: 13px;
   }
   .dirty-badge {
-    font-size: 10px;
+    font-size: 11px;
     padding: 2px 6px;
     border-radius: 4px;
     background: var(--yellow-dim);
@@ -948,7 +948,7 @@
     border: none;
     border-right: 1px solid var(--border);
     color: var(--text-muted);
-    font-size: 11px;
+    font-size: 12px;
     padding: 4px 10px;
     cursor: pointer;
     font-family: var(--mono);
@@ -964,7 +964,7 @@
     color: var(--red);
   }
   .raw-file-label {
-    font-size: 11px;
+    font-size: 12px;
     font-family: var(--mono);
     color: var(--text-muted);
     padding: 4px 0;
@@ -977,7 +977,7 @@
     border-radius: var(--radius);
     color: var(--text);
     font-family: var(--mono);
-    font-size: 13px;
+    font-size: 14px;
     padding: 12px;
     resize: vertical;
     tab-size: 4;
@@ -994,7 +994,7 @@
   }
   .validation-ok {
     color: var(--green);
-    font-size: 13px;
+    font-size: 14px;
     padding: 4px 0;
   }
   .validation-errors {
@@ -1004,7 +1004,7 @@
   }
   .validation-error {
     color: var(--red);
-    font-size: 12px;
+    font-size: 13px;
     font-family: var(--mono);
   }
 

@@ -17,13 +17,14 @@
     Cue,
     Sequence,
     TempoSection,
+    SubLaneType,
   } from "../../../lib/lighting/types";
   import {
     timestampToMs,
     msToPixel,
   } from "../../../lib/lighting/timeline-state";
   import TimeRuler from "./TimeRuler.svelte";
-  import ShowLane from "./ShowLane.svelte";
+  import ShowGroup from "./ShowGroup.svelte";
   import CuePropertiesPanel from "./CuePropertiesPanel.svelte";
 
   interface Props {
@@ -54,6 +55,7 @@
   let scrollLeft = $state(0);
   let viewportWidth = $state(600);
   let selectedCueIndex = $state<number | null>(null);
+  let selectedSubLane = $state<SubLaneType | null>(null);
   let scrollContainer: HTMLDivElement | undefined = $state();
 
   function getDurationMs(): number {
@@ -85,6 +87,7 @@
 
   function handleCueDelete(cueIndex: number) {
     selectedCueIndex = null;
+    selectedSubLane = null;
     onchange({
       ...sequence,
       cues: sequence.cues.filter((_, i) => i !== cueIndex),
@@ -182,9 +185,9 @@
           </div>
         </div>
 
-        <!-- Cue lane -->
+        <!-- Cue lanes -->
         <div class="sticky-row">
-          <ShowLane
+          <ShowGroup
             name={sequence.name}
             cues={sequence.cues}
             laneType="sequence"
@@ -193,9 +196,13 @@
             {viewportWidth}
             {tempo}
             {selectedCueIndex}
+            {selectedSubLane}
             {snapEnabled}
             {snapResolution}
-            onselect={(ci) => (selectedCueIndex = ci)}
+            onselect={(ci, subLane) => {
+              selectedCueIndex = ci;
+              selectedSubLane = subLane;
+            }}
             oncuechange={(ci, cue) => handleCueChange(ci, cue)}
             oncuedelete={(ci) => handleCueDelete(ci)}
             oncueadd={(cue) => handleCueAdd(cue)}
@@ -217,9 +224,13 @@
             {groups}
             {sequenceNames}
             {tempo}
+            focusTab={selectedSubLane}
             onchange={handleSelectedCueChange}
             ondelete={handleSelectedCueDelete}
-            onclose={() => (selectedCueIndex = null)}
+            onclose={() => {
+              selectedCueIndex = null;
+              selectedSubLane = null;
+            }}
           />
         {/if}
       {:else}
@@ -266,16 +277,16 @@
     flex-shrink: 0;
   }
   .seq-modal-title {
-    font-size: 14px;
+    font-size: 15px;
     font-weight: 600;
     color: var(--pink);
   }
   .seq-modal-info {
-    font-size: 12px;
+    font-size: 13px;
     color: var(--text-muted);
   }
   .seq-modal-hint {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-dim);
     flex: 1;
   }
@@ -339,7 +350,7 @@
     justify-content: center;
     height: 100%;
     color: var(--text-dim);
-    font-size: 13px;
+    font-size: 14px;
   }
 
   @media (max-width: 768px) {

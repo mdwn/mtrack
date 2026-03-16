@@ -191,7 +191,7 @@
     color: var(--text);
   }
   .playback-status {
-    font-size: 13px;
+    font-size: 14px;
     color: var(--text-muted);
   }
   .playback-status .playing {
@@ -217,11 +217,11 @@
     display: flex;
     justify-content: space-between;
     font-family: var(--mono);
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-dim);
   }
   .playback-error {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--red);
     text-align: center;
     padding: 2px 0;

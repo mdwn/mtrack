@@ -28,8 +28,10 @@
     midiDevices: MidiDeviceInfo[];
     trackNames: string[];
     sampleNames: string[];
+    initialSection?: string;
     onrefreshDevices: () => void;
     onchange: () => void;
+    onsectionchange?: (section: string) => void;
   }
 
   let {
@@ -38,8 +40,10 @@
     midiDevices,
     trackNames,
     sampleNames,
+    initialSection,
     onrefreshDevices,
     onchange,
+    onsectionchange,
   }: Props = $props();
 
   const tabs = [
@@ -52,7 +56,12 @@
 
   type TabKey = (typeof tabs)[number]["key"];
 
-  let activeTab = $state<TabKey>("audio");
+  const validKeys = tabs.map((t) => t.key as string);
+  function getInitialTab(): TabKey {
+    const s = initialSection;
+    return s && validKeys.includes(s) ? (s as TabKey) : "audio";
+  }
+  let activeTab = $state<TabKey>(getInitialTab());
 
   function isEnabled(key: string): boolean {
     if (key === "lighting") return profile.dmx != null;
@@ -109,7 +118,10 @@
         class:active={activeTab === tab.key}
         role="tab"
         aria-selected={activeTab === tab.key}
-        onclick={() => (activeTab = tab.key)}
+        onclick={() => {
+          activeTab = tab.key;
+          onsectionchange?.(tab.key);
+        }}
       >
         {tab.label}
         {#if isEnabled(tab.key)}
@@ -196,14 +208,14 @@
     gap: 4px;
   }
   .field label {
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.5px;
     color: var(--text-muted);
   }
   .field-hint {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-dim);
   }
   .tab-bar {
@@ -215,7 +227,7 @@
   .tab {
     position: relative;
     padding: 10px 16px;
-    font-size: 13px;
+    font-size: 14px;
     font-weight: 500;
     font-family: var(--sans);
     color: var(--text-muted);
@@ -261,7 +273,7 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    font-size: 13px;
+    font-size: 14px;
     color: var(--text-muted);
     cursor: pointer;
   }
@@ -280,12 +292,12 @@
   }
   .panel-empty p {
     margin-bottom: 4px;
-    font-size: 13px;
+    font-size: 14px;
   }
   @media (max-width: 600px) {
     .tab {
       padding: 8px 12px;
-      font-size: 12px;
+      font-size: 13px;
     }
   }
 </style>

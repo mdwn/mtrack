@@ -842,7 +842,7 @@
   }
   .field label,
   .field-label {
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.5px;
@@ -891,7 +891,7 @@
     margin-bottom: 8px;
   }
   .input-kind {
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.5px;
@@ -908,7 +908,7 @@
   }
   .btn-small {
     padding: 2px 8px;
-    font-size: 11px;
+    font-size: 12px;
   }
   .btn-accent {
     background: var(--accent, #5c8ade);
@@ -931,19 +931,19 @@
   }
   .cal-title {
     font-weight: 600;
-    font-size: 13px;
+    font-size: 14px;
   }
   .cal-status {
-    font-size: 12px;
+    font-size: 13px;
     color: var(--text-muted);
   }
   .cal-stats {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-muted);
     font-family: monospace;
   }
   .cal-error {
-    font-size: 12px;
+    font-size: 13px;
     color: var(--danger, #e74c3c);
   }
   .cal-actions {
@@ -965,7 +965,7 @@
     display: grid;
     grid-template-columns: auto 1fr;
     gap: 4px 12px;
-    font-size: 12px;
+    font-size: 13px;
     font-family: monospace;
   }
   .cal-label {

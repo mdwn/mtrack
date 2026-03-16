@@ -24,6 +24,21 @@
     type PlaylistData,
   } from "../lib/api/config";
 
+  interface Props {
+    currentHash: string;
+  }
+
+  let { currentHash }: Props = $props();
+
+  // Parse: #/playlists/PlaylistName
+  let routePlaylist = $derived.by(() => {
+    const prefix = "#/playlists/";
+    if (currentHash.startsWith(prefix) && currentHash.length > prefix.length) {
+      return decodeURIComponent(currentHash.slice(prefix.length));
+    }
+    return null;
+  });
+
   let playlists = $state<PlaylistInfo[]>([]);
   let selected = $state<string | null>(null);
   let detail = $state<PlaylistData | null>(null);
@@ -69,6 +84,7 @@
       editSongs = [...detail.songs];
       dirty = false;
       searchQuery = "";
+      window.location.hash = `#/playlists/${encodeURIComponent(name)}`;
     } catch (e: any) {
       error = e.message;
     }
@@ -184,6 +200,15 @@
   }
 
   loadPlaylists();
+
+  // Auto-select playlist from URL after data loads
+  $effect(() => {
+    if (loading || !routePlaylist || selected === routePlaylist) return;
+    const match = playlists.find((p) => p.name === routePlaylist);
+    if (match) {
+      selectPlaylist(match.name);
+    }
+  });
 </script>
 
 <div class="playlist-editor">
@@ -410,7 +435,7 @@
   }
   .muted {
     color: var(--text-muted);
-    font-size: 13px;
+    font-size: 14px;
   }
   .center {
     text-align: center;
@@ -421,7 +446,7 @@
     color: #ef4444;
     padding: 8px 12px;
     border-radius: 6px;
-    font-size: 13px;
+    font-size: 14px;
     margin-bottom: 12px;
     position: relative;
     display: flex;
@@ -433,7 +458,7 @@
     border: none;
     color: inherit;
     cursor: pointer;
-    font-size: 14px;
+    font-size: 15px;
     padding: 0 4px;
     margin-left: 8px;
     opacity: 0.7;
@@ -470,7 +495,7 @@
     border: none;
     color: var(--text);
     padding: 8px;
-    font-size: 13px;
+    font-size: 14px;
     cursor: pointer;
     border-radius: 4px;
     text-align: left;
@@ -483,7 +508,7 @@
   }
   .pl-count {
     color: var(--text-muted);
-    font-size: 11px;
+    font-size: 12px;
   }
   .pl-actions {
     display: flex;
@@ -491,7 +516,7 @@
     align-items: center;
   }
   .badge {
-    font-size: 10px;
+    font-size: 11px;
     padding: 2px 6px;
     border-radius: 4px;
     background: var(--accent);
@@ -502,7 +527,7 @@
     border: none;
     color: var(--text-muted);
     cursor: pointer;
-    font-size: 12px;
+    font-size: 13px;
     padding: 4px 6px;
     border-radius: 4px;
   }
@@ -512,10 +537,10 @@
   }
   .btn-icon.danger {
     color: #ef4444;
-    font-size: 11px;
+    font-size: 12px;
   }
   .btn-icon.small {
-    font-size: 10px;
+    font-size: 11px;
     padding: 1px 4px;
     line-height: 1;
   }
@@ -535,7 +560,7 @@
   }
   .song-col h4 {
     margin: 0 0 8px 0;
-    font-size: 13px;
+    font-size: 14px;
     color: var(--text-muted);
   }
   .song-col .input {
@@ -553,7 +578,7 @@
     align-items: center;
     gap: 6px;
     padding: 4px 8px;
-    font-size: 12px;
+    font-size: 13px;
     border-radius: 4px;
   }
   .song-list li:hover {

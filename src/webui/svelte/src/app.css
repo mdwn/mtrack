@@ -68,7 +68,7 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--sans);
-  font-size: 14px;
+  font-size: 15px;
   line-height: 1.5;
   min-height: 100vh;
 }
@@ -89,7 +89,7 @@ body {
 }
 
 .card-title {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.8px;
@@ -108,7 +108,7 @@ body {
   background: var(--bg-input);
   color: var(--text-muted);
   font-family: var(--sans);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 500;
   cursor: pointer;
   transition:
@@ -127,7 +127,7 @@ body {
 }
 .btn-sm {
   padding: 4px 10px;
-  font-size: 11px;
+  font-size: 12px;
 }
 .btn:disabled {
   opacity: 0.35;
@@ -178,7 +178,7 @@ body {
   background: var(--bg-input);
   color: var(--text);
   font-family: var(--sans);
-  font-size: 13px;
+  font-size: 14px;
   transition: border-color 0.15s;
 }
 .input:focus {
@@ -217,5 +217,5 @@ body {
 }
 
 .page-placeholder p {
-  font-size: 13px;
+  font-size: 14px;
 }

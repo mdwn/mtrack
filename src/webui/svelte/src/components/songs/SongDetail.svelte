@@ -40,9 +40,10 @@
 
   interface Props {
     songName: string;
+    initialTab?: "tracks" | "midi" | "lighting" | "config";
   }
 
-  let { songName }: Props = $props();
+  let { songName, initialTab }: Props = $props();
 
   let song = $state<SongSummary | null>(null);
   let songFiles = $state<SongFile[]>([]);
@@ -64,7 +65,16 @@
 
   // Tab state
   type TabKey = "tracks" | "midi" | "lighting" | "config";
-  let activeTab = $state<TabKey>("tracks");
+  function getInitialTab(): TabKey {
+    return initialTab ?? "tracks";
+  }
+  let activeTab = $state<TabKey>(getInitialTab());
+
+  function setTab(tab: TabKey) {
+    activeTab = tab;
+    const base = `#/songs/${encodeURIComponent(songName)}`;
+    window.location.hash = tab === "tracks" ? base : `${base}/${tab}`;
+  }
 
   const tabs: { key: TabKey; label: string }[] = [
     { key: "tracks", label: "Tracks" },
@@ -355,7 +365,7 @@
           class:active={activeTab === tab_item.key}
           role="tab"
           aria-selected={activeTab === tab_item.key}
-          onclick={() => (activeTab = tab_item.key)}
+          onclick={() => setTab(tab_item.key)}
         >
           {tab_item.label}
           {#if tabHasIndicator(tab_item.key)}
@@ -501,13 +511,12 @@
     margin-top: 8px;
   }
   .detail {
-    max-width: 1200px;
     margin: 0 auto;
   }
   .back-link {
     display: inline-block;
     margin-bottom: 12px;
-    font-size: 13px;
+    font-size: 14px;
     color: var(--accent);
     text-decoration: none;
   }
@@ -529,7 +538,7 @@
     gap: 4px;
   }
   .badge {
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 700;
     letter-spacing: 0.5px;
     padding: 2px 8px;
@@ -551,7 +560,7 @@
   .meta {
     display: flex;
     gap: 16px;
-    font-size: 13px;
+    font-size: 14px;
     color: var(--text-muted);
     margin-bottom: 16px;
   }
@@ -571,7 +580,7 @@
   .tab {
     position: relative;
     padding: 10px 16px;
-    font-size: 13px;
+    font-size: 14px;
     font-weight: 500;
     font-family: var(--sans);
     color: var(--text-muted);
@@ -610,11 +619,11 @@
     gap: 8px;
   }
   .unsaved {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--accent);
   }
   .save-msg {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--green);
   }
   .save-msg.error {
@@ -627,7 +636,7 @@
     margin-top: 8px;
   }
   .msg {
-    font-size: 12px;
+    font-size: 13px;
     color: var(--green);
     margin-top: 8px;
   }
@@ -636,7 +645,7 @@
   }
   .muted {
     color: var(--text-muted);
-    font-size: 13px;
+    font-size: 14px;
     margin-bottom: 12px;
   }
   .feature-row {
@@ -645,7 +654,7 @@
     gap: 8px;
     padding: 8px 0;
     margin-bottom: 8px;
-    font-size: 13px;
+    font-size: 14px;
   }
   .feature-label {
     color: var(--text-muted);
@@ -667,7 +676,7 @@
     background: var(--bg-input);
     color: var(--text);
     font-family: var(--mono);
-    font-size: 13px;
+    font-size: 14px;
     line-height: 1.5;
     resize: vertical;
     outline: none;
@@ -686,7 +695,7 @@
   @media (max-width: 600px) {
     .tab {
       padding: 8px 12px;
-      font-size: 12px;
+      font-size: 13px;
     }
   }
 </style>

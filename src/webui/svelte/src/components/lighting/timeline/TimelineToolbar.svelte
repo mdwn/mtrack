@@ -124,7 +124,7 @@
     display: flex;
     align-items: center;
     gap: 4px;
-    font-size: 12px;
+    font-size: 13px;
     color: var(--text-muted);
     cursor: pointer;
   }
@@ -132,7 +132,7 @@
     margin: 0;
   }
   .snap-select {
-    font-size: 11px;
+    font-size: 12px;
     padding: 2px 4px;
     border-radius: 4px;
     border: 1px solid var(--border);
@@ -141,7 +141,7 @@
   }
   .cursor-time {
     font-family: var(--mono);
-    font-size: 12px;
+    font-size: 13px;
     color: var(--text-muted);
     min-width: 80px;
     text-align: right;

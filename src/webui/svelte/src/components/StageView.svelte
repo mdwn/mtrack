@@ -152,7 +152,7 @@
     );
 
     ctx.fillStyle = "#333";
-    ctx.font = "11px monospace";
+    ctx.font = "12px monospace";
     ctx.textAlign = "center";
     ctx.fillText("STAGE", w / 2, PADDING - 6);
 
@@ -216,7 +216,7 @@
 
       // Label
       ctx.fillStyle = "#888";
-      ctx.font = "10px monospace";
+      ctx.font = "11px monospace";
       ctx.textAlign = "center";
       ctx.fillText(name, pos.x, pos.y + FIXTURE_RADIUS + 14);
     }
@@ -377,7 +377,7 @@
     height: 100%;
   }
   .reload-badge {
-    font-size: 11px;
+    font-size: 12px;
     padding: 2px 8px;
     border-radius: 4px;
     background: var(--green-dim);

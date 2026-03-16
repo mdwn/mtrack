@@ -140,6 +140,9 @@ export interface SequenceRef {
   stop?: boolean;
 }
 
+/** Sub-lane content type for multi-lane show rendering */
+export type SubLaneType = "effects" | "commands" | "sequences";
+
 /** A cue = one timestamp + all effects/commands at that time */
 export interface Cue {
   timestamp: Timestamp;
@@ -147,6 +150,8 @@ export interface Cue {
   commands: LayerCommand[];
   sequences: SequenceRef[];
   comment?: string;
+  offset_measures?: number;
+  reset_measures?: boolean;
 }
 
 /** A named sequence of cues */

@@ -132,7 +132,7 @@
     background: var(--bg-card-hover);
     border: 1px solid var(--border);
     border-radius: 4px;
-    font-size: 12px;
+    font-size: 13px;
     color: var(--text);
     white-space: nowrap;
   }
@@ -147,7 +147,7 @@
     background: none;
     border: none;
     border-radius: 50%;
-    font-size: 12px;
+    font-size: 13px;
     line-height: 1;
     color: var(--text-dim);
     cursor: pointer;
@@ -162,7 +162,7 @@
     border: none;
     outline: none;
     background: transparent;
-    font-size: 12px;
+    font-size: 13px;
     font-family: var(--sans);
     color: var(--text);
     padding: 2px 0;

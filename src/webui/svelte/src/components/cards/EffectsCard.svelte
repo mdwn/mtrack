@@ -38,11 +38,11 @@
   .effects-list li {
     padding: 4px 0;
     font-family: var(--mono);
-    font-size: 12px;
+    font-size: 13px;
     color: var(--text-muted);
   }
   .effects-empty {
-    font-size: 12px;
+    font-size: 13px;
     color: var(--text-dim);
     font-style: italic;
   }

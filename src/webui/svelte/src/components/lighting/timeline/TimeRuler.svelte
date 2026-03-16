@@ -17,7 +17,9 @@
   import {
     msToPixel,
     getGridLines,
+    getAdjustedGridLines,
     formatMs,
+    type OffsetMarker,
   } from "../../../lib/lighting/timeline-state";
 
   interface Props {
@@ -27,6 +29,10 @@
     scrollLeft: number;
     viewportWidth: number;
     onclick?: (ms: number) => void;
+    onpan?: (deltaScrollPx: number) => void;
+    oncontextmenu?: (ms: number, clientX: number, clientY: number) => void;
+    onoffsetclick?: (offset: OffsetMarker) => void;
+    offsets?: OffsetMarker[];
   }
 
   let {
@@ -36,9 +42,16 @@
     scrollLeft,
     viewportWidth,
     onclick,
+    onpan,
+    oncontextmenu: onctx,
+    onoffsetclick,
+    offsets = [],
   }: Props = $props();
 
   let canvasEl: HTMLCanvasElement | undefined = $state();
+  let dragging = $state(false);
+  let dragStartX = 0;
+  let dragMoved = false;
 
   function draw() {
     if (!canvasEl) return;
@@ -62,7 +75,7 @@
     const firstTick = Math.floor(viewStartMs / tickIntervalMs) * tickIntervalMs;
 
     ctx.fillStyle = "#555";
-    ctx.font = "10px monospace";
+    ctx.font = "13px monospace";
     ctx.textAlign = "center";
 
     for (let t = firstTick; t <= viewEndMs; t += tickIntervalMs) {
@@ -94,7 +107,10 @@
 
     // Draw measure/beat grid if tempo exists
     if (tempo) {
-      const gridLines = getGridLines(tempo, viewStartMs, viewEndMs);
+      const gridLines =
+        offsets.length > 0
+          ? getAdjustedGridLines(tempo, viewStartMs, viewEndMs, offsets)
+          : getGridLines(tempo, viewStartMs, viewEndMs);
       for (const line of gridLines) {
         const x = msToPixel(line.ms, pixelsPerMs) - scrollLeft;
         if (line.type === "measure") {
@@ -107,7 +123,7 @@
 
           if (line.label) {
             ctx.fillStyle = "rgba(94, 202, 234, 0.9)";
-            ctx.font = "9px monospace";
+            ctx.font = "12px monospace";
             ctx.textAlign = "center";
             ctx.fillText(line.label, x, 10);
           }
@@ -119,6 +135,27 @@
           ctx.lineTo(x, 14);
           ctx.stroke();
         }
+      }
+
+      // Draw offset markers
+      for (const off of offsets) {
+        if (off.ms < viewStartMs || off.ms > viewEndMs) continue;
+        const x = msToPixel(off.ms, pixelsPerMs) - scrollLeft;
+        // Vertical line
+        ctx.strokeStyle = "rgba(249, 115, 22, 0.7)";
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([3, 2]);
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, h);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        // Label
+        const label = off.type === "reset" ? "reset" : `offset ${off.measures}`;
+        ctx.fillStyle = "rgba(249, 115, 22, 0.9)";
+        ctx.font = "11px monospace";
+        ctx.textAlign = "left";
+        ctx.fillText(label, x + 3, 10);
       }
     }
 
@@ -143,12 +180,64 @@
     return 60000;
   }
 
-  function handleClick(e: MouseEvent) {
-    if (!onclick || !canvasEl) return;
+  function handlePointerDown(e: PointerEvent) {
+    if (e.button !== 0 || !canvasEl) return;
+    dragging = true;
+    dragStartX = e.clientX;
+    dragMoved = false;
+    canvasEl.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  }
+
+  function handlePointerMove(e: PointerEvent) {
+    if (!dragging) return;
+    const dx = e.clientX - dragStartX;
+    if (Math.abs(dx) > 3) dragMoved = true;
+    if (dragMoved && onpan) {
+      onpan(-dx);
+      dragStartX = e.clientX;
+    }
+  }
+
+  function handlePointerUp(e: PointerEvent) {
+    if (!dragging) return;
+    dragging = false;
+    if (!dragMoved && canvasEl) {
+      const rect = canvasEl.getBoundingClientRect();
+      const x = e.clientX - rect.left + scrollLeft;
+      const ms = x / pixelsPerMs;
+
+      // Check if click is near an offset marker (within 8px)
+      if (onoffsetclick) {
+        const hitThreshold = 8 / pixelsPerMs;
+        for (const off of offsets) {
+          if (Math.abs(off.ms - ms) < hitThreshold) {
+            onoffsetclick(off);
+            return;
+          }
+        }
+      }
+
+      if (onclick) onclick(Math.max(0, ms));
+    }
+  }
+
+  function handleContextMenu(e: MouseEvent) {
+    if (!onctx || !canvasEl) return;
+    e.preventDefault();
     const rect = canvasEl.getBoundingClientRect();
     const x = e.clientX - rect.left + scrollLeft;
-    const ms = x / pixelsPerMs;
-    onclick(Math.max(0, ms));
+    const ms = Math.max(0, x / pixelsPerMs);
+    onctx(ms, e.clientX, e.clientY);
+  }
+
+  function handleWheel(e: WheelEvent) {
+    // Ctrl/Cmd+wheel is handled by TimelineEditor for zoom — let it bubble
+    if (e.ctrlKey || e.metaKey) return;
+    e.preventDefault();
+    // Use deltaX for horizontal scroll, fall back to deltaY for vertical-only mice
+    const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+    if (onpan) onpan(delta);
   }
 
   $effect(() => {
@@ -158,11 +247,20 @@
     void tempo;
     void scrollLeft;
     void viewportWidth;
+    void offsets;
     draw();
   });
 </script>
 
-<canvas bind:this={canvasEl} class="ruler-canvas" onclick={handleClick}
+<canvas
+  bind:this={canvasEl}
+  class="ruler-canvas"
+  class:dragging
+  onpointerdown={handlePointerDown}
+  onpointermove={handlePointerMove}
+  onpointerup={handlePointerUp}
+  onwheel={handleWheel}
+  oncontextmenu={handleContextMenu}
 ></canvas>
 
 <style>
@@ -170,6 +268,10 @@
     display: block;
     width: 100%;
     height: 36px;
-    cursor: pointer;
+    cursor: grab;
+    touch-action: none;
+  }
+  .ruler-canvas.dragging {
+    cursor: grabbing;
   }
 </style>

@@ -372,7 +372,7 @@
   }
   .field label,
   .field-label {
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.5px;

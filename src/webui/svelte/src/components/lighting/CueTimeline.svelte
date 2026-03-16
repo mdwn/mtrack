@@ -117,7 +117,7 @@
     align-items: center;
   }
   .cue-count {
-    font-size: 12px;
+    font-size: 13px;
     color: var(--text-muted);
   }
   .cue-list {
@@ -140,7 +140,7 @@
     border: none;
     color: var(--text-muted);
     cursor: pointer;
-    font-size: 10px;
+    font-size: 11px;
     padding: 1px 4px;
     line-height: 1;
     border-radius: 3px;

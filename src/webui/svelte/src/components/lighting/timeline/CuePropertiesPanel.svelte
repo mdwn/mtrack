@@ -19,6 +19,7 @@
     LayerCommand,
     SequenceRef,
     Timestamp,
+    SubLaneType,
   } from "../../../lib/lighting/types";
   import TimestampInput from "../TimestampInput.svelte";
   import EffectForm from "../EffectForm.svelte";
@@ -36,6 +37,7 @@
     groups: string[];
     sequenceNames: string[];
     tempo?: TempoSection;
+    focusTab?: SubLaneType | null;
     onchange: (cue: Cue) => void;
     ondelete: () => void;
     onclose: () => void;
@@ -47,13 +49,22 @@
     groups,
     sequenceNames,
     tempo,
+    focusTab,
     onchange,
     ondelete,
     onclose,
   }: Props = $props();
 
-  let activeTab = $state<"effects" | "commands" | "sequences">("effects");
+  // Use focusTab from the sub-lane selection; fall back to "effects" when
+  // no sub-lane is set (e.g. sequence editor combined view)
+  let activeTab = $derived(focusTab ?? "effects");
   let absTime = $derived(formatMs(timestampToMs(cue.timestamp, tempo)));
+
+  const sectionLabels: Record<string, string> = {
+    effects: "Effects",
+    commands: "Commands",
+    sequences: "Sequences",
+  };
 
   function updateTimestamp(ts: Timestamp) {
     onchange({ ...cue, timestamp: ts });
@@ -124,31 +135,7 @@
       <TimestampInput value={cue.timestamp} onchange={updateTimestamp} />
     </div>
 
-    <div class="props-tabs">
-      <button
-        class="tab-btn"
-        class:active={activeTab === "effects"}
-        onclick={() => (activeTab = "effects")}
-      >
-        Effects ({cue.effects.length})
-      </button>
-      <button
-        class="tab-btn"
-        class:active={activeTab === "commands"}
-        onclick={() => (activeTab = "commands")}
-      >
-        Commands ({cue.commands.length})
-      </button>
-      {#if sequenceNames.length > 0 || cue.sequences.length > 0}
-        <button
-          class="tab-btn"
-          class:active={activeTab === "sequences"}
-          onclick={() => (activeTab = "sequences")}
-        >
-          Sequences ({cue.sequences.length})
-        </button>
-      {/if}
-    </div>
+    <span class="props-section">{sectionLabels[activeTab]}</span>
 
     <div class="props-actions">
       <button
@@ -248,7 +235,7 @@
     gap: 6px;
   }
   .props-lane {
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 600;
     color: var(--text);
   }
@@ -257,36 +244,16 @@
   }
   .props-time {
     font-family: var(--mono);
-    font-size: 11px;
+    font-size: 13px;
     color: var(--text-muted);
   }
-  .props-tabs {
-    display: flex;
-    gap: 0;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    overflow: hidden;
+  .props-section {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
     margin-left: auto;
-  }
-  .tab-btn {
-    background: var(--bg-input);
-    border: none;
-    border-right: 1px solid var(--border);
-    color: var(--text-muted);
-    font-size: 11px;
-    padding: 3px 10px;
-    cursor: pointer;
-    white-space: nowrap;
-  }
-  .tab-btn:last-child {
-    border-right: none;
-  }
-  .tab-btn.active {
-    background: var(--accent);
-    color: white;
-  }
-  .tab-btn:not(.active):hover {
-    background: rgba(255, 255, 255, 0.06);
   }
   .props-actions {
     display: flex;
@@ -315,7 +282,7 @@
   }
   .empty-hint {
     color: var(--text-dim);
-    font-size: 12px;
+    font-size: 13px;
     padding: 8px 0;
   }
 </style>

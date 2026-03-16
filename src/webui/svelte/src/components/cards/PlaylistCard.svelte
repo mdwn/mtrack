@@ -52,7 +52,7 @@
 
 <style>
   .playlist-select {
-    font-size: 12px;
+    font-size: 13px;
     padding: 2px 6px;
     border-radius: 4px;
     border: 1px solid var(--border);
@@ -67,7 +67,7 @@
   }
   .playlist-songs li {
     padding: 4px 8px;
-    font-size: 12px;
+    font-size: 13px;
     color: var(--text-muted);
     border-radius: 4px;
   }

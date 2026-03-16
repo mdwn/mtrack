@@ -148,7 +148,7 @@
     gap: 8px;
   }
   .empty {
-    font-size: 13px;
+    font-size: 14px;
     color: var(--text-dim);
     padding: 4px 0;
   }
@@ -173,7 +173,7 @@
     flex: 0 0 70px;
   }
   .field-label {
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.5px;
@@ -182,7 +182,7 @@
   }
   .field-input {
     width: 100%;
-    font-size: 12px;
+    font-size: 13px;
     padding: 4px 8px;
   }
   .file-row {
@@ -195,7 +195,7 @@
   }
   .browse-btn {
     padding: 4px 8px;
-    font-size: 12px;
+    font-size: 13px;
     flex: 0 0 auto;
   }
   select.field-input {

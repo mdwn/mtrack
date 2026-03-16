@@ -159,7 +159,7 @@
   }
   .refresh-btn {
     padding: 6px 14px;
-    font-size: 13px;
+    font-size: 14px;
     font-weight: 500;
     border: 1px solid var(--border);
     border-radius: var(--radius);
@@ -184,7 +184,7 @@
     border-radius: var(--radius);
     background: rgba(239, 68, 68, 0.12);
     color: var(--red);
-    font-size: 13px;
+    font-size: 14px;
   }
   .cards {
     display: flex;
@@ -199,7 +199,7 @@
   }
   .card h3 {
     margin: 0 0 12px;
-    font-size: 14px;
+    font-size: 15px;
     font-weight: 600;
     color: var(--text-muted);
     text-transform: uppercase;
@@ -209,7 +209,7 @@
     display: grid;
     grid-template-columns: auto 1fr;
     gap: 6px 16px;
-    font-size: 13px;
+    font-size: 14px;
   }
   .info-label {
     color: var(--text-muted);
@@ -229,7 +229,7 @@
     border-radius: var(--radius);
     background: rgba(234, 179, 8, 0.12);
     color: var(--yellow);
-    font-size: 13px;
+    font-size: 14px;
   }
   .subsystem-list {
     display: flex;
@@ -240,7 +240,7 @@
     display: flex;
     align-items: center;
     gap: 10px;
-    font-size: 13px;
+    font-size: 14px;
   }
   .status-dot {
     width: 8px;
@@ -258,7 +258,7 @@
   }
   .subsystem-name {
     color: var(--text-dim);
-    font-size: 12px;
+    font-size: 13px;
     margin-left: auto;
     text-align: right;
     overflow: hidden;

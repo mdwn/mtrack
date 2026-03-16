@@ -109,7 +109,7 @@
   }
   .color-text {
     width: 100px;
-    font-size: 12px !important;
+    font-size: 13px !important;
     padding: 4px 6px !important;
     font-family: var(--mono);
   }
@@ -118,7 +118,7 @@
     border: none;
     color: var(--text-muted);
     cursor: pointer;
-    font-size: 11px;
+    font-size: 12px;
     padding: 2px 4px;
     border-radius: 4px;
   }
@@ -128,7 +128,7 @@
   }
   .add-color {
     align-self: flex-start;
-    font-size: 11px;
+    font-size: 12px;
     padding: 2px 8px;
   }
 </style>

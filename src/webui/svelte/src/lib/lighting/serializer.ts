@@ -113,6 +113,14 @@ function serializeCues(cues: Cue[]): string {
       lines.push(`    ${serializeSequenceRef(ref)}`);
     }
 
+    // Offset/reset measures
+    if (cue.offset_measures !== undefined) {
+      lines.push(`    offset ${cue.offset_measures} measures`);
+    }
+    if (cue.reset_measures) {
+      lines.push(`    reset_measures`);
+    }
+
     // Blank line between cues (except after last)
     if (i < cues.length - 1) {
       lines.push("");

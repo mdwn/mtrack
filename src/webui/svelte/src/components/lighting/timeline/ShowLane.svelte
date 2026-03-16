@@ -17,6 +17,7 @@
     Cue,
     TempoSection,
     Timestamp,
+    SubLaneType,
   } from "../../../lib/lighting/types";
   import { emptyCue, absoluteTimestamp } from "../../../lib/lighting/types";
   import {
@@ -24,7 +25,11 @@
     timestampToMs,
     msToTimestamp,
     getGridLines,
+    getAdjustedGridLines,
     snapToNearestGrid,
+    computeAdjustedCuePositions,
+    offsetMeasuresToMs,
+    type OffsetMarker,
   } from "../../../lib/lighting/timeline-state";
   import CueBlock from "./CueBlock.svelte";
 
@@ -44,6 +49,10 @@
     oncuedelete: (index: number) => void;
     oncueadd: (cue: Cue) => void;
     ondelete: () => void;
+    subLaneType?: SubLaneType;
+    laneHeight?: number;
+    hideLabel?: boolean;
+    offsets?: OffsetMarker[];
   }
 
   let {
@@ -62,46 +71,121 @@
     oncuedelete,
     oncueadd,
     ondelete,
+    subLaneType,
+    laneHeight,
+    hideLabel = false,
+    offsets = [],
   }: Props = $props();
 
   let canvasEl: HTMLCanvasElement | undefined = $state();
   let laneEl: HTMLDivElement | undefined = $state();
 
-  // Compute cue positions — plain function to avoid deep reactive proxy traversal
+  // Compute cue positions with cumulative offset adjustment
   function getCuePositions() {
     const viewStartMs = scrollLeft / pixelsPerMs;
     const viewEndMs = (scrollLeft + viewportWidth) / pixelsPerMs;
     const margin = 100 / pixelsPerMs;
 
-    return cues.map((cue, index) => {
-      const ms = timestampToMs(cue.timestamp, tempo);
-      const px = msToPixel(ms, pixelsPerMs) - scrollLeft;
-      const visible = ms >= viewStartMs - margin && ms <= viewEndMs + margin;
-      return { cue, index, ms, px, visible };
-    });
+    // Apply cumulative offsets for shows (sequences don't use offsets)
+    const adjusted =
+      laneType === "show"
+        ? computeAdjustedCuePositions(cues, tempo)
+        : cues.map((cue, index) => ({
+            cue,
+            index,
+            adjustedMs: timestampToMs(cue.timestamp, tempo),
+            cumulativeOffsetMs: 0,
+          }));
+
+    return adjusted
+      .map((ap) => {
+        const ms = ap.adjustedMs;
+        const px = msToPixel(ms, pixelsPerMs) - scrollLeft;
+        const visible = ms >= viewStartMs - margin && ms <= viewEndMs + margin;
+        return {
+          cue: ap.cue,
+          index: ap.index,
+          ms,
+          px,
+          visible,
+          cumulativeOffsetMs: ap.cumulativeOffsetMs,
+        };
+      })
+      .filter(({ cue: c }) => {
+        if (!subLaneType) return true;
+        if (subLaneType === "effects") return c.effects.length > 0;
+        if (subLaneType === "commands") return c.commands.length > 0;
+        if (subLaneType === "sequences") return c.sequences.length > 0;
+        return true;
+      });
+  }
+
+  // Find the cumulative offset in ms at an adjusted-ms position
+  function getCumulativeOffsetAtMs(adjustedMs: number): number {
+    if (laneType !== "show") return 0;
+    const adjusted = computeAdjustedCuePositions(cues, tempo);
+    // Walk backwards to find the last cue at or before this position
+    for (let i = adjusted.length - 1; i >= 0; i--) {
+      if (adjusted[i].adjustedMs <= adjustedMs) {
+        // Use the next cue's cumulativeOffsetMs if available (it includes
+        // any offset from cue[i]). Otherwise compute it manually.
+        if (i + 1 < adjusted.length) {
+          return adjusted[i + 1].cumulativeOffsetMs;
+        }
+        let total = adjusted[i].cumulativeOffsetMs;
+        if (
+          adjusted[i].cue.offset_measures &&
+          adjusted[i].cue.offset_measures! > 0 &&
+          tempo
+        ) {
+          total += offsetMeasuresToMs(
+            adjusted[i].cue.offset_measures!,
+            adjusted[i].adjustedMs,
+            tempo,
+          );
+        }
+        return total;
+      }
+    }
+    return 0;
   }
 
   function handleDblClick(e: MouseEvent) {
     if (!laneEl) return;
     const rect = laneEl.getBoundingClientRect();
     const x = e.clientX - rect.left + scrollLeft;
-    let ms = x / pixelsPerMs;
-    ms = Math.max(0, ms);
+    let adjustedMs = x / pixelsPerMs;
+    adjustedMs = Math.max(0, adjustedMs);
+
+    // Subtract cumulative offset to get the raw timestamp ms
+    const offsetMs = getCumulativeOffsetAtMs(adjustedMs);
+    let rawMs = adjustedMs - offsetMs;
+    rawMs = Math.max(0, rawMs);
 
     if (snapEnabled && tempo) {
-      ms = snapToNearestGrid(ms, tempo, snapResolution);
+      rawMs = snapToNearestGrid(rawMs, tempo, snapResolution);
     }
 
-    // Use measure_beat if the file has tempo, otherwise absolute
     const ts: Timestamp = tempo
-      ? msToTimestamp(ms, "measure_beat", tempo)
-      : absoluteTimestamp(ms);
+      ? msToTimestamp(rawMs, "measure_beat", tempo)
+      : absoluteTimestamp(rawMs);
 
-    oncueadd(emptyCue(ts));
+    const newCue = emptyCue(ts);
+    if (subLaneType === "effects") {
+      newCue.effects = [
+        { groups: [""], effect: { type: "static", colors: [], extra: {} } },
+      ];
+    } else if (subLaneType === "commands") {
+      newCue.commands = [{ command: "clear" }];
+    } else if (subLaneType === "sequences") {
+      newCue.sequences = [{ name: "" }];
+    }
+    oncueadd(newCue);
   }
 
   function handleCueMove(index: number, deltaMs: number) {
     const cue = cues[index];
+    // Move operates on raw timestamps (offset is structural, not per-cue position)
     const currentMs = timestampToMs(cue.timestamp, tempo);
     let newMs = Math.max(0, currentMs + deltaMs);
 
@@ -135,7 +219,10 @@
 
     const viewStartMs = scrollLeft / pixelsPerMs;
     const viewEndMs = (scrollLeft + viewportWidth) / pixelsPerMs;
-    const gridLines = getGridLines(tempo, viewStartMs, viewEndMs);
+    const gridLines =
+      offsets.length > 0
+        ? getAdjustedGridLines(tempo, viewStartMs, viewEndMs, offsets)
+        : getGridLines(tempo, viewStartMs, viewEndMs);
 
     for (const line of gridLines) {
       const x = msToPixel(line.ms, pixelsPerMs) - scrollLeft;
@@ -156,22 +243,29 @@
     void scrollLeft;
     void viewportWidth;
     void tempo;
+    void offsets;
     drawGrid();
   });
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="show-lane" class:sequence={laneType === "sequence"}>
-  <div class="lane-label">
-    <span class="lane-name" title={name}>{name}</span>
-    <button
-      class="btn-icon lane-delete"
-      title="Delete {laneType}"
-      onclick={ondelete}
-    >
-      &#10005;
-    </button>
-  </div>
+<div
+  class="show-lane"
+  class:sequence={laneType === "sequence"}
+  style:height={laneHeight ? `${laneHeight}px` : undefined}
+>
+  {#if !hideLabel}
+    <div class="lane-label">
+      <span class="lane-name" title={name}>{name}</span>
+      <button
+        class="btn-icon lane-delete"
+        title="Delete {laneType}"
+        onclick={ondelete}
+      >
+        &#10005;
+      </button>
+    </div>
+  {/if}
   <div class="lane-content" bind:this={laneEl} ondblclick={handleDblClick}>
     <canvas bind:this={canvasEl} class="lane-grid-canvas"></canvas>
     {#each getCuePositions() as cp (cp.index)}
@@ -181,6 +275,7 @@
           positionPx={cp.px}
           selected={selectedCueIndex === cp.index}
           {pixelsPerMs}
+          {subLaneType}
           onselect={() => onselect(cp.index)}
           onmove={(deltaMs) => handleCueMove(cp.index, deltaMs)}
           ondelete={() => oncuedelete(cp.index)}
@@ -212,7 +307,7 @@
     background: var(--bg-card);
   }
   .lane-name {
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 500;
     color: var(--text);
     white-space: nowrap;
@@ -225,7 +320,7 @@
     border: none;
     color: var(--text-dim);
     cursor: pointer;
-    font-size: 10px;
+    font-size: 13px;
     padding: 1px 3px;
     border-radius: 3px;
     opacity: 0;
