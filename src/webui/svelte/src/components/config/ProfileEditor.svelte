@@ -45,7 +45,6 @@
   const tabs = [
     { key: "audio", label: "Audio" },
     { key: "midi", label: "MIDI" },
-    { key: "dmx", label: "DMX" },
     { key: "lighting", label: "Lighting" },
     { key: "trigger", label: "Triggers" },
     { key: "controllers", label: "Controllers" },
@@ -56,30 +55,22 @@
   let activeTab = $state<TabKey>("audio");
 
   function isEnabled(key: string): boolean {
-    if (key === "lighting") {
-      return profile.dmx?.lighting != null;
-    }
+    if (key === "lighting") return profile.dmx != null;
     return profile[key] != null;
   }
 
   function toggleSection(section: string, enabled: boolean) {
-    if (section === "lighting") {
-      if (enabled) {
-        if (!profile.dmx) profile.dmx = { universes: [] };
-        profile.dmx.lighting = {};
-      } else {
-        if (profile.dmx) delete profile.dmx.lighting;
-      }
-    } else if (enabled) {
+    if (enabled) {
       if (section === "audio") profile.audio = { device: "" };
       else if (section === "midi") profile.midi = { device: "" };
-      else if (section === "dmx") profile.dmx = { universes: [] };
+      else if (section === "lighting")
+        profile.dmx = { universes: [], lighting: {} };
       else if (section === "trigger") profile.trigger = { inputs: [] };
       else if (section === "controllers") profile.controllers = [];
     } else {
       if (section === "audio") delete profile.audio;
       else if (section === "midi") delete profile.midi;
-      else if (section === "dmx") delete profile.dmx;
+      else if (section === "lighting") delete profile.dmx;
       else if (section === "trigger") delete profile.trigger;
       else if (section === "controllers") delete profile.controllers;
     }
@@ -139,9 +130,6 @@
         />
         Enable {tabs.find((t) => t.key === activeTab)?.label}
       </label>
-      {#if activeTab === "lighting" && !profile.dmx}
-        <span class="panel-note">Enabling lighting will also enable DMX.</span>
-      {/if}
     </div>
 
     {#if activeTab === "audio" && profile.audio}
@@ -163,13 +151,13 @@
           {onchange}
         />
       </div>
-    {:else if activeTab === "dmx" && profile.dmx}
+    {:else if activeTab === "lighting" && profile.dmx}
       <div class="panel-body">
         <DmxSection bind:dmx={profile.dmx} {onchange} />
-      </div>
-    {:else if activeTab === "lighting" && profile.dmx?.lighting}
-      <div class="panel-body">
-        <LightingSection bind:lighting={profile.dmx.lighting} {onchange} />
+
+        <div class="lighting-subsection">
+          <LightingSection bind:lighting={profile.dmx.lighting} {onchange} />
+        </div>
       </div>
     {:else if activeTab === "trigger" && profile.trigger}
       <div class="panel-body">
@@ -277,12 +265,13 @@
     color: var(--text-muted);
     cursor: pointer;
   }
-  .panel-note {
-    font-size: 11px;
-    color: var(--text-dim);
-  }
   .panel-body {
     padding: 16px;
+  }
+  .lighting-subsection {
+    margin-top: 20px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
   }
   .panel-empty {
     padding: 40px 20px;

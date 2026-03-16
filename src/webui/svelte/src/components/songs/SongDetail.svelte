@@ -30,6 +30,7 @@
   import FileUpload from "./FileUpload.svelte";
   import FilePicker from "./FilePicker.svelte";
   import TrackEditor from "./TrackEditor.svelte";
+  import SongLightingEditor from "./SongLightingEditor.svelte";
 
   interface TrackEntry {
     name: string;
@@ -56,11 +57,25 @@
   let saveMsg = $state("");
   let uploading = $state(false);
   let uploadMsg = $state("");
-  let showRawYaml = $state(false);
 
-  // File browser state: null = closed, otherwise describes what we're browsing for
+  // Lighting editor state (lifted up for unified save)
+  let lightingDirty = $state(false);
+  let lightingEditorRef: SongLightingEditor | undefined = $state();
+
+  // Tab state
+  type TabKey = "tracks" | "midi" | "lighting" | "config";
+  let activeTab = $state<TabKey>("tracks");
+
+  const tabs: { key: TabKey; label: string }[] = [
+    { key: "tracks", label: "Tracks" },
+    { key: "midi", label: "MIDI" },
+    { key: "lighting", label: "Lighting" },
+    { key: "config", label: "Config" },
+  ];
+
+  // File browser state
   type BrowseTarget =
-    | { kind: "track"; index: number } // index = -1 means "add new tracks"
+    | { kind: "track"; index: number }
     | { kind: "midi" }
     | { kind: "lighting" };
   let browseTarget = $state<BrowseTarget | null>(null);
@@ -78,14 +93,12 @@
     const target = browseTarget;
     if (target.kind === "track") {
       if (target.index >= 0) {
-        // Replace file for existing track
         const idx = target.index;
         const updated = tracks.map((t, i) =>
           i === idx ? { ...t, file: paths[0] } : t,
         );
         onTracksChange(updated);
       } else {
-        // Add new tracks from selected files
         const newTracks = paths.map((p) => {
           const filename = p.split("/").pop() ?? p;
           return { name: filename.replace(/\.[^.]+$/, ""), file: p };
@@ -196,7 +209,6 @@
     if (!parsedConfig) return;
     const existing =
       (parsedConfig.lighting as { file: string }[] | undefined) ?? [];
-    // Add if not already present
     if (!existing.some((l) => l.file === filename)) {
       parsedConfig = {
         ...parsedConfig,
@@ -210,17 +222,25 @@
     saving = true;
     saveMsg = "";
     try {
-      const res = await updateSong(songName, editedYaml);
-      if (!res.ok) {
-        const data = await res.json().catch(() => null);
-        saveMsg =
-          data?.error ?? data?.errors?.[0] ?? `Save failed (${res.status})`;
-        return;
+      // Save song config if dirty.
+      if (configDirty) {
+        const res = await updateSong(songName, editedYaml);
+        if (!res.ok) {
+          const data = await res.json().catch(() => null);
+          saveMsg =
+            data?.error ?? data?.errors?.[0] ?? `Save failed (${res.status})`;
+          return;
+        }
+        rawYaml = editedYaml;
       }
-      rawYaml = editedYaml;
+
+      // Save lighting files if dirty.
+      if (lightingDirty && lightingEditorRef) {
+        await lightingEditorRef.saveLightingFiles();
+      }
+
       saveMsg = "Saved";
       setTimeout(() => (saveMsg = ""), 2000);
-      // Re-fetch to update summary
       const songs = await fetchSongs();
       song = songs.find((s) => s.name === songName) ?? null;
     } catch (e) {
@@ -275,27 +295,8 @@
     }
   }
 
-  async function handleLightingUpload(files: File[]) {
-    uploading = true;
-    uploadMsg = "";
-    try {
-      const res = await uploadTrack(songName, files[0]);
-      if (!res.ok) {
-        const data = await res.json().catch(() => null);
-        uploadMsg = data?.error ?? `Upload failed (${res.status})`;
-        return;
-      }
-      uploadMsg = "Lighting file uploaded";
-      setTimeout(() => (uploadMsg = ""), 3000);
-      await load();
-    } catch (e) {
-      uploadMsg = e instanceof Error ? e.message : "Upload failed";
-    } finally {
-      uploading = false;
-    }
-  }
-
   let configDirty = $derived(editedYaml !== rawYaml);
+  let anyDirty = $derived(configDirty || lightingDirty);
   let midiFile = $derived(
     parsedConfig
       ? ((parsedConfig.midi_playback as { file?: string })?.file ??
@@ -303,13 +304,14 @@
           null)
       : null,
   );
-  let lightingFiles = $derived(
-    parsedConfig
-      ? ((parsedConfig.lighting as { file: string }[] | undefined) ?? []).map(
-          (l) => l.file,
-        )
-      : [],
-  );
+
+  function tabHasIndicator(key: TabKey): boolean {
+    if (key === "tracks") return tracks.length > 0;
+    if (key === "midi") return !!midiFile;
+    if (key === "lighting") return song?.has_lighting ?? false;
+    if (key === "config") return configDirty;
+    return false;
+  }
 </script>
 
 <div class="detail">
@@ -326,8 +328,11 @@
         {#if song?.has_midi}
           <span class="badge midi">MIDI</span>
         {/if}
-        {#if song?.has_lighting}
+        {#if song && song.lighting_files.length > 0}
           <span class="badge lighting">LIGHT</span>
+        {/if}
+        {#if song && song.legacy_lighting_files.length > 0}
+          <span class="badge midi-dmx">MIDI DMX</span>
         {/if}
       </div>
     </div>
@@ -342,142 +347,118 @@
       </div>
     {/if}
 
-    <!-- Save bar -->
-    <div class="save-bar" class:dirty={configDirty}>
-      <div class="save-info">
+    <!-- Tab bar with inline save -->
+    <div class="tab-bar" role="tablist">
+      {#each tabs as tab_item (tab_item.key)}
+        <button
+          class="tab"
+          class:active={activeTab === tab_item.key}
+          role="tab"
+          aria-selected={activeTab === tab_item.key}
+          onclick={() => (activeTab = tab_item.key)}
+        >
+          {tab_item.label}
+          {#if tabHasIndicator(tab_item.key)}
+            <span
+              class="tab-dot"
+              class:config-dot={tab_item.key === "config" && configDirty}
+            ></span>
+          {/if}
+        </button>
+      {/each}
+      <div class="tab-save">
         {#if saveMsg}
           <span class="save-msg" class:error={saveMsg !== "Saved"}
             >{saveMsg}</span
           >
         {/if}
-        {#if configDirty}
-          <span class="unsaved">Unsaved changes</span>
+        {#if anyDirty}
+          <span class="unsaved">Unsaved</span>
         {/if}
-      </div>
-      <button
-        class="btn btn-primary"
-        onclick={save}
-        disabled={saving || !configDirty}
-      >
-        {saving ? "Saving..." : "Save"}
-      </button>
-    </div>
-
-    <!-- Tracks -->
-    <div class="card section">
-      <div class="card-header">
-        <span class="card-title">Audio Tracks</span>
-      </div>
-      <TrackEditor
-        {tracks}
-        files={songFiles}
-        {waveformTracks}
-        onchange={onTracksChange}
-        onbrowse={(index) => openBrowser({ kind: "track", index })}
-      />
-      <div class="upload-area">
-        <FileUpload
-          accept=".wav,.flac,.mp3,.ogg,.aac,.m4a,.mp4,.aiff,.aif"
-          label={uploading
-            ? "Uploading..."
-            : "Drop audio files here or click to upload"}
-          multiple={true}
-          onupload={handleTrackUpload}
-        />
-      </div>
-    </div>
-
-    <!-- MIDI -->
-    <div class="card section" class:has-feature={!!midiFile}>
-      <div class="card-header">
-        <span class="card-title">MIDI</span>
-        {#if midiFile}
-          <span class="feature-indicator midi">{midiFile}</span>
-        {/if}
-      </div>
-      <FilePicker
-        files={songFiles}
-        fileType="midi"
-        label="Use existing MIDI file from song directory"
-        onpick={setMidiFile}
-      />
-      <div class="browse-row">
-        <button class="btn" onclick={() => openBrowser({ kind: "midi" })}>
-          Browse Filesystem...
+        <button
+          class="btn btn-primary btn-sm"
+          onclick={save}
+          disabled={saving || !anyDirty}
+        >
+          {saving ? "Saving..." : "Save"}
         </button>
       </div>
-      <div class="upload-area">
-        <FileUpload
-          accept=".mid"
-          label={uploading
-            ? "Uploading..."
-            : "Drop .mid file here or click to upload"}
-          onupload={handleMidiUpload}
-        />
-      </div>
     </div>
 
-    <!-- Lighting -->
-    <div class="card section" class:has-feature={lightingFiles.length > 0}>
-      <div class="card-header">
-        <span class="card-title">Lighting</span>
-        {#if lightingFiles.length > 0}
-          <span class="feature-indicator lighting"
-            >{lightingFiles.length} show{lightingFiles.length !== 1
-              ? "s"
-              : ""}</span
+    <!-- Tab content -->
+    <div class="tab-content">
+      {#if activeTab === "tracks"}
+        <TrackEditor
+          {tracks}
+          files={songFiles}
+          {waveformTracks}
+          onchange={onTracksChange}
+          onbrowse={(index) => openBrowser({ kind: "track", index })}
+        />
+        <div class="upload-area">
+          <FileUpload
+            accept=".wav,.flac,.mp3,.ogg,.aac,.m4a,.mp4,.aiff,.aif"
+            label={uploading
+              ? "Uploading..."
+              : "Drop audio files here or click to upload"}
+            multiple={true}
+            onupload={handleTrackUpload}
+          />
+        </div>
+        {#if uploadMsg}
+          <div
+            class="msg"
+            class:error={uploadMsg.toLowerCase().includes("fail")}
           >
+            {uploadMsg}
+          </div>
         {/if}
-      </div>
-      {#if lightingFiles.length > 0}
-        <ul class="ref-list">
-          {#each lightingFiles as file (file)}
-            <li>{file}</li>
-          {/each}
-        </ul>
-      {/if}
-      <FilePicker
-        files={songFiles}
-        fileType="lighting"
-        label="Use existing lighting file from song directory"
-        onpick={setLightingFile}
-      />
-      <div class="browse-row">
-        <button class="btn" onclick={() => openBrowser({ kind: "lighting" })}>
-          Browse Filesystem...
-        </button>
-      </div>
-      <div class="upload-area">
-        <FileUpload
-          accept=".light"
-          label={uploading
-            ? "Uploading..."
-            : "Drop .light file here or click to upload"}
-          onupload={handleLightingUpload}
+      {:else if activeTab === "midi"}
+        {#if midiFile}
+          <div class="feature-row">
+            <span class="feature-label">Current MIDI file:</span>
+            <span class="feature-value">{midiFile}</span>
+          </div>
+        {:else}
+          <p class="muted">No MIDI file configured for this song.</p>
+        {/if}
+        <FilePicker
+          files={songFiles}
+          fileType="midi"
+          label="Use existing MIDI file from song directory"
+          onpick={setMidiFile}
         />
-      </div>
-    </div>
-
-    {#if uploadMsg}
-      <div class="msg" class:error={uploadMsg.toLowerCase().includes("fail")}>
-        {uploadMsg}
-      </div>
-    {/if}
-
-    <!-- Config YAML -->
-    <div class="card section">
-      <div class="card-header">
-        <span class="card-title">Configuration (YAML)</span>
-        <button class="btn" onclick={() => (showRawYaml = !showRawYaml)}>
-          {showRawYaml ? "Hide" : "Edit Raw"}
-        </button>
-      </div>
-      {#if showRawYaml}
-        <textarea
-          class="config-editor"
-          value={editedYaml}
-          oninput={(e) => onRawYamlInput(e.currentTarget.value)}
-        ></textarea>
+        <div class="browse-row">
+          <button class="btn" onclick={() => openBrowser({ kind: "midi" })}>
+            Browse Filesystem...
+          </button>
+        </div>
+        <div class="upload-area">
+          <FileUpload
+            accept=".mid"
+            label={uploading
+              ? "Uploading..."
+              : "Drop .mid file here or click to upload"}
+            onupload={handleMidiUpload}
+          />
+        </div>
+      {:else if activeTab === "lighting"}
+        {#if song}
+          <SongLightingEditor
+            bind:this={lightingEditorRef}
+            bind:dirty={lightingDirty}
+            {song}
+            onreload={load}
+          />
+        {/if}
+      {:else if activeTab === "config"}
+        <div class="config-section">
+          <textarea
+            class="config-editor"
+            value={editedYaml}
+            oninput={(e) => onRawYamlInput(e.currentTarget.value)}
+          ></textarea>
+        </div>
       {/if}
     </div>
   {/if}
@@ -520,7 +501,7 @@
     margin-top: 8px;
   }
   .detail {
-    max-width: 800px;
+    max-width: 1200px;
     margin: 0 auto;
   }
   .back-link {
@@ -563,6 +544,10 @@
     background: var(--yellow);
     color: #000;
   }
+  .badge.midi-dmx {
+    background: var(--green-dim);
+    color: var(--green);
+  }
   .meta {
     display: flex;
     gap: 16px;
@@ -570,74 +555,73 @@
     color: var(--text-muted);
     margin-bottom: 16px;
   }
-  .save-bar {
+  .tab-bar {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    padding: 8px 12px;
+    gap: 0;
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
     margin-bottom: 16px;
-    border-radius: var(--radius);
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    transition: border-color 0.15s;
     position: sticky;
     top: 48px;
     z-index: 10;
+    background: var(--bg);
+    padding-top: 4px;
   }
-  .save-bar.dirty {
-    border-color: var(--accent);
+  .tab {
+    position: relative;
+    padding: 10px 16px;
+    font-size: 13px;
+    font-weight: 500;
+    font-family: var(--sans);
+    color: var(--text-muted);
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+    white-space: nowrap;
+    transition:
+      color 0.15s,
+      border-color 0.15s;
   }
-  .save-info {
+  .tab:hover {
+    color: var(--text);
+  }
+  .tab.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+  }
+  .tab-dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--green);
+    margin-left: 6px;
+    vertical-align: middle;
+  }
+  .tab-dot.config-dot {
+    background: var(--accent);
+  }
+  .tab-save {
+    margin-left: auto;
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
   }
   .unsaved {
-    font-size: 12px;
+    font-size: 11px;
     color: var(--accent);
   }
   .save-msg {
-    font-size: 12px;
+    font-size: 11px;
     color: var(--green);
   }
   .save-msg.error {
     color: var(--red);
   }
-  .section {
-    margin-bottom: 16px;
-  }
-  .has-feature {
-    border-color: var(--text-dim);
-  }
-  .feature-indicator {
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: 0.3px;
-    padding: 1px 6px;
-    border-radius: 3px;
-    font-family: var(--mono);
-  }
-  .feature-indicator.midi {
-    background: rgba(59, 130, 246, 0.15);
-    color: var(--blue);
-  }
-  .feature-indicator.lighting {
-    background: rgba(234, 179, 8, 0.15);
-    color: var(--yellow);
-  }
-  .ref-list {
-    list-style: none;
-    margin-bottom: 8px;
-  }
-  .ref-list li {
-    padding: 4px 8px;
-    font-size: 12px;
-    font-family: var(--mono);
-    color: var(--text);
-    border-bottom: 1px solid var(--border);
-  }
-  .ref-list li:last-child {
-    border-bottom: none;
+  .tab-content {
+    min-height: 200px;
   }
   .upload-area {
     margin-top: 8px;
@@ -645,14 +629,38 @@
   .msg {
     font-size: 12px;
     color: var(--green);
-    margin-bottom: 12px;
+    margin-top: 8px;
   }
   .msg.error {
     color: var(--red);
   }
+  .muted {
+    color: var(--text-muted);
+    font-size: 13px;
+    margin-bottom: 12px;
+  }
+  .feature-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 0;
+    margin-bottom: 8px;
+    font-size: 13px;
+  }
+  .feature-label {
+    color: var(--text-muted);
+  }
+  .feature-value {
+    font-family: var(--mono);
+    color: var(--text);
+  }
+  .config-section {
+    display: flex;
+    flex-direction: column;
+  }
   .config-editor {
     width: 100%;
-    min-height: 300px;
+    min-height: 400px;
     padding: 12px;
     border: 1px solid var(--border);
     border-radius: var(--radius);
@@ -674,5 +682,11 @@
   }
   .status.error {
     color: var(--red);
+  }
+  @media (max-width: 600px) {
+    .tab {
+      padding: 8px 12px;
+      font-size: 12px;
+    }
   }
 </style>

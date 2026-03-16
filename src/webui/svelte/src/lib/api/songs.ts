@@ -28,7 +28,7 @@ export interface SongSummary {
   base_dir: string;
   /** DSL lighting file paths relative to the songs root */
   lighting_files: string[];
-  /** Legacy MIDI DMX file paths relative to the songs root */
+  /** MIDI DMX file paths relative to the songs root */
   legacy_lighting_files: string[];
 }
 

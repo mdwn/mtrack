@@ -444,20 +444,27 @@
           <p>Add a profile to configure audio, MIDI, DMX, and controllers.</p>
         </div>
       {:else}
-        <div class="profile-grid">
+        <div class="profile-list">
           {#each profileFiles as pf (pf.filename)}
             <button
-              class="profile-file-card"
+              class="profile-file-row"
               onclick={() => selectFileProfile(pf.filename)}
             >
-              <div class="pf-name">{pf.filename}</div>
+              <span class="pf-name">{pf.filename}</span>
               {#if pf.hostname}
-                <div class="pf-hostname">{pf.hostname}</div>
+                <span class="pf-hostname">{pf.hostname}</span>
               {/if}
               <div class="pf-badges">
-                {#if pf.has_audio}<span class="pf-badge">Audio</span>{/if}
-                {#if pf.has_midi}<span class="pf-badge">MIDI</span>{/if}
-                {#if pf.has_dmx}<span class="pf-badge">DMX</span>{/if}
+                {#if pf.has_audio}<span class="pf-badge pf-audio">AUDIO</span
+                  >{/if}
+                {#if pf.has_midi}<span class="pf-badge pf-midi">MIDI</span>{/if}
+                {#if pf.has_dmx}<span class="pf-badge pf-dmx">DMX</span>{/if}
+                {#if pf.has_trigger}<span class="pf-badge pf-trigger"
+                    >TRIGGER</span
+                  >{/if}
+                {#if pf.has_controllers}<span class="pf-badge pf-ctrl"
+                    >CTRL</span
+                  >{/if}
               </div>
             </button>
           {/each}
@@ -563,7 +570,7 @@
         <p>Add a profile to configure audio, MIDI, DMX, and controllers.</p>
       </div>
     {:else}
-      <div class="profile-grid">
+      <div class="profile-list">
         {#each profiles as profile, i (i)}
           <ProfileCard {profile} index={i} onclick={() => selectProfile(i)} />
         {/each}
@@ -645,10 +652,10 @@
     font-weight: 600;
     color: var(--text);
   }
-  .profile-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-    gap: 12px;
+  .profile-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
   }
   .empty-state {
     text-align: center;
@@ -722,42 +729,68 @@
     font-weight: 600;
     color: var(--text);
   }
-  .profile-file-card {
+  .profile-file-row {
     display: flex;
-    flex-direction: column;
-    gap: 4px;
-    padding: 16px;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
     background: var(--bg-card);
     border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius);
     cursor: pointer;
     text-align: left;
+    width: 100%;
     color: var(--text);
     font: inherit;
-    transition: border-color 0.15s;
+    transition:
+      background 0.15s,
+      border-color 0.15s;
   }
-  .profile-file-card:hover {
-    border-color: var(--accent);
+  .profile-file-row:hover {
+    background: var(--bg-card-hover);
+    border-color: var(--text-dim);
   }
   .pf-name {
     font-size: 14px;
     font-weight: 600;
+    flex-shrink: 0;
   }
   .pf-hostname {
     font-size: 12px;
     color: var(--text-dim);
+    flex-shrink: 0;
   }
   .pf-badges {
     display: flex;
     gap: 4px;
-    margin-top: 4px;
+    margin-left: auto;
   }
   .pf-badge {
-    font-size: 10px;
-    padding: 1px 6px;
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    padding: 2px 5px;
     border-radius: 3px;
-    background: var(--bg-hover);
-    color: var(--text-dim);
+  }
+  .pf-audio {
+    background: var(--accent);
+    color: #fff;
+  }
+  .pf-midi {
+    background: var(--green-dim);
+    color: var(--green);
+  }
+  .pf-dmx {
+    background: var(--yellow-dim);
+    color: var(--yellow);
+  }
+  .pf-trigger {
+    background: rgba(168, 85, 247, 0.15);
+    color: #a855f7;
+  }
+  .pf-ctrl {
+    background: var(--red-dim);
+    color: var(--red);
   }
   .browser-overlay {
     position: fixed;
@@ -779,9 +812,6 @@
     overflow: hidden;
   }
   @media (max-width: 600px) {
-    .profile-grid {
-      grid-template-columns: 1fr;
-    }
     .detail-toolbar {
       flex-wrap: wrap;
     }

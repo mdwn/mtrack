@@ -132,6 +132,8 @@ export interface ProfileFileInfo {
   has_audio: boolean;
   has_midi: boolean;
   has_dmx: boolean;
+  has_trigger: boolean;
+  has_controllers: boolean;
 }
 
 export async function fetchProfileFiles(): Promise<ProfileFileInfo[]> {

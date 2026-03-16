@@ -26,6 +26,7 @@
   let hasAudio = $derived(!!profile.audio);
   let hasMidi = $derived(!!profile.midi);
   let hasDmx = $derived(!!profile.dmx);
+  let hasTrigger = $derived(!!profile.trigger);
   let hasControllers = $derived(
     profile.controllers && profile.controllers.length > 0,
   );
@@ -34,70 +35,70 @@
   let midiDevice = $derived(profile.midi?.device || "");
 </script>
 
-<button class="profile-card" {onclick}>
-  <div class="card-top">
-    <span class="card-index">#{index}</span>
-    <span class="card-hostname">{hostname}</span>
-  </div>
-  <div class="badges">
+<button class="profile-row" {onclick}>
+  <span class="row-index">#{index}</span>
+  <span class="row-hostname">{hostname}</span>
+  <div class="row-badges">
     {#if hasAudio}<span class="badge badge-audio">AUDIO</span>{/if}
     {#if hasMidi}<span class="badge badge-midi">MIDI</span>{/if}
     {#if hasDmx}<span class="badge badge-dmx">DMX</span>{/if}
+    {#if hasTrigger}<span class="badge badge-trigger">TRIGGER</span>{/if}
     {#if hasControllers}<span class="badge badge-ctrl">CTRL</span>{/if}
   </div>
   {#if audioDevice || midiDevice}
-    <div class="device-meta">
-      {#if audioDevice}<span>{audioDevice}</span>{/if}
-      {#if midiDevice}<span>{midiDevice}</span>{/if}
-    </div>
+    <span class="row-devices">
+      {#if audioDevice}{audioDevice}{/if}
+      {#if audioDevice && midiDevice}
+        /
+      {/if}
+      {#if midiDevice}{midiDevice}{/if}
+    </span>
   {/if}
 </button>
 
 <style>
-  .profile-card {
+  .profile-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
     background: var(--bg-card);
     border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
-    padding: 16px;
+    border-radius: var(--radius);
     cursor: pointer;
     text-align: left;
+    width: 100%;
+    font-family: var(--sans);
     transition:
       background 0.15s,
       border-color 0.15s;
-    width: 100%;
-    font-family: var(--sans);
   }
-  .profile-card:hover {
+  .profile-row:hover {
     background: var(--bg-card-hover);
     border-color: var(--text-dim);
   }
-  .card-top {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 8px;
-  }
-  .card-index {
+  .row-index {
     font-family: var(--mono);
     font-size: 11px;
     color: var(--text-dim);
+    flex-shrink: 0;
   }
-  .card-hostname {
-    font-size: 15px;
+  .row-hostname {
+    font-size: 14px;
     font-weight: 600;
     color: var(--text);
+    flex-shrink: 0;
   }
-  .badges {
+  .row-badges {
     display: flex;
-    gap: 6px;
-    flex-wrap: wrap;
-    margin-bottom: 6px;
+    gap: 4px;
+    flex-shrink: 0;
   }
   .badge {
-    font-size: 10px;
+    font-size: 9px;
     font-weight: 600;
     letter-spacing: 0.5px;
-    padding: 2px 6px;
+    padding: 2px 5px;
     border-radius: 3px;
   }
   .badge-audio {
@@ -112,16 +113,22 @@
     background: var(--yellow-dim);
     color: var(--yellow);
   }
+  .badge-trigger {
+    background: rgba(168, 85, 247, 0.15);
+    color: #a855f7;
+  }
   .badge-ctrl {
     background: var(--red-dim);
     color: var(--red);
   }
-  .device-meta {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
+  .row-devices {
+    margin-left: auto;
     font-size: 11px;
     color: var(--text-dim);
     font-family: var(--mono);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: right;
   }
 </style>
