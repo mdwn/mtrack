@@ -34,6 +34,7 @@
     snapResolution: "beat" | "measure";
     laneType?: "show" | "sequence";
     offsets?: OffsetMarker[];
+    playheadMs?: number | null;
     onselect: (index: number, subLane: SubLaneType) => void;
     oncuechange: (index: number, cue: Cue) => void;
     oncuedelete: (index: number) => void;
@@ -54,6 +55,7 @@
     snapResolution,
     laneType = "show",
     offsets = [],
+    playheadMs = null,
     onselect,
     oncuechange,
     oncuedelete,
@@ -62,9 +64,9 @@
   }: Props = $props();
 
   const subLanes: { type: SubLaneType; label: string; height: number }[] = [
-    { type: "effects", label: "Effects", height: 32 },
-    { type: "commands", label: "Cmds", height: 24 },
-    { type: "sequences", label: "Seqs", height: 32 },
+    { type: "effects", label: "Effects", height: 44 },
+    { type: "commands", label: "Cmds", height: 32 },
+    { type: "sequences", label: "Seqs", height: 40 },
   ];
 </script>
 
@@ -106,6 +108,7 @@
         laneHeight={sl.height}
         hideLabel={true}
         {offsets}
+        {playheadMs}
         onselect={(ci) => onselect(ci, sl.type)}
         {oncuechange}
         {oncuedelete}

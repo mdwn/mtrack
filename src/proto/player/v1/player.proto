@@ -107,6 +107,15 @@ message PlayFromRequest {
     google.protobuf.Duration start_time = 1;
 }
 
+// PlaySongFromRequest is the message for requesting the player to play a specific song
+// from a specific time.
+message PlaySongFromRequest {
+    // SongName is the name of the song to play.
+    string song_name = 1;
+    // StartTime is the time to start playback from.
+    google.protobuf.Duration start_time = 2;
+}
+
 // GetCuesRequest is the message for requesting the list of cues in the current song.
 message GetCuesRequest {}
 
@@ -224,6 +233,9 @@ service PlayerService {
 
     // PlayFrom will play the current song starting from a specific time.
     rpc PlayFrom(PlayFromRequest) returns (PlayResponse);
+
+    // PlaySongFrom will play a specific song starting from a specific time.
+    rpc PlaySongFrom(PlaySongFromRequest) returns (PlayResponse);
 
     // Previous will move the playlist to the previous song.
     rpc Previous(PreviousRequest) returns (PreviousResponse);

@@ -38,6 +38,11 @@
   import TimelineEditor from "../lighting/timeline/TimelineEditor.svelte";
   import FileUpload from "./FileUpload.svelte";
   import FileBrowser from "./FileBrowser.svelte";
+  import { playerClient } from "../../lib/grpc/client";
+  import { playbackStore } from "../../lib/ws/stores";
+  import { create } from "@bufbuild/protobuf";
+  import { DurationSchema } from "@bufbuild/protobuf/wkt";
+  import { get } from "svelte/store";
 
   interface LoadedLightFile {
     path: string;
@@ -53,7 +58,6 @@
     onchange?: () => void;
   }
 
-  // eslint-disable-next-line no-useless-assignment -- $bindable default is used by Svelte
   let { song, onreload, dirty = $bindable(false), onchange }: Props = $props();
 
   let error = $state("");
@@ -72,6 +76,77 @@
   let uploading = $state(false);
   let showMidiDmxModal = $state(false);
   let showFileBrowser = $state(false);
+
+  // Playback state derived from the WebSocket playback store
+  let pbState = $state(get(playbackStore));
+  const unsubPlayback = playbackStore.subscribe((v) => (pbState = v));
+
+  // Client-side interpolation for smooth playhead
+  let lastKnownMs = $state(0);
+  let lastUpdateTime = $state(0);
+  let interpolatedMs = $state<number | null>(null);
+  let rafId = 0;
+
+  $effect(() => {
+    const isOurSong = pbState.is_playing && pbState.song_name === song.name;
+    if (isOurSong) {
+      lastKnownMs = pbState.elapsed_ms;
+      lastUpdateTime = performance.now();
+      startInterpolation();
+    } else {
+      stopInterpolation();
+      interpolatedMs = null;
+    }
+  });
+
+  function startInterpolation() {
+    if (rafId) return;
+    function tick() {
+      const now = performance.now();
+      const elapsed = now - lastUpdateTime;
+      interpolatedMs = Math.min(
+        lastKnownMs + elapsed,
+        song.duration_ms || Infinity,
+      );
+      rafId = requestAnimationFrame(tick);
+    }
+    rafId = requestAnimationFrame(tick);
+  }
+
+  function stopInterpolation() {
+    if (rafId) {
+      cancelAnimationFrame(rafId);
+      rafId = 0;
+    }
+  }
+
+  let isPlaying = $derived(
+    pbState.is_playing && pbState.song_name === song.name,
+  );
+  let playheadMs = $derived(isPlaying ? interpolatedMs : null);
+
+  async function playFromMs(ms: number) {
+    // Auto-save if dirty
+    if (dirty) await saveLightingFiles();
+    try {
+      const seconds = BigInt(Math.floor(ms / 1000));
+      const nanos = Math.round((ms % 1000) * 1_000_000);
+      await playerClient.playSongFrom({
+        songName: song.name,
+        startTime: create(DurationSchema, { seconds, nanos }),
+      });
+    } catch (e) {
+      console.error("playSongFrom failed:", e);
+    }
+  }
+
+  async function stopPlayback() {
+    try {
+      await playerClient.stop({});
+    } catch (e) {
+      console.error("stop failed:", e);
+    }
+  }
 
   async function loadVenueGroups() {
     try {
@@ -338,6 +413,10 @@
     initialized = true;
     loadLighting();
     loadVenueGroups();
+    return () => {
+      unsubPlayback();
+      stopInterpolation();
+    };
   });
 </script>
 
@@ -388,7 +467,11 @@
       {sequenceNames}
       songDurationMs={song.duration_ms}
       {waveformTracks}
+      {isPlaying}
+      {playheadMs}
       onchange={onTimelineChange}
+      onplay={playFromMs}
+      onstop={stopPlayback}
     />
   {:else if tab === "raw"}
     <div class="raw-editor">
