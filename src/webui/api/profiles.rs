@@ -163,6 +163,8 @@ pub(super) async fn get_profiles(State(state): State<WebUiState>) -> impl IntoRe
                 "has_audio": profile.audio_config().is_some(),
                 "has_midi": profile.midi().is_some(),
                 "has_dmx": profile.dmx().is_some(),
+                "has_trigger": profile.trigger().is_some(),
+                "has_controllers": !profile.controllers().is_empty(),
             }),
         ));
     }

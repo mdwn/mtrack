@@ -18,7 +18,6 @@
   import ConfigEditor from "./pages/ConfigEditor.svelte";
   import SongBrowser from "./pages/SongBrowser.svelte";
   import PlaylistEditor from "./pages/PlaylistEditor.svelte";
-  import LightingEditor from "./pages/LightingEditor.svelte";
   import StatusPage from "./pages/StatusPage.svelte";
   import NotFound from "./pages/NotFound.svelte";
   import { playbackStore } from "./lib/ws/stores";
@@ -40,7 +39,6 @@
       "#/config": "Config",
       "#/songs": "Songs",
       "#/playlists": "Playlists",
-      "#/lighting": "Lighting",
       "#/status": "Status",
     };
     const base = "mtrack";
@@ -73,8 +71,6 @@
     <SongBrowser {currentHash} />
   {:else if currentHash.startsWith("#/playlists")}
     <PlaylistEditor />
-  {:else if currentHash.startsWith("#/lighting")}
-    <LightingEditor />
   {:else if currentHash.startsWith("#/status")}
     <StatusPage />
   {:else}

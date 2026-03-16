@@ -19,6 +19,7 @@
     type SongSummary,
     type WaveformData,
   } from "../../lib/api/songs";
+  import { SvelteMap, SvelteSet } from "svelte/reactivity";
   import CreateSongDialog from "./CreateSongDialog.svelte";
   import ImportSongs from "./ImportSongs.svelte";
   import Waveform from "./Waveform.svelte";
@@ -30,11 +31,59 @@
   let showCreate = $state(false);
   let showImport = $state(false);
   let searchQuery = $state("");
+  let collapsedGroups = new SvelteSet<string>();
 
   function getFilteredSongs(): SongSummary[] {
     if (!searchQuery.trim()) return songs;
     const q = searchQuery.toLowerCase();
     return songs.filter((s) => s.name.toLowerCase().includes(q));
+  }
+
+  interface SongGroup {
+    directory: string;
+    label: string;
+    songs: SongSummary[];
+  }
+
+  function groupSongs(songList: SongSummary[]): SongGroup[] {
+    const groups = new SvelteMap<string, SongSummary[]>();
+    for (const song of songList) {
+      // base_dir is the relative path to the song directory.
+      // The parent of that is the grouping directory.
+      const parts = song.base_dir.split("/");
+      // Remove the last component (the song's own directory name).
+      const dir = parts.length > 1 ? parts.slice(0, -1).join("/") : "";
+      if (!groups.has(dir)) {
+        groups.set(dir, []);
+      }
+      groups.get(dir)!.push(song);
+    }
+
+    const result: SongGroup[] = [];
+    // Sort group keys: root ("") first, then alphabetically.
+    const keys = [...groups.keys()].sort((a, b) => {
+      if (a === "" && b === "") return 0;
+      if (a === "") return -1;
+      if (b === "") return 1;
+      return a.localeCompare(b);
+    });
+
+    for (const key of keys) {
+      result.push({
+        directory: key,
+        label: key || "",
+        songs: groups.get(key)!,
+      });
+    }
+    return result;
+  }
+
+  function toggleGroup(dir: string) {
+    if (collapsedGroups.has(dir)) {
+      collapsedGroups.delete(dir);
+    } else {
+      collapsedGroups.add(dir);
+    }
   }
 
   function compositePeaks(waveform: WaveformData): number[] {
@@ -129,6 +178,7 @@
     </div>
   {:else}
     {@const filteredSongs = getFilteredSongs()}
+    {@const groups = groupSongs(filteredSongs)}
     <div class="search-bar">
       <input
         type="text"
@@ -145,30 +195,53 @@
         >{filteredSongs.length} of {songs.length} songs</span
       >
     </div>
-    <div class="grid">
-      {#each filteredSongs as song (song.name)}
-        <button class="card song-card" onclick={() => navigate(song.name)}>
-          <div class="song-header">
-            <div class="song-name">{song.name}</div>
-            <div class="badges">
-              {#if song.has_midi}
-                <span class="badge midi">MIDI</span>
-              {/if}
-              {#if song.has_lighting}
-                <span class="badge lighting">LIGHT</span>
-              {/if}
-            </div>
-          </div>
-          <div class="song-waveform">
-            <Waveform peaks={waveforms[song.name] ?? []} height={28} />
-          </div>
-          <div class="song-meta">
-            <span>{song.duration_display}</span>
+    <div class="song-list">
+      {#each groups as group (group.directory)}
+        {#if group.label}
+          <button
+            class="group-header"
+            onclick={() => toggleGroup(group.directory)}
+          >
             <span
-              >{song.track_count} track{song.track_count !== 1 ? "s" : ""}</span
+              class="group-chevron"
+              class:collapsed={collapsedGroups.has(group.directory)}
+              >&#9662;</span
             >
-          </div>
-        </button>
+            <span class="group-label">{group.label}</span>
+            <span class="group-count">{group.songs.length}</span>
+          </button>
+        {/if}
+        {#if !collapsedGroups.has(group.directory)}
+          {#each group.songs as song (song.name)}
+            <button class="song-row" onclick={() => navigate(song.name)}>
+              <div class="song-main">
+                <span class="song-name">{song.name}</span>
+                <div class="song-badges">
+                  {#if song.has_midi}
+                    <span class="badge midi">MIDI</span>
+                  {/if}
+                  {#if song.lighting_files.length > 0}
+                    <span class="badge lighting">LIGHT</span>
+                  {/if}
+                  {#if song.legacy_lighting_files.length > 0}
+                    <span class="badge midi-dmx">MIDI DMX</span>
+                  {/if}
+                </div>
+              </div>
+              <div class="song-waveform">
+                <Waveform peaks={waveforms[song.name] ?? []} height={24} />
+              </div>
+              <div class="song-meta">
+                <span>{song.duration_display}</span>
+                <span
+                  >{song.track_count} track{song.track_count !== 1
+                    ? "s"
+                    : ""}</span
+                >
+              </div>
+            </button>
+          {/each}
+        {/if}
       {/each}
     </div>
   {/if}
@@ -234,52 +307,92 @@
     color: var(--text-muted);
     white-space: nowrap;
   }
-  .grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-    gap: 12px;
+  .song-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
   }
-  @media (max-width: 768px) {
-    .grid {
-      grid-template-columns: 1fr;
-    }
-    .header-actions {
-      flex-direction: column;
-      gap: 4px;
-    }
-  }
-  .song-card {
-    text-align: left;
+  .group-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    margin-top: 8px;
+    background: none;
+    border: none;
     cursor: pointer;
+    font: inherit;
+    color: var(--text-muted);
+  }
+  .group-header:first-child {
+    margin-top: 0;
+  }
+  .group-header:hover {
+    color: var(--text);
+  }
+  .group-chevron {
+    font-size: 10px;
+    transition: transform 0.15s;
+    flex-shrink: 0;
+  }
+  .group-chevron.collapsed {
+    transform: rotate(-90deg);
+  }
+  .group-label {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    text-transform: uppercase;
+  }
+  .group-count {
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+  .song-row {
+    display: grid;
+    grid-template-columns: 1fr minmax(80px, 160px) auto;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 14px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    cursor: pointer;
+    text-align: left;
+    width: 100%;
+    font-family: var(--sans);
     transition:
       background 0.15s,
       border-color 0.15s;
-    font-family: var(--sans);
   }
-  .song-card:hover {
+  .song-row:hover {
     background: var(--bg-card-hover);
     border-color: var(--text-dim);
   }
-  .song-header {
+  .song-main {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    margin-bottom: 6px;
+    gap: 8px;
+    min-width: 0;
   }
   .song-name {
-    font-size: 15px;
+    font-size: 14px;
     font-weight: 500;
     color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
-  .badges {
+  .song-badges {
     display: flex;
     gap: 4px;
+    flex-shrink: 0;
   }
   .badge {
     font-size: 9px;
     font-weight: 700;
     letter-spacing: 0.5px;
-    padding: 2px 6px;
+    padding: 2px 5px;
     border-radius: 3px;
     line-height: 1;
   }
@@ -291,13 +404,31 @@
     background: var(--yellow);
     color: #000;
   }
+  .badge.midi-dmx {
+    background: var(--green-dim);
+    color: var(--green);
+  }
   .song-waveform {
-    margin-bottom: 6px;
+    min-width: 0;
   }
   .song-meta {
     display: flex;
-    gap: 12px;
+    gap: 10px;
     font-size: 12px;
     color: var(--text-muted);
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  @media (max-width: 768px) {
+    .header-actions {
+      flex-direction: column;
+      gap: 4px;
+    }
+    .song-row {
+      grid-template-columns: 1fr auto;
+    }
+    .song-waveform {
+      display: none;
+    }
   }
 </style>

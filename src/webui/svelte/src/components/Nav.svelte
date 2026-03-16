@@ -27,7 +27,6 @@
     { hash: "#/config", label: "Config" },
     { hash: "#/songs", label: "Songs" },
     { hash: "#/playlists", label: "Playlists" },
-    { hash: "#/lighting", label: "Lighting" },
     { hash: "#/status", label: "Status" },
   ];
 
