@@ -102,7 +102,7 @@ impl Default for Player {
             playlist: None,
             playlists_dir: None,
             active_playlist: default_active_playlist(),
-            songs: "songs".to_string(),
+            songs: ".".to_string(),
             samples: HashMap::new(),
             samples_file: None,
             sample_triggers: Vec::new(),

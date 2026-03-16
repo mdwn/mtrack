@@ -317,6 +317,163 @@ pub(super) struct CreateSongInDirRequest {
     name: Option<String>,
 }
 
+/// POST /api/browse/bulk-import — scans subdirectories of a parent directory and creates
+/// song.yaml in each one that contains audio files. Skips subdirectories that already
+/// have song.yaml. Returns a summary of created, skipped, and failed directories.
+pub(super) async fn bulk_import(
+    State(state): State<WebUiState>,
+    Json(body): Json<BulkImportRequest>,
+) -> impl IntoResponse {
+    let config_canonical = match state.config_path.canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("Failed to resolve config path: {}", e)})),
+            )
+                .into_response();
+        }
+    };
+    let root_canonical = match config_canonical.parent() {
+        Some(p) => p.to_path_buf(),
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Unable to determine config root directory"})),
+            )
+                .into_response();
+        }
+    };
+
+    let relative = body.path.strip_prefix('/').unwrap_or(&body.path);
+    let target_dir = if relative.is_empty() {
+        root_canonical.clone()
+    } else {
+        root_canonical.join(relative)
+    };
+
+    let dir_canonical = match target_dir.canonicalize() {
+        Ok(p) => p,
+        Err(_) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": format!("Directory not found: {}", body.path)})),
+            )
+                .into_response();
+        }
+    };
+
+    if !dir_canonical.starts_with(&root_canonical) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": "Access denied: path is outside the project directory"})),
+        )
+            .into_response();
+    }
+
+    if !dir_canonical.is_dir() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "Path is not a directory"})),
+        )
+            .into_response();
+    }
+
+    let mut created: Vec<String> = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
+    let mut failed: Vec<serde_json::Value> = Vec::new();
+
+    // codeql[rust/path-injection] dir_canonical is canonicalized and verified
+    // via starts_with(root_canonical) above, preventing path traversal.
+    let read_dir = match std::fs::read_dir(&dir_canonical) {
+        Ok(rd) => rd,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("Failed to read directory: {}", e)})),
+            )
+                .into_response();
+        }
+    };
+
+    let mut subdirs: Vec<std::path::PathBuf> = read_dir
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.is_dir()
+                && !path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_none_or(|n| n.starts_with('.'))
+            {
+                Some(path)
+            } else {
+                None
+            }
+        })
+        .collect();
+    subdirs.sort();
+
+    for subdir in &subdirs {
+        let dir_name = subdir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        // Skip if song.yaml already exists
+        if subdir.join("song.yaml").exists() {
+            skipped.push(dir_name);
+            continue;
+        }
+
+        // Try to initialize a song from this directory
+        match songs::Song::initialize(subdir) {
+            Ok(song) => {
+                let mut config = song.get_config();
+                // Use directory name as song name
+                config.set_name(&dir_name);
+                let config_path = subdir.join("song.yaml");
+                match config.save(&config_path) {
+                    Ok(()) => created.push(dir_name),
+                    Err(e) => failed.push(json!({
+                        "name": dir_name,
+                        "error": format!("Failed to save: {}", e),
+                    })),
+                }
+            }
+            Err(_) => {
+                // No audio files or failed to scan — skip silently
+                skipped.push(dir_name);
+            }
+        }
+    }
+
+    // Refresh the player's song state once after all imports
+    if !created.is_empty() {
+        state.player.reload_songs(
+            &state.songs_path,
+            state.playlists_dir.as_deref(),
+            state.legacy_playlist_path.as_deref(),
+        );
+    }
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "created": created,
+            "skipped": skipped,
+            "failed": failed,
+        })),
+    )
+        .into_response()
+}
+
+#[derive(serde::Deserialize)]
+pub(super) struct BulkImportRequest {
+    path: String,
+}
+
 #[cfg(test)]
 mod test {
     use super::super::router;
@@ -576,5 +733,132 @@ mod test {
         // Within groups, sorted alphabetically
         assert_eq!(entries[0]["name"], "aaa_dir");
         assert_eq!(entries[1]["name"], "zzz_dir");
+    }
+
+    #[tokio::test]
+    async fn bulk_import_creates_songs() {
+        let (state, _dir) = test_state();
+        let parent = _dir.path().join("songs");
+        std::fs::create_dir_all(&parent).unwrap();
+
+        // Two subdirectories with audio, one without, one already has song.yaml
+        let song_a = parent.join("Alpha");
+        std::fs::create_dir_all(&song_a).unwrap();
+        std::fs::write(song_a.join("track.wav"), create_test_wav()).unwrap();
+
+        let song_b = parent.join("Beta");
+        std::fs::create_dir_all(&song_b).unwrap();
+        std::fs::write(song_b.join("track.wav"), create_test_wav()).unwrap();
+
+        let song_c = parent.join("Gamma");
+        std::fs::create_dir_all(&song_c).unwrap();
+        // No audio files — still gets a song.yaml (empty tracks)
+
+        let song_d = parent.join("Delta");
+        std::fs::create_dir_all(&song_d).unwrap();
+        std::fs::write(song_d.join("track.wav"), create_test_wav()).unwrap();
+        std::fs::write(song_d.join("song.yaml"), "name: Delta\ntracks: []\n").unwrap();
+        // Already has song.yaml — should be skipped
+
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/browse/bulk-import")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"path": "/songs"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+        let created: Vec<&str> = parsed["created"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        let skipped: Vec<&str> = parsed["skipped"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+
+        assert!(
+            created.contains(&"Alpha"),
+            "Alpha should be created: {:?}",
+            created
+        );
+        assert!(
+            created.contains(&"Beta"),
+            "Beta should be created: {:?}",
+            created
+        );
+        assert!(
+            created.contains(&"Gamma"),
+            "Gamma should be created (empty): {:?}",
+            created
+        );
+        assert!(
+            skipped.contains(&"Delta"),
+            "Delta should be skipped (existing): {:?}",
+            skipped
+        );
+
+        // Verify song.yaml was actually created
+        assert!(song_a.join("song.yaml").exists());
+        assert!(song_b.join("song.yaml").exists());
+        assert!(song_c.join("song.yaml").exists());
+    }
+
+    #[tokio::test]
+    async fn bulk_import_nonexistent_path() {
+        let (state, _dir) = test_state();
+        let app = router().with_state(state);
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/browse/bulk-import")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"path": "/nonexistent"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn bulk_import_empty_directory() {
+        let (state, _dir) = test_state();
+        let parent = _dir.path().join("empty_parent");
+        std::fs::create_dir_all(&parent).unwrap();
+
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/browse/bulk-import")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"path": "/empty_parent"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(parsed["created"].as_array().unwrap().is_empty());
     }
 }
