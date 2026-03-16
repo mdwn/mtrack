@@ -159,7 +159,13 @@ pub async fn start(
     ));
 
     // Build the app router
-    let api_router = super::api::router();
+    let api_router = super::api::router()
+        .route_layer(axum::middleware::from_fn_with_state(
+            webui_state.clone(),
+            super::api::lock_guard,
+        ))
+        // Disable the default 2MB body limit for file uploads (audio, MIDI, samples).
+        .layer(axum::extract::DefaultBodyLimit::disable());
     let app = Router::new()
         .route("/ws", get(ws_handler))
         .nest("/api", api_router)

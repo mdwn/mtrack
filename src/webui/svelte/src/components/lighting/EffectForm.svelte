@@ -20,6 +20,8 @@
     BLEND_MODES,
     CURVES,
     DIRECTIONS,
+    CHASE_DIRECTIONS,
+    CHASE_PATTERNS,
   } from "../../lib/lighting/types";
   import ColorInput from "./ColorInput.svelte";
 
@@ -105,16 +107,13 @@
     return parts.join("  ");
   });
 
-  // Filtered group suggestions
-  let filteredGroups = $derived(
-    groups.filter(
-      (g) =>
-        !effect.groups.includes(g) &&
-        g
-          .toLowerCase()
-          .includes((groupText.split(",").pop() ?? "").trim().toLowerCase()),
-    ),
-  );
+  // Deduplicated group options: known venue groups + "all"
+  let allGroupOptions = $derived.by(() => {
+    const seen: Record<string, boolean> = {};
+    for (const g of groups) seen[g] = true;
+    seen["all"] = true;
+    return Object.keys(seen).sort();
+  });
 </script>
 
 <div class="effect-form" class:expanded>
@@ -133,16 +132,14 @@
       class="inline-input group-input"
       value={groupText}
       onchange={(e) => updateGroups((e.target as HTMLInputElement).value)}
-      placeholder="groups"
-      list="group-suggestions-{effect.effect.type}"
+      placeholder="group"
+      list="group-suggestions"
     />
-    {#if filteredGroups.length > 0}
-      <datalist id="group-suggestions-{effect.effect.type}">
-        {#each filteredGroups as g (g)}
-          <option value={g}></option>
-        {/each}
-      </datalist>
-    {/if}
+    <datalist id="group-suggestions">
+      {#each allGroupOptions as g (g)}
+        <option value={g}></option>
+      {/each}
+    </datalist>
 
     <select
       class="inline-input type-select"
@@ -448,18 +445,21 @@
             /></label
           >
           <label class="param"
-            ><span class="param-label">Pattern</span><input
-              type="text"
+            ><span class="param-label">Pattern</span>
+            <select
               class="param-input"
-              placeholder="linear"
               value={effect.effect.pattern ?? ""}
               onchange={(e) =>
                 updateParam(
                   "pattern",
-                  (e.target as HTMLInputElement).value || undefined,
+                  (e.target as HTMLSelectElement).value || undefined,
                 )}
-            /></label
-          >
+            >
+              <option value="">--</option>
+              {#each CHASE_PATTERNS as p (p)}<option value={p}>{p}</option
+                >{/each}
+            </select>
+          </label>
           <label class="param"
             ><span class="param-label">Duration</span><input
               type="text"
@@ -484,8 +484,8 @@
                   (e.target as HTMLSelectElement).value || undefined,
                 )}
             >
-              <option value="">--</option>{#each DIRECTIONS as d (d)}<option
-                  value={d}>{d}</option
+              <option value="">--</option
+              >{#each CHASE_DIRECTIONS as d (d)}<option value={d}>{d}</option
                 >{/each}
             </select>
           </label>
@@ -773,6 +773,7 @@
     width: 120px;
     min-width: 60px;
     flex-shrink: 1;
+    cursor: pointer;
   }
   .type-select {
     width: 72px;

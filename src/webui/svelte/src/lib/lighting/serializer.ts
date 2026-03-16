@@ -64,6 +64,7 @@ function serializeTempo(tempo: TempoSection): string {
 
   if (tempo.changes.length > 0) {
     lines.push("    changes: [");
+    const changeLines: string[] = [];
     for (const change of tempo.changes) {
       const ts = formatTimestamp(change.timestamp);
       const params: string[] = [];
@@ -73,8 +74,9 @@ function serializeTempo(tempo: TempoSection): string {
           `time_signature: ${change.time_signature[0]}/${change.time_signature[1]}`,
         );
       if (change.transition) params.push(`transition: ${change.transition}`);
-      lines.push(`        @${ts} { ${params.join(", ")} },`);
+      changeLines.push(`        @${ts} { ${params.join(", ")} }`);
     }
+    lines.push(changeLines.join(",\n"));
     lines.push("    ]");
   }
 
@@ -100,7 +102,8 @@ function serializeCues(cues: Cue[]): string {
 
     // Effects
     for (const eff of cue.effects) {
-      lines.push(`    ${serializeEffect(eff)}`);
+      const s = serializeEffect(eff);
+      if (s) lines.push(`    ${s}`);
     }
 
     // Layer commands
@@ -148,14 +151,12 @@ export function formatTimestamp(ts: Timestamp): string {
 }
 
 function serializeEffect(cueEffect: CueEffect): string {
-  const groups = cueEffect.groups.join(", ");
+  const groups = cueEffect.groups.filter((g) => g.length > 0).join(", ");
+  if (!groups) return ""; // Skip effects with no group names
   const effect = cueEffect.effect;
   const parts: string[] = [];
 
-  // Effect type
-  // Dimmer uses space separator, others use comma
-  const isDimmer = effect.type === "dimmer";
-  const separator = isDimmer ? " " : ", ";
+  // All effect types use comma-separated parameters.
 
   // Colors
   for (const color of effect.colors) {
@@ -206,7 +207,7 @@ function serializeEffect(cueEffect: CueEffect): string {
   }
 
   if (parts.length > 0) {
-    return `${groups}: ${effect.type}${separator}${parts.join(", ")}`;
+    return `${groups}: ${effect.type}, ${parts.join(", ")}`;
   }
   return `${groups}: ${effect.type}`;
 }

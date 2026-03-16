@@ -28,7 +28,27 @@ pub(super) async fn get_status(State(state): State<WebUiState>) -> impl IntoResp
             "build_time": build_info::BUILD_TIME,
         },
         "hardware": hardware,
+        "locked": state.player.is_locked(),
     }))
+}
+
+/// GET /api/lock — returns the current lock state.
+pub(super) async fn get_lock(State(state): State<WebUiState>) -> impl IntoResponse {
+    Json(json!({"locked": state.player.is_locked()}))
+}
+
+/// PUT /api/lock — sets the lock state.
+pub(super) async fn put_lock(
+    State(state): State<WebUiState>,
+    Json(body): Json<LockRequest>,
+) -> impl IntoResponse {
+    state.player.set_locked(body.locked);
+    Json(json!({"locked": state.player.is_locked()}))
+}
+
+#[derive(serde::Deserialize)]
+pub(super) struct LockRequest {
+    locked: bool,
 }
 
 #[cfg(test)]

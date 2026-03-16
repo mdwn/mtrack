@@ -26,13 +26,17 @@
   let saving = $state(false);
 
   async function submit() {
-    const trimmed = name.trim();
+    const trimmed = name.trim().replace(/\/+$/, "");
     if (!trimmed) return;
+
+    // The API path can include subdirectories (e.g. "Artist/Album/Song").
+    // The song name in the YAML is the last segment.
+    const songName = trimmed.split("/").filter(Boolean).pop() ?? trimmed;
 
     saving = true;
     error = "";
     try {
-      const yaml = `name: "${trimmed}"\ntracks: []\n`;
+      const yaml = `name: "${songName}"\ntracks: []\n`;
       const res = await createSong(trimmed, yaml);
       if (res.status === 409) {
         error = "Song already exists";
@@ -43,7 +47,7 @@
         error = data?.error ?? `Failed to create song (${res.status})`;
         return;
       }
-      oncreated(trimmed);
+      oncreated(songName);
     } catch (e) {
       error = e instanceof Error ? e.message : "Failed to create song";
     } finally {
@@ -62,7 +66,7 @@
     <input
       class="input name-input"
       type="text"
-      placeholder="Song name"
+      placeholder="Song name or path (e.g. Artist/Song)"
       bind:value={name}
       {onkeydown}
       disabled={saving}

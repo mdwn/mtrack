@@ -39,7 +39,7 @@
   import FileUpload from "./FileUpload.svelte";
   import FileBrowser from "./FileBrowser.svelte";
   import { playerClient } from "../../lib/grpc/client";
-  import { playbackStore } from "../../lib/ws/stores";
+  import { playbackStore, wsConnected } from "../../lib/ws/stores";
   import { create } from "@bufbuild/protobuf";
   import { DurationSchema } from "@bufbuild/protobuf/wkt";
   import { get } from "svelte/store";
@@ -81,6 +81,10 @@
   let pbState = $state(get(playbackStore));
   const unsubPlayback = playbackStore.subscribe((v) => (pbState = v));
 
+  // WebSocket connection state
+  let connected = $state(get(wsConnected));
+  const unsubConnected = wsConnected.subscribe((v) => (connected = v));
+
   // Client-side interpolation for smooth playhead
   let lastKnownMs = $state(0);
   let lastUpdateTime = $state(0);
@@ -104,8 +108,11 @@
     function tick() {
       const now = performance.now();
       const elapsed = now - lastUpdateTime;
+      // Cap interpolation drift to 2s — beyond that, hold at lastKnownMs
+      // until the next WebSocket update arrives (prevents large jumps on reconnect).
+      const capped = Math.min(elapsed, 2000);
       interpolatedMs = Math.min(
-        lastKnownMs + elapsed,
+        lastKnownMs + capped,
         song.duration_ms || Infinity,
       );
       rafId = requestAnimationFrame(tick);
@@ -127,7 +134,26 @@
 
   async function playFromMs(ms: number) {
     // Auto-save if dirty
-    if (dirty) await saveLightingFiles();
+    if (dirty) {
+      try {
+        await saveLightingFiles();
+      } catch (e) {
+        error = `Auto-save failed: ${e instanceof Error ? e.message : e}`;
+        return;
+      }
+    }
+
+    // If already playing, stop first then play from new position
+    if (pbState.is_playing) {
+      try {
+        await playerClient.stop({});
+        // Brief wait for stop to complete
+        await new Promise((r) => setTimeout(r, 100));
+      } catch {
+        // Ignore stop errors (might not be playing)
+      }
+    }
+
     try {
       const seconds = BigInt(Math.floor(ms / 1000));
       const nanos = Math.round((ms % 1000) * 1_000_000);
@@ -136,7 +162,12 @@
         startTime: create(DurationSchema, { seconds, nanos }),
       });
     } catch (e) {
-      console.error("playSongFrom failed:", e);
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes("already playing")) {
+        error = "Another song is playing. Stop it first.";
+      } else {
+        error = `Playback failed: ${msg}`;
+      }
     }
   }
 
@@ -415,12 +446,18 @@
     loadVenueGroups();
     return () => {
       unsubPlayback();
+      unsubConnected();
       stopInterpolation();
     };
   });
 </script>
 
 <div class="lighting-section">
+  {#if !connected}
+    <div class="warn-banner">
+      Not connected to server — playback controls unavailable
+    </div>
+  {/if}
   {#if error}
     <div class="error-banner">
       {error}
@@ -597,6 +634,13 @@
     flex-direction: column;
     gap: 12px;
     min-height: calc(100vh - 280px);
+  }
+  .warn-banner {
+    background: rgba(234, 179, 8, 0.15);
+    color: #eab308;
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 13px;
   }
   .error-banner {
     background: rgba(220, 38, 38, 0.15);
