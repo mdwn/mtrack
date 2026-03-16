@@ -1158,7 +1158,7 @@
   }
   .sub-tab {
     padding: 8px 14px;
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 500;
     font-family: var(--sans);
     color: var(--text-dim);
@@ -1194,14 +1194,14 @@
   }
   .field label,
   .field-label {
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.5px;
     color: var(--text-muted);
   }
   .field-hint {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-dim);
   }
   .field-row-2 {
@@ -1220,7 +1220,7 @@
     gap: 8px;
   }
   .subsection-title {
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.5px;
@@ -1265,12 +1265,12 @@
     margin-bottom: 4px;
   }
   .item-name {
-    font-size: 14px;
+    font-size: 15px;
     font-weight: 600;
     color: var(--text);
   }
   .item-meta {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-dim);
     margin-top: 2px;
   }
@@ -1285,7 +1285,7 @@
     align-items: center;
   }
   .editor-title {
-    font-size: 14px;
+    font-size: 15px;
     font-weight: 600;
     color: var(--text);
     margin: 0;
@@ -1328,7 +1328,7 @@
     gap: 2px !important;
   }
   .compact-field label {
-    font-size: 10px !important;
+    font-size: 11px !important;
   }
   .fixture-row {
     display: flex;
@@ -1359,7 +1359,7 @@
     background: var(--bg-card-hover);
   }
   .group-name {
-    font-size: 13px;
+    font-size: 14px;
     font-weight: 600;
     color: var(--text);
   }
@@ -1369,12 +1369,12 @@
     gap: 8px;
   }
   .constraint-count {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-dim);
   }
   .collapse-icon {
     font-family: var(--mono);
-    font-size: 14px;
+    font-size: 15px;
     color: var(--text-dim);
     width: 16px;
     text-align: center;
@@ -1408,19 +1408,19 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    font-size: 13px;
+    font-size: 14px;
     color: var(--text-muted);
     cursor: pointer;
   }
   .save-msg {
-    font-size: 12px;
+    font-size: 13px;
     color: var(--green);
   }
   .save-error {
     color: var(--red);
   }
   .status-text {
-    font-size: 13px;
+    font-size: 14px;
     color: var(--text-dim);
     padding: 8px 0;
   }
@@ -1434,11 +1434,11 @@
   }
   .empty-state p {
     margin-bottom: 4px;
-    font-size: 13px;
+    font-size: 14px;
   }
   .btn-sm {
     padding: 4px 8px;
-    font-size: 11px;
+    font-size: 12px;
   }
   @media (max-width: 600px) {
     .field-row-2,

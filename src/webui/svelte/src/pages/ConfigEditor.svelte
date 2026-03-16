@@ -40,6 +40,31 @@
   } from "../components/config/SamplesSection.svelte";
   import FileBrowser from "../components/songs/FileBrowser.svelte";
 
+  interface Props {
+    currentHash: string;
+  }
+
+  let { currentHash }: Props = $props();
+
+  // Parse: #/config, #/config/ProfileName, #/config/ProfileName/section
+  let routeProfile = $derived.by(() => {
+    const prefix = "#/config/";
+    if (!currentHash.startsWith(prefix) || currentHash.length <= prefix.length)
+      return null;
+    const rest = decodeURIComponent(currentHash.slice(prefix.length));
+    const slashIdx = rest.indexOf("/");
+    return slashIdx >= 0 ? rest.slice(0, slashIdx) : rest;
+  });
+
+  let routeSection = $derived.by(() => {
+    const prefix = "#/config/";
+    if (!currentHash.startsWith(prefix)) return undefined;
+    const rest = decodeURIComponent(currentHash.slice(prefix.length));
+    const slashIdx = rest.indexOf("/");
+    if (slashIdx < 0) return undefined;
+    return rest.slice(slashIdx + 1) as string;
+  });
+
   let configYaml = $state("");
   let checksum = $state("");
   let profiles = $state<any[]>([]);
@@ -170,6 +195,7 @@
       selectedIndex = 0;
       profiles = [data.profile as any];
       savedSnapshot = JSON.stringify(data.profile);
+      updateConfigUrl(filename.replace(/\.\w+$/, ""));
     } catch (e: any) {
       error = e.message;
     }
@@ -232,6 +258,7 @@
     selectedFilename = null;
     isNew = false;
     dirty = false;
+    updateConfigUrl();
     saveMsg = "";
   }
 
@@ -243,6 +270,8 @@
     savedSnapshot = JSON.stringify(profiles[index]);
     dirty = false;
     saveMsg = "";
+    const name = profiles[index]?.hostname || `Profile #${index}`;
+    updateConfigUrl(name);
   }
 
   function addNewProfile() {
@@ -261,6 +290,7 @@
     isNew = false;
     dirty = false;
     saveMsg = "";
+    updateConfigUrl();
   }
 
   function onProfileChange() {
@@ -362,10 +392,42 @@
     sampleBrowseTarget = null;
   }
 
+  function updateConfigUrl(profileName?: string | null, section?: string) {
+    if (profileName) {
+      const base = `#/config/${encodeURIComponent(profileName)}`;
+      window.location.hash = section ? `${base}/${section}` : base;
+    } else {
+      window.location.hash = "#/config";
+    }
+  }
+
   $effect(() => {
     loadConfig();
     loadDevices();
     loadTrackNames();
+  });
+
+  // Auto-select profile from URL after data loads
+  $effect(() => {
+    if (loading || !routeProfile) return;
+    if (profilesDir) {
+      // File-based: match by filename (without extension)
+      const match = profileFiles.find(
+        (f) => f.filename.replace(/\.\w+$/, "") === routeProfile,
+      );
+      if (match && selectedFilename !== match.filename) {
+        selectFileProfile(match.filename);
+      }
+    } else {
+      // Inline: match by hostname or index
+      const idx = profiles.findIndex(
+        (p: any) =>
+          (p.hostname || `Profile #${profiles.indexOf(p)}`) === routeProfile,
+      );
+      if (idx >= 0 && selectedIndex !== idx) {
+        selectProfile(idx);
+      }
+    }
   });
 </script>
 
@@ -421,8 +483,11 @@
         {midiDevices}
         {trackNames}
         {sampleNames}
+        initialSection={routeSection}
         onrefreshDevices={loadDevices}
         onchange={onProfileChange}
+        onsectionchange={(section) =>
+          updateConfigUrl(selectedFilename?.replace(/\.\w+$/, ""), section)}
       />
     </div>
   {:else}
@@ -431,7 +496,6 @@
       <div class="list-header">
         <h2>Hardware Profiles</h2>
         <div class="toolbar-actions">
-          <span class="info-badge">profiles_dir</span>
           <button class="btn btn-primary" onclick={addNewFileProfile}
             >Add Profile</button
           >
@@ -550,8 +614,15 @@
       {midiDevices}
       {trackNames}
       {sampleNames}
+      initialSection={routeSection}
       onrefreshDevices={loadDevices}
       onchange={onProfileChange}
+      onsectionchange={(section) => {
+        if (selectedIndex === null) return;
+        const name =
+          profiles[selectedIndex]?.hostname || `Profile #${selectedIndex}`;
+        updateConfigUrl(name, section);
+      }}
     />
   </div>
 {:else}
@@ -664,7 +735,7 @@
   }
   .empty-state p {
     margin-bottom: 4px;
-    font-size: 13px;
+    font-size: 14px;
   }
   .detail-view {
     display: flex;
@@ -684,7 +755,7 @@
     z-index: 10;
   }
   .detail-title {
-    font-size: 15px;
+    font-size: 16px;
     font-weight: 600;
     color: var(--text);
     flex: 1;
@@ -695,7 +766,7 @@
     gap: 8px;
   }
   .save-msg {
-    font-size: 12px;
+    font-size: 13px;
     color: var(--green);
   }
   .save-error {
@@ -710,7 +781,7 @@
     gap: 16px;
   }
   .info-badge {
-    font-size: 11px;
+    font-size: 12px;
     padding: 2px 8px;
     border-radius: 4px;
     background: var(--bg-hover);
@@ -718,7 +789,7 @@
     border: 1px solid var(--border);
   }
   .info-banner {
-    font-size: 13px;
+    font-size: 14px;
     padding: 10px 14px;
     border-radius: var(--radius);
     background: var(--bg-hover);
@@ -751,12 +822,12 @@
     border-color: var(--text-dim);
   }
   .pf-name {
-    font-size: 14px;
+    font-size: 15px;
     font-weight: 600;
     flex-shrink: 0;
   }
   .pf-hostname {
-    font-size: 12px;
+    font-size: 13px;
     color: var(--text-dim);
     flex-shrink: 0;
   }
@@ -766,7 +837,7 @@
     margin-left: auto;
   }
   .pf-badge {
-    font-size: 9px;
+    font-size: 11px;
     font-weight: 600;
     letter-spacing: 0.5px;
     padding: 2px 5px;

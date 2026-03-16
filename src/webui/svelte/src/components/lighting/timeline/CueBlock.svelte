@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Cue } from "../../../lib/lighting/types";
+  import type { Cue, SubLaneType } from "../../../lib/lighting/types";
   import { effectTypeColor } from "../../../lib/lighting/timeline-state";
 
   interface Props {
@@ -10,6 +10,7 @@
     onmove: (deltaMs: number) => void;
     ondelete: () => void;
     pixelsPerMs: number;
+    subLaneType?: SubLaneType;
   }
 
   let {
@@ -20,26 +21,45 @@
     onmove,
     ondelete,
     pixelsPerMs,
+    subLaneType,
   }: Props = $props();
 
   let dragging = $state(false);
   let dragOffsetPx = $state(0);
   let dragStartX = 0;
 
-  // Derive visual properties from cue content
+  // Derive visual properties from cue content, branching on subLaneType
   let primaryColor = $derived.by(() => {
+    if (subLaneType === "commands") return "#eab308";
+    if (subLaneType === "sequences") return "#ef60a3";
     if (cue.effects.length === 0) return "#555";
     const firstEffect = cue.effects[0].effect;
-    // Use the first explicit color if available
     if (firstEffect.colors.length > 0) {
       const c = firstEffect.colors[0];
       if (c.startsWith("#") || c.startsWith("rgb")) return c;
-      // Named colors — use effect type color as fallback
     }
     return effectTypeColor(firstEffect.type);
   });
 
   let label = $derived.by(() => {
+    if (subLaneType === "commands") {
+      return cue.commands.map((c) => c.command).join(", ");
+    }
+    if (subLaneType === "sequences") {
+      return cue.sequences
+        .map((s) => (s.stop ? "stop " : "") + s.name)
+        .join(", ");
+    }
+    if (subLaneType === "effects") {
+      if (cue.effects.length === 0) return "empty";
+      const parts: string[] = [];
+      for (const eff of cue.effects) {
+        const groups = eff.groups.filter((g) => g).join(", ");
+        parts.push(groups ? `${groups}: ${eff.effect.type}` : eff.effect.type);
+      }
+      return parts.join(" | ");
+    }
+    // Combined mode (no subLaneType — e.g. SequenceEditorModal)
     if (cue.effects.length === 0 && cue.commands.length > 0) {
       return cue.commands.map((c) => c.command).join(", ");
     }
@@ -105,24 +125,44 @@
 >
   <div class="cue-color-strip"></div>
   <div class="cue-content">
-    <div class="cue-effects">
-      {#each cue.effects.slice(0, 3) as eff, ei (ei)}
-        <span
-          class="effect-dot"
-          style:background={effectTypeColor(eff.effect.type)}
-          title={eff.effect.type}
-        ></span>
-      {/each}
-      {#if cue.effects.length > 3}
-        <span class="effect-overflow">+{cue.effects.length - 3}</span>
+    {#if subLaneType === "effects"}
+      <div class="cue-effects">
+        {#each cue.effects.slice(0, 3) as eff, ei (ei)}
+          <span
+            class="effect-dot"
+            style:background={effectTypeColor(eff.effect.type)}
+            title={eff.effect.type}
+          ></span>
+        {/each}
+        {#if cue.effects.length > 3}
+          <span class="effect-overflow">+{cue.effects.length - 3}</span>
+        {/if}
+      </div>
+      <span class="cue-label">{label}</span>
+    {:else if subLaneType === "commands"}
+      <span class="cue-label cmd-label">{label}</span>
+    {:else if subLaneType === "sequences"}
+      <span class="cue-label seq-label">{label}</span>
+    {:else}
+      <div class="cue-effects">
+        {#each cue.effects.slice(0, 3) as eff, ei (ei)}
+          <span
+            class="effect-dot"
+            style:background={effectTypeColor(eff.effect.type)}
+            title={eff.effect.type}
+          ></span>
+        {/each}
+        {#if cue.effects.length > 3}
+          <span class="effect-overflow">+{cue.effects.length - 3}</span>
+        {/if}
+      </div>
+      <span class="cue-label">{label}</span>
+      {#if cue.commands.length > 0}
+        <span class="badge cmd-badge">{cue.commands.length} cmd</span>
       {/if}
-    </div>
-    <span class="cue-label">{label}</span>
-    {#if cue.commands.length > 0}
-      <span class="badge cmd-badge">{cue.commands.length} cmd</span>
-    {/if}
-    {#if cue.sequences.length > 0}
-      <span class="badge seq-badge">{cue.sequences.length} seq</span>
+      {#if cue.sequences.length > 0}
+        <span class="badge seq-badge">{cue.sequences.length} seq</span>
+      {/if}
     {/if}
   </div>
 </div>
@@ -184,18 +224,18 @@
     flex-shrink: 0;
   }
   .effect-overflow {
-    font-size: 8px;
+    font-size: 11px;
     color: var(--text-dim);
   }
   .cue-label {
-    font-size: 9px;
+    font-size: 12px;
     color: var(--text-muted);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
   .badge {
-    font-size: 8px;
+    font-size: 11px;
     padding: 0 3px;
     border-radius: 2px;
     align-self: flex-start;
@@ -207,5 +247,11 @@
   .seq-badge {
     background: rgba(239, 96, 163, 0.2);
     color: var(--pink);
+  }
+  .cmd-label {
+    color: var(--yellow, #eab308);
+  }
+  .seq-label {
+    color: var(--pink, #ef60a3);
   }
 </style>

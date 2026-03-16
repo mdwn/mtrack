@@ -250,7 +250,7 @@
   .path-input {
     flex: 1;
     font-family: var(--mono);
-    font-size: 12px;
+    font-size: 13px;
   }
   .breadcrumbs {
     display: flex;
@@ -262,7 +262,7 @@
     background: none;
     border: none;
     color: var(--accent);
-    font-size: 12px;
+    font-size: 13px;
     cursor: pointer;
     padding: 1px 3px;
     border-radius: 3px;
@@ -273,7 +273,7 @@
   }
   .sep {
     color: var(--text-dim);
-    font-size: 12px;
+    font-size: 13px;
   }
   .browser-body {
     flex: 1;
@@ -285,7 +285,7 @@
     padding: 32px 16px;
     text-align: center;
     color: var(--text-muted);
-    font-size: 13px;
+    font-size: 14px;
   }
   .browser-status.error {
     color: var(--red);
@@ -302,7 +302,7 @@
     border: none;
     background: none;
     color: var(--text);
-    font-size: 13px;
+    font-size: 14px;
     font-family: var(--sans);
     cursor: pointer;
     text-align: left;
@@ -321,7 +321,7 @@
   .entry-icon {
     flex: 0 0 20px;
     text-align: center;
-    font-size: 14px;
+    font-size: 15px;
   }
   .entry-name {
     flex: 1;
@@ -333,7 +333,7 @@
   .check {
     color: var(--accent);
     font-weight: 700;
-    font-size: 14px;
+    font-size: 15px;
   }
   .browser-footer {
     display: flex;
@@ -347,7 +347,7 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    font-size: 12px;
+    font-size: 13px;
     color: var(--text-muted);
   }
   .footer-actions {
@@ -356,6 +356,6 @@
   }
   .btn-sm {
     padding: 2px 8px;
-    font-size: 11px;
+    font-size: 12px;
   }
 </style>

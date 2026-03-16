@@ -534,7 +534,7 @@
   }
   .empty-state p {
     margin-bottom: 4px;
-    font-size: 13px;
+    font-size: 14px;
   }
   .sample-card {
     background: var(--bg-card);
@@ -559,7 +559,7 @@
     background: var(--bg-card-hover);
   }
   .sample-title {
-    font-size: 13px;
+    font-size: 14px;
     font-weight: 600;
     color: var(--text);
   }
@@ -568,7 +568,7 @@
   }
   .name-input {
     width: 200px;
-    font-size: 13px;
+    font-size: 14px;
     font-weight: 600;
   }
   .sample-controls {
@@ -578,7 +578,7 @@
   }
   .collapse-icon {
     font-family: var(--mono);
-    font-size: 14px;
+    font-size: 15px;
     color: var(--text-dim);
     width: 16px;
     text-align: center;
@@ -598,7 +598,7 @@
   }
   .field label,
   .field-label {
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.5px;
@@ -636,7 +636,7 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    font-size: 12px;
+    font-size: 13px;
     color: var(--text-muted);
     cursor: pointer;
   }
@@ -654,7 +654,7 @@
     align-items: center;
   }
   .layer-label {
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
     color: var(--text-muted);
     min-width: 80px;
@@ -665,14 +665,14 @@
   }
   .range-sep {
     color: var(--text-dim);
-    font-size: 12px;
+    font-size: 13px;
   }
   .btn-sm {
     padding: 2px 8px;
-    font-size: 11px;
+    font-size: 12px;
   }
   .msg {
-    font-size: 12px;
+    font-size: 13px;
     color: var(--green);
   }
   .msg.error {

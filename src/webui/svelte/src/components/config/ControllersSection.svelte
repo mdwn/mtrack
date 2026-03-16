@@ -229,7 +229,7 @@
     align-items: center;
   }
   .controller-kind {
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 700;
     letter-spacing: 0.5px;
     color: var(--text-muted);
@@ -241,7 +241,7 @@
   }
   .field label,
   .field-label {
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.5px;
@@ -262,10 +262,10 @@
   }
   .btn-sm {
     padding: 3px 8px;
-    font-size: 11px;
+    font-size: 12px;
   }
   .btn-expand {
-    font-size: 12px;
+    font-size: 13px;
     align-self: flex-start;
   }
   .osc-paths {
@@ -278,7 +278,7 @@
     gap: 8px;
   }
   .note {
-    font-size: 12px;
+    font-size: 13px;
     color: var(--text-dim);
     font-style: italic;
   }

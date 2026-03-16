@@ -135,11 +135,11 @@
     overflow: hidden;
   }
   .track-count {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-dim);
   }
   .empty {
-    font-size: 12px;
+    font-size: 13px;
     color: var(--text-dim);
     padding: 8px 0;
   }
@@ -167,14 +167,14 @@
   }
   .track-name {
     font-family: var(--mono);
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
   .track-channels {
-    font-size: 10px;
+    font-size: 11px;
     color: var(--text-dim);
   }
   .track-waveform {

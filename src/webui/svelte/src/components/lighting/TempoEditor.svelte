@@ -319,17 +319,17 @@
     border: none;
     color: var(--text-muted);
     cursor: pointer;
-    font-size: 10px;
+    font-size: 11px;
     padding: 2px 4px;
     width: 20px;
   }
   .section-title {
-    font-size: 13px;
+    font-size: 14px;
     font-weight: 600;
   }
   .tempo-info {
     color: var(--text-muted);
-    font-size: 12px;
+    font-size: 13px;
     flex: 1;
   }
   .tempo-body {
@@ -350,13 +350,13 @@
     gap: 3px;
   }
   .field-label {
-    font-size: 10px;
+    font-size: 11px;
     color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.5px;
   }
   .field .input {
-    font-size: 12px;
+    font-size: 13px;
     padding: 4px 6px;
     width: 80px;
   }
@@ -397,7 +397,7 @@
     align-items: center;
   }
   .section-label {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.5px;
@@ -418,7 +418,7 @@
     border: none;
     color: var(--text-muted);
     cursor: pointer;
-    font-size: 13px;
+    font-size: 14px;
     padding: 4px 6px;
     border-radius: 4px;
   }

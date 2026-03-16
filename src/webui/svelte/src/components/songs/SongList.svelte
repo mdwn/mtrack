@@ -266,7 +266,7 @@
     text-align: center;
     padding: 48px 16px;
     color: var(--text-muted);
-    font-size: 14px;
+    font-size: 15px;
   }
   .status.error {
     color: var(--red);
@@ -280,7 +280,7 @@
   .search-input {
     flex: 1;
     padding: 6px 10px;
-    font-size: 13px;
+    font-size: 14px;
     border: 1px solid var(--border);
     border-radius: var(--radius);
     background: var(--bg);
@@ -295,7 +295,7 @@
     border: none;
     color: var(--text-muted);
     cursor: pointer;
-    font-size: 14px;
+    font-size: 15px;
     padding: 4px;
     line-height: 1;
   }
@@ -303,7 +303,7 @@
     color: var(--text);
   }
   .search-count {
-    font-size: 12px;
+    font-size: 13px;
     color: var(--text-muted);
     white-space: nowrap;
   }
@@ -331,7 +331,7 @@
     color: var(--text);
   }
   .group-chevron {
-    font-size: 10px;
+    font-size: 11px;
     transition: transform 0.15s;
     flex-shrink: 0;
   }
@@ -339,13 +339,13 @@
     transform: rotate(-90deg);
   }
   .group-label {
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 600;
     letter-spacing: 0.3px;
     text-transform: uppercase;
   }
   .group-count {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-dim);
   }
   .song-row {
@@ -376,7 +376,7 @@
     min-width: 0;
   }
   .song-name {
-    font-size: 14px;
+    font-size: 15px;
     font-weight: 500;
     color: var(--text);
     overflow: hidden;
@@ -389,7 +389,7 @@
     flex-shrink: 0;
   }
   .badge {
-    font-size: 9px;
+    font-size: 11px;
     font-weight: 700;
     letter-spacing: 0.5px;
     padding: 2px 5px;
@@ -414,7 +414,7 @@
   .song-meta {
     display: flex;
     gap: 10px;
-    font-size: 12px;
+    font-size: 13px;
     color: var(--text-muted);
     white-space: nowrap;
     flex-shrink: 0;

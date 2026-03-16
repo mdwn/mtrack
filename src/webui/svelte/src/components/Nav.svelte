@@ -131,7 +131,7 @@
     text-decoration: none;
     padding: 6px 12px;
     border-radius: var(--radius);
-    font-size: 13px;
+    font-size: 14px;
     font-weight: 500;
     transition:
       color 0.15s,
@@ -149,13 +149,13 @@
     display: flex;
     align-items: center;
     gap: 4px;
-    font-size: 12px;
+    font-size: 13px;
     color: var(--text-muted);
     min-width: 0;
   }
   .now-playing-icon {
     flex-shrink: 0;
-    font-size: 10px;
+    font-size: 11px;
     color: var(--pink, #ef60a3);
   }
   .now-playing-song {
@@ -189,7 +189,7 @@
     }
     .now-playing {
       max-width: 100px;
-      font-size: 11px;
+      font-size: 12px;
     }
     .now-playing-song {
       max-width: 70px;

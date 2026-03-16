@@ -56,7 +56,7 @@
 <style>
   .log-container {
     font-family: var(--mono);
-    font-size: 11px;
+    font-size: 12px;
     line-height: 1.6;
     max-height: 300px;
     overflow-y: auto;

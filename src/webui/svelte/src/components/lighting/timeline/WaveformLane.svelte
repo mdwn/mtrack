@@ -120,7 +120,7 @@
     display: flex;
     align-items: center;
     padding: 0 8px;
-    font-size: 10px;
+    font-size: 13px;
     color: var(--text-dim);
     text-transform: uppercase;
     letter-spacing: 0.5px;

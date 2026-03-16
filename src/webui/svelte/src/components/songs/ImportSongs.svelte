@@ -290,7 +290,7 @@
     margin-bottom: 4px;
   }
   .hint {
-    font-size: 12px;
+    font-size: 13px;
     color: var(--text-muted);
     margin-bottom: 8px;
   }
@@ -320,7 +320,7 @@
   .path-input {
     flex: 1;
     font-family: var(--mono);
-    font-size: 12px;
+    font-size: 13px;
   }
   .breadcrumbs {
     display: flex;
@@ -332,7 +332,7 @@
     background: none;
     border: none;
     color: var(--accent);
-    font-size: 12px;
+    font-size: 13px;
     cursor: pointer;
     padding: 1px 3px;
     border-radius: 3px;
@@ -343,7 +343,7 @@
   }
   .sep {
     color: var(--text-dim);
-    font-size: 12px;
+    font-size: 13px;
   }
   .browser-body {
     flex: 1;
@@ -355,7 +355,7 @@
     padding: 32px 16px;
     text-align: center;
     color: var(--text-muted);
-    font-size: 13px;
+    font-size: 14px;
   }
   .browser-status.error {
     color: var(--red);
@@ -372,7 +372,7 @@
     border: none;
     background: none;
     color: var(--text);
-    font-size: 13px;
+    font-size: 14px;
     font-family: var(--sans);
     cursor: pointer;
     text-align: left;
@@ -395,7 +395,7 @@
   .entry-icon {
     flex: 0 0 20px;
     text-align: center;
-    font-size: 14px;
+    font-size: 15px;
   }
   .entry-name {
     flex: 1;
@@ -405,7 +405,7 @@
     white-space: nowrap;
   }
   .entry-type {
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.5px;
@@ -421,7 +421,7 @@
     gap: 8px;
   }
   .footer-info {
-    font-size: 12px;
+    font-size: 13px;
     color: var(--text-muted);
   }
   .footer-actions {
@@ -434,7 +434,7 @@
     margin-bottom: 12px;
   }
   .field-label {
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.5px;
@@ -442,11 +442,11 @@
     margin-bottom: 3px;
   }
   .field-input {
-    font-size: 13px;
+    font-size: 14px;
     padding: 6px 10px;
   }
   .error-msg {
-    font-size: 12px;
+    font-size: 13px;
     color: var(--red);
     margin-bottom: 8px;
   }

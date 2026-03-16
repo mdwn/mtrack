@@ -34,20 +34,23 @@
   });
 
   $effect(() => {
-    const titles: Record<string, string> = {
-      "#/": "Dashboard",
-      "#/config": "Config",
-      "#/songs": "Songs",
-      "#/playlists": "Playlists",
-      "#/status": "Status",
-    };
     const base = "mtrack";
-    const route = Object.keys(titles).find((k) =>
-      k === "#/"
-        ? currentHash === "#/" || currentHash === ""
-        : currentHash.startsWith(k),
-    );
-    const pageTitle = route ? titles[route] : "";
+    let pageTitle = "";
+
+    if (currentHash === "#/" || currentHash === "") {
+      pageTitle = "Dashboard";
+    } else if (currentHash.startsWith("#/config")) {
+      const rest = decodeURIComponent(currentHash.slice("#/config/".length));
+      pageTitle = rest ? `Config - ${rest.split("/")[0]}` : "Config";
+    } else if (currentHash.startsWith("#/songs")) {
+      const rest = decodeURIComponent(currentHash.slice("#/songs/".length));
+      pageTitle = rest ? `Songs - ${rest.split("/")[0]}` : "Songs";
+    } else if (currentHash.startsWith("#/playlists")) {
+      const rest = decodeURIComponent(currentHash.slice("#/playlists/".length));
+      pageTitle = rest ? `Playlists - ${rest}` : "Playlists";
+    } else if (currentHash.startsWith("#/status")) {
+      pageTitle = "Status";
+    }
 
     const song = $playbackStore.song_name;
     const playing = $playbackStore.is_playing;
@@ -66,11 +69,11 @@
   {#if currentHash === "#/" || currentHash === ""}
     <Dashboard />
   {:else if currentHash.startsWith("#/config")}
-    <ConfigEditor />
+    <ConfigEditor {currentHash} />
   {:else if currentHash.startsWith("#/songs")}
     <SongBrowser {currentHash} />
   {:else if currentHash.startsWith("#/playlists")}
-    <PlaylistEditor />
+    <PlaylistEditor {currentHash} />
   {:else if currentHash.startsWith("#/status")}
     <StatusPage />
   {:else}

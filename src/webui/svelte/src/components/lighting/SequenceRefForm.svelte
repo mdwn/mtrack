@@ -109,13 +109,13 @@
     gap: 3px;
   }
   .field-label {
-    font-size: 10px;
+    font-size: 11px;
     color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.5px;
   }
   .field .input {
-    font-size: 12px;
+    font-size: 13px;
     padding: 4px 6px;
     width: 140px;
   }
@@ -129,7 +129,7 @@
     display: flex;
     align-items: center;
     gap: 4px;
-    font-size: 12px;
+    font-size: 13px;
     text-transform: none;
     color: var(--text);
   }
@@ -138,7 +138,7 @@
     border: none;
     color: var(--text-muted);
     cursor: pointer;
-    font-size: 13px;
+    font-size: 14px;
     padding: 4px 6px;
     border-radius: 4px;
   }

@@ -513,13 +513,14 @@
     display: flex;
     flex-direction: column;
     gap: 12px;
+    min-height: calc(100vh - 280px);
   }
   .error-banner {
     background: rgba(220, 38, 38, 0.15);
     color: #ef4444;
     padding: 8px 12px;
     border-radius: 6px;
-    font-size: 13px;
+    font-size: 14px;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -529,7 +530,7 @@
     border: none;
     color: inherit;
     cursor: pointer;
-    font-size: 14px;
+    font-size: 15px;
     padding: 0 4px;
     margin-left: 8px;
     opacity: 0.7;
@@ -555,7 +556,7 @@
     background: var(--bg-input);
     border: none;
     color: var(--text-muted);
-    font-size: 12px;
+    font-size: 13px;
     padding: 4px 12px;
     cursor: pointer;
   }
@@ -567,7 +568,7 @@
     background: rgba(255, 255, 255, 0.06);
   }
   .file-info {
-    font-size: 12px;
+    font-size: 13px;
     color: var(--text-muted);
     display: flex;
     align-items: center;
@@ -575,7 +576,7 @@
   }
   .muted {
     color: var(--text-muted);
-    font-size: 13px;
+    font-size: 14px;
   }
   .raw-editor {
     display: flex;
@@ -595,7 +596,7 @@
     border: none;
     border-right: 1px solid var(--border);
     color: var(--text-muted);
-    font-size: 11px;
+    font-size: 12px;
     padding: 4px 10px;
     cursor: pointer;
     font-family: var(--mono);
@@ -611,7 +612,7 @@
     color: var(--red);
   }
   .raw-file-label {
-    font-size: 11px;
+    font-size: 12px;
     font-family: var(--mono);
     color: var(--text-muted);
     padding: 4px 0;
@@ -623,7 +624,7 @@
     border-radius: var(--radius);
     color: var(--text);
     font-family: var(--mono);
-    font-size: 13px;
+    font-size: 14px;
     padding: 12px;
     resize: vertical;
     tab-size: 4;
@@ -640,7 +641,7 @@
   }
   .validation-ok {
     color: var(--green);
-    font-size: 13px;
+    font-size: 14px;
     padding: 4px 0;
   }
   .validation-errors {
@@ -650,7 +651,7 @@
   }
   .validation-error {
     color: var(--red);
-    font-size: 12px;
+    font-size: 13px;
     font-family: var(--mono);
   }
   .modal-overlay {
@@ -689,10 +690,10 @@
   }
   .modal-header h3 {
     margin: 0;
-    font-size: 14px;
+    font-size: 15px;
   }
   .modal-song {
-    font-size: 12px;
+    font-size: 13px;
     color: var(--text-muted);
     flex: 1;
   }
@@ -709,7 +710,7 @@
     gap: 8px;
   }
   .modal-section-label {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.5px;
@@ -721,7 +722,7 @@
     gap: 4px;
   }
   .midi-dmx-file {
-    font-size: 11px;
+    font-size: 12px;
     font-family: var(--mono);
     color: var(--text-muted);
     background: rgba(255, 255, 255, 0.04);

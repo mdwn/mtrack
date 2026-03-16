@@ -12,7 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-import type { Timestamp, TempoSection } from "./types";
+import type { Timestamp, TempoSection, Cue } from "./types";
 
 /** A segment of constant tempo, used for measure/beat <-> ms conversion. */
 export interface TempoSegment {
@@ -285,6 +285,133 @@ export function snapToNearestGrid(
   const elapsed = ms - seg.startMs;
   const snapped = Math.round(elapsed / step) * step;
   return seg.startMs + snapped;
+}
+
+/** An offset marker on the timeline. */
+export interface OffsetMarker {
+  /** Adjusted ms position (for drawing the marker) */
+  ms: number;
+  /** Raw ms position from the tempo grid (before offsets applied) */
+  rawMs: number;
+  /** Duration of this offset in ms */
+  durationMs: number;
+  type: "offset" | "reset";
+  measures: number;
+  /** Which show this offset belongs to */
+  showIndex: number;
+  /** Which cue within the show has this offset */
+  cueIndex: number;
+}
+
+/**
+ * Generate grid lines shifted by cumulative offsets, so measure/beat
+ * positions align with offset-adjusted cue positions.
+ */
+export function getAdjustedGridLines(
+  tempo: TempoSection,
+  viewStartMs: number,
+  viewEndMs: number,
+  offsets: OffsetMarker[],
+): GridLine[] {
+  if (offsets.length === 0) {
+    return getGridLines(tempo, viewStartMs, viewEndMs);
+  }
+
+  // Sort offsets by rawMs
+  const sorted = [...offsets]
+    .filter((o) => o.type === "offset" && o.durationMs > 0)
+    .sort((a, b) => a.rawMs - b.rawMs);
+
+  // Compute cumulative offset durations at each offset point
+  const cumulativeAt: { rawMs: number; cumulativeMs: number }[] = [];
+  let cumulative = 0;
+  for (const off of sorted) {
+    cumulative += off.durationMs;
+    cumulativeAt.push({ rawMs: off.rawMs, cumulativeMs: cumulative });
+  }
+
+  // Convert view range from adjusted back to raw to know what grid lines to generate
+  // adjusted = raw + cumulativeOffset => raw = adjusted - cumulativeOffset
+  // We need a generous raw range to ensure we generate all visible grid lines
+  const totalOffset = cumulative;
+  const rawStart = Math.max(0, viewStartMs - totalOffset);
+  const rawEnd = viewEndMs;
+
+  const rawLines = getGridLines(tempo, rawStart, rawEnd);
+
+  // Shift each grid line by the cumulative offset at its raw position.
+  // Use >= so that a grid line coinciding with an offset appears BEFORE the gap.
+  const result: GridLine[] = [];
+  for (const line of rawLines) {
+    let offsetMs = 0;
+    for (const c of cumulativeAt) {
+      if (c.rawMs >= line.ms) break;
+      offsetMs = c.cumulativeMs;
+    }
+    const adjustedMs = line.ms + offsetMs;
+    // Only include lines visible in the adjusted view range
+    if (adjustedMs >= viewStartMs && adjustedMs <= viewEndMs) {
+      result.push({ ...line, ms: adjustedMs });
+    }
+  }
+
+  return result;
+}
+
+/** A cue with its adjusted (real playback) ms position accounting for cumulative offsets. */
+export interface AdjustedCuePosition {
+  cue: Cue;
+  index: number;
+  /** The adjusted ms position (raw timestamp + cumulative offset) */
+  adjustedMs: number;
+  /** The cumulative offset in ms applied to this cue */
+  cumulativeOffsetMs: number;
+}
+
+/** Convert N measures to ms at the tempo active at a given ms position. */
+export function offsetMeasuresToMs(
+  measures: number,
+  atMs: number,
+  tempo: TempoSection,
+): number {
+  const segments = buildTempoSegments(tempo);
+  let seg = segments[0];
+  for (let i = segments.length - 1; i >= 0; i--) {
+    if (segments[i].startMs <= atMs) {
+      seg = segments[i];
+      break;
+    }
+  }
+  return measures * (60000 / seg.bpm) * seg.beatsPerMeasure;
+}
+
+/**
+ * Compute adjusted cue positions for a show's cues, applying cumulative offsets.
+ * Each cue's offset_measures shifts all subsequent cues forward in real time.
+ */
+export function computeAdjustedCuePositions(
+  cues: Cue[],
+  tempo?: TempoSection,
+): AdjustedCuePosition[] {
+  let cumulativeOffsetMs = 0;
+  return cues.map((cue, index) => {
+    const baseMs = timestampToMs(cue.timestamp, tempo);
+    const adjustedMs = baseMs + cumulativeOffsetMs;
+    const result: AdjustedCuePosition = {
+      cue,
+      index,
+      adjustedMs,
+      cumulativeOffsetMs,
+    };
+    if (cue.offset_measures !== undefined && cue.offset_measures > 0 && tempo) {
+      cumulativeOffsetMs += offsetMeasuresToMs(
+        cue.offset_measures,
+        adjustedMs,
+        tempo,
+      );
+    }
+    return result;
+  });
 }
 
 /** Effect type color coding */

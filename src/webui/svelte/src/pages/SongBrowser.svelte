@@ -22,17 +22,38 @@
 
   let { currentHash }: Props = $props();
 
+  // Parse: #/songs/SongName or #/songs/SongName/tab
   let songName = $derived.by(() => {
     const prefix = "#/songs/";
     if (currentHash.startsWith(prefix) && currentHash.length > prefix.length) {
-      return decodeURIComponent(currentHash.slice(prefix.length));
+      const rest = decodeURIComponent(currentHash.slice(prefix.length));
+      // Strip trailing tab segment if present
+      const tabs = ["tracks", "midi", "lighting", "config"];
+      for (const tab of tabs) {
+        if (rest.endsWith("/" + tab)) {
+          return rest.slice(0, -(tab.length + 1));
+        }
+      }
+      return rest;
     }
     return null;
+  });
+
+  let initialTab = $derived.by(() => {
+    const prefix = "#/songs/";
+    if (!currentHash.startsWith(prefix)) return undefined;
+    const segments = currentHash.slice(prefix.length).split("/");
+    const last = segments[segments.length - 1];
+    const tabs = ["tracks", "midi", "lighting", "config"];
+    if (tabs.includes(last) && segments.length > 1) {
+      return last as "tracks" | "midi" | "lighting" | "config";
+    }
+    return undefined;
   });
 </script>
 
 {#if songName}
-  <SongDetail {songName} />
+  <SongDetail {songName} {initialTab} />
 {:else}
   <SongList />
 {/if}

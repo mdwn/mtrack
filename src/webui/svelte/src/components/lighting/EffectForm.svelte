@@ -750,7 +750,7 @@
     border: none;
     color: var(--text-dim);
     cursor: pointer;
-    font-size: 8px;
+    font-size: 10px;
     padding: 2px;
     width: 14px;
     flex-shrink: 0;
@@ -760,7 +760,7 @@
     border: 1px solid transparent;
     border-radius: 3px;
     color: var(--text);
-    font-size: 12px;
+    font-size: 13px;
     padding: 2px 4px;
   }
   .inline-input:hover,
@@ -791,7 +791,7 @@
     border: 1px solid rgba(255, 255, 255, 0.15);
   }
   .param-summary {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-dim);
     font-family: var(--mono);
     white-space: nowrap;
@@ -805,7 +805,7 @@
     border: none;
     color: var(--text-dim);
     cursor: pointer;
-    font-size: 11px;
+    font-size: 12px;
     padding: 2px 4px;
     border-radius: 3px;
     flex-shrink: 0;
@@ -833,7 +833,7 @@
     gap: 8px;
   }
   .detail-label {
-    font-size: 10px;
+    font-size: 11px;
     color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.5px;
@@ -851,7 +851,7 @@
     gap: 4px;
   }
   .param-label {
-    font-size: 10px;
+    font-size: 11px;
     color: var(--text-muted);
     white-space: nowrap;
   }
@@ -860,7 +860,7 @@
     border: 1px solid var(--border);
     border-radius: 3px;
     color: var(--text);
-    font-size: 11px;
+    font-size: 12px;
     padding: 2px 4px;
     width: 64px;
   }

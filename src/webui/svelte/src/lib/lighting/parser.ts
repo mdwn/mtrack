@@ -275,6 +275,21 @@ function parseCueBlock(lines: string[], startIdx: number): [Cue[], number] {
       continue;
     }
 
+    // Offset measures: offset N measures
+    const offsetMatch = line.match(/^offset\s+(\d+)\s+measures?$/);
+    if (offsetMatch) {
+      currentCue.offset_measures = parseInt(offsetMatch[1]);
+      i++;
+      continue;
+    }
+
+    // Reset measures
+    if (line === "reset_measures") {
+      currentCue.reset_measures = true;
+      i++;
+      continue;
+    }
+
     // Effect line: groups: type, params...
     // or: groups: type params...  (dimmer uses space instead of comma after type)
     const effectMatch = line.match(/^([^:]+):\s*(.+)/);
