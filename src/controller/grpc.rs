@@ -24,12 +24,12 @@ use crate::{
         player_service_server::{PlayerService, PlayerServiceServer},
         AddProfileRequest, Cue, GetActiveEffectsRequest, GetActiveEffectsResponse,
         GetConfigRequest, GetConfigResponse, GetCuesRequest, GetCuesResponse, NextRequest,
-        NextResponse, PlayFromRequest, PlayRequest, PlayResponse, PreviousRequest,
-        PreviousResponse, RemoveProfileRequest, StatusRequest, StatusResponse, StopRequest,
-        StopResponse, StopSamplesRequest, StopSamplesResponse, SwitchToPlaylistRequest,
-        SwitchToPlaylistResponse, UpdateAudioRequest, UpdateConfigResponse,
-        UpdateControllersRequest, UpdateDmxRequest, UpdateMidiRequest, UpdateProfileRequest,
-        FILE_DESCRIPTOR_SET,
+        NextResponse, PlayFromRequest, PlayRequest, PlayResponse, PlaySongFromRequest,
+        PreviousRequest, PreviousResponse, RemoveProfileRequest, StatusRequest, StatusResponse,
+        StopRequest, StopResponse, StopSamplesRequest, StopSamplesResponse,
+        SwitchToPlaylistRequest, SwitchToPlaylistResponse, UpdateAudioRequest,
+        UpdateConfigResponse, UpdateControllersRequest, UpdateDmxRequest, UpdateMidiRequest,
+        UpdateProfileRequest, FILE_DESCRIPTOR_SET,
     },
 };
 
@@ -176,6 +176,21 @@ impl PlayerService for PlayerServer {
         Self::play_response(self.player.play_from(start_time).await)
     }
 
+    async fn play_song_from(
+        &self,
+        request: Request<PlaySongFromRequest>,
+    ) -> Result<Response<PlayResponse>, Status> {
+        let req = request.into_inner();
+        let start_time = req
+            .start_time
+            .map(std::time::Duration::try_from)
+            .transpose()
+            .map_err(|e| Status::invalid_argument(format!("Invalid duration: {}", e)))?
+            .unwrap_or(std::time::Duration::ZERO);
+
+        Self::play_response(self.player.play_song_from(&req.song_name, start_time).await)
+    }
+
     async fn previous(
         &self,
         _: Request<PreviousRequest>,
@@ -275,10 +290,12 @@ impl PlayerService for PlayerServer {
             None => None,
         };
 
+        let playing = self.player.is_playing().await;
+
         Ok(Response::new(StatusResponse {
             playlist_name: playlist_name.to_string(),
             current_song,
-            playing: elapsed.is_some(),
+            playing,
             elapsed,
         }))
     }
@@ -913,10 +930,22 @@ mod test {
         client.play(PlayRequest {}).await?;
         eventually(|| device.is_playing(), "Song never started playing");
 
-        let resp = client.status(StatusRequest {}).await?;
-        let status = resp.into_inner();
-        assert!(status.playing);
-        assert!(status.elapsed.is_some());
+        // play_start_time is set asynchronously after clock.start(), so
+        // elapsed may briefly be None even though playing is true. Poll.
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            let resp = client.status(StatusRequest {}).await?;
+            let status = resp.into_inner();
+            assert!(status.playing);
+            if status.elapsed.is_some() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "elapsed should have a value while playing"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
 
         client.stop(StopRequest {}).await?;
         eventually(|| !device.is_playing(), "Song never stopped");

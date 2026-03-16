@@ -34,6 +34,8 @@
   import TempoLane from "./TempoLane.svelte";
   import CuePropertiesPanel from "./CuePropertiesPanel.svelte";
   import SequenceEditorModal from "./SequenceEditorModal.svelte";
+  import StagePreview from "./StagePreview.svelte";
+  import { tick } from "svelte";
 
   interface Props {
     lightFile: LightFile;
@@ -41,7 +43,11 @@
     sequenceNames: string[];
     songDurationMs: number;
     waveformTracks: WaveformTrack[];
+    isPlaying?: boolean;
+    playheadMs?: number | null;
     onchange: (lightFile: LightFile) => void;
+    onplay?: (ms: number) => void;
+    onstop?: () => void;
   }
 
   let {
@@ -50,7 +56,11 @@
     sequenceNames,
     songDurationMs,
     waveformTracks,
+    isPlaying = false,
+    playheadMs = null,
     onchange,
+    onplay,
+    onstop,
   }: Props = $props();
 
   // Timeline state
@@ -60,6 +70,64 @@
   let cursorMs = $state<number | null>(null);
   let snapEnabled = $state(true);
   let snapResolution = $state<"beat" | "measure">("beat");
+
+  // Playback cursor (the ruler position to play from)
+  let playCursorMs = $state<number>(0);
+
+  function handlePlay() {
+    onplay?.(playCursorMs);
+  }
+
+  function handlePause() {
+    // Remember where the playhead was so we can resume from there
+    if (playheadMs !== null && playheadMs !== undefined) {
+      playCursorMs = playheadMs;
+    }
+    onstop?.();
+  }
+
+  function handleStop() {
+    playCursorMs = 0;
+    onstop?.();
+    scrollToCursorMs(0);
+  }
+
+  function scrollToCursorMs(ms: number) {
+    if (!scrollContainer) return;
+    const contentWidth = viewportWidth - 80;
+    scrollContainer.scrollLeft = ms * pixelsPerMs - contentWidth / 2;
+  }
+
+  function handleSkipStart() {
+    playCursorMs = 0;
+    scrollToCursorMs(0);
+  }
+
+  function handleSkipEnd() {
+    playCursorMs = totalDurationMs;
+    scrollToCursorMs(totalDurationMs);
+  }
+
+  function handleKeydown(e: KeyboardEvent) {
+    // Ignore if focus is in an input/textarea/select
+    const tag = (e.target as HTMLElement)?.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+
+    if (e.code === "Space") {
+      e.preventDefault();
+      if (isPlaying) {
+        handlePause();
+      } else if (onplay) {
+        handlePlay();
+      }
+    } else if (e.code === "Home") {
+      e.preventDefault();
+      if (!isPlaying) handleSkipStart();
+    } else if (e.code === "End") {
+      e.preventDefault();
+      if (!isPlaying) handleSkipEnd();
+    }
+  }
 
   // Selection
   let selectedShowIndex = $state<number | null>(null);
@@ -191,24 +259,45 @@
 
   // --- Scroll ---
   let scrollRaf = 0;
+  let zooming = false;
   function handleScroll() {
     if (scrollRaf) return;
     scrollRaf = requestAnimationFrame(() => {
       scrollRaf = 0;
-      if (scrollContainer) scrollLeft = scrollContainer.scrollLeft;
+      // Don't overwrite scrollLeft during a zoom — the zoom handler owns it.
+      if (!zooming && scrollContainer) scrollLeft = scrollContainer.scrollLeft;
     });
   }
 
   const MIN_ZOOM = 0.01;
   const MAX_ZOOM = 2;
 
-  function handleZoom(newPixelsPerMs: number) {
-    const centerMs = (scrollLeft + viewportWidth / 2) / pixelsPerMs;
-    pixelsPerMs = newPixelsPerMs;
+  async function applyZoom(
+    newPxPerMs: number,
+    anchorMs: number,
+    anchorPx: number,
+  ) {
+    zooming = true;
+    pixelsPerMs = newPxPerMs;
+    // Flush DOM so the scroll-spacer width reflects the new pixelsPerMs
+    // before we set scrollLeft (otherwise the browser clamps to the old range).
+    await tick();
     if (scrollContainer) {
-      scrollContainer.scrollLeft =
-        centerMs * newPixelsPerMs - viewportWidth / 2;
+      const newScroll = anchorMs * newPxPerMs - anchorPx;
+      scrollContainer.scrollLeft = newScroll;
+      scrollLeft = scrollContainer.scrollLeft;
     }
+    zooming = false;
+  }
+
+  function handleZoom(newPixelsPerMs: number) {
+    if (!scrollContainer) return;
+    // Anchor on the center of the content area (exclude 80px label column)
+    const contentWidth = viewportWidth - 80;
+    // Read directly from DOM — the state variable may be stale during rapid zoom.
+    const currentScroll = scrollContainer.scrollLeft;
+    const centerMs = (currentScroll + contentWidth / 2) / pixelsPerMs;
+    applyZoom(newPixelsPerMs, centerMs, contentWidth / 2);
   }
 
   function handleRulerPan(deltaPx: number) {
@@ -228,7 +317,9 @@
     const rect = scrollContainer.getBoundingClientRect();
     // Mouse position relative to the content area (account for 80px label column)
     const mouseXInViewport = e.clientX - rect.left - 80;
-    const mouseMs = (scrollLeft + mouseXInViewport) / pixelsPerMs;
+    // Read directly from DOM — the state variable may be stale during rapid zoom.
+    const currentScroll = scrollContainer.scrollLeft;
+    const mouseMs = (currentScroll + mouseXInViewport) / pixelsPerMs;
 
     const zoomFactor = e.deltaY > 0 ? 1 / 1.15 : 1.15;
     const newPxPerMs = Math.min(
@@ -236,9 +327,7 @@
       Math.max(MIN_ZOOM, pixelsPerMs * zoomFactor),
     );
 
-    pixelsPerMs = newPxPerMs;
-    // Keep the point under the mouse cursor stationary
-    scrollContainer.scrollLeft = mouseMs * newPxPerMs - mouseXInViewport;
+    applyZoom(newPxPerMs, mouseMs, mouseXInViewport);
   }
 
   function fitView() {
@@ -460,6 +549,10 @@
     {snapEnabled}
     {snapResolution}
     hasTempo={!!lightFile.tempo}
+    {isPlaying}
+    canPlay={lightFile.shows.length > 0 && !!onplay}
+    {playheadMs}
+    {playCursorMs}
     onzoom={handleZoom}
     onfitview={fitView}
     onsnapchange={(enabled, res) => {
@@ -468,9 +561,15 @@
     }}
     onaddshow={addShow}
     onaddsequence={addSequence}
+    onplay={handlePlay}
+    onpause={handlePause}
+    onstop={handleStop}
+    onskipstart={handleSkipStart}
+    onskipend={handleSkipEnd}
   />
 
   <div class="timeline-body">
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div
       class="timeline-scroll"
       bind:this={scrollContainer}
@@ -478,6 +577,7 @@
       onwheel={handleWheel}
       onmousemove={handleMouseMove}
       onmouseleave={handleMouseLeave}
+      onkeydown={handleKeydown}
       role="region"
       aria-label="Lighting timeline"
       tabindex="-1"
@@ -492,6 +592,11 @@
             {scrollLeft}
             {viewportWidth}
             offsets={getOffsetMarkers()}
+            {playheadMs}
+            {playCursorMs}
+            onclick={(ms) => {
+              playCursorMs = ms;
+            }}
             onpan={handleRulerPan}
             oncontextmenu={handleRulerContextMenu}
             onoffsetclick={handleOffsetClick}
@@ -540,6 +645,7 @@
             {snapEnabled}
             {snapResolution}
             offsets={getOffsetMarkers()}
+            {playheadMs}
             onselect={(ci, subLane) => selectShowCue(si, ci, subLane)}
             oncuechange={(ci, cue) => handleShowCueChange(si, ci, cue)}
             oncuedelete={(ci) => handleShowCueDelete(si, ci)}
@@ -559,40 +665,48 @@
     </div>
   </div>
 
-  <!-- Detail area -->
-  <div class="detail-area">
-    {#if getSelectedCue()}
-      {@const selCue = getSelectedCue()}
-      {#if selCue}
-        <CuePropertiesPanel
-          cue={selCue.cue}
-          laneName={selCue.laneName}
-          {groups}
-          {sequenceNames}
-          tempo={lightFile.tempo}
-          focusTab={selectedSubLane}
-          onchange={handleSelectedCueChange}
-          ondelete={handleSelectedCueDelete}
-          onclose={clearSelection}
-        />
-      {/if}
-    {:else if lightFile.sequences.length > 0}
-      <div class="detail-sequences">
-        <span class="detail-sequences-label">Sequences</span>
-        <div class="seq-list">
-          {#each lightFile.sequences as seq, i (seq.name)}
-            <button class="seq-chip" onclick={() => (editingSequenceIndex = i)}>
-              <span class="seq-chip-name">{seq.name}</span>
-              <span class="seq-chip-count">{seq.cues.length} cues</span>
-            </button>
-          {/each}
+  <!-- Bottom panel: stage preview + detail area -->
+  <div class="bottom-panel">
+    <div class="stage-area">
+      <StagePreview />
+    </div>
+    <div class="detail-area">
+      {#if getSelectedCue()}
+        {@const selCue = getSelectedCue()}
+        {#if selCue}
+          <CuePropertiesPanel
+            cue={selCue.cue}
+            laneName={selCue.laneName}
+            {groups}
+            {sequenceNames}
+            tempo={lightFile.tempo}
+            focusTab={selectedSubLane}
+            onchange={handleSelectedCueChange}
+            ondelete={handleSelectedCueDelete}
+            onclose={clearSelection}
+          />
+        {/if}
+      {:else if lightFile.sequences.length > 0}
+        <div class="detail-sequences">
+          <span class="detail-sequences-label">Sequences</span>
+          <div class="seq-list">
+            {#each lightFile.sequences as seq, i (seq.name)}
+              <button
+                class="seq-chip"
+                onclick={() => (editingSequenceIndex = i)}
+              >
+                <span class="seq-chip-name">{seq.name}</span>
+                <span class="seq-chip-count">{seq.cues.length} cues</span>
+              </button>
+            {/each}
+          </div>
         </div>
-      </div>
-    {:else}
-      <div class="detail-empty">
-        Select a cue to edit, or double-click a lane to create one.
-      </div>
-    {/if}
+      {:else}
+        <div class="detail-empty">
+          Select a cue to edit, or double-click a lane to create one.
+        </div>
+      {/if}
+    </div>
   </div>
 </div>
 
@@ -747,9 +861,22 @@
     font-size: 14px;
   }
 
-  .detail-area {
+  .bottom-panel {
+    display: flex;
+    gap: 8px;
     flex-shrink: 0;
-    height: 200px;
+    height: 280px;
+  }
+  .stage-area {
+    width: 320px;
+    flex-shrink: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+  }
+  .detail-area {
+    flex: 1;
+    min-width: 0;
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
     overflow: hidden;

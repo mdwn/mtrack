@@ -149,6 +149,14 @@ impl Playlist {
         Some(current.clone())
     }
 
+    /// Sets the playlist position to the song matching the given name.
+    /// Returns the song if found, None otherwise.
+    pub fn navigate_to(&self, name: &str) -> Option<Arc<Song>> {
+        let idx = self.songs.iter().position(|s| s == name)?;
+        *self.position.write() = idx;
+        self.registry.get(name).ok()
+    }
+
     /// Returns the underlying song registry.
     pub fn registry(&self) -> &Arc<Songs> {
         &self.registry
@@ -338,6 +346,36 @@ mod test {
         assert!(display.contains("Playlist (2 songs):"));
         assert!(display.contains("Song 1"));
         assert!(display.contains("Song 2"));
+    }
+
+    #[test]
+    fn navigate_to_found() {
+        let playlist = two_song_playlist(test_registry());
+        assert_eq!(playlist.position(), 0);
+        let song = playlist.navigate_to("Song 2");
+        assert!(song.is_some());
+        assert_eq!(song.unwrap().name(), "Song 2");
+        assert_eq!(playlist.position(), 1);
+        assert_eq!(playlist.current().unwrap().name(), "Song 2");
+    }
+
+    #[test]
+    fn navigate_to_not_found() {
+        let playlist = two_song_playlist(test_registry());
+        let song = playlist.navigate_to("Nonexistent");
+        assert!(song.is_none());
+        // Position should not change
+        assert_eq!(playlist.position(), 0);
+    }
+
+    #[test]
+    fn navigate_to_first_song() {
+        let playlist = two_song_playlist(test_registry());
+        playlist.next(); // move to Song 2
+        assert_eq!(playlist.position(), 1);
+        let song = playlist.navigate_to("Song 1");
+        assert!(song.is_some());
+        assert_eq!(playlist.position(), 0);
     }
 
     #[test]

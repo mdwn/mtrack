@@ -33,6 +33,8 @@
     oncontextmenu?: (ms: number, clientX: number, clientY: number) => void;
     onoffsetclick?: (offset: OffsetMarker) => void;
     offsets?: OffsetMarker[];
+    playheadMs?: number | null;
+    playCursorMs?: number | null;
   }
 
   let {
@@ -46,6 +48,8 @@
     oncontextmenu: onctx,
     onoffsetclick,
     offsets = [],
+    playheadMs = null,
+    playCursorMs = null,
   }: Props = $props();
 
   let canvasEl: HTMLCanvasElement | undefined = $state();
@@ -159,6 +163,47 @@
       }
     }
 
+    // Play cursor marker (where playback will start from)
+    if (
+      playCursorMs !== null &&
+      playCursorMs !== undefined &&
+      playheadMs === null
+    ) {
+      const px = msToPixel(playCursorMs, pixelsPerMs) - scrollLeft;
+      if (px >= 0 && px <= w) {
+        ctx.strokeStyle = "rgba(34, 197, 94, 0.5)";
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 3]);
+        ctx.beginPath();
+        ctx.moveTo(px, 0);
+        ctx.lineTo(px, h);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Small triangle at top
+        ctx.fillStyle = "rgba(34, 197, 94, 0.7)";
+        ctx.beginPath();
+        ctx.moveTo(px, 0);
+        ctx.lineTo(px - 4, 6);
+        ctx.lineTo(px + 4, 6);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+
+    // Playhead line
+    if (playheadMs !== null && playheadMs !== undefined) {
+      const px = msToPixel(playheadMs, pixelsPerMs) - scrollLeft;
+      if (px >= 0 && px <= w) {
+        ctx.strokeStyle = "#22c55e";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(px, 0);
+        ctx.lineTo(px, h);
+        ctx.stroke();
+      }
+    }
+
     // Bottom border
     ctx.strokeStyle = "#333";
     ctx.lineWidth = 1;
@@ -248,6 +293,8 @@
     void scrollLeft;
     void viewportWidth;
     void offsets;
+    void playheadMs;
+    void playCursorMs;
     draw();
   });
 </script>

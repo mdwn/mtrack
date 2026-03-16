@@ -130,6 +130,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Dashboard playlist selector**: The dashboard playlist card now shows a dropdown of all
   available playlists instead of a hardcoded Playlist/All Songs toggle. The available
   playlists and active playlist name are broadcast via WebSocket.
+- **Timeline playback from editor**: The lighting timeline editor now supports full audio
+  playback with synchronized lighting preview. Users can click the ruler to set a play
+  position, then play from that point to hear audio and see lighting effects update in
+  real time. Features include:
+  - Full transport controls: skip to start, stop (reset), play/pause toggle, skip to end
+  - Spacebar play/pause toggle, Home/End keyboard shortcuts for skip
+  - Green playhead line across ruler and all show lanes during playback
+  - Dashed green cursor marker showing where playback will start
+  - Pause remembers playhead position for resume; Stop resets to beginning
+  - Auto-save of dirty lighting files before playback starts
+  - Client-side `requestAnimationFrame` interpolation for smooth playhead movement
+  - Toolbar time display: green during playback, dimmed at play cursor position
+- **Stage preview in timeline editor**: A compact stage visualization is displayed alongside
+  the cue properties panel at the bottom of the timeline editor. Shows real-time fixture
+  RGB output with glow and strobe animation, plus active effect names. Fixtures can be
+  rearranged by dragging, same as the dashboard stage view.
+- **`PlaySongFrom` gRPC endpoint**: New `PlaySongFrom` RPC accepts a song name and start
+  time, switches to the `all_songs` playlist, navigates to the song, and begins playback.
+  This enables the timeline editor to play any song from any position in a single call.
+- **`Playlist::navigate_to(name)`**: New method sets the playlist position to the song
+  matching the given name, returning the song if found.
 
 ### Changed
 
@@ -180,6 +201,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Playback elapsed time accuracy**: `play_start_time` is now set inside `play_files`
+  immediately after `clock.start()`, rather than in `play_from` before subsystem setup.
+  Previously, the variable setup time (loading audio buffers, seeking, DMX timeline
+  reconstruction) was included in the reported elapsed time, causing lighting and audio
+  to drift apart when seeking to mid-song positions.
+- **Timeline zoom stability**: Toolbar zoom (+/- buttons) now correctly anchors on the
+  center of the content area, accounting for the 80px label column. Previously, each zoom
+  step shifted the center by a fraction of 40px, causing compounding drift that could move
+  the view by many measures when zooming deeply.
 - **Sample upload path injection**: The sample file upload endpoint now canonicalizes the
   project root before constructing filesystem paths, preventing path traversal via crafted
   filenames.

@@ -53,6 +53,7 @@
     laneHeight?: number;
     hideLabel?: boolean;
     offsets?: OffsetMarker[];
+    playheadMs?: number | null;
   }
 
   let {
@@ -75,6 +76,7 @@
     laneHeight,
     hideLabel = false,
     offsets = [],
+    playheadMs = null,
   }: Props = $props();
 
   let canvasEl: HTMLCanvasElement | undefined = $state();
@@ -236,6 +238,19 @@
       ctx.lineTo(x, h);
       ctx.stroke();
     }
+
+    // Playhead line
+    if (playheadMs !== null && playheadMs !== undefined) {
+      const px = msToPixel(playheadMs, pixelsPerMs) - scrollLeft;
+      if (px >= 0 && px <= w) {
+        ctx.strokeStyle = "#22c55e";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(px, 0);
+        ctx.lineTo(px, h);
+        ctx.stroke();
+      }
+    }
   }
 
   $effect(() => {
@@ -244,6 +259,7 @@
     void viewportWidth;
     void tempo;
     void offsets;
+    void playheadMs;
     drawGrid();
   });
 </script>

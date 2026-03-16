@@ -106,6 +106,7 @@ struct PlaybackContext {
     cancel_handle: CancelHandle,
     play_tx: oneshot::Sender<Result<(), String>>,
     start_time: Duration,
+    play_start_time: Arc<Mutex<Option<SystemTime>>>,
 }
 
 /// Groups hardware devices for constructing a Player without discovering real hardware.
@@ -822,6 +823,22 @@ impl Player {
         });
     }
 
+    /// Plays a specific song by name, starting from the given time.
+    /// Switches to the all_songs playlist, navigates to the song, and calls play_from.
+    /// Returns an error if the song is not found.
+    pub async fn play_song_from(
+        &self,
+        song_name: &str,
+        start_time: Duration,
+    ) -> Result<Option<Arc<Song>>, Box<dyn Error>> {
+        let all_songs = self.get_all_songs_playlist();
+        if all_songs.navigate_to(song_name).is_none() {
+            return Err(format!("Song '{}' not found", song_name).into());
+        }
+        *self.active_playlist.write() = "all_songs".to_string();
+        self.play_from(start_time).await
+    }
+
     /// Plays the song at the current position. Returns the song if playback started successfully.
     /// Returns None if a song is already playing.
     /// Returns an error if lighting show validation fails.
@@ -897,6 +914,7 @@ impl Player {
                 cancel_handle: cancel_handle.clone(),
                 play_tx,
                 start_time,
+                play_start_time: play_start_time.clone(),
             };
             tokio::task::spawn_blocking(move || {
                 Player::play_files(ctx);
@@ -906,11 +924,6 @@ impl Player {
             join: join_handle,
             cancel: cancel_handle,
         });
-
-        {
-            let mut play_start_time = play_start_time.lock().await;
-            *play_start_time = Some(SystemTime::now());
-        }
 
         {
             let join_mutex = self.join.clone();
@@ -968,6 +981,7 @@ impl Player {
             cancel_handle,
             play_tx,
             start_time,
+            play_start_time,
         } = ctx;
 
         // Check if any subsystems are active.
@@ -1089,6 +1103,14 @@ impl Player {
 
         // Start the clock — this is the "go" signal for all subsystems.
         clock.start();
+
+        // Set play_start_time NOW, at the exact moment playback begins.
+        // Offset backwards by start_time so elapsed() reflects song position.
+        // We use blocking_lock because we're in a spawn_blocking context.
+        {
+            let mut pst = play_start_time.blocking_lock();
+            *pst = Some(SystemTime::now() - start_time);
+        }
 
         if let Some(audio_join_handle) = audio_join_handle {
             if let Err(e) = audio_join_handle.join() {
@@ -1992,11 +2014,19 @@ mod test {
         player.play().await?;
         eventually(|| device.is_playing(), "Song never started playing");
 
-        let elapsed = player.elapsed().await?;
-        assert!(
-            elapsed.is_some(),
-            "elapsed should have a value while playing"
-        );
+        // play_start_time is set inside play_files after clock.start(),
+        // so there may be a brief gap after is_playing becomes true.
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            if player.elapsed().await?.is_some() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "elapsed should have a value while playing"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
 
         player.stop().await;
         eventually(|| !device.is_playing(), "Song never stopped playing");
@@ -3111,6 +3141,116 @@ mod test {
         assert!(playlists.contains_key("my_set"));
         assert_eq!(playlists["my_set"].songs().len(), 2);
 
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn play_song_from_valid() -> Result<(), Box<dyn Error>> {
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
+        let playlist = Playlist::new(
+            "playlist",
+            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
+            songs.clone(),
+        )?;
+        let player = Player::new(
+            test_playlists(playlist, songs.clone()),
+            "playlist".to_string(),
+            &config::Player::new(
+                vec![],
+                Some(config::Audio::new("mock-device")),
+                Some(config::Midi::new("mock-midi-device", None)),
+                None,
+                HashMap::new(),
+                "assets/songs",
+            ),
+            None,
+        )?;
+        player.await_hardware_ready().await;
+        let device = player.audio_device().expect("audio device").to_mock()?;
+
+        let result = player
+            .play_song_from("Song 2", std::time::Duration::ZERO)
+            .await?;
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().name(), "Song 2");
+        eventually(|| device.is_playing(), "Song never started playing");
+
+        // Should have switched to all_songs playlist
+        assert_eq!(player.get_playlist().name(), "all_songs");
+
+        player.stop().await;
+        eventually(|| !device.is_playing(), "Song never stopped");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn play_song_from_not_found() -> Result<(), Box<dyn Error>> {
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
+        let playlist = Playlist::new(
+            "playlist",
+            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
+            songs.clone(),
+        )?;
+        let player = Player::new(
+            test_playlists(playlist, songs.clone()),
+            "playlist".to_string(),
+            &config::Player::new(
+                vec![],
+                Some(config::Audio::new("mock-device")),
+                Some(config::Midi::new("mock-midi-device", None)),
+                None,
+                HashMap::new(),
+                "assets/songs",
+            ),
+            None,
+        )?;
+        player.await_hardware_ready().await;
+
+        let result = player
+            .play_song_from("Nonexistent Song", std::time::Duration::ZERO)
+            .await;
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(err.to_string().contains("not found"));
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn play_song_from_while_playing() -> Result<(), Box<dyn Error>> {
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
+        let playlist = Playlist::new(
+            "playlist",
+            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
+            songs.clone(),
+        )?;
+        let player = Player::new(
+            test_playlists(playlist, songs.clone()),
+            "playlist".to_string(),
+            &config::Player::new(
+                vec![],
+                Some(config::Audio::new("mock-device")),
+                Some(config::Midi::new("mock-midi-device", None)),
+                None,
+                HashMap::new(),
+                "assets/songs",
+            ),
+            None,
+        )?;
+        player.await_hardware_ready().await;
+        let device = player.audio_device().expect("audio device").to_mock()?;
+
+        // Start playing first
+        player.play().await?;
+        eventually(|| device.is_playing(), "Song never started playing");
+
+        // play_song_from while already playing should return None
+        let result = player
+            .play_song_from("Song 2", std::time::Duration::ZERO)
+            .await?;
+        assert!(result.is_none());
+
+        player.stop().await;
+        eventually(|| !device.is_playing(), "Song never stopped");
         Ok(())
     }
 }

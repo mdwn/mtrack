@@ -279,10 +279,12 @@ impl Driver {
             Some(song) => song,
             None => return Ok(()),
         };
+        let is_playing = player.is_playing().await;
         let elapsed = player.elapsed().await?;
-        let status_string = match elapsed {
-            Some(_) => STATUS_PLAYING,
-            None => STATUS_STOPPED,
+        let status_string = if is_playing {
+            STATUS_PLAYING
+        } else {
+            STATUS_STOPPED
         };
         let duration_string = format!(
             "{}/{}",
@@ -567,7 +569,7 @@ mod test {
 
         // Wait for player's internal state to update as well
         eventually_async(
-            || async { player.elapsed().await.map(|e| e.is_none()).unwrap_or(false) },
+            || async { !player.is_playing().await },
             "Player state never updated to stopped",
         )
         .await;

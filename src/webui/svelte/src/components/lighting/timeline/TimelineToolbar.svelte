@@ -21,11 +21,20 @@
     snapEnabled: boolean;
     snapResolution: "beat" | "measure";
     hasTempo: boolean;
+    isPlaying: boolean;
+    canPlay: boolean;
+    playheadMs?: number | null;
+    playCursorMs?: number | null;
     onzoom: (pixelsPerMs: number) => void;
     onfitview: () => void;
     onsnapchange: (enabled: boolean, resolution: "beat" | "measure") => void;
     onaddshow: () => void;
     onaddsequence: () => void;
+    onplay?: () => void;
+    onpause?: () => void;
+    onstop?: () => void;
+    onskipstart?: () => void;
+    onskipend?: () => void;
   }
 
   let {
@@ -34,11 +43,20 @@
     snapEnabled,
     snapResolution,
     hasTempo,
+    isPlaying,
+    canPlay,
+    playheadMs = null,
+    playCursorMs = null,
     onzoom,
     onfitview,
     onsnapchange,
     onaddshow,
     onaddsequence,
+    onplay,
+    onpause = () => {},
+    onstop = () => {},
+    onskipstart = () => {},
+    onskipend = () => {},
   }: Props = $props();
 
   const MIN_ZOOM = 0.01; // 10px per second
@@ -54,6 +72,42 @@
 </script>
 
 <div class="toolbar">
+  <div class="toolbar-group transport">
+    <button
+      class="btn btn-sm btn-transport"
+      onclick={onskipstart}
+      title="Go to start"
+      disabled={isPlaying}>&#9198;</button
+    >
+    <button
+      class="btn btn-sm btn-transport btn-stop-transport"
+      onclick={onstop}
+      title="Stop (reset to start)"
+      disabled={!isPlaying && (playCursorMs === null || playCursorMs === 0)}
+      >&#9632;</button
+    >
+    {#if isPlaying}
+      <button
+        class="btn btn-sm btn-transport btn-pause"
+        onclick={onpause}
+        title="Pause">&#9646;&#9646;</button
+      >
+    {:else}
+      <button
+        class="btn btn-sm btn-transport btn-play"
+        onclick={onplay}
+        disabled={!canPlay}
+        title="Play from cursor">&#9654;</button
+      >
+    {/if}
+    <button
+      class="btn btn-sm btn-transport"
+      onclick={onskipend}
+      title="Go to end"
+      disabled={isPlaying}>&#9197;</button
+    >
+  </div>
+
   <div class="toolbar-group">
     <button class="btn btn-sm" onclick={zoomOut} title="Zoom out">-</button>
     <button class="btn btn-sm" onclick={onfitview} title="Fit to view"
@@ -96,8 +150,12 @@
 
   <div class="toolbar-spacer"></div>
 
-  {#if cursorMs !== null}
+  {#if isPlaying && playheadMs !== null}
+    <span class="cursor-time playhead-time">{formatMs(playheadMs)}</span>
+  {:else if cursorMs !== null}
     <span class="cursor-time">{formatMs(cursorMs)}</span>
+  {:else if playCursorMs !== null && playCursorMs > 0}
+    <span class="cursor-time play-cursor-time">{formatMs(playCursorMs)}</span>
   {/if}
 </div>
 
@@ -139,11 +197,50 @@
     background: var(--bg-input);
     color: var(--text);
   }
+  .transport {
+    gap: 2px;
+  }
+  .btn-transport {
+    min-width: 28px;
+    padding: 3px 5px;
+    font-size: 12px;
+    line-height: 1;
+    letter-spacing: -1px;
+  }
+  .btn-transport:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+  }
+  .btn-play {
+    color: var(--green, #22c55e);
+  }
+  .btn-play:hover:not(:disabled) {
+    background: rgba(34, 197, 94, 0.2);
+  }
+  .btn-pause {
+    color: var(--accent, #5eacea);
+  }
+  .btn-pause:hover {
+    background: rgba(94, 172, 234, 0.2);
+  }
+  .btn-stop-transport {
+    color: var(--text-muted);
+  }
+  .btn-stop-transport:hover:not(:disabled) {
+    color: var(--red, #ef4444);
+    background: rgba(239, 68, 68, 0.15);
+  }
   .cursor-time {
     font-family: var(--mono);
     font-size: 13px;
     color: var(--text-muted);
     min-width: 80px;
     text-align: right;
+  }
+  .playhead-time {
+    color: var(--green, #22c55e);
+  }
+  .play-cursor-time {
+    color: rgba(34, 197, 94, 0.6);
   }
 </style>
