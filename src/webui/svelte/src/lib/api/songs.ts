@@ -97,6 +97,10 @@ export async function importFileToSong(
   );
 }
 
+export async function deleteSong(name: string): Promise<Response> {
+  return fetch(`/api/songs/${encodeURIComponent(name)}`, { method: "DELETE" });
+}
+
 export async function fetchWaveform(name: string): Promise<WaveformData> {
   const res = await get(`/songs/${encodeURIComponent(name)}/waveform`);
   if (!res.ok) throw new Error(`Failed to fetch waveform: ${res.status}`);
@@ -143,4 +147,24 @@ export async function createSongInDirectory(
   name?: string,
 ): Promise<Response> {
   return post("/browse/create-song", JSON.stringify({ path: dirPath, name }));
+}
+
+export interface BulkImportResult {
+  created: string[];
+  skipped: string[];
+  failed: { name: string; error: string }[];
+}
+
+export async function bulkImportSongs(
+  dirPath: string,
+): Promise<BulkImportResult> {
+  const res = await post(
+    "/browse/bulk-import",
+    JSON.stringify({ path: dirPath }),
+  );
+  if (!res.ok) {
+    const data = await res.json().catch(() => null);
+    throw new Error(data?.error ?? `Bulk import failed: ${res.status}`);
+  }
+  return res.json();
 }

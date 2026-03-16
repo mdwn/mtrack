@@ -50,7 +50,8 @@ pub fn router() -> Router<WebUiState> {
             "/songs/{name}",
             get(songs_api::get_song)
                 .post(songs_api::post_song)
-                .put(songs_api::put_song),
+                .put(songs_api::put_song)
+                .delete(songs_api::delete_song),
         )
         .route(
             "/songs/{name}/tracks/{filename}",
@@ -68,6 +69,7 @@ pub fn router() -> Router<WebUiState> {
             "/browse/create-song",
             post(browse::create_song_in_directory),
         )
+        .route("/browse/bulk-import", post(browse::bulk_import))
         .route(
             "/playlist",
             get(playlists::get_playlist).put(playlists::put_playlist),

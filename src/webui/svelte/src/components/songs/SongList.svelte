@@ -16,6 +16,7 @@
   import {
     fetchSongs,
     fetchWaveform,
+    deleteSong,
     type SongSummary,
     type WaveformData,
   } from "../../lib/api/songs";
@@ -135,6 +136,27 @@
     showImport = false;
     load();
   }
+
+  async function handleDelete(e: MouseEvent, name: string) {
+    e.stopPropagation();
+    if (
+      !confirm(
+        `Remove "${name}" from the song registry?\n\nThis only deletes song.yaml — audio and other files are kept.`,
+      )
+    )
+      return;
+    try {
+      const res = await deleteSong(name);
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        alert(data?.error ?? `Delete failed (${res.status})`);
+        return;
+      }
+      load();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "Delete failed");
+    }
+  }
 </script>
 
 {#if showImport}
@@ -239,6 +261,14 @@
                     : ""}</span
                 >
               </div>
+              <!-- svelte-ignore a11y_click_events_have_key_events -->
+              <span
+                class="song-delete"
+                role="button"
+                tabindex="-1"
+                title="Remove from registry"
+                onclick={(e) => handleDelete(e, song.name)}>&#10005;</span
+              >
             </button>
           {/each}
         {/if}
@@ -348,9 +378,25 @@
     font-size: 12px;
     color: var(--text-dim);
   }
+  .song-delete {
+    opacity: 0;
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 13px;
+    padding: 2px 4px;
+    border-radius: 3px;
+    transition: opacity 0.15s;
+  }
+  .song-row:hover .song-delete {
+    opacity: 1;
+  }
+  .song-delete:hover {
+    background: rgba(239, 68, 68, 0.15);
+    color: var(--red);
+  }
   .song-row {
     display: grid;
-    grid-template-columns: 1fr minmax(80px, 160px) auto;
+    grid-template-columns: 1fr minmax(80px, 160px) auto auto;
     align-items: center;
     gap: 12px;
     padding: 8px 14px;
@@ -425,7 +471,7 @@
       gap: 4px;
     }
     .song-row {
-      grid-template-columns: 1fr auto;
+      grid-template-columns: 1fr auto auto;
     }
     .song-waveform {
       display: none;

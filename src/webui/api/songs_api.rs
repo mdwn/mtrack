@@ -260,6 +260,81 @@ pub(super) struct ImportFileRequest {
     filename: Option<String>,
 }
 
+/// DELETE /api/songs/:name — removes a song by deleting its song.yaml.
+///
+/// The song's audio, MIDI, and lighting files are left in place. Only the
+/// song.yaml config file is removed, which unregisters the song from the player.
+pub(super) async fn delete_song(
+    State(state): State<WebUiState>,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    // Look up the song in the player's registry to find its base path.
+    let all_songs = state.player.get_all_songs_playlist();
+    let song = match all_songs.get_song(&name) {
+        Some(song) => song,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": format!("Song '{}' not found", name)})),
+            )
+                .into_response();
+        }
+    };
+
+    let config_path = song.base_path().join("song.yaml");
+
+    // Verify the resolved path is under the songs directory to prevent path traversal.
+    let songs_canonical = match state.songs_path.canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("Failed to resolve songs path: {}", e)})),
+            )
+                .into_response();
+        }
+    };
+    let config_canonical = match config_path.canonicalize() {
+        Ok(p) => p,
+        Err(_) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "song.yaml not found for this song"})),
+            )
+                .into_response();
+        }
+    };
+    if !config_canonical.starts_with(&songs_canonical) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": "song path is outside the songs directory"})),
+        )
+            .into_response();
+    }
+
+    // codeql[rust/path-injection] Path verified via canonicalize + starts_with above.
+    if let Err(e) = std::fs::remove_file(&config_canonical) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("Failed to delete song.yaml: {}", e)})),
+        )
+            .into_response();
+    }
+
+    // Refresh the player's song state.
+    state.player.reload_songs(
+        &state.songs_path,
+        state.playlists_dir.as_deref(),
+        state.legacy_playlist_path.as_deref(),
+    );
+
+    (
+        StatusCode::OK,
+        Json(json!({"status": "deleted", "name": name})),
+    )
+        .into_response()
+}
+
 /// GET /api/songs/:name/waveform — returns waveform peaks for a song.
 ///
 /// Uses the shared waveform cache; computes on demand if not cached.
@@ -438,7 +513,9 @@ pub(super) async fn post_song(
             .into_response();
     }
 
-    // Validate the YAML can be deserialized as a song config
+    // Validate the YAML can be deserialized as a song config.
+    // codeql[rust/path-injection] tmp.path() is an OS-generated tempfile path, not from user input.
+    // The user-controlled `body` is written as file *content*, not used as a path.
     let tmp = match tempfile::Builder::new().suffix(".yaml").tempfile() {
         Ok(t) => t,
         Err(e) => {
@@ -464,7 +541,16 @@ pub(super) async fn post_song(
             .into_response();
     }
 
-    match config_io::atomic_write(&config_path, &body) {
+    // Re-verify the song directory is under the songs root (breaks CodeQL taint chain).
+    let dir_verified = match verify_under_songs_dir(&song_dir, &state.songs_path) {
+        Ok(p) => p,
+        Err(e) => return *e,
+    };
+    // codeql[rust/path-injection] dir_verified is canonicalized and containment-checked;
+    // "song.yaml" is a constant suffix.
+    let config_verified = dir_verified.join("song.yaml");
+
+    match config_io::atomic_write(&config_verified, &body) {
         Ok(()) => {
             state.player.reload_songs(
                 &state.songs_path,
@@ -502,7 +588,7 @@ pub(super) async fn put_song(
             .into_response();
     }
 
-    // Canonicalize songs_path and verify the song directory stays within it.
+    // Verify the songs root is valid first (500 if not).
     let songs_canonical = match state.songs_path.canonicalize() {
         Ok(p) => p,
         Err(e) => {
@@ -513,28 +599,14 @@ pub(super) async fn put_song(
                 .into_response();
         }
     };
-    let song_dir = songs_canonical.join(&name);
-    if !song_dir.is_dir() {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({"error": format!("Song not found: {}", name)})),
-        )
-            .into_response();
-    }
-    // codeql[rust/path-injection] Path verified via canonicalize + starts_with.
-    let song_dir = match song_dir.canonicalize() {
-        Ok(p) if p.starts_with(&songs_canonical) => p,
-        Ok(_) => {
+
+    // Canonicalize and verify containment before any filesystem access.
+    let song_dir = match verify_under_songs_dir(&songs_canonical.join(&name), &state.songs_path) {
+        Ok(p) if p.is_dir() => p,
+        _ => {
             return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": "Invalid song name"})),
-            )
-                .into_response();
-        }
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("Failed to resolve song path: {}", e)})),
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": format!("Song not found: {}", name)})),
             )
                 .into_response();
         }
@@ -760,6 +832,44 @@ pub(super) fn ensure_song_dir(
     }
 
     Ok(song_canonical)
+}
+
+/// Canonicalizes a path and verifies it is contained within the songs directory.
+/// Returns the canonical path on success, or an error response on failure.
+/// This breaks the CodeQL taint chain by producing a fresh canonical path
+/// verified against the songs root.
+fn verify_under_songs_dir(
+    path: &std::path::Path,
+    songs_path: &std::path::Path,
+) -> Result<std::path::PathBuf, Box<axum::response::Response>> {
+    let songs_canonical = songs_path.canonicalize().map_err(|e| {
+        Box::new(
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("Failed to resolve songs path: {}", e)})),
+            )
+                .into_response(),
+        )
+    })?;
+    let canonical = path.canonicalize().map_err(|e| {
+        Box::new(
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": format!("Path not found: {}", e)})),
+            )
+                .into_response(),
+        )
+    })?;
+    if !canonical.starts_with(&songs_canonical) {
+        return Err(Box::new(
+            (
+                StatusCode::FORBIDDEN,
+                Json(json!({"error": "Path is outside the songs directory"})),
+            )
+                .into_response(),
+        ));
+    }
+    Ok(canonical)
 }
 
 /// Generates song.yaml for a song directory if one doesn't already exist.

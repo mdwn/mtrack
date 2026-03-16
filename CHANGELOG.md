@@ -151,6 +151,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   This enables the timeline editor to play any song from any position in a single call.
 - **`Playlist::navigate_to(name)`**: New method sets the playlist position to the song
   matching the given name, returning the song if found.
+- **Bulk song import**: New `POST /api/browse/bulk-import` endpoint scans all
+  subdirectories of a given path and creates `song.yaml` in each one that doesn't
+  already have one. Audio, MIDI, and lighting files are auto-detected per directory.
+  The song browser's import UI now shows an "Import All Subdirectories" button when
+  viewing a directory that contains subdirectories, with a results summary showing
+  created, skipped, and failed imports.
 
 ### Changed
 

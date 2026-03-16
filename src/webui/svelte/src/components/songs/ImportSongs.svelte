@@ -16,7 +16,9 @@
   import {
     browseDirectory,
     createSongInDirectory,
+    bulkImportSongs,
     type BrowseEntry,
+    type BulkImportResult,
   } from "../../lib/api/songs";
 
   interface Props {
@@ -26,7 +28,7 @@
 
   let { onimported, oncancel }: Props = $props();
 
-  type Step = "browse" | "confirm";
+  type Step = "browse" | "confirm" | "bulk-result";
   let step = $state<Step>("browse");
 
   // Browse state
@@ -41,6 +43,11 @@
   let songName = $state("");
   let createError = $state("");
   let creating = $state(false);
+
+  // Bulk import state
+  let bulkImporting = $state(false);
+  let bulkResult = $state<BulkImportResult | null>(null);
+  let bulkError = $state("");
 
   async function navigate(path?: string) {
     loading = true;
@@ -129,6 +136,22 @@
       createError = e instanceof Error ? e.message : "Failed to create song";
     } finally {
       creating = false;
+    }
+  }
+
+  let canBulkImport = $derived(dirEntries.length > 0);
+
+  async function handleBulkImport() {
+    bulkImporting = true;
+    bulkError = "";
+    bulkResult = null;
+    try {
+      bulkResult = await bulkImportSongs(currentPath);
+      step = "bulk-result";
+    } catch (e) {
+      bulkError = e instanceof Error ? e.message : "Bulk import failed";
+    } finally {
+      bulkImporting = false;
     }
   }
 
@@ -231,6 +254,17 @@
         </div>
         <div class="footer-actions">
           <button class="btn" onclick={oncancel}>Cancel</button>
+          {#if canBulkImport}
+            <button
+              class="btn"
+              onclick={handleBulkImport}
+              disabled={bulkImporting}
+            >
+              {bulkImporting
+                ? "Importing..."
+                : `Import All Subdirectories (${dirEntries.length})`}
+            </button>
+          {/if}
           <button
             class="btn btn-primary"
             onclick={selectDirectory}
@@ -239,6 +273,9 @@
             Use This Directory
           </button>
         </div>
+        {#if bulkError}
+          <div class="error-msg" style="margin-top: 6px">{bulkError}</div>
+        {/if}
       </div>
     </div>
   </div>
@@ -273,6 +310,64 @@
       >
         {creating ? "Creating..." : "Create Song"}
       </button>
+    </div>
+  </div>
+{:else if step === "bulk-result" && bulkResult}
+  <div class="import-section">
+    <div class="import-header">
+      <h3>Bulk Import Complete</h3>
+    </div>
+    <div class="bulk-result">
+      {#if bulkResult.created.length > 0}
+        <div class="result-group">
+          <span class="result-label created"
+            >Created ({bulkResult.created.length})</span
+          >
+          <div class="result-list">
+            {#each bulkResult.created as name (name)}
+              <span class="result-item">{name}</span>
+            {/each}
+          </div>
+        </div>
+      {/if}
+      {#if bulkResult.skipped.length > 0}
+        <div class="result-group">
+          <span class="result-label skipped"
+            >Skipped ({bulkResult.skipped.length})</span
+          >
+          <div class="result-list">
+            {#each bulkResult.skipped as name (name)}
+              <span class="result-item dimmed">{name}</span>
+            {/each}
+          </div>
+        </div>
+      {/if}
+      {#if bulkResult.failed.length > 0}
+        <div class="result-group">
+          <span class="result-label failed"
+            >Failed ({bulkResult.failed.length})</span
+          >
+          <div class="result-list">
+            {#each bulkResult.failed as item (item.name)}
+              <span class="result-item error">{item.name}: {item.error}</span>
+            {/each}
+          </div>
+        </div>
+      {/if}
+      {#if bulkResult.created.length === 0 && bulkResult.failed.length === 0}
+        <p class="hint">
+          No new songs were found to import. All subdirectories either already
+          have a song.yaml or contain no audio files.
+        </p>
+      {/if}
+    </div>
+    <div class="configure-actions">
+      <button class="btn" onclick={() => (step = "browse")}>Back</button>
+      {#if bulkResult.created.length > 0}
+        <button class="btn btn-primary" onclick={onimported}>Done</button>
+      {:else}
+        <button class="btn" onclick={oncancel}>Close</button>
+      {/if}
     </div>
   </div>
 {/if}
@@ -454,5 +549,57 @@
     display: flex;
     gap: 8px;
     justify-content: flex-end;
+  }
+  .bulk-result {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-bottom: 16px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--bg-card);
+    padding: 12px 16px;
+    max-height: 400px;
+    overflow-y: auto;
+  }
+  .result-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .result-label {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .result-label.created {
+    color: var(--green);
+  }
+  .result-label.skipped {
+    color: var(--text-muted);
+  }
+  .result-label.failed {
+    color: var(--red);
+  }
+  .result-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .result-item {
+    font-size: 13px;
+    font-family: var(--mono);
+    background: rgba(255, 255, 255, 0.04);
+    padding: 2px 8px;
+    border-radius: 3px;
+    border: 1px solid var(--border);
+  }
+  .result-item.dimmed {
+    opacity: 0.5;
+  }
+  .result-item.error {
+    color: var(--red);
+    border-color: rgba(239, 68, 68, 0.3);
   }
 </style>
