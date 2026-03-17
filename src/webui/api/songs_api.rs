@@ -57,8 +57,8 @@ pub(super) async fn get_songs(State(state): State<WebUiState>) -> impl IntoRespo
                 })
                 .collect();
 
-            // Collect legacy MIDI DMX file paths relative to the songs root.
-            let legacy_lighting_files: Vec<String> = song
+            // Collect MIDI DMX file paths relative to the songs root.
+            let midi_dmx_files: Vec<String> = song
                 .light_shows()
                 .iter()
                 .filter_map(|show| {
@@ -81,7 +81,7 @@ pub(super) async fn get_songs(State(state): State<WebUiState>) -> impl IntoRespo
                 "has_lighting": !song.light_shows().is_empty() || !song.dsl_lighting_shows().is_empty(),
                 "base_dir": base_dir,
                 "lighting_files": lighting_files,
-                "legacy_lighting_files": legacy_lighting_files,
+                "midi_dmx_files": midi_dmx_files,
             })
         })
         .collect();
@@ -1953,7 +1953,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn get_songs_includes_legacy_lighting_files() {
+    async fn get_songs_includes_midi_dmx_files() {
         let (mut state, _dir) = test_state();
         state.songs_path = state.songs_path.canonicalize().unwrap();
 
@@ -1999,14 +1999,14 @@ mod test {
             .iter()
             .find(|s| s["name"] == "LegacySong")
             .expect("LegacySong should be in the response");
-        let legacy_files = legacy_song["legacy_lighting_files"].as_array().unwrap();
+        let legacy_files = legacy_song["midi_dmx_files"].as_array().unwrap();
         assert!(
             !legacy_files.is_empty(),
-            "legacy_lighting_files should be populated"
+            "midi_dmx_files should be populated"
         );
         assert!(
             legacy_files[0].as_str().unwrap().contains("dmx_show.mid"),
-            "legacy_lighting_files should contain the dmx MIDI file path"
+            "midi_dmx_files should contain the dmx MIDI file path"
         );
     }
 

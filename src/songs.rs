@@ -2660,7 +2660,7 @@ mod test {
         ];
         fs::write(song_dir.join("song.mid"), &midi_bytes)?;
 
-        // Legacy DMX light show file (dmx_ prefix)
+        // MIDI DMX light show file (dmx_ prefix)
         fs::write(song_dir.join("dmx_light.mid"), &midi_bytes)?;
 
         // DSL lighting show file
@@ -2681,11 +2681,11 @@ mod test {
             "Expected MIDI playback from song.mid"
         );
 
-        // Should have one legacy light show from dmx_light.mid.
+        // Should have one MIDI DMX light show from dmx_light.mid.
         assert_eq!(
             song.light_shows().len(),
             1,
-            "Expected one legacy light show from dmx_light.mid"
+            "Expected one MIDI DMX light show from dmx_light.mid"
         );
 
         // Should have one DSL lighting show from show.light.

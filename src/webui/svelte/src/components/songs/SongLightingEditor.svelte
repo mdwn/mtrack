@@ -481,8 +481,8 @@
 
     <div class="file-info">
       {lightFiles.length} DSL
-      {#if song.legacy_lighting_files.length > 0}
-        + {song.legacy_lighting_files.length} MIDI DMX
+      {#if song.midi_dmx_files.length > 0}
+        + {song.midi_dmx_files.length} MIDI DMX
       {/if}
       <button class="btn btn-sm" onclick={addLightFile}>+ DSL</button>
       <button class="btn btn-sm" onclick={() => (showMidiDmxModal = true)}>
@@ -581,11 +581,11 @@
         >
       </div>
       <div class="modal-body">
-        {#if song.legacy_lighting_files.length > 0}
+        {#if song.midi_dmx_files.length > 0}
           <div class="modal-section">
             <span class="modal-section-label">Current Files</span>
             <div class="midi-dmx-files">
-              {#each song.legacy_lighting_files as lf (lf)}
+              {#each song.midi_dmx_files as lf (lf)}
                 <span class="midi-dmx-file" title={lf}
                   >{lf.replace(/^.*\//, "")}</span
                 >

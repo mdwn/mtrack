@@ -43,7 +43,7 @@ The dashboard is the landing page, providing an at-a-glance view of the player s
 ## Song Browser
 
 The song browser lists all songs in the repository, grouped by directory. Each song shows its
-duration, track count, and badges for MIDI, lighting DSL, and legacy MIDI DMX files.
+duration, track count, and badges for MIDI, lighting DSL, and MIDI DMX files.
 
 ![Song browser](../images/song-browser.png)
 

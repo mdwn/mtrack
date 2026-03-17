@@ -12,7 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 use super::common::create_test_fixture;
-use crate::dmx::legacy_store::LegacyDmxStore;
+use crate::dmx::midi_dmx_store::MidiDmxStore;
 use crate::lighting::effects::{EffectType, FixtureInfo};
 use crate::lighting::engine::EffectEngine;
 use crate::lighting::EffectInstance;
@@ -20,11 +20,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Helper: create a LegacyDmxStore with slots matching create_test_fixture("wash1", 1, 1).
+/// Helper: create a MidiDmxStore with slots matching create_test_fixture("wash1", 1, 1).
 /// The fixture has channels dimmer=1, red=2, green=3, blue=4, white=5, strobe=6
 /// at universe 1, address 1, so DMX channels are 1–6.
-fn create_store_for_wash1() -> Arc<parking_lot::RwLock<LegacyDmxStore>> {
-    let mut store = LegacyDmxStore::new();
+fn create_store_for_wash1() -> Arc<parking_lot::RwLock<MidiDmxStore>> {
+    let mut store = MidiDmxStore::new();
     store.register_slot(1, 1, "wash1", "dimmer"); // address 1 + offset 1 - 1 = 1
     store.register_slot(1, 2, "wash1", "red"); // address 1 + offset 2 - 1 = 2
     store.register_slot(1, 3, "wash1", "green"); // address 1 + offset 3 - 1 = 3
@@ -86,16 +86,16 @@ fn test_reverse_map_construction() {
 }
 
 #[test]
-fn test_legacy_store_values_in_merged_states() {
+fn test_midi_dmx_store_values_in_merged_states() {
     let mut engine = EffectEngine::new();
 
     let fixture = create_test_fixture("wash1", 1, 1);
     engine.register_fixture(fixture);
 
     let store = create_store_for_wash1();
-    engine.set_legacy_store(store.clone());
+    engine.set_midi_dmx_store(store.clone());
 
-    // Write values via the store (simulating legacy MIDI writes)
+    // Write values via the store (simulating MIDI DMX writes)
     // Values are in 0–255 DMX scale
     {
         let s = store.read();
@@ -128,8 +128,8 @@ fn test_legacy_store_values_in_merged_states() {
 }
 
 #[test]
-fn test_legacy_store_values_generate_dmx_commands() {
-    // With the new single-path architecture, legacy values flow through the
+fn test_midi_dmx_store_values_generate_dmx_commands() {
+    // With the new single-path architecture, MIDI DMX values flow through the
     // EffectEngine and generate DmxCommands (no suppression).
     let mut engine = EffectEngine::new();
 
@@ -137,7 +137,7 @@ fn test_legacy_store_values_generate_dmx_commands() {
     engine.register_fixture(fixture);
 
     let store = create_store_for_wash1();
-    engine.set_legacy_store(store.clone());
+    engine.set_midi_dmx_store(store.clone());
 
     // Write red value via the store
     {
@@ -154,22 +154,22 @@ fn test_legacy_store_values_generate_dmx_commands() {
         .find(|cmd| cmd.universe == 1 && cmd.channel == 2);
     assert!(
         red_cmd.is_some(),
-        "DMX command for legacy channel (universe 1, channel 2) should be generated"
+        "DMX command for MIDI DMX channel (universe 1, channel 2) should be generated"
     );
     assert_eq!(red_cmd.unwrap().value, 255);
 }
 
 #[test]
-fn test_legacy_store_values_overridden_by_effects() {
+fn test_midi_dmx_store_values_overridden_by_effects() {
     let mut engine = EffectEngine::new();
 
     let fixture = create_test_fixture("wash1", 1, 1);
     engine.register_fixture(fixture);
 
     let store = create_store_for_wash1();
-    engine.set_legacy_store(store.clone());
+    engine.set_midi_dmx_store(store.clone());
 
-    // Set legacy store value for red = 128 (0.502 normalized)
+    // Set MIDI DMX store value for red = 128 (0.502 normalized)
     {
         let s = store.read();
         s.write(1, 2, 128, false);
@@ -196,26 +196,26 @@ fn test_legacy_store_values_overridden_by_effects() {
 
     let _commands = engine.update(Duration::from_millis(23), None).unwrap();
 
-    // The effect should override the legacy store value
+    // The effect should override the MIDI DMX store value
     let states = engine.get_fixture_states();
     let wash1_state = states.get("wash1").unwrap();
     assert!(
         (wash1_state.channels.get("red").unwrap().value - 1.0).abs() < f64::EPSILON,
-        "effect should override legacy store value: got {}",
+        "effect should override MIDI DMX store value: got {}",
         wash1_state.channels.get("red").unwrap().value
     );
 }
 
 #[test]
-fn test_legacy_store_values_update_across_frames() {
-    // Regression test: legacy values must reflect new MIDI writes on subsequent frames.
+fn test_midi_dmx_store_values_update_across_frames() {
+    // Regression test: MIDI DMX values must reflect new MIDI writes on subsequent frames.
     let mut engine = EffectEngine::new();
 
     let fixture = create_test_fixture("wash1", 1, 1);
     engine.register_fixture(fixture);
 
     let store = create_store_for_wash1();
-    engine.set_legacy_store(store.clone());
+    engine.set_midi_dmx_store(store.clone());
 
     // Frame 1: set red = 128 (~0.502)
     {
@@ -282,8 +282,8 @@ fn test_legacy_store_values_update_across_frames() {
 }
 
 #[test]
-fn test_legacy_store_values_not_persisted_as_permanent() {
-    // Legacy values should NOT be saved into fixture_states (permanent storage).
+fn test_midi_dmx_store_values_not_persisted_as_permanent() {
+    // MIDI DMX values should NOT be saved into fixture_states (permanent storage).
     // They must be re-injected fresh each frame from the store.
     let mut engine = EffectEngine::new();
 
@@ -291,7 +291,7 @@ fn test_legacy_store_values_not_persisted_as_permanent() {
     engine.register_fixture(fixture);
 
     let store = create_store_for_wash1();
-    engine.set_legacy_store(store.clone());
+    engine.set_midi_dmx_store(store.clone());
 
     // Set and process one frame
     {
@@ -316,14 +316,14 @@ fn test_legacy_store_values_not_persisted_as_permanent() {
 }
 
 #[test]
-fn test_clear_legacy_store() {
+fn test_clear_midi_dmx_store() {
     let mut engine = EffectEngine::new();
 
     let fixture = create_test_fixture("wash1", 1, 1);
     engine.register_fixture(fixture);
 
     let store = create_store_for_wash1();
-    engine.set_legacy_store(store.clone());
+    engine.set_midi_dmx_store(store.clone());
 
     // Write values
     {
@@ -336,7 +336,7 @@ fn test_clear_legacy_store() {
     // Clear the store
     store.read().clear();
 
-    // After update, no legacy values should appear
+    // After update, no MIDI DMX values should appear
     let _commands = engine.update(Duration::from_millis(23), None).unwrap();
     let states = engine.get_fixture_states();
 
@@ -350,14 +350,14 @@ fn test_clear_legacy_store() {
 }
 
 #[test]
-fn test_stop_all_effects_clears_legacy_store() {
+fn test_stop_all_effects_clears_midi_dmx_store() {
     let mut engine = EffectEngine::new();
 
     let fixture = create_test_fixture("wash1", 1, 1);
     engine.register_fixture(fixture);
 
     let store = create_store_for_wash1();
-    engine.set_legacy_store(store.clone());
+    engine.set_midi_dmx_store(store.clone());
 
     // Write values
     {
@@ -371,7 +371,7 @@ fn test_stop_all_effects_clears_legacy_store() {
     let states = engine.get_fixture_states();
     assert!(states.contains_key("wash1"), "wash1 should have state");
 
-    // stop_all_effects should clear the legacy store
+    // stop_all_effects should clear the MIDI DMX store
     engine.stop_all_effects();
 
     let _commands = engine.update(Duration::from_millis(23), None).unwrap();

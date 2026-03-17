@@ -264,9 +264,9 @@ impl LightingSystem {
                     return self.resolve_logical_group_graceful(&fallback_group);
                 }
 
-                // Try legacy group system as final fallback
-                if let Ok(legacy_group) = self.get_group(group_name) {
-                    return legacy_group.fixtures().to_vec();
+                // Try venue group system as final fallback
+                if let Ok(venue_group) = self.get_group(group_name) {
+                    return venue_group.fixtures().to_vec();
                 }
                 Vec::new()
             }
@@ -1239,7 +1239,7 @@ mod tests {
     }
 
     #[test]
-    fn test_graceful_with_legacy_group_fallback() {
+    fn test_graceful_with_venue_group_fallback() {
         let mut system = LightingSystem::new();
 
         let mut fixtures = HashMap::new();
@@ -1254,23 +1254,27 @@ mod tests {
             ),
         );
 
-        // Create venue with a legacy group definition
+        // Create venue with a venue group definition
         let mut groups = HashMap::new();
         groups.insert(
-            "legacy_wash".to_string(),
-            Group::new("legacy_wash".to_string(), vec!["Wash1".to_string()]),
+            "venue_wash".to_string(),
+            Group::new("venue_wash".to_string(), vec!["Wash1".to_string()]),
         );
 
         let venue = Venue::new("Test Venue".to_string(), fixtures, groups);
         system.venues.insert("Test Venue".to_string(), venue);
         system.current_venue = Some("Test Venue".to_string());
 
-        // Don't define legacy_wash as a logical group - it should fall through to legacy
-        let results = system.resolve_logical_group_graceful("legacy_wash");
-        assert_eq!(results.len(), 1, "Legacy fallback should return 1 fixture");
+        // Don't define venue_wash as a logical group - it should fall through to venue groups
+        let results = system.resolve_logical_group_graceful("venue_wash");
+        assert_eq!(
+            results.len(),
+            1,
+            "Venue group fallback should return 1 fixture"
+        );
         assert!(
             results.contains(&"Wash1".to_string()),
-            "Legacy fallback should contain Wash1"
+            "Venue group fallback should contain Wash1"
         );
     }
 }

@@ -26,7 +26,7 @@ use std::{
     time::Duration,
 };
 
-use super::legacy_store::LegacyDmxStore;
+use super::midi_dmx_store::MidiDmxStore;
 use super::ola_client::OlaClient;
 use ola::DmxBuffer;
 use tracing::{debug, error, info, span, warn, Level};
@@ -89,10 +89,10 @@ fn classify_midi_dmx_action(
 /// universe(s) that should be sent to our DMX interface(s).
 pub struct Engine {
     dimming_speed_modifier: f64,
-    /// How long to wait before starting legacy MIDI DMX playback.
+    /// How long to wait before starting MIDI DMX DMX playback.
     playback_delay: Duration,
     universes: HashMap<u16, Universe>,
-    /// Mapping from universe names to IDs for legacy MIDI system
+    /// Mapping from universe names to IDs for MIDI DMX system
     universe_name_to_id: HashMap<String, u16>,
     cancel_handle: CancelHandle,
     client_handle: Option<JoinHandle<()>>,
@@ -117,12 +117,12 @@ pub struct Engine {
     broadcast_tx: Mutex<Option<tokio::sync::broadcast::Sender<String>>>,
     /// Handle to the current file watcher (dropped/replaced per-song)
     watcher_handle: Mutex<Option<super::watcher::WatcherHandle>>,
-    /// Lockless store for legacy MIDI DMX values with built-in interpolation.
+    /// Lockless store for MIDI DMX DMX values with built-in interpolation.
     /// RwLock protects structural changes (register_slot); hot-path reads
     /// (write/tick/iter_active) take a cheap read lock while atomics handle data.
-    legacy_store: Arc<parking_lot::RwLock<LegacyDmxStore>>,
-    /// Active legacy MIDI playbacks dispatched from the effects loop.
-    legacy_midi_playbacks: Mutex<Vec<LegacyMidiPlayback>>,
+    midi_dmx_store: Arc<parking_lot::RwLock<MidiDmxStore>>,
+    /// Active MIDI DMX playbacks dispatched from the effects loop.
+    midi_dmx_playbacks: Mutex<Vec<MidiDmxPlayback>>,
     /// Heartbeat counter incremented by the effects loop each frame.
     /// Used by barrier threads to detect if the effects loop has died.
     effects_loop_heartbeat: Arc<AtomicU64>,
@@ -135,8 +135,8 @@ pub struct Engine {
     update_subphase: Arc<AtomicU64>,
 }
 
-/// A legacy MIDI light show being played back from the effects loop.
-struct LegacyMidiPlayback {
+/// A MIDI DMX light show being played back from the effects loop.
+struct MidiDmxPlayback {
     precomputed: PrecomputedMidi,
     cursor: usize,
     universe_id: u16,
@@ -183,7 +183,7 @@ impl Engine {
             })
             .collect();
 
-        // Create mapping from universe names to IDs for legacy MIDI system
+        // Create mapping from universe names to IDs for MIDI DMX system
         let universe_name_to_id: HashMap<String, u16> = config
             .universes()
             .into_iter()
@@ -217,7 +217,7 @@ impl Engine {
         let timeline_finished = Arc::new(AtomicBool::new(true));
         let timeline_cancel_handle: Arc<Mutex<Option<CancelHandle>>> = Arc::new(Mutex::new(None));
 
-        let legacy_store = Arc::new(parking_lot::RwLock::new(LegacyDmxStore::new()));
+        let midi_dmx_store = Arc::new(parking_lot::RwLock::new(MidiDmxStore::new()));
 
         Ok(Engine {
             dimming_speed_modifier: config.dimming_speed_modifier(),
@@ -237,8 +237,8 @@ impl Engine {
             timeline_cancel_handle,
             broadcast_tx: Mutex::new(None),
             watcher_handle: Mutex::new(None),
-            legacy_store,
-            legacy_midi_playbacks: Mutex::new(Vec::new()),
+            midi_dmx_store,
+            midi_dmx_playbacks: Mutex::new(Vec::new()),
             effects_loop_heartbeat: Arc::new(AtomicU64::new(0)),
             effects_loop_phase: Arc::new(AtomicU64::new(0)),
             update_subphase,
@@ -323,16 +323,16 @@ impl Engine {
     /// effects update, timeline update, and finished-check.
     ///
     /// Phase values (stored in `effects_loop_phase` for diagnostics):
-    ///   1 = legacy store tick, 2 = MIDI advance, 3 = update effects,
+    ///   1 = MIDI DMX store tick, 2 = MIDI advance, 3 = update effects,
     ///   4 = update song lighting, 5 = timeline finished check, 0 = idle.
     fn effects_loop_tick(&self) {
-        // Tick the legacy store to interpolate dimming values
+        // Tick the MIDI DMX store to interpolate dimming values
         self.effects_loop_phase.store(1, Ordering::Relaxed);
-        self.legacy_store.read().tick();
+        self.midi_dmx_store.read().tick();
 
-        // Advance legacy MIDI playback cursors and dispatch events
+        // Advance MIDI DMX playback cursors and dispatch events
         self.effects_loop_phase.store(2, Ordering::Relaxed);
-        self.advance_legacy_midi_playbacks();
+        self.advance_midi_dmx_playbacks();
 
         // Update effects engine and apply to universes
         self.effects_loop_phase.store(3, Ordering::Relaxed);
@@ -347,7 +347,7 @@ impl Engine {
             error!("Error updating song lighting: {}", e);
         }
 
-        // Check if all lighting has finished (DSL timeline cues + legacy MIDI playbacks)
+        // Check if all lighting has finished (DSL timeline cues + MIDI DMX playbacks)
         // and notify the waiting thread if so
         self.effects_loop_phase.store(5, Ordering::Relaxed);
         if !self.timeline_finished.load(Ordering::Relaxed) {
@@ -355,9 +355,9 @@ impl Engine {
                 let timeline = self.current_song_timeline.lock();
                 timeline.as_ref().is_none_or(|tl| tl.is_finished())
             };
-            let legacy_done = self.legacy_playbacks_finished();
+            let midi_dmx_done = self.midi_dmx_playbacks_finished();
 
-            if timeline_done && legacy_done {
+            if timeline_done && midi_dmx_done {
                 info!("Lighting timeline finished. Notifying barrier.");
                 self.timeline_finished.store(true, Ordering::Relaxed);
                 // Notify the cancel handle so wait() returns
@@ -460,7 +460,7 @@ impl Engine {
                 }
             }
         } else {
-            // Clear lighting state from previous song so legacy songs
+            // Clear lighting state from previous song so MIDI DMX songs
             // don't inherit a stale tempo map or timeline.
             {
                 let mut effect_engine = dmx_engine.effect_engine.lock();
@@ -533,12 +533,12 @@ impl Engine {
             return Ok(());
         }
 
-        // Build legacy MIDI playbacks and store them for effects-loop dispatch.
+        // Build MIDI DMX playbacks and store them for effects-loop dispatch.
         // Drain the map to take ownership of MidiSheets (avoids cloning event vecs).
         // This must happen BEFORE resetting timeline_finished to avoid a race where
         // the effects loop sees empty playbacks + no timeline and sets finished=true.
         {
-            let mut playbacks = dmx_engine.legacy_midi_playbacks.lock();
+            let mut playbacks = dmx_engine.midi_dmx_playbacks.lock();
             playbacks.clear();
             for (universe_name, (midi_sheet, channels)) in dmx_midi_sheets.drain() {
                 let midi_channels = HashSet::from_iter(channels);
@@ -549,7 +549,7 @@ impl Engine {
                 let events = midi_sheet.precomputed.into_events();
                 // Seek cursor past start_time
                 let cursor = events.partition_point(|e| e.time < start_time);
-                playbacks.push(LegacyMidiPlayback {
+                playbacks.push(MidiDmxPlayback {
                     precomputed: PrecomputedMidi::from_events(events),
                     cursor,
                     universe_id,
@@ -629,22 +629,22 @@ impl Engine {
         // Stop the lighting timeline for this song, but effects continue processing
         dmx_engine.stop_lighting_timeline();
 
-        // Clear legacy MIDI playbacks
-        dmx_engine.legacy_midi_playbacks.lock().clear();
+        // Clear MIDI DMX playbacks
+        dmx_engine.midi_dmx_playbacks.lock().clear();
 
         info!("DMX playback stopped.");
 
         Ok(())
     }
 
-    /// Advances all legacy MIDI playback cursors to the current song time,
+    /// Advances all MIDI DMX playback cursors to the current song time,
     /// dispatching events via handle_midi_event_by_id.
-    fn advance_legacy_midi_playbacks(&self) {
+    fn advance_midi_dmx_playbacks(&self) {
         let song_time = match self.get_song_time().checked_sub(self.playback_delay) {
             Some(t) => t,
             None => return, // Still within the playback delay period
         };
-        let mut playbacks = self.legacy_midi_playbacks.lock();
+        let mut playbacks = self.midi_dmx_playbacks.lock();
         for playback in playbacks.iter_mut() {
             let events = playback.precomputed.events();
             while playback.cursor < events.len() && events[playback.cursor].time <= song_time {
@@ -659,9 +659,9 @@ impl Engine {
         }
     }
 
-    /// Returns true if all legacy MIDI playbacks have finished.
-    fn legacy_playbacks_finished(&self) -> bool {
-        let playbacks = self.legacy_midi_playbacks.lock();
+    /// Returns true if all MIDI DMX playbacks have finished.
+    fn midi_dmx_playbacks_finished(&self) -> bool {
+        let playbacks = self.midi_dmx_playbacks.lock();
         playbacks.iter().all(|p| p.cursor >= p.precomputed.len())
     }
 
@@ -703,21 +703,21 @@ impl Engine {
         if let Some(universe) = self.universes.get(&universe_id) {
             universe.update_dim_speed(dimming_duration);
         }
-        // Mirror dim rate to legacy store
+        // Mirror dim rate to MIDI DMX store
         let rate = if dimming_duration.is_zero() {
             1.0
         } else {
             dimming_duration.as_secs_f64() * super::universe::TARGET_HZ
         };
-        self.legacy_store.read().set_dim_rate(universe_id, rate);
+        self.midi_dmx_store.read().set_dim_rate(universe_id, rate);
     }
 
     /// Updates the given universe by ID.
     /// Mapped channels (those with registered fixtures) go through the lockless
-    /// LegacyDmxStore for interpolation and EffectEngine injection. Unmapped
+    /// MidiDmxStore for interpolation and EffectEngine injection. Unmapped
     /// channels go directly to the Universe for backward compatibility.
     fn update_universe_by_id(&self, universe_id: u16, channel: u16, value: u8, dim: bool) {
-        let store = self.legacy_store.read();
+        let store = self.midi_dmx_store.read();
         if store.lookup(universe_id, channel).is_some() {
             // Mapped channel → lockless store (interpolation + EffectEngine injection)
             store.write(universe_id, channel, value, dim);
@@ -789,24 +789,24 @@ impl Engine {
             let lighting_system = lighting_system.lock();
             let fixture_infos = lighting_system.get_current_venue_fixtures()?;
             let mut effect_engine = self.effect_engine.lock();
-            let mut legacy_store = self.legacy_store.write();
+            let mut midi_dmx_store = self.midi_dmx_store.write();
 
             for fixture_info in &fixture_infos {
-                // Register slots in the legacy store for each fixture channel
+                // Register slots in the MIDI DMX store for each fixture channel
                 for (channel_name, &offset) in &fixture_info.channels {
                     let dmx_channel = fixture_info.address + offset - 1;
-                    legacy_store.register_slot(
+                    midi_dmx_store.register_slot(
                         fixture_info.universe,
                         dmx_channel,
                         &fixture_info.name,
                         channel_name,
                     );
                 }
-                legacy_store.register_universe(fixture_info.universe);
+                midi_dmx_store.register_universe(fixture_info.universe);
             }
 
-            // Set the legacy store reference on the EffectEngine
-            effect_engine.set_legacy_store(self.legacy_store.clone());
+            // Set the MIDI DMX store reference on the EffectEngine
+            effect_engine.set_midi_dmx_store(self.midi_dmx_store.clone());
 
             for fixture_info in fixture_infos {
                 effect_engine.register_fixture(fixture_info);
@@ -1034,7 +1034,7 @@ impl Engine {
                 let current_phase = phase.load(Ordering::Relaxed);
                 let phase_name = match current_phase {
                     0 => "idle",
-                    1 => "legacy_store_tick",
+                    1 => "midi_dmx_store_tick",
                     2 => "midi_advance",
                     3 => "update_effects",
                     4 => "update_song_lighting",
@@ -1048,7 +1048,7 @@ impl Engine {
                     2 => "acquire_effect_lock",
                     10 => "fast_path_check",
                     20 => "state_setup",
-                    30 => "legacy_inject",
+                    30 => "midi_dmx_inject",
                     40 => "effect_sort",
                     50 => "effect_process",
                     60 => "completed_effects",
@@ -1511,7 +1511,7 @@ mod test {
     }
 
     #[test]
-    fn test_legacy_midi_channel_filtering() -> Result<(), Box<dyn Error>> {
+    fn test_midi_dmx_channel_filtering() -> Result<(), Box<dyn Error>> {
         let (engine, _cancel_handle) = create_engine()?;
 
         assert_eq!(engine.get_universe(5).unwrap().get_dim_speed(), 1.0);
@@ -1526,7 +1526,7 @@ mod test {
 
         assert_eq!(engine.get_universe(5).unwrap().get_dim_speed(), 44.0);
 
-        // Verify channel filtering via legacy playback dispatch.
+        // Verify channel filtering via MIDI DMX playback dispatch.
         // Build a playback with channel filter = {5}.
         use crate::midi::playback::{PrecomputedMidi, TimedMidiEvent};
         let events = vec![TimedMidiEvent {
@@ -1540,8 +1540,8 @@ mod test {
         let mut midi_channels = HashSet::new();
         midi_channels.insert(5);
         {
-            let mut playbacks = engine.legacy_midi_playbacks.lock();
-            playbacks.push(super::LegacyMidiPlayback {
+            let mut playbacks = engine.midi_dmx_playbacks.lock();
+            playbacks.push(super::MidiDmxPlayback {
                 precomputed,
                 cursor: 0,
                 universe_id: 5,
@@ -1551,13 +1551,13 @@ mod test {
 
         // Advance playbacks — channel 6 should be excluded
         engine.update_song_time(std::time::Duration::from_secs(1));
-        engine.advance_legacy_midi_playbacks();
+        engine.advance_midi_dmx_playbacks();
 
         // Dim speed should still be 44.0, not reset to 0.0
         assert_eq!(engine.get_universe(5).unwrap().get_dim_speed(), 44.0);
 
         // Cleanup
-        engine.legacy_midi_playbacks.lock().clear();
+        engine.midi_dmx_playbacks.lock().clear();
 
         Ok(())
     }
@@ -1979,17 +1979,17 @@ mod test {
     }
 
     #[test]
-    fn test_legacy_song_clears_dsl_state() -> Result<(), Box<dyn std::error::Error>> {
-        // After a DSL song, a legacy song (MIDI-based light shows) must clear the
+    fn test_midi_dmx_song_clears_dsl_state() -> Result<(), Box<dyn std::error::Error>> {
+        // After a DSL song, a MIDI DMX song (MIDI-based light shows) must clear the
         // tempo map and timeline left behind.
         let (engine, cancel_handle) = create_engine()?;
         seed_lighting_state(&engine);
 
-        // Create a legacy song with a MIDI-based light show pointing to a
+        // Create a MIDI DMX song with a MIDI-based light show pointing to a
         // non-matching universe so the (empty) MIDI file is never parsed.
         let assets_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets");
         let song_config = crate::config::Song::new(
-            "Legacy Song",
+            "MIDI DMX Song",
             None,
             None,
             None,
@@ -2022,7 +2022,7 @@ mod test {
     }
 
     #[test]
-    fn test_legacy_midi_mirrors_to_effect_engine() -> Result<(), Box<dyn Error>> {
+    fn test_midi_dmx_mirrors_to_effect_engine() -> Result<(), Box<dyn Error>> {
         let (engine, _cancel_handle) = create_engine()?;
 
         // Register a fixture: universe 5 (matching create_engine), address 1
@@ -2041,9 +2041,9 @@ mod test {
             None,
         );
 
-        // Register slots in the legacy store
+        // Register slots in the MIDI DMX store
         {
-            let mut store = engine.legacy_store.write();
+            let mut store = engine.midi_dmx_store.write();
             store.register_slot(5, 1, "test_fixture", "dimmer");
             store.register_slot(5, 2, "test_fixture", "red");
             store.register_slot(5, 3, "test_fixture", "green");
@@ -2053,11 +2053,11 @@ mod test {
 
         {
             let mut effect_engine = engine.effect_engine.lock();
-            effect_engine.set_legacy_store(engine.legacy_store.clone());
+            effect_engine.set_midi_dmx_store(engine.midi_dmx_store.clone());
             effect_engine.register_fixture(fixture_info);
         }
 
-        // Send a legacy MIDI NoteOn: key=0 → DMX channel 1 (dimmer), vel=127 → value=254
+        // Send a MIDI DMX NoteOn: key=0 → DMX channel 1 (dimmer), vel=127 → value=254
         engine.handle_midi_event(
             "universe1".to_string(),
             midly::MidiMessage::NoteOn {
@@ -2068,7 +2068,7 @@ mod test {
 
         // Tick the store to interpolate (instant since NoteOn uses dim=true but
         // default dim_rate=1.0 so rate calculation produces a single-tick transition)
-        engine.legacy_store.read().tick();
+        engine.midi_dmx_store.read().tick();
 
         // Verify the EffectEngine has the value after update
         {
@@ -2096,7 +2096,7 @@ mod test {
     }
 
     #[test]
-    fn test_legacy_midi_unmapped_channel_no_mirror() -> Result<(), Box<dyn Error>> {
+    fn test_midi_dmx_unmapped_channel_no_mirror() -> Result<(), Box<dyn Error>> {
         let (engine, _cancel_handle) = create_engine()?;
 
         // Register a fixture with a small channel range (address 1, 4 channels)
@@ -2115,9 +2115,9 @@ mod test {
             None,
         );
 
-        // Register slots for channels 1-4 in the legacy store
+        // Register slots for channels 1-4 in the MIDI DMX store
         {
-            let mut store = engine.legacy_store.write();
+            let mut store = engine.midi_dmx_store.write();
             store.register_slot(5, 1, "test_fixture", "dimmer");
             store.register_slot(5, 2, "test_fixture", "red");
             store.register_slot(5, 3, "test_fixture", "green");
@@ -2127,7 +2127,7 @@ mod test {
 
         {
             let mut effect_engine = engine.effect_engine.lock();
-            effect_engine.set_legacy_store(engine.legacy_store.clone());
+            effect_engine.set_midi_dmx_store(engine.midi_dmx_store.clone());
             effect_engine.register_fixture(fixture_info);
         }
 
@@ -2149,7 +2149,7 @@ mod test {
         );
 
         // Tick and update
-        engine.legacy_store.read().tick();
+        engine.midi_dmx_store.read().tick();
 
         // EffectEngine should NOT have any state for this unmapped channel
         {
@@ -2394,14 +2394,14 @@ mod test {
         }
     }
 
-    mod legacy_playbacks_finished_tests {
+    mod midi_dmx_playbacks_finished_tests {
         use super::*;
         use crate::midi::playback::{PrecomputedMidi, TimedMidiEvent};
 
         #[test]
         fn no_playbacks_means_finished() -> Result<(), Box<dyn Error>> {
             let (engine, _cancel_handle) = create_engine()?;
-            assert!(engine.legacy_playbacks_finished());
+            assert!(engine.midi_dmx_playbacks_finished());
             Ok(())
         }
 
@@ -2417,15 +2417,15 @@ mod test {
                 },
             }];
             {
-                let mut playbacks = engine.legacy_midi_playbacks.lock();
-                playbacks.push(super::super::LegacyMidiPlayback {
+                let mut playbacks = engine.midi_dmx_playbacks.lock();
+                playbacks.push(super::super::MidiDmxPlayback {
                     precomputed: PrecomputedMidi::from_events(events),
                     cursor: 0,
                     universe_id: 5,
                     midi_channels: HashSet::new(),
                 });
             }
-            assert!(!engine.legacy_playbacks_finished());
+            assert!(!engine.midi_dmx_playbacks_finished());
             Ok(())
         }
 
@@ -2442,15 +2442,15 @@ mod test {
             }];
             let len = events.len();
             {
-                let mut playbacks = engine.legacy_midi_playbacks.lock();
-                playbacks.push(super::super::LegacyMidiPlayback {
+                let mut playbacks = engine.midi_dmx_playbacks.lock();
+                playbacks.push(super::super::MidiDmxPlayback {
                     precomputed: PrecomputedMidi::from_events(events),
                     cursor: len,
                     universe_id: 5,
                     midi_channels: HashSet::new(),
                 });
             }
-            assert!(engine.legacy_playbacks_finished());
+            assert!(engine.midi_dmx_playbacks_finished());
             Ok(())
         }
 
@@ -2466,28 +2466,28 @@ mod test {
                 },
             };
             {
-                let mut playbacks = engine.legacy_midi_playbacks.lock();
+                let mut playbacks = engine.midi_dmx_playbacks.lock();
                 // Finished playback
-                playbacks.push(super::super::LegacyMidiPlayback {
+                playbacks.push(super::super::MidiDmxPlayback {
                     precomputed: PrecomputedMidi::from_events(vec![event.clone()]),
                     cursor: 1,
                     universe_id: 5,
                     midi_channels: HashSet::new(),
                 });
                 // Unfinished playback
-                playbacks.push(super::super::LegacyMidiPlayback {
+                playbacks.push(super::super::MidiDmxPlayback {
                     precomputed: PrecomputedMidi::from_events(vec![event]),
                     cursor: 0,
                     universe_id: 5,
                     midi_channels: HashSet::new(),
                 });
             }
-            assert!(!engine.legacy_playbacks_finished());
+            assert!(!engine.midi_dmx_playbacks_finished());
             Ok(())
         }
     }
 
-    mod advance_legacy_playbacks_tests {
+    mod advance_midi_dmx_playbacks_tests {
         use super::*;
         use crate::midi::playback::{PrecomputedMidi, TimedMidiEvent};
 
@@ -2512,8 +2512,8 @@ mod test {
                 },
             }];
             {
-                let mut playbacks = engine.legacy_midi_playbacks.lock();
-                playbacks.push(super::super::LegacyMidiPlayback {
+                let mut playbacks = engine.midi_dmx_playbacks.lock();
+                playbacks.push(super::super::MidiDmxPlayback {
                     precomputed: PrecomputedMidi::from_events(events),
                     cursor: 0,
                     universe_id: 5,
@@ -2523,10 +2523,10 @@ mod test {
 
             // Song time = 1s, delay = 2s → checked_sub returns None → no advance
             engine.update_song_time(std::time::Duration::from_secs(1));
-            engine.advance_legacy_midi_playbacks();
+            engine.advance_midi_dmx_playbacks();
 
             // Cursor should still be at 0
-            let playbacks = engine.legacy_midi_playbacks.lock();
+            let playbacks = engine.midi_dmx_playbacks.lock();
             assert_eq!(playbacks[0].cursor, 0);
             Ok(())
         }
@@ -2552,8 +2552,8 @@ mod test {
                 },
             }];
             {
-                let mut playbacks = engine.legacy_midi_playbacks.lock();
-                playbacks.push(super::super::LegacyMidiPlayback {
+                let mut playbacks = engine.midi_dmx_playbacks.lock();
+                playbacks.push(super::super::MidiDmxPlayback {
                     precomputed: PrecomputedMidi::from_events(events),
                     cursor: 0,
                     universe_id: 5,
@@ -2563,9 +2563,9 @@ mod test {
 
             // Song time = 2s, delay = 1s → effective time = 1s → should advance
             engine.update_song_time(std::time::Duration::from_secs(2));
-            engine.advance_legacy_midi_playbacks();
+            engine.advance_midi_dmx_playbacks();
 
-            let playbacks = engine.legacy_midi_playbacks.lock();
+            let playbacks = engine.midi_dmx_playbacks.lock();
             assert_eq!(playbacks[0].cursor, 1);
             Ok(())
         }
@@ -2593,8 +2593,8 @@ mod test {
                 },
             ];
             {
-                let mut playbacks = engine.legacy_midi_playbacks.lock();
-                playbacks.push(super::super::LegacyMidiPlayback {
+                let mut playbacks = engine.midi_dmx_playbacks.lock();
+                playbacks.push(super::super::MidiDmxPlayback {
                     precomputed: PrecomputedMidi::from_events(events),
                     cursor: 0,
                     universe_id: 5,
@@ -2604,9 +2604,9 @@ mod test {
 
             // At 1s, only the first event (at 500ms) should be dispatched
             engine.update_song_time(std::time::Duration::from_secs(1));
-            engine.advance_legacy_midi_playbacks();
+            engine.advance_midi_dmx_playbacks();
 
-            let playbacks = engine.legacy_midi_playbacks.lock();
+            let playbacks = engine.midi_dmx_playbacks.lock();
             assert_eq!(
                 playbacks[0].cursor, 1,
                 "should advance past first event only"
@@ -2637,8 +2637,8 @@ mod test {
                 },
             ];
             {
-                let mut playbacks = engine.legacy_midi_playbacks.lock();
-                playbacks.push(super::super::LegacyMidiPlayback {
+                let mut playbacks = engine.midi_dmx_playbacks.lock();
+                playbacks.push(super::super::MidiDmxPlayback {
                     precomputed: PrecomputedMidi::from_events(events),
                     cursor: 0,
                     universe_id: 5,
@@ -2647,10 +2647,10 @@ mod test {
             }
 
             engine.update_song_time(std::time::Duration::from_secs(1));
-            engine.advance_legacy_midi_playbacks();
+            engine.advance_midi_dmx_playbacks();
 
             // Both events should be dispatched
-            let playbacks = engine.legacy_midi_playbacks.lock();
+            let playbacks = engine.midi_dmx_playbacks.lock();
             assert_eq!(playbacks[0].cursor, 2);
             Ok(())
         }
@@ -3135,11 +3135,11 @@ mod test {
         }
 
         #[test]
-        fn dimming_mirrors_to_legacy_store() -> Result<(), Box<dyn Error>> {
+        fn dimming_mirrors_to_midi_dmx_store() -> Result<(), Box<dyn Error>> {
             let (engine, _cancel_handle) = create_engine()?;
 
-            // Register universe in legacy store
-            engine.legacy_store.write().register_universe(5);
+            // Register universe in MIDI DMX store
+            engine.midi_dmx_store.write().register_universe(5);
 
             // Send a ProgramChange to set dimming
             engine.handle_midi_event_by_id(
@@ -3149,9 +3149,9 @@ mod test {
                 },
             );
 
-            // Legacy store should have the mirrored rate
+            // MIDI DMX store should have the mirrored rate
             // Just verify it doesn't panic — the rate value depends on the dimming_speed_modifier
-            let _store = engine.legacy_store.read();
+            let _store = engine.midi_dmx_store.read();
             Ok(())
         }
 
@@ -3523,13 +3523,13 @@ mod test {
         }
 
         #[test]
-        fn play_legacy_song_with_unmatched_universe() -> Result<(), Box<dyn Error>> {
+        fn play_midi_dmx_song_with_unmatched_universe() -> Result<(), Box<dyn Error>> {
             let (engine, cancel_handle) = create_engine()?;
             Engine::start_persistent_effects_loop(engine.clone());
 
             let assets_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets");
             let song_config = crate::config::Song::new(
-                "Legacy Song",
+                "MIDI DMX Song",
                 None,
                 None,
                 None,
@@ -3561,14 +3561,14 @@ mod test {
         }
 
         #[test]
-        fn play_legacy_song_multiple_unmatched_universes() -> Result<(), Box<dyn Error>> {
+        fn play_midi_dmx_song_multiple_unmatched_universes() -> Result<(), Box<dyn Error>> {
             // Test the empty barrier thread path with multiple unmatched universes
             let (engine, cancel_handle) = create_engine()?;
             Engine::start_persistent_effects_loop(engine.clone());
 
             let assets_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets");
             let song_config = crate::config::Song::new(
-                "Legacy Multi",
+                "MIDI DMX Multi",
                 None,
                 None,
                 None,
@@ -4209,7 +4209,7 @@ mod test {
         }
     }
 
-    mod play_matched_legacy_tests {
+    mod play_matched_midi_dmx_tests {
         use super::*;
 
         /// Create a minimal valid MIDI file (Type 0, 1 track)
@@ -4233,7 +4233,7 @@ mod test {
         }
 
         #[test]
-        fn play_legacy_song_with_matching_universe() -> Result<(), Box<dyn Error>> {
+        fn play_midi_dmx_song_with_matching_universe() -> Result<(), Box<dyn Error>> {
             // Create engine with universe "universe1" mapped to ID 5
             let (engine, cancel_handle) = create_engine()?;
             Engine::start_persistent_effects_loop(engine.clone());
@@ -4243,7 +4243,7 @@ mod test {
             create_valid_midi_file(&midi_path);
 
             let song_config = crate::config::Song::new(
-                "Legacy Matched",
+                "MIDI DMX Matched",
                 None,
                 None,
                 None,
@@ -4275,7 +4275,7 @@ mod test {
         }
 
         #[test]
-        fn play_legacy_song_matched_with_start_time() -> Result<(), Box<dyn Error>> {
+        fn play_midi_dmx_song_matched_with_start_time() -> Result<(), Box<dyn Error>> {
             let (engine, cancel_handle) = create_engine()?;
             Engine::start_persistent_effects_loop(engine.clone());
 
@@ -4284,7 +4284,7 @@ mod test {
             create_valid_midi_file(&midi_path);
 
             let song_config = crate::config::Song::new(
-                "Legacy Seek",
+                "MIDI DMX Seek",
                 None,
                 None,
                 None,
@@ -4379,8 +4379,8 @@ mod test {
         }
 
         #[test]
-        fn play_two_matched_legacy_universes() -> Result<(), Box<dyn Error>> {
-            // Engine with two universes to cover the second legacy barrier thread (line 713-714)
+        fn play_two_matched_midi_dmx_universes() -> Result<(), Box<dyn Error>> {
+            // Engine with two universes to cover the second MIDI DMX barrier thread (line 713-714)
             let config = config::Dmx::new(
                 None,
                 None,
@@ -4440,8 +4440,8 @@ mod test {
         }
 
         #[test]
-        fn play_dsl_and_legacy_combined() -> Result<(), Box<dyn Error>> {
-            // Song with both DSL and legacy light shows
+        fn play_dsl_and_midi_dmx_combined() -> Result<(), Box<dyn Error>> {
+            // Song with both DSL and MIDI DMX light shows
             let config = config::Dmx::new(
                 None,
                 None,

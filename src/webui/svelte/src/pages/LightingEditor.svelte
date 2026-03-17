@@ -86,7 +86,7 @@
   let sequenceNames = $derived(mergedLightFile.sequences.map((s) => s.name));
 
   let uploading = $state(false);
-  let showLegacyModal = $state(false);
+  let showMidiDmxModal = $state(false);
   let showFileBrowser = $state(false);
 
   // --- Data loading ---
@@ -451,7 +451,7 @@
                 {#if song.lighting_files.length > 0}
                   <span class="lighting-dot dsl" title="DSL lighting"></span>
                 {:else if song.has_lighting}
-                  <span class="lighting-dot legacy" title="Legacy MIDI lighting"
+                  <span class="lighting-dot midi-dmx" title="MIDI DMX lighting"
                   ></span>
                 {/if}
               </span>
@@ -492,12 +492,12 @@
 
         <div class="file-info">
           {lightFiles.length} DSL
-          {#if selectedSong && selectedSong.legacy_lighting_files.length > 0}
-            + {selectedSong.legacy_lighting_files.length} legacy
+          {#if selectedSong && selectedSong.midi_dmx_files.length > 0}
+            + {selectedSong.midi_dmx_files.length} MIDI DMX
           {/if}
           <button class="btn btn-sm" onclick={addLightFile}>+ DSL</button>
-          <button class="btn btn-sm" onclick={() => (showLegacyModal = true)}>
-            Legacy DMX...
+          <button class="btn btn-sm" onclick={() => (showMidiDmxModal = true)}>
+            MIDI DMX...
           </button>
         </div>
 
@@ -586,13 +586,13 @@
   </div>
 </div>
 
-{#if showLegacyModal && selectedSong}
+{#if showMidiDmxModal && selectedSong}
   <div
     class="modal-overlay"
-    onclick={() => (showLegacyModal = false)}
-    onkeydown={(e) => e.key === "Escape" && (showLegacyModal = false)}
+    onclick={() => (showMidiDmxModal = false)}
+    onkeydown={(e) => e.key === "Escape" && (showMidiDmxModal = false)}
     role="dialog"
-    aria-label="Legacy MIDI DMX Files"
+    aria-label="MIDI DMX Files"
     tabindex="-1"
   >
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
@@ -603,27 +603,27 @@
       role="document"
     >
       <div class="modal-header">
-        <h3>Legacy MIDI DMX Files</h3>
+        <h3>MIDI DMX Files</h3>
         <span class="modal-song">{selectedSongName}</span>
-        <button class="btn btn-sm" onclick={() => (showLegacyModal = false)}>
+        <button class="btn btn-sm" onclick={() => (showMidiDmxModal = false)}>
           Close
         </button>
       </div>
 
       <div class="modal-body">
-        {#if selectedSong.legacy_lighting_files.length > 0}
+        {#if selectedSong.midi_dmx_files.length > 0}
           <div class="modal-section">
             <span class="modal-section-label">Current Files</span>
-            <div class="legacy-files">
-              {#each selectedSong.legacy_lighting_files as lf (lf)}
-                <span class="legacy-file" title={lf}>
+            <div class="midi-dmx-files">
+              {#each selectedSong.midi_dmx_files as lf (lf)}
+                <span class="midi-dmx-file" title={lf}>
                   {lf.replace(/^.*\//, "")}
                 </span>
               {/each}
             </div>
           </div>
         {:else}
-          <p class="muted">No legacy MIDI DMX files.</p>
+          <p class="muted">No MIDI DMX files.</p>
         {/if}
 
         <div class="modal-section">
@@ -781,7 +781,7 @@
   .lighting-dot.dsl {
     background: var(--accent);
   }
-  .lighting-dot.legacy {
+  .lighting-dot.midi-dmx {
     background: var(--text-dim);
     border: 1px solid var(--text-muted);
     width: 5px;
@@ -895,12 +895,12 @@
     letter-spacing: 0.5px;
     font-weight: 600;
   }
-  .legacy-files {
+  .midi-dmx-files {
     display: flex;
     flex-wrap: wrap;
     gap: 4px;
   }
-  .legacy-file {
+  .midi-dmx-file {
     font-size: 12px;
     font-family: var(--mono);
     color: var(--text-muted);
