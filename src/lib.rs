@@ -15,6 +15,7 @@
 pub mod audio;
 pub mod build_info;
 pub mod calibrate;
+pub mod cli;
 pub(crate) mod clock;
 pub mod config;
 pub mod controller;

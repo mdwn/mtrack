@@ -11,31 +11,8 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-mod audio;
-mod build_info;
-mod calibrate;
-mod cli;
-mod clock;
-mod config;
-mod controller;
-mod dmx;
-mod lighting;
-mod midi;
-mod player;
-mod playlist;
-mod playsync;
-mod proto;
-mod samples;
-mod songs;
-mod state;
-#[cfg(test)]
-mod testutil;
-mod thread_priority;
-mod trigger;
-mod tui;
-mod util;
-mod verify;
-mod webui;
+use mtrack::cli;
+use mtrack::tui;
 
 #[tokio::main]
 async fn main() {
