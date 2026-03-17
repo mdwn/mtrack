@@ -26,6 +26,7 @@
     type SongSummary,
     type WaveformTrack,
   } from "../../lib/api/songs";
+  import { playbackStore } from "../../lib/ws/stores";
   import FileBrowser from "./FileBrowser.svelte";
   import FileUpload from "./FileUpload.svelte";
   import FilePicker from "./FilePicker.svelte";
@@ -229,6 +230,10 @@
   }
 
   async function save() {
+    if ($playbackStore.locked) {
+      saveMsg = "Player is locked. Unlock to make changes.";
+      return;
+    }
     saving = true;
     saveMsg = "";
     try {
@@ -261,6 +266,24 @@
   }
 
   async function handleTrackUpload(files: File[]) {
+    if ($playbackStore.locked) {
+      uploadMsg = "Player is locked. Unlock to make changes.";
+      return;
+    }
+
+    // Check for existing files that would be overwritten.
+    const existingNames = songFiles.map((f) => f.name);
+    const conflicts = files.filter((f) => existingNames.includes(f.name));
+    if (conflicts.length > 0) {
+      const names = conflicts.map((f) => f.name).join(", ");
+      if (
+        !confirm(
+          `The following file${conflicts.length > 1 ? "s" : ""} will be replaced:\n${names}\n\nContinue?`,
+        )
+      )
+        return;
+    }
+
     uploading = true;
     uploadMsg = "";
     try {
@@ -275,7 +298,12 @@
         uploadMsg = data?.error ?? `Upload failed (${res.status})`;
         return;
       }
-      uploadMsg = `Uploaded ${files.length} file${files.length !== 1 ? "s" : ""}`;
+      const data = await res.json().catch(() => null);
+      if (data?.replaced) {
+        uploadMsg = `Replaced ${files.length} file${files.length !== 1 ? "s" : ""}`;
+      } else {
+        uploadMsg = `Uploaded ${files.length} file${files.length !== 1 ? "s" : ""}`;
+      }
       setTimeout(() => (uploadMsg = ""), 3000);
       await load();
     } catch (e) {
@@ -286,6 +314,21 @@
   }
 
   async function handleMidiUpload(files: File[]) {
+    if ($playbackStore.locked) {
+      uploadMsg = "Player is locked. Unlock to make changes.";
+      return;
+    }
+
+    const existingNames = songFiles.map((f) => f.name);
+    if (existingNames.includes(files[0].name)) {
+      if (
+        !confirm(
+          `"${files[0].name}" already exists and will be replaced.\n\nContinue?`,
+        )
+      )
+        return;
+    }
+
     uploading = true;
     uploadMsg = "";
     try {
@@ -295,7 +338,8 @@
         uploadMsg = data?.error ?? `Upload failed (${res.status})`;
         return;
       }
-      uploadMsg = "MIDI file uploaded";
+      const data = await res.json().catch(() => null);
+      uploadMsg = data?.replaced ? "MIDI file replaced" : "MIDI file uploaded";
       setTimeout(() => (uploadMsg = ""), 3000);
       await load();
     } catch (e) {
@@ -418,7 +462,8 @@
         {#if uploadMsg}
           <div
             class="msg"
-            class:error={uploadMsg.toLowerCase().includes("fail")}
+            class:error={uploadMsg.toLowerCase().includes("fail") ||
+              uploadMsg.toLowerCase().includes("locked")}
           >
             {uploadMsg}
           </div>
@@ -452,6 +497,15 @@
             onupload={handleMidiUpload}
           />
         </div>
+        {#if uploadMsg}
+          <div
+            class="msg"
+            class:error={uploadMsg.toLowerCase().includes("fail") ||
+              uploadMsg.toLowerCase().includes("locked")}
+          >
+            {uploadMsg}
+          </div>
+        {/if}
       {:else if activeTab === "lighting"}
         {#if song}
           <SongLightingEditor

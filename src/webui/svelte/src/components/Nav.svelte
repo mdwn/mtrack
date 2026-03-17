@@ -14,6 +14,7 @@
      * -->
 <script lang="ts">
   import { wsConnected, playbackStore } from "../lib/ws/stores";
+  import { setLocked } from "../lib/api/config";
 
   interface Props {
     currentHash: string;
@@ -21,6 +22,18 @@
 
   let { currentHash }: Props = $props();
   let menuOpen = $state(false);
+  let toggling = $state(false);
+
+  async function toggleLock() {
+    toggling = true;
+    try {
+      await setLocked(!$playbackStore.locked);
+    } catch (e) {
+      console.error("Failed to toggle lock:", e);
+    } finally {
+      toggling = false;
+    }
+  }
 
   const links = [
     { hash: "#/", label: "Dashboard" },
@@ -72,6 +85,17 @@
     </div>
   {/if}
   <div class="nav-status">
+    <button
+      class="lock-toggle"
+      class:locked={$playbackStore.locked}
+      onclick={toggleLock}
+      disabled={toggling}
+      title={$playbackStore.locked
+        ? "Locked — click to unlock editing"
+        : "Unlocked — click to lock"}
+    >
+      {$playbackStore.locked ? "\uD83D\uDD12" : "\uD83D\uDD13"}
+    </button>
     <div
       class="status-indicator"
       class:connected={$wsConnected}
@@ -168,6 +192,25 @@
     display: flex;
     align-items: center;
     gap: 8px;
+  }
+  .lock-toggle {
+    background: none;
+    border: 1px solid transparent;
+    border-radius: var(--radius);
+    padding: 2px 6px;
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+    transition:
+      background 0.15s,
+      border-color 0.15s;
+  }
+  .lock-toggle:hover {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: var(--border);
+  }
+  .lock-toggle.locked {
+    color: var(--yellow, #eab308);
   }
   .status-indicator {
     width: 8px;

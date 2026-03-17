@@ -61,6 +61,15 @@ export interface ConfigSnapshot {
   checksum: string;
 }
 
+export async function setLocked(locked: boolean): Promise<void> {
+  const res = await fetch("/api/lock", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ locked }),
+  });
+  if (!res.ok) throw new Error(`Failed to set lock state: ${res.status}`);
+}
+
 export async function fetchConfigStore(): Promise<ConfigSnapshot> {
   const res = await get("/config/store");
   if (!res.ok) throw new Error(`Failed to fetch config store: ${res.status}`);

@@ -33,6 +33,7 @@ export interface PlaybackState {
   tracks: TrackInfo[];
   available_playlists: string[];
   persisted_playlist_name: string;
+  locked: boolean;
 }
 
 export interface FixtureChannels {
@@ -75,6 +76,7 @@ export const playbackStore = writable<PlaybackState>({
   tracks: [],
   available_playlists: [],
   persisted_playlist_name: "",
+  locked: true,
 });
 
 export const fixtureStore = writable<Record<string, FixtureChannels>>({});
@@ -112,6 +114,7 @@ on("playback", (msg) => {
     tracks: m.tracks ?? [],
     available_playlists: m.available_playlists ?? [],
     persisted_playlist_name: m.persisted_playlist_name ?? "",
+    locked: m.locked ?? true,
   });
 });
 

@@ -85,9 +85,24 @@ export const CURVES = [
 export const DIRECTIONS = [
   "forward",
   "backward",
+  "random",
+  "pingpong",
   "left_to_right",
   "right_to_left",
+  "top_to_bottom",
+  "bottom_to_top",
+  "clockwise",
+  "counter_clockwise",
 ];
+export const CHASE_DIRECTIONS = [
+  "left_to_right",
+  "right_to_left",
+  "top_to_bottom",
+  "bottom_to_top",
+  "clockwise",
+  "counter_clockwise",
+];
+export const CHASE_PATTERNS = ["linear", "snake", "random"];
 
 /** Effect parameters */
 export interface EffectParams {

@@ -175,7 +175,7 @@
     const newCue = emptyCue(ts);
     if (subLaneType === "effects") {
       newCue.effects = [
-        { groups: [""], effect: { type: "static", colors: [], extra: {} } },
+        { groups: ["all"], effect: { type: "static", colors: [], extra: {} } },
       ];
     } else if (subLaneType === "commands") {
       newCue.commands = [{ command: "clear" }];

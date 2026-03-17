@@ -144,17 +144,13 @@ pub async fn start(
                 player_path
             );
             let mut default_config = config::Player::default();
-            // If the project root already has discoverable songs, point songs
-            // at "." instead of creating an empty "songs" subdirectory.
+            // For zero-config startup, default to "." (project root) so songs
+            // anywhere in the directory tree are discoverable — including via
+            // bulk import after startup.
+            default_config.set_songs(".");
             if let Some(parent) = player_path.parent() {
                 if !parent.exists() {
                     std::fs::create_dir_all(parent)?;
-                }
-                if !songs::get_all_songs(parent)
-                    .map(|s| s.is_empty())
-                    .unwrap_or(true)
-                {
-                    default_config.set_songs(".");
                 }
             }
             let yaml = crate::util::to_yaml_string(&default_config)?;

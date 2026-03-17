@@ -34,6 +34,37 @@ use serde_json::json;
 use super::server::WebUiState;
 use crate::songs as songs_crate;
 
+/// Middleware that rejects mutating requests (non-GET) when the player is locked.
+/// Applied at the server layer where the state is available.
+pub(crate) async fn lock_guard(
+    State(state): State<WebUiState>,
+    request: axum::http::Request<axum::body::Body>,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let method = request.method().clone();
+    let path = request.uri().path().to_string();
+
+    // Allow all reads, the lock toggle, validation, and playlist activation
+    // (activation is a playback control, not a state-altering edit).
+    if method == axum::http::Method::GET
+        || path.ends_with("/lock")
+        || path.ends_with("/validate")
+        || path.ends_with("/activate")
+    {
+        return next.run(request).await;
+    }
+
+    if state.player.is_locked() {
+        return (
+            StatusCode::LOCKED,
+            Json(json!({"error": "Player is locked. Unlock to make changes."})),
+        )
+            .into_response();
+    }
+
+    next.run(request).await
+}
+
 /// Builds the API router for config read/write endpoints.
 ///
 /// Playback control is handled via gRPC-Web (PlayerService), not REST.
@@ -115,6 +146,7 @@ pub fn router() -> Router<WebUiState> {
                 .delete(profiles::delete_profile_file),
         )
         .route("/status", get(status::get_status))
+        .route("/lock", get(status::get_lock).put(status::put_lock))
         .route("/devices/audio", get(devices::get_audio_devices))
         .route("/devices/midi", get(devices::get_midi_devices))
         .route("/calibrate/start", post(devices::post_calibrate_start))

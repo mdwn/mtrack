@@ -385,69 +385,13 @@ pub(super) async fn bulk_import(
 
     // codeql[rust/path-injection] dir_canonical is canonicalized and verified
     // via starts_with(root_canonical) above, preventing path traversal.
-    let read_dir = match std::fs::read_dir(&dir_canonical) {
-        Ok(rd) => rd,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("Failed to read directory: {}", e)})),
-            )
-                .into_response();
-        }
-    };
-
-    let mut subdirs: Vec<std::path::PathBuf> = read_dir
-        .flatten()
-        .filter_map(|entry| {
-            let path = entry.path();
-            if path.is_dir()
-                && !path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .is_none_or(|n| n.starts_with('.'))
-            {
-                Some(path)
-            } else {
-                None
-            }
-        })
-        .collect();
-    subdirs.sort();
-
-    for subdir in &subdirs {
-        let dir_name = subdir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown")
-            .to_string();
-
-        // Skip if song.yaml already exists
-        if subdir.join("song.yaml").exists() {
-            skipped.push(dir_name);
-            continue;
-        }
-
-        // Try to initialize a song from this directory
-        match songs::Song::initialize(subdir) {
-            Ok(song) => {
-                let mut config = song.get_config();
-                // Use directory name as song name
-                config.set_name(&dir_name);
-                let config_path = subdir.join("song.yaml");
-                match config.save(&config_path) {
-                    Ok(()) => created.push(dir_name),
-                    Err(e) => failed.push(json!({
-                        "name": dir_name,
-                        "error": format!("Failed to save: {}", e),
-                    })),
-                }
-            }
-            Err(_) => {
-                // No audio files or failed to scan — skip silently
-                skipped.push(dir_name);
-            }
-        }
-    }
+    bulk_import_recursive(
+        &dir_canonical,
+        &dir_canonical,
+        &mut created,
+        &mut skipped,
+        &mut failed,
+    );
 
     // Refresh the player's song state once after all imports
     if !created.is_empty() {
@@ -467,6 +411,97 @@ pub(super) async fn bulk_import(
         })),
     )
         .into_response()
+}
+
+/// Recursively scans directories for song candidates. A directory is imported
+/// if it contains audio files (and no song.yaml yet). Directories without audio
+/// are recursed into, allowing structures like artist/album/song/.
+fn bulk_import_recursive(
+    dir: &std::path::Path,
+    root: &std::path::Path,
+    created: &mut Vec<String>,
+    skipped: &mut Vec<String>,
+    failed: &mut Vec<serde_json::Value>,
+) {
+    let read_dir = match std::fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(_) => return,
+    };
+
+    let mut subdirs: Vec<std::path::PathBuf> = Vec::new();
+    let mut has_audio = false;
+
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if !name.starts_with('.') {
+                subdirs.push(path);
+            }
+        } else if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            if songs::is_supported_audio_extension(&ext.to_lowercase()) {
+                has_audio = true;
+            }
+        }
+    }
+    subdirs.sort();
+
+    // Relative display name for reporting
+    let display_name = dir
+        .strip_prefix(root)
+        .unwrap_or(dir)
+        .to_string_lossy()
+        .to_string();
+    let display_name = if display_name.is_empty() {
+        dir.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string()
+    } else {
+        display_name
+    };
+
+    if has_audio || dir != root {
+        // This directory is a song candidate (has audio, or is a subdirectory)
+        if dir == root {
+            // Don't try to import the root itself — recurse into subdirs
+        } else if dir.join("song.yaml").exists() {
+            skipped.push(display_name);
+            return;
+        } else if has_audio {
+            // Import this directory as a song
+            let dir_name = dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            match songs::Song::initialize(&dir.to_path_buf()) {
+                Ok(song) => {
+                    let mut config = song.get_config();
+                    config.set_name(&dir_name);
+                    match config.save(&dir.join("song.yaml")) {
+                        Ok(()) => created.push(display_name),
+                        Err(e) => failed.push(json!({
+                            "name": display_name,
+                            "error": format!("Failed to save: {}", e),
+                        })),
+                    }
+                }
+                Err(e) => {
+                    failed.push(json!({
+                        "name": display_name,
+                        "error": format!("{}", e),
+                    }));
+                }
+            }
+            return; // Don't recurse into song directories
+        }
+    }
+
+    // Recurse into subdirectories
+    for subdir in &subdirs {
+        bulk_import_recursive(subdir, root, created, skipped, failed);
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -752,7 +787,7 @@ mod test {
 
         let song_c = parent.join("Gamma");
         std::fs::create_dir_all(&song_c).unwrap();
-        // No audio files — still gets a song.yaml (empty tracks)
+        // No audio files, no subdirs — skipped (not a song candidate)
 
         let song_d = parent.join("Delta");
         std::fs::create_dir_all(&song_d).unwrap();
@@ -801,20 +836,22 @@ mod test {
             created
         );
         assert!(
-            created.contains(&"Gamma"),
-            "Gamma should be created (empty): {:?}",
-            created
-        );
-        assert!(
             skipped.contains(&"Delta"),
             "Delta should be skipped (existing): {:?}",
             skipped
         );
 
+        // Gamma has no audio and no subdirs — not imported, not in any list
+        assert!(
+            !created.iter().any(|s| s.contains("Gamma")),
+            "Gamma should not be created (no audio): {:?}",
+            created
+        );
+
         // Verify song.yaml was actually created
         assert!(song_a.join("song.yaml").exists());
         assert!(song_b.join("song.yaml").exists());
-        assert!(song_c.join("song.yaml").exists());
+        assert!(!song_c.join("song.yaml").exists());
     }
 
     #[tokio::test]
@@ -860,5 +897,68 @@ mod test {
         let body = response_body(response).await;
         let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert!(parsed["created"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn bulk_import_recursive_nested() {
+        let (state, _dir) = test_state();
+        let parent = _dir.path().join("music");
+        std::fs::create_dir_all(&parent).unwrap();
+
+        // Nested: music/artist/album/song
+        let song_deep = parent.join("Artist").join("Album").join("Track1");
+        std::fs::create_dir_all(&song_deep).unwrap();
+        std::fs::write(song_deep.join("track.wav"), create_test_wav()).unwrap();
+
+        // Also a direct child with audio
+        let song_shallow = parent.join("MySong");
+        std::fs::create_dir_all(&song_shallow).unwrap();
+        std::fs::write(song_shallow.join("audio.wav"), create_test_wav()).unwrap();
+
+        let app = router().with_state(state);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/browse/bulk-import")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"path": "/music"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+        let created: Vec<&str> = parsed["created"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+
+        // Both the deeply nested and the shallow song should be found
+        assert!(
+            created.iter().any(|s| s.contains("Track1")),
+            "Nested Track1 should be created: {:?}",
+            created
+        );
+        assert!(
+            created.iter().any(|s| s.contains("MySong")),
+            "MySong should be created: {:?}",
+            created
+        );
+
+        assert!(song_deep.join("song.yaml").exists());
+        assert!(song_shallow.join("song.yaml").exists());
+        // Intermediate dirs without audio should NOT have song.yaml
+        assert!(!parent.join("Artist").join("song.yaml").exists());
+        assert!(!parent
+            .join("Artist")
+            .join("Album")
+            .join("song.yaml")
+            .exists());
     }
 }

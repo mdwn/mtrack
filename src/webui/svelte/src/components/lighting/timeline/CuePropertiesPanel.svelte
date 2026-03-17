@@ -82,7 +82,7 @@
 
   function addEffect() {
     const newEffect: CueEffect = {
-      groups: [""],
+      groups: ["all"],
       effect: { type: "static", colors: [], extra: {} },
     };
     onchange({ ...cue, effects: [...cue.effects, newEffect] });

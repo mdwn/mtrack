@@ -106,6 +106,7 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
             "tracks": tracks,
             "available_playlists": available_playlists,
             "persisted_playlist_name": persisted_playlist_name,
+            "locked": player.is_locked(),
         });
 
         let _ = tx.send(msg.to_string());
