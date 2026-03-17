@@ -28,6 +28,7 @@ excludes:
   - .*\.prettierignore
   - .*\.prettierrc
   - .*\.md
+  - .*\.png
 licenses:
   - files: any
     ident: GPL-3.0

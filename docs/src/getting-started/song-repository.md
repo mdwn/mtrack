@@ -1,10 +1,13 @@
 # Song Repository
 
-## Song repository
+## Song Repository
 
-The song repository is a location on disk that houses both your backing tracks, MIDI files, and song
-definitions. The song repository does not have to be in any particular layout, as `mtrack` will attempt
-to parse any/all config files supported by `config-rs` it finds to look for song definitions.
+The song repository is a location on disk that houses your backing tracks, MIDI files, and song
+definitions. mtrack recursively scans the repository for `song.yaml` files, so songs can be
+organized in any directory structure — flat, by artist, by album, or any other scheme.
+
+The repository path is configured via the `songs` field in `mtrack.yaml`. For zero-config
+startup (no existing `mtrack.yaml`), it defaults to `.` (the project root directory).
 
 ## Songs
 
@@ -13,12 +16,14 @@ A song comprises of:
 - One or more audio files.
 - An optional MIDI file.
 - One or more light shows (using `.light` DSL files, or legacy MIDI files interpreted as DMX).
-- A song definition.
+- A song definition (`song.yaml`).
 
-The audio files must all be the same bitrate. They do not need to be the same length. mtrack player will
-play until the last audio (or MIDI) file is complete.
+The audio files must all be the same sample rate. They do not need to be the same length. mtrack
+will play until the last audio (or MIDI) file is complete.
 
-A song is defined in any of the formats supported by `config-rs`.
+Supported audio formats: WAV, FLAC, MP3, OGG, AAC, M4A, AIFF.
+
+A song is defined in a `song.yaml` file:
 
 ```yaml
 # The name of the song. This name is primarily used when constructing
@@ -39,44 +44,26 @@ lighting:
   - file: lighting/main_show.light
   - file: lighting/outro.light
 
-# Legacy MIDI-based light shows (still supported for backward compatibility).
-# light_shows:
-# - universe_name: light-show
-#   dmx_file: DMX Light Show.mid
-#   midi_channels:
-#   - 15
-
 # An optional MIDI playback configuration.
 midi_playback:
   file: Song Automation.mid
 
-  # MIDI channels from the MIDI file to exclude. Useful if you want to do things like
-  # exclude lighting data from MIDI playback.
+  # MIDI channels from the MIDI file to exclude.
   exclude_midi_channels:
   - 15
 
-
 # The tracks associated with this song.
 tracks:
-# The click track only has one channel, so we can just indicate which output channel
-# we want directly.
 - name: click
-  file: click.wav # File paths are relative to the song config file.
-# Similarly, our cue only has one channel.
+  file: click.wav
 - name: cue
-  file: /mnt/song-storage/cue.wav # Or file paths can be absolute.
-# Our backing track file has two channels, so we have to specify `file_channel` to let
-# mtrack know which channel from the file to use.
+  file: /mnt/song-storage/cue.wav
 - name: backing-track-l
   file: Backing Tracks.wav
   file_channel: 1
-# We can re-use our backing track file and specify the other channel if we'd like to do
-# stereo.
 - name: backing-track-r
   file: Backing Tracks.wav
   file_channel: 2
-# Our keys file has two channels, but we're only interested in one.
-# Note: You can use any supported audio format (WAV, MP3, FLAC, OGG, AAC, ALAC, etc.)
 - name: keys
   file: Keys.wav
   file_channel: 1
@@ -90,24 +77,64 @@ Songs (count: 23):
 - Name: The first really cool song
   Duration: 5:10
   Channels: 11
-  Sample Rate: 44100
-  Midi Message: Some(Midi { channel: u4(15), message: ProgramChange { program: u7(0) } })
-  Midi File:None
-  Tracks: click, cue, backing-track-l, backing-track-r, keys
-- Name: The next really cool song
   ...
 ```
 
-## Generating default song configurations
+## Generating Default Song Configurations
 
-Song configurations can be generated using the `songs` command as follows:
-
+Song configurations can be generated using the `songs` command:
 
 ```
 $ mtrack songs --init /mnt/song-storage
 ```
 
-This will create a file called `song.yaml` in each subfolder of `/mnt/storage`. The name of the
-subfolder determines the song's name. Audio files (WAV, MP3, FLAC, OGG, AAC, ALAC, etc.) are used as tracks. The track's name is
-determined using the file name and the number of channels within the file. MIDI files are used as
-MIDI playback, MIDI files that start with `dmx_` will be used as light shows. You can edit the generated files to refine the settings to your needs.
+This creates a `song.yaml` in each subfolder of `/mnt/song-storage`. The name of the
+subfolder determines the song's name. Audio files are used as tracks (stereo and multichannel
+files are split into per-channel tracks). MIDI files are used as MIDI playback, and files
+prefixed with `dmx_` are treated as legacy light shows. `.light` files are auto-detected as
+DSL lighting shows.
+
+## Directory Structure
+
+Songs can be organized in any directory structure. mtrack recursively scans for `song.yaml`
+files:
+
+```
+songs/
+├── Song One/
+│   ├── song.yaml
+│   ├── click.wav
+│   └── backing.flac
+├── Artist/
+│   ├── Album/
+│   │   ├── Song Two/
+│   │   │   ├── song.yaml
+│   │   │   └── tracks.wav
+│   │   └── Song Three/
+│   │       ├── song.yaml
+│   │       └── tracks.wav
+│   └── Single/
+│       ├── song.yaml
+│       └── audio.mp3
+└── Covers/
+    └── Cover Song/
+        ├── song.yaml
+        └── audio.wav
+```
+
+## Managing Songs via the Web UI
+
+The web UI song browser provides a complete management interface:
+
+- **Create** — Create new songs with a name or nested path (e.g. `Artist/Song`).
+- **Import** — Browse the server filesystem and import existing song directories. Audio, MIDI,
+  and lighting files are auto-detected and the `song.yaml` is generated automatically.
+- **Bulk import** — Import all subdirectories of a directory at once. The scan is recursive,
+  so nested structures (artist/album/song) are handled.
+- **Edit** — Modify track assignments, upload audio and MIDI files, edit lighting shows
+  visually or as raw DSL.
+- **Delete** — Remove a song from the registry by deleting its `song.yaml`. Audio and other
+  files are preserved. The song is automatically removed from any playlists that reference it.
+
+When uploading a file that already exists in the song directory, you'll be prompted to confirm
+the replacement.

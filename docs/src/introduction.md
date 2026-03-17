@@ -6,35 +6,68 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg)](https://github.com/mdwn/mtrack/blob/main/CODE_OF_CONDUCT.md)
 
-`mtrack` is a multitrack player intended for running on small devices like the Raspberry Pi. It can output
-multiple tracks of audio as well as MIDI out via class compliant interfaces. The general intent here is to
-allow `mtrack` to be controlled remotely from your feet as opposed to needing to drive a computer or tablet
-on stage.
+`mtrack` is a multitrack audio, MIDI, and lighting player for live performances. It runs on
+small devices like the Raspberry Pi and is designed to be controlled remotely — from your feet,
+a phone, or any device with a browser — so you never have to babysit a computer on stage.
 
-## Hands free multitrack playing
+![Dashboard](images/dashboard.png)
 
-The idea behind `mtrack` is to provide a way to play multitracks in a live situation without using your hands.
-In live situations, I frequently found myself babysitting a DAW while performing. The point of `mtrack` is to
-avoid this situation by providing a very simple mechanism for playing back songs.
+## Features
 
-`mtrack` can read from multiple audio files and rearrange and combine the channels present in those files into
-a singular audio stream that is routed to a class complaint audio interface. Additionally, `mtrack` can
-simultaneously play back a MIDI file along with your audio, which allows for automation of on stage gear. `mtrack`
-can also emit MIDI events on song selection, as well as listen for MIDI events in order to control the `mtrack`
-player.
+- **Multitrack audio** — Play back multiple audio files simultaneously, mapping channels to
+  any class-compliant audio interface. Supports WAV, FLAC, MP3, OGG, AAC, M4A, and AIFF.
+- **MIDI playback** — Synchronize MIDI file playback with audio for automating on-stage gear.
+- **DMX lighting** — Programmable lighting effects with a custom DSL, real-time effects engine,
+  and OLA integration for DMX output.
+- **Web UI** — Full browser-based interface for playback control, song management, lighting
+  show editing, playlist management, and hardware configuration. Includes a DAW-style timeline
+  editor with integrated playback preview.
+- **Zero-config startup** — Point mtrack at a directory of songs and it works. No config file
+  required.
+- **Lock mode** — Safety mechanism for live shows. Lock the player to prevent accidental
+  configuration changes while keeping playback controls active.
+- **Multiple control interfaces** — Web UI, gRPC, OSC, and MIDI control. Use foot controllers,
+  tablets, or custom software to drive playback.
+- **Hardware profiles** — Define per-machine hardware configurations that auto-select based on
+  hostname. Carry the same config across rehearsal and show rigs.
+- **Triggered samples** — Audio and MIDI-triggered sample playback with velocity curves,
+  release groups, and voice management.
 
-### The general behavior of mtrack
+## Quick Start
 
-`mtrack` intends to have the following behavior loop:
+```
+# Install
+cargo install mtrack
 
-1. `mtrack` starts on the first item in the user defined playlist. The item is selected, but not playing.
-2. While no song is playing, the user can select a song on the playlist by using the `next` and `previous`
-   events. `next` and `previous` are inactive when a song is playing.
-3. The user can start a song using the `play` event and stop a currently playing song using the `stop` event.
-   While a song is playing, `play` will perform no action, and while a song is not playing, `stop` will
-   perform no action.
-4. If a user needs to play a song not represented in their playlist, the user can use the `all_songs`
-   event to move to a playlist that comprises a sorted list of all songs in a user's song repository. If the
-   user would like to use their original playlist, the `playlist` event can be used.
+# Start with a directory of songs
+cd /path/to/my/songs
+mtrack start
 
-The events listed above can be triggered using MIDI messages.
+# Or point at a specific directory
+mtrack start /path/to/my/songs
+```
+
+Open `http://localhost:8080` in a browser to access the web UI.
+
+## How It Works
+
+1. **mtrack starts** on the first song in the active playlist, selected but not playing.
+2. **Navigate** songs using next/previous controls (web UI, MIDI, OSC, or gRPC).
+3. **Play** the selected song. Audio, MIDI, and lighting play back in sync.
+4. **Stop** at any time. When a song finishes naturally, the playlist advances to the next song.
+5. **Switch playlists** to access different setlists, or use the all-songs list to find any song.
+
+![Timeline editor](images/timeline-editor.png)
+
+## Documentation
+
+See the full documentation for:
+
+- [Installation](getting-started/installation.md)
+- [Song Repository](getting-started/song-repository.md)
+- [Playlists](getting-started/playlists.md)
+- [Web UI](interfaces/web-ui.md)
+- [Lighting](lighting/overview.md)
+- [Hardware Profiles](configuration/hardware-profiles.md)
+- [gRPC Control](interfaces/grpc.md)
+- [OSC Control](interfaces/osc.md)

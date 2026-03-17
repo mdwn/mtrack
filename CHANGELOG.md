@@ -151,14 +151,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   This enables the timeline editor to play any song from any position in a single call.
 - **`Playlist::navigate_to(name)`**: New method sets the playlist position to the song
   matching the given name, returning the song if found.
-- **Bulk song import**: New `POST /api/browse/bulk-import` endpoint scans all
-  subdirectories of a given path and creates `song.yaml` in each one that doesn't
-  already have one. Audio, MIDI, and lighting files are auto-detected per directory.
-  The song browser's import UI now shows an "Import All Subdirectories" button when
-  viewing a directory that contains subdirectories, with a results summary showing
-  created, skipped, and failed imports.
+- **Bulk song import**: New `POST /api/browse/bulk-import` endpoint recursively scans
+  subdirectories of a given path and creates `song.yaml` in each one that contains
+  audio files and doesn't already have a `song.yaml`. Nested structures (artist/album/song)
+  are handled automatically. The song browser's import UI shows an "Import All
+  Subdirectories" button with a results summary showing created, skipped, and failed imports.
+- **Song deletion**: New `DELETE /api/songs/{name}` endpoint removes a song by deleting its
+  `song.yaml`. Audio and other files are preserved. The song is automatically removed from
+  any playlists that reference it. Cannot delete a song that is currently playing.
+- **Nested song creation**: `POST /api/songs/{name}` now accepts paths with slashes
+  (e.g. `Artist/Album/Song`), creating nested directory structures automatically.
+- **Lock mode**: The player starts in locked mode by default, blocking all state-altering
+  operations (song edits, playlist changes, config updates, file uploads) via a middleware
+  layer. Playback controls always work. Toggle via `PUT /api/lock` or the lock icon in
+  the web UI nav bar. Lock state is broadcast via WebSocket.
+- **SafePath module**: Centralized path verification (`src/webui/safe_path.rs`) with
+  `SafePath`, `VerifiedRoot`, and `SafePathError` types. All REST API handlers that touch
+  the filesystem now use SafePath for canonicalize + starts_with containment verification,
+  replacing bespoke per-handler implementations.
 
 ### Changed
+
+- **Binary uses library crate**: `main.rs` now imports from `mtrack::` instead of
+  re-declaring all modules. This eliminates double-compilation and ensures the binary
+  runs the same code that tests verify.
+- **Song path resolution via registry**: `put_song`, `upload_track_single`,
+  `upload_tracks_multipart`, and `import_file_to_song` now look up the song's actual
+  directory from the player registry before falling back to a flat `songs_path/name` join.
+  This correctly handles songs in nested subdirectories.
+- **Zero-config songs path**: Fresh `mtrack.yaml` files created during zero-config startup
+  now default to `songs: .` (project root) instead of conditionally choosing between
+  `songs` and `.`. This ensures bulk-imported songs are always discoverable.
 
 - `Playlist::current()`, `next()`, and `prev()` now return `Option<Arc<Song>>` instead of
   `Arc<Song>`, returning `None` when the playlist is empty. All callers (player, controllers,
@@ -216,6 +239,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   center of the content area, accounting for the 80px label column. Previously, each zoom
   step shifted the center by a fraction of 40px, causing compounding drift that could move
   the view by many measures when zooming deeply.
+- **Timeline zoom during rapid scrolling**: Zoom operations now read `scrollLeft` directly
+  from the DOM and suppress the RAF-debounced scroll handler during zoom, preventing stale
+  values from corrupting the anchor point during rapid zoom-in/out.
+- **Playback status reporting**: OSC broadcast and gRPC Status RPC now use
+  `player.is_playing()` (join handle check) instead of `elapsed().is_some()` to determine
+  playing state. This prevents a brief false "Stopped" report during the startup window
+  between `play_from` returning and `clock.start()` firing.
+- **Play rejected during initialization**: `play_from()` now returns an error if hardware
+  hasn't finished initializing, preventing silent no-output playback.
+- **PlaySongFrom playlist switch is session-only**: The editor's play-from-position switches
+  to `all_songs` for the duration of playback (required for correct WebSocket state
+  broadcasting) but the switch is not persisted — the user's real playlist is restored
+  on restart.
+- **Playhead interpolation drift cap**: Client-side playhead interpolation is capped at 2
+  seconds of drift, preventing large backward jumps when the WebSocket reconnects after a
+  long disconnect.
+- **Deleting playing song blocked**: `DELETE /api/songs/{name}` returns 409 Conflict if the
+  song is currently playing.
+- **Playlist cleanup on song deletion**: When a song is deleted, all playlist YAML files are
+  updated to remove the deleted song, preventing broken references on restart.
+- **DSL serializer trailing commas**: The lighting DSL serializer no longer emits trailing
+  commas in tempo change lists, which caused parse errors on re-read.
+- **DSL serializer empty groups**: Effects with empty group names are skipped during
+  serialization instead of producing invalid DSL like `": static"`.
+- **DSL serializer dimmer separator**: All effect types now use comma-separated parameters.
+  Previously, dimmer effects incorrectly used space separation.
+- **Default effect group**: New effects created from the timeline editor default to group
+  "all" instead of an empty string.
+- **Upload error visibility**: MIDI upload error messages are now displayed on the MIDI tab
+  (previously only shown on the Tracks tab).
+- **Upload body size limit removed**: The axum default 2MB body limit is disabled for API
+  routes, allowing upload of large audio files.
+- **File replacement confirmation**: Uploading a file that already exists prompts for
+  confirmation and shows "Replaced" instead of "Uploaded" in the success message.
+- **WebSocket disconnect indicator**: The lighting editor shows a yellow warning banner when
+  the WebSocket connection is lost.
+- **Chase direction/pattern dropdowns**: Chase effect direction uses the correct spatial
+  directions (not "forward"/"backward"), and pattern is now a dropdown instead of free text.
+- **Effect group dropdown**: The effect group field is now a text input with a datalist
+  populated from the venue's fixture groups, supporting both selection and free-text entry.
 - **Sample upload path injection**: The sample file upload endpoint now canonicalizes the
   project root before constructing filesystem paths, preventing path traversal via crafted
   filenames.
