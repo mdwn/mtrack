@@ -23,6 +23,7 @@
     uploadTrack,
     uploadTracks,
     type SongFile,
+    type SongFailure,
     type SongSummary,
     type WaveformTrack,
   } from "../../lib/api/songs";
@@ -55,6 +56,7 @@
   let tracks = $state<TrackEntry[]>([]);
   let loading = $state(true);
   let error = $state("");
+  let failureError = $state<string | null>(null);
   let saving = $state(false);
   let saveMsg = $state("");
   let uploading = $state(false);
@@ -161,9 +163,10 @@
     if (!parsedConfig) return editedYaml;
     const updated = {
       ...parsedConfig,
+      kind: "song",
       tracks: tracks.map((t) => {
         const entry: Record<string, unknown> = { name: t.name, file: t.file };
-        if (t.file_channel !== undefined && t.file_channel !== 1) {
+        if (t.file_channel !== undefined) {
           entry.file_channel = t.file_channel;
         }
         return entry;
@@ -175,12 +178,26 @@
   async function load() {
     loading = true;
     error = "";
+    failureError = null;
     try {
-      const [songs, yaml] = await Promise.all([
+      const [result, yaml] = await Promise.all([
         fetchSongs(),
         fetchSongConfig(songName),
       ]);
-      song = songs.find((s) => s.name === songName) ?? null;
+      song = result.songs.find((s) => s.name === songName) ?? null;
+
+      // Check if this song is in the failures list.
+      const failure = result.failures.find(
+        (f: SongFailure) => f.name === songName,
+      );
+      if (failure) {
+        failureError = failure.error;
+        // Default to config tab so the user can fix the YAML.
+        if (!initialTab) {
+          activeTab = "config";
+        }
+      }
+
       rawYaml = yaml;
       editedYaml = yaml;
       fetchSongFiles(songName)
@@ -256,8 +273,13 @@
 
       saveMsg = "Saved";
       setTimeout(() => (saveMsg = ""), 2000);
-      const songs = await fetchSongs();
-      song = songs.find((s) => s.name === songName) ?? null;
+      const result = await fetchSongs();
+      song = result.songs.find((s) => s.name === songName) ?? null;
+      // Clear failure banner if the song now loads successfully.
+      const stillFailed = result.failures.find(
+        (f: SongFailure) => f.name === songName,
+      );
+      failureError = stillFailed ? stillFailed.error : null;
     } catch (e) {
       saveMsg = e instanceof Error ? e.message : "Save failed";
     } finally {
@@ -379,6 +401,9 @@
     <div class="title-row">
       <h2 class="song-title">{songName}</h2>
       <div class="badges">
+        {#if failureError}
+          <span class="badge failed">ERROR</span>
+        {/if}
         {#if song?.has_midi}
           <span class="badge midi">MIDI</span>
         {/if}
@@ -391,7 +416,16 @@
       </div>
     </div>
 
-    {#if song}
+    {#if failureError}
+      <div class="failure-banner">
+        <strong
+          >This song failed to load and will not be playable until it's valid.</strong
+        >
+        <div class="failure-detail">{failureError}</div>
+      </div>
+    {/if}
+
+    {#if song && !failureError}
       <div class="meta">
         <span>{song.duration_display}</span>
         <span>{song.track_count} track{song.track_count !== 1 ? "s" : ""}</span>
@@ -610,6 +644,25 @@
   .badge.midi-dmx {
     background: var(--green-dim);
     color: var(--green);
+  }
+  .badge.failed {
+    background: rgba(239, 68, 68, 0.15);
+    color: var(--red);
+  }
+  .failure-banner {
+    background: rgba(239, 68, 68, 0.1);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    border-radius: var(--radius);
+    padding: 12px 16px;
+    margin-bottom: 16px;
+    font-size: 14px;
+    color: var(--text);
+  }
+  .failure-detail {
+    margin-top: 6px;
+    font-size: 13px;
+    color: var(--red);
+    font-family: var(--mono);
   }
   .meta {
     display: flex;

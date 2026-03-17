@@ -69,6 +69,20 @@ pub(crate) async fn lock_guard(
 ///
 /// Playback control is handled via gRPC-Web (PlayerService), not REST.
 pub fn router() -> Router<WebUiState> {
+    // Upload routes get unlimited body size for large audio/MIDI files.
+    let upload_routes = Router::new()
+        .route(
+            "/songs/{name}/tracks/{filename}",
+            put(songs_api::upload_track_single),
+        )
+        .route(
+            "/songs/{name}/tracks",
+            post(songs_api::upload_tracks_multipart),
+        )
+        .route("/samples/upload/{filename}", put(upload_sample_file))
+        .layer(axum::extract::DefaultBodyLimit::disable());
+
+    // All other routes use the default body limit.
     Router::new()
         .route(
             "/config",
@@ -84,14 +98,6 @@ pub fn router() -> Router<WebUiState> {
                 .put(songs_api::put_song)
                 .delete(songs_api::delete_song),
         )
-        .route(
-            "/songs/{name}/tracks/{filename}",
-            put(songs_api::upload_track_single),
-        )
-        .route(
-            "/songs/{name}/tracks",
-            post(songs_api::upload_tracks_multipart),
-        )
         .route("/songs/{name}/waveform", get(songs_api::get_song_waveform))
         .route("/songs/{name}/files", get(songs_api::get_song_files))
         .route("/songs/{name}/import", post(songs_api::import_file_to_song))
@@ -101,11 +107,6 @@ pub fn router() -> Router<WebUiState> {
             post(browse::create_song_in_directory),
         )
         .route("/browse/bulk-import", post(browse::bulk_import))
-        .route(
-            "/playlist",
-            get(playlists::get_playlist).put(playlists::put_playlist),
-        )
-        .route("/playlist/validate", post(playlists::validate_playlist))
         .route("/playlists", get(playlists::get_playlists))
         .route(
             "/playlists/{name}",
@@ -132,7 +133,6 @@ pub fn router() -> Router<WebUiState> {
             put(config_api::put_config_controllers),
         )
         .route("/config/samples", put(config_api::put_config_samples))
-        .route("/samples/upload/{filename}", put(upload_sample_file))
         .route("/config/profiles", post(config_api::post_config_profile))
         .route(
             "/config/profiles/{index}",
@@ -170,6 +170,7 @@ pub fn router() -> Router<WebUiState> {
                 .put(lighting_api::put_venue)
                 .delete(lighting_api::delete_venue),
         )
+        .merge(upload_routes)
 }
 
 /// Validates that a filename has a supported audio extension (for sample uploads).

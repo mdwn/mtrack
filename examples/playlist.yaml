@@ -1,6 +1,7 @@
 # This is a simple file that contains, in order, the names of all songs
 # that mtrack should play. The names of the songs are defined in the
 # song repository, which can be found in mtrack.yaml.
+kind: playlist
 songs:
 - Sound check
 - A really cool song

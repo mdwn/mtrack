@@ -1,0 +1,45 @@
+# Drum trigger node: audio output + trigger input
+kind: hardware_profile
+hostname: drum-pi
+audio:
+  device: "UltraLite-mk5"
+  track_mappings:
+    kick: [3, 4]
+    cymbal: [3, 4]
+trigger:
+  device: "UltraLite-mk5"
+  sample_rate: 44100
+  # sample_format: int
+  # bits_per_sample: 16
+  # buffer_size: 256
+  # crosstalk_window_ms: 4
+  # crosstalk_threshold: 3.0
+  inputs:
+    - kind: audio
+      channel: 1
+      sample: "kick"
+      threshold: 0.1
+      retrigger_time_ms: 30
+      scan_time_ms: 5
+      gain: 1.0
+      velocity_curve: linear
+      release_group: "kick"
+      # highpass_freq: 80.0
+      # dynamic_threshold_decay_ms: 50
+    - kind: audio
+      channel: 3
+      sample: "cymbal"
+      threshold: 0.08
+      velocity_curve: logarithmic
+      release_group: "cymbal"
+    - kind: audio
+      channel: 4
+      action: release
+      release_group: "cymbal"
+      threshold: 0.05
+    - kind: midi
+      event:
+        type: note_on
+        channel: 10
+        key: 60
+      sample: kick

@@ -198,7 +198,15 @@ fn resolve_lighting_dir(
 ) -> Result<std::path::PathBuf, axum::response::Response> {
     use super::super::safe_path::{SafePath, VerifiedRoot};
 
-    let project_root = config_path
+    let canonical_config = config_path.canonicalize().map_err(|_| {
+        use axum::response::IntoResponse;
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "Failed to resolve config path"})),
+        )
+            .into_response()
+    })?;
+    let project_root = canonical_config
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."));
     let root = VerifiedRoot::new(project_root).map_err(|e| e.into_response())?;
@@ -373,7 +381,7 @@ pub(super) async fn put_fixture_type(
     ensure_lighting_dir(&dir)?;
 
     let file_path = dir.join(format!("{}.light", sanitize_filename(&name)));
-    std::fs::write(&file_path, &dsl).map_err(|e| {
+    config_io::atomic_write(&file_path, &dsl).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": format!("Failed to write file: {}", e)})),
@@ -547,7 +555,7 @@ pub(super) async fn put_venue(
     ensure_lighting_dir(&dir)?;
 
     let file_path = dir.join(format!("{}.light", sanitize_filename(&name)));
-    std::fs::write(&file_path, &dsl).map_err(|e| {
+    config_io::atomic_write(&file_path, &dsl).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": format!("Failed to write file: {}", e)})),

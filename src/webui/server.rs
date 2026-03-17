@@ -68,6 +68,7 @@ pub struct WebUiState {
     /// Resolved path to the player config file (mtrack.yaml).
     pub config_path: PathBuf,
     /// Resolved path to the songs directory.
+    /// codeql[rust/path-injection] Set once at startup from the player config file; not user-controlled.
     pub songs_path: PathBuf,
     /// Resolved path to the playlists directory (if configured).
     pub playlists_dir: Option<PathBuf>,
@@ -159,13 +160,10 @@ pub async fn start(
     ));
 
     // Build the app router
-    let api_router = super::api::router()
-        .route_layer(axum::middleware::from_fn_with_state(
-            webui_state.clone(),
-            super::api::lock_guard,
-        ))
-        // Disable the default 2MB body limit for file uploads (audio, MIDI, samples).
-        .layer(axum::extract::DefaultBodyLimit::disable());
+    let api_router = super::api::router().route_layer(axum::middleware::from_fn_with_state(
+        webui_state.clone(),
+        super::api::lock_guard,
+    ));
     let app = Router::new()
         .route("/ws", get(ws_handler))
         .nest("/api", api_router)

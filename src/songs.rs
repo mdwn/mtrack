@@ -32,12 +32,6 @@ use crate::lighting::parser::LightShow as ParsedLightShow;
 use crate::proto::player;
 use crate::util::filename_display;
 
-/// File extensions that are media content (not song config files). Used during
-/// song discovery to skip files that are definitely not song.yaml/song.yml.
-const MEDIA_EXTENSIONS: &[&str] = &[
-    "wav", "flac", "mp3", "ogg", "aac", "m4a", "mp4", "aiff", "aif", "mid", "light",
-];
-
 /// Returns true if the extension is a supported audio (non-MIDI) format.
 pub fn is_supported_audio_extension(ext: &str) -> bool {
     matches!(
@@ -786,6 +780,20 @@ impl Track {
             .into());
         }
         let file_channel = file_channel.unwrap_or(1);
+        if file_channel == 0 {
+            return Err(format!(
+                "track {}: file_channel must be 1 or greater (channels are 1-indexed)",
+                name,
+            )
+            .into());
+        }
+        if file_channel > channel_count {
+            return Err(format!(
+                "track {}: file_channel {} exceeds the file's channel count ({})",
+                name, file_channel, channel_count,
+            )
+            .into());
+        }
 
         let sample_format = source.sample_format();
         Ok(Track {
@@ -923,17 +931,55 @@ pub struct MidiSheet {
     pub(crate) beat_clock: Option<crate::midi::beat_clock::PrecomputedBeatClock>,
 }
 
+/// A song that failed to load from disk.
+#[derive(Clone, Debug)]
+pub struct SongLoadFailure {
+    name: String,
+    base_path: PathBuf,
+    error: String,
+}
+
+impl SongLoadFailure {
+    /// Returns the name derived from the song's directory.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the base path of the failed song.
+    pub fn base_path(&self) -> &Path {
+        &self.base_path
+    }
+
+    /// Returns the error message describing the failure.
+    pub fn error(&self) -> &str {
+        &self.error
+    }
+}
+
 /// A registry of songs for use by the multitrack player.
 #[derive(Clone)]
 pub struct Songs {
     /// A mapping of the songs in the repository.
     songs: HashMap<String, Arc<Song>>,
+    /// Songs that failed to load.
+    failures: Vec<SongLoadFailure>,
 }
 
 impl Songs {
     /// Creates a new songs registry.
     pub fn new(songs: HashMap<String, Arc<Song>>) -> Songs {
-        Songs { songs }
+        Songs {
+            songs,
+            failures: vec![],
+        }
+    }
+
+    /// Creates a new songs registry with load failures.
+    pub fn with_failures(
+        songs: HashMap<String, Arc<Song>>,
+        failures: Vec<SongLoadFailure>,
+    ) -> Songs {
+        Songs { songs, failures }
     }
 
     /// Returns true if the song registry is empty.
@@ -968,6 +1014,11 @@ impl Songs {
     pub fn len(&self) -> usize {
         self.songs.len()
     }
+
+    /// Returns the list of songs that failed to load.
+    pub fn failures(&self) -> &[SongLoadFailure] {
+        &self.failures
+    }
 }
 
 /// Create default song configurations in a repository of song directories
@@ -997,58 +1048,114 @@ pub fn initialize_songs(start_path: &Path) -> Result<usize, Box<dyn Error>> {
 pub fn get_all_songs(path: &Path) -> Result<Arc<Songs>, Box<dyn Error>> {
     debug!("Getting songs for directory {path:?}");
     let mut songs: HashMap<String, Arc<Song>> = HashMap::new();
+    let mut failures: Vec<SongLoadFailure> = Vec::new();
     // codeql[rust/path-injection] path is the songs directory configured at startup.
     for entry in fs::read_dir(path)? {
         let entry = entry?;
         let path = entry.path();
 
         if path.is_dir() {
-            // Skip .git subdirectories.
-            if path.ends_with(".git") {
+            // Skip hidden directories (.git, .claude, etc.).
+            if path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with('.'))
+            {
                 continue;
             }
 
-            get_all_songs(path.as_path())?
-                .list()
-                .iter()
-                .for_each(|song| {
-                    songs.insert(song.name().to_string(), song.clone());
-                });
+            let child = get_all_songs(path.as_path())?;
+            child.list().iter().for_each(|song| {
+                songs.insert(song.name().to_string(), song.clone());
+            });
+            failures.extend(child.failures().iter().cloned());
         }
 
-        let extension = path.extension();
-        if extension.is_some_and(|ext| {
-            ext.to_str()
-                .is_some_and(|ext| !MEDIA_EXTENSIONS.contains(&ext))
-        }) {
-            if let Ok(song_config) = config::Song::deserialize(path.as_path()) {
-                match path.parent() {
-                    Some(parent) => match parent.canonicalize() {
-                        Ok(canonical_parent) => match Song::new(&canonical_parent, &song_config) {
-                            Ok(song) => {
-                                songs.insert(song.name().to_string(), Arc::new(song));
+        // Only attempt to deserialize YAML files as song configs.
+        let is_yaml = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext == "yaml" || ext == "yml");
+        if is_yaml {
+            // Peek at the `kind` field to decide how to handle this file:
+            //   kind: song     → deserialize, record failure on error
+            //   kind absent    → deserialize (backward compat), skip silently on error
+            //   kind: playlist → skip (not a song config)
+            let peeked_kind = config::peek_kind(path.as_path());
+            let is_declared_song = peeked_kind.as_ref() == Some(&config::ConfigKind::Song);
+            let should_try = peeked_kind.is_none() || is_declared_song;
+
+            if should_try {
+                match config::Song::deserialize(path.as_path()) {
+                    Ok(song_config) => match path.parent() {
+                        Some(parent) => match parent.canonicalize() {
+                            Ok(canonical_parent) => {
+                                match Song::new(&canonical_parent, &song_config) {
+                                    Ok(song) => {
+                                        songs.insert(song.name().to_string(), Arc::new(song));
+                                    }
+                                    Err(e) => {
+                                        warn!("Skipping song at {}: {}", path.display(), e);
+                                        // Song::new failures are always recorded — the YAML
+                                        // parsed as a song but its content is invalid.
+                                        failures.push(SongLoadFailure {
+                                            name: song_config.name().to_string(),
+                                            base_path: canonical_parent,
+                                            error: format!("{}", e),
+                                        });
+                                    }
+                                }
                             }
                             Err(e) => {
-                                warn!("Skipping song at {}: {}", path.display(), e);
+                                warn!(
+                                    "Skipping song at {}: failed to canonicalize: {}",
+                                    path.display(),
+                                    e
+                                );
                             }
                         },
-                        Err(e) => {
-                            warn!(
-                                "Skipping song at {}: failed to canonicalize: {}",
-                                path.display(),
-                                e
-                            );
+                        None => {
+                            warn!("Skipping song at {}: no parent directory", path.display());
                         }
                     },
-                    None => {
-                        warn!("Skipping song at {}: no parent directory", path.display());
+                    Err(e) => {
+                        // Only record deserialize failures for files with `kind: song`.
+                        // Files without a kind that fail to deserialize are silently
+                        // skipped — they may be playlists or other non-song YAML.
+                        if is_declared_song {
+                            if let Some(parent) = path.parent() {
+                                let name = parent
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or("unknown")
+                                    .to_string();
+                                let base_path = parent
+                                    .canonicalize()
+                                    .unwrap_or_else(|_| parent.to_path_buf());
+                                warn!("Failed to deserialize song at {}: {}", path.display(), e);
+                                failures.push(SongLoadFailure {
+                                    name,
+                                    base_path,
+                                    error: format!("{}", e),
+                                });
+                            }
+                        }
                     }
                 }
             }
         }
     }
 
-    Ok(Arc::new(Songs::new(songs)))
+    // Remove failures for songs that successfully loaded, and deduplicate
+    // failures by name (a directory with multiple non-media files can produce
+    // multiple failures with the same directory-derived name).
+    failures.retain(|f| !songs.contains_key(f.name()));
+    {
+        let mut seen = std::collections::HashSet::new();
+        failures.retain(|f| seen.insert(f.name().to_string()));
+    }
+
+    Ok(Arc::new(Songs::with_failures(songs, failures)))
 }
 
 #[cfg(test)]
@@ -2697,6 +2804,99 @@ mod test {
         assert!(
             song.dsl_lighting_shows()[0].shows().contains_key("mixed"),
             "Expected parsed show named 'mixed'"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_declared_song_invalid_yaml_produces_failure() -> Result<(), TestError> {
+        let temp_dir = tempfile::tempdir()?;
+        let song_dir = create_song_dir(temp_dir.path(), "broken-song")?;
+        // kind: song is present, so the failure is recorded.
+        fs::write(
+            song_dir.join("song.yaml"),
+            "kind: song\nname: broken\n  bad indent!!",
+        )?;
+
+        let songs = get_all_songs(temp_dir.path())?;
+        assert_eq!(songs.len(), 0, "Expected no valid songs");
+        assert_eq!(songs.failures().len(), 1, "Expected one failure");
+        assert_eq!(songs.failures()[0].name(), "broken-song");
+        assert!(!songs.failures()[0].error().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_undeclared_song_invalid_yaml_no_failure() -> Result<(), TestError> {
+        let temp_dir = tempfile::tempdir()?;
+        let song_dir = create_song_dir(temp_dir.path(), "not-a-song")?;
+        // No kind field — silently skipped, no failure recorded.
+        fs::write(song_dir.join("song.yaml"), "{{invalid yaml!!")?;
+
+        let songs = get_all_songs(temp_dir.path())?;
+        assert_eq!(songs.len(), 0, "Expected no valid songs");
+        assert_eq!(
+            songs.failures().len(),
+            0,
+            "Expected no failures for undeclared YAML"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_missing_audio_produces_failure() -> Result<(), TestError> {
+        let temp_dir = tempfile::tempdir()?;
+        let song_dir = create_song_dir(temp_dir.path(), "missing-audio")?;
+        // Song::new failure is always recorded regardless of kind.
+        fs::write(
+            song_dir.join("song.yaml"),
+            "name: missing-audio\ntracks:\n  - name: track1\n    file: nonexistent.wav\n",
+        )?;
+
+        let songs = get_all_songs(temp_dir.path())?;
+        assert_eq!(songs.len(), 0, "Expected no valid songs");
+        assert_eq!(songs.failures().len(), 1, "Expected one failure");
+        assert_eq!(songs.failures()[0].name(), "missing-audio");
+        Ok(())
+    }
+
+    #[test]
+    fn test_valid_and_invalid_songs_mixed() -> Result<(), TestError> {
+        let temp_dir = tempfile::tempdir()?;
+
+        // Create a valid song.
+        create_mono_song(temp_dir.path())?;
+        initialize_songs(temp_dir.path())?;
+
+        // Create an invalid song with kind: song.
+        let broken_dir = create_song_dir(temp_dir.path(), "broken-song")?;
+        fs::write(
+            broken_dir.join("song.yaml"),
+            "kind: song\nname: broken\n  bad indent!!",
+        )?;
+
+        let songs = get_all_songs(temp_dir.path())?;
+        assert_eq!(songs.len(), 1, "Expected one valid song");
+        assert_eq!(songs.failures().len(), 1, "Expected one failure");
+        assert_eq!(songs.failures()[0].name(), "broken-song");
+        Ok(())
+    }
+
+    #[test]
+    fn test_playlist_yaml_not_treated_as_song() -> Result<(), TestError> {
+        let temp_dir = tempfile::tempdir()?;
+        let sub_dir = create_song_dir(temp_dir.path(), "playlists")?;
+        fs::write(
+            sub_dir.join("my_playlist.yaml"),
+            "kind: playlist\nsongs:\n  - song1\n",
+        )?;
+
+        let songs = get_all_songs(temp_dir.path())?;
+        assert_eq!(songs.len(), 0);
+        assert_eq!(
+            songs.failures().len(),
+            0,
+            "Playlist YAML should not produce a failure"
         );
         Ok(())
     }

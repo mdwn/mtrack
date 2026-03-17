@@ -115,6 +115,46 @@ impl Dmx {
     pub fn lighting_mut(&mut self) -> Option<&mut Lighting> {
         self.lighting.as_mut()
     }
+
+    /// Validates the DMX configuration for semantic issues.
+    pub fn validate(&self) -> Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+
+        if let Some(modifier) = self.dim_speed_modifier {
+            if modifier <= 0.0 {
+                errors.push("dmx dim_speed_modifier must be greater than 0".to_string());
+            }
+        }
+        if let Some(ref delay) = self.playback_delay {
+            if DurationString::from_string(delay.clone()).is_err() {
+                errors.push(format!(
+                    "dmx playback_delay '{}' is not a valid duration",
+                    delay
+                ));
+            }
+        }
+        for (i, universe) in self.universes.iter().enumerate() {
+            if universe.name.trim().is_empty() {
+                errors.push(format!("dmx universe[{}]: name must not be empty", i));
+            }
+        }
+        // Check for duplicate universe names.
+        let mut seen_names = std::collections::HashSet::new();
+        for universe in &self.universes {
+            if !seen_names.insert(&universe.name) {
+                errors.push(format!(
+                    "dmx universe name '{}' is duplicated",
+                    universe.name
+                ));
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
 }
 
 /// A YAML representation of a DMX universe configuration.

@@ -165,6 +165,7 @@ Lighting shows are defined in separate `.light` files using the DSL format. Song
 
 ```yaml
 # Example song.yaml file
+kind: song
 name: "My Song"
 lighting:
   - file: "lighting/main_show.light"  # Path relative to song directory

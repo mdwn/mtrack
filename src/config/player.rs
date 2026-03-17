@@ -163,6 +163,60 @@ impl Player {
         Ok(player)
     }
 
+    /// Validates the player configuration for semantic issues that can be
+    /// caught without runtime context. Call this before writing to disk.
+    pub fn validate(&self) -> Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+
+        // Validate legacy top-level configs.
+        if let Some(ref audio) = self.audio {
+            if let Err(audio_errors) = audio.validate() {
+                errors.extend(audio_errors);
+            }
+        }
+        if let Some(ref midi) = self.midi {
+            if let Err(midi_errors) = midi.validate() {
+                errors.extend(midi_errors);
+            }
+        }
+        if let Some(ref dmx) = self.dmx {
+            if let Err(dmx_errors) = dmx.validate() {
+                errors.extend(dmx_errors);
+            }
+        }
+
+        // Validate track mappings (legacy top-level).
+        if let Some(ref mappings) = self.track_mappings {
+            for (name, channels) in mappings.track_mappings.iter() {
+                for ch in channels {
+                    if *ch == 0 {
+                        errors.push(format!(
+                            "track_mappings '{}': channel 0 is invalid (channels are 1-indexed)",
+                            name
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Validate profiles.
+        if let Some(ref profiles) = self.profiles {
+            for (i, profile) in profiles.iter().enumerate() {
+                if let Err(profile_errors) = profile.validate() {
+                    for e in profile_errors {
+                        errors.push(format!("profile[{}]: {}", i, e));
+                    }
+                }
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+
     /// Loads profiles from the profiles_dir, if configured.
     /// Directory profiles replace inline profiles entirely. If the directory is
     /// empty, inline profiles are kept as a fallback.
@@ -1173,26 +1227,31 @@ profiles:
     }
 
     #[test]
-    fn test_example_config_backwards_compat() {
+    fn test_example_config_parses() {
         // The existing examples/mtrack.yaml must still parse without error.
         let config =
             Player::deserialize(Path::new("examples/mtrack.yaml")).expect("example config failed");
 
-        assert!(config.audio().is_some());
-        assert_eq!(config.audio().unwrap().device(), "UltraLite-mk5");
-        assert!(config.midi().is_some());
-        assert!(!config.track_mappings().is_empty());
-        assert!(config.dmx().is_some());
-
-        // Should have been normalized into a single unified profile.
+        // Profiles are loaded from profiles_dir.
         let profiles = config.all_profiles();
-        assert_eq!(profiles.len(), 1);
+        assert!(
+            profiles.len() >= 2,
+            "Expected at least 2 profiles from profiles_dir"
+        );
+
+        // First profile (01-raspberry-pi-a) has audio + MIDI + DMX.
+        assert!(profiles[0].audio_config().is_some());
         assert_eq!(
             profiles[0].audio_config().unwrap().audio().device(),
-            "UltraLite-mk5"
+            "Behringer WING"
         );
         assert!(profiles[0].midi().is_some());
         assert!(profiles[0].dmx().is_some());
+
+        // Config-level accessors should return the first profile's config.
+        assert!(config.audio().is_some());
+        assert!(config.midi().is_some());
+        assert!(config.dmx().is_some());
     }
 
     /// Helper to create a Player from a YAML string with an associated temp directory.

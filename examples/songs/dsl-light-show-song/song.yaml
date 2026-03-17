@@ -1,3 +1,4 @@
+kind: song
 name: "DSL Light Show Song"
 midi_file: "song.mid"
 lighting:

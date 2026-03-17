@@ -21,6 +21,9 @@ use super::error::ConfigError;
 /// The configuration for a playlist.
 #[derive(Deserialize, Serialize)]
 pub struct Playlist {
+    /// Identifies this config file as a playlist.
+    #[serde(default = "default_playlist_kind")]
+    kind: super::kind::ConfigKind,
     /// The songs that belong to this playlist.
     songs: Vec<String>,
 }
@@ -29,6 +32,7 @@ impl Playlist {
     /// Creates a new playlist configuration.
     pub fn new(songs: &[String]) -> Playlist {
         Playlist {
+            kind: super::kind::ConfigKind::Playlist,
             songs: songs.to_owned(),
         }
     }
@@ -45,6 +49,10 @@ impl Playlist {
     pub fn songs(&self) -> &Vec<String> {
         &self.songs
     }
+}
+
+fn default_playlist_kind() -> super::kind::ConfigKind {
+    super::kind::ConfigKind::Playlist
 }
 
 #[cfg(test)]

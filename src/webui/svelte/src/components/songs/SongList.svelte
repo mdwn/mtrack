@@ -18,6 +18,7 @@
     fetchWaveform,
     deleteSong,
     type SongSummary,
+    type SongFailure,
     type WaveformData,
   } from "../../lib/api/songs";
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
@@ -26,6 +27,7 @@
   import Waveform from "./Waveform.svelte";
 
   let songs = $state<SongSummary[]>([]);
+  let failures = $state<SongFailure[]>([]);
   let waveforms = $state<Record<string, number[]>>({});
   let loading = $state(true);
   let error = $state("");
@@ -34,34 +36,37 @@
   let searchQuery = $state("");
   let collapsedGroups = new SvelteSet<string>();
 
-  function getFilteredSongs(): SongSummary[] {
-    if (!searchQuery.trim()) return songs;
+  type SongOrFailure = SongSummary | SongFailure;
+
+  function isSongFailure(item: SongOrFailure): item is SongFailure {
+    return "failed" in item && item.failed === true;
+  }
+
+  function getFilteredItems(): SongOrFailure[] {
+    const all: SongOrFailure[] = [...songs, ...failures];
+    if (!searchQuery.trim()) return all;
     const q = searchQuery.toLowerCase();
-    return songs.filter((s) => s.name.toLowerCase().includes(q));
+    return all.filter((s) => s.name.toLowerCase().includes(q));
   }
 
   interface SongGroup {
     directory: string;
     label: string;
-    songs: SongSummary[];
+    items: SongOrFailure[];
   }
 
-  function groupSongs(songList: SongSummary[]): SongGroup[] {
-    const groups = new SvelteMap<string, SongSummary[]>();
-    for (const song of songList) {
-      // base_dir is the relative path to the song directory.
-      // The parent of that is the grouping directory.
-      const parts = song.base_dir.split("/");
-      // Remove the last component (the song's own directory name).
+  function groupItems(itemList: SongOrFailure[]): SongGroup[] {
+    const groups = new SvelteMap<string, SongOrFailure[]>();
+    for (const item of itemList) {
+      const parts = item.base_dir.split("/");
       const dir = parts.length > 1 ? parts.slice(0, -1).join("/") : "";
       if (!groups.has(dir)) {
         groups.set(dir, []);
       }
-      groups.get(dir)!.push(song);
+      groups.get(dir)!.push(item);
     }
 
     const result: SongGroup[] = [];
-    // Sort group keys: root ("") first, then alphabetically.
     const keys = [...groups.keys()].sort((a, b) => {
       if (a === "" && b === "") return 0;
       if (a === "") return -1;
@@ -73,7 +78,7 @@
       result.push({
         directory: key,
         label: key || "",
-        songs: groups.get(key)!,
+        items: groups.get(key)!,
       });
     }
     return result;
@@ -106,7 +111,9 @@
     loading = true;
     error = "";
     try {
-      songs = await fetchSongs();
+      const result = await fetchSongs();
+      songs = result.songs;
+      failures = result.failures;
       for (const song of songs) {
         fetchWaveform(song.name)
           .then((w) => {
@@ -194,13 +201,14 @@
     <div class="status">Loading songs...</div>
   {:else if error}
     <div class="status error">{error}</div>
-  {:else if songs.length === 0}
+  {:else if songs.length === 0 && failures.length === 0}
     <div class="status">
       No songs yet. Create one or import audio files from the filesystem.
     </div>
   {:else}
-    {@const filteredSongs = getFilteredSongs()}
-    {@const groups = groupSongs(filteredSongs)}
+    {@const filteredItems = getFilteredItems()}
+    {@const groups = groupItems(filteredItems)}
+    {@const totalCount = songs.length + failures.length}
     <div class="search-bar">
       <input
         type="text"
@@ -214,7 +222,7 @@
         >
       {/if}
       <span class="search-count"
-        >{filteredSongs.length} of {songs.length} songs</span
+        >{filteredItems.length} of {totalCount} songs</span
       >
     </div>
     <div class="song-list">
@@ -230,46 +238,63 @@
               >&#9662;</span
             >
             <span class="group-label">{group.label}</span>
-            <span class="group-count">{group.songs.length}</span>
+            <span class="group-count">{group.items.length}</span>
           </button>
         {/if}
         {#if !collapsedGroups.has(group.directory)}
-          {#each group.songs as song (song.name)}
-            <button class="song-row" onclick={() => navigate(song.name)}>
-              <div class="song-main">
-                <span class="song-name">{song.name}</span>
-                <div class="song-badges">
-                  {#if song.has_midi}
-                    <span class="badge midi">MIDI</span>
-                  {/if}
-                  {#if song.lighting_files.length > 0}
-                    <span class="badge lighting">LIGHT</span>
-                  {/if}
-                  {#if song.midi_dmx_files.length > 0}
-                    <span class="badge midi-dmx">MIDI DMX</span>
-                  {/if}
-                </div>
-              </div>
-              <div class="song-waveform">
-                <Waveform peaks={waveforms[song.name] ?? []} height={24} />
-              </div>
-              <div class="song-meta">
-                <span>{song.duration_display}</span>
-                <span
-                  >{song.track_count} track{song.track_count !== 1
-                    ? "s"
-                    : ""}</span
-                >
-              </div>
-              <!-- svelte-ignore a11y_click_events_have_key_events -->
-              <span
-                class="song-delete"
-                role="button"
-                tabindex="-1"
-                title="Remove from registry"
-                onclick={(e) => handleDelete(e, song.name)}>&#10005;</span
+          {#each group.items as item (isSongFailure(item) ? `__failed__${item.name}` : item.name)}
+            {#if isSongFailure(item)}
+              <button
+                class="song-row song-row-failed"
+                onclick={() => navigate(item.name)}
               >
-            </button>
+                <div class="song-main">
+                  <span class="song-name">{item.name}</span>
+                  <div class="song-badges">
+                    <span class="badge failed">ERROR</span>
+                  </div>
+                </div>
+                <div class="song-error" title={item.error}>
+                  {item.error}
+                </div>
+              </button>
+            {:else}
+              <button class="song-row" onclick={() => navigate(item.name)}>
+                <div class="song-main">
+                  <span class="song-name">{item.name}</span>
+                  <div class="song-badges">
+                    {#if item.has_midi}
+                      <span class="badge midi">MIDI</span>
+                    {/if}
+                    {#if item.lighting_files.length > 0}
+                      <span class="badge lighting">LIGHT</span>
+                    {/if}
+                    {#if item.midi_dmx_files.length > 0}
+                      <span class="badge midi-dmx">MIDI DMX</span>
+                    {/if}
+                  </div>
+                </div>
+                <div class="song-waveform">
+                  <Waveform peaks={waveforms[item.name] ?? []} height={24} />
+                </div>
+                <div class="song-meta">
+                  <span>{item.duration_display}</span>
+                  <span
+                    >{item.track_count} track{item.track_count !== 1
+                      ? "s"
+                      : ""}</span
+                  >
+                </div>
+                <!-- svelte-ignore a11y_click_events_have_key_events -->
+                <span
+                  class="song-delete"
+                  role="button"
+                  tabindex="-1"
+                  title="Remove from registry"
+                  onclick={(e) => handleDelete(e, item.name)}>&#10005;</span
+                >
+              </button>
+            {/if}
           {/each}
         {/if}
       {/each}
@@ -453,6 +478,27 @@
   .badge.midi-dmx {
     background: var(--green-dim);
     color: var(--green);
+  }
+  .badge.failed {
+    background: rgba(239, 68, 68, 0.15);
+    color: var(--red);
+  }
+  .song-row-failed {
+    border-color: rgba(239, 68, 68, 0.3);
+  }
+  .song-row-failed:hover {
+    border-color: rgba(239, 68, 68, 0.5);
+  }
+  .song-row-failed .song-name {
+    color: var(--text-muted);
+  }
+  .song-error {
+    font-size: 12px;
+    color: var(--red);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    grid-column: 2 / -1;
   }
   .song-waveform {
     min-width: 0;
