@@ -29,7 +29,7 @@ export interface SongSummary {
   /** DSL lighting file paths relative to the songs root */
   lighting_files: string[];
   /** MIDI DMX file paths relative to the songs root */
-  legacy_lighting_files: string[];
+  midi_dmx_files: string[];
 }
 
 export interface WaveformTrack {

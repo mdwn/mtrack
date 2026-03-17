@@ -49,16 +49,16 @@ impl Slot {
     }
 }
 
-/// Lockless store for legacy MIDI DMX values. MIDI events write atomically;
+/// Lockless store for MIDI DMX values. MIDI events write atomically;
 /// the effects loop calls `tick()` each frame to interpolate, then reads
 /// interpolated values for injection into the EffectEngine.
-impl Default for LegacyDmxStore {
+impl Default for MidiDmxStore {
     fn default() -> Self {
         Self::new()
     }
 }
 
-pub struct LegacyDmxStore {
+pub struct MidiDmxStore {
     /// Pre-allocated slots indexed by position.
     slots: Vec<Slot>,
     /// (universe_id, dmx_channel) → slot index.
@@ -76,7 +76,7 @@ pub struct LegacyDmxStore {
     interpolating: AtomicBool,
 }
 
-impl LegacyDmxStore {
+impl MidiDmxStore {
     /// Creates an empty store.
     pub fn new() -> Self {
         Self {
@@ -243,8 +243,8 @@ impl LegacyDmxStore {
 mod tests {
     use super::*;
 
-    fn create_test_store() -> LegacyDmxStore {
-        let mut store = LegacyDmxStore::new();
+    fn create_test_store() -> MidiDmxStore {
+        let mut store = MidiDmxStore::new();
         store.register_slot(1, 10, "wash1", "dimmer");
         store.register_slot(1, 11, "wash1", "red");
         store.register_slot(1, 12, "wash1", "green");
@@ -442,14 +442,14 @@ mod tests {
 
     #[test]
     fn test_default_trait() {
-        let store = LegacyDmxStore::default();
+        let store = MidiDmxStore::default();
         assert_eq!(store.iter_active().count(), 0);
         assert_eq!(store.generation(), 0);
     }
 
     #[test]
     fn test_multiple_universes() {
-        let mut store = LegacyDmxStore::new();
+        let mut store = MidiDmxStore::new();
         store.register_slot(1, 1, "fixture_a", "dimmer");
         store.register_slot(2, 1, "fixture_b", "dimmer");
         store.register_universe(1);

@@ -13,7 +13,7 @@
 //
 
 pub mod engine;
-pub mod legacy_store;
+pub mod midi_dmx_store;
 pub mod ola_client;
 pub mod universe;
 pub mod watcher;

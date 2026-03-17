@@ -245,7 +245,7 @@
                   {#if song.lighting_files.length > 0}
                     <span class="badge lighting">LIGHT</span>
                   {/if}
-                  {#if song.legacy_lighting_files.length > 0}
+                  {#if song.midi_dmx_files.length > 0}
                     <span class="badge midi-dmx">MIDI DMX</span>
                   {/if}
                 </div>

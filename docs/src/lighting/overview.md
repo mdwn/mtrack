@@ -1,17 +1,34 @@
 # Light Shows
 
-Light shows and DMX playback are now supported through the use of the [Open Lighting Architecture](https://www.openlighting.org/).
-The lighting system has been significantly enhanced with a new tag-based group resolution system that enables venue-agnostic lighting shows.
+mtrack supports programmable lighting control via DMX through the
+[Open Lighting Architecture](https://www.openlighting.org/). There are two approaches
+to authoring light shows:
 
-## New Lighting System Features
+- **DSL-based lighting** (recommended) — A tag-based system with a custom lighting DSL,
+  a visual timeline editor, and venue-agnostic shows. This is the primary lighting system
+  and the focus of this documentation.
+- **MIDI-based DMX** — Direct per-channel DMX control via MIDI files. Useful for precise
+  channel programming or integration with DAW workflows. See the
+  [MIDI-Based DMX](../dmx/midi-dmx.md) section.
 
-The new lighting system provides:
+Both systems can be used independently or combined in the same project. For most users,
+the DSL system is the better starting point — it provides high-level effect definitions,
+works across different venues without modification, and integrates with the web UI's
+timeline editor for visual cue authoring with real-time playback preview.
 
-- **Venue-Agnostic Songs**: Songs use logical groups instead of specific fixture names
-- **Tag-Based Group Resolution**: Fixtures are tagged with capabilities and roles
-- **Intelligent Selection**: System automatically chooses optimal fixtures based on constraints
-- **Venue Portability**: Same lighting show works across different venues
-- **Performance Optimization**: Cached group resolutions for fast lookups
+## DSL Lighting Features
+
+- **Venue-Agnostic Shows**: Songs use logical groups instead of specific fixture names,
+  so the same show works across different venues.
+- **Tag-Based Group Resolution**: Fixtures are tagged with capabilities and roles.
+  The system automatically selects optimal fixtures based on constraints.
+- **Effects Engine**: Built-in effects (static, cycle, chase, strobe, pulse, dimmer,
+  rainbow) with layering, blend modes, and timing control.
+- **Timeline Editor**: Visual DAW-style cue authoring in the web UI with integrated
+  audio playback and real-time stage preview.
+- **Sequences**: Reusable cue patterns that can be referenced from multiple shows.
+- **Tempo-Aware Cueing**: Cues can be placed at measure/beat positions with automatic
+  tempo change support.
 
 ## Configuration Structure
 
@@ -31,7 +48,7 @@ The system supports several constraint types for group resolution:
 - **`MinCount`**: Minimum number of fixtures required
 - **`MaxCount`**: Maximum number of fixtures allowed
 - **`FallbackTo`**: Fallback to another group if primary group fails (e.g., `"all_lights"`)
-- **`AllowEmpty`**: Allow group to be empty if no fixtures match (graceful degradation, e.g., `true`)
+- **`AllowEmpty`**: Allow group to be empty if no fixtures match (graceful degradation)
 
 ## Benefits
 
@@ -39,10 +56,13 @@ The system supports several constraint types for group resolution:
 2. **Intelligent Selection**: System prefers premium fixtures when available, falls back to standard
 3. **Flexible Constraints**: Support for complex requirement combinations
 4. **Clear Error Handling**: Know exactly what's missing when requirements aren't met
-5. **Performance**: Cached resolutions for fast lookups
+5. **Visual Authoring**: Timeline editor with playback preview and stage visualization
 6. **Maintainable**: Easy to add new venues and fixture types
 
-## Migration Path
+## Getting Started
 
-- **Gradual adoption** - can mix old and new group definitions
-- **Venue-defined groups** - venue-defined groups are still supported alongside logical groups
+1. Define fixture types and venues (see [Configuration](configuration.md))
+2. Create a `.light` file for your song (see [Effects Reference](effects.md) and
+   [Cueing Features](cueing.md))
+3. Reference the light file in your song's `song.yaml`
+4. Use the web UI's timeline editor to visually author and preview your show

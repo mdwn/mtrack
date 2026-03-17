@@ -37,9 +37,9 @@
 - [Running on Startup (systemd)](deployment/systemd.md)
 - [Service Hardening](deployment/security.md)
 
-# Legacy
+# DMX
 
-- [MIDI-Based DMX System](legacy/midi-dmx.md)
+- [MIDI-Based DMX](dmx/midi-dmx.md)
 
 # Reference
 

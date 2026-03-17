@@ -1,20 +1,27 @@
-# MIDI-Based DMX System
+# MIDI-Based DMX
 
-> **Note**: The new tag-based lighting system (described in the [lighting overview](../lighting/overview.md)) is the recommended approach for most users. The MIDI-based DMX system is still supported for specific use cases requiring direct channel control.
+mtrack supports two approaches to lighting control: the **tag-based DSL system** (described in
+the [lighting overview](../lighting/overview.md)) and the **MIDI-based DMX system** described
+here. Both can be used independently or together in the same project.
+
+> **Tip**: If you're starting fresh, the DSL-based system is recommended for most users.
+> It provides venue-agnostic shows, high-level effects, and integrates with the web UI's
+> visual timeline editor. The MIDI-based system is best suited for workflows that require
+> direct per-channel DMX control or integration with DAW-authored MIDI lighting data.
 
 ## When to Use Each System
 
-**Use the New Tag-Based System when:**
+**Use the Tag-Based DSL System when:**
 - You want venue-agnostic lighting shows
-- You prefer high-level effect definitions
-- You want intelligent fixture selection
-- You're creating new lighting shows
+- You prefer high-level effect definitions (static, cycle, chase, strobe, etc.)
+- You want intelligent fixture selection via logical groups
+- You want to use the timeline editor for visual cue authoring
 
 **Use the MIDI-Based DMX System when:**
-- You have existing MIDI-based lighting shows
-- You need precise channel-level control
-- You're integrating with existing MIDI workflows
-- You prefer direct DMX channel programming
+- You need precise per-channel DMX control
+- You're integrating with existing MIDI workflows or DAWs
+- You prefer programming lights as MIDI data
+- You want to use live MIDI controllers for real-time DMX control
 
 ## Basic DMX Information
 
@@ -23,9 +30,9 @@ fed into one or more DMX channels. Each DMX channel can be set from `0` to `255`
 DMX channels: 1 for red, 1 for green, 1 for blue. In order to set the color of the light, you would have to supply these channels with
 data representing the color that you want. DMX data is arranged into universes, where 1 universe consists of 512 channels of DMX data.
 
-## Configuring mtrack for Legacy DMX Playback
+## Configuring mtrack for MIDI DMX Playback
 
-In order to use legacy light shows, you'll need to set up OLA on your playback device and map your DMX devices into DMX universes. I recommend
+In order to use MIDI-based light shows, you'll need to set up OLA on your playback device and map your DMX devices into DMX universes. I recommend
 following [this tutorial](https://www.openlighting.org/ola/getting-started/). mtrack assumes that OLA is running on the same device.
 
 mtrack can be configured to stream DMX data to OLA universes. This can be done through the mtrack configuration file when using `mtrack start`
@@ -36,7 +43,7 @@ The `dmx-universe-config` argument format is:
 universe=1,name=light-show;universe=2,name=another-light-show
 ```
 
-Legacy light shows can be defined in `Song` files and consist of an array of "universe names" and MIDI files. These universe names correlate to the
+MIDI-based light shows are defined in `Song` files and consist of an array of "universe names" and MIDI files. These universe names correlate to the
 names used in the mtrack configuration. For instance, a song with a light show with a universe name of `light-show` will play on the mtrack
 universe with the equivalent name.
 

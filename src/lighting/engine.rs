@@ -29,7 +29,7 @@ use super::effects::*;
 use super::tempo::TempoMap;
 use tracing::debug;
 
-use crate::dmx::legacy_store::LegacyDmxStore;
+use crate::dmx::midi_dmx_store::MidiDmxStore;
 
 /// The main effects engine that manages and processes lighting effects
 pub struct EffectEngine {
@@ -65,11 +65,11 @@ pub struct EffectEngine {
     /// Only built during tests for validation; not needed in production.
     #[cfg(test)]
     dmx_to_fixture_map: HashMap<(u16, u16), (String, String)>,
-    /// Reference to the legacy DMX store for reading interpolated values each frame.
-    legacy_store: Option<Arc<parking_lot::RwLock<LegacyDmxStore>>>,
+    /// Reference to the MIDI DMX store for reading interpolated values each frame.
+    midi_dmx_store: Option<Arc<parking_lot::RwLock<MidiDmxStore>>>,
     /// Cached DmxCommands from the last update() — returned when nothing has changed.
     cached_commands: Vec<DmxCommand>,
-    /// Last-seen legacy store generation (used to detect when recomputation can be skipped).
+    /// Last-seen MIDI DMX store generation (used to detect when recomputation can be skipped).
     last_store_generation: u32,
     /// Set when engine state is mutated outside of update() (e.g. clear_layer,
     /// stop_all_effects). Forces the next update() to do a full recomputation
@@ -77,7 +77,7 @@ pub struct EffectEngine {
     cache_dirty: bool,
     /// Sub-phase indicator for update() progress. Shared via Arc so external
     /// code (heartbeat checker) can read it without holding the effect_engine lock.
-    /// 0=idle, 10=fast_path, 20=state_setup, 30=legacy_inject, 40=effect_sort,
+    /// 0=idle, 10=fast_path, 20=state_setup, 30=midi_dmx_inject, 40=effect_sort,
     /// 50=effect_process, 60=completed_effects, 70=persist_state, 80=dmx_generate.
     update_subphase: Arc<AtomicU64>,
 }
@@ -106,7 +106,7 @@ impl EffectEngine {
             last_song_time: None,
             #[cfg(test)]
             dmx_to_fixture_map: HashMap::new(),
-            legacy_store: None,
+            midi_dmx_store: None,
             cached_commands: Vec::new(),
             last_store_generation: 0,
             cache_dirty: false,
@@ -298,9 +298,9 @@ impl EffectEngine {
         self.dmx_to_fixture_map.get(&(universe, dmx_channel))
     }
 
-    /// Set the legacy DMX store reference for reading interpolated MIDI values.
-    pub fn set_legacy_store(&mut self, store: Arc<parking_lot::RwLock<LegacyDmxStore>>) {
-        self.legacy_store = Some(store);
+    /// Set the MIDI DMX store reference for reading interpolated MIDI values.
+    pub fn set_midi_dmx_store(&mut self, store: Arc<parking_lot::RwLock<MidiDmxStore>>) {
+        self.midi_dmx_store = Some(store);
     }
 
     /// Start an effect
@@ -393,7 +393,7 @@ impl EffectEngine {
         self.engine_elapsed += dt;
         self.last_song_time = song_time;
 
-        // Fast path for legacy-only frames: when no DSL effects are running and
+        // Fast path for MIDI-DMX-only frames: when no DSL effects are running and
         // no permanent state exists, generate DmxCommands directly from the store.
         // This skips all HashMap cloning, fixture state rebuilding, and the full
         // merge pipeline — significant savings during active MIDI playback.
@@ -403,7 +403,7 @@ impl EffectEngine {
             && self.fixture_states.is_empty()
         {
             let store_gen = self
-                .legacy_store
+                .midi_dmx_store
                 .as_ref()
                 .map(|s| s.read().generation())
                 .unwrap_or(0);
@@ -419,7 +419,7 @@ impl EffectEngine {
             let mut commands = Vec::new();
             self.last_merged_states.clear();
 
-            if let Some(ref store) = self.legacy_store {
+            if let Some(ref store) = self.midi_dmx_store {
                 let store = store.read();
                 for (slot_idx, normalized_value) in store.iter_active() {
                     let (fixture_name, channel_name) = store.fixture_info(slot_idx);
@@ -460,7 +460,7 @@ impl EffectEngine {
         if !self.cache_dirty && self.active_effects.is_empty() && self.releasing_effects.is_empty()
         {
             let store_gen = self
-                .legacy_store
+                .midi_dmx_store
                 .as_ref()
                 .map(|s| s.read().generation())
                 .unwrap_or(0);
@@ -485,7 +485,7 @@ impl EffectEngine {
         }
 
         // Track which channels come from permanent effects to preserve them later.
-        // This MUST be computed before injecting direct values so that legacy MIDI
+        // This MUST be computed before injecting direct values so that MIDI DMX
         // channel states are not accidentally persisted as permanent effect state.
         let mut permanent_channels: HashMap<String, std::collections::HashSet<String>> =
             current_fixture_states
@@ -495,9 +495,9 @@ impl EffectEngine {
 
         self.update_subphase.store(30, Ordering::Relaxed);
 
-        // Inject legacy MIDI values from the lockless store (lowest priority).
+        // Inject MIDI DMX values from the lockless store (lowest priority).
         // Only set channels that aren't already claimed by persisted permanent effects.
-        if let Some(ref store) = self.legacy_store {
+        if let Some(ref store) = self.midi_dmx_store {
             let store = store.read();
             for (slot_idx, normalized_value) in store.iter_active() {
                 let (fixture_name, channel_name) = store.fixture_info(slot_idx);
@@ -846,8 +846,8 @@ impl EffectEngine {
         self.last_merged_states = merged_states.clone();
 
         // Convert fixture states to DMX commands.
-        // All commands pass through — legacy MIDI values are now handled via the
-        // LegacyDmxStore → EffectEngine injection path (no suppression needed).
+        // All commands pass through — MIDI DMX values are now handled via the
+        // MidiDmxStore → EffectEngine injection path (no suppression needed).
         let mut commands = Vec::new();
         for (fixture_name, fixture_state) in merged_states {
             if let Some(fixture_info) = self.fixture_registry.get(&fixture_name) {
@@ -859,7 +859,7 @@ impl EffectEngine {
         // subsequent frames where nothing changes.
         self.cached_commands = commands.clone();
         self.last_store_generation = self
-            .legacy_store
+            .midi_dmx_store
             .as_ref()
             .map(|s| s.read().generation())
             .unwrap_or(0);
@@ -921,10 +921,10 @@ impl EffectEngine {
         self.fixture_states.clear();
         self.channel_locks.clear();
         self.last_merged_states.clear();
-        // Clear legacy MIDI values so they don't bleed into the next song.
-        // Uses a read lock because LegacyDmxStore uses interior mutability
+        // Clear MIDI DMX values so they don't bleed into the next song.
+        // Uses a read lock because MidiDmxStore uses interior mutability
         // (atomics) — no write lock needed.
-        if let Some(ref store) = self.legacy_store {
+        if let Some(ref store) = self.midi_dmx_store {
             store.read().clear();
         }
         self.cache_dirty = true;

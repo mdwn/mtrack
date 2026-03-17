@@ -15,7 +15,7 @@ A song comprises of:
 
 - One or more audio files.
 - An optional MIDI file.
-- One or more light shows (using `.light` DSL files, or legacy MIDI files interpreted as DMX).
+- One or more light shows (using `.light` DSL files, or MIDI files interpreted as DMX).
 - A song definition (`song.yaml`).
 
 The audio files must all be the same sample rate. They do not need to be the same length. mtrack
@@ -91,7 +91,7 @@ $ mtrack songs --init /mnt/song-storage
 This creates a `song.yaml` in each subfolder of `/mnt/song-storage`. The name of the
 subfolder determines the song's name. Audio files are used as tracks (stereo and multichannel
 files are split into per-channel tracks). MIDI files are used as MIDI playback, and files
-prefixed with `dmx_` are treated as legacy light shows. `.light` files are auto-detected as
+prefixed with `dmx_` are treated as MIDI DMX light shows. `.light` files are auto-detected as
 DSL lighting shows.
 
 ## Directory Structure
