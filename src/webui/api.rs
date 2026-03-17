@@ -174,7 +174,8 @@ pub fn router() -> Router<WebUiState> {
 
 /// Validates that a filename has a supported audio extension (for sample uploads).
 fn validate_sample_filename(filename: &str) -> Result<(), Box<axum::response::Response>> {
-    if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
+    use super::safe_path::SafePath;
+    if SafePath::validate_name(filename).is_err() {
         return Err(Box::new(
             (
                 StatusCode::BAD_REQUEST,

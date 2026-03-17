@@ -105,13 +105,8 @@ pub(super) async fn validate_playlist(body: String) -> impl IntoResponse {
 /// Validates a playlist name for use in file paths.
 #[allow(clippy::result_large_err)]
 fn validate_playlist_name(name: &str) -> Result<(), axum::response::Response> {
-    if name.is_empty()
-        || name == "all_songs"
-        || name.contains("..")
-        || name.contains('/')
-        || name.contains('\\')
-        || name.contains('\0')
-    {
+    use super::super::safe_path::SafePath;
+    if name == "all_songs" || SafePath::validate_name(name).is_err() {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(json!({"error": "Invalid playlist name"})),
@@ -135,59 +130,25 @@ fn require_playlists_dir(state: &WebUiState) -> Result<PathBuf, axum::response::
 
 /// Resolves a playlist file path within the playlists directory, verifying
 /// that the result does not escape the directory via symlinks or other tricks.
-/// The playlists directory must exist before calling this function.
-/// Returns the validated path or an error response.
+/// Uses SafePath for containment verification.
 #[allow(clippy::result_large_err)]
 fn resolve_playlist_path(
     playlists_dir: &std::path::Path,
     name: &str,
     ext: &str,
 ) -> Result<PathBuf, axum::response::Response> {
-    // Canonicalize the directory itself (must exist) so the resulting path
-    // is anchored to a verified absolute base.
-    let dir_canonical = playlists_dir.canonicalize().map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to resolve playlists dir: {}", e)})),
-        )
-            .into_response()
-    })?;
-    let file_path = dir_canonical.join(format!("{}.{}", name, ext));
-    // If the file already exists, canonicalize it and verify it stayed inside.
-    // This catches symlink escapes.
+    use super::super::safe_path::VerifiedRoot;
+
+    let root = VerifiedRoot::new(playlists_dir).map_err(|e| e.into_response())?;
+    // Name is pre-validated by validate_playlist_name (no "..", "/", "\", null).
+    // Joining a validated filename to a canonical root is safe.
+    let file_path = root.as_path().join(format!("{}.{}", name, ext));
     if file_path.exists() {
-        let canonical = file_path.canonicalize().map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("Failed to resolve path: {}", e)})),
-            )
-                .into_response()
-        })?;
-        if !canonical.starts_with(&dir_canonical) {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": "Invalid playlist path"})),
-            )
-                .into_response());
-        }
-        Ok(canonical)
+        // Verify existing file hasn't escaped via symlink.
+        let safe = super::super::safe_path::SafePath::resolve(&file_path, &root)
+            .map_err(|e| e.into_response())?;
+        Ok(safe.as_path().to_path_buf())
     } else {
-        // File doesn't exist yet. Verify the parent of the constructed path
-        // is still the canonical directory (defense in depth beyond name validation).
-        let parent = file_path.parent().ok_or_else(|| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": "Invalid playlist path"})),
-            )
-                .into_response()
-        })?;
-        if parent != dir_canonical {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": "Invalid playlist path"})),
-            )
-                .into_response());
-        }
         Ok(file_path)
     }
 }

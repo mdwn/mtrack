@@ -20,8 +20,52 @@ use axum::{
 };
 use serde_json::json;
 
+use super::super::safe_path::{SafePath, VerifiedRoot};
 use super::super::server::WebUiState;
 use crate::songs;
+
+/// Resolves the project root (parent of config_path) as a VerifiedRoot.
+fn project_root(state: &WebUiState) -> Result<VerifiedRoot, Box<axum::response::Response>> {
+    let config_canonical = state.config_path.canonicalize().map_err(|e| {
+        Box::new(
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("Failed to resolve config path: {}", e)})),
+            )
+                .into_response(),
+        )
+    })?;
+    let parent = config_canonical.parent().ok_or_else(|| {
+        Box::new(
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Unable to determine config root directory"})),
+            )
+                .into_response(),
+        )
+    })?;
+    VerifiedRoot::new(parent).map_err(|e| Box::new(e.into_response()))
+}
+
+/// Resolves a project-relative path (e.g. "/songs") under the project root.
+fn resolve_browse_path(
+    root: &VerifiedRoot,
+    path: &str,
+) -> Result<SafePath, Box<axum::response::Response>> {
+    if path.is_empty() || path == "/" {
+        return Ok(root.as_safe_path());
+    }
+    let relative = path.strip_prefix('/').unwrap_or(path);
+    SafePath::resolve(&root.as_path().join(relative), root).map_err(|_| {
+        Box::new(
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": format!("Not a directory: {}", path)})),
+            )
+                .into_response(),
+        )
+    })
+}
 
 /// GET /api/browse?path=... — lists files and directories at a filesystem path.
 ///
@@ -32,70 +76,24 @@ pub(super) async fn browse_directory(
     State(state): State<WebUiState>,
     Query(params): Query<BrowseParams>,
 ) -> impl IntoResponse {
-    // The browsable root is the directory containing mtrack.yaml.
-    // Canonicalize config_path first to handle relative paths (e.g., "mtrack.yaml").
-    let config_canonical = match state.config_path.canonicalize() {
+    let root = match project_root(&state) {
+        Ok(r) => r,
+        Err(e) => return *e,
+    };
+    let dir_safe = match resolve_browse_path(&root, &params.path) {
         Ok(p) => p,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("Failed to resolve config path: {}", e)})),
-            )
-                .into_response();
-        }
+        Err(e) => return *e,
     };
-
-    let root_canonical = match config_canonical.parent() {
-        Some(p) => p.to_path_buf(),
-        None => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Unable to determine config root directory"})),
-            )
-                .into_response();
-        }
-    };
-
-    // Resolve the requested path. Paths from the frontend are project-relative
-    // (e.g., "/" = project root, "/songs" = songs subdirectory).
-    let requested = if params.path.is_empty() || params.path == "/" {
-        root_canonical.clone()
-    } else {
-        // Strip leading "/" and join with root to get absolute path.
-        let relative = params.path.strip_prefix('/').unwrap_or(&params.path);
-        root_canonical.join(relative)
-    };
-
-    // Canonicalize the requested path and verify it's under the root before
-    // touching the filesystem, preventing path traversal attacks.
-    let dir_canonical = match requested.canonicalize() {
-        Ok(p) => p,
-        Err(_) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": format!("Not a directory: {}", params.path)})),
-            )
-                .into_response();
-        }
-    };
-
-    if !dir_canonical.starts_with(&root_canonical) {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({
-                "error": "Access denied: path is outside the project directory",
-            })),
-        )
-            .into_response();
-    }
-
-    if !dir_canonical.is_dir() {
+    if !dir_safe.is_dir() {
         return (
             StatusCode::NOT_FOUND,
             Json(json!({"error": format!("Not a directory: {}", params.path)})),
         )
             .into_response();
     }
+
+    let root_canonical = root.as_path().to_path_buf();
+    let dir_canonical = dir_safe.as_path().to_path_buf();
 
     // Convert an absolute path to a project-relative path (e.g., "/songs/foo").
     let to_relative = |abs: &std::path::Path| -> String {
@@ -202,62 +200,22 @@ pub(super) async fn create_song_in_directory(
     State(state): State<WebUiState>,
     Json(body): Json<CreateSongInDirRequest>,
 ) -> impl IntoResponse {
-    // Resolve the project root (same logic as browse_directory).
-    let config_canonical = match state.config_path.canonicalize() {
+    let root = match project_root(&state) {
+        Ok(r) => r,
+        Err(e) => return *e,
+    };
+    let dir_safe = match resolve_browse_path(&root, &body.path) {
         Ok(p) => p,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("Failed to resolve config path: {}", e)})),
-            )
-                .into_response();
-        }
+        Err(e) => return *e,
     };
-    let root_canonical = match config_canonical.parent() {
-        Some(p) => p.to_path_buf(),
-        None => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Unable to determine config root directory"})),
-            )
-                .into_response();
-        }
-    };
-
-    // Resolve the target directory from the project-relative path.
-    let relative = body.path.strip_prefix('/').unwrap_or(&body.path);
-    let target_dir = if relative.is_empty() {
-        root_canonical.clone()
-    } else {
-        root_canonical.join(relative)
-    };
-
-    let dir_canonical = match target_dir.canonicalize() {
-        Ok(p) => p,
-        Err(_) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": format!("Directory not found: {}", body.path)})),
-            )
-                .into_response();
-        }
-    };
-
-    if !dir_canonical.starts_with(&root_canonical) {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({"error": "Access denied: path is outside the project directory"})),
-        )
-            .into_response();
-    }
-
-    if !dir_canonical.is_dir() {
+    if !dir_safe.is_dir() {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({"error": "Path is not a directory"})),
         )
             .into_response();
     }
+    let dir_canonical = dir_safe.as_path().to_path_buf();
 
     let config_path = dir_canonical.join("song.yaml");
     if config_path.exists() {
@@ -324,60 +282,22 @@ pub(super) async fn bulk_import(
     State(state): State<WebUiState>,
     Json(body): Json<BulkImportRequest>,
 ) -> impl IntoResponse {
-    let config_canonical = match state.config_path.canonicalize() {
+    let root = match project_root(&state) {
+        Ok(r) => r,
+        Err(e) => return *e,
+    };
+    let dir_safe = match resolve_browse_path(&root, &body.path) {
         Ok(p) => p,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("Failed to resolve config path: {}", e)})),
-            )
-                .into_response();
-        }
+        Err(e) => return *e,
     };
-    let root_canonical = match config_canonical.parent() {
-        Some(p) => p.to_path_buf(),
-        None => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Unable to determine config root directory"})),
-            )
-                .into_response();
-        }
-    };
-
-    let relative = body.path.strip_prefix('/').unwrap_or(&body.path);
-    let target_dir = if relative.is_empty() {
-        root_canonical.clone()
-    } else {
-        root_canonical.join(relative)
-    };
-
-    let dir_canonical = match target_dir.canonicalize() {
-        Ok(p) => p,
-        Err(_) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": format!("Directory not found: {}", body.path)})),
-            )
-                .into_response();
-        }
-    };
-
-    if !dir_canonical.starts_with(&root_canonical) {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({"error": "Access denied: path is outside the project directory"})),
-        )
-            .into_response();
-    }
-
-    if !dir_canonical.is_dir() {
+    if !dir_safe.is_dir() {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({"error": "Path is not a directory"})),
         )
             .into_response();
     }
+    let dir_canonical = dir_safe.as_path().to_path_buf();
 
     let mut created: Vec<String> = Vec::new();
     let mut skipped: Vec<String> = Vec::new();

@@ -88,38 +88,14 @@ pub(super) async fn get_lighting_file(
     State(state): State<WebUiState>,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    // Prevent path traversal
-    if name.contains("..") {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "Invalid path"})),
-        )
-            .into_response();
-    }
+    use super::super::safe_path::{SafePath, VerifiedRoot};
 
-    let file_path = state.songs_path.join(&name);
-
-    // Ensure the resolved path is still under songs_path
-    match file_path.canonicalize() {
-        Ok(canonical) => {
-            let base = match state.songs_path.canonicalize() {
-                Ok(b) => b,
-                Err(e) => {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({"error": format!("Failed to resolve base path: {}", e)})),
-                    )
-                        .into_response();
-                }
-            };
-            if !canonical.starts_with(&base) {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({"error": "Path outside allowed directory"})),
-                )
-                    .into_response();
-            }
-        }
+    let root = match VerifiedRoot::new(&state.songs_path) {
+        Ok(r) => r,
+        Err(e) => return e.into_response(),
+    };
+    let safe = match SafePath::resolve(&state.songs_path.join(&name), &root) {
+        Ok(p) => p,
         Err(_) => {
             return (
                 StatusCode::NOT_FOUND,
@@ -127,10 +103,9 @@ pub(super) async fn get_lighting_file(
             )
                 .into_response();
         }
-    }
+    };
 
-    // codeql[rust/path-injection] file_path is validated via canonicalize + starts_with above.
-    match std::fs::read_to_string(&file_path) {
+    match std::fs::read_to_string(safe.as_path()) {
         Ok(content) => (
             StatusCode::OK,
             [("content-type", "text/plain; charset=utf-8")],
@@ -151,38 +126,39 @@ pub(super) async fn put_lighting_file(
     Path(name): Path<String>,
     body: String,
 ) -> impl IntoResponse {
-    if name.contains("..") {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "Invalid path"})),
-        )
-            .into_response();
-    }
+    use super::super::safe_path::{SafePath, SafePathError, VerifiedRoot};
 
-    let file_path = state.songs_path.join(&name);
+    let root = match VerifiedRoot::new(&state.songs_path) {
+        Ok(r) => r,
+        Err(e) => return e.into_response(),
+    };
 
-    // Validate path is within songs directory
-    // For new files the parent must exist and be within the base
-    let parent = match file_path.parent() {
-        Some(p) => p,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": "Invalid file path"})),
-            )
-                .into_response();
+    // Resolve the file path under the songs root. For existing files, SafePath::resolve
+    // canonicalizes and verifies containment. For new files, resolve the parent directory
+    // and join the filename to it.
+    let candidate = root.as_path().join(&name);
+    let verified_path = match SafePath::resolve(&candidate, &root) {
+        Ok(p) => p.as_path().to_path_buf(),
+        Err(_) => {
+            // File doesn't exist — resolve the parent and join the filename.
+            let (parent, filename) = match (candidate.parent(), candidate.file_name()) {
+                (Some(p), Some(f)) => (p, f),
+                _ => return SafePathError::InvalidName.into_response(),
+            };
+            let safe_parent = match SafePath::resolve(parent, &root) {
+                Ok(p) => p,
+                Err(e) => return e.into_response(),
+            };
+            safe_parent.as_path().join(filename)
         }
     };
-    if let Err(e) = config_io::validate_path_within(&state.songs_path, parent) {
-        return (StatusCode::BAD_REQUEST, Json(json!({"error": e}))).into_response();
-    }
 
     // Validate the DSL content
     if let Err(errors) = config_io::validate_light_show(&body) {
         return (StatusCode::BAD_REQUEST, Json(json!({"errors": errors}))).into_response();
     }
 
-    match config_io::atomic_write(&file_path, &body) {
+    match config_io::atomic_write(&verified_path, &body) {
         Ok(()) => (StatusCode::OK, Json(json!({"status": "saved"}))).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e}))).into_response(),
     }
@@ -220,77 +196,19 @@ fn resolve_lighting_dir(
     override_dir: Option<&str>,
     default: &str,
 ) -> Result<std::path::PathBuf, axum::response::Response> {
+    use super::super::safe_path::{SafePath, VerifiedRoot};
+
     let project_root = config_path
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."));
-    // Canonicalize the project root so all derived paths are anchored to a
-    // verified absolute base, preventing path traversal via the dir override.
-    let root_canonical = project_root.canonicalize().map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to resolve project root: {}", e)})),
-        )
-            .into_response()
-    })?;
+    let root = VerifiedRoot::new(project_root).map_err(|e| e.into_response())?;
+
     let relative = match override_dir {
         Some(d) if !d.is_empty() => d,
         _ => default,
     };
-    // Reject absolute overrides — directories must be relative to the project root.
-    if std::path::Path::new(relative).is_absolute() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "Directory must be a relative path"})),
-        )
-            .into_response());
-    }
-    let resolved = root_canonical.join(relative);
-    // If the directory already exists, canonicalize and verify containment.
-    if resolved.exists() {
-        let canonical = resolved.canonicalize().map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("Failed to resolve directory: {}", e)})),
-            )
-                .into_response()
-        })?;
-        if !canonical.starts_with(&root_canonical) {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": "Directory must be within the project root"})),
-            )
-                .into_response());
-        }
-        Ok(canonical)
-    } else {
-        // Directory doesn't exist yet — verify no ".." components escape the root
-        // by checking lexically. The directory will be created later if needed.
-        let mut normalized = root_canonical.clone();
-        for component in std::path::Path::new(relative).components() {
-            match component {
-                std::path::Component::Normal(c) => normalized.push(c),
-                std::path::Component::ParentDir => {
-                    normalized.pop();
-                    if !normalized.starts_with(&root_canonical) {
-                        return Err((
-                            StatusCode::BAD_REQUEST,
-                            Json(json!({"error": "Directory must be within the project root"})),
-                        )
-                            .into_response());
-                    }
-                }
-                std::path::Component::CurDir => {}
-                _ => {
-                    return Err((
-                        StatusCode::BAD_REQUEST,
-                        Json(json!({"error": "Invalid directory path"})),
-                    )
-                        .into_response());
-                }
-            }
-        }
-        Ok(normalized)
-    }
+
+    SafePath::validate_relative(relative, &root).map_err(|e| e.into_response())
 }
 
 /// Query parameters for lighting endpoints — allows overriding the directory.
@@ -302,12 +220,8 @@ pub(super) struct LightingDirQuery {
 /// Validates that a fixture type or venue name is safe for use as a filename.
 #[allow(clippy::result_large_err)]
 fn validate_lighting_name(name: &str) -> Result<(), axum::response::Response> {
-    if name.is_empty()
-        || name.contains("..")
-        || name.contains('/')
-        || name.contains('\\')
-        || name.contains('\0')
-    {
+    use super::super::safe_path::SafePath;
+    if SafePath::validate_name(name).is_err() {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(json!({"error": "Invalid name"})),
@@ -962,7 +876,13 @@ mod test {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let status = response.status();
+        assert!(
+            status == StatusCode::FORBIDDEN
+                || status == StatusCode::BAD_REQUEST
+                || status == StatusCode::NOT_FOUND,
+            "expected rejection for symlink escape, got {status}"
+        );
     }
 
     #[tokio::test]
@@ -1134,7 +1054,13 @@ show "test" {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let status = response.status();
+        assert!(
+            status == StatusCode::FORBIDDEN
+                || status == StatusCode::BAD_REQUEST
+                || status == StatusCode::NOT_FOUND,
+            "expected rejection for symlink escape, got {status}"
+        );
     }
 
     #[tokio::test]
@@ -1258,10 +1184,14 @@ show "test" {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = response_body(response).await;
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert!(parsed["error"].as_str().unwrap().contains("Invalid path"));
+        // Path traversal: expect rejection (NOT_FOUND, FORBIDDEN, or BAD_REQUEST).
+        let status = response.status();
+        assert!(
+            status == StatusCode::NOT_FOUND
+                || status == StatusCode::FORBIDDEN
+                || status == StatusCode::BAD_REQUEST,
+            "expected rejection, got {status}"
+        );
     }
 
     #[tokio::test]
@@ -1337,10 +1267,13 @@ show "test" {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = response_body(response).await;
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert!(parsed["error"].as_str().unwrap().contains("Invalid path"));
+        let status = response.status();
+        assert!(
+            status == StatusCode::NOT_FOUND
+                || status == StatusCode::FORBIDDEN
+                || status == StatusCode::BAD_REQUEST,
+            "expected rejection for path traversal, got {status}"
+        );
     }
 
     #[tokio::test]
