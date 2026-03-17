@@ -249,4 +249,18 @@ track_mappings:
   - 6
 ```
 
-You can start `mtrack` as a process with `mtrack start /path/to/player.yaml`.
+You can start `mtrack` as a process with `mtrack start /path/to/player.yaml`, or
+simply `mtrack start` from the project directory.
+
+## Web UI and File Management
+
+The web UI's management features (song editing, file uploads, lighting authoring, playlist
+management) expect all project files to reside under a single directory — the directory
+containing `mtrack.yaml`. While `mtrack.yaml` supports absolute paths and references to files
+on other mounts, the web UI can only manage files that are within the project root directory.
+
+For best results:
+- Keep your `songs` path relative (e.g. `songs: .` or `songs: songs`)
+- Store playlists in a `playlists/` subdirectory within the project root
+- Store lighting files alongside song files in the song directories
+- Ensure mtrack has **write access** to the project root and its contents

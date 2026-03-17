@@ -828,27 +828,20 @@ impl Player {
     }
 
     /// Plays a specific song by name, starting from the given time.
-    /// Navigates the all_songs playlist to the song and plays from it without
-    /// changing the active playlist (so dashboard clients aren't affected).
+    /// Switches to the all_songs playlist (session-only, not persisted) and
+    /// navigates to the song before calling play_from.
     /// Returns an error if the song is not found.
     pub async fn play_song_from(
         &self,
         song_name: &str,
         start_time: Duration,
     ) -> Result<Option<Arc<Song>>, Box<dyn Error>> {
-        // Navigate all_songs to the requested song so play_from finds it.
-        // We temporarily switch to all_songs for the duration of the play_from call,
-        // then restore the original playlist. This avoids permanently changing the
-        // active playlist, which would confuse other connected clients.
         let all_songs = self.get_all_songs_playlist();
         if all_songs.navigate_to(song_name).is_none() {
             return Err(format!("Song '{}' not found", song_name).into());
         }
-        let prev_playlist = self.active_playlist.read().clone();
         *self.active_playlist.write() = "all_songs".to_string();
-        let result = self.play_from(start_time).await;
-        *self.active_playlist.write() = prev_playlist;
-        result
+        self.play_from(start_time).await
     }
 
     /// Plays the song at the current position. Returns the song if playback started successfully.
@@ -3203,8 +3196,8 @@ mod test {
         assert_eq!(result.unwrap().name(), "Song 2");
         eventually(|| device.is_playing(), "Song never started playing");
 
-        // Active playlist should be restored (not left on all_songs)
-        assert_eq!(player.get_playlist().name(), "playlist");
+        // Switches to all_songs (session-only) for the duration of playback
+        assert_eq!(player.get_playlist().name(), "all_songs");
 
         player.stop().await;
         eventually(|| !device.is_playing(), "Song never stopped");

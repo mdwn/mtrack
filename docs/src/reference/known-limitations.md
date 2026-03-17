@@ -35,6 +35,16 @@ messages. Accurate tempo requires elevated thread priority:
 The thread priority can be tuned with `MTRACK_THREAD_PRIORITY` (0–99, default 70)
 or disabled entirely with `MTRACK_DISABLE_RT_AUDIO=1`.
 
+## Web UI File Management
+
+The web UI's song management, file upload, lighting editor, and playlist editor features
+require all project files to reside under a single project root directory (the directory
+containing `mtrack.yaml`). Files referenced via absolute paths or on separate mounts will
+play back correctly but cannot be edited, uploaded to, or managed through the web UI.
+
+mtrack must have write access to the project root directory for management features to work.
+On read-only filesystems, playback and monitoring work but editing is disabled.
+
 ## General disclaimer
 
 This is my first Rust project, so this is likely cringey, horrible non-idiomatic Rust. Feel free to
