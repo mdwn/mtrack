@@ -16,14 +16,14 @@ jobs:
     name: Build mtrack
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
-    - uses: jetify-com/devbox-install-action@v0.12.0
+    - uses: actions/checkout@v6
+    - uses: jetify-com/devbox-install-action@v0.14.0
       with:
         enable-cache: 'true'
     - uses: Swatinem/rust-cache@v2
       with:
         shared-key: "cargo"
-    - uses: actions/cache@v4
+    - uses: actions/cache@v5
       with:
         path: src/webui/svelte/node_modules
         key: node-modules-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
@@ -46,14 +46,14 @@ jobs:
     name: Lint mtrack
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
-    - uses: jetify-com/devbox-install-action@v0.12.0
+    - uses: actions/checkout@v6
+    - uses: jetify-com/devbox-install-action@v0.14.0
       with:
         enable-cache: 'true'
     - uses: Swatinem/rust-cache@v2
       with:
         shared-key: "cargo"
-    - uses: actions/cache@v4
+    - uses: actions/cache@v5
       with:
         path: src/webui/svelte/node_modules
         key: node-modules-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
@@ -68,8 +68,8 @@ jobs:
     name: Run rustfmt
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
-    - uses: jetify-com/devbox-install-action@v0.12.0
+    - uses: actions/checkout@v6
+    - uses: jetify-com/devbox-install-action@v0.14.0
       with:
         enable-cache: 'true'
     - name: Run rustfmt
@@ -80,14 +80,14 @@ jobs:
     name: Run tests
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
-    - uses: jetify-com/devbox-install-action@v0.12.0
+    - uses: actions/checkout@v6
+    - uses: jetify-com/devbox-install-action@v0.14.0
       with:
         enable-cache: 'true'
     - uses: Swatinem/rust-cache@v2
       with:
         shared-key: "cargo-tarpaulin"
-    - uses: actions/cache@v4
+    - uses: actions/cache@v5
       with:
         path: src/webui/svelte/node_modules
         key: node-modules-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
@@ -97,7 +97,7 @@ jobs:
     - name: Test mtrack
       run: devbox run -- cargo tarpaulin --skip-clean --all-features --timeout 120 --out xml
     - name: Upload coverage reports to Codecov
-      uses: codecov/codecov-action@v4.0.1
+      uses: codecov/codecov-action@v5
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
         slug: mdwn/mtrack
@@ -107,11 +107,11 @@ jobs:
     name: Frontend checks
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
-    - uses: jetify-com/devbox-install-action@v0.12.0
+    - uses: actions/checkout@v6
+    - uses: jetify-com/devbox-install-action@v0.14.0
       with:
         enable-cache: 'true'
-    - uses: actions/cache@v4
+    - uses: actions/cache@v5
       with:
         path: src/webui/svelte/node_modules
         key: node-modules-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
@@ -130,8 +130,8 @@ jobs:
     name: Ensure license headers
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
-    - uses: jetify-com/devbox-install-action@v0.12.0
+    - uses: actions/checkout@v6
+    - uses: jetify-com/devbox-install-action@v0.14.0
       with:
         enable-cache: 'true'
     - name: Check for licenses
@@ -143,10 +143,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       # We'll run the extract release notes action and drop the results on the floor.
       # If extract-release-notes can successfully extract release notes, we'll
       # consider this success for now.
       - name: Extract release notes
         id: extract-release-notes
-        uses: ffurrer2/extract-release-notes@v2
+        uses: ffurrer2/extract-release-notes@v3
