@@ -74,24 +74,6 @@ pub fn validate_light_show(content: &str) -> Result<(), Vec<String>> {
     Ok(())
 }
 
-/// Validates that a resolved path is under the given base directory.
-/// Returns the canonical path if valid, or an error if the path would escape.
-pub fn validate_path_within(base: &Path, requested: &Path) -> Result<std::path::PathBuf, String> {
-    let canonical = requested
-        .canonicalize()
-        .map_err(|e| format!("Cannot resolve path {}: {}", requested.display(), e))?;
-
-    let canonical_base = base
-        .canonicalize()
-        .map_err(|e| format!("Cannot resolve base path {}: {}", base.display(), e))?;
-
-    if !canonical.starts_with(&canonical_base) {
-        return Err("Path outside allowed directory".to_string());
-    }
-
-    Ok(canonical)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,42 +116,6 @@ show "test" {
     fn test_validate_playlist_valid() {
         let yaml = "songs:\n  - song1\n  - song2\n";
         assert!(validate_playlist(yaml).is_ok());
-    }
-
-    #[test]
-    fn test_validate_path_within() {
-        let dir = tempfile::tempdir().unwrap();
-        let sub = dir.path().join("sub");
-        std::fs::create_dir(&sub).unwrap();
-        let file = sub.join("test.txt");
-        std::fs::write(&file, "test").unwrap();
-
-        // Valid path within base
-        assert!(validate_path_within(dir.path(), &file).is_ok());
-
-        // Path traversal attempt
-        let bad_path = dir
-            .path()
-            .join("sub")
-            .join("..")
-            .join("..")
-            .join("etc")
-            .join("passwd");
-        assert!(validate_path_within(dir.path(), &bad_path).is_err());
-    }
-
-    #[test]
-    fn test_validate_path_within_outside_base() {
-        // Create two separate tempdirs so the canonical path exists but is
-        // not under the base directory.
-        let base_dir = tempfile::tempdir().unwrap();
-        let other_dir = tempfile::tempdir().unwrap();
-        let outside_file = other_dir.path().join("secret.txt");
-        std::fs::write(&outside_file, "secret").unwrap();
-
-        let result = validate_path_within(base_dir.path(), &outside_file);
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "Path outside allowed directory");
     }
 
     #[test]

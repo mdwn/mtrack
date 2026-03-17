@@ -31,12 +31,8 @@ use config::Config;
 /// Validates a profile filename for use in file paths.
 #[allow(clippy::result_large_err)]
 fn validate_profile_filename(name: &str) -> Result<(), axum::response::Response> {
-    if name.is_empty()
-        || name.contains("..")
-        || name.contains('/')
-        || name.contains('\\')
-        || name.contains('\0')
-    {
+    use super::super::safe_path::SafePath;
+    if SafePath::validate_name(name).is_err() {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(json!({"error": "Invalid profile filename"})),
@@ -60,51 +56,23 @@ fn require_profiles_dir(state: &WebUiState) -> Result<PathBuf, axum::response::R
 
 /// Resolves a profile file path within the profiles directory, verifying
 /// that the result does not escape the directory via symlinks or other tricks.
+/// Uses SafePath for containment verification.
 #[allow(clippy::result_large_err)]
 fn resolve_profile_path(
     profiles_dir: &std::path::Path,
     name: &str,
     ext: &str,
 ) -> Result<PathBuf, axum::response::Response> {
-    let dir_canonical = profiles_dir.canonicalize().map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to resolve profiles dir: {}", e)})),
-        )
-            .into_response()
-    })?;
-    let file_path = dir_canonical.join(format!("{}.{}", name, ext));
+    use super::super::safe_path::VerifiedRoot;
+
+    let root = VerifiedRoot::new(profiles_dir).map_err(|e| e.into_response())?;
+    // Name is pre-validated by validate_profile_filename (no "..", "/", "\", null).
+    let file_path = root.as_path().join(format!("{}.{}", name, ext));
     if file_path.exists() {
-        let canonical = file_path.canonicalize().map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("Failed to resolve path: {}", e)})),
-            )
-                .into_response()
-        })?;
-        if !canonical.starts_with(&dir_canonical) {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": "Invalid profile path"})),
-            )
-                .into_response());
-        }
-        Ok(canonical)
+        let safe = super::super::safe_path::SafePath::resolve(&file_path, &root)
+            .map_err(|e| e.into_response())?;
+        Ok(safe.as_path().to_path_buf())
     } else {
-        let parent = file_path.parent().ok_or_else(|| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": "Invalid profile path"})),
-            )
-                .into_response()
-        })?;
-        if parent != dir_canonical {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": "Invalid profile path"})),
-            )
-                .into_response());
-        }
         Ok(file_path)
     }
 }
