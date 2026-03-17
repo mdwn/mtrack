@@ -13,10 +13,10 @@ jobs:
     name: Publish to crates.io
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
-    - uses: jetify-com/devbox-install-action@v0.12.0
+    - uses: actions/checkout@v6
+    - uses: jetify-com/devbox-install-action@v0.14.0
     - name: Cache node modules
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: src/webui/svelte/node_modules
         key: node-modules-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
@@ -34,10 +34,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Extract release notes
         id: extract-release-notes
-        uses: ffurrer2/extract-release-notes@v2
+        uses: ffurrer2/extract-release-notes@v3
       - name: Create release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
