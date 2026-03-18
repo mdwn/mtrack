@@ -147,12 +147,15 @@ pub(super) async fn reject_if_playing(state: &WebUiState) -> Option<axum::respon
     }
 }
 
-/// Reloads hardware from the updated config. Non-blocking — spawns async
-/// device discovery and returns immediately. The broadcast channel is already
-/// stored on the Player and will be wired when the DMX engine comes up.
+/// Reloads hardware and controllers from the updated config. Non-blocking —
+/// spawns async device discovery and returns immediately. The broadcast channel
+/// is already stored on the Player and will be wired when the DMX engine comes up.
 pub(super) async fn reload_hardware_after_mutation(state: &WebUiState) {
     if let Err(e) = state.player.reload_hardware().await {
         warn!("Hardware reload failed: {}", e);
+    }
+    if let Err(e) = state.player.reload_controllers().await {
+        warn!("Controller reload failed: {}", e);
     }
 }
 

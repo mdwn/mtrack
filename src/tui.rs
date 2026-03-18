@@ -29,7 +29,6 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use tokio::sync::{mpsc, watch};
 
-use crate::controller::Controller;
 use crate::player::Player;
 use crate::state::StateSnapshot;
 
@@ -41,7 +40,6 @@ use app::{Action, App};
 /// The TUI replaces `Controller::join()` as the main loop when stdin is a TTY.
 pub async fn run(
     player: Arc<Player>,
-    controller: Controller,
     state_rx: watch::Receiver<Arc<StateSnapshot>>,
 ) -> Result<(), Box<dyn Error>> {
     // Set up terminal
@@ -91,9 +89,6 @@ pub async fn run(
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
-
-    // Shut down controllers
-    controller.shutdown();
 
     result
 }

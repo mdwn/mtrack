@@ -26,47 +26,108 @@ pub trait Driver: Send + Sync + 'static {
     fn monitor_events(&self) -> JoinHandle<Result<(), io::Error>>;
 }
 
+/// Status of a single controller.
+#[derive(Clone, serde::Serialize)]
+pub struct ControllerStatus {
+    /// The kind of controller (grpc, osc, midi).
+    pub kind: String,
+    /// Whether the controller started successfully.
+    pub status: String,
+    /// Additional info (e.g. port number, device name).
+    pub detail: Option<String>,
+    /// Error message if the controller failed to start.
+    pub error: Option<String>,
+}
+
 /// Controls a playlist.
 pub struct Controller {
     handles: Vec<JoinHandle<Result<(), io::Error>>>,
+    statuses: Vec<ControllerStatus>,
 }
 
 impl Controller {
-    /// Creates a new controller with the given config.
-    pub fn new(
-        config: Vec<config::Controller>,
-        player: Arc<Player>,
-    ) -> Result<Controller, Box<dyn Error>> {
+    /// Creates a new controller with the given config. Individual controller
+    /// failures are logged and tracked but do not prevent other controllers
+    /// from starting.
+    pub fn new(config: Vec<config::Controller>, player: Arc<Player>) -> Controller {
         let mut controller_drivers = Vec::new();
+        let mut statuses = Vec::new();
         for config in config {
             let player = player.clone();
-            let driver: Arc<dyn Driver> = match config {
-                config::Controller::Grpc(config) => grpc::Driver::new(config, player)?,
-                config::Controller::Osc(config) => osc::Driver::new(config, player)?,
-                config::Controller::Midi(config) => midi::Driver::new(config, player)?,
-                _ => return Err("unexpected controller type".into()),
+            let (kind, detail) = match &config {
+                config::Controller::Grpc(c) => {
+                    ("grpc".to_string(), Some(format!("port {}", c.port())))
+                }
+                config::Controller::Osc(c) => {
+                    ("osc".to_string(), Some(format!("port {}", c.port())))
+                }
+                config::Controller::Midi(_) => ("midi".to_string(), None),
+                _ => ("unknown".to_string(), None),
             };
-            controller_drivers.push(driver);
+            let result: Result<Arc<dyn Driver>, Box<dyn Error>> = match config {
+                config::Controller::Grpc(config) => {
+                    grpc::Driver::new(config, player).map(|d| d as Arc<dyn Driver>)
+                }
+                config::Controller::Osc(config) => {
+                    osc::Driver::new(config, player).map(|d| d as Arc<dyn Driver>)
+                }
+                config::Controller::Midi(config) => {
+                    midi::Driver::new(config, player).map(|d| d as Arc<dyn Driver>)
+                }
+                _ => Err("unexpected controller type".into()),
+            };
+            match result {
+                Ok(driver) => {
+                    controller_drivers.push(driver);
+                    statuses.push(ControllerStatus {
+                        kind,
+                        status: "running".to_string(),
+                        detail,
+                        error: None,
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!(kind = %kind, error = %e, "Controller failed to start");
+                    statuses.push(ControllerStatus {
+                        kind,
+                        status: "error".to_string(),
+                        detail,
+                        error: Some(e.to_string()),
+                    });
+                }
+            }
         }
-        Ok(Self::new_from_drivers(controller_drivers))
+
+        let mut handles = Vec::new();
+        for driver in controller_drivers {
+            handles.push(driver.monitor_events());
+        }
+        Controller { handles, statuses }
     }
 
     /// Creates a new controller from multiple drivers.
     pub fn new_from_drivers(drivers: Vec<Arc<dyn Driver>>) -> Controller {
         let mut handles = Vec::new();
-        for driver in drivers {
+        for driver in &drivers {
             handles.push(driver.monitor_events());
         }
-        Controller { handles }
+        Controller {
+            handles,
+            statuses: drivers
+                .iter()
+                .map(|_| ControllerStatus {
+                    kind: "unknown".to_string(),
+                    status: "running".to_string(),
+                    detail: None,
+                    error: None,
+                })
+                .collect(),
+        }
     }
 
-    /// Join will block until the controller finishes.
-    pub async fn join(mut self) -> Result<(), io::Error> {
-        for handle in &mut self.handles {
-            handle.await??;
-        }
-
-        Ok(())
+    /// Returns the status of all controllers.
+    pub fn statuses(&self) -> &[ControllerStatus] {
+        &self.statuses
     }
 
     /// Shuts down all controller tasks by aborting their handles.
@@ -211,8 +272,8 @@ mod test {
         let grpc_config = config::GrpcController::new(0);
         let controller =
             super::Controller::new(vec![config::Controller::Grpc(grpc_config)], player);
-        assert!(controller.is_ok());
-        controller.unwrap().shutdown();
+        assert!(controller.statuses().iter().all(|s| s.status == "running"));
+        controller.shutdown();
 
         Ok(())
     }
@@ -248,8 +309,8 @@ mod test {
 
         // Empty config vec should produce a controller with no drivers.
         let controller = super::Controller::new(vec![], player);
-        assert!(controller.is_ok());
-        controller.unwrap().shutdown();
+        assert!(controller.statuses().is_empty());
+        controller.shutdown();
 
         Ok(())
     }
@@ -286,8 +347,8 @@ mod test {
         let osc_config = config::OscController::new();
         let controller =
             super::Controller::new(vec![config::Controller::Osc(Box::new(osc_config))], player);
-        assert!(controller.is_ok());
-        controller.unwrap().shutdown();
+        assert!(controller.statuses().iter().all(|s| s.status == "running"));
+        controller.shutdown();
 
         Ok(())
     }
@@ -404,10 +465,7 @@ mod test {
 
         println!("Close");
         driver.next_event(TestEvent::Close).await;
-        assert!(
-            controller.join().await.is_ok(),
-            "Error waiting for controller",
-        );
+        controller.shutdown();
 
         Ok(())
     }

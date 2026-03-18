@@ -37,15 +37,17 @@ pub(super) async fn get_audio_devices() -> impl IntoResponse {
 }
 
 /// GET /api/devices/midi — lists available MIDI devices.
+///
+/// Returns an empty array if the MIDI subsystem is unavailable (e.g. no ALSA
+/// on WSL2), rather than a 500 error.
 pub(super) async fn get_midi_devices() -> impl IntoResponse {
     match tokio::task::spawn_blocking(|| midi::list_device_info().map_err(|e| e.to_string())).await
     {
         Ok(Ok(devices)) => (StatusCode::OK, Json(json!(devices))).into_response(),
-        Ok(Err(e)) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("failed to list MIDI devices: {}", e)})),
-        )
-            .into_response(),
+        Ok(Err(e)) => {
+            tracing::warn!("MIDI subsystem unavailable: {}", e);
+            (StatusCode::OK, Json(json!([]))).into_response()
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": format!("task failed: {}", e)})),

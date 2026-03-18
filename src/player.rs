@@ -176,6 +176,8 @@ pub struct Player {
     /// When true, state-altering operations (config changes, song edits, etc.)
     /// are rejected. Playback controls always work. Locked by default on startup.
     locked: Arc<AtomicBool>,
+    /// Active controllers (gRPC, OSC, MIDI). Replaced on reload.
+    controller: Arc<parking_lot::Mutex<Option<crate::controller::Controller>>>,
 }
 
 impl Player {
@@ -550,6 +552,7 @@ impl Player {
             init_done_tx: Arc::new(init_done_tx),
             state_tx: Arc::new(parking_lot::Mutex::new(None)),
             locked: Arc::new(AtomicBool::new(true)),
+            controller: Arc::new(parking_lot::Mutex::new(None)),
         })
     }
 
@@ -771,6 +774,60 @@ impl Player {
 
         info!("Hardware reload initiated");
         Ok(())
+    }
+
+    /// Starts controllers from the given config. Called at startup and on reload.
+    /// Requires `Arc<Player>` because controllers hold a reference to the player.
+    pub fn start_controllers(self: &Arc<Self>, config: Vec<config::Controller>) {
+        // Shut down any existing controllers.
+        if let Some(old) = self.controller.lock().take() {
+            info!("Shutting down existing controllers");
+            old.shutdown();
+        }
+
+        if config.is_empty() {
+            info!("No controllers configured");
+            return;
+        }
+
+        let controller = crate::controller::Controller::new(config, Arc::clone(self));
+        *self.controller.lock() = Some(controller);
+        info!("Controllers started");
+    }
+
+    /// Reloads controllers from the current config store.
+    /// Requires `Arc<Player>` because controllers hold a reference to the player.
+    pub async fn reload_controllers(self: &Arc<Self>) -> Result<(), Box<dyn Error>> {
+        let config = self
+            .config_store()
+            .ok_or("No config store available")?
+            .read_config()
+            .await;
+
+        let hostname = config::resolve_hostname();
+        let controllers = config
+            .profiles(&hostname)
+            .first()
+            .map(|p| p.controllers().to_vec())
+            .unwrap_or_default();
+
+        self.start_controllers(controllers);
+        Ok(())
+    }
+
+    /// Returns the status of all active controllers.
+    pub fn controller_statuses(&self) -> Vec<crate::controller::ControllerStatus> {
+        match self.controller.lock().as_ref() {
+            Some(controller) => controller.statuses().to_vec(),
+            None => vec![],
+        }
+    }
+
+    /// Shuts down all active controllers. Called during process shutdown.
+    pub fn shutdown_controllers(&self) {
+        if let Some(controller) = self.controller.lock().take() {
+            controller.shutdown();
+        }
     }
 
     /// Reports status as MIDI events.
