@@ -153,8 +153,9 @@ impl Playlist {
     /// Returns the song if found, None otherwise.
     pub fn navigate_to(&self, name: &str) -> Option<Arc<Song>> {
         let idx = self.songs.iter().position(|s| s == name)?;
+        let song = self.registry.get(name).ok()?;
         *self.position.write() = idx;
-        self.registry.get(name).ok()
+        Some(song)
     }
 
     /// Returns the underlying song registry.

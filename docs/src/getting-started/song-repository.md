@@ -26,6 +26,9 @@ Supported audio formats: WAV, FLAC, MP3, OGG, AAC, M4A, AIFF.
 A song is defined in a `song.yaml` file:
 
 ```yaml
+# Identifies this file as a song configuration.
+kind: song
+
 # The name of the song. This name is primarily used when constructing
 # playlists for mtrack.
 name: The Song Name

@@ -48,22 +48,8 @@ pub fn validate_player_config(yaml: &str) -> Result<(), Vec<String>> {
     std::fs::write(tmp.path(), yaml)
         .map_err(|e| vec![format!("Failed to write temp file: {}", e)])?;
 
-    config::Player::deserialize(tmp.path()).map_err(|e| vec![format!("{}", e)])?;
-
-    Ok(())
-}
-
-/// Validates a playlist config YAML string by attempting to deserialize it.
-pub fn validate_playlist(yaml: &str) -> Result<(), Vec<String>> {
-    let tmp = tempfile::Builder::new()
-        .suffix(".yaml")
-        .tempfile()
-        .map_err(|e| vec![format!("Failed to create temp file: {}", e)])?;
-
-    std::fs::write(tmp.path(), yaml)
-        .map_err(|e| vec![format!("Failed to write temp file: {}", e)])?;
-
-    config::Playlist::deserialize(tmp.path()).map_err(|e| vec![format!("{}", e)])?;
+    let player = config::Player::deserialize(tmp.path()).map_err(|e| vec![format!("{}", e)])?;
+    player.validate()?;
 
     Ok(())
 }
@@ -110,12 +96,6 @@ show "test" {
     fn test_validate_light_show_invalid() {
         let content = "this is not valid DSL content {{{";
         assert!(validate_light_show(content).is_err());
-    }
-
-    #[test]
-    fn test_validate_playlist_valid() {
-        let yaml = "songs:\n  - song1\n  - song2\n";
-        assert!(validate_playlist(yaml).is_ok());
     }
 
     #[test]

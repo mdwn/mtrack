@@ -90,6 +90,7 @@ impl SafePath {
     /// Rejects empty strings, "..", and path separators.
     pub fn validate_name(name: &str) -> Result<(), SafePathError> {
         if name.is_empty()
+            || name == "."
             || name.contains("..")
             || name.contains('/')
             || name.contains('\\')

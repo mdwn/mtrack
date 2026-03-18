@@ -53,6 +53,23 @@ impl AudioConfig {
         &self.track_mappings
     }
 
+    /// Validates the audio configuration within a profile.
+    pub fn validate(&self, errors: &mut Vec<String>) {
+        if let Err(audio_errors) = self.audio.validate() {
+            errors.extend(audio_errors);
+        }
+        for (name, channels) in &self.track_mappings {
+            for &ch in channels {
+                if ch == 0 {
+                    errors.push(format!(
+                        "track_mappings '{}': channel 0 is invalid (channels are 1-indexed)",
+                        name
+                    ));
+                }
+            }
+        }
+    }
+
     /// Returns the track mappings as a HashMap (for runtime use where order doesn't matter).
     pub fn track_mappings_hash(&self) -> HashMap<String, Vec<u16>> {
         self.track_mappings
@@ -67,6 +84,10 @@ impl AudioConfig {
 /// no constraint) is used.
 #[derive(Deserialize, Serialize, Clone)]
 pub struct Profile {
+    /// Identifies this config file as a hardware profile.
+    #[serde(default = "default_hardware_profile_kind")]
+    kind: super::kind::ConfigKind,
+
     /// Optional hostname restriction.
     hostname: Option<String>,
 
@@ -96,6 +117,7 @@ impl Profile {
         dmx: Option<Dmx>,
     ) -> Self {
         Profile {
+            kind: super::kind::ConfigKind::HardwareProfile,
             hostname,
             audio,
             midi,
@@ -149,6 +171,35 @@ impl Profile {
     pub(super) fn set_controllers(&mut self, controllers: Vec<Controller>) {
         self.controllers = controllers;
     }
+
+    /// Validates the profile configuration for semantic issues.
+    pub fn validate(&self) -> Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+
+        if let Some(ref audio_config) = self.audio {
+            audio_config.validate(&mut errors);
+        }
+        if let Some(ref midi) = self.midi {
+            if let Err(midi_errors) = midi.validate() {
+                errors.extend(midi_errors);
+            }
+        }
+        if let Some(ref dmx) = self.dmx {
+            if let Err(dmx_errors) = dmx.validate() {
+                errors.extend(dmx_errors);
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+}
+
+fn default_hardware_profile_kind() -> super::kind::ConfigKind {
+    super::kind::ConfigKind::HardwareProfile
 }
 
 /// Filters profiles by hostname. Returns profiles that either have no hostname

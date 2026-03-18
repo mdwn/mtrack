@@ -1,0 +1,8 @@
+# Fallback: minimal audio-only setup (no hostname restriction, matches any host)
+kind: hardware_profile
+audio:
+  device: "Built-in Audio"
+  track_mappings:
+    click: [1]
+    backing-track-l: [1]
+    backing-track-r: [2]

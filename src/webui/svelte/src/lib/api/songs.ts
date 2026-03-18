@@ -42,11 +42,23 @@ export interface WaveformData {
   tracks: WaveformTrack[];
 }
 
-export async function fetchSongs(): Promise<SongSummary[]> {
+export interface SongFailure {
+  name: string;
+  error: string;
+  base_dir: string;
+  failed: true;
+}
+
+export interface FetchSongsResult {
+  songs: SongSummary[];
+  failures: SongFailure[];
+}
+
+export async function fetchSongs(): Promise<FetchSongsResult> {
   const res = await get("/songs");
   if (!res.ok) throw new Error(`Failed to fetch songs: ${res.status}`);
   const data = await res.json();
-  return data.songs;
+  return { songs: data.songs, failures: data.failures ?? [] };
 }
 
 export async function fetchSongConfig(name: string): Promise<string> {

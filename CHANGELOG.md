@@ -218,9 +218,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the configuration is mutated, enabling real-time UI updates without polling.
 - **Config round-trip test**: A serialize/deserialize round-trip test validates that
   `config::Player` survives YAML serialization via `yaml-rust2` without data loss.
-
-### Changed
-
 - Config store checksums use SHA-256 (via `sha2` crate) instead of hand-rolled FNV-1a for
   clarity and industry-standard collision resistance.
 - `config::Player` and `config::TrackMappings` now derive `Clone`, enabling the config store

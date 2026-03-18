@@ -95,7 +95,7 @@
     try {
       loading = true;
       error = "";
-      songs = await fetchSongs();
+      songs = (await fetchSongs()).songs;
     } catch (e: any) {
       error = e.message;
     } finally {

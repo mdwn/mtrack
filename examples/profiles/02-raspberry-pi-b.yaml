@@ -1,0 +1,15 @@
+# Raspberry Pi B: Audio + MIDI, no DMX
+kind: hardware_profile
+hostname: raspberry-pi-b
+audio:
+  device: "Behringer WING"
+  sample_rate: 48000
+  track_mappings:
+    click: [11]
+    cue: [12]
+    backing-track-l: [13]
+    backing-track-r: [14]
+    keys: [15, 16]
+midi:
+  device: "USB MIDI Interface"
+  playback_delay: 200ms

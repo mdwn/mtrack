@@ -206,6 +206,12 @@ pub(super) async fn put_config_audio(
         _ => None,
     };
 
+    if let Some(ref audio) = audio {
+        if let Err(errors) = audio.validate() {
+            return (StatusCode::BAD_REQUEST, Json(json!({"errors": errors}))).into_response();
+        }
+    }
+
     let store = match require_config_store(&state) {
         Ok(s) => s,
         Err(e) => return e,
@@ -253,6 +259,12 @@ pub(super) async fn put_config_midi(
         _ => None,
     };
 
+    if let Some(ref midi) = midi {
+        if let Err(errors) = midi.validate() {
+            return (StatusCode::BAD_REQUEST, Json(json!({"errors": errors}))).into_response();
+        }
+    }
+
     let store = match require_config_store(&state) {
         Ok(s) => s,
         Err(e) => return e,
@@ -299,6 +311,12 @@ pub(super) async fn put_config_dmx(
         },
         _ => None,
     };
+
+    if let Some(ref dmx) = dmx {
+        if let Err(errors) = dmx.validate() {
+            return (StatusCode::BAD_REQUEST, Json(json!({"errors": errors}))).into_response();
+        }
+    }
 
     let store = match require_config_store(&state) {
         Ok(s) => s,
@@ -460,6 +478,10 @@ pub(super) async fn post_config_profile(
         }
     };
 
+    if let Err(errors) = profile.validate() {
+        return (StatusCode::BAD_REQUEST, Json(json!({"errors": errors}))).into_response();
+    }
+
     let store = match require_config_store(&state) {
         Ok(s) => s,
         Err(e) => return e,
@@ -513,6 +535,10 @@ pub(super) async fn put_config_profile(
                 .into_response()
         }
     };
+
+    if let Err(errors) = profile.validate() {
+        return (StatusCode::BAD_REQUEST, Json(json!({"errors": errors}))).into_response();
+    }
 
     let store = match require_config_store(&state) {
         Ok(s) => s,

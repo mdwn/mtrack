@@ -59,3 +59,6 @@ pub use self::song::{LightShow, LightingShow, MidiPlayback, Song};
 pub use self::statusevents::StatusEvents;
 pub use self::store::ConfigStore;
 pub use self::track::Track;
+
+mod kind;
+pub use self::kind::{peek_kind, ConfigKind};

@@ -169,9 +169,9 @@
 
   async function loadTrackNames() {
     try {
-      const songs = await fetchSongs();
+      const result = await fetchSongs();
       const names = new SvelteSet<string>();
-      for (const song of songs) {
+      for (const song of result.songs) {
         for (const track of song.tracks) {
           names.add(track);
         }

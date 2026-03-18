@@ -5,6 +5,7 @@
 Playlists are YAML files that define an ordered list of songs to play:
 
 ```yaml
+kind: playlist
 songs:
 - Sound check
 - A really cool song

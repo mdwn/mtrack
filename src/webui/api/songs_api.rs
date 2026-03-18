@@ -85,7 +85,30 @@ pub(super) async fn get_songs(State(state): State<WebUiState>) -> impl IntoRespo
             })
         })
         .collect();
-    (StatusCode::OK, Json(json!({"songs": song_list}))).into_response()
+    let failure_list: Vec<serde_json::Value> = all_songs
+        .failures()
+        .iter()
+        .map(|f| {
+            let base_dir = f
+                .base_path()
+                .strip_prefix(&state.songs_path)
+                .unwrap_or(std::path::Path::new(""))
+                .to_string_lossy()
+                .to_string();
+            json!({
+                "name": f.name(),
+                "error": f.error(),
+                "base_dir": base_dir,
+                "failed": true,
+            })
+        })
+        .collect();
+
+    (
+        StatusCode::OK,
+        Json(json!({"songs": song_list, "failures": failure_list})),
+    )
+        .into_response()
 }
 
 /// GET /api/songs/:name — returns a single song's config YAML.
@@ -139,11 +162,47 @@ pub(super) async fn get_song(
                 }
             }
         }
-        Err(_) => (
-            StatusCode::NOT_FOUND,
-            Json(json!({"error": format!("Song not found: {}", name)})),
-        )
-            .into_response(),
+        Err(_) => {
+            // Check if this is a failed song — serve its raw config for editing.
+            if let Some(failure) = all_songs.failures().iter().find(|f| f.name() == name) {
+                let config_path = failure.base_path().join("song.yaml");
+                let alt_config_path = failure.base_path().join("song.yml");
+                let yaml_path = if config_path.exists() {
+                    Some(config_path)
+                } else if alt_config_path.exists() {
+                    Some(alt_config_path)
+                } else {
+                    None
+                };
+
+                return match yaml_path {
+                    Some(path) => match std::fs::read_to_string(&path) {
+                        Ok(content) => (
+                            StatusCode::OK,
+                            [("content-type", "text/yaml; charset=utf-8")],
+                            content,
+                        )
+                            .into_response(),
+                        Err(e) => (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(json!({"error": format!("Failed to read song config: {}", e)})),
+                        )
+                            .into_response(),
+                    },
+                    None => (
+                        StatusCode::NOT_FOUND,
+                        Json(json!({"error": format!("No config file found for failed song: {}", name)})),
+                    )
+                        .into_response(),
+                };
+            }
+
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": format!("Song not found: {}", name)})),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -493,6 +552,12 @@ pub(super) async fn post_song(
         Err(e) => return e.into_response(),
     };
 
+    // Validate the YAML before creating any directories so we don't leave
+    // orphan directories on disk when validation fails.
+    if let Err(e) = validate_song_body(&body) {
+        return e;
+    }
+
     let song_dir = match SafePath::create_dir_nested(&name, &root) {
         Ok(p) => p,
         Err(e) => return e.into_response(),
@@ -503,34 +568,6 @@ pub(super) async fn post_song(
         return (
             StatusCode::CONFLICT,
             Json(json!({"error": format!("Song already exists: {}", name)})),
-        )
-            .into_response();
-    }
-
-    // Validate the YAML can be deserialized as a song config.
-    // codeql[rust/path-injection] tmp.path() is an OS-generated tempfile path, not from user input.
-    // The user-controlled `body` is written as file *content*, not used as a path.
-    let tmp = match tempfile::Builder::new().suffix(".yaml").tempfile() {
-        Ok(t) => t,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("Failed to create temp file: {}", e)})),
-            )
-                .into_response();
-        }
-    };
-    if let Err(e) = std::fs::write(tmp.path(), &body) {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to write temp file: {}", e)})),
-        )
-            .into_response();
-    }
-    if let Err(e) = config::Song::deserialize(tmp.path()) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"errors": [format!("{}", e)]})),
         )
             .into_response();
     }
@@ -568,34 +605,20 @@ pub(super) async fn put_song(
 
     let config_path = song_dir.join_filename("song.yaml");
 
-    // Validate the YAML can be deserialized as a song config
-    let tmp = match tempfile::Builder::new().suffix(".yaml").tempfile() {
-        Ok(t) => t,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("Failed to create temp file: {}", e)})),
-            )
-                .into_response();
-        }
-    };
-    if let Err(e) = std::fs::write(tmp.path(), &body) {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to write temp file: {}", e)})),
-        )
-            .into_response();
-    }
-    if let Err(e) = config::Song::deserialize(tmp.path()) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"errors": [format!("{}", e)]})),
-        )
-            .into_response();
+    // Validate the YAML before writing to disk.
+    if let Err(e) = validate_song_body(&body) {
+        return e;
     }
 
     match config_io::atomic_write(&config_path, &body) {
-        Ok(()) => (StatusCode::OK, Json(json!({"status": "saved"}))).into_response(),
+        Ok(()) => {
+            state.player.reload_songs(
+                &state.songs_path,
+                state.playlists_dir.as_deref(),
+                state.legacy_playlist_path.as_deref(),
+            );
+            (StatusCode::OK, Json(json!({"status": "saved"}))).into_response()
+        }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e}))).into_response(),
     }
 }
@@ -721,6 +744,40 @@ pub(super) async fn upload_tracks_multipart(
 
 use super::super::safe_path::{SafePath, VerifiedRoot};
 
+/// Deserializes and validates a song config YAML body. Returns the parsed
+/// config on success, or an error response with all validation issues.
+#[allow(clippy::result_large_err)]
+fn validate_song_body(body: &str) -> Result<config::Song, axum::response::Response> {
+    let tmp = tempfile::Builder::new()
+        .suffix(".yaml")
+        .tempfile()
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("Failed to create temp file: {}", e)})),
+            )
+                .into_response()
+        })?;
+    std::fs::write(tmp.path(), body).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("Failed to write temp file: {}", e)})),
+        )
+            .into_response()
+    })?;
+    let song_config = config::Song::deserialize(tmp.path()).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"errors": [format!("{}", e)]})),
+        )
+            .into_response()
+    })?;
+    if let Err(errors) = song_config.validate() {
+        return Err((StatusCode::BAD_REQUEST, Json(json!({"errors": errors}))).into_response());
+    }
+    Ok(song_config)
+}
+
 /// Resolves an existing song directory by checking the player's registry first
 /// (handles nested paths like `artist/album/song`), then falling back to a
 /// direct path join. Returns an error response if the song isn't found.
@@ -734,6 +791,16 @@ pub(super) fn resolve_song_dir(
     // Check the registry first — handles songs in nested subdirectories.
     if let Some(song) = player.get_all_songs_playlist().get_song(name) {
         if let Ok(safe) = SafePath::resolve(song.base_path(), &root) {
+            if safe.is_dir() {
+                return Ok(safe);
+            }
+        }
+    }
+
+    // Check failures list — the song exists on disk but failed to load.
+    let all_songs = player.songs();
+    if let Some(failure) = all_songs.failures().iter().find(|f| f.name() == name) {
+        if let Ok(safe) = SafePath::resolve(failure.base_path(), &root) {
             if safe.is_dir() {
                 return Ok(safe);
             }

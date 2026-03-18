@@ -189,6 +189,52 @@ impl Audio {
         self.resampler = Some(resampler);
         self
     }
+
+    /// Validates the audio configuration for semantic issues.
+    pub fn validate(&self) -> Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+
+        if self.device.trim().is_empty() {
+            errors.push("audio device must not be empty".to_string());
+        }
+        if let Some(rate) = self.sample_rate {
+            if rate == 0 {
+                errors.push("audio sample_rate must be greater than 0".to_string());
+            }
+        }
+        if let Some(bits) = self.bits_per_sample {
+            if bits == 0 {
+                errors.push("audio bits_per_sample must be greater than 0".to_string());
+            }
+        }
+        if let Some(ref fmt) = self.sample_format {
+            if SampleFormat::from_str(fmt).is_err() {
+                errors.push(format!(
+                    "audio sample_format '{}' is invalid (expected 'int' or 'float')",
+                    fmt
+                ));
+            }
+        }
+        if let Some(ref delay) = self.playback_delay {
+            if DurationString::from_string(delay.clone()).is_err() {
+                errors.push(format!(
+                    "audio playback_delay '{}' is not a valid duration",
+                    delay
+                ));
+            }
+        }
+        if let Some(size) = self.buffer_size {
+            if size == 0 {
+                errors.push("audio buffer_size must be greater than 0".to_string());
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
 }
 
 #[cfg(test)]

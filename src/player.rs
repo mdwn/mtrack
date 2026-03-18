@@ -836,12 +836,25 @@ impl Player {
         song_name: &str,
         start_time: Duration,
     ) -> Result<Option<Arc<Song>>, Box<dyn Error>> {
+        // Reject playback if hardware hasn't finished initializing.
+        if !*self.init_done_tx.borrow() {
+            return Err("Hardware is still initializing".into());
+        }
+
+        let mut join = self.join.lock().await;
+        if join.is_some() {
+            info!("Player is already playing a song.");
+            return Ok(None);
+        }
+
         let all_songs = self.get_all_songs_playlist();
         if all_songs.navigate_to(song_name).is_none() {
             return Err(format!("Song '{}' not found", song_name).into());
         }
         *self.active_playlist.write() = "all_songs".to_string();
-        self.play_from(start_time).await
+
+        // Start playback with the lock already held.
+        self.play_from_locked(start_time, &mut join).await
     }
 
     /// Plays the song at the current position. Returns the song if playback started successfully.
@@ -859,14 +872,28 @@ impl Player {
         &self,
         start_time: Duration,
     ) -> Result<Option<Arc<Song>>, Box<dyn Error>> {
-        let _enter = self.span.enter();
-
         // Reject playback if hardware hasn't finished initializing.
         if !*self.init_done_tx.borrow() {
             return Err("Hardware is still initializing".into());
         }
 
         let mut join = self.join.lock().await;
+        if join.is_some() {
+            info!("Player is already playing a song.");
+            return Ok(None);
+        }
+
+        self.play_from_locked(start_time, &mut join).await
+    }
+
+    /// Inner implementation of play_from that assumes the caller already holds the join lock
+    /// and has verified it is `None` (no active playback).
+    async fn play_from_locked(
+        &self,
+        start_time: Duration,
+        join: &mut Option<PlayHandles>,
+    ) -> Result<Option<Arc<Song>>, Box<dyn Error>> {
+        let _enter = self.span.enter();
 
         let playlist = self.get_playlist().clone();
         let song = match playlist.current() {
@@ -876,13 +903,6 @@ impl Player {
                 return Ok(None);
             }
         };
-        if join.is_some() {
-            info!(
-                current_song = song.name(),
-                "Player is already playing a song."
-            );
-            return Ok(None);
-        }
 
         // Load samples for this song (if not already loaded)
         self.load_song_samples(&song);
@@ -1146,33 +1166,31 @@ impl Player {
         }
     }
 
-    /// If a song is currently playing, returns `Some(current_song)` so the caller can short-circuit.
-    /// Returns `None` if the player is idle (or the playlist is empty).
-    async fn if_playing_then_current_song(&self) -> Option<Arc<Song>> {
-        let join = self.join.lock().await;
-        if join.is_some() {
-            self.get_playlist().current()
-        } else {
-            None
-        }
-    }
-
     /// Navigates the playlist using the given function, returning the current song
     /// if the player is active. Returns `None` if the playlist is empty.
+    ///
+    /// Holds the join lock across the entire operation to prevent a concurrent
+    /// `play_from()` from starting between the is-playing check and the
+    /// playlist position advance.
     async fn navigate<F>(&self, action: &str, nav_fn: F) -> Option<Arc<Song>>
     where
         F: FnOnce(Option<Arc<dyn midi::Device>>, Arc<Playlist>) -> Option<Arc<Song>>,
     {
-        if let Some(current) = self.if_playing_then_current_song().await {
-            info!(
-                current_song = current.name(),
-                "Can't go to {}, player is active.", action
-            );
-            return Some(current);
+        let join = self.join.lock().await;
+        if join.is_some() {
+            let current = self.get_playlist().current();
+            if let Some(ref song) = current {
+                info!(
+                    current_song = song.name(),
+                    "Can't go to {}, player is active.", action
+                );
+            }
+            return current;
         }
         let playlist = self.get_playlist();
         let midi_device = self.hardware.read().midi_device.clone();
         let song = nav_fn(midi_device, playlist)?;
+        drop(join);
         self.load_song_samples(&song);
         Some(song)
     }
@@ -1199,24 +1217,12 @@ impl Player {
             }
         };
 
-        if self
-            .stop_run
-            .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
-            .is_err()
-        {
-            // Put the handles back since we're not stopping
-            *join = Some(play_handles);
-            info!("The previous stop is still processing.");
-            return None;
-        }
-
         let song = match self.get_playlist().current() {
             Some(song) => song,
             None => {
                 info!("Playlist is empty, nothing to stop.");
                 play_handles.cancel.cancel();
                 drop(play_handles.join);
-                self.stop_run.store(false, Ordering::Relaxed);
                 return None;
             }
         };
@@ -1231,11 +1237,6 @@ impl Player {
             *play_start_time = None;
         }
 
-        // Reset stop_run immediately so play() is available right away.
-        // The cleanup task won't touch join or play_start_time when cancelled,
-        // so there's no clobber risk from a new play() starting before it runs.
-        self.stop_run.store(false, Ordering::Relaxed);
-
         drop(play_handles.join);
         drop(join);
 
@@ -1246,12 +1247,17 @@ impl Player {
     /// doesn't exist in the map or if the player is currently playing.
     /// Switching to "all_songs" is session-only (not persisted to config).
     pub async fn switch_to_playlist(&self, name: &str) -> Result<(), String> {
-        if let Some(current) = self.if_playing_then_current_song().await {
-            info!(
-                current_song = current.name(),
-                "Can't switch to {}, player is active.", name
-            );
-            return Err("Cannot switch playlist while playing".to_string());
+        {
+            let join = self.join.lock().await;
+            if join.is_some() {
+                if let Some(current) = self.get_playlist().current() {
+                    info!(
+                        current_song = current.name(),
+                        "Can't switch to {}, player is active.", name
+                    );
+                }
+                return Err("Cannot switch playlist while playing".to_string());
+            }
         }
 
         // Validate the name exists.

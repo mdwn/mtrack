@@ -1,0 +1,7 @@
+# Lighting-only node: DMX only, no audio or MIDI
+kind: hardware_profile
+hostname: lighting-node
+dmx:
+  universes:
+    - universe: 1
+      name: light-show

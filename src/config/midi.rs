@@ -71,6 +71,29 @@ impl Midi {
     pub fn midi_to_dmx(&self) -> Vec<MidiToDmx> {
         self.midi_to_dmx.clone().unwrap_or_default()
     }
+
+    /// Validates the MIDI configuration for semantic issues.
+    pub fn validate(&self) -> Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+
+        if self.device.trim().is_empty() {
+            errors.push("midi device must not be empty".to_string());
+        }
+        if let Some(ref delay) = self.playback_delay {
+            if DurationString::from_string(delay.clone()).is_err() {
+                errors.push(format!(
+                    "midi playback_delay '{}' is not a valid duration",
+                    delay
+                ));
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
 }
 
 /// A YAML representation of the MIDI configuration.

@@ -24,9 +24,12 @@ use super::{
     track::Track,
 };
 
-/// A YAML represetnation of a song.
+/// A YAML representation of a song.
 #[derive(Deserialize, Serialize)]
 pub struct Song {
+    /// Identifies this config file as a song.
+    #[serde(default = "default_song_kind")]
+    kind: super::kind::ConfigKind,
     /// The name of the song.
     name: String,
     /// The MIDI event to emit when the song is selected.
@@ -64,6 +67,7 @@ impl Song {
         sample_triggers: Vec<SampleTrigger>,
     ) -> Song {
         Song {
+            kind: super::kind::ConfigKind::Song,
             name: name.to_string(),
             midi_event,
             midi_file,
@@ -97,6 +101,45 @@ impl Song {
         match file.write_all(serialized.as_bytes()) {
             Ok(_result) => Ok(()),
             Err(err) => Err(Box::new(err)),
+        }
+    }
+
+    /// Validates the song configuration for structural issues that can be
+    /// caught without filesystem access. Call this before writing to disk.
+    pub fn validate(&self) -> Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+
+        if self.name.trim().is_empty() {
+            errors.push("song name must not be empty".to_string());
+        }
+
+        for (i, track) in self.tracks.iter().enumerate() {
+            let label = if track.name().is_empty() {
+                format!("track[{}]", i)
+            } else {
+                format!("track \"{}\"", track.name())
+            };
+
+            if track.name().trim().is_empty() {
+                errors.push(format!("{}: name must not be empty", label));
+            }
+            if track.file().trim().is_empty() {
+                errors.push(format!("{}: file must not be empty", label));
+            }
+            if let Some(ch) = track.file_channel() {
+                if ch == 0 {
+                    errors.push(format!(
+                        "{}: file_channel must be 1 or greater (channels are 1-indexed)",
+                        label
+                    ));
+                }
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
         }
     }
 
@@ -249,6 +292,10 @@ impl LightingShow {
     pub fn file(&self) -> &str {
         &self.file
     }
+}
+
+fn default_song_kind() -> super::kind::ConfigKind {
+    super::kind::ConfigKind::Song
 }
 
 #[cfg(test)]
@@ -506,5 +553,100 @@ mod tests {
         let song = minimal_song();
         let result = song.save(Path::new("/nonexistent/directory/song.yaml"));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_ok_for_valid_song() {
+        let song = minimal_song();
+        assert!(song.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_empty_name() {
+        let song = Song::new(
+            "",
+            None,
+            None,
+            None,
+            None,
+            None,
+            vec![Track::new("t".to_string(), "t.wav", None)],
+            HashMap::new(),
+            vec![],
+        );
+        let errors = song.validate().unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("song name")));
+    }
+
+    #[test]
+    fn validate_rejects_file_channel_zero() {
+        let song = Song::new(
+            "test",
+            None,
+            None,
+            None,
+            None,
+            None,
+            vec![Track::new("t".to_string(), "t.wav", Some(0))],
+            HashMap::new(),
+            vec![],
+        );
+        let errors = song.validate().unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("file_channel")));
+    }
+
+    #[test]
+    fn validate_rejects_empty_track_name() {
+        let song = Song::new(
+            "test",
+            None,
+            None,
+            None,
+            None,
+            None,
+            vec![Track::new("".to_string(), "t.wav", None)],
+            HashMap::new(),
+            vec![],
+        );
+        let errors = song.validate().unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("name must not be empty")));
+    }
+
+    #[test]
+    fn validate_rejects_empty_track_file() {
+        let song = Song::new(
+            "test",
+            None,
+            None,
+            None,
+            None,
+            None,
+            vec![Track::new("t".to_string(), "", None)],
+            HashMap::new(),
+            vec![],
+        );
+        let errors = song.validate().unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("file must not be empty")));
+    }
+
+    #[test]
+    fn validate_collects_multiple_errors() {
+        let song = Song::new(
+            "",
+            None,
+            None,
+            None,
+            None,
+            None,
+            vec![Track::new("".to_string(), "", Some(0))],
+            HashMap::new(),
+            vec![],
+        );
+        let errors = song.validate().unwrap_err();
+        assert!(
+            errors.len() >= 4,
+            "Expected at least 4 errors, got: {:?}",
+            errors
+        );
     }
 }

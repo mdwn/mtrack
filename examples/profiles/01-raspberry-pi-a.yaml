@@ -1,0 +1,109 @@
+# Raspberry Pi A: Full setup with audio + MIDI + DMX
+kind: hardware_profile
+hostname: raspberry-pi-a
+audio:
+  device: "Behringer WING"
+  sample_rate: 48000
+  sample_format: int
+  bits_per_sample: 32
+  buffer_size: 1024
+  resampler: sinc
+  playback_delay: 500ms
+  track_mappings:
+    click: [1]
+    cue: [2]
+    backing-track-l: [3]
+    backing-track-r: [4]
+    keys: [5, 6]
+midi:
+  device: "Behringer WING"
+  playback_delay: 500ms
+  midi_to_dmx:
+    - midi_channel: 15
+      universe: light-show
+dmx:
+  dim_speed_modifier: 0.25
+  universes:
+    - universe: 1
+      name: light-show
+
+  # Lighting system configuration with tag-based group resolution
+  lighting:
+    # Current venue selection - determines which physical fixtures to use
+    current_venue: "main_stage"
+
+    # Simple inline fixture definitions (for basic cases)
+    fixtures:
+      emergency_light: "Emergency @ 1:500"
+
+    # Logical groups with role-based constraints
+    groups:
+      front_wash:
+        name: "front_wash"
+        constraints:
+          - AllOf: ["wash", "front"]
+          - MinCount: 4
+          - MaxCount: 8
+      back_wash:
+        name: "back_wash"
+        constraints:
+          - AllOf: ["wash", "back"]
+          - MinCount: 2
+          - MaxCount: 6
+      movers:
+        name: "movers"
+        constraints:
+          - AnyOf: ["moving_head", "spot"]
+          - Prefer: ["premium"]
+          - MinCount: 2
+          - MaxCount: 4
+      strobes:
+        name: "strobes"
+        constraints:
+          - AllOf: ["strobe"]
+          - MinCount: 1
+          - MaxCount: 3
+      all_lights:
+        name: "all_lights"
+        constraints:
+          - AnyOf: ["wash", "moving_head", "spot", "strobe", "beam"]
+          - MinCount: 1
+          - AllowEmpty: true
+      premium_lights:
+        name: "premium_lights"
+        constraints:
+          - AllOf: ["premium"]
+          - MinCount: 1
+      rgb_lights:
+        name: "rgb_lights"
+        constraints:
+          - AllOf: ["rgb"]
+          - MinCount: 1
+      front_stage:
+        name: "front_stage"
+        constraints:
+          - AllOf: ["front"]
+          - MinCount: 2
+      back_stage:
+        name: "back_stage"
+        constraints:
+          - AllOf: ["back"]
+          - MinCount: 1
+      movers_with_fallback:
+        name: "movers_with_fallback"
+        constraints:
+          - AnyOf: ["moving_head", "spot"]
+          - MinCount: 1
+          - FallbackTo: "all_lights"
+
+    # Directory configuration for DSL files (auto-discovered)
+    directories:
+      fixture_types: "lighting/fixture_types"
+      venues: "lighting/venues"
+controllers:
+  - kind: grpc
+    port: 43234
+  - kind: osc
+    port: 43235
+    broadcast_addresses:
+      - 127.0.0.1:43236
