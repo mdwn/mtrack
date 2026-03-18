@@ -250,6 +250,9 @@
               class="playlist-item"
               onclick={() => pl.name !== "all_songs" && selectPlaylist(pl.name)}
               disabled={pl.name === "all_songs"}
+              title={pl.name === "all_songs"
+                ? "Auto-generated playlist containing all songs"
+                : undefined}
             >
               <span class="pl-name">{pl.name}</span>
               <span class="pl-count">{pl.song_count} songs</span>

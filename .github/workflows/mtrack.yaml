@@ -125,6 +125,35 @@ jobs:
     - name: Type check
       run: devbox run -- bash -c 'cd src/webui/svelte && npm run check'
 
+  # Run Playwright E2E tests against mock backend.
+  playwright:
+    name: Playwright E2E tests
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+    - uses: jetify-com/devbox-install-action@v0.14.0
+      with:
+        enable-cache: 'true'
+    - uses: actions/cache@v5
+      with:
+        path: src/webui/svelte/node_modules
+        key: node-modules-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+        restore-keys: node-modules-${{ runner.os }}-
+    - name: Install and generate
+      run: devbox run -- bash -c 'cd src/webui/svelte && npm ci && buf generate'
+    - name: Install Playwright browsers
+      run: devbox run -- bash -c 'cd src/webui/svelte && npx playwright install chromium'
+    - name: Install Playwright system deps
+      run: cd src/webui/svelte && npx playwright install-deps chromium
+    - name: Run Playwright tests
+      run: devbox run -- bash -c 'cd src/webui/svelte && npx playwright test --project=mock'
+    - uses: actions/upload-artifact@v4
+      if: ${{ !cancelled() }}
+      with:
+        name: playwright-report
+        path: src/webui/svelte/playwright-report/
+        retention-days: 14
+
   # Make sure all code has an appropriate license header.
   licensure:
     name: Ensure license headers

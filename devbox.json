@@ -1,21 +1,21 @@
 {
   "$schema": "https://raw.githubusercontent.com/jetify-com/devbox/main/.schema/devbox.schema.json",
   "packages": {
-    "rustup":                                                                     "1.28.2",
-    "nodejs":                                                                     "22.22.0",
-    "pkg-config":                                                                 "0.29.2",
+    "rustup":     "1.28.2",
+    "nodejs":     "22.22.0",
+    "pkg-config": "0.29.2",
     "udev": {
       "version":   "252.5",
-      "platforms":  ["x86_64-linux", "aarch64-linux"]
+      "platforms": ["x86_64-linux", "aarch64-linux"]
     },
-    "protobuf":                                                                   "33.5",
-    "buf":                                                                        "1.64.0",
-    "cargo-tarpaulin":                                                            "0.35.1",
-    "licensure":                                                                  "0.5.1",
-    "mdbook":                                                                     "0.4.44",
+    "protobuf":        "33.5",
+    "buf":             "1.64.0",
+    "cargo-tarpaulin": "0.35.1",
+    "licensure":       "0.5.1",
+    "mdbook":          "0.4.44",
     "github:NixOS/nixpkgs/80d901ec0377e19ac3f7bb8c035201e2e098cc97#alsa-lib.dev": {
       "version":   "",
-      "platforms":  ["x86_64-linux", "aarch64-linux"]
+      "platforms": ["x86_64-linux", "aarch64-linux"]
     },
     "openssl": {
       "version": "3.6.0",
