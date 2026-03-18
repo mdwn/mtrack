@@ -232,7 +232,7 @@ pub async fn start(
     player.set_state_tx(state_tx);
 
     // Start the unified web server (dashboard + gRPC-Web + REST API)
-    let webui_handle = {
+    let _webui_handle = {
         // Create a broadcast channel for the web UI (shared by dashboard WS and DMX file watcher)
         let (broadcast_tx, _) = tokio::sync::broadcast::channel::<String>(128);
 
@@ -272,19 +272,18 @@ pub async fn start(
         .first()
         .map(|p| p.controllers().to_vec())
         .unwrap_or_default();
-    let controller = crate::controller::Controller::new(controllers, player.clone())?;
+    player.start_controllers(controllers);
 
     if tui_mode {
-        crate::tui::run(player, controller, state_rx).await?;
+        crate::tui::run(player.clone(), state_rx).await?;
     } else {
-        controller.join().await?;
-        // If no controllers are configured (e.g. zero-config start), keep
-        // the process alive so the web UI remains accessible.
-        if webui_handle.is_some() {
-            info!("No controllers configured; web UI is running. Press Ctrl+C to stop.");
-            std::future::pending::<()>().await;
-        }
+        // Keep the process alive for the web UI and controllers.
+        // Controllers run as background tasks; Ctrl+C terminates the process.
+        info!("mtrack is running. Press Ctrl+C to stop.");
+        std::future::pending::<()>().await;
     }
+
+    player.shutdown_controllers();
 
     Ok(())
 }

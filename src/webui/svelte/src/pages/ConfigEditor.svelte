@@ -79,8 +79,8 @@
   let midiDevices = $state<MidiDeviceInfo[]>([]);
   let trackNames = $state<string[]>([]);
 
-  // Snapshot of the profile at load time for dirty tracking
-  let savedSnapshot = $state("");
+  // Suppresses the URL-based auto-select effect after programmatic navigation.
+  let suppressAutoSelect = false;
 
   // File-based profiles mode
   let profilesDir = $state<string | null>(null);
@@ -194,7 +194,7 @@
       selectedFilename = filename;
       selectedIndex = 0;
       profiles = [data.profile as any];
-      savedSnapshot = JSON.stringify(data.profile);
+
       updateConfigUrl(filename.replace(/\.\w+$/, ""));
     } catch (e: any) {
       error = e.message;
@@ -209,7 +209,7 @@
     selectedIndex = 0;
     selectedFilename = name;
     isNew = true;
-    savedSnapshot = JSON.stringify(empty);
+
     dirty = false;
     saveMsg = "";
   }
@@ -220,7 +220,7 @@
     saveMsg = "";
     try {
       await saveProfileFile(selectedFilename, profiles[selectedIndex]);
-      savedSnapshot = JSON.stringify(profiles[selectedIndex]);
+
       isNew = false;
       dirty = false;
       saveMsg = "Saved";
@@ -254,6 +254,7 @@
 
   function goBackFile() {
     if (dirty && !confirm("Discard unsaved changes?")) return;
+    suppressAutoSelect = true;
     selectedIndex = null;
     selectedFilename = null;
     isNew = false;
@@ -267,7 +268,7 @@
   function selectProfile(index: number) {
     selectedIndex = index;
     isNew = false;
-    savedSnapshot = JSON.stringify(profiles[index]);
+
     dirty = false;
     saveMsg = "";
     const name = profiles[index]?.hostname || `Profile #${index}`;
@@ -279,13 +280,14 @@
     profiles.push(empty);
     selectedIndex = profiles.length - 1;
     isNew = true;
-    savedSnapshot = JSON.stringify(empty);
+
     dirty = false;
     saveMsg = "";
   }
 
   function goBack() {
     if (dirty && !confirm("Discard unsaved changes?")) return;
+    suppressAutoSelect = true;
     selectedIndex = null;
     isNew = false;
     dirty = false;
@@ -295,7 +297,7 @@
 
   function onProfileChange() {
     if (selectedIndex !== null) {
-      dirty = JSON.stringify(profiles[selectedIndex]) !== savedSnapshot;
+      dirty = true;
     }
   }
 
@@ -319,9 +321,6 @@
       }
       applySnapshot(snapshot);
       isNew = false;
-      if (selectedIndex < profiles.length) {
-        savedSnapshot = JSON.stringify(profiles[selectedIndex]);
-      }
       dirty = false;
       saveMsg = "Saved";
       setTimeout(() => (saveMsg = ""), 2000);
@@ -407,9 +406,26 @@
     loadTrackNames();
   });
 
-  // Auto-select profile from URL after data loads
+  // Sync selection state with URL (deep-linking, browser nav, nav bar clicks).
   $effect(() => {
-    if (loading || !routeProfile) return;
+    if (loading) return;
+    if (suppressAutoSelect) {
+      // goBack/goBackFile set this flag — consume it and skip this cycle.
+      // The URL will catch up on the next hash change.
+      suppressAutoSelect = false;
+      return;
+    }
+    if (!routeProfile) {
+      // URL is #/config with no profile — clear selection to show list view.
+      if (selectedIndex !== null || selectedFilename !== null) {
+        selectedIndex = null;
+        selectedFilename = null;
+        isNew = false;
+        dirty = false;
+        saveMsg = "";
+      }
+      return;
+    }
     if (profilesDir) {
       // File-based: match by filename (without extension)
       const match = profileFiles.find(
@@ -424,7 +440,7 @@
         (p: any) =>
           (p.hostname || `Profile #${profiles.indexOf(p)}`) === routeProfile,
       );
-      if (idx >= 0 && selectedIndex !== idx) {
+      if (idx >= 0) {
         selectProfile(idx);
       }
     }

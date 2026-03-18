@@ -39,18 +39,18 @@
   });
 
   function addController(kind: string) {
-    if (kind === "grpc") {
-      controllers.push({ kind: "grpc" });
-    } else if (kind === "osc") {
-      controllers.push({ kind: "osc" });
-    }
-    controllerKeys.push(nextId++);
+    const newCtrl: any = { kind };
+    controllers = [...controllers, newCtrl];
+    controllerKeys = [...controllerKeys, nextId++];
     onchange();
   }
 
   function removeController(i: number) {
-    controllers.splice(i, 1);
-    controllerKeys.splice(i, 1);
+    controllers = [...controllers.slice(0, i), ...controllers.slice(i + 1)];
+    controllerKeys = [
+      ...controllerKeys.slice(0, i),
+      ...controllerKeys.slice(i + 1),
+    ];
     onchange();
   }
 

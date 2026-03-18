@@ -50,6 +50,7 @@ pub(crate) async fn lock_guard(
         || path.ends_with("/lock")
         || path.ends_with("/validate")
         || path.ends_with("/activate")
+        || path.ends_with("/controllers/restart")
     {
         return next.run(request).await;
     }
@@ -146,6 +147,7 @@ pub fn router() -> Router<WebUiState> {
                 .delete(profiles::delete_profile_file),
         )
         .route("/status", get(status::get_status))
+        .route("/controllers/restart", post(status::restart_controllers))
         .route("/lock", get(status::get_lock).put(status::put_lock))
         .route("/devices/audio", get(devices::get_audio_devices))
         .route("/devices/midi", get(devices::get_midi_devices))

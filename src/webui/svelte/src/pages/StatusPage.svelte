@@ -18,6 +18,13 @@
     name: string | null;
   }
 
+  interface ControllerStatus {
+    kind: string;
+    status: string;
+    detail: string | null;
+    error: string | null;
+  }
+
   interface StatusResponse {
     build: {
       version: string;
@@ -33,6 +40,7 @@
       dmx: SubsystemStatus;
       trigger: SubsystemStatus;
     };
+    controllers: ControllerStatus[];
   }
 
   let data = $state<StatusResponse | null>(null);
@@ -67,6 +75,25 @@
     if (status === "connected") return "Connected";
     if (status === "initializing") return "Initializing";
     return "Not Connected";
+  }
+
+  let restarting = $state(false);
+
+  async function restartControllers() {
+    restarting = true;
+    try {
+      const res = await fetch("/api/controllers/restart", { method: "POST" });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        error = body?.error ?? `Restart failed (${res.status})`;
+      } else {
+        await fetchStatus();
+      }
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : String(e);
+    } finally {
+      restarting = false;
+    }
   }
 
   const subsystems: { key: keyof StatusResponse["hardware"]; label: string }[] =
@@ -137,6 +164,45 @@
             </div>
           {/each}
         </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header-row">
+          <h3>Controllers</h3>
+          <button
+            class="refresh-btn"
+            onclick={restartControllers}
+            disabled={restarting}
+          >
+            {restarting ? "Restarting..." : "Restart"}
+          </button>
+        </div>
+        {#if data.controllers.length === 0}
+          <div class="empty-note">No controllers configured</div>
+        {:else}
+          <div class="subsystem-list">
+            {#each data.controllers as ctrl, i (`${i}:${ctrl.kind}`)}
+              <div class="subsystem-row">
+                <div
+                  class="status-dot"
+                  style="background: {ctrl.status === 'running'
+                    ? 'var(--green)'
+                    : 'var(--red)'}"
+                ></div>
+                <span class="subsystem-label">{ctrl.kind.toUpperCase()}</span>
+                <span class="subsystem-status"
+                  >{ctrl.status === "running" ? "Running" : "Error"}</span
+                >
+                {#if ctrl.detail}
+                  <span class="subsystem-name">{ctrl.detail}</span>
+                {/if}
+              </div>
+              {#if ctrl.error}
+                <div class="controller-error">{ctrl.error}</div>
+              {/if}
+            {/each}
+          </div>
+        {/if}
       </div>
     </div>
   {/if}
@@ -265,5 +331,30 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     max-width: 300px;
+  }
+  .card-header-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+  }
+  .card-header-row h3 {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .empty-note {
+    font-size: 14px;
+    color: var(--text-dim);
+  }
+  .controller-error {
+    font-size: 13px;
+    color: var(--red);
+    padding-left: 18px;
+    margin-top: -4px;
+    margin-bottom: 4px;
   }
 </style>

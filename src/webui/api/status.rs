@@ -18,9 +18,10 @@ use serde_json::json;
 use super::super::server::WebUiState;
 use crate::build_info;
 
-/// GET /api/status — returns build info and hardware status.
+/// GET /api/status — returns build info, hardware status, and controller status.
 pub(super) async fn get_status(State(state): State<WebUiState>) -> impl IntoResponse {
     let hardware = state.player.hardware_status();
+    let controllers = state.player.controller_statuses();
     Json(json!({
         "build": {
             "version": build_info::VERSION,
@@ -28,8 +29,37 @@ pub(super) async fn get_status(State(state): State<WebUiState>) -> impl IntoResp
             "build_time": build_info::BUILD_TIME,
         },
         "hardware": hardware,
+        "controllers": controllers,
         "locked": state.player.is_locked(),
     }))
+}
+
+/// POST /api/controllers/restart — restarts all controllers from current config.
+///
+/// Rejected during playback to avoid disrupting active control surfaces.
+pub(super) async fn restart_controllers(State(state): State<WebUiState>) -> impl IntoResponse {
+    if state.player.is_playing().await {
+        return (
+            axum::http::StatusCode::CONFLICT,
+            Json(json!({"error": "Cannot restart controllers during playback"})),
+        )
+            .into_response();
+    }
+    match state.player.reload_controllers().await {
+        Ok(()) => {
+            let statuses = state.player.controller_statuses();
+            (
+                axum::http::StatusCode::OK,
+                Json(json!({"status": "restarted", "controllers": statuses})),
+            )
+                .into_response()
+        }
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("{}", e)})),
+        )
+            .into_response(),
+    }
 }
 
 /// GET /api/lock — returns the current lock state.
