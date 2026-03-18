@@ -24,7 +24,7 @@
     <div class="effects-empty">No active effects</div>
   {:else}
     <ul class="effects-list">
-      {#each $effectsStore as effect (effect)}
+      {#each $effectsStore as effect, i (`${i}:${effect}`)}
         <li>{effect}</li>
       {/each}
     </ul>

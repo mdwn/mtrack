@@ -1919,9 +1919,7 @@ mod test {
 
     #[tokio::test]
     async fn get_songs_includes_base_dir() {
-        let (mut state, _dir) = test_state();
-        // Canonicalize songs_path so strip_prefix works with canonicalized song base_paths.
-        state.songs_path = state.songs_path.canonicalize().unwrap();
+        let (state, _dir) = test_state();
 
         // Create a song on disk so that it appears in the response.
         let song_dir = state.songs_path.join("BaseDirSong");
@@ -1968,8 +1966,7 @@ mod test {
 
     #[tokio::test]
     async fn get_songs_includes_lighting_files() {
-        let (mut state, _dir) = test_state();
-        state.songs_path = state.songs_path.canonicalize().unwrap();
+        let (state, _dir) = test_state();
 
         // Create a song with a DSL lighting show.
         let song_dir = state.songs_path.join("LitSong");
@@ -2021,8 +2018,7 @@ mod test {
 
     #[tokio::test]
     async fn get_songs_includes_midi_dmx_files() {
-        let (mut state, _dir) = test_state();
-        state.songs_path = state.songs_path.canonicalize().unwrap();
+        let (state, _dir) = test_state();
 
         // Create a song with a legacy dmx_*.mid light show.
         let song_dir = state.songs_path.join("LegacySong");
