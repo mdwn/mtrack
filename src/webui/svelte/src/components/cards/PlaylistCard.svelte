@@ -44,7 +44,7 @@
     {/if}
   </div>
   <ul class="playlist-songs">
-    {#each $playbackStore.playlist_songs as song, i (song + i)}
+    {#each $playbackStore.playlist_songs as song, i (`${i}:${song}`)}
       <li class:current={i === $playbackStore.playlist_position}>{song}</li>
     {/each}
   </ul>

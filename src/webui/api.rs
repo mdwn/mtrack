@@ -338,7 +338,7 @@ pub(super) mod test_helpers {
         let (_state_tx, state_rx) =
             watch::channel(std::sync::Arc::new(crate::state::StateSnapshot::default()));
 
-        let state = WebUiState {
+        let state = WebUiState::new(super::super::server::WebUiStateParams {
             player,
             state_rx,
             broadcast_tx,
@@ -348,8 +348,7 @@ pub(super) mod test_helpers {
             legacy_playlist_path: Some(playlist_path),
             profiles_dir: None,
             waveform_cache: super::super::state::new_waveform_cache(),
-            calibration: std::sync::Arc::new(parking_lot::Mutex::new(None)),
-        };
+        });
 
         (state, dir)
     }

@@ -111,7 +111,7 @@
     <div class="empty">No tracks</div>
   {:else}
     <div class="tracks-list">
-      {#each $playbackStore.tracks as track (track.name)}
+      {#each $playbackStore.tracks as track, i (`${i}:${track.name}`)}
         <div class="track-row">
           <div class="track-info">
             <span class="track-name">{track.name}</span>

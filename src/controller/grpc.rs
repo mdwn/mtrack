@@ -195,6 +195,9 @@ impl PlayerService for PlayerServer {
         &self,
         _: Request<PreviousRequest>,
     ) -> Result<Response<PreviousResponse>, Status> {
+        if self.player.is_playing().await {
+            return Err(Status::failed_precondition("can't navigate while playing"));
+        }
         let current_song = self
             .player
             .get_playlist()
@@ -207,8 +210,8 @@ impl PlayerService for PlayerServer {
             .ok_or_else(|| Status::failed_precondition("playlist is empty"))?;
 
         if current_song.name() == previous_song.name() {
-            return Err(Status::failed_precondition(
-                "can't move to previous song while playing",
+            return Err(Status::out_of_range(
+                "already at the beginning of the playlist",
             ));
         }
 
@@ -218,6 +221,9 @@ impl PlayerService for PlayerServer {
     }
 
     async fn next(&self, _: Request<NextRequest>) -> Result<Response<NextResponse>, Status> {
+        if self.player.is_playing().await {
+            return Err(Status::failed_precondition("can't navigate while playing"));
+        }
         let current_song = self
             .player
             .get_playlist()
@@ -230,9 +236,7 @@ impl PlayerService for PlayerServer {
             .ok_or_else(|| Status::failed_precondition("playlist is empty"))?;
 
         if current_song.name() == next_song.name() {
-            return Err(Status::failed_precondition(
-                "can't move to next song while playing",
-            ));
+            return Err(Status::out_of_range("already at the end of the playlist"));
         }
 
         Ok(Response::new(NextResponse {

@@ -242,18 +242,18 @@ pub async fn start(
 
         let profiles_dir = player_config.profiles_dir_resolved(player_path);
 
-        let webui_state = crate::webui::server::WebUiState {
-            player: player.clone(),
-            state_rx: state_rx.clone(),
-            broadcast_tx,
-            config_path: player_path.to_path_buf(),
-            songs_path: player_config.songs(player_path),
-            playlists_dir: playlists_dir.clone(),
-            legacy_playlist_path: Some(legacy_playlist_path.clone()),
-            profiles_dir,
-            waveform_cache: crate::webui::state::new_waveform_cache(),
-            calibration: std::sync::Arc::new(parking_lot::Mutex::new(None)),
-        };
+        let webui_state =
+            crate::webui::server::WebUiState::new(crate::webui::server::WebUiStateParams {
+                player: player.clone(),
+                state_rx: state_rx.clone(),
+                broadcast_tx,
+                config_path: player_path.to_path_buf(),
+                songs_path: player_config.songs(player_path),
+                playlists_dir: playlists_dir.clone(),
+                legacy_playlist_path: Some(legacy_playlist_path.clone()),
+                profiles_dir,
+                waveform_cache: crate::webui::state::new_waveform_cache(),
+            });
 
         match crate::webui::server::start(webui_state, web_config.address.clone(), web_config.port)
             .await

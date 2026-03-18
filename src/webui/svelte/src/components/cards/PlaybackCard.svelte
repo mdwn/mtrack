@@ -13,6 +13,7 @@
      *
      * -->
 <script lang="ts">
+  import { Code, ConnectError } from "@connectrpc/connect";
   import { playbackStore } from "../../lib/ws/stores";
   import { playerClient } from "../../lib/grpc/client";
   import { formatMs } from "../../lib/util/format";
@@ -53,8 +54,12 @@
     try {
       await playerClient.next({});
     } catch (e) {
-      console.error("next failed:", e);
-      showError("Next failed");
+      if (e instanceof ConnectError && e.code === Code.OutOfRange) {
+        // Already at end of playlist — not an error.
+      } else {
+        console.error("next failed:", e);
+        showError("Next failed");
+      }
     } finally {
       loading = false;
     }
@@ -65,8 +70,12 @@
     try {
       await playerClient.previous({});
     } catch (e) {
-      console.error("previous failed:", e);
-      showError("Previous failed");
+      if (e instanceof ConnectError && e.code === Code.OutOfRange) {
+        // Already at beginning of playlist — not an error.
+      } else {
+        console.error("previous failed:", e);
+        showError("Previous failed");
+      }
     } finally {
       loading = false;
     }
@@ -95,6 +104,16 @@
         break;
     }
   }
+
+  let canPrev = $derived(
+    $playbackStore.playlist_songs.length > 0 &&
+      $playbackStore.playlist_position > 0,
+  );
+  let canNext = $derived(
+    $playbackStore.playlist_songs.length > 0 &&
+      $playbackStore.playlist_position <
+        $playbackStore.playlist_songs.length - 1,
+  );
 
   let progressPct = $derived(
     $playbackStore.song_duration_ms > 0
@@ -140,7 +159,7 @@
       <button
         class="btn"
         onclick={previous}
-        disabled={$playbackStore.is_playing || loading}
+        disabled={$playbackStore.is_playing || loading || !canPrev}
         title="Previous (Left Arrow)">Prev</button
       >
       {#if $playbackStore.is_playing}
@@ -161,7 +180,7 @@
       <button
         class="btn"
         onclick={next}
-        disabled={$playbackStore.is_playing || loading}
+        disabled={$playbackStore.is_playing || loading || !canNext}
         title="Next (Right Arrow)">Next</button
       >
     </div>

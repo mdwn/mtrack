@@ -60,27 +60,68 @@ impl Default for WebConfig {
 }
 
 /// Shared state for the web UI.
+///
+/// All path fields are canonicalized at construction time so that path
+/// comparisons (e.g. `strip_prefix`) work consistently regardless of how
+/// the paths were originally specified in the config file.
 #[derive(Clone)]
 pub struct WebUiState {
     pub player: Arc<Player>,
     pub state_rx: watch::Receiver<Arc<StateSnapshot>>,
     pub broadcast_tx: broadcast::Sender<String>,
-    /// Resolved path to the player config file (mtrack.yaml).
+    /// Canonicalized path to the player config file (mtrack.yaml).
     pub config_path: PathBuf,
-    /// Resolved path to the songs directory.
+    /// Canonicalized path to the songs directory.
     /// codeql[rust/path-injection] Set once at startup from the player config file; not user-controlled.
     pub songs_path: PathBuf,
-    /// Resolved path to the playlists directory (if configured).
+    /// Canonicalized path to the playlists directory (if configured).
     pub playlists_dir: Option<PathBuf>,
-    /// Resolved path to the legacy playlist file (for backward compat).
+    /// Canonicalized path to the legacy playlist file (for backward compat).
     pub legacy_playlist_path: Option<PathBuf>,
     /// Shared waveform cache (sent to each WebSocket client on connect).
     pub waveform_cache: ws_state::WaveformCache,
-    /// Resolved path to the profiles directory (if configured).
+    /// Canonicalized path to the profiles directory (if configured).
     pub profiles_dir: Option<PathBuf>,
     /// Active calibration session (at most one at a time).
     pub(crate) calibration:
         Arc<parking_lot::Mutex<Option<super::api::devices::CalibrationSession>>>,
+}
+
+/// Canonicalizes a path, falling back to the original if canonicalization fails
+/// (e.g. the path does not exist yet).
+fn canonicalize_or_keep(path: PathBuf) -> PathBuf {
+    path.canonicalize().unwrap_or(path)
+}
+
+/// Parameters for constructing a [`WebUiState`].
+pub struct WebUiStateParams {
+    pub player: Arc<Player>,
+    pub state_rx: watch::Receiver<Arc<StateSnapshot>>,
+    pub broadcast_tx: broadcast::Sender<String>,
+    pub config_path: PathBuf,
+    pub songs_path: PathBuf,
+    pub playlists_dir: Option<PathBuf>,
+    pub legacy_playlist_path: Option<PathBuf>,
+    pub profiles_dir: Option<PathBuf>,
+    pub waveform_cache: ws_state::WaveformCache,
+}
+
+impl WebUiState {
+    /// Creates a new WebUiState, canonicalizing all path fields.
+    pub fn new(params: WebUiStateParams) -> Self {
+        WebUiState {
+            player: params.player,
+            state_rx: params.state_rx,
+            broadcast_tx: params.broadcast_tx,
+            config_path: canonicalize_or_keep(params.config_path),
+            songs_path: canonicalize_or_keep(params.songs_path),
+            playlists_dir: params.playlists_dir.map(canonicalize_or_keep),
+            legacy_playlist_path: params.legacy_playlist_path.map(canonicalize_or_keep),
+            profiles_dir: params.profiles_dir.map(canonicalize_or_keep),
+            waveform_cache: params.waveform_cache,
+            calibration: Arc::new(parking_lot::Mutex::new(None)),
+        }
+    }
 }
 
 /// Handle to a running web UI server, returned so callers can shut it down.
@@ -527,7 +568,7 @@ mod test {
         let (_state_tx, state_rx) =
             watch::channel(Arc::new(crate::state::StateSnapshot::default()));
 
-        let state = WebUiState {
+        let state = WebUiState::new(WebUiStateParams {
             player,
             state_rx,
             broadcast_tx,
@@ -537,8 +578,7 @@ mod test {
             legacy_playlist_path: Some(playlist_path),
             profiles_dir: None,
             waveform_cache: ws_state::new_waveform_cache(),
-            calibration: Arc::new(parking_lot::Mutex::new(None)),
-        };
+        });
 
         (state, dir)
     }
