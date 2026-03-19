@@ -53,11 +53,13 @@ test.describe("Profile Editor", () => {
     await expect(page.locator(".tab.active")).toContainText("MIDI");
   });
 
-  test("MIDI tab shows enable toggle when disabled", async ({ page }) => {
+  test("MIDI tab shows enable button and enables on click", async ({
+    page,
+  }) => {
     await page.locator(".tab", { hasText: "MIDI" }).click();
-    // MIDI is not configured in the mock, so it should show the enable checkbox
-    const enableToggle = page.locator(".enable-toggle");
-    await expect(enableToggle).toBeVisible();
+    // Section is not enabled yet — click the Enable button
+    await page.getByRole("button", { name: "Enable MIDI" }).click();
+    await expect(page.locator("#midi-device")).toBeVisible();
   });
 
   test("switching to Controllers tab works", async ({ page }) => {
@@ -106,5 +108,44 @@ test.describe("Profile Editor", () => {
     // Should include at least the mock devices
     const count = await options.count();
     expect(count).toBeGreaterThanOrEqual(2);
+  });
+
+  test("disabled section shows enable prompt", async ({ page }) => {
+    await page.locator(".tab", { hasText: "MIDI" }).click();
+    // Should show the enable prompt, not the section fields
+    await expect(
+      page.getByRole("button", { name: "Enable MIDI" }),
+    ).toBeVisible();
+    await expect(page.locator("#midi-device")).not.toBeVisible();
+  });
+
+  test("enabling section shows fields and tab dot", async ({ page }) => {
+    await page.locator(".tab", { hasText: "MIDI" }).click();
+    await page.getByRole("button", { name: "Enable MIDI" }).click();
+    // Fields should now be visible
+    await expect(page.locator("#midi-device")).toBeVisible();
+    // Tab should have the green dot indicator
+    const midiTab = page.locator(".tab", { hasText: "MIDI" });
+    await expect(midiTab.locator(".tab-dot")).toBeVisible();
+  });
+
+  test("Remove Section button removes config and returns to enable prompt", async ({
+    page,
+  }) => {
+    await page.locator(".tab", { hasText: "MIDI" }).click();
+    await page.getByRole("button", { name: "Enable MIDI" }).click();
+    await expect(page.locator("#midi-device")).toBeVisible();
+    // Click Remove MIDI
+    await page.getByRole("button", { name: "Remove MIDI" }).click();
+    // Confirm in the dialog
+    await page
+      .locator('[role="dialog"]')
+      .getByRole("button", { name: "Confirm" })
+      .click();
+    // Should be back to the enable prompt
+    await expect(
+      page.getByRole("button", { name: "Enable MIDI" }),
+    ).toBeVisible();
+    await expect(page.locator("#midi-device")).not.toBeVisible();
   });
 });

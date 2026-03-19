@@ -20,6 +20,7 @@
   import PlaylistEditor from "./pages/PlaylistEditor.svelte";
   import StatusPage from "./pages/StatusPage.svelte";
   import NotFound from "./pages/NotFound.svelte";
+  import ConfirmDialog from "./components/ConfirmDialog.svelte";
   import { playbackStore } from "./lib/ws/stores";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
@@ -88,6 +89,8 @@
     <NotFound />
   {/if}
 </main>
+
+<ConfirmDialog />
 
 <style>
   .app-main {

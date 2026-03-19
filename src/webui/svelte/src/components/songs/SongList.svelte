@@ -24,6 +24,7 @@
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
+  import { showConfirm, showAlert } from "../../lib/dialog.svelte";
   import CreateSongDialog from "./CreateSongDialog.svelte";
   import ImportSongs from "./ImportSongs.svelte";
   import Waveform from "./Waveform.svelte";
@@ -149,17 +150,22 @@
 
   async function handleDelete(e: MouseEvent, name: string) {
     e.stopPropagation();
-    if (!confirm(get(t)("songs.confirmDelete", { values: { name } }))) return;
+    if (
+      !(await showConfirm(get(t)("songs.confirmDelete", { values: { name } }), {
+        danger: true,
+      }))
+    )
+      return;
     try {
       const res = await deleteSong(name);
       if (!res.ok) {
         const data = await res.json().catch(() => null);
-        alert(data?.error ?? `Delete failed (${res.status})`);
+        await showAlert(data?.error ?? `Delete failed (${res.status})`);
         return;
       }
       load();
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Delete failed");
+      await showAlert(err instanceof Error ? err.message : "Delete failed");
     }
   }
 </script>

@@ -99,42 +99,33 @@ test.describe("Tooltips", () => {
   });
 
   test("midi section has tooltips", async ({ page }) => {
+    // Click the tab, then enable the section
     await page.locator(".tab", { hasText: "MIDI" }).click();
-    // Need to enable MIDI first if not enabled
-    const checkbox = page.locator(".enable-toggle input[type='checkbox']");
-    if (!(await checkbox.isChecked())) {
-      await checkbox.check();
-    }
+    await page.getByRole("button", { name: "Enable MIDI" }).click();
     const tooltipIcons = page.locator(".tooltip-icon");
     await expect(tooltipIcons.first()).toBeVisible();
   });
 
   test("dmx section has tooltips", async ({ page }) => {
+    // Click the tab, then enable the section
     await page.locator(".tab", { hasText: "Lighting" }).click();
-    const checkbox = page.locator(".enable-toggle input[type='checkbox']");
-    if (!(await checkbox.isChecked())) {
-      await checkbox.check();
-    }
+    await page.getByRole("button", { name: "Enable Lighting" }).click();
     const tooltipIcons = page.locator(".tooltip-icon");
     await expect(tooltipIcons.first()).toBeVisible();
   });
 
   test("trigger section has tooltips", async ({ page }) => {
+    // Click the tab, then enable the section
     await page.locator(".tab", { hasText: "Triggers" }).click();
-    const checkbox = page.locator(".enable-toggle input[type='checkbox']");
-    if (!(await checkbox.isChecked())) {
-      await checkbox.check();
-    }
+    await page.getByRole("button", { name: "Enable Triggers" }).click();
     const tooltipIcons = page.locator(".tooltip-icon");
     await expect(tooltipIcons.first()).toBeVisible();
   });
 
   test("controllers section has tooltips", async ({ page }) => {
+    // Click the tab, then enable the section
     await page.locator(".tab", { hasText: "Controllers" }).click();
-    const checkbox = page.locator(".enable-toggle input[type='checkbox']");
-    if (!(await checkbox.isChecked())) {
-      await checkbox.check();
-    }
+    await page.getByRole("button", { name: "Enable Controllers" }).click();
     const tooltipIcons = page.locator(".tooltip-icon");
     await expect(tooltipIcons.first()).toBeVisible();
   });

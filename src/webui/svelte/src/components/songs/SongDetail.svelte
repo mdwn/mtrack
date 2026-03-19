@@ -29,6 +29,7 @@
     type SongSummary,
     type WaveformTrack,
   } from "../../lib/api/songs";
+  import { showConfirm } from "../../lib/dialog.svelte";
   import { playbackStore } from "../../lib/ws/stores";
   import FileBrowser from "./FileBrowser.svelte";
   import FileUpload from "./FileUpload.svelte";
@@ -386,11 +387,11 @@
     if (conflicts.length > 0) {
       const names = conflicts.map((f) => f.name).join(", ");
       if (
-        !confirm(
+        !(await showConfirm(
           get(t)("songs.detail.confirmReplace", {
             values: { count: conflicts.length, names },
           }),
-        )
+        ))
       )
         return;
     }
@@ -440,11 +441,11 @@
     const existingNames = songFiles.map((f) => f.name);
     if (existingNames.includes(files[0].name)) {
       if (
-        !confirm(
+        !(await showConfirm(
           get(t)("songs.detail.confirmMidiReplace", {
             values: { name: files[0].name },
           }),
-        )
+        ))
       )
         return;
     }

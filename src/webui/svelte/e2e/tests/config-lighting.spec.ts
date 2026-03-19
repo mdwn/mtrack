@@ -19,43 +19,28 @@ test.describe("Profile Editor - Lighting/DMX Section", () => {
     await page.goto("/#/config");
     await page.locator(".profile-row", { hasText: "test-host" }).click();
     await expect(page.getByRole("button", { name: "Back" })).toBeVisible();
+    // Click the Lighting tab, then enable the section
     await page.locator(".tab", { hasText: "Lighting" }).click();
     await expect(page.locator(".tab.active")).toContainText("Lighting");
+    await page.getByRole("button", { name: "Enable Lighting" }).click();
   });
 
-  test("shows Enable Lighting checkbox unchecked", async ({ page }) => {
-    const checkbox = page.locator(".enable-toggle input[type='checkbox']");
-    await expect(checkbox).not.toBeChecked();
-  });
-
-  test("enabling lighting shows DMX fields", async ({ page }) => {
-    const checkbox = page.locator(".enable-toggle input[type='checkbox']");
-    await checkbox.check();
-
+  test("lighting tab shows DMX fields", async ({ page }) => {
     // Should show DMX universe management
     await expect(page.getByRole("button", { name: "Add" })).toBeVisible();
   });
 
   test("adding a DMX universe creates a row", async ({ page }) => {
-    const checkbox = page.locator(".enable-toggle input[type='checkbox']");
-    await checkbox.check();
-
     await page.getByRole("button", { name: "Add" }).click();
     await expect(page.locator(".universe-row")).toBeVisible();
   });
 
   test("DMX universe row is visible after adding", async ({ page }) => {
-    const checkbox = page.locator(".enable-toggle input[type='checkbox']");
-    await checkbox.check();
-
     await page.getByRole("button", { name: "Add" }).click();
     await expect(page.locator(".universe-row")).toBeVisible();
   });
 
-  test("shows OLA port input when enabled", async ({ page }) => {
-    const checkbox = page.locator(".enable-toggle input[type='checkbox']");
-    await checkbox.check();
-
+  test("shows OLA port input", async ({ page }) => {
     await expect(page.locator("#dmx-ola-port")).toBeVisible();
   });
 });

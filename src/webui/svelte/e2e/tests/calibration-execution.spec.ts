@@ -22,8 +22,8 @@ test.describe("Calibration Execution", () => {
     await expect(page.getByRole("button", { name: "Back" })).toBeVisible();
     await page.locator(".tab", { hasText: "Triggers" }).click();
 
-    const checkbox = page.locator(".enable-toggle input[type='checkbox']");
-    await checkbox.check();
+    // Enable the Triggers section, then add an audio input
+    await page.getByRole("button", { name: "Enable Triggers" }).click();
     await page.getByRole("button", { name: "+ Audio" }).click();
     await expect(page.locator(".input-card")).toBeVisible();
 

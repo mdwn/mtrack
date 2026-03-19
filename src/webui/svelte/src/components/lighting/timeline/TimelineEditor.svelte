@@ -37,6 +37,7 @@
   import StagePreview from "./StagePreview.svelte";
   import { t } from "svelte-i18n";
   import { tick } from "svelte";
+  import { showConfirm, showPrompt } from "../../../lib/dialog.svelte";
 
   interface Props {
     lightFile: LightFile;
@@ -351,14 +352,19 @@
   }
 
   // --- Show CRUD ---
-  function addShow() {
-    const name = prompt("Show name:");
+  async function addShow() {
+    const name = await showPrompt("Show name:");
     if (!name) return;
     onchange({ ...lightFile, shows: [...lightFile.shows, { name, cues: [] }] });
   }
 
-  function deleteShow(index: number) {
-    if (!confirm(`Delete show "${lightFile.shows[index].name}"?`)) return;
+  async function deleteShow(index: number) {
+    if (
+      !(await showConfirm(`Delete show "${lightFile.shows[index].name}"?`, {
+        danger: true,
+      }))
+    )
+      return;
     clearSelection();
     onchange({
       ...lightFile,
@@ -367,16 +373,21 @@
   }
 
   // --- Sequence CRUD ---
-  function addSequence() {
-    const name = prompt("Sequence name:");
+  async function addSequence() {
+    const name = await showPrompt("Sequence name:");
     if (!name) return;
     const newSeqs = [...lightFile.sequences, { name, cues: [] }];
     onchange({ ...lightFile, sequences: newSeqs });
     editingSequenceIndex = newSeqs.length - 1;
   }
 
-  function deleteSequence(index: number) {
-    if (!confirm(`Delete sequence "${lightFile.sequences[index].name}"?`))
+  async function deleteSequence(index: number) {
+    if (
+      !(await showConfirm(
+        `Delete sequence "${lightFile.sequences[index].name}"?`,
+        { danger: true },
+      ))
+    )
       return;
     editingSequenceIndex = null;
     onchange({
