@@ -16,6 +16,7 @@
   /* eslint-disable @typescript-eslint/no-explicit-any */
   import { t } from "svelte-i18n";
   import type { AudioDeviceInfo, MidiDeviceInfo } from "../../lib/api/config";
+  import Tooltip from "./Tooltip.svelte";
   import AudioSection from "./AudioSection.svelte";
   import MidiSection from "./MidiSection.svelte";
   import DmxSection from "./DmxSection.svelte";
@@ -90,7 +91,11 @@
 
 <div class="editor">
   <div class="field">
-    <label for="profile-hostname">{$t("profile.hostname")}</label>
+    <label for="profile-hostname"
+      >{$t("profile.hostname")}<Tooltip
+        text={$t("tooltips.profile.hostname")}
+      /></label
+    >
     <input
       id="profile-hostname"
       class="input"

@@ -27,6 +27,17 @@
   } from "../../lib/api/config";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
+  import Tooltip from "./Tooltip.svelte";
+
+  const constraintTooltipKeys: Record<string, string> = {
+    AllOf: "tooltips.lighting.allOf",
+    AnyOf: "tooltips.lighting.anyOf",
+    Prefer: "tooltips.lighting.prefer",
+    MinCount: "tooltips.lighting.minCount",
+    MaxCount: "tooltips.lighting.maxCount",
+    FallbackTo: "tooltips.lighting.fallbackTo",
+    AllowEmpty: "tooltips.lighting.allowEmpty",
+  };
 
   interface Props {
     lighting: any;
@@ -569,7 +580,11 @@
 
           <div class="subsection">
             <div class="subsection-header">
-              <span class="field-label">{$t("lighting.channelMap")}</span>
+              <span class="field-label"
+                >{$t("lighting.channelMap")}<Tooltip
+                  text={$t("tooltips.lighting.channelMap")}
+                /></span
+              >
               <button class="btn btn-sm" onclick={addFtChannel}
                 >{$t("lighting.addChannel")}</button
               >
@@ -598,7 +613,11 @@
 
           <div class="field-row-3">
             <div class="field">
-              <label for="ft-max-strobe">{$t("lighting.maxStrobeFreq")}</label>
+              <label for="ft-max-strobe"
+                >{$t("lighting.maxStrobeFreq")}<Tooltip
+                  text={$t("tooltips.lighting.maxStrobeFreq")}
+                /></label
+              >
               <input
                 id="ft-max-strobe"
                 class="input"
@@ -609,7 +628,11 @@
               />
             </div>
             <div class="field">
-              <label for="ft-min-strobe">{$t("lighting.minStrobeFreq")}</label>
+              <label for="ft-min-strobe"
+                >{$t("lighting.minStrobeFreq")}<Tooltip
+                  text={$t("tooltips.lighting.minStrobeFreq")}
+                /></label
+              >
               <input
                 id="ft-min-strobe"
                 class="input"
@@ -621,7 +644,9 @@
             </div>
             <div class="field">
               <label for="ft-strobe-offset"
-                >{$t("lighting.strobeDmxOffset")}</label
+                >{$t("lighting.strobeDmxOffset")}<Tooltip
+                  text={$t("tooltips.lighting.strobeDmxOffset")}
+                /></label
               >
               <input
                 id="ft-strobe-offset"
@@ -821,7 +846,11 @@
                     />
                   </div>
                   <div class="field compact-field" style="flex: 2;">
-                    <label for={`fix-tags-${i}`}>{$t("lighting.tags")}</label>
+                    <label for={`fix-tags-${i}`}
+                      >{$t("lighting.tags")}<Tooltip
+                        text={$t("tooltips.lighting.fixtureTags")}
+                      /></label
+                    >
                     <TagInput
                       tags={fix.tags}
                       onchange={(tags) => (editVenueFixtures[i].tags = tags)}
@@ -963,7 +992,11 @@
 
         <!-- Current Venue -->
         <div class="field">
-          <label for="lighting-venue">{$t("lighting.currentVenue")}</label>
+          <label for="lighting-venue"
+            >{$t("lighting.currentVenue")}<Tooltip
+              text={$t("tooltips.lighting.currentVenue")}
+            /></label
+          >
           {#if venueNames.length > 0}
             <select
               id="lighting-venue"
@@ -994,7 +1027,11 @@
         <!-- Inline Fixtures -->
         <div class="subsection">
           <div class="subsection-header">
-            <h4 class="subsection-title">{$t("lighting.inlineFixtures")}</h4>
+            <h4 class="subsection-title">
+              {$t("lighting.inlineFixtures")}<Tooltip
+                text={$t("tooltips.lighting.inlineFixtures")}
+              />
+            </h4>
             <button class="btn btn-sm" onclick={addInlineFixture}
               >{$t("common.add")}</button
             >
@@ -1035,7 +1072,11 @@
         <!-- Logical Groups -->
         <div class="subsection">
           <div class="subsection-header">
-            <h4 class="subsection-title">{$t("lighting.logicalGroups")}</h4>
+            <h4 class="subsection-title">
+              {$t("lighting.logicalGroups")}<Tooltip
+                text={$t("tooltips.lighting.logicalGroups")}
+              />
+            </h4>
             <button class="btn btn-sm" onclick={addGroup}
               >{$t("common.add")}</button
             >
@@ -1127,6 +1168,9 @@
                             <option value={ct.value}>{$t(ct.labelKey)}</option>
                           {/each}
                         </select>
+                        <Tooltip
+                          text={$t(constraintTooltipKeys[cType] ?? "")}
+                        />
 
                         {#if cType === "AllOf" || cType === "AnyOf" || cType === "Prefer"}
                           <div class="constraint-value">

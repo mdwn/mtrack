@@ -15,6 +15,7 @@
 <script lang="ts">
   /* eslint-disable @typescript-eslint/no-explicit-any */
   import { t } from "svelte-i18n";
+  import Tooltip from "./Tooltip.svelte";
 
   interface Props {
     dmx: any;
@@ -62,7 +63,10 @@
 <div class="section-fields">
   <div class="field-row-2">
     <div class="field">
-      <label for="dmx-ola-port">{$t("dmx.olaPort")}</label>
+      <label for="dmx-ola-port"
+        >{$t("dmx.olaPort")}
+        <Tooltip text={$t("tooltips.dmx.olaPort")} /></label
+      >
       <input
         id="dmx-ola-port"
         type="number"
@@ -77,7 +81,10 @@
     </div>
 
     <div class="field">
-      <label for="dmx-dim-speed">{$t("dmx.dimSpeedModifier")}</label>
+      <label for="dmx-dim-speed"
+        >{$t("dmx.dimSpeedModifier")}
+        <Tooltip text={$t("tooltips.dmx.dimSpeedModifier")} /></label
+      >
       <input
         id="dmx-dim-speed"
         type="number"
@@ -95,7 +102,10 @@
 
   <div class="field-row-2">
     <div class="field">
-      <label for="dmx-delay">{$t("dmx.playbackDelay")}</label>
+      <label for="dmx-delay"
+        >{$t("dmx.playbackDelay")}
+        <Tooltip text={$t("tooltips.dmx.playbackDelay")} /></label
+      >
       <input
         id="dmx-delay"
         type="text"
@@ -122,13 +132,17 @@
           }}
         />
         {$t("dmx.nullClient")}
+        <Tooltip text={$t("tooltips.dmx.nullClient")} />
       </label>
     </div>
   </div>
 
   <div class="field">
     <div class="field-header">
-      <span class="field-label">{$t("dmx.universes")}</span>
+      <span class="field-label"
+        >{$t("dmx.universes")}
+        <Tooltip text={$t("tooltips.dmx.universes")} /></span
+      >
       <button class="btn" onclick={addUniverse}>{$t("common.add")}</button>
     </div>
     {#each universes as u, i (u.universe)}
