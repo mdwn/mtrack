@@ -35,6 +35,8 @@
   import FilePicker from "./FilePicker.svelte";
   import TrackEditor from "./TrackEditor.svelte";
   import SongLightingEditor from "./SongLightingEditor.svelte";
+  import SamplesSection from "../config/SamplesSection.svelte";
+  import type { SampleBrowseTarget } from "../config/SamplesSection.svelte";
 
   interface TrackEntry {
     name: string;
@@ -42,9 +44,22 @@
     file_channel?: number;
   }
 
+  /* eslint-disable @typescript-eslint/no-explicit-any */
+
+  interface MidiEvent {
+    type: string;
+    channel?: number;
+    key?: number;
+    velocity?: number;
+    program?: number;
+    controller?: number;
+    value?: number;
+    bend?: number;
+  }
+
   interface Props {
     songName: string;
-    initialTab?: "tracks" | "midi" | "lighting" | "config";
+    initialTab?: "tracks" | "midi" | "samples" | "lighting" | "config";
   }
 
   let { songName, initialTab }: Props = $props();
@@ -71,7 +86,7 @@
   let lightingEditorRef: SongLightingEditor | undefined = $state();
 
   // Tab state
-  type TabKey = "tracks" | "midi" | "lighting" | "config";
+  type TabKey = "tracks" | "midi" | "samples" | "lighting" | "config";
   function getInitialTab(): TabKey {
     return initialTab ?? "tracks";
   }
@@ -86,15 +101,25 @@
   const tabs: { key: TabKey; labelKey: string }[] = [
     { key: "tracks", labelKey: "songs.detail.tabs.tracks" },
     { key: "midi", labelKey: "songs.detail.tabs.midi" },
+    { key: "samples", labelKey: "songs.detail.tabs.samples" },
     { key: "lighting", labelKey: "songs.detail.tabs.lighting" },
     { key: "config", labelKey: "songs.detail.tabs.config" },
   ];
+
+  // Per-song samples state
+  let songSamples = $state<Record<string, any>>({});
+  let songSamplesRef: SamplesSection | undefined = $state();
+  let sampleBrowseTarget = $state<SampleBrowseTarget | null>(null);
+
+  // MIDI event state
+  let midiEvent = $state<MidiEvent | null>(null);
 
   // File browser state
   type BrowseTarget =
     | { kind: "track"; index: number }
     | { kind: "midi" }
-    | { kind: "lighting" };
+    | { kind: "lighting" }
+    | { kind: "sample" };
   let browseTarget = $state<BrowseTarget | null>(null);
 
   function openBrowser(target: BrowseTarget) {
@@ -128,6 +153,9 @@
       for (const p of paths) {
         setLightingFile(p);
       }
+    } else if (browseTarget.kind === "sample") {
+      onSampleBrowseSelect(paths);
+      return;
     }
     browseTarget = null;
   }
@@ -137,6 +165,7 @@
     if (browseTarget.kind === "track") return ["audio"];
     if (browseTarget.kind === "midi") return ["midi"];
     if (browseTarget.kind === "lighting") return ["lighting"];
+    if (browseTarget.kind === "sample") return ["audio"];
     return [];
   });
 
@@ -156,16 +185,22 @@
           file: (t.file as string) ?? "",
           file_channel: t.file_channel as number | undefined,
         }));
+        midiEvent = (parsed.midi_event as MidiEvent) ?? null;
+        const s = parsed.samples;
+        songSamples =
+          s && typeof s === "object" ? (s as Record<string, any>) : {};
       }
     } catch {
       parsedConfig = null;
       tracks = [];
+      midiEvent = null;
+      songSamples = {};
     }
   }
 
   function buildYaml(): string {
     if (!parsedConfig) return editedYaml;
-    const updated = {
+    const updated: Record<string, unknown> = {
       ...parsedConfig,
       kind: "song",
       tracks: tracks.map((t) => {
@@ -176,6 +211,16 @@
         return entry;
       }),
     };
+    if (midiEvent) {
+      updated.midi_event = midiEvent;
+    } else {
+      delete updated.midi_event;
+    }
+    if (Object.keys(songSamples).length > 0) {
+      updated.samples = songSamples;
+    } else {
+      delete updated.samples;
+    }
     return YAML.stringify(updated, { lineWidth: 0 });
   }
 
@@ -251,6 +296,37 @@
       };
       editedYaml = buildYaml();
     }
+  }
+
+  function onMidiEventChange() {
+    editedYaml = buildYaml();
+  }
+
+  function addMidiEvent() {
+    midiEvent = { type: "program_change", channel: 1, program: 0 };
+    editedYaml = buildYaml();
+  }
+
+  function removeMidiEvent() {
+    midiEvent = null;
+    editedYaml = buildYaml();
+  }
+
+  function onSongSamplesChange() {
+    editedYaml = buildYaml();
+  }
+
+  function onSampleBrowse(target: SampleBrowseTarget) {
+    sampleBrowseTarget = target;
+    browseTarget = { kind: "sample" };
+  }
+
+  function onSampleBrowseSelect(paths: string[]) {
+    if (paths.length > 0 && sampleBrowseTarget && songSamplesRef) {
+      songSamplesRef.applyBrowseResult(sampleBrowseTarget, paths[0]);
+    }
+    sampleBrowseTarget = null;
+    browseTarget = null;
   }
 
   async function save() {
@@ -409,7 +485,8 @@
 
   function tabHasIndicator(key: TabKey): boolean {
     if (key === "tracks") return tracks.length > 0;
-    if (key === "midi") return !!midiFile;
+    if (key === "midi") return !!midiFile || !!midiEvent;
+    if (key === "samples") return Object.keys(songSamples).length > 0;
     if (key === "lighting") return song?.has_lighting ?? false;
     if (key === "config") return configDirty;
     return false;
@@ -560,6 +637,267 @@
             {uploadMsg}
           </div>
         {/if}
+
+        <!-- MIDI Event Editor -->
+        <div class="midi-event-section">
+          <div class="section-header">
+            <span class="section-label">{$t("songs.detail.midiEvent")}</span>
+            {#if !midiEvent}
+              <button class="btn btn-sm" onclick={addMidiEvent}
+                >{$t("songs.detail.addMidiEvent")}</button
+              >
+            {:else}
+              <button class="btn btn-sm btn-danger" onclick={removeMidiEvent}
+                >{$t("songs.detail.removeMidiEvent")}</button
+              >
+            {/if}
+          </div>
+          <p class="muted hint-text">{$t("songs.detail.midiEventHint")}</p>
+          {#if midiEvent}
+            <div class="midi-event-fields">
+              <div class="field">
+                <label for="midi-event-type"
+                  >{$t("songs.detail.midiEventType")}</label
+                >
+                <select
+                  id="midi-event-type"
+                  class="input"
+                  value={midiEvent.type}
+                  onchange={(e) => {
+                    const type = (e.target as HTMLSelectElement).value;
+                    if (type === "note_on" || type === "note_off") {
+                      midiEvent = {
+                        type,
+                        channel: midiEvent?.channel ?? 1,
+                        key: 60,
+                        velocity: 100,
+                      };
+                    } else if (type === "aftertouch") {
+                      midiEvent = {
+                        type,
+                        channel: midiEvent?.channel ?? 1,
+                        key: 60,
+                        velocity: 100,
+                      };
+                    } else if (type === "control_change") {
+                      midiEvent = {
+                        type,
+                        channel: midiEvent?.channel ?? 1,
+                        controller: 0,
+                        value: 0,
+                      };
+                    } else if (type === "program_change") {
+                      midiEvent = {
+                        type,
+                        channel: midiEvent?.channel ?? 1,
+                        program: 0,
+                      };
+                    } else if (type === "channel_aftertouch") {
+                      midiEvent = {
+                        type,
+                        channel: midiEvent?.channel ?? 1,
+                        velocity: 64,
+                      };
+                    } else if (type === "pitch_bend") {
+                      midiEvent = {
+                        type,
+                        channel: midiEvent?.channel ?? 1,
+                        bend: 8192,
+                      };
+                    }
+                    onMidiEventChange();
+                  }}
+                >
+                  <option value="note_on"
+                    >{$t("songs.detail.midiEventNoteOn")}</option
+                  >
+                  <option value="note_off"
+                    >{$t("songs.detail.midiEventNoteOff")}</option
+                  >
+                  <option value="aftertouch"
+                    >{$t("songs.detail.midiEventAftertouch")}</option
+                  >
+                  <option value="control_change"
+                    >{$t("songs.detail.midiEventControlChange")}</option
+                  >
+                  <option value="program_change"
+                    >{$t("songs.detail.midiEventProgramChange")}</option
+                  >
+                  <option value="channel_aftertouch"
+                    >{$t("songs.detail.midiEventChannelAftertouch")}</option
+                  >
+                  <option value="pitch_bend"
+                    >{$t("songs.detail.midiEventPitchBend")}</option
+                  >
+                </select>
+              </div>
+
+              <div class="midi-event-params">
+                <div class="field">
+                  <label for="midi-event-channel"
+                    >{$t("songs.detail.midiEventChannel")}</label
+                  >
+                  <input
+                    id="midi-event-channel"
+                    class="input"
+                    type="number"
+                    min="1"
+                    max="16"
+                    value={midiEvent.channel ?? 1}
+                    onchange={(e) => {
+                      midiEvent!.channel =
+                        parseInt((e.target as HTMLInputElement).value) || 1;
+                      onMidiEventChange();
+                    }}
+                  />
+                </div>
+
+                {#if midiEvent.type === "note_on" || midiEvent.type === "note_off" || midiEvent.type === "aftertouch"}
+                  <div class="field">
+                    <label for="midi-event-key"
+                      >{$t("songs.detail.midiEventKey")}</label
+                    >
+                    <input
+                      id="midi-event-key"
+                      class="input"
+                      type="number"
+                      min="0"
+                      max="127"
+                      value={midiEvent.key ?? 60}
+                      onchange={(e) => {
+                        midiEvent!.key =
+                          parseInt((e.target as HTMLInputElement).value) || 0;
+                        onMidiEventChange();
+                      }}
+                    />
+                  </div>
+                  <div class="field">
+                    <label for="midi-event-velocity"
+                      >{$t("songs.detail.midiEventVelocity")}</label
+                    >
+                    <input
+                      id="midi-event-velocity"
+                      class="input"
+                      type="number"
+                      min="0"
+                      max="127"
+                      value={midiEvent.velocity ?? 0}
+                      onchange={(e) => {
+                        midiEvent!.velocity =
+                          parseInt((e.target as HTMLInputElement).value) || 0;
+                        onMidiEventChange();
+                      }}
+                    />
+                  </div>
+                {:else if midiEvent.type === "control_change"}
+                  <div class="field">
+                    <label for="midi-event-controller"
+                      >{$t("songs.detail.midiEventController")}</label
+                    >
+                    <input
+                      id="midi-event-controller"
+                      class="input"
+                      type="number"
+                      min="0"
+                      max="127"
+                      value={midiEvent.controller ?? 0}
+                      onchange={(e) => {
+                        midiEvent!.controller =
+                          parseInt((e.target as HTMLInputElement).value) || 0;
+                        onMidiEventChange();
+                      }}
+                    />
+                  </div>
+                  <div class="field">
+                    <label for="midi-event-value"
+                      >{$t("songs.detail.midiEventValue")}</label
+                    >
+                    <input
+                      id="midi-event-value"
+                      class="input"
+                      type="number"
+                      min="0"
+                      max="127"
+                      value={midiEvent.value ?? 0}
+                      onchange={(e) => {
+                        midiEvent!.value =
+                          parseInt((e.target as HTMLInputElement).value) || 0;
+                        onMidiEventChange();
+                      }}
+                    />
+                  </div>
+                {:else if midiEvent.type === "program_change"}
+                  <div class="field">
+                    <label for="midi-event-program"
+                      >{$t("songs.detail.midiEventProgram")}</label
+                    >
+                    <input
+                      id="midi-event-program"
+                      class="input"
+                      type="number"
+                      min="0"
+                      max="127"
+                      value={midiEvent.program ?? 0}
+                      onchange={(e) => {
+                        midiEvent!.program =
+                          parseInt((e.target as HTMLInputElement).value) || 0;
+                        onMidiEventChange();
+                      }}
+                    />
+                  </div>
+                {:else if midiEvent.type === "channel_aftertouch"}
+                  <div class="field">
+                    <label for="midi-event-velocity"
+                      >{$t("songs.detail.midiEventVelocity")}</label
+                    >
+                    <input
+                      id="midi-event-velocity"
+                      class="input"
+                      type="number"
+                      min="0"
+                      max="127"
+                      value={midiEvent.velocity ?? 0}
+                      onchange={(e) => {
+                        midiEvent!.velocity =
+                          parseInt((e.target as HTMLInputElement).value) || 0;
+                        onMidiEventChange();
+                      }}
+                    />
+                  </div>
+                {:else if midiEvent.type === "pitch_bend"}
+                  <div class="field">
+                    <label for="midi-event-bend"
+                      >{$t("songs.detail.midiEventBend")}</label
+                    >
+                    <input
+                      id="midi-event-bend"
+                      class="input"
+                      type="number"
+                      min="0"
+                      max="16383"
+                      value={midiEvent.bend ?? 8192}
+                      onchange={(e) => {
+                        midiEvent!.bend =
+                          parseInt((e.target as HTMLInputElement).value) || 0;
+                        onMidiEventChange();
+                      }}
+                    />
+                  </div>
+                {/if}
+              </div>
+            </div>
+          {/if}
+        </div>
+      {:else if activeTab === "samples"}
+        {#if Object.keys(songSamples).length === 0}
+          <p class="muted">{$t("songs.detail.noSamples")}</p>
+        {/if}
+        <SamplesSection
+          bind:this={songSamplesRef}
+          bind:samples={songSamples}
+          onchange={onSongSamplesChange}
+          onbrowse={onSampleBrowse}
+        />
       {:else if activeTab === "lighting"}
         {#if song}
           <SongLightingEditor
@@ -774,6 +1112,50 @@
     color: var(--text-muted);
     font-size: 14px;
     margin-bottom: 12px;
+  }
+  .midi-event-section {
+    margin-top: 20px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+  }
+  .section-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 4px;
+  }
+  .section-label {
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-muted);
+  }
+  .hint-text {
+    font-size: 13px;
+    margin-bottom: 12px;
+  }
+  .midi-event-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .midi-event-params {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    gap: 10px;
+  }
+  .midi-event-fields .field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .midi-event-fields .field label {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-muted);
   }
   .feature-row {
     display: flex;
