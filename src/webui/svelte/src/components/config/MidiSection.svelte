@@ -15,6 +15,7 @@
 <script lang="ts">
   /* eslint-disable @typescript-eslint/no-explicit-any */
   import { t } from "svelte-i18n";
+  import Tooltip from "./Tooltip.svelte";
   import type { MidiDeviceInfo } from "../../lib/api/config";
 
   interface Props {
@@ -67,7 +68,10 @@
   </div>
 
   <div class="field">
-    <label for="midi-delay">{$t("midi.playbackDelay")}</label>
+    <label for="midi-delay"
+      >{$t("midi.playbackDelay")}
+      <Tooltip text={$t("tooltips.midi.playbackDelay")} /></label
+    >
     <input
       id="midi-delay"
       type="text"
@@ -94,6 +98,7 @@
         }}
       />
       {$t("midi.enableBeatClock")}
+      <Tooltip text={$t("tooltips.midi.beatClock")} />
     </label>
   </div>
 

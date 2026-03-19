@@ -15,6 +15,7 @@
 <script lang="ts">
   /* eslint-disable @typescript-eslint/no-explicit-any */
   import { t } from "svelte-i18n";
+  import Tooltip from "./Tooltip.svelte";
 
   interface Props {
     controllers: any[];
@@ -118,7 +119,10 @@
 
       {#if ctrl.kind === "grpc"}
         <div class="field">
-          <label for="ctrl-grpc-port-{i}">{$t("controllers.port")}</label>
+          <label for="ctrl-grpc-port-{i}"
+            >{$t("controllers.port")}
+            <Tooltip text={$t("tooltips.controllers.grpcPort")} /></label
+          >
           <input
             id="ctrl-grpc-port-{i}"
             type="number"
@@ -133,7 +137,10 @@
         </div>
       {:else if ctrl.kind === "osc"}
         <div class="field">
-          <label for="ctrl-osc-port-{i}">{$t("controllers.port")}</label>
+          <label for="ctrl-osc-port-{i}"
+            >{$t("controllers.port")}
+            <Tooltip text={$t("tooltips.controllers.oscPort")} /></label
+          >
           <input
             id="ctrl-osc-port-{i}"
             type="number"
@@ -150,7 +157,10 @@
         <div class="field">
           <div class="field-header">
             <span class="field-label"
-              >{$t("controllers.broadcastAddresses")}</span
+              >{$t("controllers.broadcastAddresses")}
+              <Tooltip
+                text={$t("tooltips.controllers.broadcastAddresses")}
+              /></span
             >
             <button class="btn" onclick={() => addBroadcastAddr(i)}
               >{$t("common.add")}</button

@@ -73,7 +73,9 @@ test.describe("Profile Editor - Triggers Section", () => {
     await checkbox.check();
 
     await page.getByRole("button", { name: "+ Audio" }).click();
-    await expect(page.getByRole("button", { name: "More" })).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "More", exact: true }),
+    ).toBeVisible();
   });
 
   test("More button reveals advanced settings", async ({ page }) => {
@@ -81,7 +83,7 @@ test.describe("Profile Editor - Triggers Section", () => {
     await checkbox.check();
 
     await page.getByRole("button", { name: "+ Audio" }).click();
-    await page.getByRole("button", { name: "More" }).click();
+    await page.getByRole("button", { name: "More", exact: true }).click();
 
     // Advanced fields should be visible
     await expect(page.locator('[id^="trigger-retrig-"]')).toBeVisible();
@@ -89,7 +91,9 @@ test.describe("Profile Editor - Triggers Section", () => {
     await expect(page.locator('[id^="trigger-vel-"]')).toBeVisible();
 
     // Button should now say "Less"
-    await expect(page.getByRole("button", { name: "Less" })).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Less", exact: true }),
+    ).toBeVisible();
   });
 
   test("removing input removes card", async ({ page }) => {

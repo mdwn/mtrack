@@ -15,6 +15,7 @@
 <script lang="ts">
   /* eslint-disable @typescript-eslint/no-explicit-any */
   import { t } from "svelte-i18n";
+  import Tooltip from "./Tooltip.svelte";
   import type { AudioDeviceInfo } from "../../lib/api/config";
 
   interface Props {
@@ -223,7 +224,10 @@
     </div>
 
     <div class="field">
-      <label for="audio-buffer-size">{$t("audio.bufferSize")}</label>
+      <label for="audio-buffer-size"
+        >{$t("audio.bufferSize")}
+        <Tooltip text={$t("tooltips.audio.bufferSize")} /></label
+      >
       <input
         id="audio-buffer-size"
         type="number"
@@ -240,7 +244,10 @@
 
   <div class="field-row-2">
     <div class="field">
-      <label for="audio-stream-buffer">{$t("audio.streamBufferSize")}</label>
+      <label for="audio-stream-buffer"
+        >{$t("audio.streamBufferSize")}
+        <Tooltip text={$t("tooltips.audio.streamBufferSize")} /></label
+      >
       <input
         id="audio-stream-buffer"
         type="text"
@@ -268,7 +275,10 @@
     </div>
 
     <div class="field">
-      <label for="audio-buffer-threads">{$t("audio.bufferThreads")}</label>
+      <label for="audio-buffer-threads"
+        >{$t("audio.bufferThreads")}
+        <Tooltip text={$t("tooltips.audio.bufferThreads")} /></label
+      >
       <input
         id="audio-buffer-threads"
         type="number"
@@ -285,7 +295,10 @@
 
   <div class="field-row-2">
     <div class="field">
-      <label for="audio-resampler">{$t("audio.resampler")}</label>
+      <label for="audio-resampler"
+        >{$t("audio.resampler")}
+        <Tooltip text={$t("tooltips.audio.resampler")} /></label
+      >
       <select
         id="audio-resampler"
         class="input"
@@ -304,7 +317,10 @@
     </div>
 
     <div class="field">
-      <label for="audio-delay">{$t("audio.playbackDelay")}</label>
+      <label for="audio-delay"
+        >{$t("audio.playbackDelay")}
+        <Tooltip text={$t("tooltips.audio.playbackDelay")} /></label
+      >
       <input
         id="audio-delay"
         type="text"
@@ -323,7 +339,10 @@
 
   <div class="field">
     <div class="field-header">
-      <span class="field-label">{$t("audio.trackMappings")}</span>
+      <span class="field-label"
+        >{$t("audio.trackMappings")}
+        <Tooltip text={$t("tooltips.audio.trackMappings")} /></span
+      >
       <button class="btn" onclick={addMapping}>{$t("common.add")}</button>
     </div>
     {#each mappingEntries as [name, channels], i (name)}

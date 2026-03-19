@@ -18,6 +18,7 @@
   import { uploadSampleFile } from "../../lib/api/config";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
+  import Tooltip from "./Tooltip.svelte";
 
   export type SampleBrowseTarget = {
     sampleName: string;
@@ -241,7 +242,9 @@
           <div class="field-row-2">
             <div class="field">
               <label for="sample-channels-{name}"
-                >{$t("samples.outputChannels")}</label
+                >{$t("samples.outputChannels")}<Tooltip
+                  text={$t("tooltips.samples.outputChannels")}
+                /></label
               >
               <input
                 id="sample-channels-{name}"
@@ -259,7 +262,9 @@
 
             <div class="field">
               <label for="sample-track-{name}"
-                >{$t("samples.outputTrack")}</label
+                >{$t("samples.outputTrack")}<Tooltip
+                  text={$t("tooltips.samples.outputTrack")}
+                /></label
               >
               <input
                 id="sample-track-{name}"
@@ -280,7 +285,9 @@
           <div class="field-row-2">
             <div class="field">
               <label for="sample-release-{name}"
-                >{$t("samples.releaseBehavior")}</label
+                >{$t("samples.releaseBehavior")}<Tooltip
+                  text={$t("tooltips.samples.releaseBehavior")}
+                /></label
               >
               <select
                 id="sample-release-{name}"
@@ -305,7 +312,9 @@
 
             <div class="field">
               <label for="sample-retrigger-{name}"
-                >{$t("samples.retrigger")}</label
+                >{$t("samples.retrigger")}<Tooltip
+                  text={$t("tooltips.samples.retrigger")}
+                /></label
               >
               <select
                 id="sample-retrigger-{name}"
@@ -327,7 +336,9 @@
           <div class="field-row-2">
             <div class="field">
               <label for="sample-max-voices-{name}"
-                >{$t("samples.maxVoices")}</label
+                >{$t("samples.maxVoices")}<Tooltip
+                  text={$t("tooltips.samples.maxVoices")}
+                /></label
               >
               <input
                 id="sample-max-voices-{name}"
@@ -344,7 +355,9 @@
 
             <div class="field">
               <label for="sample-fade-ms-{name}"
-                >{$t("samples.fadeTimeMs")}</label
+                >{$t("samples.fadeTimeMs")}<Tooltip
+                  text={$t("tooltips.samples.fadeTimeMs")}
+                /></label
               >
               <input
                 id="sample-fade-ms-{name}"
@@ -373,7 +386,9 @@
             <div class="field-row-2">
               <div class="field">
                 <label for="sample-vel-mode-{name}"
-                  >{$t("samples.velocityMode")}</label
+                  >{$t("samples.velocityMode")}<Tooltip
+                    text={$t("tooltips.samples.velocityMode")}
+                  /></label
                 >
                 <select
                   id="sample-vel-mode-{name}"
@@ -399,7 +414,9 @@
               {#if (def.velocity?.mode ?? "ignore") === "ignore"}
                 <div class="field">
                   <label for="sample-vel-default-{name}"
-                    >{$t("samples.defaultVelocity")}</label
+                    >{$t("samples.defaultVelocity")}<Tooltip
+                      text={$t("tooltips.samples.defaultVelocity")}
+                    /></label
                   >
                   <input
                     id="sample-vel-default-{name}"
@@ -448,7 +465,9 @@
                       onchange();
                     }}
                   />
-                  {$t("samples.scaleByVelocity")}
+                  {$t("samples.scaleByVelocity")}<Tooltip
+                    text={$t("tooltips.samples.scaleByVelocity")}
+                  />
                 </label>
 
                 {#each def.velocity?.layers ?? [] as layer, li (li)}

@@ -26,6 +26,7 @@
     cancelCalibration,
   } from "../../lib/api/config";
   import { t } from "svelte-i18n";
+  import Tooltip from "./Tooltip.svelte";
 
   interface Props {
     trigger: any;
@@ -224,7 +225,10 @@
   </datalist>
 
   <div class="field">
-    <label for="trigger-device">{$t("trigger.audioInputDevice")}</label>
+    <label for="trigger-device"
+      >{$t("trigger.audioInputDevice")}
+      <Tooltip text={$t("tooltips.trigger.audioInputDevice")} /></label
+    >
     <div class="field-row">
       <input
         id="trigger-device"
@@ -278,7 +282,10 @@
     </div>
 
     <div class="field">
-      <label for="trigger-buffer-size">{$t("trigger.bufferSize")}</label>
+      <label for="trigger-buffer-size"
+        >{$t("trigger.bufferSize")}
+        <Tooltip text={$t("tooltips.trigger.bufferSize")} /></label
+      >
       <input
         id="trigger-buffer-size"
         type="number"
@@ -296,7 +303,8 @@
   <div class="field-row-2">
     <div class="field">
       <label for="trigger-crosstalk-window"
-        >{$t("trigger.crosstalkWindow")}</label
+        >{$t("trigger.crosstalkWindow")}
+        <Tooltip text={$t("tooltips.trigger.crosstalkWindow")} /></label
       >
       <input
         id="trigger-crosstalk-window"
@@ -313,7 +321,8 @@
 
     <div class="field">
       <label for="trigger-crosstalk-threshold"
-        >{$t("trigger.crosstalkThreshold")}</label
+        >{$t("trigger.crosstalkThreshold")}
+        <Tooltip text={$t("tooltips.trigger.crosstalkThreshold")} /></label
       >
       <input
         id="trigger-crosstalk-threshold"
@@ -581,7 +590,10 @@
                 />
               </div>
               <div class="field">
-                <label for="trigger-action-{i}">{$t("trigger.action")}</label>
+                <label for="trigger-action-{i}"
+                  >{$t("trigger.action")}
+                  <Tooltip text={$t("tooltips.trigger.action")} /></label
+                >
                 <select
                   id="trigger-action-{i}"
                   class="input"
@@ -603,7 +615,9 @@
 
             <div class="field-row-3">
               <div class="field">
-                <label for="trigger-thresh-{i}">{$t("trigger.threshold")}</label
+                <label for="trigger-thresh-{i}"
+                  >{$t("trigger.threshold")}
+                  <Tooltip text={$t("tooltips.trigger.threshold")} /></label
                 >
                 <input
                   id="trigger-thresh-{i}"
@@ -622,7 +636,10 @@
                 />
               </div>
               <div class="field">
-                <label for="trigger-gain-{i}">{$t("trigger.gain")}</label>
+                <label for="trigger-gain-{i}"
+                  >{$t("trigger.gain")}
+                  <Tooltip text={$t("tooltips.trigger.gain")} /></label
+                >
                 <input
                   id="trigger-gain-{i}"
                   type="number"
@@ -637,7 +654,10 @@
                 />
               </div>
               <div class="field">
-                <label for="trigger-rg-{i}">{$t("trigger.releaseGroup")}</label>
+                <label for="trigger-rg-{i}"
+                  >{$t("trigger.releaseGroup")}
+                  <Tooltip text={$t("tooltips.trigger.releaseGroup")} /></label
+                >
                 <input
                   id="trigger-rg-{i}"
                   class="input"
@@ -657,7 +677,8 @@
               <div class="field-row-3">
                 <div class="field">
                   <label for="trigger-retrig-{i}"
-                    >{$t("trigger.retriggerMs")}</label
+                    >{$t("trigger.retriggerMs")}
+                    <Tooltip text={$t("tooltips.trigger.retriggerMs")} /></label
                   >
                   <input
                     id="trigger-retrig-{i}"
@@ -676,7 +697,10 @@
                   />
                 </div>
                 <div class="field">
-                  <label for="trigger-scan-{i}">{$t("trigger.scanMs")}</label>
+                  <label for="trigger-scan-{i}"
+                    >{$t("trigger.scanMs")}
+                    <Tooltip text={$t("tooltips.trigger.scanMs")} /></label
+                  >
                   <input
                     id="trigger-scan-{i}"
                     type="number"
@@ -695,7 +719,10 @@
                 </div>
                 <div class="field">
                   <label for="trigger-vel-{i}"
-                    >{$t("trigger.velocityCurve")}</label
+                    >{$t("trigger.velocityCurve")}
+                    <Tooltip
+                      text={$t("tooltips.trigger.velocityCurve")}
+                    /></label
                   >
                   <select
                     id="trigger-vel-{i}"
@@ -721,7 +748,10 @@
 
               <div class="field-row-3">
                 <div class="field">
-                  <label for="trigger-hp-{i}">{$t("trigger.highpassHz")}</label>
+                  <label for="trigger-hp-{i}"
+                    >{$t("trigger.highpassHz")}
+                    <Tooltip text={$t("tooltips.trigger.highpassHz")} /></label
+                  >
                   <input
                     id="trigger-hp-{i}"
                     type="number"
@@ -741,7 +771,10 @@
                 </div>
                 <div class="field">
                   <label for="trigger-dynth-{i}"
-                    >{$t("trigger.dynThresholdMs")}</label
+                    >{$t("trigger.dynThresholdMs")}
+                    <Tooltip
+                      text={$t("tooltips.trigger.dynThresholdMs")}
+                    /></label
                   >
                   <input
                     id="trigger-dynth-{i}"
@@ -761,7 +794,10 @@
                 </div>
                 <div class="field">
                   <label for="trigger-nf-{i}"
-                    >{$t("trigger.noiseFloorSens")}</label
+                    >{$t("trigger.noiseFloorSens")}
+                    <Tooltip
+                      text={$t("tooltips.trigger.noiseFloorSens")}
+                    /></label
                   >
                   <input
                     id="trigger-nf-{i}"
@@ -786,7 +822,10 @@
                 <div class="field-row-3">
                   <div class="field">
                     <label for="trigger-fixvel-{i}"
-                      >{$t("trigger.fixedVelocity")}</label
+                      >{$t("trigger.fixedVelocity")}
+                      <Tooltip
+                        text={$t("tooltips.trigger.fixedVelocity")}
+                      /></label
                     >
                     <input
                       id="trigger-fixvel-{i}"

@@ -15,7 +15,7 @@ ROOT_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 SVELTE_DIR := $(ROOT_DIR)/src/webui/svelte
 DOCS_DIR := $(ROOT_DIR)/docs
 
-.PHONY: all build gen-proto build-ui build-rust test lint lint-ui lint-rust fmt fmt-ui fmt-rust check clean dev-ui docs docs-serve docs-clean
+.PHONY: all build gen-proto build-ui build-rust test test-ui lint lint-ui lint-rust fmt fmt-ui fmt-rust check clean dev-ui docs docs-serve docs-clean
 
 all: build
 
@@ -35,8 +35,12 @@ build-rust:
 	cargo build --release --manifest-path $(ROOT_DIR)/Cargo.toml
 
 ## Run all tests
-test:
+test: test-ui
 	cargo test --manifest-path $(ROOT_DIR)/Cargo.toml
+
+## Run Playwright UI tests (mock server)
+test-ui:
+	cd $(SVELTE_DIR) && npx playwright test --project=mock
 
 ## Lint everything
 lint: lint-ui lint-rust
