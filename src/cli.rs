@@ -45,10 +45,11 @@ SupplementaryGroups=audio
 AmbientCapabilities=CAP_SYS_NICE
 CapabilityBoundingSet=CAP_SYS_NICE
 
-# Filesystem restrictions. The entire filesystem is read-only, which is
-# sufficient since mtrack does not write to disk. /home is inaccessible.
+# Filesystem restrictions. The filesystem is read-only except for the project
+# directory, which mtrack writes to for configuration, songs, playlists, and
+# lighting files. ReadWritePaths must cover MTRACK_PATH.
 ProtectSystem=strict
-ProtectHome=true
+ReadWritePaths=$MTRACK_PATH
 PrivateTmp=true
 
 # Kernel restrictions.
@@ -398,6 +399,7 @@ mod tests {
         fn preserves_hardening_directives() {
             let result = render_systemd_service("/usr/bin/mtrack");
             assert!(result.contains("ProtectSystem=strict"));
+            assert!(result.contains("ReadWritePaths=$MTRACK_PATH"));
             assert!(result.contains("NoNewPrivileges=true"));
             assert!(result.contains("MemoryDenyWriteExecute=true"));
         }

@@ -1,4 +1,8 @@
-# Song Repository
+# Song Configuration (YAML)
+
+> **Note:** This page documents the YAML format for song definitions. For most users, the web
+> UI is the easiest way to create and manage songs.
+> See [Importing Songs](../getting-started/importing-songs.md).
 
 ## Song Repository
 
@@ -23,7 +27,7 @@ will play until the last audio (or MIDI) file is complete.
 
 Supported audio formats: WAV, FLAC, MP3, OGG, AAC, M4A, AIFF.
 
-A song is defined in a `song.yaml` file:
+## song.yaml Format
 
 ```yaml
 # Identifies this file as a song configuration.
@@ -72,31 +76,6 @@ tracks:
   file_channel: 1
 ```
 
-We can test our song repository with the `mtrack songs` command:
-
-```
-$ mtrack songs /mnt/song-storage
-Songs (count: 23):
-- Name: The first really cool song
-  Duration: 5:10
-  Channels: 11
-  ...
-```
-
-## Generating Default Song Configurations
-
-Song configurations can be generated using the `songs` command:
-
-```
-$ mtrack songs --init /mnt/song-storage
-```
-
-This creates a `song.yaml` in each subfolder of `/mnt/song-storage`. The name of the
-subfolder determines the song's name. Audio files are used as tracks (stereo and multichannel
-files are split into per-channel tracks). MIDI files are used as MIDI playback, and files
-prefixed with `dmx_` are treated as MIDI DMX light shows. `.light` files are auto-detected as
-DSL lighting shows.
-
 ## Directory Structure
 
 Songs can be organized in any directory structure. mtrack recursively scans for `song.yaml`
@@ -125,19 +104,27 @@ songs/
         └── audio.wav
 ```
 
-## Managing Songs via the Web UI
+## CLI: Listing Songs
 
-The web UI song browser provides a complete management interface:
+```
+$ mtrack songs /mnt/song-storage
+Songs (count: 23):
+- Name: The first really cool song
+  Duration: 5:10
+  Channels: 11
+  ...
+```
 
-- **Create** — Create new songs with a name or nested path (e.g. `Artist/Song`).
-- **Import** — Browse the server filesystem and import existing song directories. Audio, MIDI,
-  and lighting files are auto-detected and the `song.yaml` is generated automatically.
-- **Bulk import** — Import all subdirectories of a directory at once. The scan is recursive,
-  so nested structures (artist/album/song) are handled.
-- **Edit** — Modify track assignments, upload audio and MIDI files, edit lighting shows
-  visually or as raw DSL.
-- **Delete** — Remove a song from the registry by deleting its `song.yaml`. Audio and other
-  files are preserved. The song is automatically removed from any playlists that reference it.
+## CLI: Generating Default Song Configurations
 
-When uploading a file that already exists in the song directory, you'll be prompted to confirm
-the replacement.
+Song configurations can be generated using the `songs` command:
+
+```
+$ mtrack songs --init /mnt/song-storage
+```
+
+This creates a `song.yaml` in each subfolder of `/mnt/song-storage`. The name of the
+subfolder determines the song's name. Audio files are used as tracks (stereo and multichannel
+files are split into per-channel tracks). MIDI files are used as MIDI playback, and files
+prefixed with `dmx_` are treated as MIDI DMX light shows. `.light` files are auto-detected as
+DSL lighting shows.

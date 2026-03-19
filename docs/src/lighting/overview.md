@@ -16,6 +16,20 @@ the DSL system is the better starting point — it provides high-level effect de
 works across different venues without modification, and integrates with the web UI's
 timeline editor for visual cue authoring with real-time playback preview.
 
+## Why a custom DSL?
+
+There is no widely adopted open standard for cue-based lighting show authoring. Existing
+formats either target specific commercial platforms (e.g. proprietary console show files),
+operate at the raw DMX channel level (like Art-Net recordings or MIDI-to-DMX mappings),
+or focus on fixture patching rather than show programming.
+
+mtrack's lighting DSL fills that gap. It operates at the level musicians and small
+production teams think in — effects on groups of lights, timed to music — rather than
+individual DMX channel values. The DSL is plain text, stored in `.light` files alongside
+your songs, version-controllable, and human-readable. The web UI's timeline editor
+provides a visual interface on top of it, so you don't need to write DSL by hand unless
+you want to.
+
 ## DSL Lighting Features
 
 - **Venue-Agnostic Shows**: Songs use logical groups instead of specific fixture names,

@@ -14,10 +14,10 @@ ever acquire. Without this capability, the beat clock will still function but ma
 more timing jitter under heavy system load.
 
 **Filesystem restrictions**: `ProtectSystem=strict` makes the entire filesystem hierarchy
-read-only, which is sufficient since `mtrack` does not write to disk (logs are emitted to
-stdout/stderr and captured by journald). `ProtectHome=true` makes `/home`, `/root`, and
-`/run/user` completely inaccessible. `PrivateTmp=true` provides an isolated temporary
-directory.
+read-only by default. `ReadWritePaths=$MTRACK_PATH` grants write access to the project
+directory so the web UI can manage configuration, songs, playlists, and lighting files.
+Logs are emitted to stdout/stderr and captured by journald. `PrivateTmp=true` provides
+an isolated temporary directory.
 
 **Kernel restrictions**: The service cannot modify kernel tunables (`ProtectKernelTunables`),
 load kernel modules (`ProtectKernelModules`), access the kernel log buffer
