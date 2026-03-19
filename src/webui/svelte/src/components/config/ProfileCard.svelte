@@ -14,6 +14,9 @@
      * -->
 <script lang="ts">
   /* eslint-disable @typescript-eslint/no-explicit-any */
+  import { t } from "svelte-i18n";
+  import { get } from "svelte/store";
+
   interface Props {
     profile: any;
     index: number;
@@ -22,7 +25,7 @@
 
   let { profile, index, onclick }: Props = $props();
 
-  let hostname = $derived(profile.hostname || "Default Profile");
+  let hostname = $derived(profile.hostname || get(t)("config.defaultProfile"));
   let hasAudio = $derived(!!profile.audio);
   let hasMidi = $derived(!!profile.midi);
   let hasDmx = $derived(!!profile.dmx);

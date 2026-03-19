@@ -13,6 +13,7 @@
      *
      * -->
 <script lang="ts">
+  import { t } from "svelte-i18n";
   import type { SongFile } from "../../lib/api/songs";
   import type { WaveformTrack } from "../../lib/api/songs";
   import Waveform from "./Waveform.svelte";
@@ -63,13 +64,13 @@
 
 <div class="track-editor">
   {#if tracks.length === 0}
-    <div class="empty">No tracks configured</div>
+    <div class="empty">{$t("songs.tracks.noTracks")}</div>
   {/if}
   {#each tracks as track, i (i)}
     <div class="track-row">
       <div class="track-fields">
         <label class="field">
-          <span class="field-label">Name</span>
+          <span class="field-label">{$t("songs.tracks.name")}</span>
           <input
             class="input field-input"
             type="text"
@@ -78,7 +79,7 @@
           />
         </label>
         <div class="field">
-          <span class="field-label">File</span>
+          <span class="field-label">{$t("songs.tracks.file")}</span>
           <div class="file-row">
             {#if audioFiles.length > 0 && !track.file.includes("/")}
               <select
@@ -90,7 +91,9 @@
                   <option value={f.name}>{f.name}</option>
                 {/each}
                 {#if track.file && !audioFiles.some((f) => f.name === track.file)}
-                  <option value={track.file}>{track.file} (missing)</option>
+                  <option value={track.file}
+                    >{track.file} {$t("songs.tracks.missing")}</option
+                  >
                 {/if}
               </select>
             {:else}
@@ -105,12 +108,12 @@
             <button
               class="btn browse-btn"
               onclick={() => onbrowse(i)}
-              title="Browse filesystem">...</button
+              title={$t("songs.tracks.browseFilesystem")}>...</button
             >
           </div>
         </div>
         <label class="field field-narrow">
-          <span class="field-label">Channel</span>
+          <span class="field-label">{$t("songs.tracks.channel")}</span>
           <input
             class="input field-input"
             type="number"
@@ -125,7 +128,7 @@
         <button
           class="btn btn-danger remove-btn"
           onclick={() => removeTrack(i)}
-          title="Remove track">&times;</button
+          title={$t("songs.tracks.removeTrack")}>&times;</button
         >
       </div>
       <div class="track-waveform">
@@ -134,9 +137,10 @@
     </div>
   {/each}
   <div class="add-actions">
-    <button class="btn" onclick={addTrack}>+ Add Track</button>
+    <button class="btn" onclick={addTrack}>{$t("songs.tracks.addTrack")}</button
+    >
     <button class="btn" onclick={() => onbrowse(-1)}
-      >Browse Filesystem...</button
+      >{$t("songs.tracks.browseFilesystemBtn")}</button
     >
   </div>
 </div>

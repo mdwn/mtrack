@@ -22,6 +22,8 @@
     type WaveformData,
   } from "../../lib/api/songs";
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
+  import { t } from "svelte-i18n";
+  import { get } from "svelte/store";
   import CreateSongDialog from "./CreateSongDialog.svelte";
   import ImportSongs from "./ImportSongs.svelte";
   import Waveform from "./Waveform.svelte";
@@ -122,7 +124,8 @@
           .catch(() => {});
       }
     } catch (e) {
-      error = e instanceof Error ? e.message : "Failed to load songs";
+      error =
+        e instanceof Error ? e.message : get(t)("songs.failedToLoadSongs");
     } finally {
       loading = false;
     }
@@ -146,12 +149,7 @@
 
   async function handleDelete(e: MouseEvent, name: string) {
     e.stopPropagation();
-    if (
-      !confirm(
-        `Remove "${name}" from the song registry?\n\nThis only deletes song.yaml — audio and other files are kept.`,
-      )
-    )
-      return;
+    if (!confirm(get(t)("songs.confirmDelete", { values: { name } }))) return;
     try {
       const res = await deleteSong(name);
       if (!res.ok) {
@@ -170,7 +168,7 @@
   <ImportSongs {onimported} oncancel={() => (showImport = false)} />
 {:else}
   <div class="header">
-    <h2>Songs</h2>
+    <h2>{$t("songs.title")}</h2>
     <div class="header-actions">
       <button
         class="btn"
@@ -179,7 +177,7 @@
           showCreate = false;
         }}
       >
-        Import from Filesystem
+        {$t("songs.importFromFilesystem")}
       </button>
       <button
         class="btn btn-primary"
@@ -188,7 +186,7 @@
           showImport = false;
         }}
       >
-        {showCreate ? "Cancel" : "New Song"}
+        {showCreate ? $t("common.cancel") : $t("songs.newSong")}
       </button>
     </div>
   </div>
@@ -198,12 +196,12 @@
   {/if}
 
   {#if loading}
-    <div class="status">Loading songs...</div>
+    <div class="status">{$t("songs.loadingSongs")}</div>
   {:else if error}
     <div class="status error">{error}</div>
   {:else if songs.length === 0 && failures.length === 0}
     <div class="status">
-      No songs yet. Create one or import audio files from the filesystem.
+      {$t("songs.noSongs")}
     </div>
   {:else}
     {@const filteredItems = getFilteredItems()}
@@ -213,7 +211,7 @@
       <input
         type="text"
         class="search-input"
-        placeholder="Search songs..."
+        placeholder={$t("songs.searchPlaceholder")}
         bind:value={searchQuery}
       />
       {#if searchQuery}
@@ -222,7 +220,9 @@
         >
       {/if}
       <span class="search-count"
-        >{filteredItems.length} of {totalCount} songs</span
+        >{$t("songs.searchCount", {
+          values: { filtered: filteredItems.length, total: totalCount },
+        })}</span
       >
     </div>
     <div class="song-list">
@@ -280,9 +280,9 @@
                 <div class="song-meta">
                   <span>{item.duration_display}</span>
                   <span
-                    >{item.track_count} track{item.track_count !== 1
-                      ? "s"
-                      : ""}</span
+                    >{$t("songs.trackCount", {
+                      values: { count: item.track_count },
+                    })}</span
                   >
                 </div>
                 <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -290,7 +290,7 @@
                   class="song-delete"
                   role="button"
                   tabindex="-1"
-                  title="Remove from registry"
+                  title={$t("songs.removeFromRegistry")}
                   onclick={(e) => handleDelete(e, item.name)}>&#10005;</span
                 >
               </button>

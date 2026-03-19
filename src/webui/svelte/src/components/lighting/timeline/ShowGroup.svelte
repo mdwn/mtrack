@@ -13,6 +13,7 @@
      *
      * -->
 <script lang="ts">
+  import { t } from "svelte-i18n";
   import type {
     Cue,
     TempoSection,
@@ -63,11 +64,19 @@
     ondelete,
   }: Props = $props();
 
-  const subLanes: { type: SubLaneType; label: string; height: number }[] = [
-    { type: "effects", label: "Effects", height: 44 },
-    { type: "commands", label: "Cmds", height: 32 },
-    { type: "sequences", label: "Seqs", height: 40 },
-  ];
+  let subLanes = $derived([
+    { type: "effects" as SubLaneType, label: $t("cue.effects"), height: 44 },
+    {
+      type: "commands" as SubLaneType,
+      label: $t("timeline.showGroup.cmds"),
+      height: 32,
+    },
+    {
+      type: "sequences" as SubLaneType,
+      label: $t("timeline.showGroup.seqs"),
+      height: 40,
+    },
+  ]);
 </script>
 
 <div class="show-group">
@@ -85,7 +94,7 @@
     </div>
     <button
       class="btn-icon group-delete"
-      title="Delete show"
+      title={$t("timeline.showGroup.deleteShow")}
       onclick={ondelete}
     >
       &#10005;

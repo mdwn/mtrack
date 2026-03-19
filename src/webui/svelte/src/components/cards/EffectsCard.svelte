@@ -14,14 +14,15 @@
      * -->
 <script lang="ts">
   import { effectsStore } from "../../lib/ws/stores";
+  import { t } from "svelte-i18n";
 </script>
 
 <div class="card card-full">
   <div class="card-header">
-    <span class="card-title">Active Effects</span>
+    <span class="card-title">{$t("effects.title")}</span>
   </div>
   {#if $effectsStore.length === 0}
-    <div class="effects-empty">No active effects</div>
+    <div class="effects-empty">{$t("effects.noEffects")}</div>
   {:else}
     <ul class="effects-list">
       {#each $effectsStore as effect, i (`${i}:${effect}`)}

@@ -12,14 +12,18 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-import { waitLocale } from "./lib/i18n";
-import "./app.css";
-import App from "./App.svelte";
-import { mount } from "svelte";
+import {
+  register,
+  init,
+  getLocaleFromNavigator,
+  waitLocale,
+} from "svelte-i18n";
 
-async function start() {
-  await waitLocale();
-  mount(App, { target: document.getElementById("app")! });
-}
+register("en", () => import("./en.json"));
 
-start();
+init({
+  fallbackLocale: "en",
+  initialLocale: getLocaleFromNavigator(),
+});
+
+export { waitLocale };

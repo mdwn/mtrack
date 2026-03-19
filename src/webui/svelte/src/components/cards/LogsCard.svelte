@@ -15,6 +15,7 @@
 <script lang="ts">
   import { logStore } from "../../lib/ws/stores";
   import { tick } from "svelte";
+  import { t } from "svelte-i18n";
 
   let container: HTMLDivElement | undefined = $state();
   let autoScroll = $state(true);
@@ -40,7 +41,7 @@
 
 <div class="card card-full">
   <div class="card-header">
-    <span class="card-title">Logs</span>
+    <span class="card-title">{$t("logs.title")}</span>
   </div>
   <div class="log-container" bind:this={container} onscroll={handleScroll}>
     {#each $logStore as line, i (i)}

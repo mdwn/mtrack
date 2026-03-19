@@ -13,6 +13,8 @@
      *
      * -->
 <script lang="ts">
+  import { t } from "svelte-i18n";
+  import { get } from "svelte/store";
   import { SvelteSet } from "svelte/reactivity";
   import { browseDirectory, type BrowseEntry } from "../../lib/api/songs";
 
@@ -49,7 +51,7 @@
       pathInput = result.path;
       entries = result.entries;
     } catch (e) {
-      error = e instanceof Error ? e.message : "Failed to browse directory";
+      error = e instanceof Error ? e.message : get(t)("fileBrowser.emptyDir");
     } finally {
       loading = false;
     }
@@ -158,7 +160,7 @@
           if (e.key === "Enter") navigateToInput();
         }}
       />
-      <button class="btn" onclick={navigateToInput}>Go</button>
+      <button class="btn" onclick={navigateToInput}>{$t("common.go")}</button>
     </div>
     <div class="breadcrumbs">
       {#each breadcrumbs as crumb, i (crumb.path)}
@@ -172,11 +174,11 @@
 
   <div class="browser-body">
     {#if loading}
-      <div class="browser-status">Loading...</div>
+      <div class="browser-status">{$t("common.loading")}</div>
     {:else if error}
       <div class="browser-status error">{error}</div>
     {:else if visibleEntries.length === 0}
-      <div class="browser-status">Empty directory</div>
+      <div class="browser-status">{$t("fileBrowser.emptyDir")}</div>
     {:else}
       <div class="entry-list">
         {#if !atRoot}
@@ -206,24 +208,32 @@
   <div class="browser-footer">
     <div class="footer-info">
       {#if selected.size > 0}
-        <span>{selected.size} selected</span>
+        <span
+          >{$t("fileBrowser.selected", {
+            values: { count: selected.size },
+          })}</span
+        >
       {:else if fileCount > 0}
-        <span>{fileCount} file{fileCount !== 1 ? "s" : ""}</span>
+        <span
+          >{$t("fileBrowser.fileCount", { values: { count: fileCount } })}</span
+        >
       {/if}
       {#if multiple && fileCount > 0}
         <button class="btn btn-sm" onclick={selectAll}>
-          {selected.size === fileCount ? "Deselect All" : "Select All"}
+          {selected.size === fileCount
+            ? $t("fileBrowser.deselectAll")
+            : $t("fileBrowser.selectAll")}
         </button>
       {/if}
     </div>
     <div class="footer-actions">
-      <button class="btn" onclick={oncancel}>Cancel</button>
+      <button class="btn" onclick={oncancel}>{$t("common.cancel")}</button>
       <button
         class="btn btn-primary"
         onclick={confirm}
         disabled={selected.size === 0}
       >
-        Select ({selected.size})
+        {$t("fileBrowser.select", { values: { count: selected.size } })}
       </button>
     </div>
   </div>

@@ -13,6 +13,7 @@
      *
      * -->
 <script lang="ts">
+  import { t } from "svelte-i18n";
   import {
     metadataStore,
     fixtureStore,
@@ -352,7 +353,7 @@
       </div>
     {/if}
   {:else}
-    <div class="no-fixtures">No fixtures configured</div>
+    <div class="no-fixtures">{$t("timeline.noFixtures")}</div>
   {/if}
 </div>
 

@@ -13,6 +13,7 @@
      *
      * -->
 <script lang="ts">
+  import { t } from "svelte-i18n";
   import type { LayerCommand } from "../../lib/lighting/types";
   import { LAYERS } from "../../lib/lighting/types";
 
@@ -40,7 +41,7 @@
 <div class="cmd-form">
   <div class="cmd-row">
     <label class="field">
-      <span class="field-label">Command</span>
+      <span class="field-label">{$t("effect.command.command")}</span>
       <select
         class="input"
         value={command.command}
@@ -53,7 +54,7 @@
       </select>
     </label>
     <label class="field">
-      <span class="field-label">Layer</span>
+      <span class="field-label">{$t("effect.command.layer")}</span>
       <select
         class="input"
         value={command.layer ?? ""}
@@ -71,7 +72,7 @@
 
     {#if command.command === "release"}
       <label class="field">
-        <span class="field-label">Time</span>
+        <span class="field-label">{$t("effect.command.time")}</span>
         <input
           type="text"
           class="input"
@@ -87,7 +88,7 @@
 
     {#if command.command === "master"}
       <label class="field">
-        <span class="field-label">Intensity</span>
+        <span class="field-label">{$t("effect.command.intensity")}</span>
         <input
           type="text"
           class="input"
@@ -100,7 +101,7 @@
         />
       </label>
       <label class="field">
-        <span class="field-label">Speed</span>
+        <span class="field-label">{$t("effect.command.speed")}</span>
         <input
           type="text"
           class="input"
@@ -116,7 +117,7 @@
 
     <button
       class="btn-icon delete-btn"
-      title="Remove command"
+      title={$t("effect.command.removeCommand")}
       onclick={ondelete}
     >
       &#10005;

@@ -13,6 +13,8 @@
      *
      * -->
 <script lang="ts">
+  import { t } from "svelte-i18n";
+
   interface Props {
     peaks: number[];
     songDurationMs: number;
@@ -104,7 +106,7 @@
 </script>
 
 <div class="waveform-lane">
-  <div class="lane-label">Waveform</div>
+  <div class="lane-label">{$t("timeline.waveform")}</div>
   <canvas bind:this={canvasEl} class="waveform-canvas"></canvas>
 </div>
 

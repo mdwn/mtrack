@@ -13,6 +13,7 @@
      *
      * -->
 <script lang="ts">
+  import { t } from "svelte-i18n";
   import type { TempoSection } from "../../../lib/lighting/types";
   import {
     buildTempoSegments,
@@ -119,7 +120,7 @@
 </script>
 
 <div class="tempo-lane">
-  <div class="tempo-label">Tempo</div>
+  <div class="tempo-label">{$t("timeline.tempo")}</div>
   <div class="tempo-content">
     <canvas bind:this={canvasEl} class="tempo-canvas"></canvas>
   </div>

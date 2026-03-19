@@ -13,6 +13,8 @@
      *
      * -->
 <script lang="ts">
+  import { t } from "svelte-i18n";
+  import { get } from "svelte/store";
   import type { TempoSection } from "../../../lib/lighting/types";
   import {
     msToPixel,
@@ -155,7 +157,10 @@
         ctx.stroke();
         ctx.setLineDash([]);
         // Label
-        const label = off.type === "reset" ? "reset" : `offset ${off.measures}`;
+        const label =
+          off.type === "reset"
+            ? get(t)("timeline.reset")
+            : `offset ${off.measures}`;
         ctx.fillStyle = "rgba(249, 115, 22, 0.9)";
         ctx.font = "11px monospace";
         ctx.textAlign = "left";

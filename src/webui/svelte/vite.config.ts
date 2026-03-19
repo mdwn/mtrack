@@ -21,6 +21,20 @@ export default defineConfig({
   plugins: [svelte()],
   build: {
     chunkSizeWarningLimit: 600,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vendor: [
+            "svelte",
+            "@connectrpc/connect",
+            "@connectrpc/connect-web",
+            "@bufbuild/protobuf",
+            "yaml",
+            "svelte-i18n",
+          ],
+        },
+      },
+    },
   },
   server: {
     proxy: {

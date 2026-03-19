@@ -14,6 +14,7 @@
      * -->
 <script lang="ts">
   /* eslint-disable @typescript-eslint/no-explicit-any */
+  import { t } from "svelte-i18n";
   import type { AudioDeviceInfo, MidiDeviceInfo } from "../../lib/api/config";
   import AudioSection from "./AudioSection.svelte";
   import MidiSection from "./MidiSection.svelte";
@@ -47,16 +48,16 @@
   }: Props = $props();
 
   const tabs = [
-    { key: "audio", label: "Audio" },
-    { key: "midi", label: "MIDI" },
-    { key: "lighting", label: "Lighting" },
-    { key: "trigger", label: "Triggers" },
-    { key: "controllers", label: "Controllers" },
+    { key: "audio", labelKey: "profile.tabs.audio" },
+    { key: "midi", labelKey: "profile.tabs.midi" },
+    { key: "lighting", labelKey: "profile.tabs.lighting" },
+    { key: "trigger", labelKey: "profile.tabs.trigger" },
+    { key: "controllers", labelKey: "profile.tabs.controllers" },
   ] as const;
 
   type TabKey = (typeof tabs)[number]["key"];
 
-  const validKeys = tabs.map((t) => t.key as string);
+  const validKeys = tabs.map((tab) => tab.key as string);
   function getInitialTab(): TabKey {
     const s = initialSection;
     return s && validKeys.includes(s) ? (s as TabKey) : "audio";
@@ -89,12 +90,12 @@
 
 <div class="editor">
   <div class="field">
-    <label for="profile-hostname">Hostname</label>
+    <label for="profile-hostname">{$t("profile.hostname")}</label>
     <input
       id="profile-hostname"
       class="input"
       type="text"
-      placeholder="Leave empty for default profile"
+      placeholder={$t("profile.hostnamePlaceholder")}
       value={profile.hostname ?? ""}
       oninput={(e) => {
         const v = (e.target as HTMLInputElement).value.trim();
@@ -106,9 +107,7 @@
         onchange();
       }}
     />
-    <span class="field-hint"
-      >Matches against system hostname. Empty = matches any host.</span
-    >
+    <span class="field-hint">{$t("profile.hostnameHint")}</span>
   </div>
 
   <div class="tab-bar" role="tablist">
@@ -123,7 +122,7 @@
           onsectionchange?.(tab.key);
         }}
       >
-        {tab.label}
+        {$t(tab.labelKey)}
         {#if isEnabled(tab.key)}
           <span class="tab-dot"></span>
         {/if}
@@ -140,7 +139,13 @@
           onchange={(e) =>
             toggleSection(activeTab, (e.target as HTMLInputElement).checked)}
         />
-        Enable {tabs.find((t) => t.key === activeTab)?.label}
+        {$t("profile.enable", {
+          values: {
+            section: $t(
+              tabs.find((tab) => tab.key === activeTab)?.labelKey ?? "",
+            ),
+          },
+        })}
       </label>
     </div>
 
@@ -188,9 +193,15 @@
     {:else if !isEnabled(activeTab)}
       <div class="panel-empty">
         <p>
-          {tabs.find((t) => t.key === activeTab)?.label} is not enabled for this profile.
+          {$t("profile.notEnabled", {
+            values: {
+              section: $t(
+                tabs.find((tab) => tab.key === activeTab)?.labelKey ?? "",
+              ),
+            },
+          })}
         </p>
-        <p>Toggle the checkbox above to configure it.</p>
+        <p>{$t("profile.toggleHint")}</p>
       </div>
     {/if}
   </div>

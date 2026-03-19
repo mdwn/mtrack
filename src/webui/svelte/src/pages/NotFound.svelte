@@ -12,7 +12,11 @@
      * this program. If not, see <https://www.gnu.org/licenses/>.
      *
      * -->
+<script lang="ts">
+  import { t } from "svelte-i18n";
+</script>
+
 <div class="page-placeholder">
-  <h2>Not Found</h2>
-  <p>The page you're looking for doesn't exist.</p>
+  <h2>{$t("notFound.title")}</h2>
+  <p>{$t("notFound.message")}</p>
 </div>

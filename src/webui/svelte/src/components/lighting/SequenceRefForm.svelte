@@ -13,6 +13,7 @@
      *
      * -->
 <script lang="ts">
+  import { t } from "svelte-i18n";
   import type { SequenceRef } from "../../lib/lighting/types";
 
   interface Props {
@@ -32,7 +33,7 @@
 <div class="seq-ref-form">
   <div class="seq-row">
     <label class="field">
-      <span class="field-label">Sequence</span>
+      <span class="field-label">{$t("sequenceRef.sequence")}</span>
       {#if sequenceNames.length > 0}
         <select
           class="input"
@@ -40,7 +41,7 @@
           onchange={(e) =>
             update("name", (e.target as HTMLSelectElement).value)}
         >
-          <option value="">-- select --</option>
+          <option value="">{$t("sequenceRef.select")}</option>
           {#each sequenceNames as name (name)}
             <option value={name}>{name}</option>
           {/each}
@@ -51,12 +52,12 @@
           class="input"
           value={ref.name}
           onchange={(e) => update("name", (e.target as HTMLInputElement).value)}
-          placeholder="sequence name"
+          placeholder={$t("sequenceRef.namePlaceholder")}
         />
       {/if}
     </label>
     <label class="field">
-      <span class="field-label">Loop</span>
+      <span class="field-label">{$t("sequenceRef.loop")}</span>
       <select
         class="input"
         value={ref.loop ?? ""}
@@ -67,10 +68,10 @@
         }}
       >
         <option value="">--</option>
-        <option value="once">once</option>
-        <option value="loop">loop</option>
-        <option value="pingpong">pingpong</option>
-        <option value="random">random</option>
+        <option value="once">{$t("effect.once")}</option>
+        <option value="loop">{$t("effect.loopOption")}</option>
+        <option value="pingpong">{$t("effect.pingpong")}</option>
+        <option value="random">{$t("effect.random")}</option>
       </select>
     </label>
     <div class="field checkbox-field">
@@ -81,10 +82,14 @@
           onchange={(e) =>
             update("stop", (e.target as HTMLInputElement).checked || undefined)}
         />
-        Stop
+        {$t("sequenceRef.stop")}
       </label>
     </div>
-    <button class="btn-icon delete-btn" title="Remove" onclick={ondelete}>
+    <button
+      class="btn-icon delete-btn"
+      title={$t("sequenceRef.remove")}
+      onclick={ondelete}
+    >
       &#10005;
     </button>
   </div>

@@ -39,6 +39,8 @@
   import TimelineEditor from "../components/lighting/timeline/TimelineEditor.svelte";
   import FileUpload from "../components/songs/FileUpload.svelte";
   import FileBrowser from "../components/songs/FileBrowser.svelte";
+  import { t } from "svelte-i18n";
+  import { get } from "svelte/store";
 
   // --- Types ---
 
@@ -122,8 +124,7 @@
 
   async function selectSong(name: string) {
     if (dirty && selectedSongName) {
-      if (!confirm("You have unsaved changes. Discard and switch songs?"))
-        return;
+      if (!confirm(get(t)("lightingEditor.discardSwitch"))) return;
     }
     try {
       error = "";
@@ -275,7 +276,7 @@
       await loadSongs();
 
       dirty = false;
-      saveMsg = "Saved";
+      saveMsg = get(t)("common.saved");
       setTimeout(() => (saveMsg = ""), 2000);
     } catch (e: any) {
       error = e.message;
@@ -382,7 +383,7 @@
         if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
       }
       await reloadCurrentSong();
-      saveMsg = "Uploaded";
+      saveMsg = get(t)("common.uploaded");
       setTimeout(() => (saveMsg = ""), 2000);
     } catch (err: any) {
       error = err.message;
@@ -410,7 +411,7 @@
         }
       }
       await reloadCurrentSong();
-      saveMsg = "Imported";
+      saveMsg = get(t)("common.imported");
       setTimeout(() => (saveMsg = ""), 2000);
     } catch (err: any) {
       error = err.message;
@@ -433,13 +434,13 @@
 <div class="lighting-editor">
   <div class="panel list-panel">
     <div class="panel-header">
-      <h3>Songs</h3>
+      <h3>{$t("lightingEditor.songs")}</h3>
     </div>
 
     {#if loading}
-      <p class="muted">Loading...</p>
+      <p class="muted">{$t("common.loading")}</p>
     {:else if songs.length === 0}
-      <p class="muted">No songs found.</p>
+      <p class="muted">{$t("lightingEditor.noSongs")}</p>
     {:else}
       <ul class="song-list">
         {#each songs as song (song.name)}
@@ -473,7 +474,7 @@
     {/if}
 
     {#if !selectedSongName}
-      <p class="muted center">Select a song to edit its lighting.</p>
+      <p class="muted center">{$t("lightingEditor.selectSong")}</p>
     {:else}
       <div class="detail-toolbar">
         <span class="detail-title">{selectedSongName}</span>
@@ -481,23 +482,27 @@
           <button
             class="tab-btn"
             class:active={tab === "timeline"}
-            onclick={switchToTimeline}>Timeline</button
+            onclick={switchToTimeline}>{$t("lightingEditor.timeline")}</button
           >
           <button
             class="tab-btn"
             class:active={tab === "raw"}
-            onclick={switchToRaw}>Raw DSL</button
+            onclick={switchToRaw}>{$t("lightingEditor.rawDsl")}</button
           >
         </div>
 
         <div class="file-info">
-          {lightFiles.length} DSL
+          {lightFiles.length}
+          {$t("lightingEditor.dsl")}
           {#if selectedSong && selectedSong.midi_dmx_files.length > 0}
-            + {selectedSong.midi_dmx_files.length} MIDI DMX
+            + {selectedSong.midi_dmx_files.length}
+            {$t("lightingEditor.midiDmx")}
           {/if}
-          <button class="btn btn-sm" onclick={addLightFile}>+ DSL</button>
+          <button class="btn btn-sm" onclick={addLightFile}
+            >{$t("lightingEditor.addDsl")}</button
+          >
           <button class="btn btn-sm" onclick={() => (showMidiDmxModal = true)}>
-            MIDI DMX...
+            {$t("lightingEditor.midiDmxBtn")}
           </button>
         </div>
 
@@ -506,21 +511,21 @@
             <span class="save-msg success">{saveMsg}</span>
           {/if}
           {#if dirty}
-            <span class="dirty-badge">unsaved</span>
+            <span class="dirty-badge">{$t("common.unsaved")}</span>
           {/if}
           <button
             class="btn btn-primary btn-sm"
             onclick={handleSave}
             disabled={saving}
           >
-            {saving ? "Saving..." : "Save"}
+            {saving ? $t("common.saving") : $t("common.save")}
           </button>
         </div>
       </div>
 
       {#if lightFiles.some((f) => f.parseError)}
         <div class="error-banner">
-          Some lighting files have parse errors. Use the Raw DSL tab to fix.
+          {$t("lightingEditor.parseErrors")}
         </div>
       {/if}
 
@@ -552,7 +557,7 @@
             <div class="raw-file-label">{lightFiles[0].path}</div>
           {:else}
             <p class="muted">
-              No lighting files. Click "+ File" to create one.
+              {$t("lightingEditor.noLightFiles")}
             </p>
           {/if}
 
@@ -565,11 +570,11 @@
             ></textarea>
             <div class="raw-actions">
               <button class="btn btn-sm" onclick={handleValidate}
-                >Validate</button
+                >{$t("common.validate")}</button
               >
               {#if validationResult}
                 {#if validationResult.valid}
-                  <span class="validation-ok">Valid</span>
+                  <span class="validation-ok">{$t("common.valid")}</span>
                 {:else}
                   <div class="validation-errors">
                     {#each validationResult.errors ?? [] as err, i (i)}
@@ -592,7 +597,7 @@
     onclick={() => (showMidiDmxModal = false)}
     onkeydown={(e) => e.key === "Escape" && (showMidiDmxModal = false)}
     role="dialog"
-    aria-label="MIDI DMX Files"
+    aria-label={$t("lightingEditor.midiDmxFiles")}
     tabindex="-1"
   >
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
@@ -603,17 +608,19 @@
       role="document"
     >
       <div class="modal-header">
-        <h3>MIDI DMX Files</h3>
+        <h3>{$t("lightingEditor.midiDmxFiles")}</h3>
         <span class="modal-song">{selectedSongName}</span>
         <button class="btn btn-sm" onclick={() => (showMidiDmxModal = false)}>
-          Close
+          {$t("common.close")}
         </button>
       </div>
 
       <div class="modal-body">
         {#if selectedSong.midi_dmx_files.length > 0}
           <div class="modal-section">
-            <span class="modal-section-label">Current Files</span>
+            <span class="modal-section-label"
+              >{$t("lightingEditor.currentFiles")}</span
+            >
             <div class="midi-dmx-files">
               {#each selectedSong.midi_dmx_files as lf (lf)}
                 <span class="midi-dmx-file" title={lf}>
@@ -623,24 +630,26 @@
             </div>
           </div>
         {:else}
-          <p class="muted">No MIDI DMX files.</p>
+          <p class="muted">{$t("lightingEditor.noMidiDmxFiles")}</p>
         {/if}
 
         <div class="modal-section">
-          <span class="modal-section-label">Upload</span>
+          <span class="modal-section-label">{$t("lightingEditor.upload")}</span>
           <FileUpload
             accept=".mid,.midi"
             label={uploading
-              ? "Uploading..."
-              : "Drop MIDI DMX file here or click to upload"}
+              ? $t("common.uploading")
+              : $t("lightingEditor.dropMidiDmx")}
             onupload={(files) => handleFileUpload(files, "midi")}
           />
         </div>
 
         <div class="modal-section">
-          <span class="modal-section-label">Import from Filesystem</span>
+          <span class="modal-section-label"
+            >{$t("lightingEditor.importFromFs")}</span
+          >
           <button class="btn" onclick={() => (showFileBrowser = true)}>
-            Browse Server Filesystem...
+            {$t("lightingEditor.browseServer")}
           </button>
         </div>
       </div>

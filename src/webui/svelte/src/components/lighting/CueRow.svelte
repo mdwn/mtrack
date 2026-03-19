@@ -13,6 +13,7 @@
      *
      * -->
 <script lang="ts">
+  import { t } from "svelte-i18n";
   import type {
     Cue,
     CueEffect,
@@ -129,7 +130,11 @@
       <span class="cue-summary">{summary}</span>
     {/if}
     <div class="cue-actions">
-      <button class="btn-icon delete-cue" title="Delete cue" onclick={ondelete}>
+      <button
+        class="btn-icon delete-cue"
+        title={$t("cue.deleteCue")}
+        onclick={ondelete}
+      >
         &#10005;
       </button>
     </div>
@@ -139,14 +144,14 @@
     <div class="cue-body">
       {#if cue.comment !== undefined}
         <label class="field comment-field">
-          <span class="field-label">Comment</span>
+          <span class="field-label">{$t("cue.comment")}</span>
           <input
             type="text"
             class="input"
             value={cue.comment ?? ""}
             onchange={(e) =>
               updateComment((e.target as HTMLInputElement).value)}
-            placeholder="Cue description..."
+            placeholder={$t("cue.commentPlaceholder")}
           />
         </label>
       {:else}
@@ -154,15 +159,17 @@
           class="btn btn-sm add-comment"
           onclick={() => updateComment("")}
         >
-          + Comment
+          {$t("cue.addComment")}
         </button>
       {/if}
 
       <!-- Effects -->
       <div class="section">
         <div class="section-header">
-          <span class="section-label">Effects</span>
-          <button class="btn btn-sm" onclick={addEffect}>+ Effect</button>
+          <span class="section-label">{$t("cue.effects")}</span>
+          <button class="btn btn-sm" onclick={addEffect}
+            >{$t("cue.addEffect")}</button
+          >
         </div>
         {#each cue.effects as eff, i (i)}
           <EffectForm
@@ -177,8 +184,10 @@
       <!-- Layer Commands -->
       <div class="section">
         <div class="section-header">
-          <span class="section-label">Commands</span>
-          <button class="btn btn-sm" onclick={addCommand}>+ Command</button>
+          <span class="section-label">{$t("cue.commands")}</span>
+          <button class="btn btn-sm" onclick={addCommand}
+            >{$t("cue.addCommand")}</button
+          >
         </div>
         {#each cue.commands as cmd, i (i)}
           <LayerCommandForm
@@ -193,9 +202,9 @@
       {#if sequenceNames.length > 0 || cue.sequences.length > 0}
         <div class="section">
           <div class="section-header">
-            <span class="section-label">Sequences</span>
+            <span class="section-label">{$t("cue.sequences")}</span>
             <button class="btn btn-sm" onclick={addSequenceRef}
-              >+ Sequence</button
+              >{$t("cue.addSequence")}</button
             >
           </div>
           {#each cue.sequences as seqRef, i (i)}

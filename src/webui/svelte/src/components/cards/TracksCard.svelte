@@ -15,6 +15,8 @@
 <script lang="ts">
   import { playbackStore, waveformStore } from "../../lib/ws/stores";
   import type { TrackInfo } from "../../lib/ws/stores";
+  import { t } from "svelte-i18n";
+  import { get } from "svelte/store";
 
   const WAVEFORM_HEIGHT = 32;
 
@@ -22,7 +24,7 @@
   let canvasRefs: Record<string, HTMLCanvasElement> = $state({});
 
   function formatChannels(track: TrackInfo): string {
-    if (track.output_channels.length === 0) return "(unmapped)";
+    if (track.output_channels.length === 0) return get(t)("tracks.unmapped");
     return "ch " + track.output_channels.join(", ");
   }
 
@@ -104,11 +106,15 @@
 
 <div class="card tracks-card">
   <div class="card-header">
-    <span class="card-title">Tracks</span>
-    <span class="track-count">{$playbackStore.tracks.length} tracks</span>
+    <span class="card-title">{$t("tracks.title")}</span>
+    <span class="track-count"
+      >{$t("tracks.count", {
+        values: { count: $playbackStore.tracks.length },
+      })}</span
+    >
   </div>
   {#if $playbackStore.tracks.length === 0}
-    <div class="empty">No tracks</div>
+    <div class="empty">{$t("tracks.noTracks")}</div>
   {:else}
     <div class="tracks-list">
       {#each $playbackStore.tracks as track, i (`${i}:${track.name}`)}

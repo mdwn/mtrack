@@ -13,6 +13,7 @@
      *
      * -->
 <script lang="ts">
+  import { t } from "svelte-i18n";
   import type {
     Cue,
     Sequence,
@@ -149,16 +150,24 @@
     role="document"
   >
     <div class="seq-modal-header">
-      <span class="seq-modal-title">Sequence: "{sequence.name}"</span>
-      <span class="seq-modal-info">{sequence.cues.length} cues</span>
-      <span class="seq-modal-hint"
-        >Double-click to add cues. Drag to reposition.</span
+      <span class="seq-modal-title"
+        >{$t("timeline.sequenceEditor.title", {
+          values: { name: sequence.name },
+        })}</span
       >
+      <span class="seq-modal-info"
+        >{$t("timeline.sequenceEditor.cueCount", {
+          values: { count: sequence.cues.length },
+        })}</span
+      >
+      <span class="seq-modal-hint">{$t("timeline.sequenceEditor.hint")}</span>
       <div class="seq-modal-actions">
         <button class="btn btn-sm btn-danger" onclick={ondelete}
-          >Delete Sequence</button
+          >{$t("timeline.sequenceEditor.deleteSequence")}</button
         >
-        <button class="btn btn-sm" onclick={onclose}>Close</button>
+        <button class="btn btn-sm" onclick={onclose}
+          >{$t("common.close")}</button
+        >
       </div>
     </div>
 
@@ -235,7 +244,7 @@
         {/if}
       {:else}
         <div class="seq-detail-empty">
-          Select a cue to edit, or double-click the lane to create one.
+          {$t("timeline.sequenceEditor.selectCue")}
         </div>
       {/if}
     </div>

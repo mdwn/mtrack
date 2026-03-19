@@ -13,6 +13,8 @@
      *
      * -->
 <script lang="ts">
+  import { t } from "svelte-i18n";
+  import { get } from "svelte/store";
   import { createSong } from "../../lib/api/songs";
 
   interface Props {
@@ -39,7 +41,7 @@
       const yaml = `name: "${songName}"\ntracks: []\n`;
       const res = await createSong(trimmed, yaml);
       if (res.status === 409) {
-        error = "Song already exists";
+        error = get(t)("songs.create.alreadyExists");
         return;
       }
       if (!res.ok) {
@@ -49,7 +51,7 @@
       }
       oncreated(songName);
     } catch (e) {
-      error = e instanceof Error ? e.message : "Failed to create song";
+      error = e instanceof Error ? e.message : get(t)("songs.create.failed");
     } finally {
       saving = false;
     }
@@ -66,7 +68,7 @@
     <input
       class="input name-input"
       type="text"
-      placeholder="Song name or path (e.g. Artist/Song)"
+      placeholder={$t("songs.create.placeholder")}
       bind:value={name}
       {onkeydown}
       disabled={saving}
@@ -76,9 +78,11 @@
       onclick={submit}
       disabled={saving || !name.trim()}
     >
-      {saving ? "Creating..." : "Create"}
+      {saving ? $t("common.creating") : $t("common.create")}
     </button>
-    <button class="btn" onclick={oncancel} disabled={saving}>Cancel</button>
+    <button class="btn" onclick={oncancel} disabled={saving}
+      >{$t("common.cancel")}</button
+    >
   </div>
   {#if error}
     <div class="form-error">{error}</div>

@@ -25,6 +25,8 @@
     type FixtureTypeData,
     type VenueData,
   } from "../../lib/api/config";
+  import { t } from "svelte-i18n";
+  import { get } from "svelte/store";
 
   interface Props {
     lighting: any;
@@ -160,7 +162,7 @@
 
   async function saveFt() {
     if (!editFtName.trim()) {
-      ftMsg = "Name is required";
+      ftMsg = get(t)("lighting.nameRequired");
       return;
     }
     const channels: Record<string, number> = {};
@@ -169,7 +171,7 @@
       channels[ch.name.trim()] = ch.offset;
     }
     if (Object.keys(channels).length === 0) {
-      ftMsg = "At least one channel is required";
+      ftMsg = get(t)("lighting.channelRequired");
       return;
     }
     const newName = editFtName.trim();
@@ -199,7 +201,7 @@
       }
       await loadFixtureTypes();
       editingFt = null;
-      ftMsg = "Saved";
+      ftMsg = get(t)("common.saved");
       setTimeout(() => (ftMsg = ""), 2000);
     } catch (e: any) {
       ftMsg = e.message;
@@ -209,7 +211,8 @@
   }
 
   async function removeFt(name: string) {
-    if (!confirm(`Delete fixture type "${name}"?`)) return;
+    if (!confirm(get(t)("lighting.deleteFixtureType", { values: { name } })))
+      return;
     try {
       await deleteFixtureType(name, ftDir || undefined);
       await loadFixtureTypes();
@@ -268,7 +271,7 @@
 
   async function saveVenueData() {
     if (!editVenueName.trim()) {
-      venueMsg = "Name is required";
+      venueMsg = get(t)("lighting.nameRequired");
       return;
     }
     const fixtures = editVenueFixtures
@@ -292,7 +295,7 @@
       }
       await loadVenues();
       editingVenue = null;
-      venueMsg = "Saved";
+      venueMsg = get(t)("common.saved");
       setTimeout(() => (venueMsg = ""), 2000);
     } catch (e: any) {
       venueMsg = e.message;
@@ -302,7 +305,7 @@
   }
 
   async function removeVenue(name: string) {
-    if (!confirm(`Delete venue "${name}"?`)) return;
+    if (!confirm(get(t)("lighting.deleteVenue", { values: { name } }))) return;
     try {
       await deleteVenue(name, venueDir || undefined);
       await loadVenues();
@@ -430,14 +433,14 @@
     | "FallbackTo"
     | "AllowEmpty";
 
-  const constraintTypes: { value: ConstraintType; label: string }[] = [
-    { value: "AllOf", label: "All Of (tags)" },
-    { value: "AnyOf", label: "Any Of (tags)" },
-    { value: "Prefer", label: "Prefer (tags)" },
-    { value: "MinCount", label: "Min Count" },
-    { value: "MaxCount", label: "Max Count" },
-    { value: "FallbackTo", label: "Fallback To" },
-    { value: "AllowEmpty", label: "Allow Empty" },
+  const constraintTypes: { value: ConstraintType; labelKey: string }[] = [
+    { value: "AllOf", labelKey: "lighting.allOfTags" },
+    { value: "AnyOf", labelKey: "lighting.anyOfTags" },
+    { value: "Prefer", labelKey: "lighting.preferTags" },
+    { value: "MinCount", labelKey: "lighting.minCount" },
+    { value: "MaxCount", labelKey: "lighting.maxCount" },
+    { value: "FallbackTo", labelKey: "lighting.fallbackTo" },
+    { value: "AllowEmpty", labelKey: "lighting.allowEmptyLabel" },
   ];
 
   function getConstraintType(constraint: any): ConstraintType {
@@ -503,17 +506,19 @@
     <button
       class="sub-tab"
       class:active={activeSubTab === "fixture_types"}
-      onclick={() => (activeSubTab = "fixture_types")}>Fixture Types</button
+      onclick={() => (activeSubTab = "fixture_types")}
+      >{$t("lighting.fixtureTypes")}</button
     >
     <button
       class="sub-tab"
       class:active={activeSubTab === "venues"}
-      onclick={() => (activeSubTab = "venues")}>Venues</button
+      onclick={() => (activeSubTab = "venues")}>{$t("lighting.venues")}</button
     >
     <button
       class="sub-tab"
       class:active={activeSubTab === "profile"}
-      onclick={() => (activeSubTab = "profile")}>Profile Settings</button
+      onclick={() => (activeSubTab = "profile")}
+      >{$t("lighting.profileSettings")}</button
     >
   </div>
 
@@ -525,27 +530,35 @@
         <div class="editor-form">
           <div class="editor-header">
             <h4 class="editor-title">
-              {isNewFt ? "New Fixture Type" : `Edit: ${editingFt}`}
+              {isNewFt
+                ? $t("lighting.newFixtureType")
+                : $t("lighting.editFixtureType", {
+                    values: { name: editingFt },
+                  })}
             </h4>
             <div class="editor-actions">
               {#if ftMsg}
-                <span class="save-msg" class:save-error={ftMsg !== "Saved"}
+                <span
+                  class="save-msg"
+                  class:save-error={ftMsg !== get(t)("common.saved")}
                   >{ftMsg}</span
                 >
               {/if}
-              <button class="btn" onclick={cancelEditFt}>Cancel</button>
+              <button class="btn" onclick={cancelEditFt}
+                >{$t("common.cancel")}</button
+              >
               <button
                 class="btn btn-primary"
                 onclick={saveFt}
                 disabled={ftSaving}
               >
-                {ftSaving ? "Saving..." : "Save"}
+                {ftSaving ? $t("common.saving") : $t("common.save")}
               </button>
             </div>
           </div>
 
           <div class="field">
-            <label for="ft-name">Name</label>
+            <label for="ft-name">{$t("lighting.name")}</label>
             <input
               id="ft-name"
               class="input"
@@ -556,23 +569,23 @@
 
           <div class="subsection">
             <div class="subsection-header">
-              <span class="field-label">Channel Map</span>
+              <span class="field-label">{$t("lighting.channelMap")}</span>
               <button class="btn btn-sm" onclick={addFtChannel}
-                >Add Channel</button
+                >{$t("lighting.addChannel")}</button
               >
             </div>
             {#each editFtChannels as ch, i (i)}
               <div class="channel-row">
                 <input
                   class="input channel-name"
-                  placeholder="Channel name"
+                  placeholder={$t("lighting.channelName")}
                   bind:value={ch.name}
                 />
                 <input
                   class="input channel-offset"
                   type="number"
                   min="1"
-                  placeholder="Offset"
+                  placeholder={$t("lighting.offset")}
                   bind:value={ch.offset}
                 />
                 <button
@@ -585,7 +598,7 @@
 
           <div class="field-row-3">
             <div class="field">
-              <label for="ft-max-strobe">Max Strobe Freq (Hz)</label>
+              <label for="ft-max-strobe">{$t("lighting.maxStrobeFreq")}</label>
               <input
                 id="ft-max-strobe"
                 class="input"
@@ -596,7 +609,7 @@
               />
             </div>
             <div class="field">
-              <label for="ft-min-strobe">Min Strobe Freq (Hz)</label>
+              <label for="ft-min-strobe">{$t("lighting.minStrobeFreq")}</label>
               <input
                 id="ft-min-strobe"
                 class="input"
@@ -607,7 +620,9 @@
               />
             </div>
             <div class="field">
-              <label for="ft-strobe-offset">Strobe DMX Offset</label>
+              <label for="ft-strobe-offset"
+                >{$t("lighting.strobeDmxOffset")}</label
+              >
               <input
                 id="ft-strobe-offset"
                 class="input"
@@ -623,32 +638,35 @@
         <!-- Fixture Type List -->
         <div class="list-header">
           <span class="field-hint"
-            >{Object.keys(fixtureTypes).length} fixture type(s)</span
+            >{$t("lighting.fixtureTypeCount", {
+              values: { count: Object.keys(fixtureTypes).length },
+            })}</span
           >
           <div class="list-actions">
             {#if ftMsg}
-              <span class="save-msg" class:save-error={ftMsg !== "Saved"}
+              <span
+                class="save-msg"
+                class:save-error={ftMsg !== get(t)("common.saved")}
                 >{ftMsg}</span
               >
             {/if}
             <button class="btn" onclick={loadFixtureTypes} disabled={ftLoading}
-              >Refresh</button
+              >{$t("common.refresh")}</button
             >
             <button class="btn btn-primary" onclick={startNewFt}
-              >New Fixture Type</button
+              >{$t("lighting.newFixtureType")}</button
             >
           </div>
         </div>
         {#if ftLoading}
-          <p class="status-text">Loading...</p>
+          <p class="status-text">{$t("common.loading")}</p>
         {:else if ftError}
           <p class="status-text error-text">{ftError}</p>
         {:else if Object.keys(fixtureTypes).length === 0}
           <div class="empty-state">
-            <p>No fixture types defined.</p>
+            <p>{$t("lighting.noFixtureTypes")}</p>
             <p>
-              Create one to define the DMX channel layout of your lighting
-              fixtures.
+              {$t("lighting.fixtureTypeHint")}
             </p>
           </div>
         {:else}
@@ -670,19 +688,25 @@
                     onclick={(e) => {
                       e.stopPropagation();
                       removeFt(name);
-                    }}>Delete</button
+                    }}>{$t("common.delete")}</button
                   >
                 </div>
                 <div class="item-meta">
-                  {Object.keys(ft.channels).length} channels:
-                  {Object.entries(ft.channels)
-                    .sort(([, a], [, b]) => a - b)
-                    .map(([n]) => n)
-                    .join(", ")}
+                  {$t("lighting.channels", {
+                    values: {
+                      count: Object.keys(ft.channels).length,
+                      names: Object.entries(ft.channels)
+                        .sort(([, a], [, b]) => a - b)
+                        .map(([n]) => n)
+                        .join(", "),
+                    },
+                  })}
                 </div>
                 {#if ft.max_strobe_frequency}
                   <div class="item-meta">
-                    Strobe: {ft.max_strobe_frequency} Hz max
+                    {$t("lighting.strobeMax", {
+                      values: { freq: ft.max_strobe_frequency },
+                    })}
                   </div>
                 {/if}
               </div>
@@ -701,27 +725,33 @@
         <div class="editor-form">
           <div class="editor-header">
             <h4 class="editor-title">
-              {isNewVenue ? "New Venue" : `Edit: ${editingVenue}`}
+              {isNewVenue
+                ? $t("lighting.newVenue")
+                : $t("lighting.editVenue", { values: { name: editingVenue } })}
             </h4>
             <div class="editor-actions">
               {#if venueMsg}
-                <span class="save-msg" class:save-error={venueMsg !== "Saved"}
+                <span
+                  class="save-msg"
+                  class:save-error={venueMsg !== get(t)("common.saved")}
                   >{venueMsg}</span
                 >
               {/if}
-              <button class="btn" onclick={cancelEditVenue}>Cancel</button>
+              <button class="btn" onclick={cancelEditVenue}
+                >{$t("common.cancel")}</button
+              >
               <button
                 class="btn btn-primary"
                 onclick={saveVenueData}
                 disabled={venueSaving}
               >
-                {venueSaving ? "Saving..." : "Save"}
+                {venueSaving ? $t("common.saving") : $t("common.save")}
               </button>
             </div>
           </div>
 
           <div class="field">
-            <label for="venue-name">Name</label>
+            <label for="venue-name">{$t("lighting.name")}</label>
             <input
               id="venue-name"
               class="input"
@@ -732,9 +762,9 @@
 
           <div class="subsection">
             <div class="subsection-header">
-              <span class="field-label">Fixtures</span>
+              <span class="field-label">{$t("lighting.fixtures")}</span>
               <button class="btn btn-sm" onclick={addVenueFixture}
-                >Add Fixture</button
+                >{$t("lighting.addFixture")}</button
               >
             </div>
 
@@ -743,12 +773,12 @@
                 <div class="venue-fixture-row">
                   <input
                     class="input"
-                    placeholder="Fixture name"
+                    placeholder={$t("lighting.fixtureName")}
                     bind:value={fix.name}
                   />
                   {#if fixtureTypeNames.length > 0}
                     <select class="input" bind:value={fix.fixture_type}>
-                      <option value="">-- Select Type --</option>
+                      <option value="">{$t("lighting.selectType")}</option>
                       {#each fixtureTypeNames as ftName (ftName)}
                         <option value={ftName}>{ftName}</option>
                       {/each}
@@ -756,7 +786,7 @@
                   {:else}
                     <input
                       class="input"
-                      placeholder="Fixture type"
+                      placeholder={$t("lighting.fixtureType")}
                       bind:value={fix.fixture_type}
                     />
                   {/if}
@@ -767,7 +797,9 @@
                 </div>
                 <div class="venue-fixture-row">
                   <div class="field compact-field">
-                    <label for={`fix-universe-${i}`}>Universe</label>
+                    <label for={`fix-universe-${i}`}
+                      >{$t("lighting.universe")}</label
+                    >
                     <input
                       id={`fix-universe-${i}`}
                       class="input"
@@ -777,7 +809,9 @@
                     />
                   </div>
                   <div class="field compact-field">
-                    <label for={`fix-channel-${i}`}>Channel</label>
+                    <label for={`fix-channel-${i}`}
+                      >{$t("lighting.channelLabel")}</label
+                    >
                     <input
                       id={`fix-channel-${i}`}
                       class="input"
@@ -787,11 +821,11 @@
                     />
                   </div>
                   <div class="field compact-field" style="flex: 2;">
-                    <label for={`fix-tags-${i}`}>Tags</label>
+                    <label for={`fix-tags-${i}`}>{$t("lighting.tags")}</label>
                     <TagInput
                       tags={fix.tags}
-                      onchange={(t) => (editVenueFixtures[i].tags = t)}
-                      placeholder="Add tag..."
+                      onchange={(tags) => (editVenueFixtures[i].tags = tags)}
+                      placeholder={$t("lighting.tagPlaceholder")}
                     />
                   </div>
                 </div>
@@ -802,31 +836,36 @@
       {:else}
         <!-- Venue List -->
         <div class="list-header">
-          <span class="field-hint">{Object.keys(venues).length} venue(s)</span>
+          <span class="field-hint"
+            >{$t("lighting.venueCount", {
+              values: { count: Object.keys(venues).length },
+            })}</span
+          >
           <div class="list-actions">
             {#if venueMsg}
-              <span class="save-msg" class:save-error={venueMsg !== "Saved"}
+              <span
+                class="save-msg"
+                class:save-error={venueMsg !== get(t)("common.saved")}
                 >{venueMsg}</span
               >
             {/if}
             <button class="btn" onclick={loadVenues} disabled={venueLoading}
-              >Refresh</button
+              >{$t("common.refresh")}</button
             >
             <button class="btn btn-primary" onclick={startNewVenue}
-              >New Venue</button
+              >{$t("lighting.newVenue")}</button
             >
           </div>
         </div>
         {#if venueLoading}
-          <p class="status-text">Loading...</p>
+          <p class="status-text">{$t("common.loading")}</p>
         {:else if venueError}
           <p class="status-text error-text">{venueError}</p>
         {:else if Object.keys(venues).length === 0}
           <div class="empty-state">
-            <p>No venues defined.</p>
+            <p>{$t("lighting.noVenues")}</p>
             <p>
-              Create one to define the physical fixture layout at a performance
-              location.
+              {$t("lighting.venueHint")}
             </p>
           </div>
         {:else}
@@ -848,13 +887,17 @@
                     onclick={(e) => {
                       e.stopPropagation();
                       removeVenue(name);
-                    }}>Delete</button
+                    }}>{$t("common.delete")}</button
                   >
                 </div>
                 <div class="item-meta">
-                  {Object.keys(v.fixtures).length} fixture(s)
+                  {$t("lighting.fixtureCount", {
+                    values: { count: Object.keys(v.fixtures).length },
+                  })}
                   {#if Object.keys(v.groups).length > 0}
-                    &middot; {Object.keys(v.groups).length} group(s)
+                    &middot; {$t("lighting.groupCount", {
+                      values: { count: Object.keys(v.groups).length },
+                    })}
                   {/if}
                 </div>
                 <div class="item-meta">
@@ -877,21 +920,20 @@
       <div class="section-fields">
         <!-- Directories -->
         <div class="subsection">
-          <h4 class="subsection-title">Directories</h4>
+          <h4 class="subsection-title">{$t("lighting.directories")}</h4>
           <span class="field-hint">
-            Override where fixture types and venues are loaded from. Leave empty
-            to use the defaults (lighting/fixture_types, lighting/venues).
+            {$t("lighting.directoriesHint")}
           </span>
           <div class="field-row-2">
             <div class="field">
               <label for="lighting-fixture-types-dir"
-                >Fixture Types Directory</label
+                >{$t("lighting.fixtureTypesDir")}</label
               >
               <input
                 id="lighting-fixture-types-dir"
                 class="input"
                 type="text"
-                placeholder="lighting/fixture_types"
+                placeholder={$t("lighting.fixtureTypesDirPlaceholder")}
                 value={lighting.directories?.fixture_types ?? ""}
                 onchange={(e) =>
                   setDirectory(
@@ -901,12 +943,13 @@
               />
             </div>
             <div class="field">
-              <label for="lighting-venues-dir">Venues Directory</label>
+              <label for="lighting-venues-dir">{$t("lighting.venuesDir")}</label
+              >
               <input
                 id="lighting-venues-dir"
                 class="input"
                 type="text"
-                placeholder="lighting/venues"
+                placeholder={$t("lighting.venuesDirPlaceholder")}
                 value={lighting.directories?.venues ?? ""}
                 onchange={(e) =>
                   setDirectory(
@@ -920,7 +963,7 @@
 
         <!-- Current Venue -->
         <div class="field">
-          <label for="lighting-venue">Current Venue</label>
+          <label for="lighting-venue">{$t("lighting.currentVenue")}</label>
           {#if venueNames.length > 0}
             <select
               id="lighting-venue"
@@ -929,7 +972,7 @@
               onchange={(e) =>
                 setVenueSelection((e.target as HTMLSelectElement).value)}
             >
-              <option value="">-- None --</option>
+              <option value="">{$t("lighting.noneVenue")}</option>
               {#each venueNames as vn (vn)}
                 <option value={vn}>{vn}</option>
               {/each}
@@ -945,19 +988,19 @@
                 setVenueSelection((e.target as HTMLInputElement).value.trim())}
             />
           {/if}
-          <span class="field-hint"
-            >Venue to use for fixture resolution in this profile.</span
-          >
+          <span class="field-hint">{$t("lighting.venueHintField")}</span>
         </div>
 
         <!-- Inline Fixtures -->
         <div class="subsection">
           <div class="subsection-header">
-            <h4 class="subsection-title">Inline Fixtures</h4>
-            <button class="btn btn-sm" onclick={addInlineFixture}>Add</button>
+            <h4 class="subsection-title">{$t("lighting.inlineFixtures")}</h4>
+            <button class="btn btn-sm" onclick={addInlineFixture}
+              >{$t("common.add")}</button
+            >
           </div>
           <span class="field-hint">
-            Simple fixture overrides. Format: "FixtureType @ universe:channel"
+            {$t("lighting.inlineFixturesHint")}
           </span>
           {#each inlineFixtureEntries as [name, value] (name)}
             <div class="fixture-row">
@@ -992,11 +1035,13 @@
         <!-- Logical Groups -->
         <div class="subsection">
           <div class="subsection-header">
-            <h4 class="subsection-title">Logical Groups</h4>
-            <button class="btn btn-sm" onclick={addGroup}>Add</button>
+            <h4 class="subsection-title">{$t("lighting.logicalGroups")}</h4>
+            <button class="btn btn-sm" onclick={addGroup}
+              >{$t("common.add")}</button
+            >
           </div>
           <span class="field-hint">
-            Role-based groups that resolve to venue fixtures by tag matching.
+            {$t("lighting.logicalGroupsHint")}
           </span>
 
           {#each groupEntries as [name, group] (name)}
@@ -1016,7 +1061,9 @@
                 <span class="group-name">{name}</span>
                 <div class="group-controls">
                   <span class="constraint-count"
-                    >{group.constraints?.length ?? 0} constraints</span
+                    >{$t("lighting.constraintCount", {
+                      values: { count: group.constraints?.length ?? 0 },
+                    })}</span
                   >
                   <button
                     class="btn btn-danger btn-sm"
@@ -1034,7 +1081,9 @@
               {#if expandedGroups[name]}
                 <div class="group-body">
                   <div class="field">
-                    <label for={`group-name-${name}`}>Group Name</label>
+                    <label for={`group-name-${name}`}
+                      >{$t("lighting.groupName")}</label
+                    >
                     <input
                       id={`group-name-${name}`}
                       class="input"
@@ -1049,10 +1098,13 @@
 
                   <div class="constraints-section">
                     <div class="subsection-header">
-                      <span class="field-label">Constraints</span>
+                      <span class="field-label"
+                        >{$t("lighting.constraints")}</span
+                      >
                       <button
                         class="btn btn-sm"
-                        onclick={() => addConstraint(name)}>Add</button
+                        onclick={() => addConstraint(name)}
+                        >{$t("common.add")}</button
                       >
                     </div>
 
@@ -1072,7 +1124,7 @@
                             )}
                         >
                           {#each constraintTypes as ct (ct.value)}
-                            <option value={ct.value}>{ct.label}</option>
+                            <option value={ct.value}>{$t(ct.labelKey)}</option>
                           {/each}
                         </select>
 
@@ -1080,8 +1132,9 @@
                           <div class="constraint-value">
                             <TagInput
                               tags={cValue ?? []}
-                              onchange={(t) => setConstraintValue(name, ci, t)}
-                              placeholder="Add tag..."
+                              onchange={(tags) =>
+                                setConstraintValue(name, ci, tags)}
+                              placeholder={$t("lighting.tagPlaceholder")}
                             />
                           </div>
                         {:else if cType === "MinCount" || cType === "MaxCount"}
@@ -1102,7 +1155,7 @@
                         {:else if cType === "FallbackTo"}
                           <input
                             class="input constraint-value"
-                            placeholder="Group name"
+                            placeholder={$t("lighting.groupNamePlaceholder")}
                             value={cValue}
                             onchange={(e) =>
                               setConstraintValue(
@@ -1123,7 +1176,7 @@
                                   (e.target as HTMLInputElement).checked,
                                 )}
                             />
-                            Allow empty
+                            {$t("lighting.allowEmpty")}
                           </label>
                         {/if}
 

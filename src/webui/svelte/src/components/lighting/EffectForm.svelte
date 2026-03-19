@@ -13,6 +13,7 @@
      *
      * -->
 <script lang="ts">
+  import { t } from "svelte-i18n";
   import type { CueEffect, EffectType } from "../../lib/lighting/types";
   import {
     EFFECT_TYPES,
@@ -122,7 +123,7 @@
     <button
       class="expand-toggle"
       onclick={() => (expanded = !expanded)}
-      title={expanded ? "Collapse" : "Expand"}
+      title={expanded ? $t("effect.collapse") : $t("effect.expand")}
     >
       {expanded ? "\u25BC" : "\u25B6"}
     </button>
@@ -132,7 +133,7 @@
       class="inline-input group-input"
       value={groupText}
       onchange={(e) => updateGroups((e.target as HTMLInputElement).value)}
-      placeholder="group"
+      placeholder={$t("effect.group")}
       list="group-suggestions"
     />
     <datalist id="group-suggestions">
@@ -171,7 +172,7 @@
 
     <button
       class="btn-icon delete-btn"
-      title="Remove effect"
+      title={$t("effect.removeEffect")}
       onclick={ondelete}
     >
       &#10005;
@@ -183,7 +184,7 @@
     <div class="effect-detail">
       {#if showsColor}
         <div class="detail-row">
-          <span class="detail-label">Color{isMultiColor ? "s" : ""}</span>
+          <span class="detail-label">{$t("effect.colors")}</span>
           <ColorInput
             colors={effect.effect.colors}
             onchange={updateColors}
@@ -195,7 +196,7 @@
       <div class="param-grid">
         {#if effect.effect.type === "static"}
           <label class="param">
-            <span class="param-label">Intensity</span>
+            <span class="param-label">{$t("effect.intensity")}</span>
             <input
               type="number"
               class="param-input"
@@ -210,7 +211,7 @@
             />
           </label>
           <label class="param">
-            <span class="param-label">Dimmer</span>
+            <span class="param-label">{$t("effect.dimmer")}</span>
             <input
               type="text"
               class="param-input"
@@ -224,7 +225,7 @@
           </label>
         {:else if effect.effect.type === "cycle"}
           <label class="param"
-            ><span class="param-label">Speed</span><input
+            ><span class="param-label">{$t("effect.speed")}</span><input
               type="text"
               class="param-input"
               placeholder="1.0"
@@ -237,7 +238,7 @@
             /></label
           >
           <label class="param"
-            ><span class="param-label">Duration</span><input
+            ><span class="param-label">{$t("effect.duration")}</span><input
               type="text"
               class="param-input"
               placeholder="2s"
@@ -250,7 +251,7 @@
             /></label
           >
           <label class="param"
-            ><span class="param-label">Dimmer</span><input
+            ><span class="param-label">{$t("effect.dimmer")}</span><input
               type="text"
               class="param-input"
               placeholder="100%"
@@ -263,7 +264,7 @@
             /></label
           >
           <label class="param"
-            ><span class="param-label">Direction</span>
+            ><span class="param-label">{$t("effect.direction")}</span>
             <select
               class="param-input"
               value={effect.effect.direction ?? ""}
@@ -278,7 +279,7 @@
             </select>
           </label>
           <label class="param"
-            ><span class="param-label">Loop</span>
+            ><span class="param-label">{$t("effect.loop")}</span>
             <select
               class="param-input"
               value={effect.effect.loop ?? ""}
@@ -288,15 +289,16 @@
                   (e.target as HTMLSelectElement).value || undefined,
                 )}
             >
-              <option value="">--</option><option value="once">once</option
-              ><option value="loop">loop</option><option value="pingpong"
-                >pingpong</option
-              ><option value="random">random</option>
+              <option value="">--</option><option value="once"
+                >{$t("effect.once")}</option
+              ><option value="loop">{$t("effect.loopOption")}</option><option
+                value="pingpong">{$t("effect.pingpong")}</option
+              ><option value="random">{$t("effect.random")}</option>
             </select>
           </label>
         {:else if effect.effect.type === "strobe"}
           <label class="param"
-            ><span class="param-label">Frequency</span><input
+            ><span class="param-label">{$t("effect.frequency")}</span><input
               type="text"
               class="param-input"
               placeholder="8"
@@ -309,7 +311,7 @@
             /></label
           >
           <label class="param"
-            ><span class="param-label">Intensity</span><input
+            ><span class="param-label">{$t("effect.intensity")}</span><input
               type="number"
               class="param-input"
               min="0"
@@ -323,7 +325,7 @@
             /></label
           >
           <label class="param"
-            ><span class="param-label">Duration</span><input
+            ><span class="param-label">{$t("effect.duration")}</span><input
               type="text"
               class="param-input"
               placeholder="4s"
@@ -336,7 +338,7 @@
             /></label
           >
           <label class="param"
-            ><span class="param-label">Duty</span><input
+            ><span class="param-label">{$t("effect.duty")}</span><input
               type="text"
               class="param-input"
               placeholder="50%"
@@ -350,7 +352,7 @@
           >
         {:else if effect.effect.type === "pulse"}
           <label class="param"
-            ><span class="param-label">Frequency</span><input
+            ><span class="param-label">{$t("effect.frequency")}</span><input
               type="text"
               class="param-input"
               placeholder="4"
@@ -363,7 +365,7 @@
             /></label
           >
           <label class="param"
-            ><span class="param-label">Intensity</span><input
+            ><span class="param-label">{$t("effect.intensity")}</span><input
               type="number"
               class="param-input"
               min="0"
@@ -377,7 +379,7 @@
             /></label
           >
           <label class="param"
-            ><span class="param-label">Base</span><input
+            ><span class="param-label">{$t("effect.base")}</span><input
               type="number"
               class="param-input"
               min="0"
@@ -391,7 +393,7 @@
             /></label
           >
           <label class="param"
-            ><span class="param-label">Amplitude</span><input
+            ><span class="param-label">{$t("effect.amplitude")}</span><input
               type="number"
               class="param-input"
               min="0"
@@ -405,7 +407,7 @@
             /></label
           >
           <label class="param"
-            ><span class="param-label">Duration</span><input
+            ><span class="param-label">{$t("effect.duration")}</span><input
               type="text"
               class="param-input"
               placeholder="500ms"
@@ -418,7 +420,7 @@
             /></label
           >
           <label class="param"
-            ><span class="param-label">Dimmer</span><input
+            ><span class="param-label">{$t("effect.dimmer")}</span><input
               type="text"
               class="param-input"
               placeholder="80%"
@@ -432,7 +434,7 @@
           >
         {:else if effect.effect.type === "chase"}
           <label class="param"
-            ><span class="param-label">Speed</span><input
+            ><span class="param-label">{$t("effect.speed")}</span><input
               type="text"
               class="param-input"
               placeholder="2.0"
@@ -445,7 +447,7 @@
             /></label
           >
           <label class="param"
-            ><span class="param-label">Pattern</span>
+            ><span class="param-label">{$t("effect.pattern")}</span>
             <select
               class="param-input"
               value={effect.effect.pattern ?? ""}
@@ -461,7 +463,7 @@
             </select>
           </label>
           <label class="param"
-            ><span class="param-label">Duration</span><input
+            ><span class="param-label">{$t("effect.duration")}</span><input
               type="text"
               class="param-input"
               placeholder="1s"
@@ -474,7 +476,7 @@
             /></label
           >
           <label class="param"
-            ><span class="param-label">Direction</span>
+            ><span class="param-label">{$t("effect.direction")}</span>
             <select
               class="param-input"
               value={effect.effect.direction ?? ""}
@@ -490,7 +492,7 @@
             </select>
           </label>
           <label class="param"
-            ><span class="param-label">Loop</span>
+            ><span class="param-label">{$t("effect.loop")}</span>
             <select
               class="param-input"
               value={effect.effect.loop ?? ""}
@@ -500,15 +502,16 @@
                   (e.target as HTMLSelectElement).value || undefined,
                 )}
             >
-              <option value="">--</option><option value="once">once</option
-              ><option value="loop">loop</option><option value="pingpong"
-                >pingpong</option
-              ><option value="random">random</option>
+              <option value="">--</option><option value="once"
+                >{$t("effect.once")}</option
+              ><option value="loop">{$t("effect.loopOption")}</option><option
+                value="pingpong">{$t("effect.pingpong")}</option
+              ><option value="random">{$t("effect.random")}</option>
             </select>
           </label>
         {:else if effect.effect.type === "dimmer"}
           <label class="param"
-            ><span class="param-label">Start</span><input
+            ><span class="param-label">{$t("effect.start")}</span><input
               type="number"
               class="param-input"
               min="0"
@@ -522,7 +525,7 @@
             /></label
           >
           <label class="param"
-            ><span class="param-label">End</span><input
+            ><span class="param-label">{$t("effect.end")}</span><input
               type="number"
               class="param-input"
               min="0"
@@ -536,7 +539,7 @@
             /></label
           >
           <label class="param"
-            ><span class="param-label">Duration</span><input
+            ><span class="param-label">{$t("effect.duration")}</span><input
               type="text"
               class="param-input"
               placeholder="0.5s"
@@ -549,7 +552,7 @@
             /></label
           >
           <label class="param"
-            ><span class="param-label">Curve</span>
+            ><span class="param-label">{$t("effect.curve")}</span>
             <select
               class="param-input"
               value={effect.effect.curve ?? ""}
@@ -566,7 +569,7 @@
           </label>
         {:else if effect.effect.type === "rainbow"}
           <label class="param"
-            ><span class="param-label">Speed</span><input
+            ><span class="param-label">{$t("effect.speed")}</span><input
               type="text"
               class="param-input"
               placeholder="2.0"
@@ -579,7 +582,7 @@
             /></label
           >
           <label class="param"
-            ><span class="param-label">Saturation</span><input
+            ><span class="param-label">{$t("effect.saturation")}</span><input
               type="number"
               class="param-input"
               min="0"
@@ -593,7 +596,7 @@
             /></label
           >
           <label class="param"
-            ><span class="param-label">Brightness</span><input
+            ><span class="param-label">{$t("effect.brightness")}</span><input
               type="number"
               class="param-input"
               min="0"
@@ -607,7 +610,7 @@
             /></label
           >
           <label class="param"
-            ><span class="param-label">Direction</span>
+            ><span class="param-label">{$t("effect.direction")}</span>
             <select
               class="param-input"
               value={effect.effect.direction ?? ""}
@@ -623,7 +626,7 @@
             </select>
           </label>
           <label class="param"
-            ><span class="param-label">Duration</span><input
+            ><span class="param-label">{$t("effect.duration")}</span><input
               type="text"
               class="param-input"
               placeholder="3s"
@@ -636,7 +639,7 @@
             /></label
           >
           <label class="param"
-            ><span class="param-label">Loop</span>
+            ><span class="param-label">{$t("effect.loop")}</span>
             <select
               class="param-input"
               value={effect.effect.loop ?? ""}
@@ -646,15 +649,16 @@
                   (e.target as HTMLSelectElement).value || undefined,
                 )}
             >
-              <option value="">--</option><option value="once">once</option
-              ><option value="loop">loop</option>
+              <option value="">--</option><option value="once"
+                >{$t("effect.once")}</option
+              ><option value="loop">{$t("effect.loopOption")}</option>
             </select>
           </label>
         {/if}
 
         <!-- Layer & blend mode -->
         <label class="param"
-          ><span class="param-label">Layer</span>
+          ><span class="param-label">{$t("effect.layer")}</span>
           <select
             class="param-input"
             value={effect.effect.layer ?? ""}
@@ -670,7 +674,7 @@
           </select>
         </label>
         <label class="param"
-          ><span class="param-label">Blend</span>
+          ><span class="param-label">{$t("effect.blend")}</span>
           <select
             class="param-input"
             value={effect.effect.blend_mode ?? ""}
@@ -688,7 +692,7 @@
 
         <!-- Timing -->
         <label class="param"
-          ><span class="param-label">Up</span><input
+          ><span class="param-label">{$t("effect.up")}</span><input
             type="text"
             class="param-input"
             placeholder="fade in"
@@ -701,7 +705,7 @@
           /></label
         >
         <label class="param"
-          ><span class="param-label">Hold</span><input
+          ><span class="param-label">{$t("effect.hold")}</span><input
             type="text"
             class="param-input"
             placeholder="hold"
@@ -714,7 +718,7 @@
           /></label
         >
         <label class="param"
-          ><span class="param-label">Down</span><input
+          ><span class="param-label">{$t("effect.down")}</span><input
             type="text"
             class="param-input"
             placeholder="fade out"

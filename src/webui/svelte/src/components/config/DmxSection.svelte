@@ -14,6 +14,8 @@
      * -->
 <script lang="ts">
   /* eslint-disable @typescript-eslint/no-explicit-any */
+  import { t } from "svelte-i18n";
+
   interface Props {
     dmx: any;
     onchange: () => void;
@@ -60,7 +62,7 @@
 <div class="section-fields">
   <div class="field-row-2">
     <div class="field">
-      <label for="dmx-ola-port">OLA Port</label>
+      <label for="dmx-ola-port">{$t("dmx.olaPort")}</label>
       <input
         id="dmx-ola-port"
         type="number"
@@ -75,7 +77,7 @@
     </div>
 
     <div class="field">
-      <label for="dmx-dim-speed">Dim Speed Modifier</label>
+      <label for="dmx-dim-speed">{$t("dmx.dimSpeedModifier")}</label>
       <input
         id="dmx-dim-speed"
         type="number"
@@ -93,12 +95,12 @@
 
   <div class="field-row-2">
     <div class="field">
-      <label for="dmx-delay">Playback Delay</label>
+      <label for="dmx-delay">{$t("dmx.playbackDelay")}</label>
       <input
         id="dmx-delay"
         type="text"
         class="input"
-        placeholder="e.g. 200ms"
+        placeholder={$t("dmx.playbackDelayPlaceholder")}
         value={dmx.playback_delay ?? ""}
         onchange={(e) =>
           setOrDelete(
@@ -119,22 +121,22 @@
             setOrDelete("null_client", checked || undefined);
           }}
         />
-        Null Client
+        {$t("dmx.nullClient")}
       </label>
     </div>
   </div>
 
   <div class="field">
     <div class="field-header">
-      <span class="field-label">Universes</span>
-      <button class="btn" onclick={addUniverse}>Add</button>
+      <span class="field-label">{$t("dmx.universes")}</span>
+      <button class="btn" onclick={addUniverse}>{$t("common.add")}</button>
     </div>
     {#each universes as u, i (u.universe)}
       <div class="universe-row">
         <input
           type="number"
           class="input universe-num"
-          placeholder="Universe #"
+          placeholder={$t("dmx.universePlaceholder")}
           value={u.universe}
           onchange={(e) =>
             updateUniverse(
@@ -145,7 +147,7 @@
         />
         <input
           class="input universe-name"
-          placeholder="Name"
+          placeholder={$t("dmx.namePlaceholder")}
           value={u.name}
           onchange={(e) =>
             updateUniverse(

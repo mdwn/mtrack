@@ -21,6 +21,7 @@
     Timestamp,
     SubLaneType,
   } from "../../../lib/lighting/types";
+  import { t } from "svelte-i18n";
   import TimestampInput from "../TimestampInput.svelte";
   import EffectForm from "../EffectForm.svelte";
   import LayerCommandForm from "../LayerCommandForm.svelte";
@@ -60,11 +61,11 @@
   let activeTab = $derived(focusTab ?? "effects");
   let absTime = $derived(formatMs(timestampToMs(cue.timestamp, tempo)));
 
-  const sectionLabels: Record<string, string> = {
-    effects: "Effects",
-    commands: "Commands",
-    sequences: "Sequences",
-  };
+  let sectionLabels = $derived({
+    effects: $t("timeline.properties.effects"),
+    commands: $t("timeline.properties.commands"),
+    sequences: $t("timeline.properties.sequences"),
+  } as Record<string, string>);
 
   function updateTimestamp(ts: Timestamp) {
     onchange({ ...cue, timestamp: ts });
@@ -140,13 +141,13 @@
     <div class="props-actions">
       <button
         class="btn btn-sm btn-danger"
-        title="Delete cue"
+        title={$t("cue.deleteCue")}
         onclick={ondelete}
       >
-        Delete
+        {$t("common.delete")}
       </button>
-      <button class="btn btn-sm" title="Close" onclick={onclose}>
-        Close
+      <button class="btn btn-sm" title={$t("common.close")} onclick={onclose}>
+        {$t("common.close")}
       </button>
     </div>
   </div>
@@ -155,7 +156,9 @@
     {#if activeTab === "effects"}
       <div class="tab-content">
         <div class="tab-toolbar">
-          <button class="btn btn-sm" onclick={addEffect}>+ Effect</button>
+          <button class="btn btn-sm" onclick={addEffect}
+            >{$t("timeline.properties.addEffect")}</button
+          >
         </div>
         <div class="items-grid">
           {#each cue.effects as eff, i (i)}
@@ -167,14 +170,16 @@
             />
           {/each}
           {#if cue.effects.length === 0}
-            <p class="empty-hint">No effects. Click "+ Effect" to add one.</p>
+            <p class="empty-hint">{$t("timeline.properties.noEffects")}</p>
           {/if}
         </div>
       </div>
     {:else if activeTab === "commands"}
       <div class="tab-content">
         <div class="tab-toolbar">
-          <button class="btn btn-sm" onclick={addCommand}>+ Command</button>
+          <button class="btn btn-sm" onclick={addCommand}
+            >{$t("timeline.properties.addCommand")}</button
+          >
         </div>
         <div class="items-grid">
           {#each cue.commands as cmd, i (i)}
@@ -185,14 +190,15 @@
             />
           {/each}
           {#if cue.commands.length === 0}
-            <p class="empty-hint">No commands.</p>
+            <p class="empty-hint">{$t("timeline.properties.noCommands")}</p>
           {/if}
         </div>
       </div>
     {:else if activeTab === "sequences"}
       <div class="tab-content">
         <div class="tab-toolbar">
-          <button class="btn btn-sm" onclick={addSequenceRef}>+ Sequence</button
+          <button class="btn btn-sm" onclick={addSequenceRef}
+            >{$t("timeline.properties.addSequence")}</button
           >
         </div>
         <div class="items-grid">
@@ -205,7 +211,7 @@
             />
           {/each}
           {#if cue.sequences.length === 0}
-            <p class="empty-hint">No sequence references.</p>
+            <p class="empty-hint">{$t("timeline.properties.noSequences")}</p>
           {/if}
         </div>
       </div>
