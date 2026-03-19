@@ -308,6 +308,7 @@
   "samples.noSamples": "No samples configured.",
   "samples.addSampleHint": "Add a sample to define audio files for trigger playback.",
   "samples.addSample": "Add Sample",
+  "samples.advanced": "Advanced",
   "samples.file": "File",
   "samples.filePlaceholder": "path/to/sample.wav",
   "samples.browseFilesystem": "Browse Filesystem...",

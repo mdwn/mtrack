@@ -36,8 +36,19 @@
 
   let editingName: string | null = $state(null);
   let collapsed: Record<string, boolean> = $state({});
+  let advancedOpen: Record<string, boolean> = $state({});
   let uploading = $state(false);
   let uploadMsg = $state("");
+
+  function hasAdvancedSettings(def: any): boolean {
+    return (
+      (def.release_behavior && def.release_behavior !== "play_to_completion") ||
+      (def.retrigger && def.retrigger !== "cut") ||
+      def.max_voices != null ||
+      def.fade_time_ms != null ||
+      def.velocity != null
+    );
+  }
 
   let sampleEntries = $derived(
     Object.entries(samples).sort(([a], [b]) => a.localeCompare(b)),
@@ -79,19 +90,6 @@
       delete samples[name][key];
     } else {
       samples[name][key] = value;
-    }
-    onchange();
-  }
-
-  function updateOutputChannels(name: string, value: string) {
-    const channels = value
-      .split(",")
-      .map((s: string) => parseInt(s.trim()))
-      .filter((n: number) => !isNaN(n));
-    if (channels.length > 0) {
-      samples[name].output_channels = channels;
-    } else {
-      delete samples[name].output_channels;
     }
     onchange();
   }
@@ -239,316 +237,333 @@
             </div>
           </div>
 
-          <div class="field-row-2">
-            <div class="field">
-              <label for="sample-channels-{name}"
-                >{$t("samples.outputChannels")}<Tooltip
-                  text={$t("tooltips.samples.outputChannels")}
-                /></label
-              >
-              <input
-                id="sample-channels-{name}"
-                class="input"
-                type="text"
-                placeholder="1, 2"
-                value={(def.output_channels || []).join(", ")}
-                onchange={(e) =>
-                  updateOutputChannels(
-                    name,
-                    (e.target as HTMLInputElement).value,
-                  )}
-              />
-            </div>
-
-            <div class="field">
-              <label for="sample-track-{name}"
-                >{$t("samples.outputTrack")}<Tooltip
-                  text={$t("tooltips.samples.outputTrack")}
-                /></label
-              >
-              <input
-                id="sample-track-{name}"
-                class="input"
-                type="text"
-                placeholder={$t("samples.outputTrackPlaceholder")}
-                value={def.output_track ?? ""}
-                onchange={(e) =>
-                  setOrDelete(
-                    name,
-                    "output_track",
-                    (e.target as HTMLInputElement).value.trim() || undefined,
-                  )}
-              />
-            </div>
+          <div class="field">
+            <label for="sample-track-{name}"
+              >{$t("samples.outputTrack")}<Tooltip
+                text={$t("tooltips.samples.outputTrack")}
+              /></label
+            >
+            <input
+              id="sample-track-{name}"
+              class="input"
+              type="text"
+              placeholder={$t("samples.outputTrackPlaceholder")}
+              value={def.output_track ?? ""}
+              onchange={(e) =>
+                setOrDelete(
+                  name,
+                  "output_track",
+                  (e.target as HTMLInputElement).value.trim() || undefined,
+                )}
+            />
           </div>
 
-          <div class="field-row-2">
-            <div class="field">
-              <label for="sample-release-{name}"
-                >{$t("samples.releaseBehavior")}<Tooltip
-                  text={$t("tooltips.samples.releaseBehavior")}
-                /></label
-              >
-              <select
-                id="sample-release-{name}"
-                class="input"
-                value={def.release_behavior ?? "play_to_completion"}
-                onchange={(e) => {
-                  const v = (e.target as HTMLSelectElement).value;
-                  setOrDelete(
-                    name,
-                    "release_behavior",
-                    v === "play_to_completion" ? undefined : v,
-                  );
-                }}
-              >
-                <option value="play_to_completion"
-                  >{$t("samples.playToCompletion")}</option
-                >
-                <option value="stop">{$t("samples.releaseStop")}</option>
-                <option value="fade">{$t("samples.releaseFade")}</option>
-              </select>
-            </div>
+          <!-- Advanced settings toggle -->
+          <button
+            class="advanced-toggle"
+            type="button"
+            onclick={() => (advancedOpen[name] = !advancedOpen[name])}
+          >
+            <span class="advanced-chevron" class:open={advancedOpen[name]}
+              >&#9662;</span
+            >
+            {$t("samples.advanced")}
+            {#if hasAdvancedSettings(def)}
+              <span class="advanced-dot"></span>
+            {/if}
+          </button>
 
-            <div class="field">
-              <label for="sample-retrigger-{name}"
-                >{$t("samples.retrigger")}<Tooltip
-                  text={$t("tooltips.samples.retrigger")}
-                /></label
-              >
-              <select
-                id="sample-retrigger-{name}"
-                class="input"
-                value={def.retrigger ?? "cut"}
-                onchange={(e) => {
-                  const v = (e.target as HTMLSelectElement).value;
-                  setOrDelete(name, "retrigger", v === "cut" ? undefined : v);
-                }}
-              >
-                <option value="cut">{$t("samples.retriggerCut")}</option>
-                <option value="polyphonic"
-                  >{$t("samples.retriggerPolyphonic")}</option
-                >
-              </select>
-            </div>
-          </div>
+          {#if advancedOpen[name]}
+            <div class="advanced-body">
+              <div class="field-row-2">
+                <div class="field">
+                  <label for="sample-release-{name}"
+                    >{$t("samples.releaseBehavior")}<Tooltip
+                      text={$t("tooltips.samples.releaseBehavior")}
+                    /></label
+                  >
+                  <select
+                    id="sample-release-{name}"
+                    class="input"
+                    value={def.release_behavior ?? "play_to_completion"}
+                    onchange={(e) => {
+                      const v = (e.target as HTMLSelectElement).value;
+                      setOrDelete(
+                        name,
+                        "release_behavior",
+                        v === "play_to_completion" ? undefined : v,
+                      );
+                    }}
+                  >
+                    <option value="play_to_completion"
+                      >{$t("samples.playToCompletion")}</option
+                    >
+                    <option value="stop">{$t("samples.releaseStop")}</option>
+                    <option value="fade">{$t("samples.releaseFade")}</option>
+                  </select>
+                </div>
 
-          <div class="field-row-2">
-            <div class="field">
-              <label for="sample-max-voices-{name}"
-                >{$t("samples.maxVoices")}<Tooltip
-                  text={$t("tooltips.samples.maxVoices")}
-                /></label
-              >
-              <input
-                id="sample-max-voices-{name}"
-                class="input"
-                type="number"
-                placeholder={$t("samples.maxVoicesPlaceholder")}
-                value={def.max_voices ?? ""}
-                onchange={(e) => {
-                  const v = (e.target as HTMLInputElement).value;
-                  setOrDelete(name, "max_voices", v ? parseInt(v) : undefined);
-                }}
-              />
-            </div>
-
-            <div class="field">
-              <label for="sample-fade-ms-{name}"
-                >{$t("samples.fadeTimeMs")}<Tooltip
-                  text={$t("tooltips.samples.fadeTimeMs")}
-                /></label
-              >
-              <input
-                id="sample-fade-ms-{name}"
-                class="input"
-                type="number"
-                placeholder="50"
-                value={def.fade_time_ms ?? ""}
-                onchange={(e) => {
-                  const v = (e.target as HTMLInputElement).value;
-                  setOrDelete(
-                    name,
-                    "fade_time_ms",
-                    v ? parseInt(v) : undefined,
-                  );
-                }}
-              />
-            </div>
-          </div>
-
-          <!-- Velocity -->
-          <div class="subsection">
-            <div class="field-header">
-              <span class="field-label">{$t("samples.velocity")}</span>
-            </div>
-
-            <div class="field-row-2">
-              <div class="field">
-                <label for="sample-vel-mode-{name}"
-                  >{$t("samples.velocityMode")}<Tooltip
-                    text={$t("tooltips.samples.velocityMode")}
-                  /></label
-                >
-                <select
-                  id="sample-vel-mode-{name}"
-                  class="input"
-                  value={def.velocity?.mode ?? "ignore"}
-                  onchange={(e) => {
-                    const v = (e.target as HTMLSelectElement).value;
-                    if (v === "ignore") {
-                      delete samples[name].velocity;
-                    } else {
-                      if (!samples[name].velocity) samples[name].velocity = {};
-                      samples[name].velocity.mode = v;
-                    }
-                    onchange();
-                  }}
-                >
-                  <option value="ignore">{$t("samples.velocityIgnore")}</option>
-                  <option value="scale">{$t("samples.velocityScale")}</option>
-                  <option value="layers">{$t("samples.velocityLayers")}</option>
-                </select>
+                <div class="field">
+                  <label for="sample-retrigger-{name}"
+                    >{$t("samples.retrigger")}<Tooltip
+                      text={$t("tooltips.samples.retrigger")}
+                    /></label
+                  >
+                  <select
+                    id="sample-retrigger-{name}"
+                    class="input"
+                    value={def.retrigger ?? "cut"}
+                    onchange={(e) => {
+                      const v = (e.target as HTMLSelectElement).value;
+                      setOrDelete(
+                        name,
+                        "retrigger",
+                        v === "cut" ? undefined : v,
+                      );
+                    }}
+                  >
+                    <option value="cut">{$t("samples.retriggerCut")}</option>
+                    <option value="polyphonic"
+                      >{$t("samples.retriggerPolyphonic")}</option
+                    >
+                  </select>
+                </div>
               </div>
 
-              {#if (def.velocity?.mode ?? "ignore") === "ignore"}
+              <div class="field-row-2">
                 <div class="field">
-                  <label for="sample-vel-default-{name}"
-                    >{$t("samples.defaultVelocity")}<Tooltip
-                      text={$t("tooltips.samples.defaultVelocity")}
+                  <label for="sample-max-voices-{name}"
+                    >{$t("samples.maxVoices")}<Tooltip
+                      text={$t("tooltips.samples.maxVoices")}
                     /></label
                   >
                   <input
-                    id="sample-vel-default-{name}"
+                    id="sample-max-voices-{name}"
                     class="input"
                     type="number"
-                    min="0"
-                    max="127"
-                    placeholder="100"
-                    value={def.velocity?.default ?? ""}
+                    placeholder={$t("samples.maxVoicesPlaceholder")}
+                    value={def.max_voices ?? ""}
                     onchange={(e) => {
                       const v = (e.target as HTMLInputElement).value;
-                      if (!def.velocity) samples[name].velocity = {};
-                      if (v) {
-                        samples[name].velocity.default = parseInt(v);
-                      } else {
-                        delete samples[name].velocity?.default;
-                      }
-                      onchange();
+                      setOrDelete(
+                        name,
+                        "max_voices",
+                        v ? parseInt(v) : undefined,
+                      );
                     }}
                   />
                 </div>
-              {/if}
-            </div>
 
-            {#if def.velocity?.mode === "layers"}
-              <div class="layers-section">
-                <div class="field-header">
-                  <span class="field-label">{$t("samples.layers")}</span>
-                  <button class="btn btn-sm" onclick={() => addLayer(name)}
-                    >{$t("samples.addLayer")}</button
+                <div class="field">
+                  <label for="sample-fade-ms-{name}"
+                    >{$t("samples.fadeTimeMs")}<Tooltip
+                      text={$t("tooltips.samples.fadeTimeMs")}
+                    /></label
                   >
-                </div>
-
-                <label class="toggle-inline">
                   <input
-                    type="checkbox"
-                    checked={def.velocity?.scale ?? false}
+                    id="sample-fade-ms-{name}"
+                    class="input"
+                    type="number"
+                    placeholder="50"
+                    value={def.fade_time_ms ?? ""}
                     onchange={(e) => {
-                      if (!samples[name].velocity) samples[name].velocity = {};
-                      const checked = (e.target as HTMLInputElement).checked;
-                      if (checked) {
-                        samples[name].velocity.scale = true;
-                      } else {
-                        delete samples[name].velocity.scale;
-                      }
-                      onchange();
+                      const v = (e.target as HTMLInputElement).value;
+                      setOrDelete(
+                        name,
+                        "fade_time_ms",
+                        v ? parseInt(v) : undefined,
+                      );
                     }}
                   />
-                  {$t("samples.scaleByVelocity")}<Tooltip
-                    text={$t("tooltips.samples.scaleByVelocity")}
-                  />
-                </label>
+                </div>
+              </div>
 
-                {#each def.velocity?.layers ?? [] as layer, li (li)}
-                  <div class="layer-card">
-                    <div class="layer-row">
-                      <span class="layer-label"
-                        >Velocity {layer.range?.[0] ?? 0}-{layer.range?.[1] ??
-                          127}</span
-                      >
-                      <input
-                        class="input layer-range"
-                        type="number"
-                        min="0"
-                        max="127"
-                        placeholder="Min"
-                        value={layer.range?.[0] ?? ""}
-                        onchange={(e) => {
-                          samples[name].velocity.layers[li].range[0] =
-                            parseInt((e.target as HTMLInputElement).value) || 0;
-                          onchange();
-                        }}
-                      />
-                      <span class="range-sep">-</span>
-                      <input
-                        class="input layer-range"
-                        type="number"
-                        min="0"
-                        max="127"
-                        placeholder="Max"
-                        value={layer.range?.[1] ?? ""}
-                        onchange={(e) => {
-                          samples[name].velocity.layers[li].range[1] =
-                            parseInt((e.target as HTMLInputElement).value) ||
-                            127;
-                          onchange();
-                        }}
-                      />
-                      <button
-                        class="btn btn-danger btn-sm"
-                        onclick={() => removeLayer(name, li)}>X</button
-                      >
-                    </div>
-                    <input
+              <!-- Velocity -->
+              <div class="subsection">
+                <div class="field-header">
+                  <span class="field-label">{$t("samples.velocity")}</span>
+                </div>
+
+                <div class="field-row-2">
+                  <div class="field">
+                    <label for="sample-vel-mode-{name}"
+                      >{$t("samples.velocityMode")}<Tooltip
+                        text={$t("tooltips.samples.velocityMode")}
+                      /></label
+                    >
+                    <select
+                      id="sample-vel-mode-{name}"
                       class="input"
-                      type="text"
-                      placeholder={$t("samples.layerFilePlaceholder")}
-                      value={layer.file ?? ""}
+                      value={def.velocity?.mode ?? "ignore"}
                       onchange={(e) => {
-                        samples[name].velocity.layers[li].file = (
-                          e.target as HTMLInputElement
-                        ).value.trim();
+                        const v = (e.target as HTMLSelectElement).value;
+                        if (v === "ignore") {
+                          delete samples[name].velocity;
+                        } else {
+                          if (!samples[name].velocity)
+                            samples[name].velocity = {};
+                          samples[name].velocity.mode = v;
+                        }
                         onchange();
                       }}
-                    />
-                    <div class="browse-row">
-                      <button
-                        class="btn"
-                        onclick={() => {
-                          onbrowse({
-                            sampleName: name,
-                            field: "layer",
-                            layerIndex: li,
-                          });
-                        }}>{$t("samples.browseFilesystem")}</button
+                    >
+                      <option value="ignore"
+                        >{$t("samples.velocityIgnore")}</option
                       >
-                    </div>
-                    <div class="upload-area">
-                      <FileUpload
-                        accept=".wav,.flac,.mp3,.ogg,.aac,.m4a,.mp4,.aiff,.aif"
-                        label={uploading
-                          ? $t("common.uploading")
-                          : $t("samples.dropAudio")}
-                        onupload={(files) =>
-                          handleSampleUpload(name, "layer", li, files)}
+                      <option value="scale"
+                        >{$t("samples.velocityScale")}</option
+                      >
+                      <option value="layers"
+                        >{$t("samples.velocityLayers")}</option
+                      >
+                    </select>
+                  </div>
+
+                  {#if (def.velocity?.mode ?? "ignore") === "ignore"}
+                    <div class="field">
+                      <label for="sample-vel-default-{name}"
+                        >{$t("samples.defaultVelocity")}<Tooltip
+                          text={$t("tooltips.samples.defaultVelocity")}
+                        /></label
+                      >
+                      <input
+                        id="sample-vel-default-{name}"
+                        class="input"
+                        type="number"
+                        min="0"
+                        max="127"
+                        placeholder="100"
+                        value={def.velocity?.default ?? ""}
+                        onchange={(e) => {
+                          const v = (e.target as HTMLInputElement).value;
+                          if (!def.velocity) samples[name].velocity = {};
+                          if (v) {
+                            samples[name].velocity.default = parseInt(v);
+                          } else {
+                            delete samples[name].velocity?.default;
+                          }
+                          onchange();
+                        }}
                       />
                     </div>
+                  {/if}
+                </div>
+
+                {#if def.velocity?.mode === "layers"}
+                  <div class="layers-section">
+                    <div class="field-header">
+                      <span class="field-label">{$t("samples.layers")}</span>
+                      <button class="btn btn-sm" onclick={() => addLayer(name)}
+                        >{$t("samples.addLayer")}</button
+                      >
+                    </div>
+
+                    <label class="toggle-inline">
+                      <input
+                        type="checkbox"
+                        checked={def.velocity?.scale ?? false}
+                        onchange={(e) => {
+                          if (!samples[name].velocity)
+                            samples[name].velocity = {};
+                          const checked = (e.target as HTMLInputElement)
+                            .checked;
+                          if (checked) {
+                            samples[name].velocity.scale = true;
+                          } else {
+                            delete samples[name].velocity.scale;
+                          }
+                          onchange();
+                        }}
+                      />
+                      {$t("samples.scaleByVelocity")}<Tooltip
+                        text={$t("tooltips.samples.scaleByVelocity")}
+                      />
+                    </label>
+
+                    {#each def.velocity?.layers ?? [] as layer, li (li)}
+                      <div class="layer-card">
+                        <div class="layer-row">
+                          <span class="layer-label"
+                            >Velocity {layer.range?.[0] ?? 0}-{layer
+                              .range?.[1] ?? 127}</span
+                          >
+                          <input
+                            class="input layer-range"
+                            type="number"
+                            min="0"
+                            max="127"
+                            placeholder="Min"
+                            value={layer.range?.[0] ?? ""}
+                            onchange={(e) => {
+                              samples[name].velocity.layers[li].range[0] =
+                                parseInt(
+                                  (e.target as HTMLInputElement).value,
+                                ) || 0;
+                              onchange();
+                            }}
+                          />
+                          <span class="range-sep">-</span>
+                          <input
+                            class="input layer-range"
+                            type="number"
+                            min="0"
+                            max="127"
+                            placeholder="Max"
+                            value={layer.range?.[1] ?? ""}
+                            onchange={(e) => {
+                              samples[name].velocity.layers[li].range[1] =
+                                parseInt(
+                                  (e.target as HTMLInputElement).value,
+                                ) || 127;
+                              onchange();
+                            }}
+                          />
+                          <button
+                            class="btn btn-danger btn-sm"
+                            onclick={() => removeLayer(name, li)}>X</button
+                          >
+                        </div>
+                        <input
+                          class="input"
+                          type="text"
+                          placeholder={$t("samples.layerFilePlaceholder")}
+                          value={layer.file ?? ""}
+                          onchange={(e) => {
+                            samples[name].velocity.layers[li].file = (
+                              e.target as HTMLInputElement
+                            ).value.trim();
+                            onchange();
+                          }}
+                        />
+                        <div class="browse-row">
+                          <button
+                            class="btn"
+                            onclick={() => {
+                              onbrowse({
+                                sampleName: name,
+                                field: "layer",
+                                layerIndex: li,
+                              });
+                            }}>{$t("samples.browseFilesystem")}</button
+                          >
+                        </div>
+                        <div class="upload-area">
+                          <FileUpload
+                            accept=".wav,.flac,.mp3,.ogg,.aac,.m4a,.mp4,.aiff,.aif"
+                            label={uploading
+                              ? $t("common.uploading")
+                              : $t("samples.dropAudio")}
+                            onupload={(files) =>
+                              handleSampleUpload(name, "layer", li, files)}
+                          />
+                        </div>
+                      </div>
+                    {/each}
                   </div>
-                {/each}
+                {/if}
               </div>
-            {/if}
-          </div>
+            </div>
+          {/if}
         </div>
       {/if}
     </div>
@@ -647,6 +662,44 @@
     text-transform: uppercase;
     letter-spacing: 0.5px;
     color: var(--text-muted);
+  }
+  .advanced-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    cursor: pointer;
+    padding: 4px 0;
+    font-family: var(--sans);
+    transition: color 0.15s;
+  }
+  .advanced-toggle:hover {
+    color: var(--text-muted);
+  }
+  .advanced-chevron {
+    font-size: 10px;
+    transition: transform 0.15s;
+    transform: rotate(-90deg);
+  }
+  .advanced-chevron.open {
+    transform: rotate(0deg);
+  }
+  .advanced-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+  .advanced-body {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
   }
   .browse-row {
     margin-top: 8px;
