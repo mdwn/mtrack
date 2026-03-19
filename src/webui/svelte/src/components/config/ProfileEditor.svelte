@@ -96,7 +96,7 @@
       type="text"
       placeholder="Leave empty for default profile"
       value={profile.hostname ?? ""}
-      onchange={(e) => {
+      oninput={(e) => {
         const v = (e.target as HTMLInputElement).value.trim();
         if (v) {
           profile.hostname = v;

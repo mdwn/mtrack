@@ -15,6 +15,8 @@
 import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 
+const proxyTarget = process.env.VITE_PROXY_TARGET || "http://127.0.0.1:8080";
+
 export default defineConfig({
   plugins: [svelte()],
   build: {
@@ -23,14 +25,14 @@ export default defineConfig({
   server: {
     proxy: {
       "/ws": {
-        target: "http://127.0.0.1:8080",
+        target: proxyTarget,
         ws: true,
       },
       "/api": {
-        target: "http://127.0.0.1:8080",
+        target: proxyTarget,
       },
       "/player.v1.PlayerService": {
-        target: "http://127.0.0.1:8080",
+        target: proxyTarget,
       },
     },
   },

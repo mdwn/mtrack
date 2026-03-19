@@ -403,8 +403,16 @@
                     <button
                       class="btn btn-accent"
                       onclick={doNoiseFloor}
-                      disabled={!calDevice}>Start</button
+                      disabled={!calDevice}
+                      title={!calDevice
+                        ? "Select an audio input device first"
+                        : undefined}>Start</button
                     >
+                    {#if !calDevice}
+                      <span class="cal-hint"
+                        >Select a device to start calibration</span
+                      >
+                    {/if}
                     <button class="btn" onclick={closeCalibrate}>Cancel</button>
                   </div>
                 </div>
@@ -945,6 +953,11 @@
   .cal-error {
     font-size: 13px;
     color: var(--danger, #e74c3c);
+  }
+  .cal-hint {
+    font-size: 12px;
+    color: var(--text-dim);
+    font-style: italic;
   }
   .cal-actions {
     display: flex;

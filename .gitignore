@@ -7,4 +7,6 @@ lcov.info
 src/webui/svelte/node_modules/
 src/webui/svelte/dist/
 src/webui/svelte/src/gen/
+src/webui/svelte/playwright-report/
+src/webui/svelte/test-results/
 docs/book/
