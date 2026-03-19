@@ -105,7 +105,12 @@ test.describe("Playback State Transitions", () => {
   });
 
   test("next song changes current song", async ({ page }) => {
+    // Verify Next button is enabled before clicking
+    await expect(page.getByRole("button", { name: "Next" })).toBeEnabled();
     await page.getByRole("button", { name: "Next" }).click();
+
+    // Wait for the gRPC call to finish (Play button re-enables after loading)
+    await expect(page.getByRole("button", { name: "Play" })).toBeEnabled();
 
     // Simulate server advancing to next song
     await sendWsMessage(page, {

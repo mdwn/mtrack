@@ -24,9 +24,7 @@ test.describe("Keyboard Shortcuts", () => {
   });
 
   test("space bar triggers play via gRPC", async ({ page }) => {
-    let grpcCalled = false;
     await page.route("**/player.v1.PlayerService/**", async (route) => {
-      grpcCalled = true;
       await route.fulfill({
         status: 200,
         headers: {
@@ -37,14 +35,15 @@ test.describe("Keyboard Shortcuts", () => {
       });
     });
 
+    const requestPromise = page.waitForRequest((req) =>
+      req.url().includes("player.v1.PlayerService"),
+    );
     await page.keyboard.press("Space");
-    expect(grpcCalled).toBe(true);
+    await requestPromise;
   });
 
   test("right arrow triggers next via gRPC", async ({ page }) => {
-    let urlCalled = "";
     await page.route("**/player.v1.PlayerService/**", async (route) => {
-      urlCalled = route.request().url();
       await route.fulfill({
         status: 200,
         headers: {
@@ -55,14 +54,15 @@ test.describe("Keyboard Shortcuts", () => {
       });
     });
 
+    const requestPromise = page.waitForRequest((req) =>
+      req.url().includes("Next"),
+    );
     await page.keyboard.press("ArrowRight");
-    expect(urlCalled).toContain("Next");
+    await requestPromise;
   });
 
   test("left arrow triggers previous via gRPC", async ({ page }) => {
-    let urlCalled = "";
     await page.route("**/player.v1.PlayerService/**", async (route) => {
-      urlCalled = route.request().url();
       await route.fulfill({
         status: 200,
         headers: {
@@ -73,15 +73,14 @@ test.describe("Keyboard Shortcuts", () => {
       });
     });
 
+    const requestPromise = page.waitForRequest((req) =>
+      req.url().includes("Previous"),
+    );
     await page.keyboard.press("ArrowLeft");
-    expect(urlCalled).toContain("Previous");
+    await requestPromise;
   });
 
   test("space bar does not trigger when typing in input", async ({ page }) => {
-    // Navigate to songs page which has a search input
-    await page.goto("/#/songs");
-    await expect(page.locator(".search-input")).toBeVisible();
-
     let grpcCalled = false;
     await page.route("**/player.v1.PlayerService/**", async (route) => {
       grpcCalled = true;
@@ -95,8 +94,37 @@ test.describe("Keyboard Shortcuts", () => {
       });
     });
 
-    // Focus the search input and press space
+    // Even on the dashboard, focusing an input should suppress shortcuts
+    // (The playlist select is an input-like element on the dashboard)
+    // Navigate to songs page to find a text input
+    await page.goto("/#/songs");
+    await expect(page.locator(".search-input")).toBeVisible();
     await page.locator(".search-input").focus();
+    await page.keyboard.press("Space");
+
+    // gRPC should NOT have been called (wrong page + input focused)
+    expect(grpcCalled).toBe(false);
+  });
+
+  test("shortcuts do not trigger on non-dashboard pages", async ({ page }) => {
+    let grpcCalled = false;
+    await page.route("**/player.v1.PlayerService/**", async (route) => {
+      grpcCalled = true;
+      await route.fulfill({
+        status: 200,
+        headers: {
+          "content-type": "application/grpc-web+proto",
+          "grpc-status": "0",
+        },
+        body: Buffer.alloc(0),
+      });
+    });
+
+    // Navigate to config page and press space
+    await page.goto("/#/config");
+    await expect(
+      page.getByRole("heading", { name: "Hardware Profiles" }),
+    ).toBeVisible();
     await page.keyboard.press("Space");
 
     // gRPC should NOT have been called
