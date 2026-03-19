@@ -84,6 +84,15 @@
   let loading = $state(false);
 
   function handleKeydown(e: KeyboardEvent) {
+    // Only handle shortcuts on the dashboard page to avoid accidental
+    // playback triggers when interacting with forms on other pages.
+    if (
+      window.location.hash !== "#/" &&
+      window.location.hash !== "" &&
+      window.location.hash !== "#"
+    )
+      return;
+
     // Don't intercept when typing in form fields
     const tag = (e.target as HTMLElement)?.tagName;
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;

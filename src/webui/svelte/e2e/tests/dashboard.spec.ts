@@ -86,9 +86,7 @@ test.describe("Dashboard", () => {
   });
 
   test("play button triggers gRPC call", async ({ page }) => {
-    let grpcCalled = false;
     await page.route("**/player.v1.PlayerService/**", async (route) => {
-      grpcCalled = true;
       await route.fulfill({
         status: 200,
         headers: {
@@ -99,7 +97,10 @@ test.describe("Dashboard", () => {
       });
     });
 
+    const requestPromise = page.waitForRequest((req) =>
+      req.url().includes("player.v1.PlayerService"),
+    );
     await dashboard.playButton.click();
-    expect(grpcCalled).toBe(true);
+    await requestPromise;
   });
 });

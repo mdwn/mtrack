@@ -14,6 +14,16 @@
 
 import { test, expect } from "@playwright/test";
 
+// Helper to push a WebSocket message to all connected clients via mock server.
+async function sendWsMessage(
+  page: import("@playwright/test").Page,
+  msg: object,
+) {
+  await page.request.post("http://127.0.0.1:3111/test/send-ws", {
+    data: msg,
+  });
+}
+
 test.describe("Lock Mode", () => {
   test("lock toggle is visible on dashboard", async ({ page }) => {
     await page.goto("/#/");
@@ -42,11 +52,83 @@ test.describe("Lock Mode", () => {
     expect(lockCalled).toBe(true);
   });
 
-  test("locked state adds class to lock toggle", async ({ page }) => {
-    // The mock WebSocket sends locked: false, but let's check the unlocked state
+  test("unlocked state does not have locked class", async ({ page }) => {
     await page.goto("/#/");
     await expect(page.locator(".lock-toggle")).toBeVisible();
-    // In unlocked state, the toggle should not have the .locked class
     await expect(page.locator(".lock-toggle")).not.toHaveClass(/locked/);
+  });
+
+  test("locked state prevents config save", async ({ page }) => {
+    await page.goto("/#/config");
+    await expect(
+      page.getByRole("heading", { name: "Hardware Profiles" }),
+    ).toBeVisible();
+
+    // Lock the player via WebSocket
+    await sendWsMessage(page, {
+      type: "playback",
+      is_playing: false,
+      elapsed_ms: 0,
+      song_name: "Test Song Alpha",
+      song_duration_ms: 180000,
+      playlist_name: "setlist",
+      playlist_position: 0,
+      playlist_songs: ["Test Song Alpha", "Test Song Beta"],
+      tracks: [],
+      available_playlists: ["all_songs", "setlist"],
+      persisted_playlist_name: "setlist",
+      locked: true,
+    });
+
+    // Navigate into a profile
+    await page.locator(".profile-row", { hasText: "test-host" }).click();
+    await expect(page.getByRole("button", { name: "Back" })).toBeVisible();
+
+    // Modify hostname
+    const hostnameInput = page.locator("#profile-hostname");
+    await hostnameInput.fill("locked-hostname");
+
+    // Try to save
+    await page.getByRole("button", { name: "Save" }).click();
+
+    // Should show lock error message
+    await expect(page.locator(".save-msg")).toContainText(/locked/i);
+  });
+
+  test("locked state prevents playlist save", async ({ page }) => {
+    await page.goto("/#/playlists");
+
+    // Lock the player via WebSocket
+    await sendWsMessage(page, {
+      type: "playback",
+      is_playing: false,
+      elapsed_ms: 0,
+      song_name: "Test Song Alpha",
+      song_duration_ms: 180000,
+      playlist_name: "setlist",
+      playlist_position: 0,
+      playlist_songs: ["Test Song Alpha", "Test Song Beta"],
+      tracks: [],
+      available_playlists: ["all_songs", "setlist"],
+      persisted_playlist_name: "setlist",
+      locked: true,
+    });
+
+    // Select and modify a playlist
+    await page.locator(".playlist-item", { hasText: "setlist" }).click();
+    await expect(page.locator(".song-columns")).toBeVisible();
+
+    // Add a song
+    const addBtn = page
+      .locator(".song-list.available li")
+      .first()
+      .locator('.btn-icon[title="Add"]');
+    await addBtn.click();
+
+    // Try to save
+    await page.getByRole("button", { name: "Save" }).click();
+
+    // Should show lock error
+    await expect(page.locator(".error-banner")).toContainText(/locked/i);
   });
 });

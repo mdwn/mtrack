@@ -33,6 +33,7 @@
     type ProfileFileInfo,
   } from "../lib/api/config";
   import { fetchSongs } from "../lib/api/songs";
+  import { playbackStore } from "../lib/ws/stores";
   import ProfileCard from "../components/config/ProfileCard.svelte";
   import ProfileEditor from "../components/config/ProfileEditor.svelte";
   import SamplesSection, {
@@ -216,6 +217,10 @@
 
   async function saveFileProfile() {
     if (selectedIndex === null || !selectedFilename) return;
+    if ($playbackStore.locked) {
+      saveMsg = "Player is locked. Unlock to make changes.";
+      return;
+    }
     saving = true;
     saveMsg = "";
     try {
@@ -235,6 +240,10 @@
 
   async function removeFileProfile() {
     if (!selectedFilename) return;
+    if ($playbackStore.locked) {
+      saveMsg = "Player is locked. Unlock to make changes.";
+      return;
+    }
     if (!confirm("Delete this profile?")) return;
     saving = true;
     saveMsg = "";
@@ -309,6 +318,10 @@
 
   async function saveProfile() {
     if (selectedIndex === null) return;
+    if ($playbackStore.locked) {
+      saveMsg = "Player is locked. Unlock to make changes.";
+      return;
+    }
     saving = true;
     saveMsg = "";
     try {
@@ -333,6 +346,10 @@
 
   async function removeProfile() {
     if (selectedIndex === null) return;
+    if ($playbackStore.locked) {
+      saveMsg = "Player is locked. Unlock to make changes.";
+      return;
+    }
     if (!confirm("Delete this profile?")) return;
     saving = true;
     saveMsg = "";
@@ -356,6 +373,10 @@
   }
 
   async function saveSamples() {
+    if ($playbackStore.locked) {
+      samplesSaveMsg = "Player is locked. Unlock to make changes.";
+      return;
+    }
     samplesSaving = true;
     samplesSaveMsg = "";
     try {

@@ -23,6 +23,7 @@
     type PlaylistInfo,
     type PlaylistData,
   } from "../lib/api/config";
+  import { playbackStore } from "../lib/ws/stores";
 
   interface Props {
     currentHash: string;
@@ -92,6 +93,10 @@
 
   async function handleSave() {
     if (!selected) return;
+    if ($playbackStore.locked) {
+      error = "Player is locked. Unlock to make changes.";
+      return;
+    }
     try {
       saving = true;
       error = "";
@@ -118,6 +123,10 @@
   }
 
   async function handleDelete(name: string) {
+    if ($playbackStore.locked) {
+      error = "Player is locked. Unlock to make changes.";
+      return;
+    }
     try {
       error = "";
       await deletePlaylist(name);
@@ -136,6 +145,10 @@
   async function handleCreate() {
     const name = newName.trim();
     if (!name) return;
+    if ($playbackStore.locked) {
+      error = "Player is locked. Unlock to make changes.";
+      return;
+    }
     try {
       error = "";
       await savePlaylist(name, []);
@@ -205,7 +218,7 @@
   $effect(() => {
     if (loading || !routePlaylist || selected === routePlaylist) return;
     const match = playlists.find((p) => p.name === routePlaylist);
-    if (match) {
+    if (match && match.name !== "all_songs") {
       selectPlaylist(match.name);
     }
   });
