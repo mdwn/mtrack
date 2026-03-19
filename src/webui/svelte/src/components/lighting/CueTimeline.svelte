@@ -13,6 +13,7 @@
      *
      * -->
 <script lang="ts">
+  import { t } from "svelte-i18n";
   import type { Cue, Timestamp } from "../../lib/lighting/types";
   import CueRow from "./CueRow.svelte";
 
@@ -69,9 +70,9 @@
 <div class="cue-timeline">
   <div class="timeline-header">
     <span class="cue-count"
-      >{cues.length} cue{cues.length !== 1 ? "s" : ""}</span
+      >{$t("cue.cueCount", { values: { count: cues.length } })}</span
     >
-    <button class="btn btn-sm" onclick={addCue}>+ Cue</button>
+    <button class="btn btn-sm" onclick={addCue}>{$t("cue.addCue")}</button>
   </div>
 
   <div class="cue-list">
@@ -82,13 +83,13 @@
             class="btn-icon small"
             disabled={i === 0}
             onclick={() => moveCue(i, i - 1)}
-            title="Move up">&#9650;</button
+            title={$t("cue.moveUp")}>&#9650;</button
           >
           <button
             class="btn-icon small"
             disabled={i === cues.length - 1}
             onclick={() => moveCue(i, i + 1)}
-            title="Move down">&#9660;</button
+            title={$t("cue.moveDown")}>&#9660;</button
           >
         </div>
         <div class="cue-content">

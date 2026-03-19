@@ -14,6 +14,8 @@
      * -->
 <script lang="ts">
   /* eslint-disable @typescript-eslint/no-explicit-any */
+  import { t } from "svelte-i18n";
+  import { get } from "svelte/store";
   import { SvelteSet } from "svelte/reactivity";
   import YAML from "yaml";
   import {
@@ -75,6 +77,7 @@
   let error = $state("");
   let saving = $state(false);
   let saveMsg = $state("");
+  let saveOk = $state(false);
   let dirty = $state(false);
   let audioDevices = $state<AudioDeviceInfo[]>([]);
   let midiDevices = $state<MidiDeviceInfo[]>([]);
@@ -114,6 +117,7 @@
   let samplesDirty = $state(false);
   let samplesSaving = $state(false);
   let samplesSaveMsg = $state("");
+  let samplesSaveOk = $state(false);
   let samplesSnapshot = $state("");
 
   function parseProfiles() {
@@ -188,6 +192,7 @@
   async function selectFileProfile(filename: string) {
     saving = false;
     saveMsg = "";
+    saveOk = false;
     dirty = false;
     isNew = false;
     try {
@@ -203,7 +208,7 @@
   }
 
   function addNewFileProfile() {
-    const name = prompt("Profile filename (without extension):");
+    const name = prompt(get(t)("config.profileFilenamePrompt"));
     if (!name) return;
     const empty: any = {};
     profiles = [empty];
@@ -213,23 +218,25 @@
 
     dirty = false;
     saveMsg = "";
+    saveOk = false;
   }
 
   async function saveFileProfile() {
     if (selectedIndex === null || !selectedFilename) return;
     if ($playbackStore.locked) {
-      saveMsg = "Player is locked. Unlock to make changes.";
+      saveMsg = get(t)("common.locked");
       return;
     }
     saving = true;
     saveMsg = "";
+    saveOk = false;
     try {
       await saveProfileFile(selectedFilename, profiles[selectedIndex]);
 
       isNew = false;
       dirty = false;
-      saveMsg = "Saved";
-      setTimeout(() => (saveMsg = ""), 2000);
+      saveOk = true;
+      setTimeout(() => (saveOk = false), 2000);
       await loadProfileFiles();
     } catch (e: any) {
       saveMsg = e.message;
@@ -241,10 +248,10 @@
   async function removeFileProfile() {
     if (!selectedFilename) return;
     if ($playbackStore.locked) {
-      saveMsg = "Player is locked. Unlock to make changes.";
+      saveMsg = get(t)("common.locked");
       return;
     }
-    if (!confirm("Delete this profile?")) return;
+    if (!confirm(get(t)("config.deleteProfile"))) return;
     saving = true;
     saveMsg = "";
     try {
@@ -262,7 +269,7 @@
   }
 
   function goBackFile() {
-    if (dirty && !confirm("Discard unsaved changes?")) return;
+    if (dirty && !confirm(get(t)("config.discardUnsaved"))) return;
     suppressAutoSelect = true;
     selectedIndex = null;
     selectedFilename = null;
@@ -270,6 +277,7 @@
     dirty = false;
     updateConfigUrl();
     saveMsg = "";
+    saveOk = false;
   }
 
   // --- Inline profile operations ---
@@ -280,6 +288,7 @@
 
     dirty = false;
     saveMsg = "";
+    saveOk = false;
     const name = profiles[index]?.hostname || `Profile #${index}`;
     updateConfigUrl(name);
   }
@@ -292,15 +301,17 @@
 
     dirty = false;
     saveMsg = "";
+    saveOk = false;
   }
 
   function goBack() {
-    if (dirty && !confirm("Discard unsaved changes?")) return;
+    if (dirty && !confirm(get(t)("config.discardUnsaved"))) return;
     suppressAutoSelect = true;
     selectedIndex = null;
     isNew = false;
     dirty = false;
     saveMsg = "";
+    saveOk = false;
     updateConfigUrl();
   }
 
@@ -319,11 +330,12 @@
   async function saveProfile() {
     if (selectedIndex === null) return;
     if ($playbackStore.locked) {
-      saveMsg = "Player is locked. Unlock to make changes.";
+      saveMsg = get(t)("common.locked");
       return;
     }
     saving = true;
     saveMsg = "";
+    saveOk = false;
     try {
       const profile = profiles[selectedIndex];
       let snapshot;
@@ -335,8 +347,8 @@
       applySnapshot(snapshot);
       isNew = false;
       dirty = false;
-      saveMsg = "Saved";
-      setTimeout(() => (saveMsg = ""), 2000);
+      saveOk = true;
+      setTimeout(() => (saveOk = false), 2000);
     } catch (e: any) {
       saveMsg = e.message;
     } finally {
@@ -347,10 +359,10 @@
   async function removeProfile() {
     if (selectedIndex === null) return;
     if ($playbackStore.locked) {
-      saveMsg = "Player is locked. Unlock to make changes.";
+      saveMsg = get(t)("common.locked");
       return;
     }
-    if (!confirm("Delete this profile?")) return;
+    if (!confirm(get(t)("config.deleteProfile"))) return;
     saving = true;
     saveMsg = "";
     try {
@@ -374,18 +386,19 @@
 
   async function saveSamples() {
     if ($playbackStore.locked) {
-      samplesSaveMsg = "Player is locked. Unlock to make changes.";
+      samplesSaveMsg = get(t)("common.locked");
       return;
     }
     samplesSaving = true;
     samplesSaveMsg = "";
+    samplesSaveOk = false;
     try {
       const snapshot = await updateSamples(samplesMap, checksum);
       applySnapshot(snapshot);
       samplesSnapshot = JSON.stringify(samplesMap);
       samplesDirty = false;
-      samplesSaveMsg = "Saved";
-      setTimeout(() => (samplesSaveMsg = ""), 2000);
+      samplesSaveOk = true;
+      setTimeout(() => (samplesSaveOk = false), 2000);
     } catch (e: any) {
       samplesSaveMsg = e.message;
     } finally {
@@ -444,6 +457,7 @@
         isNew = false;
         dirty = false;
         saveMsg = "";
+        saveOk = false;
       }
       return;
     }
@@ -470,15 +484,17 @@
 
 {#if loading}
   <div class="page-placeholder">
-    <p>Loading configuration...</p>
+    <p>{$t("config.loadingConfig")}</p>
   </div>
 {:else if error}
   <div class="page-placeholder">
-    <h2>Error</h2>
+    <h2>{$t("common.error")}</h2>
     <p>{error}</p>
     <div class="error-actions">
-      <button class="btn" onclick={loadConfig}>Retry</button>
-      <button class="btn" onclick={() => (error = "")}>Dismiss</button>
+      <button class="btn" onclick={loadConfig}>{$t("common.retry")}</button>
+      <button class="btn" onclick={() => (error = "")}
+        >{$t("common.dismiss")}</button
+      >
     </div>
   </div>
 {:else if profilesDir}
@@ -487,21 +503,21 @@
     <!-- Detail View (file-based) -->
     <div class="detail-view">
       <div class="detail-toolbar">
-        <button class="btn" onclick={goBackFile}>Back</button>
+        <button class="btn" onclick={goBackFile}>{$t("common.back")}</button>
         <span class="detail-title">
-          {isNew ? "New Profile" : selectedFilename || "Profile"}
+          {isNew ? $t("config.newProfile") : selectedFilename || "Profile"}
         </span>
         <div class="toolbar-actions">
-          {#if saveMsg}
-            <span class="save-msg" class:save-error={saveMsg !== "Saved"}
-              >{saveMsg}</span
-            >
+          {#if saveOk}
+            <span class="save-msg">{$t("common.saved")}</span>
+          {:else if saveMsg}
+            <span class="save-msg save-error">{saveMsg}</span>
           {/if}
           {#if !isNew}
             <button
               class="btn btn-danger"
               onclick={removeFileProfile}
-              disabled={saving}>Delete</button
+              disabled={saving}>{$t("common.delete")}</button
             >
           {/if}
           <button
@@ -509,7 +525,7 @@
             onclick={saveFileProfile}
             disabled={saving || !dirty}
           >
-            {saving ? "Saving..." : "Save"}
+            {saving ? $t("common.saving") : $t("common.save")}
           </button>
         </div>
       </div>
@@ -531,18 +547,18 @@
     <!-- List View (file-based) -->
     <div class="list-view">
       <div class="list-header">
-        <h2>Hardware Profiles</h2>
+        <h2>{$t("config.hardwareProfiles")}</h2>
         <div class="toolbar-actions">
           <button class="btn btn-primary" onclick={addNewFileProfile}
-            >Add Profile</button
+            >{$t("config.addProfile")}</button
           >
         </div>
       </div>
 
       {#if profileFiles.length === 0}
         <div class="empty-state">
-          <p>No profiles in directory.</p>
-          <p>Add a profile to configure audio, MIDI, DMX, and controllers.</p>
+          <p>{$t("config.noProfilesDir")}</p>
+          <p>{$t("config.addProfileHint")}</p>
         </div>
       {:else}
         <div class="profile-list">
@@ -575,32 +591,35 @@
       <!-- Samples Section -->
       <div class="samples-top-section">
         <div class="list-header">
-          <h2>Samples</h2>
+          <h2>{$t("config.samples")}</h2>
           <div class="toolbar-actions">
             {#if samplesFile}
-              <span class="info-badge">from {samplesFile}</span>
+              <span class="info-badge"
+                >{$t("config.samplesFromFile", {
+                  values: { file: samplesFile },
+                })}</span
+              >
             {:else}
-              {#if samplesSaveMsg}
-                <span
-                  class="save-msg"
-                  class:save-error={samplesSaveMsg !== "Saved"}
-                  >{samplesSaveMsg}</span
-                >
+              {#if samplesSaveOk}
+                <span class="save-msg">{$t("common.saved")}</span>
+              {:else if samplesSaveMsg}
+                <span class="save-msg save-error">{samplesSaveMsg}</span>
               {/if}
               <button
                 class="btn btn-primary"
                 onclick={saveSamples}
                 disabled={samplesSaving || !samplesDirty}
               >
-                {samplesSaving ? "Saving..." : "Save Samples"}
+                {samplesSaving ? $t("common.saving") : $t("config.saveSamples")}
               </button>
             {/if}
           </div>
         </div>
         {#if samplesFile}
           <div class="info-banner">
-            Samples loaded from <code>{samplesFile}</code>. Edit the file
-            directly to make changes.
+            {$t("config.samplesExternalBanner", {
+              values: { file: samplesFile },
+            })}
           </div>
         {/if}
         <SamplesSection
@@ -616,23 +635,23 @@
   <!-- Detail View (inline) -->
   <div class="detail-view">
     <div class="detail-toolbar">
-      <button class="btn" onclick={goBack}>Back</button>
+      <button class="btn" onclick={goBack}>{$t("common.back")}</button>
       <span class="detail-title">
         {isNew
-          ? "New Profile"
+          ? $t("config.newProfile")
           : profiles[selectedIndex].hostname || `Profile #${selectedIndex}`}
       </span>
       <div class="toolbar-actions">
-        {#if saveMsg}
-          <span class="save-msg" class:save-error={saveMsg !== "Saved"}
-            >{saveMsg}</span
-          >
+        {#if saveOk}
+          <span class="save-msg">{$t("common.saved")}</span>
+        {:else if saveMsg}
+          <span class="save-msg save-error">{saveMsg}</span>
         {/if}
         {#if !isNew}
           <button
             class="btn btn-danger"
             onclick={removeProfile}
-            disabled={saving}>Delete</button
+            disabled={saving}>{$t("common.delete")}</button
           >
         {/if}
         <button
@@ -640,7 +659,7 @@
           onclick={saveProfile}
           disabled={saving || !dirty}
         >
-          {saving ? "Saving..." : "Save"}
+          {saving ? $t("common.saving") : $t("common.save")}
         </button>
       </div>
     </div>
@@ -666,16 +685,16 @@
   <!-- List View (inline) -->
   <div class="list-view">
     <div class="list-header">
-      <h2>Hardware Profiles</h2>
+      <h2>{$t("config.hardwareProfiles")}</h2>
       <button class="btn btn-primary" onclick={addNewProfile}
-        >Add Profile</button
+        >{$t("config.addProfile")}</button
       >
     </div>
 
     {#if profiles.length === 0}
       <div class="empty-state">
-        <p>No profiles configured.</p>
-        <p>Add a profile to configure audio, MIDI, DMX, and controllers.</p>
+        <p>{$t("config.noProfilesInline")}</p>
+        <p>{$t("config.addProfileHint")}</p>
       </div>
     {:else}
       <div class="profile-list">
@@ -688,32 +707,35 @@
     <!-- Samples Section -->
     <div class="samples-top-section">
       <div class="list-header">
-        <h2>Samples</h2>
+        <h2>{$t("config.samples")}</h2>
         <div class="toolbar-actions">
           {#if samplesFile}
-            <span class="info-badge">from {samplesFile}</span>
+            <span class="info-badge"
+              >{$t("config.samplesFromFile", {
+                values: { file: samplesFile },
+              })}</span
+            >
           {:else}
-            {#if samplesSaveMsg}
-              <span
-                class="save-msg"
-                class:save-error={samplesSaveMsg !== "Saved"}
-                >{samplesSaveMsg}</span
-              >
+            {#if samplesSaveOk}
+              <span class="save-msg">{$t("common.saved")}</span>
+            {:else if samplesSaveMsg}
+              <span class="save-msg save-error">{samplesSaveMsg}</span>
             {/if}
             <button
               class="btn btn-primary"
               onclick={saveSamples}
               disabled={samplesSaving || !samplesDirty}
             >
-              {samplesSaving ? "Saving..." : "Save Samples"}
+              {samplesSaving ? $t("common.saving") : $t("config.saveSamples")}
             </button>
           {/if}
         </div>
       </div>
       {#if samplesFile}
         <div class="info-banner">
-          Samples loaded from <code>{samplesFile}</code>. Edit the file directly
-          to make changes.
+          {$t("config.samplesExternalBanner", {
+            values: { file: samplesFile },
+          })}
         </div>
       {/if}
       <SamplesSection
@@ -832,10 +854,6 @@
     background: var(--bg-hover);
     color: var(--text-dim);
     border: 1px solid var(--border);
-  }
-  .info-banner code {
-    font-weight: 600;
-    color: var(--text);
   }
   .profile-file-row {
     display: flex;

@@ -13,6 +13,8 @@
      *
      * -->
 <script lang="ts">
+  import { t } from "svelte-i18n";
+  import { get } from "svelte/store";
   import {
     browseDirectory,
     createSongInDirectory,
@@ -59,7 +61,7 @@
       entries = result.entries;
     } catch (e) {
       browseError =
-        e instanceof Error ? e.message : "Failed to browse directory";
+        e instanceof Error ? e.message : get(t)("fileBrowser.emptyDir");
     } finally {
       loading = false;
     }
@@ -122,7 +124,7 @@
     try {
       const res = await createSongInDirectory(songDir, songName.trim());
       if (res.status === 409) {
-        createError = "song.yaml already exists in this directory";
+        createError = get(t)("songs.import.songExists");
         return;
       }
       if (!res.ok) {
@@ -133,7 +135,8 @@
       }
       onimported();
     } catch (e) {
-      createError = e instanceof Error ? e.message : "Failed to create song";
+      createError =
+        e instanceof Error ? e.message : get(t)("songs.create.failed");
     } finally {
       creating = false;
     }
@@ -174,11 +177,9 @@
 {#if step === "browse"}
   <div class="import-section">
     <div class="import-header">
-      <h3>Import Song from Directory</h3>
+      <h3>{$t("songs.import.title")}</h3>
       <p class="hint">
-        Navigate to a directory containing your song files. Audio, MIDI, and
-        lighting files will be detected automatically. Stereo and multichannel
-        audio files will be split into per-channel tracks.
+        {$t("songs.import.hint")}
       </p>
     </div>
     <div class="browser">
@@ -192,7 +193,9 @@
               if (e.key === "Enter") navigateToInput();
             }}
           />
-          <button class="btn" onclick={navigateToInput}>Go</button>
+          <button class="btn" onclick={navigateToInput}
+            >{$t("common.go")}</button
+          >
         </div>
         <div class="breadcrumbs">
           {#each breadcrumbs as crumb, i (crumb.path)}
@@ -206,7 +209,7 @@
 
       <div class="browser-body">
         {#if loading}
-          <div class="browser-status">Loading...</div>
+          <div class="browser-status">{$t("common.loading")}</div>
         {:else if browseError}
           <div class="browser-status error">{browseError}</div>
         {:else}
@@ -238,22 +241,26 @@
         <div class="footer-info">
           {#if hasAudioFiles}
             <span
-              >{audioFiles.length} audio file{audioFiles.length !== 1
-                ? "s"
-                : ""}</span
+              >{$t("songs.import.audioFileCount", {
+                values: { count: audioFiles.length },
+              })}</span
             >
             {#if midiFiles.length > 0}<span>
-                &middot; {midiFiles.length} MIDI</span
+                &middot; {$t("songs.import.midiFileCount", {
+                  values: { count: midiFiles.length },
+                })}</span
               >{/if}
             {#if lightingFilesList.length > 0}<span>
-                &middot; {lightingFilesList.length} lighting</span
+                &middot; {$t("songs.import.lightingFileCount", {
+                  values: { count: lightingFilesList.length },
+                })}</span
               >{/if}
           {:else}
-            <span class="hint">No audio files in this directory</span>
+            <span class="hint">{$t("songs.import.noAudio")}</span>
           {/if}
         </div>
         <div class="footer-actions">
-          <button class="btn" onclick={oncancel}>Cancel</button>
+          <button class="btn" onclick={oncancel}>{$t("common.cancel")}</button>
           {#if canBulkImport}
             <button
               class="btn"
@@ -261,8 +268,10 @@
               disabled={bulkImporting}
             >
               {bulkImporting
-                ? "Importing..."
-                : `Import All Subdirectories (${dirEntries.length})`}
+                ? $t("songs.import.importing")
+                : $t("songs.import.importAll", {
+                    values: { count: dirEntries.length },
+                  })}
             </button>
           {/if}
           <button
@@ -270,7 +279,7 @@
             onclick={selectDirectory}
             disabled={!hasAudioFiles}
           >
-            Use This Directory
+            {$t("songs.import.useThisDir")}
           </button>
         </div>
         {#if bulkError}
@@ -282,17 +291,22 @@
 {:else if step === "confirm"}
   <div class="card import-section">
     <div class="card-header">
-      <span class="card-title">Create Song</span>
+      <span class="card-title">{$t("songs.import.createSong")}</span>
     </div>
     <p class="hint">
-      A song definition will be generated in <code>{songDir}</code> from {audioFiles.length}
-      audio file{audioFiles.length !== 1 ? "s" : ""}{midiFiles.length > 0
-        ? ", MIDI"
-        : ""}{lightingFilesList.length > 0 ? ", lighting" : ""}.
+      {$t("songs.import.songGenHint", {
+        values: {
+          dir: songDir,
+          count: audioFiles.length,
+          extra:
+            (midiFiles.length > 0 ? ", MIDI" : "") +
+            (lightingFilesList.length > 0 ? ", lighting" : ""),
+        },
+      })}
     </p>
 
     <label class="field">
-      <span class="field-label">Song Name</span>
+      <span class="field-label">{$t("songs.import.songName")}</span>
       <input class="input field-input" type="text" bind:value={songName} />
     </label>
 
@@ -301,27 +315,31 @@
     {/if}
 
     <div class="configure-actions">
-      <button class="btn" onclick={() => (step = "browse")}>Back</button>
-      <button class="btn" onclick={oncancel}>Cancel</button>
+      <button class="btn" onclick={() => (step = "browse")}
+        >{$t("common.back")}</button
+      >
+      <button class="btn" onclick={oncancel}>{$t("common.cancel")}</button>
       <button
         class="btn btn-primary"
         onclick={createSong}
         disabled={!canCreate || creating}
       >
-        {creating ? "Creating..." : "Create Song"}
+        {creating ? $t("common.creating") : $t("songs.import.createSong")}
       </button>
     </div>
   </div>
 {:else if step === "bulk-result" && bulkResult}
   <div class="import-section">
     <div class="import-header">
-      <h3>Bulk Import Complete</h3>
+      <h3>{$t("songs.import.bulkComplete")}</h3>
     </div>
     <div class="bulk-result">
       {#if bulkResult.created.length > 0}
         <div class="result-group">
           <span class="result-label created"
-            >Created ({bulkResult.created.length})</span
+            >{$t("songs.import.created", {
+              values: { count: bulkResult.created.length },
+            })}</span
           >
           <div class="result-list">
             {#each bulkResult.created as name (name)}
@@ -333,7 +351,9 @@
       {#if bulkResult.skipped.length > 0}
         <div class="result-group">
           <span class="result-label skipped"
-            >Skipped ({bulkResult.skipped.length})</span
+            >{$t("songs.import.skipped", {
+              values: { count: bulkResult.skipped.length },
+            })}</span
           >
           <div class="result-list">
             {#each bulkResult.skipped as name (name)}
@@ -345,7 +365,9 @@
       {#if bulkResult.failed.length > 0}
         <div class="result-group">
           <span class="result-label failed"
-            >Failed ({bulkResult.failed.length})</span
+            >{$t("songs.import.failed", {
+              values: { count: bulkResult.failed.length },
+            })}</span
           >
           <div class="result-list">
             {#each bulkResult.failed as item (item.name)}
@@ -356,17 +378,20 @@
       {/if}
       {#if bulkResult.created.length === 0 && bulkResult.failed.length === 0}
         <p class="hint">
-          No new songs were found to import. All subdirectories either already
-          have a song.yaml or contain no audio files.
+          {$t("songs.import.noNewSongs")}
         </p>
       {/if}
     </div>
     <div class="configure-actions">
-      <button class="btn" onclick={() => (step = "browse")}>Back</button>
+      <button class="btn" onclick={() => (step = "browse")}
+        >{$t("common.back")}</button
+      >
       {#if bulkResult.created.length > 0}
-        <button class="btn btn-primary" onclick={onimported}>Done</button>
+        <button class="btn btn-primary" onclick={onimported}
+          >{$t("common.done")}</button
+        >
       {:else}
-        <button class="btn" onclick={oncancel}>Close</button>
+        <button class="btn" onclick={oncancel}>{$t("common.close")}</button>
       {/if}
     </div>
   </div>
@@ -388,12 +413,6 @@
     font-size: 13px;
     color: var(--text-muted);
     margin-bottom: 8px;
-  }
-  .hint code {
-    font-family: var(--mono);
-    background: rgba(255, 255, 255, 0.05);
-    padding: 1px 4px;
-    border-radius: 3px;
   }
   .browser {
     display: flex;

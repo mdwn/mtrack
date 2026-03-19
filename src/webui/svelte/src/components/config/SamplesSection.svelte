@@ -16,6 +16,8 @@
   /* eslint-disable @typescript-eslint/no-explicit-any */
   import FileUpload from "../songs/FileUpload.svelte";
   import { uploadSampleFile } from "../../lib/api/config";
+  import { t } from "svelte-i18n";
+  import { get } from "svelte/store";
 
   export type SampleBrowseTarget = {
     sampleName: string;
@@ -135,7 +137,9 @@
       } else if (field === "layer" && layerIndex !== undefined) {
         samples[sampleName].velocity.layers[layerIndex].file = result.path;
       }
-      uploadMsg = `Uploaded ${files[0].name}`;
+      uploadMsg = get(t)("samples.uploadedFile", {
+        values: { name: files[0].name },
+      });
       setTimeout(() => (uploadMsg = ""), 3000);
       onchange();
     } catch (e: any) {
@@ -149,8 +153,8 @@
 <div class="samples-section">
   {#if sampleEntries.length === 0}
     <div class="empty-state">
-      <p>No samples configured.</p>
-      <p>Add a sample to define audio files for trigger playback.</p>
+      <p>{$t("samples.noSamples")}</p>
+      <p>{$t("samples.addSampleHint")}</p>
     </div>
   {/if}
 
@@ -191,7 +195,7 @@
             onclick={(e) => {
               e.stopPropagation();
               removeSample(name);
-            }}>Remove</button
+            }}>{$t("common.remove")}</button
           >
           <span class="collapse-icon">{collapsed[name] ? "+" : "-"}</span>
         </div>
@@ -200,12 +204,12 @@
       {#if !collapsed[name]}
         <div class="sample-body">
           <div class="field">
-            <label for="sample-file-{name}">File</label>
+            <label for="sample-file-{name}">{$t("samples.file")}</label>
             <input
               id="sample-file-{name}"
               class="input"
               type="text"
-              placeholder="path/to/sample.wav"
+              placeholder={$t("samples.filePlaceholder")}
               value={def.file ?? ""}
               onchange={(e) =>
                 setOrDelete(
@@ -219,15 +223,15 @@
                 class="btn"
                 onclick={() => {
                   onbrowse({ sampleName: name, field: "file" });
-                }}>Browse Filesystem...</button
+                }}>{$t("samples.browseFilesystem")}</button
               >
             </div>
             <div class="upload-area">
               <FileUpload
                 accept=".wav,.flac,.mp3,.ogg,.aac,.m4a,.mp4,.aiff,.aif"
                 label={uploading
-                  ? "Uploading..."
-                  : "Drop audio file here or click to upload"}
+                  ? $t("common.uploading")
+                  : $t("samples.dropAudio")}
                 onupload={(files) =>
                   handleSampleUpload(name, "file", undefined, files)}
               />
@@ -236,7 +240,9 @@
 
           <div class="field-row-2">
             <div class="field">
-              <label for="sample-channels-{name}">Output Channels</label>
+              <label for="sample-channels-{name}"
+                >{$t("samples.outputChannels")}</label
+              >
               <input
                 id="sample-channels-{name}"
                 class="input"
@@ -252,12 +258,14 @@
             </div>
 
             <div class="field">
-              <label for="sample-track-{name}">Output Track</label>
+              <label for="sample-track-{name}"
+                >{$t("samples.outputTrack")}</label
+              >
               <input
                 id="sample-track-{name}"
                 class="input"
                 type="text"
-                placeholder="Track mapping name"
+                placeholder={$t("samples.outputTrackPlaceholder")}
                 value={def.output_track ?? ""}
                 onchange={(e) =>
                   setOrDelete(
@@ -271,7 +279,9 @@
 
           <div class="field-row-2">
             <div class="field">
-              <label for="sample-release-{name}">Release Behavior</label>
+              <label for="sample-release-{name}"
+                >{$t("samples.releaseBehavior")}</label
+              >
               <select
                 id="sample-release-{name}"
                 class="input"
@@ -285,14 +295,18 @@
                   );
                 }}
               >
-                <option value="play_to_completion">Play to Completion</option>
-                <option value="stop">Stop</option>
-                <option value="fade">Fade</option>
+                <option value="play_to_completion"
+                  >{$t("samples.playToCompletion")}</option
+                >
+                <option value="stop">{$t("samples.releaseStop")}</option>
+                <option value="fade">{$t("samples.releaseFade")}</option>
               </select>
             </div>
 
             <div class="field">
-              <label for="sample-retrigger-{name}">Retrigger</label>
+              <label for="sample-retrigger-{name}"
+                >{$t("samples.retrigger")}</label
+              >
               <select
                 id="sample-retrigger-{name}"
                 class="input"
@@ -302,20 +316,24 @@
                   setOrDelete(name, "retrigger", v === "cut" ? undefined : v);
                 }}
               >
-                <option value="cut">Cut</option>
-                <option value="polyphonic">Polyphonic</option>
+                <option value="cut">{$t("samples.retriggerCut")}</option>
+                <option value="polyphonic"
+                  >{$t("samples.retriggerPolyphonic")}</option
+                >
               </select>
             </div>
           </div>
 
           <div class="field-row-2">
             <div class="field">
-              <label for="sample-max-voices-{name}">Max Voices</label>
+              <label for="sample-max-voices-{name}"
+                >{$t("samples.maxVoices")}</label
+              >
               <input
                 id="sample-max-voices-{name}"
                 class="input"
                 type="number"
-                placeholder="Global limit"
+                placeholder={$t("samples.maxVoicesPlaceholder")}
                 value={def.max_voices ?? ""}
                 onchange={(e) => {
                   const v = (e.target as HTMLInputElement).value;
@@ -325,7 +343,9 @@
             </div>
 
             <div class="field">
-              <label for="sample-fade-ms-{name}">Fade Time (ms)</label>
+              <label for="sample-fade-ms-{name}"
+                >{$t("samples.fadeTimeMs")}</label
+              >
               <input
                 id="sample-fade-ms-{name}"
                 class="input"
@@ -347,12 +367,14 @@
           <!-- Velocity -->
           <div class="subsection">
             <div class="field-header">
-              <span class="field-label">Velocity</span>
+              <span class="field-label">{$t("samples.velocity")}</span>
             </div>
 
             <div class="field-row-2">
               <div class="field">
-                <label for="sample-vel-mode-{name}">Mode</label>
+                <label for="sample-vel-mode-{name}"
+                  >{$t("samples.velocityMode")}</label
+                >
                 <select
                   id="sample-vel-mode-{name}"
                   class="input"
@@ -368,15 +390,16 @@
                     onchange();
                   }}
                 >
-                  <option value="ignore">Ignore</option>
-                  <option value="scale">Scale</option>
-                  <option value="layers">Layers</option>
+                  <option value="ignore">{$t("samples.velocityIgnore")}</option>
+                  <option value="scale">{$t("samples.velocityScale")}</option>
+                  <option value="layers">{$t("samples.velocityLayers")}</option>
                 </select>
               </div>
 
               {#if (def.velocity?.mode ?? "ignore") === "ignore"}
                 <div class="field">
-                  <label for="sample-vel-default-{name}">Default Velocity</label
+                  <label for="sample-vel-default-{name}"
+                    >{$t("samples.defaultVelocity")}</label
                   >
                   <input
                     id="sample-vel-default-{name}"
@@ -404,9 +427,9 @@
             {#if def.velocity?.mode === "layers"}
               <div class="layers-section">
                 <div class="field-header">
-                  <span class="field-label">Layers</span>
+                  <span class="field-label">{$t("samples.layers")}</span>
                   <button class="btn btn-sm" onclick={() => addLayer(name)}
-                    >Add Layer</button
+                    >{$t("samples.addLayer")}</button
                   >
                 </div>
 
@@ -425,7 +448,7 @@
                       onchange();
                     }}
                   />
-                  Scale volume by velocity
+                  {$t("samples.scaleByVelocity")}
                 </label>
 
                 {#each def.velocity?.layers ?? [] as layer, li (li)}
@@ -471,7 +494,7 @@
                     <input
                       class="input"
                       type="text"
-                      placeholder="path/to/layer-file.wav"
+                      placeholder={$t("samples.layerFilePlaceholder")}
                       value={layer.file ?? ""}
                       onchange={(e) => {
                         samples[name].velocity.layers[li].file = (
@@ -489,15 +512,15 @@
                             field: "layer",
                             layerIndex: li,
                           });
-                        }}>Browse Filesystem...</button
+                        }}>{$t("samples.browseFilesystem")}</button
                       >
                     </div>
                     <div class="upload-area">
                       <FileUpload
                         accept=".wav,.flac,.mp3,.ogg,.aac,.m4a,.mp4,.aiff,.aif"
                         label={uploading
-                          ? "Uploading..."
-                          : "Drop audio file here or click to upload"}
+                          ? $t("common.uploading")
+                          : $t("samples.dropAudio")}
                         onupload={(files) =>
                           handleSampleUpload(name, "layer", li, files)}
                       />
@@ -518,7 +541,9 @@
     </div>
   {/if}
 
-  <button class="btn btn-primary" onclick={addSample}>Add Sample</button>
+  <button class="btn btn-primary" onclick={addSample}
+    >{$t("samples.addSample")}</button
+  >
 </div>
 
 <style>

@@ -13,6 +13,8 @@
      *
      * -->
 <script lang="ts">
+  import { t } from "svelte-i18n";
+  import { get } from "svelte/store";
   import YAML from "yaml";
   import {
     fetchSongs,
@@ -59,8 +61,10 @@
   let failureError = $state<string | null>(null);
   let saving = $state(false);
   let saveMsg = $state("");
+  let saveOk = $state(false);
   let uploading = $state(false);
   let uploadMsg = $state("");
+  let uploadOk = $state(false);
 
   // Lighting editor state (lifted up for unified save)
   let lightingDirty = $state(false);
@@ -79,11 +83,11 @@
     window.location.hash = tab === "tracks" ? base : `${base}/${tab}`;
   }
 
-  const tabs: { key: TabKey; label: string }[] = [
-    { key: "tracks", label: "Tracks" },
-    { key: "midi", label: "MIDI" },
-    { key: "lighting", label: "Lighting" },
-    { key: "config", label: "Config" },
+  const tabs: { key: TabKey; labelKey: string }[] = [
+    { key: "tracks", labelKey: "songs.detail.tabs.tracks" },
+    { key: "midi", labelKey: "songs.detail.tabs.midi" },
+    { key: "lighting", labelKey: "songs.detail.tabs.lighting" },
+    { key: "config", labelKey: "songs.detail.tabs.config" },
   ];
 
   // File browser state
@@ -208,7 +212,10 @@
         .then((w) => (waveformTracks = w.tracks))
         .catch(() => {});
     } catch (e) {
-      error = e instanceof Error ? e.message : "Failed to load song";
+      error =
+        e instanceof Error
+          ? e.message
+          : get(t)("songs.detail.failedToLoadSong");
     } finally {
       loading = false;
     }
@@ -248,11 +255,13 @@
 
   async function save() {
     if ($playbackStore.locked) {
-      saveMsg = "Player is locked. Unlock to make changes.";
+      saveMsg = get(t)("common.locked");
+      saveOk = false;
       return;
     }
     saving = true;
     saveMsg = "";
+    saveOk = false;
     try {
       // Save song config if dirty.
       if (configDirty) {
@@ -271,7 +280,8 @@
         await lightingEditorRef.saveLightingFiles();
       }
 
-      saveMsg = "Saved";
+      saveMsg = get(t)("common.saved");
+      saveOk = true;
       setTimeout(() => (saveMsg = ""), 2000);
       const result = await fetchSongs();
       song = result.songs.find((s) => s.name === songName) ?? null;
@@ -289,7 +299,8 @@
 
   async function handleTrackUpload(files: File[]) {
     if ($playbackStore.locked) {
-      uploadMsg = "Player is locked. Unlock to make changes.";
+      uploadMsg = get(t)("common.locked");
+      uploadOk = false;
       return;
     }
 
@@ -300,7 +311,9 @@
       const names = conflicts.map((f) => f.name).join(", ");
       if (
         !confirm(
-          `The following file${conflicts.length > 1 ? "s" : ""} will be replaced:\n${names}\n\nContinue?`,
+          get(t)("songs.detail.confirmReplace", {
+            values: { count: conflicts.length, names },
+          }),
         )
       )
         return;
@@ -308,6 +321,7 @@
 
     uploading = true;
     uploadMsg = "";
+    uploadOk = false;
     try {
       let res: Response;
       if (files.length === 1) {
@@ -322,10 +336,15 @@
       }
       const data = await res.json().catch(() => null);
       if (data?.replaced) {
-        uploadMsg = `Replaced ${files.length} file${files.length !== 1 ? "s" : ""}`;
+        uploadMsg = get(t)("songs.detail.replacedFiles", {
+          values: { count: files.length },
+        });
       } else {
-        uploadMsg = `Uploaded ${files.length} file${files.length !== 1 ? "s" : ""}`;
+        uploadMsg = get(t)("songs.detail.uploadedFiles", {
+          values: { count: files.length },
+        });
       }
+      uploadOk = true;
       setTimeout(() => (uploadMsg = ""), 3000);
       await load();
     } catch (e) {
@@ -337,7 +356,8 @@
 
   async function handleMidiUpload(files: File[]) {
     if ($playbackStore.locked) {
-      uploadMsg = "Player is locked. Unlock to make changes.";
+      uploadMsg = get(t)("common.locked");
+      uploadOk = false;
       return;
     }
 
@@ -345,7 +365,9 @@
     if (existingNames.includes(files[0].name)) {
       if (
         !confirm(
-          `"${files[0].name}" already exists and will be replaced.\n\nContinue?`,
+          get(t)("songs.detail.confirmMidiReplace", {
+            values: { name: files[0].name },
+          }),
         )
       )
         return;
@@ -353,6 +375,7 @@
 
     uploading = true;
     uploadMsg = "";
+    uploadOk = false;
     try {
       const res = await uploadTrack(songName, files[0]);
       if (!res.ok) {
@@ -361,7 +384,10 @@
         return;
       }
       const data = await res.json().catch(() => null);
-      uploadMsg = data?.replaced ? "MIDI file replaced" : "MIDI file uploaded";
+      uploadMsg = data?.replaced
+        ? get(t)("songs.detail.midiReplaced")
+        : get(t)("songs.detail.midiUploaded");
+      uploadOk = true;
       setTimeout(() => (uploadMsg = ""), 3000);
       await load();
     } catch (e) {
@@ -391,10 +417,10 @@
 </script>
 
 <div class="detail">
-  <a class="back-link" href="#/songs">&larr; All Songs</a>
+  <a class="back-link" href="#/songs">&larr; {$t("songs.detail.allSongs")}</a>
 
   {#if loading}
-    <div class="status">Loading...</div>
+    <div class="status">{$t("common.loading")}</div>
   {:else if error}
     <div class="status error">{error}</div>
   {:else}
@@ -418,9 +444,7 @@
 
     {#if failureError}
       <div class="failure-banner">
-        <strong
-          >This song failed to load and will not be playable until it's valid.</strong
-        >
+        <strong>{$t("songs.detail.failedToLoad")}</strong>
         <div class="failure-detail">{failureError}</div>
       </div>
     {/if}
@@ -428,7 +452,11 @@
     {#if song && !failureError}
       <div class="meta">
         <span>{song.duration_display}</span>
-        <span>{song.track_count} track{song.track_count !== 1 ? "s" : ""}</span>
+        <span
+          >{$t("songs.trackCount", {
+            values: { count: song.track_count },
+          })}</span
+        >
         {#if song.sample_format}
           <span>{song.num_channels}ch {song.sample_format}</span>
         {/if}
@@ -445,7 +473,7 @@
           aria-selected={activeTab === tab_item.key}
           onclick={() => setTab(tab_item.key)}
         >
-          {tab_item.label}
+          {$t(tab_item.labelKey)}
           {#if tabHasIndicator(tab_item.key)}
             <span
               class="tab-dot"
@@ -456,19 +484,17 @@
       {/each}
       <div class="tab-save">
         {#if saveMsg}
-          <span class="save-msg" class:error={saveMsg !== "Saved"}
-            >{saveMsg}</span
-          >
+          <span class="save-msg" class:error={!saveOk}>{saveMsg}</span>
         {/if}
         {#if anyDirty}
-          <span class="unsaved">Unsaved</span>
+          <span class="unsaved">{$t("common.unsaved")}</span>
         {/if}
         <button
           class="btn btn-primary btn-sm"
           onclick={save}
           disabled={saving || !anyDirty}
         >
-          {saving ? "Saving..." : "Save"}
+          {saving ? $t("common.saving") : $t("common.save")}
         </button>
       </div>
     </div>
@@ -487,56 +513,50 @@
           <FileUpload
             accept=".wav,.flac,.mp3,.ogg,.aac,.m4a,.mp4,.aiff,.aif"
             label={uploading
-              ? "Uploading..."
-              : "Drop audio files here or click to upload"}
+              ? $t("common.uploading")
+              : $t("songs.detail.dropAudio")}
             multiple={true}
             onupload={handleTrackUpload}
           />
         </div>
         {#if uploadMsg}
-          <div
-            class="msg"
-            class:error={uploadMsg.toLowerCase().includes("fail") ||
-              uploadMsg.toLowerCase().includes("locked")}
-          >
+          <div class="msg" class:error={!uploadOk}>
             {uploadMsg}
           </div>
         {/if}
       {:else if activeTab === "midi"}
         {#if midiFile}
           <div class="feature-row">
-            <span class="feature-label">Current MIDI file:</span>
+            <span class="feature-label"
+              >{$t("songs.detail.currentMidiFile")}</span
+            >
             <span class="feature-value">{midiFile}</span>
           </div>
         {:else}
-          <p class="muted">No MIDI file configured for this song.</p>
+          <p class="muted">{$t("songs.detail.noMidi")}</p>
         {/if}
         <FilePicker
           files={songFiles}
           fileType="midi"
-          label="Use existing MIDI file from song directory"
+          label={$t("songs.detail.useExistingMidi")}
           onpick={setMidiFile}
         />
         <div class="browse-row">
           <button class="btn" onclick={() => openBrowser({ kind: "midi" })}>
-            Browse Filesystem...
+            {$t("samples.browseFilesystem")}
           </button>
         </div>
         <div class="upload-area">
           <FileUpload
             accept=".mid"
             label={uploading
-              ? "Uploading..."
-              : "Drop .mid file here or click to upload"}
+              ? $t("common.uploading")
+              : $t("songs.detail.dropMidi")}
             onupload={handleMidiUpload}
           />
         </div>
         {#if uploadMsg}
-          <div
-            class="msg"
-            class:error={uploadMsg.toLowerCase().includes("fail") ||
-              uploadMsg.toLowerCase().includes("locked")}
-          >
+          <div class="msg" class:error={!uploadOk}>
             {uploadMsg}
           </div>
         {/if}

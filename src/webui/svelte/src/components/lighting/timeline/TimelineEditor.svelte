@@ -35,6 +35,7 @@
   import CuePropertiesPanel from "./CuePropertiesPanel.svelte";
   import SequenceEditorModal from "./SequenceEditorModal.svelte";
   import StagePreview from "./StagePreview.svelte";
+  import { t } from "svelte-i18n";
   import { tick } from "svelte";
 
   interface Props {
@@ -657,7 +658,7 @@
 
       {#if lightFile.shows.length === 0}
         <div class="sticky-row empty-lanes">
-          <p>No shows. Click "+ Show" to get started.</p>
+          <p>{$t("timeline.noShows")}</p>
         </div>
       {/if}
 
@@ -703,7 +704,7 @@
         </div>
       {:else}
         <div class="detail-empty">
-          Select a cue to edit, or double-click a lane to create one.
+          {$t("timeline.selectCue")}
         </div>
       {/if}
     </div>
@@ -724,12 +725,12 @@
     style:top="{offsetMenu.y}px"
   >
     {#if offsetMenu.editing}
-      <div class="offset-menu-title">Edit Offset</div>
+      <div class="offset-menu-title">{$t("timeline.editOffset")}</div>
       <input
         type="number"
         class="offset-menu-input"
         min="1"
-        placeholder="measures"
+        placeholder={$t("timeline.measures")}
         bind:value={offsetInputValue}
         onkeydown={(e) => {
           if (e.key === "Escape") closeOffsetMenu();
@@ -741,17 +742,17 @@
           class="btn btn-sm offset-menu-btn"
           onclick={updateEditingOffset}
         >
-          Save
+          {$t("common.save")}
         </button>
         <button
           class="btn btn-sm btn-danger offset-menu-btn"
           onclick={deleteEditingOffset}
         >
-          Delete
+          {$t("common.delete")}
         </button>
       </div>
     {:else}
-      <div class="offset-menu-title">Add Offset (measures)</div>
+      <div class="offset-menu-title">{$t("timeline.addOffsetMeasures")}</div>
       <input
         type="number"
         class="offset-menu-input"
@@ -769,7 +770,7 @@
           class="btn btn-sm offset-menu-btn"
           onclick={() => addOffsetToShow(0)}
         >
-          Add
+          {$t("common.add")}
         </button>
       {:else}
         {#each lightFile.shows as show, si (show.name)}

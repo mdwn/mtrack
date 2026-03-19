@@ -15,6 +15,7 @@
 <script lang="ts">
   import { wsConnected, playbackStore } from "../lib/ws/stores";
   import { setLocked } from "../lib/api/config";
+  import { t } from "svelte-i18n";
 
   interface Props {
     currentHash: string;
@@ -36,11 +37,11 @@
   }
 
   const links = [
-    { hash: "#/", label: "Dashboard" },
-    { hash: "#/config", label: "Config" },
-    { hash: "#/songs", label: "Songs" },
-    { hash: "#/playlists", label: "Playlists" },
-    { hash: "#/status", label: "Status" },
+    { hash: "#/", labelKey: "nav.dashboard" },
+    { hash: "#/config", labelKey: "nav.config" },
+    { hash: "#/songs", labelKey: "nav.songs" },
+    { hash: "#/playlists", labelKey: "nav.playlists" },
+    { hash: "#/status", labelKey: "nav.status" },
   ];
 
   function isActive(hash: string): boolean {
@@ -58,7 +59,7 @@
   <button
     class="hamburger"
     onclick={() => (menuOpen = !menuOpen)}
-    aria-label="Menu"
+    aria-label={$t("nav.menu")}
   >
     <span class="hamburger-line"></span>
     <span class="hamburger-line"></span>
@@ -72,7 +73,7 @@
         class:active={isActive(link.hash)}
         onclick={closeMenu}
       >
-        {link.label}
+        {$t(link.labelKey)}
       </a>
     {/each}
   </div>
@@ -91,8 +92,8 @@
       onclick={toggleLock}
       disabled={toggling}
       title={$playbackStore.locked
-        ? "Locked — click to unlock editing"
-        : "Unlocked — click to lock"}
+        ? $t("nav.lock.locked")
+        : $t("nav.lock.unlocked")}
     >
       {$playbackStore.locked ? "\uD83D\uDD12" : "\uD83D\uDD13"}
     </button>
@@ -100,9 +101,13 @@
       class="status-indicator"
       class:connected={$wsConnected}
       class:disconnected={!$wsConnected}
-      title={$wsConnected ? "Connected" : "Disconnected"}
+      title={$wsConnected
+        ? $t("nav.connection.connected")
+        : $t("nav.connection.disconnected")}
       role="status"
-      aria-label={$wsConnected ? "Server connected" : "Server disconnected"}
+      aria-label={$wsConnected
+        ? $t("nav.connection.serverConnected")
+        : $t("nav.connection.serverDisconnected")}
     ></div>
   </div>
 </nav>

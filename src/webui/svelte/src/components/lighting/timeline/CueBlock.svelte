@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { t } from "svelte-i18n";
+  import { get } from "svelte/store";
   import type { Cue, SubLaneType } from "../../../lib/lighting/types";
   import { effectTypeColor } from "../../../lib/lighting/timeline-state";
 
@@ -51,7 +53,7 @@
         .join(", ");
     }
     if (subLaneType === "effects") {
-      if (cue.effects.length === 0) return "empty";
+      if (cue.effects.length === 0) return get(t)("timeline.cueBlock.empty");
       const parts: string[] = [];
       for (const eff of cue.effects) {
         const groups = eff.groups.filter((g) => g).join(", ");
@@ -63,7 +65,7 @@
     if (cue.effects.length === 0 && cue.commands.length > 0) {
       return cue.commands.map((c) => c.command).join(", ");
     }
-    if (cue.effects.length === 0) return "empty";
+    if (cue.effects.length === 0) return get(t)("timeline.cueBlock.empty");
     const parts: string[] = [];
     for (const eff of cue.effects) {
       const groups = eff.groups.filter((g) => g).join(", ");
@@ -158,10 +160,18 @@
       </div>
       <span class="cue-label">{label}</span>
       {#if cue.commands.length > 0}
-        <span class="badge cmd-badge">{cue.commands.length} cmd</span>
+        <span class="badge cmd-badge"
+          >{$t("timeline.cueBlock.cmdCount", {
+            values: { count: cue.commands.length },
+          })}</span
+        >
       {/if}
       {#if cue.sequences.length > 0}
-        <span class="badge seq-badge">{cue.sequences.length} seq</span>
+        <span class="badge seq-badge"
+          >{$t("timeline.cueBlock.seqCount", {
+            values: { count: cue.sequences.length },
+          })}</span
+        >
       {/if}
     {/if}
   </div>

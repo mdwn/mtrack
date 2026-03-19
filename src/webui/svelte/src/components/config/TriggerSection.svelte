@@ -25,6 +25,7 @@
     stopCapture,
     cancelCalibration,
   } from "../../lib/api/config";
+  import { t } from "svelte-i18n";
 
   interface Props {
     trigger: any;
@@ -223,13 +224,13 @@
   </datalist>
 
   <div class="field">
-    <label for="trigger-device">Audio Input Device</label>
+    <label for="trigger-device">{$t("trigger.audioInputDevice")}</label>
     <div class="field-row">
       <input
         id="trigger-device"
         class="input"
         list="trigger-device-list"
-        placeholder="Only needed for audio triggers"
+        placeholder={$t("trigger.audioInputPlaceholder")}
         value={trigger.device || ""}
         onchange={(e) =>
           setOrDelete(
@@ -242,13 +243,13 @@
           <option value={name}></option>
         {/each}
       </datalist>
-      <button class="btn" onclick={onrefresh}>Refresh</button>
+      <button class="btn" onclick={onrefresh}>{$t("common.refresh")}</button>
     </div>
   </div>
 
   <div class="field-row-2">
     <div class="field">
-      <label for="trigger-sample-rate">Sample Rate</label>
+      <label for="trigger-sample-rate">{$t("trigger.sampleRate")}</label>
       <select
         id="trigger-sample-rate"
         class="input"
@@ -258,7 +259,7 @@
           setOrDelete("sample_rate", v ? parseInt(v) : undefined);
         }}
       >
-        <option value="">Default</option>
+        <option value="">{$t("common.default")}</option>
         {#if sampleRateOptions.length > 0}
           {#each sampleRateOptions as rate (rate)}
             <option value={String(rate)}>{rate}</option>
@@ -277,12 +278,12 @@
     </div>
 
     <div class="field">
-      <label for="trigger-buffer-size">Buffer Size</label>
+      <label for="trigger-buffer-size">{$t("trigger.bufferSize")}</label>
       <input
         id="trigger-buffer-size"
         type="number"
         class="input"
-        placeholder="Device default"
+        placeholder={$t("trigger.bufferSizePlaceholder")}
         value={trigger.buffer_size ?? ""}
         onchange={(e) => {
           const v = (e.target as HTMLInputElement).value;
@@ -294,12 +295,14 @@
 
   <div class="field-row-2">
     <div class="field">
-      <label for="trigger-crosstalk-window">Crosstalk Window (ms)</label>
+      <label for="trigger-crosstalk-window"
+        >{$t("trigger.crosstalkWindow")}</label
+      >
       <input
         id="trigger-crosstalk-window"
         type="number"
         class="input"
-        placeholder="Disabled"
+        placeholder={$t("trigger.disabled")}
         value={trigger.crosstalk_window_ms ?? ""}
         onchange={(e) => {
           const v = (e.target as HTMLInputElement).value;
@@ -309,13 +312,15 @@
     </div>
 
     <div class="field">
-      <label for="trigger-crosstalk-threshold">Crosstalk Threshold</label>
+      <label for="trigger-crosstalk-threshold"
+        >{$t("trigger.crosstalkThreshold")}</label
+      >
       <input
         id="trigger-crosstalk-threshold"
         type="number"
         step="0.1"
         class="input"
-        placeholder="Disabled"
+        placeholder={$t("trigger.disabled")}
         value={trigger.crosstalk_threshold ?? ""}
         onchange={(e) => {
           const v = (e.target as HTMLInputElement).value;
@@ -327,10 +332,14 @@
 
   <div class="field">
     <div class="field-header">
-      <span class="field-label">Inputs</span>
+      <span class="field-label">{$t("trigger.inputs")}</span>
       <div class="btn-group">
-        <button class="btn" onclick={addAudioInput}>+ Audio</button>
-        <button class="btn" onclick={addMidiInput}>+ MIDI</button>
+        <button class="btn" onclick={addAudioInput}
+          >{$t("trigger.addAudio")}</button
+        >
+        <button class="btn" onclick={addMidiInput}
+          >{$t("trigger.addMidi")}</button
+        >
       </div>
     </div>
 
@@ -338,16 +347,21 @@
       <div class="input-card" class:midi={input.kind === "midi"}>
         <div class="input-header">
           <span class="input-kind"
-            >{input.kind === "audio" ? "Audio" : "MIDI"}</span
+            >{input.kind === "audio"
+              ? $t("trigger.audioLabel")
+              : $t("trigger.midiLabel")}</span
           >
           <div class="input-header-controls">
             {#if input.kind === "audio"}
               <button
                 class="btn btn-small btn-accent"
-                onclick={() => openCalibrate(i)}>Calibrate</button
+                onclick={() => openCalibrate(i)}
+                >{$t("trigger.calibrate")}</button
               >
               <button class="btn btn-small" onclick={() => toggleExpanded(i)}
-                >{expandedInput === i ? "Less" : "More"}</button
+                >{expandedInput === i
+                  ? $t("trigger.less")
+                  : $t("trigger.more")}</button
               >
             {/if}
             <button
@@ -363,10 +377,14 @@
             <div class="cal-wizard">
               {#if calStep === "setup"}
                 <div class="cal-step">
-                  <div class="cal-title">Calibrate Channel {calChannel}</div>
+                  <div class="cal-title">
+                    {$t("trigger.cal.calibrateChannel", {
+                      values: { channel: calChannel },
+                    })}
+                  </div>
                   <div class="field-row-3">
                     <div class="field">
-                      <label for="cal-device">Device</label>
+                      <label for="cal-device">{$t("trigger.cal.device")}</label>
                       <input
                         id="cal-device"
                         class="input"
@@ -375,7 +393,9 @@
                       />
                     </div>
                     <div class="field">
-                      <label for="cal-channel">Channel</label>
+                      <label for="cal-channel"
+                        >{$t("trigger.cal.channel")}</label
+                      >
                       <input
                         id="cal-channel"
                         type="number"
@@ -385,7 +405,9 @@
                       />
                     </div>
                     <div class="field">
-                      <label for="cal-duration">Duration (s)</label>
+                      <label for="cal-duration"
+                        >{$t("trigger.cal.duration")}</label
+                      >
                       <input
                         id="cal-duration"
                         type="number"
@@ -405,22 +427,28 @@
                       onclick={doNoiseFloor}
                       disabled={!calDevice}
                       title={!calDevice
-                        ? "Select an audio input device first"
-                        : undefined}>Start</button
+                        ? $t("trigger.cal.selectDevice")
+                        : undefined}>{$t("common.start")}</button
                     >
                     {#if !calDevice}
                       <span class="cal-hint"
-                        >Select a device to start calibration</span
+                        >{$t("trigger.cal.selectDeviceHint")}</span
                       >
                     {/if}
-                    <button class="btn" onclick={closeCalibrate}>Cancel</button>
+                    <button class="btn" onclick={closeCalibrate}
+                      >{$t("common.cancel")}</button
+                    >
                   </div>
                 </div>
               {:else if calStep === "noise"}
                 <div class="cal-step">
-                  <div class="cal-title">Measuring noise floor...</div>
+                  <div class="cal-title">
+                    {$t("trigger.cal.measuringNoise")}
+                  </div>
                   <div class="cal-status">
-                    Keep all pads silent. {calCountdown}s remaining
+                    {$t("trigger.cal.keepSilent", {
+                      values: { seconds: calCountdown },
+                    })}
                   </div>
                   <div class="cal-progress">
                     <div
@@ -434,12 +462,15 @@
                 </div>
               {:else if calStep === "capture"}
                 <div class="cal-step">
-                  <div class="cal-title">Hit your trigger now!</div>
+                  <div class="cal-title">{$t("trigger.cal.hitTrigger")}</div>
                   {#if calNoiseFloor}
                     <div class="cal-stats">
-                      Noise floor: peak {calNoiseFloor.peak.toFixed(6)}, RMS {calNoiseFloor.rms.toFixed(
-                        6,
-                      )}
+                      {$t("trigger.cal.noiseFloor", {
+                        values: {
+                          peak: calNoiseFloor.peak.toFixed(6),
+                          rms: calNoiseFloor.rms.toFixed(6),
+                        },
+                      })}
                     </div>
                   {/if}
                   {#if calError}
@@ -447,41 +478,55 @@
                   {/if}
                   <div class="cal-actions">
                     <button class="btn btn-accent" onclick={doStopCapture}
-                      >Stop</button
+                      >{$t("common.stop")}</button
                     >
-                    <button class="btn" onclick={closeCalibrate}>Cancel</button>
+                    <button class="btn" onclick={closeCalibrate}
+                      >{$t("common.cancel")}</button
+                    >
                   </div>
                 </div>
               {:else if calStep === "results"}
                 <div class="cal-step">
                   {#if calResult}
-                    <div class="cal-title">Calibration Results</div>
+                    <div class="cal-title">{$t("trigger.cal.results")}</div>
                     <div class="cal-results-grid">
-                      <span class="cal-label">Hits detected:</span>
+                      <span class="cal-label"
+                        >{$t("trigger.cal.hitsDetected")}</span
+                      >
                       <span>{calResult.num_hits_detected}</span>
-                      <span class="cal-label">Threshold:</span>
+                      <span class="cal-label"
+                        >{$t("trigger.cal.threshold")}</span
+                      >
                       <span>{calResult.threshold.toFixed(4)}</span>
-                      <span class="cal-label">Gain:</span>
+                      <span class="cal-label">{$t("trigger.cal.gain")}</span>
                       <span>{calResult.gain.toFixed(2)}</span>
-                      <span class="cal-label">Scan time:</span>
+                      <span class="cal-label">{$t("trigger.cal.scanTime")}</span
+                      >
                       <span>{calResult.scan_time_ms} ms</span>
-                      <span class="cal-label">Retrigger time:</span>
+                      <span class="cal-label"
+                        >{$t("trigger.cal.retriggerTime")}</span
+                      >
                       <span>{calResult.retrigger_time_ms} ms</span>
                       {#if calResult.highpass_freq != null}
-                        <span class="cal-label">Highpass:</span>
+                        <span class="cal-label"
+                          >{$t("trigger.cal.highpass")}</span
+                        >
                         <span>{calResult.highpass_freq} Hz</span>
                       {/if}
                       {#if calResult.dynamic_threshold_decay_ms != null}
-                        <span class="cal-label">Dyn. threshold:</span>
+                        <span class="cal-label"
+                          >{$t("trigger.cal.dynThreshold")}</span
+                        >
                         <span>{calResult.dynamic_threshold_decay_ms} ms</span>
                       {/if}
-                      <span class="cal-label">Max hit amplitude:</span>
+                      <span class="cal-label"
+                        >{$t("trigger.cal.maxHitAmplitude")}</span
+                      >
                       <span>{calResult.max_hit_amplitude.toFixed(4)}</span>
                     </div>
                     {#if calResult.num_hits_detected === 0}
                       <div class="cal-error">
-                        No hits detected. Try again with stronger hits or lower
-                        noise.
+                        {$t("trigger.cal.noHits")}
                       </div>
                     {/if}
                     <div class="cal-actions">
@@ -489,10 +534,10 @@
                         class="btn btn-accent"
                         onclick={applyCalibration}
                         disabled={calResult.num_hits_detected === 0}
-                        >Apply</button
+                        >{$t("common.apply")}</button
                       >
                       <button class="btn" onclick={closeCalibrate}
-                        >Discard</button
+                        >{$t("common.discard")}</button
                       >
                     </div>
                   {/if}
@@ -504,7 +549,7 @@
           <div class="input-fields">
             <div class="field-row-3">
               <div class="field">
-                <label for="trigger-ch-{i}">Channel</label>
+                <label for="trigger-ch-{i}">{$t("trigger.channel")}</label>
                 <input
                   id="trigger-ch-{i}"
                   type="number"
@@ -520,12 +565,12 @@
                 />
               </div>
               <div class="field">
-                <label for="trigger-sample-{i}">Sample</label>
+                <label for="trigger-sample-{i}">{$t("trigger.sample")}</label>
                 <input
                   id="trigger-sample-{i}"
                   class="input"
                   list="sample-names-list"
-                  placeholder="Sample name"
+                  placeholder={$t("trigger.samplePlaceholder")}
                   value={input.sample ?? ""}
                   onchange={(e) =>
                     setOrDeleteInput(
@@ -536,7 +581,7 @@
                 />
               </div>
               <div class="field">
-                <label for="trigger-action-{i}">Action</label>
+                <label for="trigger-action-{i}">{$t("trigger.action")}</label>
                 <select
                   id="trigger-action-{i}"
                   class="input"
@@ -550,15 +595,16 @@
                     );
                   }}
                 >
-                  <option value="trigger">Trigger</option>
-                  <option value="release">Release</option>
+                  <option value="trigger">{$t("trigger.actionTrigger")}</option>
+                  <option value="release">{$t("trigger.actionRelease")}</option>
                 </select>
               </div>
             </div>
 
             <div class="field-row-3">
               <div class="field">
-                <label for="trigger-thresh-{i}">Threshold</label>
+                <label for="trigger-thresh-{i}">{$t("trigger.threshold")}</label
+                >
                 <input
                   id="trigger-thresh-{i}"
                   type="number"
@@ -576,7 +622,7 @@
                 />
               </div>
               <div class="field">
-                <label for="trigger-gain-{i}">Gain</label>
+                <label for="trigger-gain-{i}">{$t("trigger.gain")}</label>
                 <input
                   id="trigger-gain-{i}"
                   type="number"
@@ -591,11 +637,11 @@
                 />
               </div>
               <div class="field">
-                <label for="trigger-rg-{i}">Release Group</label>
+                <label for="trigger-rg-{i}">{$t("trigger.releaseGroup")}</label>
                 <input
                   id="trigger-rg-{i}"
                   class="input"
-                  placeholder="Optional"
+                  placeholder={$t("trigger.releaseGroupPlaceholder")}
                   value={input.release_group ?? ""}
                   onchange={(e) =>
                     setOrDeleteInput(
@@ -610,7 +656,9 @@
             {#if expandedInput === i}
               <div class="field-row-3">
                 <div class="field">
-                  <label for="trigger-retrig-{i}">Retrigger (ms)</label>
+                  <label for="trigger-retrig-{i}"
+                    >{$t("trigger.retriggerMs")}</label
+                  >
                   <input
                     id="trigger-retrig-{i}"
                     type="number"
@@ -628,7 +676,7 @@
                   />
                 </div>
                 <div class="field">
-                  <label for="trigger-scan-{i}">Scan (ms)</label>
+                  <label for="trigger-scan-{i}">{$t("trigger.scanMs")}</label>
                   <input
                     id="trigger-scan-{i}"
                     type="number"
@@ -646,7 +694,9 @@
                   />
                 </div>
                 <div class="field">
-                  <label for="trigger-vel-{i}">Velocity Curve</label>
+                  <label for="trigger-vel-{i}"
+                    >{$t("trigger.velocityCurve")}</label
+                  >
                   <select
                     id="trigger-vel-{i}"
                     class="input"
@@ -660,22 +710,24 @@
                       );
                     }}
                   >
-                    <option value="linear">Linear</option>
-                    <option value="logarithmic">Logarithmic</option>
-                    <option value="fixed">Fixed</option>
+                    <option value="linear">{$t("trigger.linear")}</option>
+                    <option value="logarithmic"
+                      >{$t("trigger.logarithmic")}</option
+                    >
+                    <option value="fixed">{$t("trigger.fixed")}</option>
                   </select>
                 </div>
               </div>
 
               <div class="field-row-3">
                 <div class="field">
-                  <label for="trigger-hp-{i}">Highpass (Hz)</label>
+                  <label for="trigger-hp-{i}">{$t("trigger.highpassHz")}</label>
                   <input
                     id="trigger-hp-{i}"
                     type="number"
                     step="1"
                     class="input"
-                    placeholder="Off"
+                    placeholder={$t("trigger.highpassOff")}
                     value={input.highpass_freq ?? ""}
                     onchange={(e) => {
                       const v = (e.target as HTMLInputElement).value;
@@ -688,12 +740,14 @@
                   />
                 </div>
                 <div class="field">
-                  <label for="trigger-dynth-{i}">Dyn. Threshold (ms)</label>
+                  <label for="trigger-dynth-{i}"
+                    >{$t("trigger.dynThresholdMs")}</label
+                  >
                   <input
                     id="trigger-dynth-{i}"
                     type="number"
                     class="input"
-                    placeholder="Off"
+                    placeholder={$t("trigger.highpassOff")}
                     value={input.dynamic_threshold_decay_ms ?? ""}
                     onchange={(e) => {
                       const v = (e.target as HTMLInputElement).value;
@@ -706,13 +760,15 @@
                   />
                 </div>
                 <div class="field">
-                  <label for="trigger-nf-{i}">Noise Floor Sens.</label>
+                  <label for="trigger-nf-{i}"
+                    >{$t("trigger.noiseFloorSens")}</label
+                  >
                   <input
                     id="trigger-nf-{i}"
                     type="number"
                     step="0.1"
                     class="input"
-                    placeholder="Off"
+                    placeholder={$t("trigger.highpassOff")}
                     value={input.noise_floor_sensitivity ?? ""}
                     onchange={(e) => {
                       const v = (e.target as HTMLInputElement).value;
@@ -729,7 +785,9 @@
               {#if input.velocity_curve === "fixed"}
                 <div class="field-row-3">
                   <div class="field">
-                    <label for="trigger-fixvel-{i}">Fixed Velocity</label>
+                    <label for="trigger-fixvel-{i}"
+                      >{$t("trigger.fixedVelocity")}</label
+                    >
                     <input
                       id="trigger-fixvel-{i}"
                       type="number"
@@ -758,7 +816,9 @@
           <div class="input-fields">
             <div class="field-row-3">
               <div class="field">
-                <label for="trigger-midi-type-{i}">Event Type</label>
+                <label for="trigger-midi-type-{i}"
+                  >{$t("trigger.eventType")}</label
+                >
                 <select
                   id="trigger-midi-type-{i}"
                   class="input"
@@ -770,13 +830,17 @@
                       (e.target as HTMLSelectElement).value,
                     )}
                 >
-                  <option value="note_on">Note On</option>
-                  <option value="note_off">Note Off</option>
-                  <option value="control_change">Control Change</option>
+                  <option value="note_on">{$t("trigger.noteOn")}</option>
+                  <option value="note_off">{$t("trigger.noteOff")}</option>
+                  <option value="control_change"
+                    >{$t("trigger.controlChange")}</option
+                  >
                 </select>
               </div>
               <div class="field">
-                <label for="trigger-midi-ch-{i}">Channel</label>
+                <label for="trigger-midi-ch-{i}"
+                  >{$t("trigger.midiChannel")}</label
+                >
                 <input
                   id="trigger-midi-ch-{i}"
                   type="number"
@@ -793,7 +857,7 @@
                 />
               </div>
               <div class="field">
-                <label for="trigger-midi-key-{i}">Key / CC#</label>
+                <label for="trigger-midi-key-{i}">{$t("trigger.keyCC")}</label>
                 <input
                   id="trigger-midi-key-{i}"
                   type="number"
@@ -815,12 +879,14 @@
               </div>
             </div>
             <div class="field">
-              <label for="trigger-midi-sample-{i}">Sample</label>
+              <label for="trigger-midi-sample-{i}"
+                >{$t("trigger.midiSample")}</label
+              >
               <input
                 id="trigger-midi-sample-{i}"
                 class="input"
                 list="sample-names-list"
-                placeholder="Sample name"
+                placeholder={$t("trigger.samplePlaceholder")}
                 value={input.sample ?? ""}
                 onchange={(e) =>
                   updateInput(

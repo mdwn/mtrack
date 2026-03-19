@@ -13,6 +13,9 @@
      *
      * -->
 <script lang="ts">
+  import { t } from "svelte-i18n";
+  import { get } from "svelte/store";
+
   interface SubsystemStatus {
     status: string;
     name: string | null;
@@ -72,9 +75,9 @@
   }
 
   function statusLabel(status: string): string {
-    if (status === "connected") return "Connected";
-    if (status === "initializing") return "Initializing";
-    return "Not Connected";
+    if (status === "connected") return get(t)("status.connected");
+    if (status === "initializing") return get(t)("status.initializing");
+    return get(t)("status.notConnected");
   }
 
   let restarting = $state(false);
@@ -96,54 +99,58 @@
     }
   }
 
-  const subsystems: { key: keyof StatusResponse["hardware"]; label: string }[] =
-    [
-      { key: "audio", label: "Audio" },
-      { key: "midi", label: "MIDI" },
-      { key: "dmx", label: "DMX" },
-      { key: "trigger", label: "Trigger" },
-    ];
+  const subsystems: {
+    key: keyof StatusResponse["hardware"];
+    labelKey: string;
+  }[] = [
+    { key: "audio", labelKey: "status.audio" },
+    { key: "midi", labelKey: "status.midi" },
+    { key: "dmx", labelKey: "status.dmx" },
+    { key: "trigger", labelKey: "status.trigger" },
+  ];
 </script>
 
 <div class="status-page">
   <div class="status-header">
-    <h2>Status</h2>
+    <h2>{$t("status.title")}</h2>
     <button class="refresh-btn" onclick={fetchStatus} disabled={loading}>
-      {loading ? "Refreshing..." : "Refresh"}
+      {loading ? $t("common.refreshing") : $t("common.refresh")}
     </button>
   </div>
 
   {#if error}
-    <div class="error-banner">Failed to load status: {error}</div>
+    <div class="error-banner">
+      {$t("status.failedToLoad", { values: { error } })}
+    </div>
   {/if}
 
   {#if data}
     <div class="cards">
       <div class="card">
-        <h3>Build Info</h3>
+        <h3>{$t("status.buildInfo")}</h3>
         <div class="info-grid">
-          <span class="info-label">Version</span>
+          <span class="info-label">{$t("status.version")}</span>
           <span class="info-value">{data.build.version}</span>
-          <span class="info-label">Git Hash</span>
+          <span class="info-label">{$t("status.gitHash")}</span>
           <span class="info-value mono">{data.build.git_hash}</span>
-          <span class="info-label">Build Time</span>
+          <span class="info-label">{$t("status.buildTime")}</span>
           <span class="info-value mono">{data.build.build_time}</span>
         </div>
       </div>
 
       <div class="card">
-        <h3>Hardware</h3>
+        <h3>{$t("status.hardware")}</h3>
         {#if !data.hardware.init_done}
-          <div class="init-banner">Hardware initialization in progress...</div>
+          <div class="init-banner">{$t("status.hardwareInit")}</div>
         {/if}
         {#if data.hardware.hostname || data.hardware.profile}
           <div class="info-grid profile-info">
             {#if data.hardware.hostname}
-              <span class="info-label">Hostname</span>
+              <span class="info-label">{$t("status.hostname")}</span>
               <span class="info-value mono">{data.hardware.hostname}</span>
             {/if}
             {#if data.hardware.profile}
-              <span class="info-label">Profile</span>
+              <span class="info-label">{$t("status.profile")}</span>
               <span class="info-value mono">{data.hardware.profile}</span>
             {/if}
           </div>
@@ -156,7 +163,7 @@
                 class="status-dot"
                 style="background: {statusColor(s.status)}"
               ></div>
-              <span class="subsystem-label">{sub.label}</span>
+              <span class="subsystem-label">{$t(sub.labelKey)}</span>
               <span class="subsystem-status">{statusLabel(s.status)}</span>
               {#if s.name}
                 <span class="subsystem-name">{s.name}</span>
@@ -168,17 +175,17 @@
 
       <div class="card">
         <div class="card-header-row">
-          <h3>Controllers</h3>
+          <h3>{$t("status.controllers")}</h3>
           <button
             class="refresh-btn"
             onclick={restartControllers}
             disabled={restarting}
           >
-            {restarting ? "Restarting..." : "Restart"}
+            {restarting ? $t("status.restarting") : $t("status.restart")}
           </button>
         </div>
         {#if data.controllers.length === 0}
-          <div class="empty-note">No controllers configured</div>
+          <div class="empty-note">{$t("status.noControllers")}</div>
         {:else}
           <div class="subsystem-list">
             {#each data.controllers as ctrl, i (`${i}:${ctrl.kind}`)}
@@ -191,7 +198,9 @@
                 ></div>
                 <span class="subsystem-label">{ctrl.kind.toUpperCase()}</span>
                 <span class="subsystem-status"
-                  >{ctrl.status === "running" ? "Running" : "Error"}</span
+                  >{ctrl.status === "running"
+                    ? $t("status.running")
+                    : $t("status.error")}</span
                 >
                 {#if ctrl.detail}
                   <span class="subsystem-name">{ctrl.detail}</span>

@@ -14,6 +14,7 @@
      * -->
 <script lang="ts">
   /* eslint-disable @typescript-eslint/no-explicit-any */
+  import { t } from "svelte-i18n";
   import type { AudioDeviceInfo } from "../../lib/api/config";
 
   interface Props {
@@ -109,13 +110,13 @@
 
 <div class="section-fields">
   <div class="field">
-    <label for="audio-device">Device</label>
+    <label for="audio-device">{$t("audio.device")}</label>
     <div class="field-row">
       <input
         id="audio-device"
         class="input"
         list="audio-device-list"
-        placeholder="Type or select a device"
+        placeholder={$t("audio.devicePlaceholder")}
         value={audio.device || ""}
         onchange={(e) => set("device", (e.target as HTMLInputElement).value)}
       />
@@ -126,13 +127,13 @@
           >
         {/each}
       </datalist>
-      <button class="btn" onclick={onrefresh}>Refresh</button>
+      <button class="btn" onclick={onrefresh}>{$t("common.refresh")}</button>
     </div>
   </div>
 
   <div class="field-row-2">
     <div class="field">
-      <label for="audio-sample-rate">Sample Rate</label>
+      <label for="audio-sample-rate">{$t("audio.sampleRate")}</label>
       <select
         id="audio-sample-rate"
         class="input"
@@ -142,7 +143,7 @@
           setOrDelete("sample_rate", v ? parseInt(v) : undefined, undefined);
         }}
       >
-        <option value="">Default</option>
+        <option value="">{$t("common.default")}</option>
         {#if sampleRateOptions.length > 0}
           {#each sampleRateOptions as rate (rate)}
             <option value={String(rate)}>{rate}</option>
@@ -159,7 +160,7 @@
     </div>
 
     <div class="field">
-      <label for="audio-sample-format">Sample Format</label>
+      <label for="audio-sample-format">{$t("audio.sampleFormat")}</label>
       <select
         id="audio-sample-format"
         class="input"
@@ -171,7 +172,7 @@
             undefined,
           )}
       >
-        <option value="">Default</option>
+        <option value="">{$t("common.default")}</option>
         {#if sampleFormatOptions.length > 0}
           {#each sampleFormatOptions as fmt (fmt)}
             <option value={fmt}>{fmt}</option>
@@ -189,7 +190,7 @@
 
   <div class="field-row-2">
     <div class="field">
-      <label for="audio-bits">Bits Per Sample</label>
+      <label for="audio-bits">{$t("audio.bitsPerSample")}</label>
       <select
         id="audio-bits"
         class="input"
@@ -203,7 +204,7 @@
           );
         }}
       >
-        <option value="">Default</option>
+        <option value="">{$t("common.default")}</option>
         {#if bitsPerSampleOptions.length > 0}
           {#each bitsPerSampleOptions as bits (bits)}
             <option value={String(bits)}>{bits}</option>
@@ -222,7 +223,7 @@
     </div>
 
     <div class="field">
-      <label for="audio-buffer-size">Buffer Size</label>
+      <label for="audio-buffer-size">{$t("audio.bufferSize")}</label>
       <input
         id="audio-buffer-size"
         type="number"
@@ -239,7 +240,7 @@
 
   <div class="field-row-2">
     <div class="field">
-      <label for="audio-stream-buffer">Stream Buffer Size</label>
+      <label for="audio-stream-buffer">{$t("audio.streamBufferSize")}</label>
       <input
         id="audio-stream-buffer"
         type="text"
@@ -267,7 +268,7 @@
     </div>
 
     <div class="field">
-      <label for="audio-buffer-threads">Buffer Threads</label>
+      <label for="audio-buffer-threads">{$t("audio.bufferThreads")}</label>
       <input
         id="audio-buffer-threads"
         type="number"
@@ -284,7 +285,7 @@
 
   <div class="field-row-2">
     <div class="field">
-      <label for="audio-resampler">Resampler</label>
+      <label for="audio-resampler">{$t("audio.resampler")}</label>
       <select
         id="audio-resampler"
         class="input"
@@ -296,19 +297,19 @@
             undefined,
           )}
       >
-        <option value="">Default (sinc)</option>
+        <option value="">{$t("audio.resamplerDefault")}</option>
         <option value="sinc">sinc</option>
         <option value="fft">fft</option>
       </select>
     </div>
 
     <div class="field">
-      <label for="audio-delay">Playback Delay</label>
+      <label for="audio-delay">{$t("audio.playbackDelay")}</label>
       <input
         id="audio-delay"
         type="text"
         class="input"
-        placeholder="e.g. 500ms"
+        placeholder={$t("audio.playbackDelayPlaceholder")}
         value={audio.playback_delay ?? ""}
         onchange={(e) =>
           setOrDelete(
@@ -322,8 +323,8 @@
 
   <div class="field">
     <div class="field-header">
-      <span class="field-label">Track Mappings</span>
-      <button class="btn" onclick={addMapping}>Add</button>
+      <span class="field-label">{$t("audio.trackMappings")}</span>
+      <button class="btn" onclick={addMapping}>{$t("common.add")}</button>
     </div>
     {#each mappingEntries as [name, channels], i (name)}
       <div class="mapping-row" data-index={i}>
@@ -331,7 +332,7 @@
           class="input mapping-name"
           list="track-name-list"
           value={name}
-          placeholder="Track name"
+          placeholder={$t("audio.trackNamePlaceholder")}
           onchange={(e) =>
             updateMappingName(
               name,

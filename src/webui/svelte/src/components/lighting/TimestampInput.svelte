@@ -13,6 +13,7 @@
      *
      * -->
 <script lang="ts">
+  import { t } from "svelte-i18n";
   import type { Timestamp } from "../../lib/lighting/types";
 
   interface Props {
@@ -74,8 +75,8 @@
         (e.target as HTMLSelectElement).value as "absolute" | "measure_beat",
       )}
   >
-    <option value="absolute">Time</option>
-    <option value="measure_beat">Measure</option>
+    <option value="absolute">{$t("timestamp.time")}</option>
+    <option value="measure_beat">{$t("timestamp.measure")}</option>
   </select>
 
   {#if mode === "absolute"}
@@ -92,7 +93,7 @@
             secs,
             msVal,
           )}
-        title="Minutes"
+        title={$t("timestamp.minutes")}
       />
       <span class="ts-sep">:</span>
       <input
@@ -107,7 +108,7 @@
             parseInt((e.target as HTMLInputElement).value) || 0,
             msVal,
           )}
-        title="Seconds"
+        title={$t("timestamp.seconds")}
       />
       <span class="ts-sep">.</span>
       <input
@@ -122,7 +123,7 @@
             secs,
             parseInt((e.target as HTMLInputElement).value) || 0,
           )}
-        title="Milliseconds"
+        title={$t("timestamp.milliseconds")}
       />
     </div>
   {:else}
@@ -137,7 +138,7 @@
             parseInt((e.target as HTMLInputElement).value) || 1,
             beatVal,
           )}
-        title="Measure"
+        title={$t("timestamp.measure")}
       />
       <span class="ts-sep">/</span>
       <input
@@ -151,7 +152,7 @@
             measureVal,
             parseFloat((e.target as HTMLInputElement).value) || 1,
           )}
-        title="Beat"
+        title={$t("timestamp.beat")}
       />
     </div>
   {/if}

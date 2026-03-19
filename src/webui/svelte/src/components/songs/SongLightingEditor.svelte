@@ -38,6 +38,7 @@
   import TimelineEditor from "../lighting/timeline/TimelineEditor.svelte";
   import FileUpload from "./FileUpload.svelte";
   import FileBrowser from "./FileBrowser.svelte";
+  import { t } from "svelte-i18n";
   import { playerClient } from "../../lib/grpc/client";
   import { playbackStore, wsConnected } from "../../lib/ws/stores";
   import { create } from "@bufbuild/protobuf";
@@ -455,7 +456,7 @@
 <div class="lighting-section">
   {#if !connected}
     <div class="warn-banner">
-      Not connected to server — playback controls unavailable
+      {$t("songLighting.notConnected")}
     </div>
   {/if}
   {#if error}
@@ -472,28 +473,32 @@
       <button
         class="tab-btn"
         class:active={tab === "timeline"}
-        onclick={switchToTimeline}>Timeline</button
+        onclick={switchToTimeline}>{$t("songLighting.timeline")}</button
       >
       <button class="tab-btn" class:active={tab === "raw"} onclick={switchToRaw}
-        >Raw DSL</button
+        >{$t("songLighting.rawDsl")}</button
       >
     </div>
 
     <div class="file-info">
-      {lightFiles.length} DSL
+      {$t("songLighting.dslCount", { values: { count: lightFiles.length } })}
       {#if song.midi_dmx_files.length > 0}
-        + {song.midi_dmx_files.length} MIDI DMX
+        {$t("songLighting.midiDmxCount", {
+          values: { count: song.midi_dmx_files.length },
+        })}
       {/if}
-      <button class="btn btn-sm" onclick={addLightFile}>+ DSL</button>
+      <button class="btn btn-sm" onclick={addLightFile}
+        >{$t("songLighting.addDsl")}</button
+      >
       <button class="btn btn-sm" onclick={() => (showMidiDmxModal = true)}>
-        MIDI DMX...
+        {$t("songLighting.midiDmxBtn")}
       </button>
     </div>
   </div>
 
   {#if lightFiles.some((f) => f.parseError)}
     <div class="error-banner">
-      Some lighting files have parse errors. Use the Raw DSL tab to fix.
+      {$t("songLighting.parseErrors")}
     </div>
   {/if}
 
@@ -528,7 +533,7 @@
       {:else if lightFiles.length === 1}
         <div class="raw-file-label">{lightFiles[0].path}</div>
       {:else}
-        <p class="muted">No lighting files. Click "+ DSL" to create one.</p>
+        <p class="muted">{$t("songLighting.noLightFiles")}</p>
       {/if}
 
       {#if lightFiles.length > 0}
@@ -539,10 +544,12 @@
           spellcheck="false"
         ></textarea>
         <div class="raw-actions">
-          <button class="btn btn-sm" onclick={handleValidate}>Validate</button>
+          <button class="btn btn-sm" onclick={handleValidate}
+            >{$t("common.validate")}</button
+          >
           {#if validationResult}
             {#if validationResult.valid}
-              <span class="validation-ok">Valid</span>
+              <span class="validation-ok">{$t("common.valid")}</span>
             {:else}
               <div class="validation-errors">
                 {#each validationResult.errors ?? [] as err, i (i)}
@@ -574,16 +581,18 @@
       role="document"
     >
       <div class="modal-header">
-        <h3>MIDI DMX Files</h3>
+        <h3>{$t("songLighting.midiDmxFiles")}</h3>
         <span class="modal-song">{song.name}</span>
         <button class="btn btn-sm" onclick={() => (showMidiDmxModal = false)}
-          >Close</button
+          >{$t("common.close")}</button
         >
       </div>
       <div class="modal-body">
         {#if song.midi_dmx_files.length > 0}
           <div class="modal-section">
-            <span class="modal-section-label">Current Files</span>
+            <span class="modal-section-label"
+              >{$t("songLighting.currentFiles")}</span
+            >
             <div class="midi-dmx-files">
               {#each song.midi_dmx_files as lf (lf)}
                 <span class="midi-dmx-file" title={lf}
@@ -593,22 +602,24 @@
             </div>
           </div>
         {:else}
-          <p class="muted">No MIDI DMX files.</p>
+          <p class="muted">{$t("songLighting.noMidiDmxFiles")}</p>
         {/if}
         <div class="modal-section">
-          <span class="modal-section-label">Upload</span>
+          <span class="modal-section-label">{$t("songLighting.upload")}</span>
           <FileUpload
             accept=".mid,.midi"
             label={uploading
-              ? "Uploading..."
-              : "Drop MIDI DMX file here or click to upload"}
+              ? $t("common.uploading")
+              : $t("songLighting.dropMidiDmx")}
             onupload={(files) => handleFileUpload(files, "midi")}
           />
         </div>
         <div class="modal-section">
-          <span class="modal-section-label">Import from Filesystem</span>
+          <span class="modal-section-label"
+            >{$t("songLighting.importFromFs")}</span
+          >
           <button class="btn" onclick={() => (showFileBrowser = true)}>
-            Browse Server Filesystem...
+            {$t("songLighting.browseServer")}
           </button>
         </div>
       </div>

@@ -13,6 +13,8 @@
      *
      * -->
 <script lang="ts">
+  import { t } from "svelte-i18n";
+
   interface Props {
     colors: string[];
     onchange: (colors: string[]) => void;
@@ -74,7 +76,7 @@
       {#if colors.length > 1}
         <button
           class="btn-icon"
-          title="Remove color"
+          title={$t("effect.color.removeColor")}
           onclick={() => removeColor(i)}
         >
           &#10005;
@@ -83,7 +85,9 @@
     </div>
   {/each}
   {#if multi || colors.length === 0}
-    <button class="btn btn-sm add-color" onclick={addColor}>+ Color</button>
+    <button class="btn btn-sm add-color" onclick={addColor}
+      >{$t("effect.color.addColor")}</button
+    >
   {/if}
 </div>
 

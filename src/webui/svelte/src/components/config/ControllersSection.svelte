@@ -14,6 +14,8 @@
      * -->
 <script lang="ts">
   /* eslint-disable @typescript-eslint/no-explicit-any */
+  import { t } from "svelte-i18n";
+
   interface Props {
     controllers: any[];
     onchange: () => void;
@@ -110,13 +112,13 @@
         <span class="controller-kind">{ctrl.kind?.toUpperCase()}</span>
         <button
           class="btn btn-danger btn-sm"
-          onclick={() => removeController(i)}>Remove</button
+          onclick={() => removeController(i)}>{$t("common.remove")}</button
         >
       </div>
 
       {#if ctrl.kind === "grpc"}
         <div class="field">
-          <label for="ctrl-grpc-port-{i}">Port</label>
+          <label for="ctrl-grpc-port-{i}">{$t("controllers.port")}</label>
           <input
             id="ctrl-grpc-port-{i}"
             type="number"
@@ -131,7 +133,7 @@
         </div>
       {:else if ctrl.kind === "osc"}
         <div class="field">
-          <label for="ctrl-osc-port-{i}">Port</label>
+          <label for="ctrl-osc-port-{i}">{$t("controllers.port")}</label>
           <input
             id="ctrl-osc-port-{i}"
             type="number"
@@ -147,15 +149,19 @@
 
         <div class="field">
           <div class="field-header">
-            <span class="field-label">Broadcast Addresses</span>
-            <button class="btn" onclick={() => addBroadcastAddr(i)}>Add</button>
+            <span class="field-label"
+              >{$t("controllers.broadcastAddresses")}</span
+            >
+            <button class="btn" onclick={() => addBroadcastAddr(i)}
+              >{$t("common.add")}</button
+            >
           </div>
           {#each ctrl.broadcast_addresses || [] as addr, ai (ai)}
             <div class="addr-row">
               <input
                 class="input"
                 value={addr}
-                placeholder="192.168.1.255:43235"
+                placeholder={$t("controllers.broadcastPlaceholder")}
                 onchange={(e) =>
                   updateBroadcastAddr(
                     i,
@@ -172,7 +178,9 @@
         </div>
 
         <button class="btn btn-expand" onclick={() => toggleOscAdvanced(i)}>
-          {showOscAdvanced[i] ? "Hide" : "Show"} OSC Path Overrides
+          {showOscAdvanced[i]
+            ? $t("controllers.hideOscPaths")
+            : $t("controllers.showOscPaths")}
         </button>
 
         {#if showOscAdvanced[i]}
@@ -197,14 +205,18 @@
           </div>
         {/if}
       {:else if ctrl.kind === "midi"}
-        <div class="note">Edit MIDI controllers in raw YAML.</div>
+        <div class="note">{$t("controllers.midiNote")}</div>
       {/if}
     </div>
   {/each}
 
   <div class="add-buttons">
-    <button class="btn" onclick={() => addController("grpc")}>Add gRPC</button>
-    <button class="btn" onclick={() => addController("osc")}>Add OSC</button>
+    <button class="btn" onclick={() => addController("grpc")}
+      >{$t("controllers.addGrpc")}</button
+    >
+    <button class="btn" onclick={() => addController("osc")}
+      >{$t("controllers.addOsc")}</button
+    >
   </div>
 </div>
 

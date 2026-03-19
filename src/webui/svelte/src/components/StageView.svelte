@@ -15,6 +15,8 @@
 <script lang="ts">
   import { metadataStore, fixtureStore, reloadStore } from "../lib/ws/stores";
   import type { FixtureChannels, FixtureMetadata } from "../lib/ws/stores";
+  import { t } from "svelte-i18n";
+  import { get } from "svelte/store";
 
   const FIXTURE_RADIUS = 22;
   const GLOW_RADIUS = 50;
@@ -154,7 +156,7 @@
     ctx.fillStyle = "#333";
     ctx.font = "12px monospace";
     ctx.textAlign = "center";
-    ctx.fillText("STAGE", w / 2, PADDING - 6);
+    ctx.fillText(get(t)("stage.label"), w / 2, PADDING - 6);
 
     for (const name of Object.keys($metadataStore)) {
       const pos = layoutPositions[name];
@@ -334,11 +336,11 @@
 
 <div class="card card-full stage-card">
   <div class="card-header">
-    <span class="card-title">Stage</span>
+    <span class="card-title">{$t("stage.title")}</span>
     {#if $reloadStore}
       <span class="reload-badge" class:error={$reloadStore.status === "error"}>
         {$reloadStore.status === "ok"
-          ? "Reloaded"
+          ? $t("stage.reloaded")
           : `Error: ${$reloadStore.error}`}
       </span>
     {/if}

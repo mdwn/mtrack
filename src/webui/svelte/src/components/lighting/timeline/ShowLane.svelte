@@ -13,6 +13,7 @@
      *
      * -->
 <script lang="ts">
+  import { t } from "svelte-i18n";
   import type {
     Cue,
     TempoSection,
@@ -275,7 +276,9 @@
       <span class="lane-name" title={name}>{name}</span>
       <button
         class="btn-icon lane-delete"
-        title="Delete {laneType}"
+        title={$t("timeline.showLane.deleteLane", {
+          values: { type: laneType },
+        })}
         onclick={ondelete}
       >
         &#10005;

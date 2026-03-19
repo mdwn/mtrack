@@ -21,6 +21,8 @@
   import StatusPage from "./pages/StatusPage.svelte";
   import NotFound from "./pages/NotFound.svelte";
   import { playbackStore } from "./lib/ws/stores";
+  import { t } from "svelte-i18n";
+  import { get } from "svelte/store";
 
   let currentHash = $state(window.location.hash || "#/");
 
@@ -38,18 +40,24 @@
     let pageTitle = "";
 
     if (currentHash === "#/" || currentHash === "") {
-      pageTitle = "Dashboard";
+      pageTitle = get(t)("nav.dashboard");
     } else if (currentHash.startsWith("#/config")) {
       const rest = decodeURIComponent(currentHash.slice("#/config/".length));
-      pageTitle = rest ? `Config - ${rest.split("/")[0]}` : "Config";
+      pageTitle = rest
+        ? `${get(t)("nav.config")} - ${rest.split("/")[0]}`
+        : get(t)("nav.config");
     } else if (currentHash.startsWith("#/songs")) {
       const rest = decodeURIComponent(currentHash.slice("#/songs/".length));
-      pageTitle = rest ? `Songs - ${rest.split("/")[0]}` : "Songs";
+      pageTitle = rest
+        ? `${get(t)("nav.songs")} - ${rest.split("/")[0]}`
+        : get(t)("nav.songs");
     } else if (currentHash.startsWith("#/playlists")) {
       const rest = decodeURIComponent(currentHash.slice("#/playlists/".length));
-      pageTitle = rest ? `Playlists - ${rest}` : "Playlists";
+      pageTitle = rest
+        ? `${get(t)("nav.playlists")} - ${rest}`
+        : get(t)("nav.playlists");
     } else if (currentHash.startsWith("#/status")) {
-      pageTitle = "Status";
+      pageTitle = get(t)("nav.status");
     }
 
     const song = $playbackStore.song_name;

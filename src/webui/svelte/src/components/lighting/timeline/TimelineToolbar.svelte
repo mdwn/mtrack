@@ -13,6 +13,7 @@
      *
      * -->
 <script lang="ts">
+  import { t } from "svelte-i18n";
   import { formatMs } from "../../../lib/lighting/timeline-state";
 
   interface Props {
@@ -76,13 +77,13 @@
     <button
       class="btn btn-sm btn-transport"
       onclick={onskipstart}
-      title="Go to start"
+      title={$t("timeline.toolbar.goToStart")}
       disabled={isPlaying}>&#9198;</button
     >
     <button
       class="btn btn-sm btn-transport btn-stop-transport"
       onclick={onstop}
-      title="Stop (reset to start)"
+      title={$t("timeline.toolbar.stopReset")}
       disabled={!isPlaying && (playCursorMs === null || playCursorMs === 0)}
       >&#9632;</button
     >
@@ -90,30 +91,41 @@
       <button
         class="btn btn-sm btn-transport btn-pause"
         onclick={onpause}
-        title="Pause">&#9646;&#9646;</button
+        title={$t("timeline.toolbar.pause")}>&#9646;&#9646;</button
       >
     {:else}
       <button
         class="btn btn-sm btn-transport btn-play"
         onclick={onplay}
         disabled={!canPlay}
-        title="Play from cursor">&#9654;</button
+        title={$t("timeline.toolbar.playFromCursor")}>&#9654;</button
       >
     {/if}
     <button
       class="btn btn-sm btn-transport"
       onclick={onskipend}
-      title="Go to end"
+      title={$t("timeline.toolbar.goToEnd")}
       disabled={isPlaying}>&#9197;</button
     >
   </div>
 
   <div class="toolbar-group">
-    <button class="btn btn-sm" onclick={zoomOut} title="Zoom out">-</button>
-    <button class="btn btn-sm" onclick={onfitview} title="Fit to view"
-      >Fit</button
+    <button
+      class="btn btn-sm"
+      onclick={zoomOut}
+      title={$t("timeline.toolbar.zoomOut")}>-</button
     >
-    <button class="btn btn-sm" onclick={zoomIn} title="Zoom in">+</button>
+    <button
+      class="btn btn-sm"
+      onclick={onfitview}
+      title={$t("timeline.toolbar.fitToView")}
+      >{$t("timeline.toolbar.fit")}</button
+    >
+    <button
+      class="btn btn-sm"
+      onclick={zoomIn}
+      title={$t("timeline.toolbar.zoomIn")}>+</button
+    >
   </div>
 
   {#if hasTempo}
@@ -124,7 +136,7 @@
           checked={snapEnabled}
           onchange={() => onsnapchange(!snapEnabled, snapResolution)}
         />
-        <span>Snap</span>
+        <span>{$t("timeline.toolbar.snap")}</span>
       </label>
       {#if snapEnabled}
         <select
@@ -136,16 +148,20 @@
               (e.target as HTMLSelectElement).value as "beat" | "measure",
             )}
         >
-          <option value="beat">Beat</option>
-          <option value="measure">Measure</option>
+          <option value="beat">{$t("timeline.toolbar.beat")}</option>
+          <option value="measure">{$t("timeline.toolbar.measure")}</option>
         </select>
       {/if}
     </div>
   {/if}
 
   <div class="toolbar-group">
-    <button class="btn btn-sm" onclick={onaddshow}>+ Show</button>
-    <button class="btn btn-sm" onclick={onaddsequence}>+ Sequence</button>
+    <button class="btn btn-sm" onclick={onaddshow}
+      >{$t("timeline.toolbar.addShow")}</button
+    >
+    <button class="btn btn-sm" onclick={onaddsequence}
+      >{$t("timeline.toolbar.addSequence")}</button
+    >
   </div>
 
   <div class="toolbar-spacer"></div>

@@ -17,6 +17,8 @@
   import { playbackStore } from "../../lib/ws/stores";
   import { playerClient } from "../../lib/grpc/client";
   import { formatMs } from "../../lib/util/format";
+  import { t } from "svelte-i18n";
+  import { get } from "svelte/store";
 
   let errorMsg = $state("");
 
@@ -31,7 +33,7 @@
       await playerClient.play({});
     } catch (e) {
       console.error("play failed:", e);
-      showError("Play failed");
+      showError(get(t)("playback.error.play"));
     } finally {
       loading = false;
     }
@@ -43,7 +45,7 @@
       await playerClient.stop({});
     } catch (e) {
       console.error("stop failed:", e);
-      showError("Stop failed");
+      showError(get(t)("playback.error.stop"));
     } finally {
       loading = false;
     }
@@ -58,7 +60,7 @@
         // Already at end of playlist — not an error.
       } else {
         console.error("next failed:", e);
-        showError("Next failed");
+        showError(get(t)("playback.error.next"));
       }
     } finally {
       loading = false;
@@ -74,7 +76,7 @@
         // Already at beginning of playlist — not an error.
       } else {
         console.error("previous failed:", e);
-        showError("Previous failed");
+        showError(get(t)("playback.error.prev"));
       }
     } finally {
       loading = false;
@@ -135,16 +137,18 @@
 
 <div class="card card-full">
   <div class="card-header">
-    <span class="card-title">Playback</span>
+    <span class="card-title">{$t("playback.title")}</span>
   </div>
   <div class="transport">
     <div class="transport-info">
-      <div class="playback-song">{$playbackStore.song_name || "No song"}</div>
+      <div class="playback-song">
+        {$playbackStore.song_name || $t("playback.noSong")}
+      </div>
       <div class="playback-status">
         {#if $playbackStore.is_playing}
-          <span class="playing">Playing</span>
+          <span class="playing">{$t("playback.playing")}</span>
         {:else}
-          <span class="stopped">Stopped</span>
+          <span class="stopped">{$t("playback.stopped")}</span>
         {/if}
       </div>
     </div>
@@ -155,7 +159,7 @@
         aria-valuenow={progressPct}
         aria-valuemin={0}
         aria-valuemax={100}
-        aria-label="Song progress"
+        aria-label={$t("playback.songProgress")}
       >
         <div class="progress-fill" style:width="{progressPct}%"></div>
       </div>
@@ -169,28 +173,28 @@
         class="btn"
         onclick={previous}
         disabled={$playbackStore.is_playing || loading || !canPrev}
-        title="Previous (Left Arrow)">Prev</button
+        title={$t("playback.prevTooltip")}>{$t("playback.prev")}</button
       >
       {#if $playbackStore.is_playing}
         <button
           class="btn btn-primary"
           onclick={stop}
           disabled={loading}
-          title="Stop (Space)">Stop</button
+          title={$t("playback.stopTooltip")}>{$t("playback.stop")}</button
         >
       {:else}
         <button
           class="btn btn-primary"
           onclick={play}
           disabled={loading}
-          title="Play (Space)">Play</button
+          title={$t("playback.playTooltip")}>{$t("playback.play")}</button
         >
       {/if}
       <button
         class="btn"
         onclick={next}
         disabled={$playbackStore.is_playing || loading || !canNext}
-        title="Next (Right Arrow)">Next</button
+        title={$t("playback.nextTooltip")}>{$t("playback.next")}</button
       >
     </div>
   </div>

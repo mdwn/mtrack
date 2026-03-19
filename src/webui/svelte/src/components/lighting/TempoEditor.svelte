@@ -13,6 +13,7 @@
      *
      * -->
 <script lang="ts">
+  import { t } from "svelte-i18n";
   import type { TempoSection, TempoChange } from "../../lib/lighting/types";
   import TimestampInput from "./TimestampInput.svelte";
 
@@ -106,18 +107,19 @@
     <button class="expand-btn" onclick={() => (expanded = !expanded)}>
       {expanded ? "\u25BC" : "\u25B6"}
     </button>
-    <span class="section-title">Tempo</span>
+    <span class="section-title">{$t("tempo.title")}</span>
     {#if tempo}
       <span class="tempo-info"
-        >{tempo.bpm} BPM, {tempo.time_signature[0]}/{tempo
+        >{tempo.bpm}
+        {$t("tempo.bpm")}, {tempo.time_signature[0]}/{tempo
           .time_signature[1]}</span
       >
       <button class="btn btn-sm btn-danger" onclick={disableTempo}
-        >Remove</button
+        >{$t("common.remove")}</button
       >
     {:else}
       <button class="btn btn-sm btn-primary" onclick={enableTempo}
-        >Add Tempo</button
+        >{$t("tempo.addTempo")}</button
       >
     {/if}
   </div>
@@ -126,7 +128,7 @@
     <div class="tempo-body">
       <div class="tempo-fields">
         <label class="field">
-          <span class="field-label">BPM</span>
+          <span class="field-label">{$t("tempo.bpm")}</span>
           <input
             type="number"
             class="input"
@@ -138,7 +140,7 @@
           />
         </label>
         <label class="field">
-          <span class="field-label">Time Signature</span>
+          <span class="field-label">{$t("tempo.timeSignature")}</span>
           <div class="ts-row">
             <input
               type="number"
@@ -168,7 +170,7 @@
           </div>
         </label>
         <label class="field">
-          <span class="field-label">Start Offset</span>
+          <span class="field-label">{$t("tempo.startOffset")}</span>
           <div class="start-row">
             <input
               type="number"
@@ -195,20 +197,22 @@
       <!-- Tempo changes -->
       <div class="changes-section">
         <div class="changes-header">
-          <span class="section-label">Tempo Changes</span>
-          <button class="btn btn-sm" onclick={addChange}>+ Change</button>
+          <span class="section-label">{$t("tempo.tempoChanges")}</span>
+          <button class="btn btn-sm" onclick={addChange}
+            >{$t("tempo.addChange")}</button
+          >
         </div>
         {#each tempo.changes as change, i (i)}
           <div class="change-row">
             <label class="field">
-              <span class="field-label">At</span>
+              <span class="field-label">{$t("tempo.at")}</span>
               <TimestampInput
                 value={change.timestamp}
                 onchange={(ts) => updateChange(i, { ...change, timestamp: ts })}
               />
             </label>
             <label class="field">
-              <span class="field-label">BPM</span>
+              <span class="field-label">{$t("tempo.bpm")}</span>
               <input
                 type="number"
                 class="input sm-input"
@@ -225,7 +229,7 @@
               />
             </label>
             <label class="field">
-              <span class="field-label">Time Sig</span>
+              <span class="field-label">{$t("tempo.timeSig")}</span>
               <div class="ts-row">
                 <input
                   type="number"
@@ -273,7 +277,7 @@
               </div>
             </label>
             <label class="field">
-              <span class="field-label">Transition</span>
+              <span class="field-label">{$t("tempo.transition")}</span>
               <input
                 type="text"
                 class="input sm-input"
@@ -290,7 +294,7 @@
             </label>
             <button
               class="btn-icon delete-btn"
-              title="Remove"
+              title={$t("common.remove")}
               onclick={() => deleteChange(i)}
             >
               &#10005;

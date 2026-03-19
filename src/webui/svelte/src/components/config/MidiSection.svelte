@@ -14,6 +14,7 @@
      * -->
 <script lang="ts">
   /* eslint-disable @typescript-eslint/no-explicit-any */
+  import { t } from "svelte-i18n";
   import type { MidiDeviceInfo } from "../../lib/api/config";
 
   interface Props {
@@ -46,13 +47,13 @@
 
 <div class="section-fields">
   <div class="field">
-    <label for="midi-device">Device</label>
+    <label for="midi-device">{$t("midi.device")}</label>
     <div class="field-row">
       <input
         id="midi-device"
         class="input"
         list="midi-device-list"
-        placeholder="Type or select a device"
+        placeholder={$t("midi.devicePlaceholder")}
         value={midi.device || ""}
         onchange={(e) => set("device", (e.target as HTMLInputElement).value)}
       />
@@ -61,17 +62,17 @@
           <option value={name}></option>
         {/each}
       </datalist>
-      <button class="btn" onclick={onrefresh}>Refresh</button>
+      <button class="btn" onclick={onrefresh}>{$t("common.refresh")}</button>
     </div>
   </div>
 
   <div class="field">
-    <label for="midi-delay">Playback Delay</label>
+    <label for="midi-delay">{$t("midi.playbackDelay")}</label>
     <input
       id="midi-delay"
       type="text"
       class="input"
-      placeholder="e.g. 500ms"
+      placeholder={$t("midi.playbackDelayPlaceholder")}
       value={midi.playback_delay ?? ""}
       onchange={(e) =>
         setOrDelete(
@@ -92,14 +93,13 @@
           setOrDelete("beat_clock", checked || undefined);
         }}
       />
-      Enable Beat Clock
+      {$t("midi.enableBeatClock")}
     </label>
   </div>
 
   {#if midi.midi_to_dmx}
     <div class="note">
-      MIDI-to-DMX mappings configured. Edit in raw YAML for advanced
-      configuration.
+      {$t("midi.midiToDmxNote")}
     </div>
   {/if}
 </div>

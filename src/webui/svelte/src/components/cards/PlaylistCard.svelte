@@ -15,6 +15,7 @@
 <script lang="ts">
   import { playbackStore } from "../../lib/ws/stores";
   import { playerClient } from "../../lib/grpc/client";
+  import { t } from "svelte-i18n";
 
   async function switchPlaylist(name: string) {
     try {
@@ -30,7 +31,7 @@
 
 <div class="card">
   <div class="card-header">
-    <span class="card-title">Playlist</span>
+    <span class="card-title">{$t("playlist.title")}</span>
     {#if playlists.length > 0}
       <select
         class="playlist-select"

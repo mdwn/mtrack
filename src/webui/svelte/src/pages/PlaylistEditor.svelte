@@ -24,6 +24,8 @@
     type PlaylistData,
   } from "../lib/api/config";
   import { playbackStore } from "../lib/ws/stores";
+  import { t } from "svelte-i18n";
+  import { get } from "svelte/store";
 
   interface Props {
     currentHash: string;
@@ -94,7 +96,7 @@
   async function handleSave() {
     if (!selected) return;
     if ($playbackStore.locked) {
-      error = "Player is locked. Unlock to make changes.";
+      error = get(t)("common.locked");
       return;
     }
     try {
@@ -124,7 +126,7 @@
 
   async function handleDelete(name: string) {
     if ($playbackStore.locked) {
-      error = "Player is locked. Unlock to make changes.";
+      error = get(t)("common.locked");
       return;
     }
     try {
@@ -146,7 +148,7 @@
     const name = newName.trim();
     if (!name) return;
     if ($playbackStore.locked) {
-      error = "Player is locked. Unlock to make changes.";
+      error = get(t)("common.locked");
       return;
     }
     try {
@@ -227,9 +229,9 @@
 <div class="playlist-editor">
   <div class="panel list-panel">
     <div class="panel-header">
-      <h3>Playlists</h3>
+      <h3>{$t("playlists.title")}</h3>
       <button class="btn btn-sm" onclick={() => (showNewInput = !showNewInput)}>
-        {showNewInput ? "Cancel" : "New"}
+        {showNewInput ? $t("common.cancel") : $t("playlists.new")}
       </button>
     </div>
 
@@ -238,20 +240,20 @@
         <input
           type="text"
           class="input"
-          placeholder="Playlist name"
+          placeholder={$t("playlists.namePlaceholder")}
           bind:value={newName}
           onkeydown={(e) => e.key === "Enter" && handleCreate()}
         />
         <button class="btn btn-primary btn-sm" onclick={handleCreate}
-          >Create</button
+          >{$t("common.create")}</button
         >
       </div>
     {/if}
 
     {#if loading}
-      <p class="muted">Loading...</p>
+      <p class="muted">{$t("common.loading")}</p>
     {:else if playlists.length === 0}
-      <p class="muted">No playlists found.</p>
+      <p class="muted">{$t("playlists.noPlaylists")}</p>
     {:else}
       <ul class="playlist-list">
         {#each playlists as pl (pl.name)}
@@ -264,19 +266,23 @@
               onclick={() => pl.name !== "all_songs" && selectPlaylist(pl.name)}
               disabled={pl.name === "all_songs"}
               title={pl.name === "all_songs"
-                ? "Auto-generated playlist containing all songs"
+                ? $t("playlists.allSongsHint")
                 : undefined}
             >
               <span class="pl-name">{pl.name}</span>
-              <span class="pl-count">{pl.song_count} songs</span>
+              <span class="pl-count"
+                >{$t("playlists.songs", {
+                  values: { count: pl.song_count },
+                })}</span
+              >
             </button>
             <div class="pl-actions">
               {#if pl.is_active}
-                <span class="badge">active</span>
+                <span class="badge">{$t("playlists.active")}</span>
               {:else if pl.name !== "all_songs"}
                 <button
                   class="btn-icon"
-                  title="Activate"
+                  title={$t("playlists.activate")}
                   onclick={() => handleActivate(pl.name)}
                 >
                   &#9654;
@@ -288,18 +294,18 @@
                     class="btn-icon danger"
                     onclick={() => handleDelete(pl.name)}
                   >
-                    Confirm
+                    {$t("common.confirm")}
                   </button>
                   <button
                     class="btn-icon"
                     onclick={() => (confirmDelete = null)}
                   >
-                    Cancel
+                    {$t("common.cancel")}
                   </button>
                 {:else}
                   <button
                     class="btn-icon"
-                    title="Delete"
+                    title={$t("common.delete")}
                     onclick={() => (confirmDelete = pl.name)}
                   >
                     &#10005;
@@ -325,7 +331,7 @@
 
     {#if !selected}
       <p class="muted center">
-        Select a playlist to edit, or create a new one.
+        {$t("playlists.selectOrCreate")}
       </p>
     {:else if detail}
       <div class="panel-header">
@@ -335,16 +341,20 @@
           onclick={handleSave}
           disabled={!dirty || saving}
         >
-          {saving ? "Saving..." : "Save"}
+          {saving ? $t("common.saving") : $t("common.save")}
         </button>
       </div>
 
       <div class="song-columns">
         <div class="song-col">
-          <h4>Playlist Songs ({editSongs.length})</h4>
+          <h4>
+            {$t("playlists.playlistSongs", {
+              values: { count: editSongs.length },
+            })}
+          </h4>
           {#if editSongs.length === 0}
             <p class="muted">
-              No songs in this playlist. Add songs from the right.
+              {$t("playlists.noSongsInPlaylist")}
             </p>
           {:else}
             <ul class="song-list">
@@ -372,7 +382,7 @@
                   <span class="song-name">{song}</span>
                   <button
                     class="btn-icon"
-                    title="Remove"
+                    title={$t("common.remove")}
                     onclick={() => removeSong(i)}
                   >
                     &#10005;
@@ -384,11 +394,11 @@
         </div>
 
         <div class="song-col">
-          <h4>Available Songs</h4>
+          <h4>{$t("playlists.availableSongs")}</h4>
           <input
             type="text"
             class="input"
-            placeholder="Search songs..."
+            placeholder={$t("playlists.searchSongs")}
             bind:value={searchQuery}
           />
           <ul class="song-list available">
@@ -397,7 +407,7 @@
                 <span class="song-name">{song}</span>
                 <button
                   class="btn-icon"
-                  title="Add"
+                  title={$t("common.add")}
                   onclick={() => addSong(song)}>+</button
                 >
               </li>
