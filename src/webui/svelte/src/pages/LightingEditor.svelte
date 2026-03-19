@@ -41,6 +41,7 @@
   import FileBrowser from "../components/songs/FileBrowser.svelte";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
+  import { showConfirm, showPrompt } from "../lib/dialog.svelte";
 
   // --- Types ---
 
@@ -124,7 +125,7 @@
 
   async function selectSong(name: string) {
     if (dirty && selectedSongName) {
-      if (!confirm(get(t)("lightingEditor.discardSwitch"))) return;
+      if (!(await showConfirm(get(t)("lightingEditor.discardSwitch")))) return;
     }
     try {
       error = "";
@@ -343,7 +344,7 @@
   // --- Add light file to song ---
 
   async function addLightFile() {
-    const name = prompt("Light show filename (e.g. verse_lights):");
+    const name = await showPrompt("Light show filename (e.g. verse_lights):");
     if (!name) return;
     const fileName = name.endsWith(".light") ? name : `${name}.light`;
     const showName = fileName.replace(/\.light$/, "");

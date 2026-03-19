@@ -21,9 +21,8 @@ test.describe("OSC Path Overrides", () => {
     await expect(page.getByRole("button", { name: "Back" })).toBeVisible();
     await page.locator(".tab", { hasText: "Controllers" }).click();
 
-    // Enable controllers and add an OSC controller
-    const checkbox = page.locator(".enable-toggle input[type='checkbox']");
-    await checkbox.check();
+    // Enable the Controllers section, then add an OSC controller
+    await page.getByRole("button", { name: "Enable Controllers" }).click();
     await page.getByRole("button", { name: "Add OSC" }).click();
     await expect(page.locator(".controller-card")).toBeVisible();
 

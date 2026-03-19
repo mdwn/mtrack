@@ -15,6 +15,8 @@
 <script lang="ts">
   /* eslint-disable @typescript-eslint/no-explicit-any */
   import { t } from "svelte-i18n";
+  import { get } from "svelte/store";
+  import { showConfirm } from "../../lib/dialog.svelte";
   import type { AudioDeviceInfo, MidiDeviceInfo } from "../../lib/api/config";
   import Tooltip from "./Tooltip.svelte";
   import AudioSection from "./AudioSection.svelte";
@@ -87,6 +89,20 @@
     }
     onchange();
   }
+
+  async function handleRemoveSection() {
+    const label = get(t)(
+      tabs.find((tab) => tab.key === activeTab)?.labelKey ?? "",
+    );
+    if (
+      await showConfirm(
+        get(t)("profile.confirmRemoveSection", { values: { section: label } }),
+        { danger: true },
+      )
+    ) {
+      toggleSection(activeTab, false);
+    }
+  }
 </script>
 
 <div class="editor">
@@ -136,25 +152,34 @@
   </div>
 
   <div class="tab-panel" role="tabpanel">
-    <div class="panel-header">
-      <label class="enable-toggle">
-        <input
-          type="checkbox"
-          checked={isEnabled(activeTab)}
-          onchange={(e) =>
-            toggleSection(activeTab, (e.target as HTMLInputElement).checked)}
-        />
-        {$t("profile.enable", {
-          values: {
-            section: $t(
-              tabs.find((tab) => tab.key === activeTab)?.labelKey ?? "",
-            ),
-          },
-        })}
-      </label>
-    </div>
-
-    {#if activeTab === "audio" && profile.audio}
+    {#if !isEnabled(activeTab)}
+      <div class="panel-enable">
+        <p class="panel-enable-text">
+          {$t("profile.enableHint", {
+            values: {
+              section: $t(
+                tabs.find((tab) => tab.key === activeTab)?.labelKey ?? "",
+              ),
+            },
+          })}
+        </p>
+        <button
+          class="btn btn-primary"
+          onclick={() => {
+            toggleSection(activeTab, true);
+            onchange();
+          }}
+        >
+          {$t("profile.enable", {
+            values: {
+              section: $t(
+                tabs.find((tab) => tab.key === activeTab)?.labelKey ?? "",
+              ),
+            },
+          })}
+        </button>
+      </div>
+    {:else if activeTab === "audio" && profile.audio}
       <div class="panel-body">
         <AudioSection
           bind:audio={profile.audio}
@@ -195,18 +220,19 @@
       <div class="panel-body">
         <ControllersSection bind:controllers={profile.controllers} {onchange} />
       </div>
-    {:else if !isEnabled(activeTab)}
-      <div class="panel-empty">
-        <p>
-          {$t("profile.notEnabled", {
+    {/if}
+
+    {#if isEnabled(activeTab)}
+      <div class="panel-footer">
+        <button class="btn btn-danger btn-sm" onclick={handleRemoveSection}>
+          {$t("profile.removeSection", {
             values: {
               section: $t(
                 tabs.find((tab) => tab.key === activeTab)?.labelKey ?? "",
               ),
             },
           })}
-        </p>
-        <p>{$t("profile.toggleHint")}</p>
+        </button>
       </div>
     {/if}
   </div>
@@ -278,20 +304,17 @@
     border-radius: var(--radius-lg);
     overflow: hidden;
   }
-  .panel-header {
+  .panel-enable {
     display: flex;
+    flex-direction: column;
     align-items: center;
-    gap: 16px;
-    padding: 12px 16px;
-    border-bottom: 1px solid var(--border);
+    gap: 12px;
+    padding: 40px 20px;
+    text-align: center;
   }
-  .enable-toggle {
-    display: flex;
-    align-items: center;
-    gap: 8px;
+  .panel-enable-text {
     font-size: 14px;
-    color: var(--text-muted);
-    cursor: pointer;
+    color: var(--text-dim);
   }
   .panel-body {
     padding: 16px;
@@ -301,14 +324,11 @@
     padding-top: 16px;
     border-top: 1px solid var(--border);
   }
-  .panel-empty {
-    padding: 40px 20px;
-    text-align: center;
-    color: var(--text-dim);
-  }
-  .panel-empty p {
-    margin-bottom: 4px;
-    font-size: 14px;
+  .panel-footer {
+    display: flex;
+    justify-content: flex-end;
+    padding: 12px 16px;
+    border-top: 1px solid var(--border);
   }
   @media (max-width: 600px) {
     .tab {

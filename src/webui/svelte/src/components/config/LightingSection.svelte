@@ -27,6 +27,7 @@
   } from "../../lib/api/config";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
+  import { showConfirm } from "../../lib/dialog.svelte";
   import Tooltip from "./Tooltip.svelte";
 
   const constraintTooltipKeys: Record<string, string> = {
@@ -222,7 +223,12 @@
   }
 
   async function removeFt(name: string) {
-    if (!confirm(get(t)("lighting.deleteFixtureType", { values: { name } })))
+    if (
+      !(await showConfirm(
+        get(t)("lighting.deleteFixtureType", { values: { name } }),
+        { danger: true },
+      ))
+    )
       return;
     try {
       await deleteFixtureType(name, ftDir || undefined);
@@ -316,7 +322,13 @@
   }
 
   async function removeVenue(name: string) {
-    if (!confirm(get(t)("lighting.deleteVenue", { values: { name } }))) return;
+    if (
+      !(await showConfirm(
+        get(t)("lighting.deleteVenue", { values: { name } }),
+        { danger: true },
+      ))
+    )
+      return;
     try {
       await deleteVenue(name, venueDir || undefined);
       await loadVenues();

@@ -43,12 +43,14 @@ test.describe("Song Deletion", () => {
       }
     });
 
-    // Accept the confirm dialog
-    page.on("dialog", (dialog) => dialog.accept());
-
     const songRow = page.locator(".song-row", { hasText: "Test Song Alpha" });
     await songRow.hover();
     await songRow.locator(".song-delete").click();
+
+    // Confirm via custom dialog
+    const dialog = page.locator('[role="dialog"]');
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("button", { name: "Confirm" }).click();
 
     expect(deleteCalled).toBe(true);
   });
@@ -62,12 +64,14 @@ test.describe("Song Deletion", () => {
       await route.continue();
     });
 
-    // Dismiss the confirm dialog
-    page.on("dialog", (dialog) => dialog.dismiss());
-
     const songRow = page.locator(".song-row", { hasText: "Test Song Alpha" });
     await songRow.hover();
     await songRow.locator(".song-delete").click();
+
+    // Cancel via custom dialog
+    const dialog = page.locator('[role="dialog"]');
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("button", { name: "Cancel" }).click();
 
     expect(deleteCalled).toBe(false);
   });

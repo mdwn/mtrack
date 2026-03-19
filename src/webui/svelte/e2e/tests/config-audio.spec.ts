@@ -23,11 +23,6 @@ test.describe("Profile Editor - Audio Section", () => {
     await expect(page.locator(".tab.active")).toContainText("Audio");
   });
 
-  test("shows Enable Audio checkbox checked", async ({ page }) => {
-    const checkbox = page.locator(".enable-toggle input[type='checkbox']");
-    await expect(checkbox).toBeChecked();
-  });
-
   test("shows device input", async ({ page }) => {
     await expect(page.locator("#audio-device")).toBeVisible();
   });

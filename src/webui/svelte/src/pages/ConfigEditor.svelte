@@ -35,6 +35,7 @@
     type ProfileFileInfo,
   } from "../lib/api/config";
   import { fetchSongs } from "../lib/api/songs";
+  import { showConfirm, showPrompt } from "../lib/dialog.svelte";
   import { playbackStore } from "../lib/ws/stores";
   import ProfileCard from "../components/config/ProfileCard.svelte";
   import ProfileEditor from "../components/config/ProfileEditor.svelte";
@@ -207,8 +208,8 @@
     }
   }
 
-  function addNewFileProfile() {
-    const name = prompt(get(t)("config.profileFilenamePrompt"));
+  async function addNewFileProfile() {
+    const name = await showPrompt(get(t)("config.profileFilenamePrompt"));
     if (!name) return;
     const empty: any = {};
     profiles = [empty];
@@ -251,7 +252,8 @@
       saveMsg = get(t)("common.locked");
       return;
     }
-    if (!confirm(get(t)("config.deleteProfile"))) return;
+    if (!(await showConfirm(get(t)("config.deleteProfile"), { danger: true })))
+      return;
     saving = true;
     saveMsg = "";
     try {
@@ -268,8 +270,8 @@
     }
   }
 
-  function goBackFile() {
-    if (dirty && !confirm(get(t)("config.discardUnsaved"))) return;
+  async function goBackFile() {
+    if (dirty && !(await showConfirm(get(t)("config.discardUnsaved")))) return;
     suppressAutoSelect = true;
     selectedIndex = null;
     selectedFilename = null;
@@ -304,8 +306,8 @@
     saveOk = false;
   }
 
-  function goBack() {
-    if (dirty && !confirm(get(t)("config.discardUnsaved"))) return;
+  async function goBack() {
+    if (dirty && !(await showConfirm(get(t)("config.discardUnsaved")))) return;
     suppressAutoSelect = true;
     selectedIndex = null;
     isNew = false;
@@ -362,7 +364,8 @@
       saveMsg = get(t)("common.locked");
       return;
     }
-    if (!confirm(get(t)("config.deleteProfile"))) return;
+    if (!(await showConfirm(get(t)("config.deleteProfile"), { danger: true })))
+      return;
     saving = true;
     saveMsg = "";
     try {

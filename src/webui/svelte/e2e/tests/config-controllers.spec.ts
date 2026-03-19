@@ -19,32 +19,18 @@ test.describe("Profile Editor - Controllers", () => {
     await page.goto("/#/config");
     await page.locator(".profile-row", { hasText: "test-host" }).click();
     await expect(page.getByRole("button", { name: "Back" })).toBeVisible();
-    // Switch to Controllers tab
+    // Click the Controllers tab, then enable the section
     await page.locator(".tab", { hasText: "Controllers" }).click();
     await expect(page.locator(".tab.active")).toContainText("Controllers");
+    await page.getByRole("button", { name: "Enable Controllers" }).click();
   });
 
-  test("shows Enable Controllers checkbox unchecked", async ({ page }) => {
-    const checkbox = page.locator(".enable-toggle input[type='checkbox']");
-    await expect(checkbox).not.toBeChecked();
-  });
-
-  test("shows disabled message when not enabled", async ({ page }) => {
-    await expect(page.locator(".panel-empty")).toBeVisible();
-  });
-
-  test("enabling controllers shows Add buttons", async ({ page }) => {
-    const checkbox = page.locator(".enable-toggle input[type='checkbox']");
-    await checkbox.check();
-
+  test("controllers tab shows Add buttons", async ({ page }) => {
     await expect(page.getByRole("button", { name: "Add gRPC" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Add OSC" })).toBeVisible();
   });
 
   test("adding gRPC controller shows port field", async ({ page }) => {
-    const checkbox = page.locator(".enable-toggle input[type='checkbox']");
-    await checkbox.check();
-
     await page.getByRole("button", { name: "Add gRPC" }).click();
     await expect(page.locator(".controller-card")).toBeVisible();
     await expect(page.locator(".controller-kind")).toContainText(/grpc/i);
@@ -53,9 +39,6 @@ test.describe("Profile Editor - Controllers", () => {
   });
 
   test("adding OSC controller shows port field", async ({ page }) => {
-    const checkbox = page.locator(".enable-toggle input[type='checkbox']");
-    await checkbox.check();
-
     await page.getByRole("button", { name: "Add OSC" }).click();
     await expect(page.locator(".controller-card")).toBeVisible();
     await expect(page.locator(".controller-kind")).toContainText(/osc/i);
@@ -64,20 +47,17 @@ test.describe("Profile Editor - Controllers", () => {
   });
 
   test("removing controller removes card", async ({ page }) => {
-    const checkbox = page.locator(".enable-toggle input[type='checkbox']");
-    await checkbox.check();
-
     await page.getByRole("button", { name: "Add gRPC" }).click();
     await expect(page.locator(".controller-card")).toHaveCount(1);
 
-    await page.getByRole("button", { name: "Remove" }).click();
+    await page
+      .locator(".controller-card")
+      .getByRole("button", { name: "Remove" })
+      .click();
     await expect(page.locator(".controller-card")).toHaveCount(0);
   });
 
   test("OSC controller shows path overrides toggle", async ({ page }) => {
-    const checkbox = page.locator(".enable-toggle input[type='checkbox']");
-    await checkbox.check();
-
     await page.getByRole("button", { name: "Add OSC" }).click();
     await expect(
       page.getByRole("button", { name: /show osc path/i }),
@@ -85,9 +65,6 @@ test.describe("Profile Editor - Controllers", () => {
   });
 
   test("toggling OSC path overrides shows path inputs", async ({ page }) => {
-    const checkbox = page.locator(".enable-toggle input[type='checkbox']");
-    await checkbox.check();
-
     await page.getByRole("button", { name: "Add OSC" }).click();
     await page.getByRole("button", { name: /show osc path/i }).click();
     await expect(page.locator(".osc-paths")).toBeVisible();

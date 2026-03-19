@@ -19,40 +19,25 @@ test.describe("Profile Editor - MIDI Section", () => {
     await page.goto("/#/config");
     await page.locator(".profile-row", { hasText: "test-host" }).click();
     await expect(page.getByRole("button", { name: "Back" })).toBeVisible();
+    // Click the MIDI tab, then enable the section
     await page.locator(".tab", { hasText: "MIDI" }).click();
     await expect(page.locator(".tab.active")).toContainText("MIDI");
+    await page.getByRole("button", { name: "Enable MIDI" }).click();
   });
 
-  test("shows Enable MIDI checkbox unchecked", async ({ page }) => {
-    const checkbox = page.locator(".enable-toggle input[type='checkbox']");
-    await expect(checkbox).not.toBeChecked();
-  });
-
-  test("shows panel empty message when disabled", async ({ page }) => {
-    await expect(page.locator(".panel-empty")).toBeVisible();
-  });
-
-  test("enabling MIDI shows device input", async ({ page }) => {
-    const checkbox = page.locator(".enable-toggle input[type='checkbox']");
-    await checkbox.check();
+  test("MIDI tab shows device input", async ({ page }) => {
     await expect(page.locator("#midi-device")).toBeVisible();
   });
 
-  test("enabling MIDI shows delay input", async ({ page }) => {
-    const checkbox = page.locator(".enable-toggle input[type='checkbox']");
-    await checkbox.check();
+  test("MIDI tab shows delay input", async ({ page }) => {
     await expect(page.locator("#midi-delay")).toBeVisible();
   });
 
-  test("enabling MIDI shows beat clock checkbox", async ({ page }) => {
-    const checkbox = page.locator(".enable-toggle input[type='checkbox']");
-    await checkbox.check();
+  test("MIDI tab shows beat clock checkbox", async ({ page }) => {
     await expect(page.locator("#midi-beat-clock")).toBeVisible();
   });
 
-  test("enabling MIDI shows Refresh button", async ({ page }) => {
-    const checkbox = page.locator(".enable-toggle input[type='checkbox']");
-    await checkbox.check();
+  test("MIDI tab shows Refresh button", async ({ page }) => {
     await expect(page.getByRole("button", { name: "Refresh" })).toBeVisible();
   });
 });

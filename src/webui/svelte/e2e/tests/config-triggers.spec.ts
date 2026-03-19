@@ -19,28 +19,19 @@ test.describe("Profile Editor - Triggers Section", () => {
     await page.goto("/#/config");
     await page.locator(".profile-row", { hasText: "test-host" }).click();
     await expect(page.getByRole("button", { name: "Back" })).toBeVisible();
+    // Click the Triggers tab, then enable the section
     await page.locator(".tab", { hasText: "Triggers" }).click();
     await expect(page.locator(".tab.active")).toContainText("Triggers");
+    await page.getByRole("button", { name: "Enable Triggers" }).click();
   });
 
-  test("shows Enable Triggers checkbox unchecked", async ({ page }) => {
-    const checkbox = page.locator(".enable-toggle input[type='checkbox']");
-    await expect(checkbox).not.toBeChecked();
-  });
-
-  test("enabling triggers shows input controls", async ({ page }) => {
-    const checkbox = page.locator(".enable-toggle input[type='checkbox']");
-    await checkbox.check();
-
+  test("triggers tab shows input controls", async ({ page }) => {
     // Should show Add Audio and Add MIDI buttons
     await expect(page.getByRole("button", { name: "+ Audio" })).toBeVisible();
     await expect(page.getByRole("button", { name: "+ MIDI" })).toBeVisible();
   });
 
   test("adding audio input shows input card", async ({ page }) => {
-    const checkbox = page.locator(".enable-toggle input[type='checkbox']");
-    await checkbox.check();
-
     await page.getByRole("button", { name: "+ Audio" }).click();
     await expect(page.locator(".input-card")).toBeVisible();
     // Should show the AUDIO header
@@ -48,9 +39,6 @@ test.describe("Profile Editor - Triggers Section", () => {
   });
 
   test("adding MIDI input shows MIDI fields", async ({ page }) => {
-    const checkbox = page.locator(".enable-toggle input[type='checkbox']");
-    await checkbox.check();
-
     await page.getByRole("button", { name: "+ MIDI" }).click();
     await expect(page.locator(".input-card.midi")).toBeVisible();
     // Should show MIDI-specific fields
@@ -59,9 +47,6 @@ test.describe("Profile Editor - Triggers Section", () => {
   });
 
   test("audio input shows Calibrate button", async ({ page }) => {
-    const checkbox = page.locator(".enable-toggle input[type='checkbox']");
-    await checkbox.check();
-
     await page.getByRole("button", { name: "+ Audio" }).click();
     await expect(page.getByRole("button", { name: "Calibrate" })).toBeVisible();
   });
@@ -69,9 +54,6 @@ test.describe("Profile Editor - Triggers Section", () => {
   test("audio input shows More/Less toggle for advanced settings", async ({
     page,
   }) => {
-    const checkbox = page.locator(".enable-toggle input[type='checkbox']");
-    await checkbox.check();
-
     await page.getByRole("button", { name: "+ Audio" }).click();
     await expect(
       page.getByRole("button", { name: "More", exact: true }),
@@ -79,9 +61,6 @@ test.describe("Profile Editor - Triggers Section", () => {
   });
 
   test("More button reveals advanced settings", async ({ page }) => {
-    const checkbox = page.locator(".enable-toggle input[type='checkbox']");
-    await checkbox.check();
-
     await page.getByRole("button", { name: "+ Audio" }).click();
     await page.getByRole("button", { name: "More", exact: true }).click();
 
@@ -97,9 +76,6 @@ test.describe("Profile Editor - Triggers Section", () => {
   });
 
   test("removing input removes card", async ({ page }) => {
-    const checkbox = page.locator(".enable-toggle input[type='checkbox']");
-    await checkbox.check();
-
     await page.getByRole("button", { name: "+ Audio" }).click();
     await expect(page.locator(".input-card")).toHaveCount(1);
 
@@ -112,9 +88,6 @@ test.describe("Profile Editor - Triggers Section", () => {
   });
 
   test("calibration wizard opens on Calibrate click", async ({ page }) => {
-    const checkbox = page.locator(".enable-toggle input[type='checkbox']");
-    await checkbox.check();
-
     await page.getByRole("button", { name: "+ Audio" }).click();
     await page.getByRole("button", { name: "Calibrate" }).click();
 
@@ -127,9 +100,6 @@ test.describe("Profile Editor - Triggers Section", () => {
   test("calibration wizard shows device and channel inputs", async ({
     page,
   }) => {
-    const checkbox = page.locator(".enable-toggle input[type='checkbox']");
-    await checkbox.check();
-
     await page.getByRole("button", { name: "+ Audio" }).click();
     await page.getByRole("button", { name: "Calibrate" }).click();
 
@@ -139,9 +109,6 @@ test.describe("Profile Editor - Triggers Section", () => {
   });
 
   test("calibration cancel closes wizard", async ({ page }) => {
-    const checkbox = page.locator(".enable-toggle input[type='checkbox']");
-    await checkbox.check();
-
     await page.getByRole("button", { name: "+ Audio" }).click();
     await page.getByRole("button", { name: "Calibrate" }).click();
     await expect(page.locator(".cal-wizard")).toBeVisible();
