@@ -34,6 +34,7 @@ test.describe("Song Detail", () => {
     await expect(page.locator(".tab-bar")).toBeVisible();
     await expect(page.locator(".tab", { hasText: "Tracks" })).toBeVisible();
     await expect(page.locator(".tab", { hasText: "MIDI" })).toBeVisible();
+    await expect(page.locator(".tab", { hasText: "Samples" })).toBeVisible();
     await expect(page.locator(".tab", { hasText: "Lighting" })).toBeVisible();
     await expect(page.locator(".tab", { hasText: "Config" })).toBeVisible();
   });
@@ -84,5 +85,77 @@ test.describe("Song Detail", () => {
 
   test("shows lighting badge for song with lighting", async ({ page }) => {
     await expect(page.locator(".badge.lighting, .badge.light")).toBeVisible();
+  });
+
+  test("clicking Samples tab shows samples content", async ({ page }) => {
+    await page.locator(".tab", { hasText: "Samples" }).click();
+    await expect(page.locator(".tab.active")).toContainText("Samples");
+    await expect(page).toHaveURL(/.*#\/songs\/Test%20Song%20Alpha\/samples/);
+  });
+
+  test("Samples tab shows empty state", async ({ page }) => {
+    await page.locator(".tab", { hasText: "Samples" }).click();
+    await expect(page.getByText(/per-song sample overrides/i)).toBeVisible();
+  });
+
+  test("Samples tab shows Add Sample button", async ({ page }) => {
+    await page.locator(".tab", { hasText: "Samples" }).click();
+    await expect(
+      page.getByRole("button", { name: "Add Sample" }),
+    ).toBeVisible();
+  });
+});
+
+test.describe("Song Detail - MIDI Event Editor", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto("/#/songs/Test%20Song%20Alpha");
+    await page.locator(".tab", { hasText: "MIDI" }).click();
+  });
+
+  test("shows Song Select Event section", async ({ page }) => {
+    await expect(page.getByText(/Song Select Event/i)).toBeVisible();
+  });
+
+  test("shows Add Event button when no event configured", async ({ page }) => {
+    await expect(page.getByRole("button", { name: "Add Event" })).toBeVisible();
+  });
+
+  test("adding event shows type dropdown and fields", async ({ page }) => {
+    await page.getByRole("button", { name: "Add Event" }).click();
+    await expect(page.locator("#midi-event-type")).toBeVisible();
+    await expect(page.locator("#midi-event-channel")).toBeVisible();
+    // Default type is program_change, so program field should be visible
+    await expect(page.locator("#midi-event-program")).toBeVisible();
+  });
+
+  test("changing type to note_on shows key and velocity fields", async ({
+    page,
+  }) => {
+    await page.getByRole("button", { name: "Add Event" }).click();
+    await page.locator("#midi-event-type").selectOption("note_on");
+    await expect(page.locator("#midi-event-key")).toBeVisible();
+    await expect(page.locator("#midi-event-velocity")).toBeVisible();
+  });
+
+  test("changing type to control_change shows controller and value fields", async ({
+    page,
+  }) => {
+    await page.getByRole("button", { name: "Add Event" }).click();
+    await page.locator("#midi-event-type").selectOption("control_change");
+    await expect(page.locator("#midi-event-controller")).toBeVisible();
+    await expect(page.locator("#midi-event-value")).toBeVisible();
+  });
+
+  test("Remove button clears the event", async ({ page }) => {
+    await page.getByRole("button", { name: "Add Event" }).click();
+    await expect(page.locator("#midi-event-type")).toBeVisible();
+    await page.getByRole("button", { name: "Remove", exact: true }).click();
+    await expect(page.locator("#midi-event-type")).not.toBeVisible();
+    await expect(page.getByRole("button", { name: "Add Event" })).toBeVisible();
+  });
+
+  test("adding event marks config as dirty", async ({ page }) => {
+    await page.getByRole("button", { name: "Add Event" }).click();
+    await expect(page.locator(".unsaved")).toBeVisible();
   });
 });
