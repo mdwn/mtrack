@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-03-20
+
+### Fixed
+
+- **Controller startup timing**: MIDI controllers (and any controller that depends on
+  hardware devices) failed to start because controllers were initialized before async
+  hardware discovery completed. Controllers are now started at the end of hardware
+  initialization, after all devices are ready. This also affects hardware reloads —
+  controllers are re-created with each reload cycle.
+- **`Player::new()` returns `Arc<Player>`**: Since the player spawns async init tasks
+  that require `Arc` access, `new()` now returns `Arc<Player>` directly instead of
+  requiring callers to wrap it.
+
 ## [0.11.0] - 2026-03-20
 
 ### Added

@@ -236,7 +236,7 @@ mod test {
             playlist::from_songs(songs.clone())?,
         );
         playlists.insert("playlist".to_string(), pl);
-        let player = Arc::new(Player::new(
+        let player = Player::new(
             playlists,
             "playlist".to_string(),
             &config::Player::new(
@@ -248,7 +248,7 @@ mod test {
                 "assets/songs",
             ),
             None,
-        )?);
+        )?;
         player.await_hardware_ready().await;
         let playlist = player.get_playlist();
         let binding = player

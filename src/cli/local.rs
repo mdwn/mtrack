@@ -217,12 +217,12 @@ pub async fn start(
             .join("playlist.yaml")
     });
 
-    let player = Arc::new(crate::player::Player::new(
+    let player = crate::player::Player::new(
         playlists,
         active_playlist,
         &player_config,
         player_path.parent(),
-    )?);
+    )?;
     player.set_config_store(config_store);
 
     // Create the state watch channel upfront. The sampler will be started
@@ -265,14 +265,6 @@ pub async fn start(
             }
         }
     };
-
-    let hostname = config::resolve_hostname();
-    let controllers = player_config
-        .profiles(&hostname)
-        .first()
-        .map(|p| p.controllers().to_vec())
-        .unwrap_or_default();
-    player.start_controllers(controllers);
 
     if tui_mode {
         crate::tui::run(player.clone(), state_rx).await?;

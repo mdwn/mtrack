@@ -253,7 +253,7 @@ mod test {
             playlist::from_songs(songs.clone())?,
         );
         playlists.insert("playlist".to_string(), playlist);
-        let player = Arc::new(Player::new(
+        let player = Player::new(
             playlists,
             "playlist".to_string(),
             &config::Player::new(
@@ -265,7 +265,7 @@ mod test {
                 "assets/songs",
             ),
             None,
-        )?);
+        )?;
         player.await_hardware_ready().await;
 
         // Use port 0 to let the OS pick an available port.
@@ -292,7 +292,7 @@ mod test {
             playlist::from_songs(songs.clone())?,
         );
         playlists.insert("playlist".to_string(), playlist);
-        let player = Arc::new(Player::new(
+        let player = Player::new(
             playlists,
             "playlist".to_string(),
             &config::Player::new(
@@ -304,7 +304,7 @@ mod test {
                 "assets/songs",
             ),
             None,
-        )?);
+        )?;
         player.await_hardware_ready().await;
 
         // Empty config vec should produce a controller with no drivers.
@@ -329,7 +329,7 @@ mod test {
             playlist::from_songs(songs.clone())?,
         );
         playlists.insert("playlist".to_string(), playlist);
-        let player = Arc::new(Player::new(
+        let player = Player::new(
             playlists,
             "playlist".to_string(),
             &config::Player::new(
@@ -341,7 +341,7 @@ mod test {
                 "assets/songs",
             ),
             None,
-        )?);
+        )?;
         player.await_hardware_ready().await;
 
         let osc_config = config::OscController::new();
@@ -367,7 +367,7 @@ mod test {
             playlist::from_songs(songs.clone())?,
         );
         playlists.insert("playlist".to_string(), playlist);
-        let player = Arc::new(Player::new(
+        let player = Player::new(
             playlists,
             "playlist".to_string(),
             &config::Player::new(
@@ -379,7 +379,7 @@ mod test {
                 "assets/songs",
             ),
             None,
-        )?);
+        )?;
         player.await_hardware_ready().await;
         let playlist = player.get_playlist();
         let binding = player
@@ -484,7 +484,7 @@ mod test {
             playlist::from_songs(songs.clone())?,
         );
         playlists.insert("playlist".to_string(), playlist);
-        let player = Arc::new(Player::new(
+        let player = Player::new(
             playlists,
             "playlist".to_string(),
             &config::Player::new(
@@ -496,7 +496,7 @@ mod test {
                 "assets/songs",
             ),
             None,
-        )?);
+        )?;
         player.await_hardware_ready().await;
 
         let driver = Arc::new(TestDriver::new(player.clone(), TestEvent::Unset));

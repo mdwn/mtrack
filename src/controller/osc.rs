@@ -465,7 +465,7 @@ mod test {
             playlist::from_songs(songs.clone())?,
         );
         playlists.insert("playlist".to_string(), pl);
-        let player = Arc::new(Player::new(
+        let player = Player::new(
             playlists,
             "playlist".to_string(),
             &config::Player::new(
@@ -477,7 +477,7 @@ mod test {
                 "assets/songs",
             ),
             None,
-        )?);
+        )?;
         player.await_hardware_ready().await;
         let binding = player
             .audio_device()
@@ -636,7 +636,7 @@ mod test {
             playlist::from_songs(songs.clone())?,
         );
         playlists.insert("playlist".to_string(), pl);
-        let player = Arc::new(Player::new(
+        let player = Player::new(
             playlists,
             "playlist".to_string(),
             &config::Player::new(
@@ -648,7 +648,7 @@ mod test {
                 "assets/songs",
             ),
             None,
-        )?);
+        )?;
         player.await_hardware_ready().await;
         let _player = player;
 
@@ -766,7 +766,7 @@ mod test {
             playlist::from_songs(songs.clone())?,
         );
         playlists.insert("playlist".to_string(), pl);
-        let player = Arc::new(Player::new(
+        let player = Player::new(
             playlists,
             "playlist".to_string(),
             &config::Player::new(
@@ -778,7 +778,7 @@ mod test {
                 "assets/songs",
             ),
             None,
-        )?);
+        )?;
         player.await_hardware_ready().await;
         let _player = player;
 
@@ -1051,22 +1051,20 @@ mod test {
                 playlist::from_songs(songs.clone()).unwrap(),
             );
             playlists.insert("playlist".to_string(), pl);
-            let player = Arc::new(
-                Player::new(
-                    playlists,
-                    "playlist".to_string(),
-                    &config::Player::new(
-                        vec![],
-                        Some(config::Audio::new("mock-device")),
-                        Some(config::Midi::new("mock-midi-device", None)),
-                        None,
-                        HashMap::new(),
-                        "assets/songs",
-                    ),
+            let player = Player::new(
+                playlists,
+                "playlist".to_string(),
+                &config::Player::new(
+                    vec![],
+                    Some(config::Audio::new("mock-device")),
+                    Some(config::Midi::new("mock-midi-device", None)),
                     None,
-                )
-                .unwrap(),
-            );
+                    HashMap::new(),
+                    "assets/songs",
+                ),
+                None,
+            )
+            .unwrap();
             player.await_hardware_ready().await;
             player
         }
@@ -1163,7 +1161,7 @@ mod test {
             playlist::from_songs(songs.clone())?,
         );
         playlists.insert("playlist".to_string(), pl);
-        let player = Arc::new(Player::new(
+        let player = Player::new(
             playlists,
             "playlist".to_string(),
             &config::Player::new(
@@ -1175,7 +1173,7 @@ mod test {
                 "assets/songs",
             ),
             None,
-        )?);
+        )?;
         player.await_hardware_ready().await;
         let binding = player
             .audio_device()
@@ -1258,7 +1256,7 @@ mod test {
             playlist::from_songs(songs.clone())?,
         );
         playlists.insert("playlist".to_string(), pl);
-        let player = Arc::new(Player::new(
+        let player = Player::new(
             playlists,
             "playlist".to_string(),
             &config::Player::new(
@@ -1270,7 +1268,7 @@ mod test {
                 "assets/songs",
             ),
             None,
-        )?);
+        )?;
         player.await_hardware_ready().await;
 
         // Find a free port.

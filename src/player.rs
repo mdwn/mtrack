@@ -193,7 +193,7 @@ impl Player {
         active_playlist: String,
         config: &config::Player,
         base_path: Option<&Path>,
-    ) -> Result<Player, Box<dyn Error>> {
+    ) -> Result<Arc<Player>, Box<dyn Error>> {
         let devices = PlayerDevices {
             audio: None,
             mappings: None,
@@ -203,7 +203,12 @@ impl Player {
             trigger_engine: None,
         };
 
-        let player = Self::new_with_devices(devices, playlists, active_playlist, base_path)?;
+        let player = Arc::new(Self::new_with_devices(
+            devices,
+            playlists,
+            active_playlist,
+            base_path,
+        )?);
 
         // Mark as not ready — async init will set to true when complete.
         // Use send_modify() because send() is a no-op when no receivers exist yet.
@@ -228,7 +233,11 @@ impl Player {
     ///   Phase 1: Audio + DMX (parallel)
     ///   Phase 2: MIDI (needs DMX), Sample engine (needs Audio) — parallel
     ///   Phase 3: Trigger engine (needs Sample engine), status reporting
-    async fn init_hardware_async(&self, config: config::Player, base_path: Option<PathBuf>) {
+    async fn init_hardware_async(
+        self: &Arc<Self>,
+        config: config::Player,
+        base_path: Option<PathBuf>,
+    ) {
         let cancel = self.init_cancel.lock().clone();
 
         let hostname = config::resolve_hostname();
@@ -441,6 +450,9 @@ impl Player {
                 ));
             }
         }
+
+        // Start controllers now that all hardware is ready.
+        self.start_controllers(profile.controllers().to_vec());
 
         self.init_done_tx.send_modify(|v| *v = true);
         info!("Hardware initialization complete");
@@ -733,7 +745,7 @@ impl Player {
     /// Rejects the request if the player is currently playing. Cancels any
     /// in-flight init, resets hardware to empty, and spawns a new async init
     /// round. Returns immediately — does not wait for devices to be found.
-    pub async fn reload_hardware(&self) -> Result<(), Box<dyn Error>> {
+    pub async fn reload_hardware(self: &Arc<Self>) -> Result<(), Box<dyn Error>> {
         if self.is_playing().await {
             return Err("Cannot reload hardware during playback".into());
         }
@@ -2020,7 +2032,7 @@ mod test {
         audio: Option<config::Audio>,
         midi: Option<config::Midi>,
         dmx: Option<config::Dmx>,
-    ) -> Result<Player, Box<dyn Error>> {
+    ) -> Result<Arc<Player>, Box<dyn Error>> {
         let songs = songs::get_all_songs(Path::new("assets/songs"))?;
         let playlist = Playlist::new(
             "playlist",
@@ -2038,7 +2050,7 @@ mod test {
     }
 
     /// Helper to create a player with the standard test assets (audio + MIDI).
-    async fn make_test_player() -> Result<Player, Box<dyn Error>> {
+    async fn make_test_player() -> Result<Arc<Player>, Box<dyn Error>> {
         make_test_player_with_config(
             Some(config::Audio::new("mock-device")),
             Some(config::Midi::new("mock-midi-device", None)),
