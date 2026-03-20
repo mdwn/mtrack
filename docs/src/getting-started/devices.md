@@ -1,5 +1,12 @@
 # Discovering Devices
 
+The **Status** page in the web UI shows all connected audio and MIDI devices. This is the
+easiest way to check what hardware mtrack can see.
+
+Alternatively, you can use the CLI commands below.
+
+## CLI Commands
+
 You can figure out what audio devices `mtrack` recognizes by running `mtrack devices`:
 
 ```

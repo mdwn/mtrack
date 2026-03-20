@@ -5,11 +5,11 @@
 # Getting Started
 
 - [Installation](getting-started/installation.md)
-- [Discovering Devices](getting-started/devices.md)
-- [File Formats](getting-started/file-formats.md)
-- [Song Repository](getting-started/song-repository.md)
+- [Quick Start](getting-started/quick-start.md)
+- [Importing Songs](getting-started/importing-songs.md)
 - [Playlists](getting-started/playlists.md)
-- [Player Configuration](getting-started/player-config.md)
+- [Hardware Configuration](getting-started/hardware-config.md)
+- [Discovering Devices](getting-started/devices.md)
 
 # Interfaces
 
@@ -18,11 +18,14 @@
 - [gRPC Control](interfaces/grpc.md)
 - [OSC Control](interfaces/osc.md)
 
-# Configuration
+# Configuration Reference
 
+- [Player Configuration (YAML)](configuration/player-config.md)
+- [Song Configuration (YAML)](configuration/song-config.md)
 - [Hardware Profiles](configuration/hardware-profiles.md)
 - [MIDI-Triggered Samples](configuration/samples.md)
 - [Trigger Configuration](configuration/triggers.md)
+- [File Formats](configuration/file-formats.md)
 
 # Lighting
 

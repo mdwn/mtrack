@@ -1,7 +1,11 @@
-# Player Configuration
+# Player Configuration (YAML)
 
-To start mtrack as a standalone player that's controllable by MIDI, you'll need to create a
-player config file:
+> **Note:** This page documents the YAML configuration format. For most users, the web UI's
+> Config page is the easiest way to configure mtrack.
+> See [Hardware Configuration](../getting-started/hardware-config.md).
+
+The player configuration file (`mtrack.yaml`) controls all of mtrack's runtime settings. It is
+created automatically when mtrack starts, and can be edited through the web UI or by hand.
 
 ```yaml
 # The directory where all of your songs are located, frequently referred to as the song repository.

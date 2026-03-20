@@ -98,6 +98,9 @@ test.describe("Lock Mode", () => {
   test("locked state prevents playlist save", async ({ page }) => {
     await page.goto("/#/playlists");
 
+    // Wait for WebSocket connection to be established
+    await expect(page.locator(".status-indicator.connected")).toBeVisible();
+
     // Lock the player via WebSocket
     await sendWsMessage(page, {
       type: "playback",
@@ -114,15 +117,18 @@ test.describe("Lock Mode", () => {
       locked: true,
     });
 
+    // Wait for lock state to be reflected in the UI
+    await expect(page.locator(".lock-toggle.locked")).toBeVisible();
+
     // Select and modify a playlist
     await page.locator(".playlist-item", { hasText: "setlist" }).click();
     await expect(page.locator(".song-columns")).toBeVisible();
 
-    // Add a song
+    // Add a song from the available list to make the playlist dirty
     const addBtn = page
       .locator(".song-list.available li")
       .first()
-      .locator('.btn-icon[title="Add"]');
+      .locator(".btn-icon");
     await addBtn.click();
 
     // Try to save
