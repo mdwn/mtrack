@@ -21,15 +21,16 @@ $ sudo mtrack systemd > /etc/systemd/system/mtrack.service
 ```
 
 The service expects that `mtrack` is available at the location `/usr/local/bin/mtrack`. It also
-expects you to define your player configuration in `/etc/default/mtrack`. This file
-should contain one variable: `MTRACK_CONFIG`:
+expects you to define your project directory in `/etc/default/mtrack`. This file
+should contain one variable: `MTRACK_PATH`:
 
 ```
-# The configuration for the mtrack player.
-MTRACK_CONFIG=/mnt/storage/mtrack.yaml
+# The project directory for mtrack (contains songs, config, playlists, lighting).
+MTRACK_PATH=/mnt/storage
 ```
 
-Make sure the `mtrack` user can read your configuration and song files:
+Make sure the `mtrack` user has read **and write** access to the project directory so the
+web UI can manage configuration, songs, playlists, and lighting files:
 
 ```
 $ sudo chown -R mtrack:mtrack /mnt/storage

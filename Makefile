@@ -15,7 +15,7 @@ ROOT_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 SVELTE_DIR := $(ROOT_DIR)/src/webui/svelte
 DOCS_DIR := $(ROOT_DIR)/docs
 
-.PHONY: all build gen-proto build-ui build-rust test test-ui lint lint-ui lint-rust fmt fmt-ui fmt-rust check clean dev-ui docs docs-serve docs-clean
+.PHONY: all build gen-proto build-ui build-rust test test-ui test-systemd lint lint-ui lint-rust fmt fmt-ui fmt-rust check clean dev-ui docs docs-serve docs-clean
 
 all: build
 
@@ -41,6 +41,20 @@ test: test-ui
 ## Run Playwright UI tests (mock server)
 test-ui:
 	cd $(SVELTE_DIR) && npx playwright test --project=mock
+
+## Run systemd integration test (requires Docker)
+test-systemd:
+	DOCKER_BUILDKIT=1 docker build -f $(ROOT_DIR)/tests/systemd/Dockerfile -t mtrack-systemd-test $(ROOT_DIR)
+	@# Start container with systemd as PID 1, run tests via exec, then stop.
+	@cid=$$(docker run -d --rm --privileged mtrack-systemd-test) && \
+	  cleanup() { docker stop $$cid >/dev/null 2>&1 || true; }; \
+	  trap cleanup EXIT; \
+	  echo "Waiting for systemd to boot..."; \
+	  for i in $$(seq 1 30); do \
+	    docker exec $$cid systemctl is-system-running 2>/dev/null | grep -qE 'running|degraded' && break; \
+	    sleep 1; \
+	  done; \
+	  docker exec $$cid /test.sh
 
 ## Lint everything
 lint: lint-ui lint-rust

@@ -13,9 +13,9 @@ callback thread and the MIDI beat clock thread, without requiring root.
 ever acquire. Without this capability, the beat clock will still function but may exhibit
 more timing jitter under heavy system load.
 
-**Filesystem restrictions**: `ProtectSystem=strict` makes the entire filesystem hierarchy
-read-only by default. `ReadWritePaths=$MTRACK_PATH` grants write access to the project
-directory so the web UI can manage configuration, songs, playlists, and lighting files.
+**Filesystem restrictions**: `ProtectSystem=full` makes `/usr`, `/boot`, and `/efi`
+read-only while leaving other paths writable for the service user. This allows mtrack
+to write configuration, songs, playlists, and lighting files to the project directory.
 Logs are emitted to stdout/stderr and captured by journald. `PrivateTmp=true` provides
 an isolated temporary directory.
 

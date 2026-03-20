@@ -47,9 +47,9 @@ CapabilityBoundingSet=CAP_SYS_NICE
 
 # Filesystem restrictions. The filesystem is read-only except for the project
 # directory, which mtrack writes to for configuration, songs, playlists, and
-# lighting files. ReadWritePaths must cover MTRACK_PATH.
-ProtectSystem=strict
-ReadWritePaths=$MTRACK_PATH
+# lighting files. ProtectSystem=full makes /usr, /boot, and /efi read-only
+# while leaving other paths writable for the mtrack user.
+ProtectSystem=full
 PrivateTmp=true
 
 # Kernel restrictions.
@@ -398,8 +398,7 @@ mod tests {
         #[test]
         fn preserves_hardening_directives() {
             let result = render_systemd_service("/usr/bin/mtrack");
-            assert!(result.contains("ProtectSystem=strict"));
-            assert!(result.contains("ReadWritePaths=$MTRACK_PATH"));
+            assert!(result.contains("ProtectSystem=full"));
             assert!(result.contains("NoNewPrivileges=true"));
             assert!(result.contains("MemoryDenyWriteExecute=true"));
         }
@@ -408,6 +407,53 @@ mod tests {
         fn handles_path_with_spaces() {
             let result = render_systemd_service("/opt/my apps/mtrack");
             assert!(result.contains("ExecStart=/opt/my apps/mtrack start"));
+        }
+
+        #[test]
+        fn does_not_contain_protect_home() {
+            // ProtectHome was removed because the project directory is often
+            // under /home and mtrack needs write access to it.
+            let result = render_systemd_service("/usr/bin/mtrack");
+            assert!(
+                !result.contains("ProtectHome"),
+                "ProtectHome should not be in the systemd template — the project \
+                 directory may be under /home and mtrack needs write access to it"
+            );
+        }
+
+        #[test]
+        fn does_not_contain_protect_system_strict() {
+            let result = render_systemd_service("/usr/bin/mtrack");
+            assert!(
+                !result.contains("ProtectSystem=strict"),
+                "ProtectSystem=strict prevents mtrack from writing to the project \
+                 directory — use ProtectSystem=full instead"
+            );
+        }
+
+        #[test]
+        fn allows_write_access_to_project_dir() {
+            // ProtectSystem=full makes /usr, /boot, /efi read-only but leaves
+            // other paths writable so mtrack can write config, songs, playlists,
+            // and lighting files to the project directory.
+            let result = render_systemd_service("/usr/bin/mtrack");
+            assert!(
+                result.contains("ProtectSystem=full"),
+                "ProtectSystem must be 'full' (not 'strict') so the project \
+                 directory remains writable"
+            );
+            assert!(
+                !result.contains("ProtectSystem=strict"),
+                "ProtectSystem=strict would make the project directory read-only"
+            );
+        }
+
+        #[test]
+        fn uses_environment_file() {
+            // MTRACK_PATH is defined in /etc/default/mtrack
+            let result = render_systemd_service("/usr/bin/mtrack");
+            assert!(result.contains("EnvironmentFile=-/etc/default/mtrack"));
+            assert!(result.contains("\"$MTRACK_PATH\""));
         }
     }
 
