@@ -23,6 +23,7 @@ use crate::{
 pub(crate) mod beat_clock;
 pub(crate) mod midir;
 pub(crate) mod mock;
+pub mod morningstar;
 pub(crate) mod playback;
 mod transform;
 
@@ -49,6 +50,9 @@ pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {
 
     /// Emits an event.
     fn emit(&self, midi_event: Option<LiveEvent<'static>>) -> Result<(), Box<dyn Error>>;
+
+    /// Sends raw SysEx bytes to the MIDI output.
+    fn emit_sysex(&self, bytes: &[u8]) -> Result<(), Box<dyn Error>>;
 
     #[cfg(test)]
     fn to_mock(&self) -> Result<Arc<mock::Device>, Box<dyn Error>>;

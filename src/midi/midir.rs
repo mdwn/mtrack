@@ -379,6 +379,28 @@ impl super::Device for Device {
         Ok(())
     }
 
+    fn emit_sysex(&self, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
+        let span = span!(Level::INFO, "emit_sysex (midir)");
+        let _enter = span.enter();
+
+        let output_port = match &self.output_port {
+            Some(output_port) => output_port,
+            None => {
+                warn!("No MIDI output device configured, cannot emit SysEx.");
+                return Ok(());
+            }
+        };
+
+        let output = MidiOutput::new("mtrack emit sysex output")?;
+
+        debug!(device = self.name, len = bytes.len(), "Emitting SysEx.");
+
+        let mut connection = output.connect(output_port, "mtrack player")?;
+        connection.send(bytes)?;
+
+        Ok(())
+    }
+
     #[cfg(test)]
     fn to_mock(&self) -> Result<Arc<super::mock::Device>, Box<dyn Error>> {
         Err("not a mock".into())

@@ -17,7 +17,7 @@ use midly::live::LiveEvent;
 use tokio::{sync::mpsc, task::JoinHandle};
 use tracing::{error, info, span, Level};
 
-use crate::{config, midi::Device, player::Player};
+use crate::{config, midi, midi::Device, player::Player};
 
 /// Recognized MIDI controller actions.
 #[derive(Debug, PartialEq)]
@@ -76,18 +76,27 @@ impl Driver {
         player: Arc<Player>,
     ) -> Result<Arc<Self>, Box<dyn Error>> {
         match player.midi_device() {
-            Some(midi_device) => Ok(Arc::new(Driver {
-                player,
-                midi_device,
-                events: MidiEvents {
-                    play: config.play()?,
-                    prev: config.prev()?,
-                    next: config.next()?,
-                    stop: config.stop()?,
-                    all_songs: config.all_songs()?,
-                    playlist: config.playlist()?,
-                },
-            })),
+            Some(midi_device) => {
+                if let Some(ms) = config.morningstar() {
+                    info!("Registering Morningstar song change notifier");
+                    player.add_song_change_notifier(Arc::new(midi::morningstar::Notifier::new(
+                        ms.clone(),
+                        midi_device.clone(),
+                    )));
+                }
+                Ok(Arc::new(Driver {
+                    player,
+                    midi_device,
+                    events: MidiEvents {
+                        play: config.play()?,
+                        prev: config.prev()?,
+                        next: config.next()?,
+                        stop: config.stop()?,
+                        all_songs: config.all_songs()?,
+                        playlist: config.playlist()?,
+                    },
+                }))
+            }
             None => Err("No MIDI device to use for MIDI configuration".into()),
         }
     }
@@ -132,6 +141,11 @@ impl super::Driver for Driver {
                         return Ok(());
                     }
                 };
+
+                // Check for Morningstar SysEx ack responses.
+                if midi::morningstar::check_ack(&raw_event) {
+                    continue;
+                }
 
                 // Process triggered samples (synchronous, minimal latency)
                 player.process_sample_trigger(&raw_event);

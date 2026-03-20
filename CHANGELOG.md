@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Morningstar SysEx integration**: mtrack can now automatically push the current song name
+  to a Morningstar MIDI controller (MC3, MC6, MC8, MC6 Pro, MC8 Pro, MC4 Pro) via SysEx
+  when songs change. Configured via an optional `morningstar` block on the MIDI controller,
+  this eliminates the need for hand-maintained per-song program change mappings. Supports
+  short/long preset names, configurable preset slots, save-to-flash, and custom model IDs.
+- **Morningstar configuration in web UI**: The MIDI controller section in the hardware profile
+  editor now includes a Morningstar preset naming panel with model selection, preset number,
+  name type, and save-to-flash options.
+- **Song change notifier system**: New `SongChangeNotifier` trait on the player enables
+  pluggable reactions to song changes. The Morningstar integration is the first consumer;
+  the trait is generic and supports multiple concurrent notifiers.
+
+### Changed
+
+- **Player method refactoring**: Converted several static `Player` methods (`emit_midi_event`,
+  `prev_and_emit`, `next_and_emit`, `report_status`) to instance methods, reducing parameter
+  passing and simplifying call sites. Playlist navigation now uses a `PlaylistDirection` enum
+  instead of function pointers.
+
 ## [0.11.2] - 2026-03-21
 
 ### Fixed

@@ -238,6 +238,21 @@ controllers:
     controller: 100
     value: 5
 
+  # Optional: Morningstar controller integration. When configured, mtrack will
+  # automatically update the current bank name on the controller via SysEx
+  # whenever the current song changes. This eliminates the need for per-song
+  # program change mappings.
+  morningstar:
+    # The Morningstar controller model. Determines the device ID byte and the
+    # required name length in the SysEx message.
+    # Supported values: mc3, mc6, mc8, mc6pro, mc8pro, mc4pro
+    # For unlisted models, use: { custom: { model_id: <0-127> } }
+    model: mc4pro
+
+    # Whether to save the bank name to flash (true) or keep it temporary (false).
+    # Temporary names reset on power cycle. Default: false.
+    # save: false
+
 # Mappings of track names to output channels.
 track_mappings:
   click:

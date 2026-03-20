@@ -13,6 +13,7 @@
 //
 use midly::live::LiveEvent;
 use parking_lot::RwLock;
+use std::fmt;
 use std::{
     collections::HashMap,
     error::Error,
@@ -42,6 +43,21 @@ use crate::{
     songs::Song,
 };
 
+/// Direction for playlist navigation.
+enum PlaylistDirection {
+    Next,
+    Prev,
+}
+
+impl fmt::Display for PlaylistDirection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PlaylistDirection::Next => write!(f, "next"),
+            PlaylistDirection::Prev => write!(f, "previous"),
+        }
+    }
+}
+
 /// Holds the ingredients for constructing a per-song `PlaybackClock`.
 /// When an audio device is present, clocks are derived from its hardware
 /// sample counter. Otherwise, clocks fall back to `Instant::now()`.
@@ -69,6 +85,14 @@ impl ClockSource {
     }
 }
 
+/// Notified when the current song changes. Implementations capture whatever
+/// device handles they need at construction time, keeping the player unaware
+/// of protocol-specific details.
+pub trait SongChangeNotifier: Send + Sync {
+    /// Called when the player advances to a new song.
+    fn notify(&self, song: &Song);
+}
+
 /// Groups all hardware device state so it can be atomically swapped on reload.
 #[derive(Clone)]
 struct HardwareState {
@@ -79,6 +103,8 @@ struct HardwareState {
     sample_engine: Option<Arc<RwLock<SampleEngine>>>,
     trigger_engine: Option<Arc<TriggerEngine>>,
     clock_source: ClockSource,
+    /// Notifiers invoked on every song change.
+    song_change_notifiers: Vec<Arc<dyn SongChangeNotifier>>,
     /// The hostname of the active hardware profile (None if no profile matched).
     profile_name: Option<String>,
     /// The resolved machine hostname used for profile matching.
@@ -424,10 +450,15 @@ impl Player {
             self.hardware.write().trigger_engine = Some(te.clone());
         }
 
+        // Start controllers now that all hardware is ready.
+        self.start_controllers(profile.controllers().to_vec());
+
         // MIDI post-init: emit initial track event + start status reporting.
+        // This runs after start_controllers so that song change notifiers
+        // (e.g. Morningstar) are registered before the first song fires.
         if midi_result.is_some() {
             if let Some(song) = self.get_playlist().current() {
-                Player::emit_midi_event(midi_result.clone(), song);
+                self.emit_song_change(&song);
             }
 
             let status_events = match StatusEvents::new(config.status_events()) {
@@ -439,20 +470,12 @@ impl Player {
             };
 
             if let Some(status_events) = status_events {
-                let midi_device = midi_result.clone().expect("MIDI device must be present");
-                let join = self.join.clone();
-                let span = self.span.clone();
-                tokio::spawn(Player::report_status(
-                    span,
-                    midi_device,
-                    join,
-                    status_events,
-                ));
+                let player = self.clone();
+                tokio::spawn(async move {
+                    player.report_status(status_events).await;
+                });
             }
         }
-
-        // Start controllers now that all hardware is ready.
-        self.start_controllers(profile.controllers().to_vec());
 
         self.init_done_tx.send_modify(|v| *v = true);
         info!("Hardware initialization complete");
@@ -529,6 +552,7 @@ impl Player {
             sample_engine: devices.sample_engine,
             trigger_engine: devices.trigger_engine,
             clock_source,
+            song_change_notifiers: Vec::new(),
             profile_name: None,
             hostname: None,
         };
@@ -588,6 +612,11 @@ impl Player {
     /// Gets the MIDI device currently in use by the player.
     pub fn midi_device(&self) -> Option<Arc<dyn midi::Device>> {
         self.hardware.read().midi_device.clone()
+    }
+
+    /// Adds a notifier that will be called on every song change.
+    pub fn add_song_change_notifier(&self, notifier: Arc<dyn SongChangeNotifier>) {
+        self.hardware.write().song_change_notifiers.push(notifier);
     }
 
     /// Returns a snapshot of all hardware subsystem statuses.
@@ -772,6 +801,7 @@ impl Player {
             sample_engine: None,
             trigger_engine: None,
             clock_source: ClockSource::Wall,
+            song_change_notifiers: Vec::new(),
             profile_name: None,
             hostname: None,
         };
@@ -843,17 +873,17 @@ impl Player {
     }
 
     /// Reports status as MIDI events.
-    async fn report_status(
-        span: Span,
-        midi_device: Arc<dyn midi::Device>,
-        join: Arc<Mutex<Option<PlayHandles>>>,
-        status_events: StatusEvents,
-    ) {
-        let _enter = span.enter();
+    async fn report_status(&self, status_events: StatusEvents) {
+        let _enter = self.span.enter();
         info!("Reporting status");
 
-        let midi_device = midi_device.clone();
-        let join = join.clone();
+        let midi_device = self
+            .hardware
+            .read()
+            .midi_device
+            .clone()
+            .expect("MIDI device must be present for status reporting");
+        let join = self.join.clone();
 
         // This thread will run until the process is terminated.
         let _join_handle = tokio::spawn(async move {
@@ -1025,10 +1055,8 @@ impl Player {
         });
 
         {
-            let join_mutex = self.join.clone();
-            let stop_run = self.stop_run.clone();
+            let player = self.clone();
             let song = song.clone();
-            let midi_device = hw.midi_device.clone();
             tokio::spawn(async move {
                 let result = match play_rx.await {
                     Ok(Ok(())) => PlaybackResult::Success,
@@ -1053,16 +1081,18 @@ impl Player {
                 }
 
                 // Natural finish: advance playlist and clean up.
-                let mut join = join_mutex.lock().await;
-                Player::next_and_emit(midi_device.clone(), playlist);
+                let mut join = player.join.lock().await;
+                if let Some(song) = playlist.next() {
+                    player.emit_song_change(&song);
+                }
 
                 {
-                    let mut play_start_time = play_start_time.lock().await;
+                    let mut play_start_time = player.play_start_time.lock().await;
                     *play_start_time = None;
                 }
 
                 *join = None;
-                stop_run.store(false, Ordering::Relaxed);
+                player.stop_run.store(false, Ordering::Relaxed);
             });
         }
 
@@ -1235,30 +1265,30 @@ impl Player {
         }
     }
 
-    /// Navigates the playlist using the given function, returning the current song
-    /// if the player is active. Returns `None` if the playlist is empty.
+    /// Navigates the playlist in the given direction, emitting the song-change
+    /// event. Returns the current song if the player is active.
     ///
     /// Holds the join lock across the entire operation to prevent a concurrent
     /// `play_from()` from starting between the is-playing check and the
     /// playlist position advance.
-    async fn navigate<F>(&self, action: &str, nav_fn: F) -> Option<Arc<Song>>
-    where
-        F: FnOnce(Option<Arc<dyn midi::Device>>, Arc<Playlist>) -> Option<Arc<Song>>,
-    {
+    async fn navigate(&self, direction: PlaylistDirection) -> Option<Arc<Song>> {
         let join = self.join.lock().await;
         if join.is_some() {
             let current = self.get_playlist().current();
             if let Some(ref song) = current {
                 info!(
                     current_song = song.name(),
-                    "Can't go to {}, player is active.", action
+                    "Can't go to {}, player is active.", direction
                 );
             }
             return current;
         }
         let playlist = self.get_playlist();
-        let midi_device = self.hardware.read().midi_device.clone();
-        let song = nav_fn(midi_device, playlist)?;
+        let song = match direction {
+            PlaylistDirection::Next => playlist.next()?,
+            PlaylistDirection::Prev => playlist.prev()?,
+        };
+        self.emit_song_change(&song);
         drop(join);
         self.load_song_samples(&song);
         Some(song)
@@ -1266,12 +1296,12 @@ impl Player {
 
     /// Next goes to the next entry in the playlist.
     pub async fn next(&self) -> Option<Arc<Song>> {
-        self.navigate("next", Player::next_and_emit).await
+        self.navigate(PlaylistDirection::Next).await
     }
 
     /// Prev goes to the previous entry in the playlist.
     pub async fn prev(&self) -> Option<Arc<Song>> {
-        self.navigate("previous", Player::prev_and_emit).await
+        self.navigate(PlaylistDirection::Prev).await
     }
 
     /// Stop will stop a song if a song is playing.
@@ -1350,8 +1380,7 @@ impl Player {
         }
 
         if let Some(song) = self.get_playlist().current() {
-            let midi_device = self.hardware.read().midi_device.clone();
-            Player::emit_midi_event(midi_device, song);
+            self.emit_song_change(&song);
         }
 
         Ok(())
@@ -1493,33 +1522,20 @@ impl Player {
             .map(|engine| engine.format_active_effects())
     }
 
-    /// Goes to the previous song and emits the MIDI event associated if one exists.
-    fn prev_and_emit(
-        midi_device: Option<Arc<dyn midi::Device>>,
-        playlist: Arc<Playlist>,
-    ) -> Option<Arc<Song>> {
-        let song = playlist.prev()?;
-        Player::emit_midi_event(midi_device, song.clone());
-        Some(song)
-    }
+    /// Emits the per-song MIDI event and notifies all song-change notifiers.
+    fn emit_song_change(&self, song: &Song) {
+        let hw = self.hardware.read();
+        let midi_device = hw.midi_device.clone();
+        let notifiers = hw.song_change_notifiers.clone();
+        drop(hw);
 
-    /// Goes to the next song and emits the MIDI event associated if one exists.
-    fn next_and_emit(
-        midi_device: Option<Arc<dyn midi::Device>>,
-        playlist: Arc<Playlist>,
-    ) -> Option<Arc<Song>> {
-        let song = playlist.next()?;
-        Player::emit_midi_event(midi_device, song.clone());
-        Some(song)
-    }
-
-    /// Emits a MIDI event for the given song if possible.
-    fn emit_midi_event(midi_device: Option<Arc<dyn midi::Device>>, song: Arc<Song>) {
-        if let Some(midi_device) = midi_device.clone() {
-            let midi_event = song.midi_event();
-            if let Err(e) = midi_device.emit(midi_event) {
+        if let Some(ref device) = midi_device {
+            if let Err(e) = device.emit(song.midi_event()) {
                 error!("Error emitting MIDI event: {:?}", e);
             }
+        }
+        for notifier in &notifiers {
+            notifier.notify(song);
         }
     }
 }
@@ -2832,10 +2848,13 @@ mod test {
         Ok(())
     }
 
-    #[test]
-    fn emit_midi_event_no_device() {
-        let song = Arc::new(Song::new_for_test("test", &[]));
-        Player::emit_midi_event(None, song);
+    #[tokio::test(flavor = "multi_thread")]
+    async fn emit_song_change_no_device() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player_with_config(None, None, None).await?;
+        let song = Song::new_for_test("test", &[]);
+        // Should not panic when no MIDI device is configured.
+        player.emit_song_change(&song);
+        Ok(())
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2869,16 +2888,11 @@ mod test {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_prev_and_emit_no_midi() -> Result<(), Box<dyn Error>> {
-        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
-        let playlist = Playlist::new(
-            "test",
-            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
-            songs.clone(),
-        )?;
+    async fn test_navigate_no_midi() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player_with_config(None, None, None).await?;
 
-        Player::next_and_emit(None, playlist.clone());
-        let song = Player::prev_and_emit(None, playlist).unwrap();
+        player.next().await;
+        let song = player.prev().await.unwrap();
         assert_eq!(song.name(), "Song 1");
         Ok(())
     }

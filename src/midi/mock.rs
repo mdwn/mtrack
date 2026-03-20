@@ -36,6 +36,7 @@ pub struct Device {
     closed: Arc<AtomicBool>,
     event: Arc<Mutex<Vec<u8>>>,
     emit_called: Arc<Mutex<Option<Vec<u8>>>>,
+    sysex_called: Arc<Mutex<Option<Vec<u8>>>>,
     event_thread: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
@@ -48,6 +49,7 @@ impl Device {
             barrier: Arc::new(Barrier::new(2)),
             event: Arc::new(Mutex::new(Vec::new())),
             emit_called: Arc::new(Mutex::new(None)),
+            sysex_called: Arc::new(Mutex::new(None)),
             event_thread: Arc::new(Mutex::new(None)),
         }
     }
@@ -83,6 +85,20 @@ impl Device {
             .lock()
             .expect("unable to get emit called lock");
         *emit_called = None;
+    }
+
+    #[cfg(test)]
+    /// Gets the last SysEx bytes emitted.
+    pub fn get_emitted_sysex(&self) -> Option<Vec<u8>> {
+        let sysex = self.sysex_called.lock().expect("unable to get sysex lock");
+        sysex.clone()
+    }
+
+    #[cfg(test)]
+    /// Resets the last emitted SysEx to none.
+    pub fn reset_emitted_sysex(&self) {
+        let mut sysex = self.sysex_called.lock().expect("unable to get sysex lock");
+        *sysex = None;
     }
 }
 
@@ -201,6 +217,13 @@ impl super::Device for Device {
             *emit_called = Some(buf);
         }
 
+        Ok(())
+    }
+
+    /// Sends raw SysEx bytes.
+    fn emit_sysex(&self, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
+        let mut sysex = self.sysex_called.lock().expect("unable to get sysex lock");
+        *sysex = Some(bytes.to_vec());
         Ok(())
     }
 

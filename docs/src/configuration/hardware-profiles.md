@@ -126,3 +126,84 @@ dmx:
 
 Files are sorted by filename for deterministic ordering. Use numeric prefixes
 (e.g., `01-pi-a.yaml`, `02-pi-b.yaml`, `99-fallback.yaml`) to control priority.
+
+## Controllers
+
+Controllers (gRPC, OSC, MIDI) are defined per-profile under the `controllers` key.
+They are initialized after all hardware devices are ready.
+
+```yaml
+profiles:
+  - hostname: my-host
+    audio:
+      device: "Behringer WING"
+      track_mappings:
+        click: [1]
+    midi:
+      device: "Behringer WING"
+    controllers:
+      - kind: grpc
+      - kind: osc
+        port: 43235
+      - kind: midi
+        play:
+          type: control_change
+          channel: 16
+          controller: 100
+          value: 0
+        prev:
+          type: control_change
+          channel: 16
+          controller: 100
+          value: 1
+        next:
+          type: control_change
+          channel: 16
+          controller: 100
+          value: 2
+        stop:
+          type: control_change
+          channel: 16
+          controller: 100
+          value: 3
+        all_songs:
+          type: control_change
+          channel: 16
+          controller: 100
+          value: 4
+        playlist:
+          type: control_change
+          channel: 16
+          controller: 100
+          value: 5
+```
+
+### Morningstar Integration
+
+If you use a Morningstar MIDI controller (MC3, MC6, MC8, MC6 Pro, MC8 Pro, MC4 Pro),
+mtrack can automatically push the current song name to the controller's display via
+SysEx whenever the song changes. Add a `morningstar` block to your MIDI controller
+configuration:
+
+```yaml
+controllers:
+  - kind: midi
+    play: { type: control_change, channel: 16, controller: 100, value: 0 }
+    # ... other MIDI events ...
+    morningstar:
+      model: mc4pro     # Controller model (mc3, mc6, mc8, mc6pro, mc8pro, mc4pro)
+      # save: false     # Save to flash (default: false = temporary, resets on power cycle)
+```
+
+The `model` field determines the SysEx device ID and the bank name length
+(16 chars for MC3, 24 for MC6/MC8, 32 for Pro models). Names are automatically
+truncated or padded to fit.
+
+For unlisted models, use a custom device ID:
+
+```yaml
+    morningstar:
+      model:
+        custom:
+          model_id: 15   # SysEx device ID byte (0-127)
+```
