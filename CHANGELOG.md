@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-03-20
+
 ### Added
 
 - **Zero-config start**: `mtrack start mtrack.yaml` now works even when the config file doesn't

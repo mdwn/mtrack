@@ -38,7 +38,13 @@
     "@bufbuild/protobuf": "^2",
     "@connectrpc/connect": "^2",
     "@connectrpc/connect-web": "^2",
+    "esbuild": "^0.27.4",
     "svelte-i18n": "^4.0.1",
     "yaml": "^2.8.2"
+  },
+  "overrides": {
+    "svelte-i18n": {
+      "esbuild": "$esbuild"
+    }
   }
 }
