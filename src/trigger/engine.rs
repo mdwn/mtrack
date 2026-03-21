@@ -18,9 +18,11 @@
 //! instances, and produces `TriggerAction` events via a crossbeam channel.
 
 use std::error::Error;
+use std::sync::Arc;
 
 use cpal::traits::{DeviceTrait, StreamTrait};
 use crossbeam_channel::{Receiver, Sender};
+use parking_lot::{Condvar, Mutex};
 use tracing::{debug, error, info, warn};
 
 use super::detector::TriggerDetector;
@@ -28,24 +30,45 @@ use super::ms_to_samples;
 use crate::audio::format::SampleFormat;
 use crate::config::trigger::{AudioTriggerInput, TriggerConfig, TriggerInput, TriggerInputAction};
 use crate::samples::TriggerAction;
+use crate::thread_priority::{callback_thread_priority, promote_to_realtime, rt_audio_enabled};
+
+/// Shared condvar notify for signalling stream errors from the error callback
+/// to the recovery thread.
+type ErrorNotify = Arc<(Mutex<bool>, Condvar)>;
+
+/// Shared shutdown signal so `Drop` can wake the recovery thread.
+type ShutdownNotify = Arc<(Mutex<bool>, Condvar)>;
 
 /// Manages a cpal input stream and per-channel trigger detectors.
 ///
 /// The engine captures audio from the configured input device, feeds samples
 /// to the appropriate detectors, and forwards resulting `TriggerAction` events
-/// through a crossbeam channel.
+/// through a crossbeam channel. On backend errors (e.g. ALSA POLLERR), the
+/// stream is automatically recreated.
 pub struct TriggerEngine {
-    /// The cpal input stream (kept alive by ownership).
-    _stream: cpal::Stream,
     /// Receiver for trigger actions produced by detectors.
     receiver: Receiver<TriggerAction>,
+    /// Background thread running the stream recovery loop.
+    _thread: Option<std::thread::JoinHandle<()>>,
+    /// Shutdown signal to stop the recovery thread on drop.
+    shutdown: ShutdownNotify,
+}
+
+/// Parameters captured from config for rebuilding the input stream on recovery.
+struct StreamParams {
+    device_name: String,
+    stream_config: cpal::StreamConfig,
+    sample_format: cpal::SampleFormat,
+    crosstalk: Option<(u32, f32)>,
+    inputs: Vec<TriggerInput>,
 }
 
 impl TriggerEngine {
     /// Creates a new trigger engine from configuration.
     ///
     /// Opens the named cpal input device, creates detectors for each configured
-    /// input channel, and starts the input stream.
+    /// input channel, and starts the input stream. On backend errors (e.g. ALSA
+    /// POLLERR), the stream is automatically recreated.
     pub fn new(config: &TriggerConfig) -> Result<Self, Box<dyn Error>> {
         let device_name = config
             .device()
@@ -125,29 +148,50 @@ impl TriggerEngine {
             );
         }
 
-        // Build detectors for each configured input, keyed by 0-indexed channel
-        let detector_map = build_detector_map(config.inputs(), channels, sample_rate)?;
-
         // Create the event channel (bounded to prevent unbounded growth under load)
         let (tx, rx) = crossbeam_channel::bounded(256);
 
-        // Build the input stream using the resolved sample format
+        let params = StreamParams {
+            device_name: device_name.to_string(),
+            stream_config,
+            sample_format: stream_format,
+            crosstalk,
+            inputs: config.inputs().to_vec(),
+        };
+
+        let error_notify: ErrorNotify = Arc::new((Mutex::new(false), Condvar::new()));
+        let shutdown: ShutdownNotify = Arc::new((Mutex::new(false), Condvar::new()));
+
+        // Build the initial stream before spawning the recovery thread.
+        let detector_map =
+            build_detector_map(&params.inputs, params.stream_config.channels, sample_rate)?;
         let stream = Self::build_input_stream(
             &device,
-            &stream_config,
+            &params.stream_config,
             detector_map,
-            channels,
-            tx,
-            stream_format,
-            crosstalk,
+            params.stream_config.channels,
+            tx.clone(),
+            params.sample_format,
+            params.crosstalk,
+            error_notify.clone(),
         )?;
-
         stream.play()?;
         info!("Trigger input stream started");
 
+        // Spawn recovery thread — mirrors the audio output stream pattern.
+        let thread = {
+            let shutdown = shutdown.clone();
+            std::thread::Builder::new()
+                .name("trigger-input-recovery".into())
+                .spawn(move || {
+                    Self::recovery_loop(stream, params, tx, error_notify, shutdown);
+                })?
+        };
+
         Ok(TriggerEngine {
-            _stream: stream,
             receiver: rx,
+            _thread: Some(thread),
+            shutdown,
         })
     }
 
@@ -156,7 +200,94 @@ impl TriggerEngine {
         self.receiver.clone()
     }
 
+    /// Runs the stream recovery loop. Blocks until shutdown.
+    fn recovery_loop(
+        mut stream: cpal::Stream,
+        params: StreamParams,
+        tx: Sender<TriggerAction>,
+        error_notify: ErrorNotify,
+        shutdown: ShutdownNotify,
+    ) {
+        loop {
+            // Wait for either a stream error or shutdown.
+            let (err_mutex, err_condvar) = &*error_notify;
+            let (shut_mutex, _) = &*shutdown;
+            loop {
+                if *shut_mutex.lock() {
+                    drop(stream);
+                    return;
+                }
+                let mut errored = err_mutex.lock();
+                if *errored {
+                    *errored = false;
+                    break;
+                }
+                err_condvar.wait_for(&mut errored, std::time::Duration::from_millis(500));
+            }
+
+            // Drop the old stream and attempt to rebuild.
+            drop(stream);
+            warn!("Trigger input stream error detected, attempting recovery");
+
+            // Retry with backoff until the device is available again.
+            loop {
+                if *shutdown.0.lock() {
+                    return;
+                }
+
+                let device = match crate::audio::find_input_device(&params.device_name) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        warn!(error = %e, "Trigger recovery: device not found, retrying");
+                        std::thread::sleep(std::time::Duration::from_secs(1));
+                        continue;
+                    }
+                };
+
+                let detector_map = match build_detector_map(
+                    &params.inputs,
+                    params.stream_config.channels,
+                    params.stream_config.sample_rate,
+                ) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        warn!(error = %e, "Trigger recovery: failed to build detectors, retrying");
+                        std::thread::sleep(std::time::Duration::from_secs(1));
+                        continue;
+                    }
+                };
+
+                match Self::build_input_stream(
+                    &device,
+                    &params.stream_config,
+                    detector_map,
+                    params.stream_config.channels,
+                    tx.clone(),
+                    params.sample_format,
+                    params.crosstalk,
+                    error_notify.clone(),
+                ) {
+                    Ok(new_stream) => {
+                        if let Err(e) = new_stream.play() {
+                            warn!(error = %e, "Trigger recovery: failed to start stream, retrying");
+                            std::thread::sleep(std::time::Duration::from_secs(1));
+                            continue;
+                        }
+                        info!("Trigger input stream recovered after backend error");
+                        stream = new_stream;
+                        break;
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Trigger recovery: failed to build stream, retrying");
+                        std::thread::sleep(std::time::Duration::from_secs(1));
+                    }
+                }
+            }
+        }
+    }
+
     /// Builds the cpal input stream, matching the device's native sample format.
+    #[allow(clippy::too_many_arguments)]
     fn build_input_stream(
         device: &cpal::Device,
         config: &cpal::StreamConfig,
@@ -165,21 +296,41 @@ impl TriggerEngine {
         tx: Sender<TriggerAction>,
         sample_format: cpal::SampleFormat,
         crosstalk: Option<(u32, f32)>,
+        error_notify: ErrorNotify,
     ) -> Result<cpal::Stream, Box<dyn Error>> {
         match sample_format {
             cpal::SampleFormat::I16 => Self::build_input_stream_typed::<i16>(
-                device, config, detectors, channels, tx, crosstalk,
+                device,
+                config,
+                detectors,
+                channels,
+                tx,
+                crosstalk,
+                error_notify,
             ),
             cpal::SampleFormat::I32 => Self::build_input_stream_typed::<i32>(
-                device, config, detectors, channels, tx, crosstalk,
+                device,
+                config,
+                detectors,
+                channels,
+                tx,
+                crosstalk,
+                error_notify,
             ),
             _ => Self::build_input_stream_typed::<f32>(
-                device, config, detectors, channels, tx, crosstalk,
+                device,
+                config,
+                detectors,
+                channels,
+                tx,
+                crosstalk,
+                error_notify,
             ),
         }
     }
 
     /// Builds a typed cpal input stream, converting samples to f32 for detection.
+    #[allow(clippy::too_many_arguments)]
     fn build_input_stream_typed<T>(
         device: &cpal::Device,
         config: &cpal::StreamConfig,
@@ -187,14 +338,20 @@ impl TriggerEngine {
         channels: u16,
         tx: Sender<TriggerAction>,
         crosstalk: Option<(u32, f32)>,
+        error_notify: ErrorNotify,
     ) -> Result<cpal::Stream, Box<dyn Error>>
     where
         T: cpal::SizedSample + 'static,
         f32: cpal::FromSample<T>,
     {
+        let callback_priority = callback_thread_priority();
+        let rt_audio = rt_audio_enabled();
+        let mut priority_set = false;
+
         let stream = device.build_input_stream(
             config,
             move |data: &[T], _: &cpal::InputCallbackInfo| {
+                promote_to_realtime(callback_priority, rt_audio, &mut priority_set);
                 // Data is interleaved: [ch0, ch1, ch2, ..., ch0, ch1, ...]
                 for frame in data.chunks_exact(channels as usize) {
                     let f32_frame: Vec<f32> = frame
@@ -205,12 +362,27 @@ impl TriggerEngine {
                 }
             },
             move |err| {
-                error!(error = %err, "Trigger input stream error");
+                error!(
+                    error = %err,
+                    "Trigger input stream error (will attempt to recover)"
+                );
+                let (mutex, condvar) = &*error_notify;
+                let mut guard = mutex.lock();
+                *guard = true;
+                condvar.notify_one();
             },
             None,
         )?;
 
         Ok(stream)
+    }
+}
+
+impl Drop for TriggerEngine {
+    fn drop(&mut self) {
+        let (mutex, condvar) = &*self.shutdown;
+        *mutex.lock() = true;
+        condvar.notify_one();
     }
 }
 

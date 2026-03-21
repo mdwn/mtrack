@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-03-21
+
+### Fixed
+
+- **Trigger input stream recovery**: The trigger engine now automatically recovers
+  from ALSA backend errors (e.g. POLLERR) by recreating the input stream, matching
+  the existing recovery pattern used by the audio output stream. Previously, a single
+  backend error would flood the logs with repeated error messages and leave the trigger
+  engine non-functional.
+- **Trigger input thread priority**: The trigger input callback thread is now promoted
+  to real-time priority (SCHED_FIFO), matching the audio output and MIDI beat clock
+  threads. This reduces scheduling jitter for trigger detection.
+
 ## [0.11.1] - 2026-03-20
 
 ### Fixed
