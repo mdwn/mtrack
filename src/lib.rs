@@ -27,6 +27,7 @@ pub mod playlist;
 pub mod playsync;
 pub mod proto;
 pub mod samples;
+pub mod song_cache;
 pub mod songs;
 pub mod state;
 #[cfg(test)]

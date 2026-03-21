@@ -289,12 +289,15 @@ pub async fn waveform_poller(
                     )
                 })
                 .collect();
+            let song_dir = current_song.base_path().to_path_buf();
 
             let song_name_for_task = song_name.clone();
             info!("Computing waveform for '{}'", song_name_for_task);
             let start = std::time::Instant::now();
-            let peaks_result =
-                tokio::task::spawn_blocking(move || compute_waveform_peaks(&track_infos)).await;
+            let peaks_result = tokio::task::spawn_blocking(move || {
+                compute_waveform_peaks(&song_dir, &track_infos)
+            })
+            .await;
             info!(
                 "Waveform for '{}' computed in {:.1?}",
                 song_name,
@@ -399,11 +402,12 @@ pub async fn waveform_prewarmer(player: Arc<Player>, cache: WaveformCache) {
     let total_songs = song_names.len();
 
     // Collect track info for all uncached songs up front
-    let uncached_songs: Vec<(String, Vec<TrackInfo>)> = song_names
+    let uncached_songs: Vec<(String, PathBuf, Vec<TrackInfo>)> = song_names
         .iter()
         .filter(|name| !cache.lock().contains_key(*name))
         .filter_map(|name| {
             let song = all_songs.get_song(name)?;
+            let song_dir = song.base_path().to_path_buf();
             let track_infos: Vec<TrackInfo> = song
                 .tracks()
                 .iter()
@@ -415,7 +419,7 @@ pub async fn waveform_prewarmer(player: Arc<Player>, cache: WaveformCache) {
                     )
                 })
                 .collect();
-            Some((name.clone(), track_infos))
+            Some((name.clone(), song_dir, track_infos))
         })
         .collect();
 
@@ -435,9 +439,9 @@ pub async fn waveform_prewarmer(player: Arc<Player>, cache: WaveformCache) {
     let results: Vec<(String, Vec<TrackPeaks>)> = tokio::task::spawn_blocking(move || {
         uncached_songs
             .into_par_iter()
-            .map(|(name, track_infos)| {
+            .map(|(name, song_dir, track_infos)| {
                 let start = std::time::Instant::now();
-                let peaks = compute_waveform_peaks(&track_infos);
+                let peaks = compute_waveform_peaks(&song_dir, &track_infos);
                 info!(
                     "Prewarmed waveform for '{}' in {:.1?}",
                     name,
@@ -464,17 +468,59 @@ pub async fn waveform_prewarmer(player: Arc<Player>, cache: WaveformCache) {
     );
 }
 
-/// Computes waveform peaks for all tracks in parallel. Returns (track_name, peaks) pairs.
-pub fn compute_waveform_peaks(tracks: &[TrackInfo]) -> Vec<TrackPeaks> {
+/// Computes waveform peaks for all tracks in parallel, using the disk cache
+/// when available. Returns (track_name, peaks) pairs.
+///
+/// Loads valid cached peaks first, computes only uncached tracks, then saves
+/// newly computed peaks back to disk.
+pub fn compute_waveform_peaks(song_dir: &std::path::Path, tracks: &[TrackInfo]) -> Vec<TrackPeaks> {
     const NUM_BUCKETS: usize = 500;
 
-    tracks
+    let cached = crate::song_cache::load_cached_peaks(song_dir, tracks);
+
+    // Split tracks into cached and uncached.
+    let mut results: Vec<TrackPeaks> = Vec::with_capacity(tracks.len());
+    let uncached: Vec<&TrackInfo> = tracks
+        .iter()
+        .filter(|(name, _, _)| !cached.contains_key(name))
+        .collect();
+
+    // Compute uncached tracks in parallel.
+    let newly_computed: Vec<TrackPeaks> = uncached
         .par_iter()
         .map(|(name, file, file_channel)| {
             let peaks = compute_track_peaks(file, *file_channel, NUM_BUCKETS);
             (name.clone(), peaks)
         })
-        .collect()
+        .collect();
+
+    // Save newly computed peaks to disk.
+    if !newly_computed.is_empty() {
+        let save_data: Vec<(String, PathBuf, u16, Vec<f32>)> = newly_computed
+            .iter()
+            .filter_map(|(name, peaks)| {
+                let (_, file, channel) = tracks.iter().find(|(n, _, _)| n == name)?;
+                Some((name.clone(), file.clone(), *channel, peaks.clone()))
+            })
+            .collect();
+
+        if let Err(e) = crate::song_cache::save_peaks(song_dir, &save_data) {
+            warn!("Failed to save waveform cache: {}", e);
+        }
+    }
+
+    // Merge: preserve original track order.
+    for (name, _file, _channel) in tracks {
+        if let Some(peaks) = cached.get(name) {
+            results.push((name.clone(), peaks.clone()));
+        } else if let Some(peaks) = newly_computed.iter().find(|(n, _)| n == name) {
+            results.push(peaks.clone());
+        } else {
+            results.push((name.clone(), vec![]));
+        }
+    }
+
+    results
 }
 
 /// Computes peak values for a single track using bulk buffer reads.
@@ -1100,12 +1146,13 @@ mod test {
 
     #[test]
     fn compute_waveform_peaks_missing_file() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
         let tracks = vec![(
             "missing".to_string(),
             std::path::PathBuf::from("/nonexistent/file.wav"),
             1_u16,
         )];
-        let results = compute_waveform_peaks(&tracks);
+        let results = compute_waveform_peaks(temp_dir.path(), &tracks);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0, "missing");
         assert!(results[0].1.is_empty());
@@ -1127,7 +1174,7 @@ mod test {
             ("Track 2".to_string(), wav2, 1_u16),
         ];
 
-        let results = compute_waveform_peaks(&tracks);
+        let results = compute_waveform_peaks(temp_dir.path(), &tracks);
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].0, "Track 1");
         assert_eq!(results[1].0, "Track 2");
@@ -1168,8 +1215,9 @@ mod test {
 
     #[test]
     fn compute_waveform_peaks_empty_tracks() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
         let tracks: Vec<(String, PathBuf, u16)> = vec![];
-        let results = compute_waveform_peaks(&tracks);
+        let results = compute_waveform_peaks(temp_dir.path(), &tracks);
         assert!(results.is_empty());
     }
 
