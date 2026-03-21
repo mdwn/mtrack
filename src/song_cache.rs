@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use crate::webui::config_io::atomic_write;
 use serde::{Deserialize, Serialize};
 
-const CACHE_VERSION: u32 = 1;
+const CACHE_VERSION: u32 = 2;
 const CACHE_FILENAME: &str = ".mtrack-cache.json";
 
 #[derive(Serialize, Deserialize)]
@@ -45,6 +45,8 @@ struct FileCacheEntry {
 #[derive(Serialize, Deserialize, Clone)]
 struct ChannelCache {
     peaks: Vec<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    beat_grid: Option<crate::audio::click_analysis::BeatGrid>,
 }
 
 /// Metadata from the filesystem used for cache invalidation.
@@ -181,13 +183,104 @@ pub fn save_peaks(
         entry.size = meta.size;
 
         let channel_key = channel.to_string();
+        let existing_tempo_map = entry
+            .channels
+            .get(&channel_key)
+            .and_then(|c| c.beat_grid.clone());
         entry.channels.insert(
             channel_key,
             ChannelCache {
                 peaks: peak_data.clone(),
+                beat_grid: existing_tempo_map,
             },
         );
     }
+
+    cache.version = CACHE_VERSION;
+
+    let json = serde_json::to_string_pretty(&cache)
+        .map_err(|e| format!("Failed to serialize song cache: {}", e))?;
+
+    let cache_path = song_dir.join(CACHE_FILENAME);
+    atomic_write(&cache_path, &json)
+}
+
+/// Load a cached click tempo map for a specific file and channel.
+/// Returns `None` if cache is missing, stale, or has no tempo map.
+pub fn load_cached_beat_grid(
+    song_dir: &Path,
+    file: &Path,
+    channel: u16,
+) -> Option<crate::audio::click_analysis::BeatGrid> {
+    if !is_valid_cache_dir(song_dir) {
+        return None;
+    }
+
+    let cache = read_cache(song_dir)?;
+    let key = filename_key(file)?;
+    let entry = cache.tracks.get(&key)?;
+    let meta = get_file_meta(file)?;
+
+    if !meta_matches(entry, &meta) {
+        return None;
+    }
+
+    let channel_key = channel.to_string();
+    entry.channels.get(&channel_key)?.beat_grid.clone()
+}
+
+/// Save a click tempo map for a specific file and channel.
+/// Merges with existing cache data.
+pub fn save_beat_grid(
+    song_dir: &Path,
+    file: &Path,
+    channel: u16,
+    map: &crate::audio::click_analysis::BeatGrid,
+) -> Result<(), String> {
+    if !is_valid_cache_dir(song_dir) {
+        return Ok(());
+    }
+
+    let mut cache = read_cache(song_dir).unwrap_or(SongCache {
+        version: CACHE_VERSION,
+        tracks: HashMap::new(),
+    });
+
+    let key = match filename_key(file) {
+        Some(k) => k,
+        None => return Ok(()),
+    };
+
+    let meta = match get_file_meta(file) {
+        Some(m) => m,
+        None => return Ok(()),
+    };
+
+    let entry = cache.tracks.entry(key).or_insert_with(|| FileCacheEntry {
+        mtime_secs: meta.mtime_secs,
+        mtime_nanos: meta.mtime_nanos,
+        size: meta.size,
+        channels: HashMap::new(),
+    });
+
+    entry.mtime_secs = meta.mtime_secs;
+    entry.mtime_nanos = meta.mtime_nanos;
+    entry.size = meta.size;
+
+    let channel_key = channel.to_string();
+    let existing_peaks = entry
+        .channels
+        .get(&channel_key)
+        .map(|c| c.peaks.clone())
+        .unwrap_or_default();
+
+    entry.channels.insert(
+        channel_key,
+        ChannelCache {
+            peaks: existing_peaks,
+            beat_grid: Some(map.clone()),
+        },
+    );
 
     cache.version = CACHE_VERSION;
 
@@ -355,6 +448,77 @@ mod tests {
 
         let content = fs::read_to_string(dir.path().join(CACHE_FILENAME)).unwrap();
         assert!(content.contains('\n'));
-        assert!(content.contains("\"version\": 1"));
+        assert!(content.contains(&format!("\"version\": {}", CACHE_VERSION)));
+    }
+
+    #[test]
+    fn beat_grid_save_load_roundtrip() {
+        use crate::audio::click_analysis::BeatGrid;
+
+        let dir = TempDir::new().unwrap();
+        let file = create_test_audio_file(dir.path(), "click.wav", b"audio data");
+
+        let grid = BeatGrid {
+            beats: vec![0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5],
+            measure_starts: vec![0, 4],
+        };
+
+        save_beat_grid(dir.path(), &file, 1, &grid).unwrap();
+
+        let loaded = load_cached_beat_grid(dir.path(), &file, 1);
+        assert_eq!(loaded, Some(grid));
+    }
+
+    #[test]
+    fn beat_grid_preserved_when_saving_peaks() {
+        use crate::audio::click_analysis::BeatGrid;
+
+        let dir = TempDir::new().unwrap();
+        let file = create_test_audio_file(dir.path(), "click.wav", b"audio data");
+
+        let grid = BeatGrid {
+            beats: vec![0.0, 0.5, 1.0, 1.5],
+            measure_starts: vec![0],
+        };
+
+        save_beat_grid(dir.path(), &file, 1, &grid).unwrap();
+
+        // Now save peaks for the same file/channel.
+        save_peaks(
+            dir.path(),
+            &[("click".to_string(), file.clone(), 1u16, vec![0.5, 0.8])],
+        )
+        .unwrap();
+
+        // Beat grid should still be there.
+        let loaded = load_cached_beat_grid(dir.path(), &file, 1);
+        assert_eq!(loaded, Some(grid));
+
+        // Peaks should also be there.
+        let tracks = vec![("click".to_string(), file, 1u16)];
+        let peaks = load_cached_peaks(dir.path(), &tracks);
+        assert_eq!(peaks.get("click").unwrap(), &vec![0.5, 0.8]);
+    }
+
+    #[test]
+    fn beat_grid_invalidated_on_file_change() {
+        use crate::audio::click_analysis::BeatGrid;
+
+        let dir = TempDir::new().unwrap();
+        let file = create_test_audio_file(dir.path(), "click.wav", b"audio data");
+
+        let grid = BeatGrid {
+            beats: vec![0.0, 0.5, 1.0, 1.5],
+            measure_starts: vec![0],
+        };
+
+        save_beat_grid(dir.path(), &file, 1, &grid).unwrap();
+
+        // Modify the file.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        fs::write(&file, b"modified audio data that is longer").unwrap();
+
+        let loaded = load_cached_beat_grid(dir.path(), &file, 1);
+        assert!(loaded.is_none());
     }
 }

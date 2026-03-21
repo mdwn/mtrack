@@ -65,31 +65,40 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
         let playlist_position = playlist.position();
         let playlist_songs: Vec<String> = playlist.songs().clone();
 
-        let (song_name, song_duration_ms, tracks) = if let Some(current_song) = playlist.current() {
-            let mappings = player.track_mappings();
-            let tracks: Vec<serde_json::Value> = current_song
-                .tracks()
-                .iter()
-                .map(|t| {
-                    let output_channels = mappings
-                        .as_ref()
-                        .and_then(|m| m.get(t.name()))
-                        .cloned()
-                        .unwrap_or_default();
-                    json!({
-                        "name": t.name(),
-                        "output_channels": output_channels,
+        let (song_name, song_duration_ms, tracks, beat_grid) =
+            if let Some(current_song) = playlist.current() {
+                let mappings = player.track_mappings();
+                let tracks: Vec<serde_json::Value> = current_song
+                    .tracks()
+                    .iter()
+                    .map(|t| {
+                        let output_channels = mappings
+                            .as_ref()
+                            .and_then(|m| m.get(t.name()))
+                            .cloned()
+                            .unwrap_or_default();
+                        json!({
+                            "name": t.name(),
+                            "output_channels": output_channels,
+                        })
                     })
-                })
-                .collect();
-            (
-                current_song.name().to_string(),
-                current_song.duration().as_millis() as u64,
-                tracks,
-            )
-        } else {
-            (String::new(), 0, vec![])
-        };
+                    .collect();
+                let beat_grid = current_song.beat_grid().map(|g| {
+                    json!({
+                        "beats": g.beats,
+                        "measure_starts": g.measure_starts,
+                    })
+                });
+
+                (
+                    current_song.name().to_string(),
+                    current_song.duration().as_millis() as u64,
+                    tracks,
+                    beat_grid,
+                )
+            } else {
+                (String::new(), 0, vec![], None)
+            };
 
         let available_playlists = player.list_playlists();
         let persisted_playlist_name = player.persisted_playlist_name();
@@ -107,6 +116,7 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
             "available_playlists": available_playlists,
             "persisted_playlist_name": persisted_playlist_name,
             "locked": player.is_locked(),
+            "beat_grid": beat_grid,
         });
 
         let _ = tx.send(msg.to_string());

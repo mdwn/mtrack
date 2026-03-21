@@ -82,6 +82,10 @@ pub(super) async fn get_songs(State(state): State<WebUiState>) -> impl IntoRespo
                 "base_dir": base_dir,
                 "lighting_files": lighting_files,
                 "midi_dmx_files": midi_dmx_files,
+                "beat_grid": song.beat_grid().map(|g| json!({
+                    "beats": g.beats,
+                    "measure_starts": g.measure_starts,
+                })),
             })
         })
         .collect();

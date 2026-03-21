@@ -539,6 +539,17 @@
           <span>{song.num_channels}ch {song.sample_format}</span>
         {/if}
       </div>
+
+      {#if song.beat_grid}
+        <div class="beat-grid-summary">
+          <span class="beat-grid-label">Beat Grid:</span>
+          <span class="beat-grid-stat">{song.beat_grid.beats.length} beats</span
+          >
+          <span class="beat-grid-stat"
+            >{song.beat_grid.measure_starts.length} measures</span
+          >
+        </div>
+      {/if}
     {/if}
 
     <!-- Tab bar with inline save -->
@@ -1028,7 +1039,22 @@
     gap: 16px;
     font-size: 14px;
     color: var(--text-muted);
+    margin-bottom: 8px;
+  }
+  .beat-grid-summary {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 13px;
+    color: var(--text-muted);
     margin-bottom: 16px;
+  }
+  .beat-grid-label {
+    font-weight: 600;
+    color: var(--text);
+  }
+  .beat-grid-stat {
+    font-family: var(--mono);
   }
   .tab-bar {
     display: flex;
