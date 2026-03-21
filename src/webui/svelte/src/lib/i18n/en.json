@@ -240,6 +240,11 @@
   "controllers.showOscPaths": "Show OSC Path Overrides",
   "controllers.hideOscPaths": "Hide OSC Path Overrides",
   "controllers.midiNote": "Edit MIDI controllers in raw YAML.",
+  "controllers.morningstar": "Morningstar",
+  "controllers.morningstarEnable": "Enable Morningstar bank naming",
+  "controllers.morningstarModel": "Model",
+  "controllers.morningstarSave": "Save to flash",
+  "controllers.morningstarCustomModelId": "Device ID",
   "controllers.addGrpc": "Add gRPC",
   "controllers.addOsc": "Add OSC",
 
@@ -656,6 +661,10 @@
   "tooltips.controllers.grpcPort": "TCP port for the gRPC control server. The web UI and other clients connect to this port. Default is 43234.",
   "tooltips.controllers.oscPort": "UDP port to listen for incoming OSC messages. Default is 43235.",
   "tooltips.controllers.broadcastAddresses": "IP addresses to broadcast OSC status updates to (e.g. '192.168.1.255:43235'). Enables external apps like TouchOSC to receive state updates.",
+  "tooltips.controllers.morningstar": "Automatically push the current song name to a Morningstar MIDI controller via SysEx when songs change.",
+  "tooltips.controllers.morningstarModel": "The Morningstar controller model. Determines the device ID byte in the SysEx message.",
+  "tooltips.controllers.morningstarSave": "When enabled, the bank name is saved to flash. When disabled, the name is temporary and resets on power cycle.",
+  "tooltips.controllers.morningstarCustomModelId": "The SysEx device ID byte for a custom/unlisted Morningstar model (0-127).",
 
   "tooltips.samples.outputChannels": "Device output channels for this sample, as comma-separated numbers (e.g. '1, 2'). If both output channels and output track are empty, uses the default stereo output.",
   "tooltips.samples.outputTrack": "Name of a track mapping (defined in Audio settings) to route this sample's output. Overrides output channels if set.",

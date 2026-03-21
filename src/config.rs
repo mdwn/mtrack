@@ -34,8 +34,11 @@ pub mod trigger;
 
 pub use self::audio::{Audio, ResamplerType, StreamBufferSize};
 pub use self::controller::Controller;
+pub use self::controller::CustomModel;
 pub use self::controller::GrpcController;
 pub use self::controller::MidiController;
+pub use self::controller::MorningstarConfig;
+pub use self::controller::MorningstarModel;
 pub use self::controller::OscController;
 pub use self::controller::DEFAULT_GRPC_PORT;
 pub use self::dmx::Dmx;

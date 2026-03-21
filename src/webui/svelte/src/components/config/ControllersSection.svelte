@@ -104,6 +104,74 @@
   function toggleOscAdvanced(i: number) {
     showOscAdvanced[i] = !showOscAdvanced[i];
   }
+
+  // Morningstar helpers
+  const morningstarModels = [
+    { value: "mc3", label: "MC3" },
+    { value: "mc6", label: "MC6" },
+    { value: "mc8", label: "MC8" },
+    { value: "mc6pro", label: "MC6 Pro" },
+    { value: "mc8pro", label: "MC8 Pro" },
+    { value: "mc4pro", label: "MC4 Pro" },
+    { value: "custom", label: "Custom" },
+  ];
+
+  function toggleMorningstar(i: number) {
+    if (controllers[i].morningstar) {
+      delete controllers[i].morningstar;
+    } else {
+      controllers[i].morningstar = { model: "mc4pro" };
+    }
+    onchange();
+  }
+
+  function updateMorningstarField(i: number, key: string, value: any) {
+    if (!controllers[i].morningstar) return;
+    if (value === undefined || value === "") {
+      delete controllers[i].morningstar[key];
+    } else {
+      controllers[i].morningstar[key] = value;
+    }
+    onchange();
+  }
+
+  function getMorningstarModel(ctrl: any): string {
+    const ms = ctrl.morningstar;
+    if (!ms?.model) return "mc4pro";
+    if (typeof ms.model === "string") return ms.model;
+    if (typeof ms.model === "object" && ms.model.custom) return "custom";
+    return "mc4pro";
+  }
+
+  function setMorningstarModel(i: number, value: string) {
+    if (!controllers[i].morningstar) return;
+    if (value === "custom") {
+      const existingId =
+        typeof controllers[i].morningstar.model === "object"
+          ? (controllers[i].morningstar.model.custom?.model_id ?? 0)
+          : 0;
+      controllers[i].morningstar.model = { custom: { model_id: existingId } };
+    } else {
+      controllers[i].morningstar.model = value;
+    }
+    onchange();
+  }
+
+  function getCustomModelId(ctrl: any): number {
+    const model = ctrl.morningstar?.model;
+    if (typeof model === "object" && model.custom) {
+      return model.custom.model_id ?? 0;
+    }
+    return 0;
+  }
+
+  function setCustomModelId(i: number, value: number) {
+    if (!controllers[i].morningstar) return;
+    controllers[i].morningstar.model = {
+      custom: { model_id: value },
+    };
+    onchange();
+  }
 </script>
 
 <div class="section-fields">
@@ -216,6 +284,84 @@
         {/if}
       {:else if ctrl.kind === "midi"}
         <div class="note">{$t("controllers.midiNote")}</div>
+
+        <div class="morningstar-section">
+          <label class="checkbox-label">
+            <input
+              type="checkbox"
+              checked={!!ctrl.morningstar}
+              onchange={() => toggleMorningstar(i)}
+            />
+            {$t("controllers.morningstarEnable")}
+            <Tooltip text={$t("tooltips.controllers.morningstar")} />
+          </label>
+
+          {#if ctrl.morningstar}
+            <div class="morningstar-fields">
+              <div class="field">
+                <label for="ms-model-{i}"
+                  >{$t("controllers.morningstarModel")}
+                  <Tooltip
+                    text={$t("tooltips.controllers.morningstarModel")}
+                  /></label
+                >
+                <select
+                  id="ms-model-{i}"
+                  class="input"
+                  value={getMorningstarModel(ctrl)}
+                  onchange={(e) =>
+                    setMorningstarModel(
+                      i,
+                      (e.target as HTMLSelectElement).value,
+                    )}
+                >
+                  {#each morningstarModels as m (m.value)}
+                    <option value={m.value}>{m.label}</option>
+                  {/each}
+                </select>
+              </div>
+
+              {#if getMorningstarModel(ctrl) === "custom"}
+                <div class="field">
+                  <label for="ms-custom-id-{i}"
+                    >{$t("controllers.morningstarCustomModelId")}
+                    <Tooltip
+                      text={$t("tooltips.controllers.morningstarCustomModelId")}
+                    /></label
+                  >
+                  <input
+                    id="ms-custom-id-{i}"
+                    type="number"
+                    class="input"
+                    min="0"
+                    max="127"
+                    value={getCustomModelId(ctrl)}
+                    onchange={(e) =>
+                      setCustomModelId(
+                        i,
+                        parseInt((e.target as HTMLInputElement).value) || 0,
+                      )}
+                  />
+                </div>
+              {/if}
+
+              <label class="checkbox-label">
+                <input
+                  type="checkbox"
+                  checked={ctrl.morningstar.save ?? false}
+                  onchange={(e) =>
+                    updateMorningstarField(
+                      i,
+                      "save",
+                      (e.target as HTMLInputElement).checked || undefined,
+                    )}
+                />
+                {$t("controllers.morningstarSave")}
+                <Tooltip text={$t("tooltips.controllers.morningstarSave")} />
+              </label>
+            </div>
+          {/if}
+        </div>
       {/if}
     </div>
   {/each}
@@ -303,6 +449,28 @@
     font-size: 13px;
     color: var(--text-dim);
     font-style: italic;
+  }
+  .morningstar-section {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .morningstar-fields {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    padding: 8px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+  .checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: var(--text-muted);
+    cursor: pointer;
   }
   @media (max-width: 600px) {
     .osc-paths {

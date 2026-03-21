@@ -28,7 +28,7 @@ gen-proto:
 
 ## Build the Svelte frontend (generates protobuf bindings first)
 build-ui: gen-proto
-	cd $(SVELTE_DIR) && npm run build
+	cd $(SVELTE_DIR) && npm ci && npm run build
 
 ## Build the Rust binary
 build-rust:

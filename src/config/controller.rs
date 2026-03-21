@@ -80,6 +80,9 @@ pub struct MidiController {
     all_songs: midi::Event,
     /// The MIDI event to look for to switch back to the current playlist.
     playlist: midi::Event,
+    /// Optional Morningstar controller integration for automatic preset naming.
+    #[serde(default)]
+    morningstar: Option<MorningstarConfig>,
 }
 
 impl MidiController {
@@ -99,6 +102,7 @@ impl MidiController {
             stop,
             all_songs,
             playlist,
+            morningstar: None,
         }
     }
     /// Gets the play event.
@@ -129,6 +133,11 @@ impl MidiController {
     /// Gets the playlist event.
     pub fn playlist(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
         self.playlist.to_midi_event()
+    }
+
+    /// Gets the optional Morningstar configuration.
+    pub fn morningstar(&self) -> Option<&MorningstarConfig> {
+        self.morningstar.as_ref()
     }
 }
 
@@ -289,6 +298,89 @@ impl OscController {
     pub fn playlist_current_song_elapsed(&self) -> &str {
         &self.playlist_current_song_elapsed
     }
+}
+
+/// Configuration for Morningstar MIDI controller integration.
+///
+/// When present, mtrack will send SysEx messages to update the current bank
+/// name on the controller whenever the current song changes.
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct MorningstarConfig {
+    /// The Morningstar controller model.
+    model: MorningstarModel,
+    /// Whether to save the name to flash (true) or keep it temporary (false).
+    #[serde(default)]
+    save: bool,
+}
+
+impl MorningstarConfig {
+    #[cfg(test)]
+    pub fn new(model: MorningstarModel, save: bool) -> MorningstarConfig {
+        MorningstarConfig { model, save }
+    }
+
+    /// Returns the device model ID byte for the SysEx message.
+    pub fn model_id(&self) -> u8 {
+        self.model.device_id()
+    }
+
+    /// Returns whether to save to flash.
+    pub fn save(&self) -> bool {
+        self.save
+    }
+
+    /// Returns the required bank name length for this model.
+    /// Names must be padded with spaces to exactly this length.
+    pub fn name_length(&self) -> usize {
+        self.model.name_length()
+    }
+}
+
+/// Morningstar controller model.
+#[derive(Deserialize, Serialize, Clone, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum MorningstarModel {
+    MC3,
+    MC6,
+    MC8,
+    #[serde(rename = "mc6pro")]
+    MC6Pro,
+    #[serde(rename = "mc8pro")]
+    MC8Pro,
+    #[serde(rename = "mc4pro")]
+    MC4Pro,
+    Custom(CustomModel),
+}
+
+impl MorningstarModel {
+    /// Returns the SysEx device ID byte for this model.
+    fn device_id(&self) -> u8 {
+        match self {
+            MorningstarModel::MC3 => 0x05,
+            MorningstarModel::MC6 => 0x03,
+            MorningstarModel::MC8 => 0x04,
+            MorningstarModel::MC6Pro => 0x06,
+            MorningstarModel::MC8Pro => 0x08,
+            MorningstarModel::MC4Pro => 0x09,
+            MorningstarModel::Custom(c) => c.model_id,
+        }
+    }
+
+    /// Returns the required bank name length for this model.
+    fn name_length(&self) -> usize {
+        match self {
+            MorningstarModel::MC3 => 16,
+            MorningstarModel::MC6 | MorningstarModel::MC8 => 24,
+            MorningstarModel::MC6Pro | MorningstarModel::MC8Pro | MorningstarModel::MC4Pro => 32,
+            MorningstarModel::Custom(_) => 32,
+        }
+    }
+}
+
+/// Custom Morningstar model with explicit device ID.
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct CustomModel {
+    pub model_id: u8,
 }
 
 #[cfg(test)]
