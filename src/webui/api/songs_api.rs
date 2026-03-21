@@ -428,11 +428,12 @@ pub(super) async fn get_song_waveform(
             )
         })
         .collect();
+    let song_dir = song.base_path().to_path_buf();
 
     let cache = state.waveform_cache.clone();
     let song_name = name.clone();
     let peaks_result = tokio::task::spawn_blocking(move || {
-        let peaks = ws_state::compute_waveform_peaks(&track_infos);
+        let peaks = ws_state::compute_waveform_peaks(&song_dir, &track_infos);
         cache.lock().insert(song_name, peaks.clone());
         peaks
     })
