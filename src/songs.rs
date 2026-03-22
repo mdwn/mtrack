@@ -129,6 +129,8 @@ pub struct Song {
     samples_config: config::SamplesConfig,
     /// Tempo map derived from click track analysis.
     beat_grid: Option<crate::audio::click_analysis::BeatGrid>,
+    /// Whether this song should loop when it finishes playing.
+    loop_playback: bool,
 }
 
 /// A simple sample for songs. Boils down to i32 or f32, which we can be reasonably assured that
@@ -236,6 +238,7 @@ impl Song {
             tracks,
             samples_config: config.samples_config(),
             beat_grid,
+            loop_playback: config.loop_playback(),
         })
     }
 
@@ -433,9 +436,14 @@ impl Song {
         &self.tracks
     }
 
-    /// Gets the click track tempo map, if available.
+    /// Gets the beat grid derived from click track analysis, if available.
     pub fn beat_grid(&self) -> Option<&crate::audio::click_analysis::BeatGrid> {
         self.beat_grid.as_ref()
+    }
+
+    /// Returns whether this song should loop when it finishes playing.
+    pub fn loop_playback(&self) -> bool {
+        self.loop_playback
     }
 
     /// Checks if this song requires transcoding for the given target format
@@ -621,6 +629,7 @@ impl Default for Song {
             tracks: Default::default(),
             samples_config: config::SamplesConfig::default(),
             beat_grid: None,
+            loop_playback: false,
         }
     }
 }

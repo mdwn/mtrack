@@ -389,6 +389,8 @@
   "songs.detail.tabs.midi": "MIDI",
   "songs.detail.tabs.lighting": "Lighting",
   "songs.detail.tabs.config": "Config",
+  "songs.detail.loopPlayback": "Loop Playback",
+  "songs.detail.loopPlaybackHint": "Song will repeat from the beginning when it finishes, with audio crossfade at the loop boundary.",
   "songs.detail.failedToLoadSong": "Failed to load song",
   "songs.detail.failedToLoad": "This song failed to load and will not be playable until it's valid.",
   "songs.detail.noMidi": "No MIDI file configured for this song.",

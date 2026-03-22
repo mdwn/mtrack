@@ -195,7 +195,7 @@ impl PlayerService for PlayerServer {
         &self,
         _: Request<PreviousRequest>,
     ) -> Result<Response<PreviousResponse>, Status> {
-        if self.player.is_playing().await {
+        if self.player.is_playing().await && !self.player.is_current_song_looping() {
             return Err(Status::failed_precondition("can't navigate while playing"));
         }
         let current_song = self
@@ -221,7 +221,7 @@ impl PlayerService for PlayerServer {
     }
 
     async fn next(&self, _: Request<NextRequest>) -> Result<Response<NextResponse>, Status> {
-        if self.player.is_playing().await {
+        if self.player.is_playing().await && !self.player.is_current_song_looping() {
             return Err(Status::failed_precondition("can't navigate while playing"));
         }
         let current_song = self

@@ -11,7 +11,12 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-use std::{any::Any, error::Error, fmt, sync::Arc};
+use std::{
+    any::Any,
+    error::Error,
+    fmt,
+    sync::{atomic::AtomicBool, Arc},
+};
 
 use midly::live::LiveEvent;
 use tokio::sync::mpsc::Sender;
@@ -46,6 +51,7 @@ pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {
         ready_tx: std::sync::mpsc::Sender<()>,
         start_time: std::time::Duration,
         clock: PlaybackClock,
+        loop_break: Arc<AtomicBool>,
     ) -> Result<(), Box<dyn Error>>;
 
     /// Emits an event.

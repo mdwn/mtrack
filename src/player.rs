@@ -133,6 +133,8 @@ struct PlaybackContext {
     play_tx: oneshot::Sender<Result<(), String>>,
     start_time: Duration,
     play_start_time: Arc<Mutex<Option<SystemTime>>>,
+    /// Shared flag to break out of the loop gracefully.
+    loop_break: Arc<AtomicBool>,
 }
 
 /// Groups hardware devices for constructing a Player without discovering real hardware.
@@ -204,6 +206,11 @@ pub struct Player {
     locked: Arc<AtomicBool>,
     /// Active controllers (gRPC, OSC, MIDI). Replaced on reload.
     controller: Arc<parking_lot::Mutex<Option<crate::controller::Controller>>>,
+    /// Signal to break out of a song loop gracefully (not a hard cancel).
+    /// Set by play()/next() when the current song is looping. The playback
+    /// loop checks this flag and exits cleanly, allowing the cleanup task
+    /// to advance the playlist and start the next song.
+    loop_break: Arc<AtomicBool>,
 }
 
 impl Player {
@@ -589,6 +596,7 @@ impl Player {
             state_tx: Arc::new(parking_lot::Mutex::new(None)),
             locked: Arc::new(AtomicBool::new(true)),
             controller: Arc::new(parking_lot::Mutex::new(None)),
+            loop_break: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -978,6 +986,18 @@ impl Player {
 
         let mut join = self.join.lock().await;
         if join.is_some() {
+            // If the current song is looping, break out immediately with crossfade.
+            // Fade out current audio, then cancel so subsystems exit. The cleanup
+            // task sees loop_broken and auto-plays the next song.
+            if self.is_current_song_looping() {
+                info!("Breaking out of song loop to advance playlist.");
+                self.fade_out_current_audio();
+                self.loop_break.store(true, Ordering::Relaxed);
+                if let Some(ref handles) = *join {
+                    handles.cancel.cancel();
+                }
+                return Ok(None);
+            }
             info!("Player is already playing a song.");
             return Ok(None);
         }
@@ -1044,6 +1064,7 @@ impl Player {
                 play_tx,
                 start_time,
                 play_start_time: play_start_time.clone(),
+                loop_break: self.loop_break.clone(),
             };
             tokio::task::spawn_blocking(move || {
                 Player::play_files(ctx);
@@ -1065,14 +1086,16 @@ impl Player {
                 };
 
                 let cancelled = cancel_handle_for_cleanup.is_cancelled();
+                let loop_broken = player.loop_break.swap(false, Ordering::Relaxed);
 
                 info!(
                     song = song.name(),
                     cancelled = cancelled,
+                    loop_broken = loop_broken,
                     "Song finished playing."
                 );
 
-                let action = decide_cleanup_action(result, cancelled);
+                let action = decide_cleanup_action(result, cancelled, loop_broken);
                 if action == CleanupAction::StopCancelled {
                     // stop() already cleared join and play_start_time.
                     // Touching them here would clobber state from a new play() that
@@ -1080,7 +1103,7 @@ impl Player {
                     return;
                 }
 
-                // Natural finish: advance playlist and clean up.
+                // Natural finish or loop break: advance playlist and clean up.
                 let mut join = player.join.lock().await;
                 if let Some(song) = playlist.next() {
                     player.emit_song_change(&song);
@@ -1093,6 +1116,21 @@ impl Player {
 
                 *join = None;
                 player.stop_run.store(false, Ordering::Relaxed);
+                let should_auto_play = action == CleanupAction::LoopBreakAndPlay;
+                drop(join);
+
+                // If loop was broken (play/next during loop), auto-play the next song.
+                // Use spawn_blocking + block_on to avoid the non-Send future issue
+                // with tokio::sync::Mutex guards inside play_from.
+                if should_auto_play {
+                    let player_for_play = player;
+                    tokio::task::spawn_blocking(move || {
+                        let rt = tokio::runtime::Handle::current();
+                        if let Err(e) = rt.block_on(player_for_play.play()) {
+                            error!(err = %e, "Failed to auto-play next song after loop break");
+                        }
+                    });
+                }
             });
         }
 
@@ -1111,6 +1149,7 @@ impl Player {
             play_tx,
             start_time,
             play_start_time,
+            loop_break,
         } = ctx;
 
         // Check if any subsystems are active.
@@ -1143,12 +1182,20 @@ impl Player {
             let audio_outcome = audio_outcome.clone();
             let ready_tx = ready_tx.clone();
             let clock = clock.clone();
+            let loop_break = loop_break.clone();
             expected_ready += 1;
 
             Some(thread::spawn(move || {
                 let song_name = song.name().to_string();
-                let result =
-                    device.play_from(song, &mappings, cancel_handle, ready_tx, clock, start_time);
+                let result = device.play_from(
+                    song,
+                    &mappings,
+                    cancel_handle,
+                    ready_tx,
+                    clock,
+                    start_time,
+                    loop_break,
+                );
                 if let Err(ref e) = result {
                     error!(
                         err = e.as_ref(),
@@ -1170,6 +1217,7 @@ impl Player {
             let cancel_handle = cancel_handle.clone();
             let clock = clock.clone();
             let ready_tx = ready_tx.clone();
+            let loop_break = loop_break.clone();
             expected_ready += 1;
 
             thread::spawn(move || {
@@ -1182,6 +1230,7 @@ impl Player {
                     ready_tx,
                     start_time,
                     clock,
+                    loop_break,
                 ) {
                     error!(
                         err = e.as_ref(),
@@ -1198,14 +1247,20 @@ impl Player {
             let cancel_handle = cancel_handle.clone();
             let ready_tx = ready_tx.clone();
             let clock = clock.clone();
+            let loop_break = loop_break.clone();
             expected_ready += 1;
 
             Some(thread::spawn(move || {
                 let song_name = song.name().to_string();
 
-                if let Err(e) =
-                    midi_device.play_from(song, cancel_handle, ready_tx, start_time, clock)
-                {
+                if let Err(e) = midi_device.play_from(
+                    song,
+                    cancel_handle,
+                    ready_tx,
+                    start_time,
+                    clock,
+                    loop_break,
+                ) {
                     error!(
                         err = e.as_ref(),
                         song = song_name,
@@ -1274,6 +1329,16 @@ impl Player {
     async fn navigate(&self, direction: PlaylistDirection) -> Option<Arc<Song>> {
         let join = self.join.lock().await;
         if join.is_some() {
+            // If the current song is looping, break out immediately with crossfade.
+            if self.is_current_song_looping() {
+                info!("Breaking out of song loop via {} navigation.", direction);
+                self.fade_out_current_audio();
+                self.loop_break.store(true, Ordering::Relaxed);
+                if let Some(ref handles) = *join {
+                    handles.cancel.cancel();
+                }
+                return self.get_playlist().current();
+            }
             let current = self.get_playlist().current();
             if let Some(ref song) = current {
                 info!(
@@ -1483,6 +1548,38 @@ impl Player {
         self.join.lock().await.is_some()
     }
 
+    /// Returns true if the current song has loop_playback enabled.
+    /// Does not require the join lock — just checks the playlist's current song.
+    pub fn is_current_song_looping(&self) -> bool {
+        self.get_playlist()
+            .current()
+            .map(|song| song.loop_playback())
+            .unwrap_or(false)
+    }
+
+    /// Sets fade-out envelopes on all current audio sources for a smooth
+    /// crossfade transition when breaking out of a loop.
+    fn fade_out_current_audio(&self) {
+        let hw = self.hardware.read();
+        if let Some(ref device) = hw.device {
+            if let Some(mixer) = device.mixer() {
+                let crossfade_samples = (0.1 * mixer.sample_rate() as f64) as u64;
+                let source_ids: Vec<u64> = {
+                    let sources = mixer.get_active_sources();
+                    let guard = sources.read();
+                    guard.iter().map(|s| s.lock().id).collect()
+                };
+                if !source_ids.is_empty() {
+                    let fade_out = Arc::new(crate::audio::crossfade::GainEnvelope::fade_out(
+                        crossfade_samples,
+                        crate::audio::crossfade::CrossfadeCurve::Linear,
+                    ));
+                    mixer.set_gain_envelope(&source_ids, fade_out);
+                }
+            }
+        }
+    }
+
     /// Returns true if the player is in locked mode (state-altering operations blocked).
     pub fn is_locked(&self) -> bool {
         self.locked.load(Ordering::Relaxed)
@@ -1674,10 +1771,22 @@ enum PlaybackResult {
 enum CleanupAction {
     AdvancePlaylist,
     StopCancelled,
+    /// Loop was broken via play/next — advance playlist and auto-play next song.
+    LoopBreakAndPlay,
 }
 
 /// Decides whether to advance the playlist or stop after playback finishes.
-fn decide_cleanup_action(result: PlaybackResult, cancelled: bool) -> CleanupAction {
+fn decide_cleanup_action(
+    result: PlaybackResult,
+    cancelled: bool,
+    loop_broken: bool,
+) -> CleanupAction {
+    // Loop break takes priority over cancel — we intentionally cancel
+    // playback to break out of a loop immediately, but the intent is
+    // to advance and play, not to stop.
+    if loop_broken {
+        return CleanupAction::LoopBreakAndPlay;
+    }
     if cancelled {
         return CleanupAction::StopCancelled;
     }
@@ -2637,7 +2746,7 @@ mod test {
     #[test]
     fn cleanup_success_not_cancelled() {
         assert_eq!(
-            decide_cleanup_action(PlaybackResult::Success, false),
+            decide_cleanup_action(PlaybackResult::Success, false, false),
             CleanupAction::AdvancePlaylist
         );
     }
@@ -2645,7 +2754,7 @@ mod test {
     #[test]
     fn cleanup_success_cancelled() {
         assert_eq!(
-            decide_cleanup_action(PlaybackResult::Success, true),
+            decide_cleanup_action(PlaybackResult::Success, true, false),
             CleanupAction::StopCancelled
         );
     }
@@ -2653,7 +2762,7 @@ mod test {
     #[test]
     fn cleanup_failed_not_cancelled() {
         assert_eq!(
-            decide_cleanup_action(PlaybackResult::Failed("err".into()), false),
+            decide_cleanup_action(PlaybackResult::Failed("err".into()), false, false),
             CleanupAction::AdvancePlaylist
         );
     }
@@ -2661,7 +2770,7 @@ mod test {
     #[test]
     fn cleanup_failed_cancelled() {
         assert_eq!(
-            decide_cleanup_action(PlaybackResult::Failed("err".into()), true),
+            decide_cleanup_action(PlaybackResult::Failed("err".into()), true, false),
             CleanupAction::StopCancelled
         );
     }
@@ -2669,8 +2778,26 @@ mod test {
     #[test]
     fn cleanup_sender_dropped_not_cancelled() {
         assert_eq!(
-            decide_cleanup_action(PlaybackResult::SenderDropped, false),
+            decide_cleanup_action(PlaybackResult::SenderDropped, false, false),
             CleanupAction::AdvancePlaylist
+        );
+    }
+
+    #[test]
+    fn cleanup_loop_broken() {
+        assert_eq!(
+            decide_cleanup_action(PlaybackResult::Success, false, true),
+            CleanupAction::LoopBreakAndPlay
+        );
+    }
+
+    #[test]
+    fn cleanup_loop_broken_takes_priority_over_cancel() {
+        // If both cancelled and loop_broken, loop_broken wins — we intentionally
+        // cancel to break out of the loop immediately, but the intent is to advance.
+        assert_eq!(
+            decide_cleanup_action(PlaybackResult::Success, true, true),
+            CleanupAction::LoopBreakAndPlay
         );
     }
 

@@ -106,6 +106,38 @@ test.describe("Song Detail", () => {
   });
 });
 
+test.describe("Song Detail - Loop Playback", () => {
+  test("does not show LOOP badge for non-looping song", async ({ page }) => {
+    await page.goto("/#/songs/Test%20Song%20Alpha");
+    await expect(page.locator(".badge.loop")).not.toBeVisible();
+  });
+
+  test("shows LOOP badge for looping song", async ({ page }) => {
+    await page.goto("/#/songs/Test%20Song%20Beta");
+    await expect(page.locator(".badge.loop")).toBeVisible();
+  });
+
+  test("loop checkbox is unchecked for non-looping song", async ({ page }) => {
+    await page.goto("/#/songs/Test%20Song%20Alpha");
+    const checkbox = page.locator("#loop-playback");
+    await expect(checkbox).toBeVisible();
+    await expect(checkbox).not.toBeChecked();
+  });
+
+  test("loop checkbox is checked for looping song", async ({ page }) => {
+    await page.goto("/#/songs/Test%20Song%20Beta");
+    const checkbox = page.locator("#loop-playback");
+    await expect(checkbox).toBeVisible();
+    await expect(checkbox).toBeChecked();
+  });
+
+  test("toggling loop checkbox marks config as dirty", async ({ page }) => {
+    await page.goto("/#/songs/Test%20Song%20Alpha");
+    await page.locator("#loop-playback").check();
+    await expect(page.locator(".unsaved")).toBeVisible();
+  });
+});
+
 test.describe("Song Detail - MIDI Event Editor", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/#/songs/Test%20Song%20Alpha");

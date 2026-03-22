@@ -996,6 +996,7 @@ impl AudioDevice for Device {
         ready_tx: std::sync::mpsc::Sender<()>,
         clock: crate::clock::PlaybackClock,
         start_time: Duration,
+        loop_break: Arc<AtomicBool>,
     ) -> Result<(), Box<dyn Error>> {
         let span = span!(Level::INFO, "play song (cpal)");
         let _enter = span.enter();
@@ -1062,6 +1063,23 @@ impl AudioDevice for Device {
             return Err("No sources found in song".into());
         }
 
+        // If there are already sources in the mixer (fading out from a previous
+        // song), apply a fade-in envelope to the new sources for a smooth crossfade.
+        let has_existing_sources = {
+            let sources = self.output_manager.mixer.get_active_sources();
+            let guard = sources.read();
+            !guard.is_empty()
+        };
+        let fade_in_envelope = if has_existing_sources {
+            let crossfade_samples = (0.1 * self.output_manager.mixer.sample_rate() as f64) as u64;
+            Some(Arc::new(crate::audio::crossfade::GainEnvelope::fade_in(
+                crossfade_samples,
+                crate::audio::crossfade::CrossfadeCurve::Linear,
+            )))
+        } else {
+            None
+        };
+
         // Create sources and track their finish flags (no locks needed for monitoring)
         let mut source_finish_flags = Vec::new();
 
@@ -1074,14 +1092,14 @@ impl AudioDevice for Device {
             let active_source = MixerActiveSource {
                 id: current_source_id,
                 source,
-                track_mappings: mappings.clone(), // Clone for each source
-                channel_mappings: Vec::new(),     // Will be precomputed in add_source
+                track_mappings: mappings.clone(),
+                channel_mappings: Vec::new(),
                 cached_source_channel_count: source_channel_count,
-                cancel_handle: cancel_handle.clone(), // Clone for each source
+                cancel_handle: cancel_handle.clone(),
                 is_finished,
-                start_at_sample: None,  // Song sources play immediately
-                cancel_at_sample: None, // Song sources don't have scheduled cancellation
-                gain_envelope: None,
+                start_at_sample: None,
+                cancel_at_sample: None,
+                gain_envelope: fade_in_envelope.clone(),
             };
 
             self.output_manager.add_source(active_source)?;
@@ -1117,6 +1135,103 @@ impl AudioDevice for Device {
         });
 
         cancel_handle.wait(finished);
+
+        // Loop if the song has loop_playback and we haven't been told to stop.
+        while song.loop_playback()
+            && !cancel_handle.is_cancelled()
+            && !loop_break.load(Ordering::Relaxed)
+        {
+            info!(song = song.name(), "Audio loop: creating crossfade sources");
+
+            let crossfade_samples = (0.1 * self.output_manager.mixer.sample_rate() as f64) as u64;
+
+            // Fade out any remaining sources from previous iteration.
+            let current_ids: Vec<u64> = {
+                let sources = self.output_manager.mixer.get_active_sources();
+                let guard = sources.read();
+                guard.iter().map(|s| s.lock().id).collect()
+            };
+            if !current_ids.is_empty() {
+                let fade_out = Arc::new(crate::audio::crossfade::GainEnvelope::fade_out(
+                    crossfade_samples,
+                    crate::audio::crossfade::CrossfadeCurve::Linear,
+                ));
+                self.output_manager
+                    .mixer
+                    .set_gain_envelope(&current_ids, fade_out);
+            }
+
+            // Create new sources at t=0 with fade-in.
+            let new_sources = match song.create_channel_mapped_sources_from(
+                &playback_context,
+                Duration::ZERO,
+                mappings,
+            ) {
+                Ok(s) => s,
+                Err(e) => {
+                    error!(err = e.as_ref(), "Failed to create loop audio sources");
+                    break;
+                }
+            };
+
+            let fade_in = Arc::new(crate::audio::crossfade::GainEnvelope::fade_in(
+                crossfade_samples,
+                crate::audio::crossfade::CrossfadeCurve::Linear,
+            ));
+
+            let mut new_finish_flags = Vec::new();
+            for source in new_sources {
+                let source_id = crate::audio::next_source_id();
+                let source_channel_count = source.source_channel_count();
+                let is_finished = Arc::new(AtomicBool::new(false));
+                new_finish_flags.push(is_finished.clone());
+
+                let active_source = MixerActiveSource {
+                    id: source_id,
+                    source,
+                    track_mappings: mappings.clone(),
+                    channel_mappings: Vec::new(),
+                    cached_source_channel_count: source_channel_count,
+                    cancel_handle: cancel_handle.clone(),
+                    is_finished,
+                    start_at_sample: None,
+                    cancel_at_sample: None,
+                    gain_envelope: Some(fade_in.clone()),
+                };
+
+                if let Err(e) = self.output_manager.add_source(active_source) {
+                    error!(err = %e, "Failed to add loop source to mixer");
+                    break;
+                }
+            }
+
+            if new_finish_flags.is_empty() {
+                break;
+            }
+
+            // Wait for new sources to finish or cancel/loop_break.
+            let loop_finished = Arc::new(AtomicBool::new(false));
+            let loop_finished_monitor = loop_finished.clone();
+            let cancel_for_monitor = cancel_handle.clone();
+            let loop_break_for_monitor = loop_break.clone();
+            let monitor_flags = new_finish_flags;
+
+            thread::spawn(move || loop {
+                if cancel_for_monitor.is_cancelled()
+                    || loop_break_for_monitor.load(Ordering::Relaxed)
+                {
+                    break;
+                }
+                if monitor_flags.iter().all(|f| f.load(Ordering::Relaxed)) {
+                    loop_finished_monitor.store(true, Ordering::Relaxed);
+                    cancel_for_monitor.notify();
+                    break;
+                }
+                thread::sleep(Duration::from_millis(10));
+            });
+
+            cancel_handle.wait(loop_finished);
+        }
 
         Ok(())
     }

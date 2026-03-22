@@ -32,6 +32,8 @@ export interface SongSummary {
   midi_dmx_files: string[];
   /** Beat grid derived from click track analysis */
   beat_grid: { beats: number[]; measure_starts: number[] } | null;
+  /** Whether this song loops when it finishes playing */
+  loop_playback: boolean;
 }
 
 export interface WaveformTrack {

@@ -50,6 +50,9 @@ pub struct Song {
     /// Song-specific sample trigger mappings (overrides global triggers with same MIDI event).
     #[serde(default)]
     sample_triggers: Vec<SampleTrigger>,
+    /// Whether this song should loop when it finishes playing.
+    #[serde(default)]
+    loop_playback: bool,
 }
 
 impl Song {
@@ -77,6 +80,7 @@ impl Song {
             tracks,
             samples,
             sample_triggers,
+            loop_playback: false,
         }
     }
 
@@ -188,6 +192,11 @@ impl Song {
     /// Gets the tracks associated with the song.
     pub fn tracks(&self) -> &Vec<Track> {
         &self.tracks
+    }
+
+    /// Returns whether this song should loop when it finishes playing.
+    pub fn loop_playback(&self) -> bool {
+        self.loop_playback
     }
 
     /// Gets the song-specific samples configuration.
