@@ -135,7 +135,12 @@ pub fn load_cached_peaks(
 
         let channel_key = channel.to_string();
         if let Some(ch_cache) = entry.channels.get(&channel_key) {
-            result.insert(track_name.clone(), ch_cache.peaks.clone());
+            // Only use cached peaks if they're non-empty. The beat_grid save
+            // creates channel entries with empty peaks; those shouldn't count
+            // as a valid peak cache hit.
+            if !ch_cache.peaks.is_empty() {
+                result.insert(track_name.clone(), ch_cache.peaks.clone());
+            }
         }
     }
 
