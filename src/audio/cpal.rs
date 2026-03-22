@@ -1081,6 +1081,7 @@ impl AudioDevice for Device {
                 is_finished,
                 start_at_sample: None,  // Song sources play immediately
                 cancel_at_sample: None, // Song sources don't have scheduled cancellation
+                gain_envelope: None,
             };
 
             self.output_manager.add_source(active_source)?;
@@ -1644,6 +1645,7 @@ mod test {
             is_finished: Arc::new(AtomicBool::new(false)),
             start_at_sample: None,
             cancel_at_sample: None,
+            gain_envelope: None,
         }
     }
 

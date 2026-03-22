@@ -337,6 +337,7 @@ impl SampleEngine {
             cancel_handle: source_cancel_handle,
             start_at_sample: Some(start_at_sample),
             cancel_at_sample: Some(source_cancel_at_sample),
+            gain_envelope: None,
         };
 
         if let Err(e) = self.source_tx.send(active_source) {

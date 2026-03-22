@@ -75,6 +75,11 @@ pub struct ActiveSource {
     /// Sample count at which this source should stop playing (for scheduled cuts)
     /// If None, the source plays until finished or cancelled
     pub cancel_at_sample: Option<Arc<std::sync::atomic::AtomicU64>>,
+    /// Optional gain envelope applied during mixing. When present, all samples
+    /// from this source are multiplied by the envelope's current gain value.
+    /// Used for crossfading during loop transitions and song-to-song transitions.
+    /// When a fade-out envelope completes (end_gain = 0), the source is auto-finished.
+    pub gain_envelope: Option<Arc<crate::audio::crossfade::GainEnvelope>>,
 }
 
 impl AudioMixer {
@@ -402,6 +407,16 @@ impl AudioMixer {
 
                 match active_source.source.read_frames(batch_buf, frames_needed) {
                     Ok(frames_got) => {
+                        // Compute gain from envelope (if present). Advance once
+                        // per batch for efficiency — gain is constant across the
+                        // buffer chunk, which is fine for typical buffer sizes
+                        // (256–1024 frames) relative to crossfade durations (~4410).
+                        let gain = active_source
+                            .gain_envelope
+                            .as_ref()
+                            .map(|env| env.advance(frames_got as u64))
+                            .unwrap_or(1.0);
+
                         for frame_idx in 0..frames_got {
                             let src_offset = frame_idx * source_channel_count;
                             let dst_base = (start_frame + frame_idx) * channels;
@@ -415,12 +430,25 @@ impl AudioMixer {
                                 {
                                     for &output_index in output_channels {
                                         if output_index < channels {
-                                            output[dst_base + output_index] += sample;
+                                            output[dst_base + output_index] += sample * gain;
                                         }
                                     }
                                 }
                             }
                         }
+
+                        // Auto-finish sources whose fade-out envelope has completed.
+                        if let Some(ref env) = active_source.gain_envelope {
+                            if env.is_finished() && env.end_gain() == 0.0 {
+                                debug!(
+                                    source_id = active_source.id,
+                                    "mixer: source marked finished (fade-out envelope completed)"
+                                );
+                                active_source.is_finished.store(true, Ordering::Relaxed);
+                                finished_source_ids.push(active_source.id);
+                            }
+                        }
+
                         if frames_got < frames_needed {
                             // Buffered sources report false during transient underruns;
                             // unbuffered sources return None → treated as EOF.
@@ -522,6 +550,7 @@ mod tests {
             cancel_handle: CancelHandle::new(),
             start_at_sample: None,
             cancel_at_sample: None,
+            gain_envelope: None,
         }
     }
 
@@ -547,6 +576,7 @@ mod tests {
             cancel_handle: CancelHandle::new(),
             start_at_sample: None,
             cancel_at_sample: None,
+            gain_envelope: None,
         };
 
         mixer.add_source(active_source);
@@ -594,6 +624,7 @@ mod tests {
             cancel_handle: CancelHandle::new(),
             start_at_sample: None,
             cancel_at_sample: None,
+            gain_envelope: None,
         };
 
         let active_source2 = ActiveSource {
@@ -611,6 +642,7 @@ mod tests {
             cancel_handle: CancelHandle::new(),
             start_at_sample: None,
             cancel_at_sample: None,
+            gain_envelope: None,
         };
 
         mixer.add_source(active_source1);
@@ -656,6 +688,7 @@ mod tests {
             cancel_handle: CancelHandle::new(),
             start_at_sample: None,
             cancel_at_sample: None,
+            gain_envelope: None,
         };
 
         mixer.add_source(active_source);
@@ -704,6 +737,7 @@ mod tests {
             cancel_handle: CancelHandle::new(),
             start_at_sample: Some(400),
             cancel_at_sample: Some(cancel_at),
+            gain_envelope: None,
         };
 
         mixer.add_source(active_source);
@@ -754,6 +788,7 @@ mod tests {
             cancel_handle: CancelHandle::new(),
             start_at_sample: None,
             cancel_at_sample: None,
+            gain_envelope: None,
         };
 
         mixer.add_source(active_source);
@@ -794,6 +829,7 @@ mod tests {
             cancel_handle: CancelHandle::new(),
             start_at_sample: Some(2), // Start at sample 2
             cancel_at_sample: None,
+            gain_envelope: None,
         };
 
         mixer.add_source(active_source);
@@ -836,6 +872,7 @@ mod tests {
             cancel_handle: CancelHandle::new(),
             start_at_sample: None,
             cancel_at_sample: Some(cancel_at),
+            gain_envelope: None,
         };
 
         mixer.add_source(active_source);
@@ -875,6 +912,7 @@ mod tests {
             cancel_handle: CancelHandle::new(),
             start_at_sample: None,
             cancel_at_sample: None,
+            gain_envelope: None,
         };
 
         mixer.add_source(active_source);
@@ -927,6 +965,7 @@ mod tests {
             cancel_handle: CancelHandle::new(),
             start_at_sample: None,
             cancel_at_sample: None,
+            gain_envelope: None,
         };
 
         let active_source2 = ActiveSource {
@@ -944,6 +983,7 @@ mod tests {
             cancel_handle: CancelHandle::new(),
             start_at_sample: None,
             cancel_at_sample: None,
+            gain_envelope: None,
         };
 
         mixer.add_source(active_source1);
@@ -979,6 +1019,7 @@ mod tests {
             cancel_handle: CancelHandle::new(),
             start_at_sample: Some(2), // Start at sample 2
             cancel_at_sample: Some(cancel_at),
+            gain_envelope: None,
         };
 
         mixer.add_source(active_source);
@@ -1091,6 +1132,7 @@ mod tests {
             cancel_handle: CancelHandle::new(),
             start_at_sample: None,
             cancel_at_sample: None,
+            gain_envelope: None,
         };
 
         mixer.add_source(active_source);
@@ -1150,6 +1192,7 @@ mod tests {
             cancel_handle: CancelHandle::new(),
             start_at_sample: None,
             cancel_at_sample: None,
+            gain_envelope: None,
         };
 
         mixer.add_source(active_source);

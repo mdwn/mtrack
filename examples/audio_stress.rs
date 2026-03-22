@@ -239,6 +239,7 @@ fn create_looping_source(
         cancel_handle: cancel_handle.clone(),
         start_at_sample: None,
         cancel_at_sample: None,
+        gain_envelope: None,
     };
 
     (active_source, is_finished, cancel_handle)
