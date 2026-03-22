@@ -30,6 +30,8 @@ export interface SongSummary {
   lighting_files: string[];
   /** MIDI DMX file paths relative to the songs root */
   midi_dmx_files: string[];
+  /** Beat grid derived from click track analysis */
+  beat_grid: { beats: number[]; measure_starts: number[] } | null;
 }
 
 export interface WaveformTrack {

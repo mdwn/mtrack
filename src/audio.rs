@@ -20,6 +20,7 @@ use crate::playsync::CancelHandle;
 use crate::songs::Song;
 use std::collections::HashMap;
 
+pub mod click_analysis;
 pub mod context;
 pub mod cpal;
 pub mod format;

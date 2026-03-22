@@ -127,6 +127,8 @@ pub struct Song {
     tracks: Vec<Track>,
     /// Per-song samples configuration.
     samples_config: config::SamplesConfig,
+    /// Tempo map derived from click track analysis.
+    beat_grid: Option<crate::audio::click_analysis::BeatGrid>,
 }
 
 /// A simple sample for songs. Boils down to i32 or f32, which we can be reasonably assured that
@@ -188,6 +190,38 @@ impl Song {
             warn!("no sample format found");
         }
 
+        // Analyze click track for BPM/time signature if present.
+        let beat_grid = tracks
+            .iter()
+            .find(|t| t.name == "click")
+            .and_then(|click_track| {
+                // Try loading from cache first.
+                if let Some(cached) = crate::song_cache::load_cached_beat_grid(
+                    start_path,
+                    &click_track.file,
+                    click_track.file_channel,
+                ) {
+                    return Some(cached);
+                }
+
+                // Analyze and cache the result.
+                let map = crate::audio::click_analysis::analyze_click_track_default(
+                    &click_track.file,
+                    click_track.file_channel,
+                )?;
+
+                if let Err(e) = crate::song_cache::save_beat_grid(
+                    start_path,
+                    &click_track.file,
+                    click_track.file_channel,
+                    &map,
+                ) {
+                    warn!("Failed to cache click tempo map: {}", e);
+                }
+
+                Some(map)
+            });
+
         Ok(Song {
             name: config.name().to_string(),
             base_path: start_path.to_path_buf(),
@@ -201,6 +235,7 @@ impl Song {
             duration: max_duration,
             tracks,
             samples_config: config.samples_config(),
+            beat_grid,
         })
     }
 
@@ -398,6 +433,11 @@ impl Song {
         &self.tracks
     }
 
+    /// Gets the click track tempo map, if available.
+    pub fn beat_grid(&self) -> Option<&crate::audio::click_analysis::BeatGrid> {
+        self.beat_grid.as_ref()
+    }
+
     /// Checks if this song requires transcoding for the given target format
     pub fn needs_transcoding(&self, target_format: &TargetFormat) -> bool {
         // Check if any track has different sample rate, format, or bit depth
@@ -531,10 +571,16 @@ impl Song {
             Ok(duration) => duration,
             Err(e) => return Err(std::io::Error::other(e.to_string())),
         };
+        let beat_grid = self.beat_grid.as_ref().map(|grid| player::v1::BeatGrid {
+            beats: grid.beats.clone(),
+            measure_starts: grid.measure_starts.iter().map(|&i| i as u32).collect(),
+        });
+
         Ok(player::v1::Song {
             name: self.name.to_string(),
             duration: Some(duration),
             tracks: self.tracks.iter().map(|track| track.name.clone()).collect(),
+            beat_grid,
         })
     }
 }
@@ -574,6 +620,7 @@ impl Default for Song {
             duration: Default::default(),
             tracks: Default::default(),
             samples_config: config::SamplesConfig::default(),
+            beat_grid: None,
         }
     }
 }

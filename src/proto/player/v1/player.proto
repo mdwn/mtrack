@@ -17,6 +17,15 @@ package player.v1;
 
 import "google/protobuf/duration.proto";
 
+// BeatGrid contains beat positions and measure boundaries detected from
+// a click track. Used for snapping loop points to musically meaningful positions.
+message BeatGrid {
+    // Absolute time in seconds of each detected beat.
+    repeated double beats = 1;
+    // Indices into beats that mark measure boundaries (accented beats).
+    repeated uint32 measure_starts = 2;
+}
+
 // Song is a message that contains information about a song.
 message Song {
     reserved 4;
@@ -24,12 +33,15 @@ message Song {
 
     // Name is the name of the song.
     string name = 1;
-    
+
     // Duration is the length of the song.
     google.protobuf.Duration duration = 2;
 
     // Tracks are the tracks available for the song.
     repeated string tracks = 3;
+
+    // Beat grid derived from click track analysis.
+    BeatGrid beat_grid = 5;
 }
 
 // PlayRequest is the message for requesting the player to play the current song.

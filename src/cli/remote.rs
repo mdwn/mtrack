@@ -182,6 +182,7 @@ mod tests {
                     nanos: 0,
                 }),
                 tracks: vec!["guitar".to_string(), "bass".to_string()],
+                ..Default::default()
             };
             assert!(print_song(Some(song)).is_ok());
         }
@@ -192,6 +193,7 @@ mod tests {
                 name: "No Duration".to_string(),
                 duration: None,
                 tracks: vec![],
+                ..Default::default()
             };
             assert!(print_song(Some(song)).is_ok());
         }
@@ -205,6 +207,7 @@ mod tests {
                     nanos: 0,
                 }),
                 tracks: vec![],
+                ..Default::default()
             };
             assert!(print_song(Some(song)).is_ok());
         }
@@ -322,6 +325,7 @@ mod tests {
                     "vocals".to_string(),
                     "keys".to_string(),
                 ],
+                ..Default::default()
             };
             assert!(print_song(Some(song)).is_ok());
         }
@@ -335,6 +339,7 @@ mod tests {
                     nanos: 0,
                 }),
                 tracks: vec!["track".to_string()],
+                ..Default::default()
             };
             assert!(print_song(Some(song)).is_ok());
         }
@@ -348,6 +353,7 @@ mod tests {
                     nanos: 500_000_000,
                 }),
                 tracks: vec![],
+                ..Default::default()
             };
             assert!(print_song(Some(song)).is_ok());
         }
@@ -361,6 +367,7 @@ mod tests {
                     nanos: 0,
                 }),
                 tracks: vec!["ambient".to_string()],
+                ..Default::default()
             };
             assert!(print_song(Some(song)).is_ok());
         }
@@ -374,6 +381,7 @@ mod tests {
                     nanos: 0,
                 }),
                 tracks: vec![],
+                ..Default::default()
             };
             assert!(print_song(Some(song)).is_ok());
         }

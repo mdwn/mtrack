@@ -131,6 +131,33 @@
       ? ($playbackStore.elapsed_ms / $playbackStore.song_duration_ms) * 100
       : 0,
   );
+
+  let currentBeatInfo = $derived.by(() => {
+    const grid = $playbackStore.beat_grid;
+    if (!grid || grid.beats.length === 0) return null;
+    const elapsed = $playbackStore.elapsed_ms / 1000;
+
+    // Find current beat index.
+    let beatIdx = 0;
+    for (let i = grid.beats.length - 1; i >= 0; i--) {
+      if (grid.beats[i] <= elapsed) {
+        beatIdx = i;
+        break;
+      }
+    }
+
+    // Find current measure.
+    let measureIdx = 0;
+    for (let i = grid.measure_starts.length - 1; i >= 0; i--) {
+      if (grid.measure_starts[i] <= beatIdx) {
+        measureIdx = i;
+        break;
+      }
+    }
+
+    const beatInMeasure = beatIdx - grid.measure_starts[measureIdx] + 1;
+    return { measure: measureIdx + 1, beat: beatInMeasure };
+  });
 </script>
 
 <svelte:window onkeydown={handleKeydown} />
@@ -149,6 +176,11 @@
           <span class="playing">{$t("playback.playing")}</span>
         {:else}
           <span class="stopped">{$t("playback.stopped")}</span>
+        {/if}
+        {#if currentBeatInfo}
+          <span class="beat-info"
+            >m{currentBeatInfo.measure} b{currentBeatInfo.beat}</span
+          >
         {/if}
       </div>
     </div>
@@ -230,6 +262,11 @@
     color: var(--green);
   }
   .playback-status .stopped {
+    color: var(--text-dim);
+  }
+  .beat-info {
+    margin-left: 8px;
+    font-family: var(--mono);
     color: var(--text-dim);
   }
   .progress-bar {

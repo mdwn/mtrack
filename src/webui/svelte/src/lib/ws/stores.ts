@@ -22,6 +22,11 @@ export interface TrackInfo {
   output_channels: number[];
 }
 
+export interface BeatGrid {
+  beats: number[];
+  measure_starts: number[];
+}
+
 export interface PlaybackState {
   is_playing: boolean;
   elapsed_ms: number;
@@ -34,6 +39,7 @@ export interface PlaybackState {
   available_playlists: string[];
   persisted_playlist_name: string;
   locked: boolean;
+  beat_grid: BeatGrid | null;
 }
 
 export interface FixtureChannels {
@@ -77,6 +83,7 @@ export const playbackStore = writable<PlaybackState>({
   available_playlists: [],
   persisted_playlist_name: "",
   locked: true,
+  beat_grid: null,
 });
 
 export const fixtureStore = writable<Record<string, FixtureChannels>>({});
@@ -115,6 +122,7 @@ on("playback", (msg) => {
     available_playlists: m.available_playlists ?? [],
     persisted_playlist_name: m.persisted_playlist_name ?? "",
     locked: m.locked ?? true,
+    beat_grid: m.beat_grid ?? null,
   });
 });
 
