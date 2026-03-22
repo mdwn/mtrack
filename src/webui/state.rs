@@ -53,7 +53,7 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
         let is_playing = player.is_playing().await;
         let playlist = player.get_playlist();
 
-        let elapsed_ms = player
+        let raw_elapsed_ms = player
             .elapsed()
             .await
             .ok()
@@ -65,7 +65,7 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
         let playlist_position = playlist.position();
         let playlist_songs: Vec<String> = playlist.songs().clone();
 
-        let (song_name, song_duration_ms, tracks, beat_grid) =
+        let (song_name, song_duration_ms, tracks, beat_grid, looping) =
             if let Some(current_song) = playlist.current() {
                 let mappings = player.track_mappings();
                 let tracks: Vec<serde_json::Value> = current_song
@@ -95,13 +95,22 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
                     current_song.duration().as_millis() as u64,
                     tracks,
                     beat_grid,
+                    current_song.loop_playback(),
                 )
             } else {
-                (String::new(), 0, vec![], None)
+                (String::new(), 0, vec![], None, false)
             };
 
         let available_playlists = player.list_playlists();
         let persisted_playlist_name = player.persisted_playlist_name();
+
+        // For looping songs, wrap elapsed time to show position within the
+        // current loop iteration rather than total time since first play.
+        let elapsed_ms = if looping && song_duration_ms > 0 {
+            raw_elapsed_ms % song_duration_ms
+        } else {
+            raw_elapsed_ms
+        };
 
         let msg = json!({
             "type": "playback",
@@ -117,6 +126,7 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
             "persisted_playlist_name": persisted_playlist_name,
             "locked": player.is_locked(),
             "beat_grid": beat_grid,
+            "looping": looping,
         });
 
         let _ = tx.send(msg.to_string());

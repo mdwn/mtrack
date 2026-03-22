@@ -40,6 +40,7 @@ export interface PlaybackState {
   persisted_playlist_name: string;
   locked: boolean;
   beat_grid: BeatGrid | null;
+  looping: boolean;
 }
 
 export interface FixtureChannels {
@@ -84,6 +85,7 @@ export const playbackStore = writable<PlaybackState>({
   persisted_playlist_name: "",
   locked: true,
   beat_grid: null,
+  looping: false,
 });
 
 export const fixtureStore = writable<Record<string, FixtureChannels>>({});
@@ -123,6 +125,7 @@ on("playback", (msg) => {
     persisted_playlist_name: m.persisted_playlist_name ?? "",
     locked: m.locked ?? true,
     beat_grid: m.beat_grid ?? null,
+    looping: m.looping ?? false,
   });
 });
 

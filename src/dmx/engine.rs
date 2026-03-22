@@ -408,6 +408,7 @@ impl Engine {
         ready_tx: std::sync::mpsc::Sender<()>,
         start_time: Duration,
         clock: crate::clock::PlaybackClock,
+        loop_break: Arc<AtomicBool>,
     ) -> Result<(), Box<dyn Error>> {
         let span = span!(Level::INFO, "play song (dmx)");
         let _enter = span.enter();
@@ -618,18 +619,75 @@ impl Engine {
         }
 
         // Song playback finished - signal the song time tracker to stop.
-        // We use timeline_finished flag (not cancel) so we don't cancel audio/MIDI.
         dmx_engine.timeline_finished.store(true, Ordering::Relaxed);
 
-        // Wait for song time tracker to finish (will exit now that timeline_finished is set)
         if let Err(e) = song_time_tracker.join() {
             error!("Error waiting for song time tracker to stop: {:?}", e);
         }
 
-        // Stop the lighting timeline for this song, but effects continue processing
-        dmx_engine.stop_lighting_timeline();
+        // Loop if the song has loop_playback enabled.
+        while song.loop_playback()
+            && !cancel_handle.is_cancelled()
+            && !loop_break.load(Ordering::Relaxed)
+        {
+            info!(
+                song = song.name(),
+                "DMX loop: restarting timeline from beginning"
+            );
 
-        // Clear MIDI DMX playbacks
+            // Reset state for new loop iteration.
+            dmx_engine.update_song_time(Duration::ZERO);
+            dmx_engine.start_lighting_timeline_at(Duration::ZERO);
+
+            // Reset MIDI DMX playback cursors to the beginning.
+            {
+                let mut playbacks = dmx_engine.midi_dmx_playbacks.lock();
+                for playback in playbacks.iter_mut() {
+                    playback.cursor = 0;
+                }
+            }
+
+            dmx_engine.timeline_finished.store(false, Ordering::Relaxed);
+
+            // Start a new song time tracker for this loop iteration.
+            let loop_time_tracker = Self::start_song_time_tracker_from(
+                dmx_engine.clone(),
+                cancel_handle.clone(),
+                Duration::ZERO,
+                clock.clone(),
+            );
+
+            // Wait for timeline to finish again.
+            let loop_watcher = {
+                let cancel_handle = cancel_handle.clone();
+                let timeline_finished = dmx_engine.timeline_finished.clone();
+                let heartbeat = dmx_engine.effects_loop_heartbeat.clone();
+                let phase = dmx_engine.effects_loop_phase.clone();
+                let subphase = dmx_engine.update_subphase.clone();
+                thread::spawn(move || {
+                    Self::wait_for_timeline_with_heartbeat(
+                        &cancel_handle,
+                        timeline_finished,
+                        &heartbeat,
+                        &phase,
+                        &subphase,
+                    );
+                })
+            };
+
+            if let Err(e) = loop_watcher.join() {
+                error!("Error while joining loop timeline watcher: {:?}", e);
+            }
+
+            dmx_engine.timeline_finished.store(true, Ordering::Relaxed);
+
+            if let Err(e) = loop_time_tracker.join() {
+                error!("Error waiting for loop time tracker to stop: {:?}", e);
+            }
+        }
+
+        // Final cleanup.
+        dmx_engine.stop_lighting_timeline();
         dmx_engine.midi_dmx_playbacks.lock().clear();
 
         info!("DMX playback stopped.");
@@ -1191,7 +1249,7 @@ mod test {
         collections::HashSet,
         error::Error,
         net::{Ipv4Addr, SocketAddr, TcpListener},
-        sync::Arc,
+        sync::{atomic::AtomicBool, Arc},
     };
 
     use midly::num::u7;
@@ -1677,6 +1735,7 @@ mod test {
             ready_tx,
             std::time::Duration::ZERO,
             clock,
+            Arc::new(AtomicBool::new(false)),
         )?;
 
         // Verify timeline was created (may be None if no lighting config)
@@ -1960,6 +2019,7 @@ mod test {
             ready_tx,
             std::time::Duration::ZERO,
             clock,
+            Arc::new(AtomicBool::new(false)),
         )?;
 
         // The tempo map should have been cleared (not inherited from the seeded state).
@@ -2015,6 +2075,7 @@ mod test {
             ready_tx,
             std::time::Duration::ZERO,
             clock,
+            Arc::new(AtomicBool::new(false)),
         )?;
 
         assert_lighting_state_cleared(&engine);
@@ -3454,6 +3515,7 @@ mod test {
                 ready_tx,
                 std::time::Duration::ZERO,
                 clock,
+                Arc::new(AtomicBool::new(false)),
             );
             assert!(result.is_ok());
             Ok(())
@@ -3485,6 +3547,7 @@ mod test {
                 ready_tx,
                 std::time::Duration::ZERO,
                 clock,
+                Arc::new(AtomicBool::new(false)),
             );
             assert!(result.is_ok());
             Ok(())
@@ -3517,6 +3580,7 @@ mod test {
                 ready_tx,
                 std::time::Duration::from_secs(3),
                 clock,
+                Arc::new(AtomicBool::new(false)),
             );
             assert!(result.is_ok());
             Ok(())
@@ -3555,6 +3619,7 @@ mod test {
                 ready_tx,
                 std::time::Duration::ZERO,
                 clock,
+                Arc::new(AtomicBool::new(false)),
             );
             assert!(result.is_ok());
             Ok(())
@@ -3601,6 +3666,7 @@ mod test {
                 ready_tx,
                 std::time::Duration::ZERO,
                 clock,
+                Arc::new(AtomicBool::new(false)),
             );
             assert!(result.is_ok(), "play failed: {:?}", result.err());
             Ok(())
@@ -4269,6 +4335,7 @@ mod test {
                 ready_tx,
                 std::time::Duration::ZERO,
                 clock,
+                Arc::new(AtomicBool::new(false)),
             );
             assert!(result.is_ok(), "play failed: {:?}", result.err());
             Ok(())
@@ -4311,6 +4378,7 @@ mod test {
                 ready_tx,
                 std::time::Duration::from_secs(10),
                 clock,
+                Arc::new(AtomicBool::new(false)),
             );
             assert!(result.is_ok(), "play failed: {:?}", result.err());
             Ok(())
@@ -4359,6 +4427,7 @@ mod test {
                 ready_tx,
                 std::time::Duration::ZERO,
                 clock,
+                Arc::new(AtomicBool::new(false)),
             );
             assert!(result.is_ok(), "play failed: {:?}", result.err());
             Ok(())
@@ -4434,6 +4503,7 @@ mod test {
                 ready_tx,
                 std::time::Duration::ZERO,
                 clock,
+                Arc::new(AtomicBool::new(false)),
             );
             assert!(result.is_ok(), "play failed: {:?}", result.err());
             Ok(())
@@ -4495,6 +4565,7 @@ mod test {
                 ready_tx,
                 std::time::Duration::ZERO,
                 clock,
+                Arc::new(AtomicBool::new(false)),
             );
             assert!(result.is_ok(), "play failed: {:?}", result.err());
             Ok(())
@@ -4607,6 +4678,7 @@ mod test {
                 ready_tx,
                 std::time::Duration::ZERO,
                 clock,
+                Arc::new(AtomicBool::new(false)),
             );
             assert!(result.is_ok());
             Ok(())

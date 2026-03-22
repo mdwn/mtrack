@@ -167,6 +167,22 @@ impl AudioMixer {
         });
     }
 
+    /// Sets a gain envelope on all active sources matching the given IDs.
+    /// Used to attach fade-out envelopes to running sources during loop crossfades.
+    pub fn set_gain_envelope(
+        &self,
+        source_ids: &[u64],
+        envelope: Arc<crate::audio::crossfade::GainEnvelope>,
+    ) {
+        let sources = self.active_sources.read();
+        for source_arc in sources.iter() {
+            let mut source = source_arc.lock();
+            if source_ids.contains(&source.id) {
+                source.gain_envelope = Some(envelope.clone());
+            }
+        }
+    }
+
     /// Processes one frame of audio mixing with performance monitoring (test only)
     /// This is the core mixing logic extracted from the CPAL callback
     /// Minimizes lock duration by cloning Arc references and processing without holding the lock
@@ -317,8 +333,16 @@ impl AudioMixer {
         for active_source_arc in sources_to_process.iter() {
             let mut active_source = active_source_arc.lock();
 
+            // Sources with an active fade-out envelope should continue playing
+            // until the fade completes, even if cancelled. This allows crossfade
+            // transitions to complete smoothly when breaking out of a loop.
+            let has_active_fade_out = active_source
+                .gain_envelope
+                .as_ref()
+                .is_some_and(|env| env.end_gain() == 0.0 && !env.is_finished());
+
             if active_source.is_finished.load(Ordering::Relaxed)
-                || active_source.cancel_handle.is_cancelled()
+                || (active_source.cancel_handle.is_cancelled() && !has_active_fade_out)
             {
                 debug!(
                     source_id = active_source.id,

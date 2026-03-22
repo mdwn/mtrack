@@ -115,6 +115,9 @@
   // MIDI event state
   let midiEvent = $state<MidiEvent | null>(null);
 
+  // Loop playback state
+  let loopPlayback = $state(false);
+
   // File browser state
   type BrowseTarget =
     | { kind: "track"; index: number }
@@ -187,6 +190,7 @@
           file_channel: t.file_channel as number | undefined,
         }));
         midiEvent = (parsed.midi_event as MidiEvent) ?? null;
+        loopPlayback = parsed.loop_playback === true;
         const s = parsed.samples;
         songSamples =
           s && typeof s === "object" ? (s as Record<string, any>) : {};
@@ -195,6 +199,7 @@
       parsedConfig = null;
       tracks = [];
       midiEvent = null;
+      loopPlayback = false;
       songSamples = {};
     }
   }
@@ -216,6 +221,11 @@
       updated.midi_event = midiEvent;
     } else {
       delete updated.midi_event;
+    }
+    if (loopPlayback) {
+      updated.loop_playback = true;
+    } else {
+      delete updated.loop_playback;
     }
     if (Object.keys(songSamples).length > 0) {
       updated.samples = songSamples;
@@ -517,6 +527,9 @@
         {#if song && song.midi_dmx_files.length > 0}
           <span class="badge midi-dmx">MIDI DMX</span>
         {/if}
+        {#if song?.loop_playback}
+          <span class="badge loop">LOOP</span>
+        {/if}
       </div>
     </div>
 
@@ -550,6 +563,22 @@
           >
         </div>
       {/if}
+
+      <div class="field">
+        <label for="loop-playback">
+          <input
+            id="loop-playback"
+            type="checkbox"
+            checked={loopPlayback}
+            onchange={(e) => {
+              loopPlayback = (e.currentTarget as HTMLInputElement).checked;
+              editedYaml = buildYaml();
+            }}
+          />
+          {$t("songs.detail.loopPlayback")}
+        </label>
+        <span class="field-hint">{$t("songs.detail.loopPlaybackHint")}</span>
+      </div>
     {/if}
 
     <!-- Tab bar with inline save -->
@@ -1015,6 +1044,10 @@
     background: var(--green-dim);
     color: var(--green);
   }
+  .badge.loop {
+    background: var(--accent);
+    color: var(--bg);
+  }
   .badge.failed {
     background: rgba(239, 68, 68, 0.15);
     color: var(--red);
@@ -1040,6 +1073,20 @@
     font-size: 14px;
     color: var(--text-muted);
     margin-bottom: 8px;
+  }
+  .field label:has(input[type="checkbox"]) {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  .field-hint {
+    display: block;
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-top: 2px;
+    margin-left: 24px;
   }
   .beat-grid-summary {
     display: flex;

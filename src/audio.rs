@@ -12,7 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 use std::any::Any;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::{error::Error, fmt, sync::Arc, time::Duration};
 
 use crate::config;
@@ -45,6 +45,7 @@ pub fn next_source_id() -> u64 {
 /// Type alias for the channel sender used to add sources to the mixer.
 pub type SourceSender = crossbeam_channel::Sender<mixer::ActiveSource>;
 
+#[allow(clippy::too_many_arguments)]
 pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {
     /// Plays the given song through the audio interface, starting from a specific time.
     /// The `ready_tx` sender signals that setup is complete. The implementation should
@@ -58,6 +59,7 @@ pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {
         ready_tx: std::sync::mpsc::Sender<()>,
         clock: crate::clock::PlaybackClock,
         start_time: Duration,
+        loop_break: Arc<AtomicBool>,
     ) -> Result<(), Box<dyn Error>>;
 
     /// Gets the mixer for adding triggered samples.
@@ -181,6 +183,7 @@ mod test {
                 _ready_tx: std::sync::mpsc::Sender<()>,
                 _clock: crate::clock::PlaybackClock,
                 _start_time: Duration,
+                _loop_break: Arc<AtomicBool>,
             ) -> Result<(), Box<dyn Error>> {
                 Ok(())
             }

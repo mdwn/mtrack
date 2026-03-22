@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Song looping with crossfade**: Songs can now be configured to loop indefinitely by
+  setting `loop_playback: true` in song.yaml. Audio crossfades seamlessly at loop boundaries
+  (100ms linear fade), MIDI restarts from the beginning, and the lighting/DMX timeline resets
+  cleanly. During a looping song, pressing Play or Next breaks out of the loop, advances the
+  playlist, and auto-plays the next song. Stop cancels everything as usual.
+- **Beat grid detection from click tracks**: Audio click tracks (tracks named "click") are
+  analyzed offline to detect beat positions and measure boundaries. The result is a `BeatGrid`
+  with absolute beat times and accented-beat indices, stored in a per-song disk cache
+  (`.mtrack-cache.json`) alongside waveform peaks. Accent classification uses a pluggable
+  `AccentClassifier` trait — the default `ZcrClassifier` separates click sounds by
+  zero-crossing rate (timbral differences), with `AmplitudeClassifier` as an alternative.
+  Beat grid data is exposed via gRPC proto and displayed in the web UI (measure/beat position
+  during playback, beat/measure counts in song detail).
+- **Song analysis disk cache**: Computed song data (waveform peaks, beat grids) is now persisted
+  to `.mtrack-cache.json` in each song's directory. The cache uses file mtime+size for
+  invalidation — if an audio file changes, its cached data is recomputed on next access.
+  This eliminates redundant waveform computation on restarts.
+- **Audio crossfade primitives**: New `CrossfadeCurve` enum (Linear, EqualPower) and
+  `GainEnvelope` struct for applying time-varying gain to audio sources. The mixer's
+  `ActiveSource` now supports an optional gain envelope, applied per-block during mixing.
+  Sources with a completed fade-out envelope are automatically finished. These primitives
+  support both song looping and future song-to-song crossfade transitions.
 - **Morningstar SysEx integration**: mtrack can now automatically push the current song name
   to a Morningstar MIDI controller (MC3, MC6, MC8, MC6 Pro, MC8 Pro, MC4 Pro) via SysEx
   when songs change. Configured via an optional `morningstar` block on the MIDI controller,

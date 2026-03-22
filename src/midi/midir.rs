@@ -182,6 +182,7 @@ impl super::Device for Device {
         ready_tx: std::sync::mpsc::Sender<()>,
         start_time: Duration,
         clock: PlaybackClock,
+        loop_break: Arc<AtomicBool>,
     ) -> Result<(), Box<dyn Error>> {
         let span = span!(Level::INFO, "play song (midir)");
         let _enter = span.enter();
@@ -318,6 +319,8 @@ impl super::Device for Device {
                         exclude_channels: &exclude_midi_channels,
                         beat_clock_barrier: beat_clock_internal_barrier,
                         clock: &clock,
+                        loop_playback: song.loop_playback(),
+                        loop_break: loop_break.clone(),
                     },
                 );
             })
@@ -668,6 +671,8 @@ struct PlaybackContext<'a> {
     exclude_channels: &'a HashSet<u8>,
     beat_clock_barrier: Option<Arc<Barrier>>,
     clock: &'a PlaybackClock,
+    loop_playback: bool,
+    loop_break: Arc<AtomicBool>,
 }
 
 /// Runs the MIDI playback thread body: signals readiness, waits for the clock
@@ -719,6 +724,22 @@ fn run_playback(sender: &mut dyn MidiSender, ctx: PlaybackContext<'_>) {
         ctx.exclude_channels,
         ctx.clock,
     );
+
+    // Loop if the song has loop_playback enabled.
+    while ctx.loop_playback
+        && !ctx.cancel_handle.is_cancelled()
+        && !ctx.loop_break.load(Ordering::Relaxed)
+    {
+        info!("MIDI loop: restarting from beginning");
+        play_precomputed(
+            ctx.precomputed,
+            Duration::ZERO,
+            sender,
+            ctx.cancel_handle,
+            ctx.exclude_channels,
+            ctx.clock,
+        );
+    }
 
     ctx.finished.store(true, Ordering::Relaxed);
     ctx.cancel_handle.notify();
@@ -1447,6 +1468,7 @@ mod test {
                 ready_tx,
                 Duration::ZERO,
                 clock,
+                Arc::new(AtomicBool::new(false)),
             );
             assert!(result.is_ok());
         }
@@ -1469,6 +1491,7 @@ mod test {
                 ready_tx,
                 Duration::ZERO,
                 clock,
+                Arc::new(AtomicBool::new(false)),
             );
             assert!(result.is_ok());
         }
@@ -1493,6 +1516,7 @@ mod test {
                 ready_tx,
                 Duration::ZERO,
                 clock,
+                Arc::new(AtomicBool::new(false)),
             );
             assert!(result.is_ok());
             assert!(
@@ -1820,6 +1844,8 @@ mod test {
                     exclude_channels: &exclude,
                     beat_clock_barrier: None,
                     clock: &clock,
+                    loop_playback: false,
+                    loop_break: Arc::new(AtomicBool::new(false)),
                 },
             );
 
@@ -1851,6 +1877,8 @@ mod test {
                     exclude_channels: &exclude,
                     beat_clock_barrier: None,
                     clock: &clock,
+                    loop_playback: false,
+                    loop_break: Arc::new(AtomicBool::new(false)),
                 },
             );
 
@@ -1889,6 +1917,8 @@ mod test {
                     exclude_channels: &exclude,
                     beat_clock_barrier: None,
                     clock: &clock,
+                    loop_playback: false,
+                    loop_break: Arc::new(AtomicBool::new(false)),
                 },
             );
 
@@ -1921,6 +1951,8 @@ mod test {
                     exclude_channels: &exclude,
                     beat_clock_barrier: None,
                     clock: &clock,
+                    loop_playback: false,
+                    loop_break: Arc::new(AtomicBool::new(false)),
                 },
             );
 
@@ -1970,6 +2002,8 @@ mod test {
                     exclude_channels: &exclude,
                     beat_clock_barrier: None,
                     clock: &clock,
+                    loop_playback: false,
+                    loop_break: Arc::new(AtomicBool::new(false)),
                 },
             );
 
@@ -2005,6 +2039,8 @@ mod test {
                         exclude_channels: &exclude,
                         beat_clock_barrier: None,
                         clock: &clock_clone,
+                        loop_playback: false,
+                        loop_break: Arc::new(AtomicBool::new(false)),
                     },
                 );
                 sender

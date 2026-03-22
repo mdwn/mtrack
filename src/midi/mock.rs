@@ -149,6 +149,7 @@ impl super::Device for Device {
         ready_tx: std::sync::mpsc::Sender<()>,
         start_time: Duration,
         clock: PlaybackClock,
+        _loop_break: Arc<std::sync::atomic::AtomicBool>,
     ) -> Result<(), Box<dyn Error>> {
         let span = span!(Level::INFO, "play song (mock)");
         let _enter = span.enter();

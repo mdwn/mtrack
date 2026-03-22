@@ -45,9 +45,11 @@ app.get("/api/songs", (_req, res) => {
 app.get("/api/songs/:name", (req, res) => {
   const song = SONGS.songs.find((s) => s.name === req.params.name);
   if (!song) return res.status(404).json({ error: "Song not found" });
-  res
-    .type("text/yaml")
-    .send(`name: ${song.name}\ntracks:\n  - kick\n  - snare\n  - bass\n`);
+  let yaml = `name: ${song.name}\ntracks:\n  - kick\n  - snare\n  - bass\n`;
+  if (song.loop_playback) {
+    yaml += `loop_playback: true\n`;
+  }
+  res.type("text/yaml").send(yaml);
 });
 
 app.post("/api/songs/:name", (_req, res) => {

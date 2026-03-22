@@ -27,6 +27,8 @@ export const SONGS = {
       base_dir: "Test Song Alpha",
       lighting_files: ["show.light"],
       midi_dmx_files: [],
+      beat_grid: null,
+      loop_playback: false,
     },
     {
       name: "Test Song Beta",
@@ -41,6 +43,8 @@ export const SONGS = {
       base_dir: "Test Song Beta",
       lighting_files: [],
       midi_dmx_files: [],
+      beat_grid: null,
+      loop_playback: true,
     },
   ],
   failures: [
@@ -176,6 +180,8 @@ export const PLAYBACK_STATE = {
   available_playlists: ["all_songs", "setlist"],
   persisted_playlist_name: "setlist",
   locked: false,
+  beat_grid: null,
+  looping: false,
 };
 
 export const METADATA_STATE = {

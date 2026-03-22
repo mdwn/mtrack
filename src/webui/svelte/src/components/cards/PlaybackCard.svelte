@@ -177,6 +177,9 @@
         {:else}
           <span class="stopped">{$t("playback.stopped")}</span>
         {/if}
+        {#if $playbackStore.looping}
+          <span class="loop-badge">LOOP</span>
+        {/if}
         {#if currentBeatInfo}
           <span class="beat-info"
             >m{currentBeatInfo.measure} b{currentBeatInfo.beat}</span
@@ -204,7 +207,9 @@
       <button
         class="btn"
         onclick={previous}
-        disabled={$playbackStore.is_playing || loading || !canPrev}
+        disabled={($playbackStore.is_playing && !$playbackStore.looping) ||
+          loading ||
+          !canPrev}
         title={$t("playback.prevTooltip")}>{$t("playback.prev")}</button
       >
       {#if $playbackStore.is_playing}
@@ -225,7 +230,9 @@
       <button
         class="btn"
         onclick={next}
-        disabled={$playbackStore.is_playing || loading || !canNext}
+        disabled={($playbackStore.is_playing && !$playbackStore.looping) ||
+          loading ||
+          !canNext}
         title={$t("playback.nextTooltip")}>{$t("playback.next")}</button
       >
     </div>
@@ -268,6 +275,15 @@
     margin-left: 8px;
     font-family: var(--mono);
     color: var(--text-dim);
+  }
+  .loop-badge {
+    margin-left: 8px;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: var(--accent);
+    color: var(--bg);
   }
   .progress-bar {
     height: 4px;
