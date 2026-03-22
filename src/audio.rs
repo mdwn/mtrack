@@ -23,6 +23,7 @@ use std::collections::HashMap;
 pub mod click_analysis;
 pub mod context;
 pub mod cpal;
+pub mod crossfade;
 pub mod format;
 pub mod mixer;
 pub mod mock;
