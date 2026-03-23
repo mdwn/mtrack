@@ -191,3 +191,53 @@ test.describe("Song Detail - MIDI Event Editor", () => {
     await expect(page.locator(".unsaved")).toBeVisible();
   });
 });
+
+test.describe("Song Detail - Section Editor", () => {
+  test("shows Sections tab", async ({ page }) => {
+    await page.goto("/#/songs/Test%20Song%20Alpha");
+    await expect(page.locator(".tab", { hasText: "Sections" })).toBeVisible();
+  });
+
+  test("clicking Sections tab shows section editor", async ({ page }) => {
+    await page.goto("/#/songs/Test%20Song%20Alpha");
+    await page.locator(".tab", { hasText: "Sections" }).click();
+    await expect(page.locator(".tab.active")).toContainText("Sections");
+    await expect(page.locator(".sections-editor")).toBeVisible();
+  });
+
+  test("sections tab shows empty state for song without sections", async ({
+    page,
+  }) => {
+    await page.goto("/#/songs/Test%20Song%20Alpha");
+    await page.locator(".tab", { hasText: "Sections" }).click();
+    await expect(page.getByText(/No sections defined/i)).toBeVisible();
+  });
+
+  test("sections tab shows Add Section button", async ({ page }) => {
+    await page.goto("/#/songs/Test%20Song%20Alpha");
+    await page.locator(".tab", { hasText: "Sections" }).click();
+    await expect(
+      page.getByRole("button", { name: "Add Section" }),
+    ).toBeVisible();
+  });
+
+  test("adding section shows section fields", async ({ page }) => {
+    await page.goto("/#/songs/Test%20Song%20Alpha");
+    await page.locator(".tab", { hasText: "Sections" }).click();
+    await page.getByRole("button", { name: "Add Section" }).click();
+    await expect(page.locator(".section-row")).toBeVisible();
+  });
+
+  test("adding section marks config as dirty", async ({ page }) => {
+    await page.goto("/#/songs/Test%20Song%20Alpha");
+    await page.locator(".tab", { hasText: "Sections" }).click();
+    await page.getByRole("button", { name: "Add Section" }).click();
+    await expect(page.locator(".unsaved")).toBeVisible();
+  });
+
+  test("song with sections shows existing sections", async ({ page }) => {
+    await page.goto("/#/songs/Test%20Song%20Beta");
+    await page.locator(".tab", { hasText: "Sections" }).click();
+    await expect(page.locator(".section-row")).toHaveCount(2);
+  });
+});

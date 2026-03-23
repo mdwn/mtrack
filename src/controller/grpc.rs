@@ -23,10 +23,11 @@ use crate::{
     proto::player::v1::{
         player_service_server::{PlayerService, PlayerServiceServer},
         AddProfileRequest, Cue, GetActiveEffectsRequest, GetActiveEffectsResponse,
-        GetConfigRequest, GetConfigResponse, GetCuesRequest, GetCuesResponse, NextRequest,
-        NextResponse, PlayFromRequest, PlayRequest, PlayResponse, PlaySongFromRequest,
-        PreviousRequest, PreviousResponse, RemoveProfileRequest, StatusRequest, StatusResponse,
-        StopRequest, StopResponse, StopSamplesRequest, StopSamplesResponse,
+        GetConfigRequest, GetConfigResponse, GetCuesRequest, GetCuesResponse, LoopSectionRequest,
+        LoopSectionResponse, NextRequest, NextResponse, PlayFromRequest, PlayRequest, PlayResponse,
+        PlaySongFromRequest, PreviousRequest, PreviousResponse, RemoveProfileRequest,
+        StatusRequest, StatusResponse, StopRequest, StopResponse, StopSamplesRequest,
+        StopSamplesResponse, StopSectionLoopRequest, StopSectionLoopResponse,
         SwitchToPlaylistRequest, SwitchToPlaylistResponse, UpdateAudioRequest,
         UpdateConfigResponse, UpdateControllersRequest, UpdateDmxRequest, UpdateMidiRequest,
         UpdateProfileRequest, FILE_DESCRIPTOR_SET,
@@ -478,6 +479,26 @@ impl PlayerService for PlayerServer {
             .await
             .map_err(config_error_to_status)?;
         snapshot_to_update_response(snapshot)
+    }
+
+    async fn loop_section(
+        &self,
+        request: Request<LoopSectionRequest>,
+    ) -> Result<Response<LoopSectionResponse>, Status> {
+        let section_name = request.into_inner().section_name;
+        self.player
+            .loop_section(&section_name)
+            .await
+            .map_err(|e| Status::failed_precondition(e.to_string()))?;
+        Ok(Response::new(LoopSectionResponse {}))
+    }
+
+    async fn stop_section_loop(
+        &self,
+        _request: Request<StopSectionLoopRequest>,
+    ) -> Result<Response<StopSectionLoopResponse>, Status> {
+        self.player.stop_section_loop();
+        Ok(Response::new(StopSectionLoopResponse {}))
     }
 }
 

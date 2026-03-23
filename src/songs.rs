@@ -131,6 +131,10 @@ pub struct Song {
     beat_grid: Option<crate::audio::click_analysis::BeatGrid>,
     /// Whether this song should loop when it finishes playing.
     loop_playback: bool,
+    /// Named sections defined by measure boundaries.
+    sections: Vec<config::Section>,
+    /// Output channels (1-indexed) for the section loop confirmation tone.
+    loop_confirmation_outputs: Vec<u16>,
 }
 
 /// A simple sample for songs. Boils down to i32 or f32, which we can be reasonably assured that
@@ -239,6 +243,8 @@ impl Song {
             samples_config: config.samples_config(),
             beat_grid,
             loop_playback: config.loop_playback(),
+            sections: config.sections().to_vec(),
+            loop_confirmation_outputs: config.loop_confirmation_outputs().to_vec(),
         })
     }
 
@@ -446,6 +452,43 @@ impl Song {
         self.loop_playback
     }
 
+    /// Gets the named sections of this song.
+    pub fn sections(&self) -> &[config::Section] {
+        &self.sections
+    }
+
+    /// Gets the output channels for the section loop confirmation tone.
+    pub fn loop_confirmation_outputs(&self) -> &[u16] {
+        &self.loop_confirmation_outputs
+    }
+
+    /// Resolves a named section to absolute time bounds using the beat grid.
+    /// Returns `None` if no beat grid, section not found, or measures out of range.
+    /// Times are returned as `(start_time, end_time)` in Duration.
+    pub fn resolve_section(&self, name: &str) -> Option<(Duration, Duration)> {
+        let section = self.sections.iter().find(|s| s.name == name)?;
+        let grid = self.beat_grid.as_ref()?;
+
+        // Measures are 1-indexed in config, 0-indexed in beat grid.
+        let start_measure = section.start_measure.checked_sub(1)?;
+        let end_measure = section.end_measure.checked_sub(1)?;
+
+        let (start_secs, _) = grid.measure_time_range(start_measure)?;
+        // For end, we want the start of the end measure (exclusive boundary).
+        let end_secs = if end_measure < grid.measure_starts.len() {
+            let beat_idx = *grid.measure_starts.get(end_measure)?;
+            *grid.beats.get(beat_idx)?
+        } else {
+            // End measure is past the last measure — use the last beat time.
+            *grid.beats.last()?
+        };
+
+        Some((
+            Duration::from_secs_f64(start_secs),
+            Duration::from_secs_f64(end_secs),
+        ))
+    }
+
     /// Checks if this song requires transcoding for the given target format
     pub fn needs_transcoding(&self, target_format: &TargetFormat) -> bool {
         // Check if any track has different sample rate, format, or bit depth
@@ -584,11 +627,22 @@ impl Song {
             measure_starts: grid.measure_starts.iter().map(|&i| i as u32).collect(),
         });
 
+        let sections = self
+            .sections
+            .iter()
+            .map(|s| player::v1::Section {
+                name: s.name.clone(),
+                start_measure: s.start_measure as u32,
+                end_measure: s.end_measure as u32,
+            })
+            .collect();
+
         Ok(player::v1::Song {
             name: self.name.to_string(),
             duration: Some(duration),
             tracks: self.tracks.iter().map(|track| track.name.clone()).collect(),
             beat_grid,
+            sections,
         })
     }
 }
@@ -630,6 +684,8 @@ impl Default for Song {
             samples_config: config::SamplesConfig::default(),
             beat_grid: None,
             loop_playback: false,
+            sections: Vec::new(),
+            loop_confirmation_outputs: Vec::new(),
         }
     }
 }
@@ -2955,5 +3011,119 @@ mod test {
             "Playlist YAML should not produce a failure"
         );
         Ok(())
+    }
+
+    // ── resolve_section tests ────────────────────────────────────────
+
+    fn make_song_with_beat_grid() -> super::Song {
+        let mut song = super::Song::new_for_test("test", &["click"]);
+        // 8 beats, measures at beats 0 and 4 (two 4-beat measures).
+        song.beat_grid = Some(crate::audio::click_analysis::BeatGrid {
+            beats: vec![0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5],
+            measure_starts: vec![0, 4],
+        });
+        song.sections = vec![
+            crate::config::Section {
+                name: "verse".to_string(),
+                start_measure: 1,
+                end_measure: 2,
+            },
+            crate::config::Section {
+                name: "chorus".to_string(),
+                start_measure: 2,
+                end_measure: 3,
+            },
+        ];
+        song
+    }
+
+    #[test]
+    fn resolve_section_returns_correct_times() {
+        let song = make_song_with_beat_grid();
+        let (start, end) = song.resolve_section("verse").unwrap();
+        assert!((start.as_secs_f64() - 0.0).abs() < 0.001);
+        assert!((end.as_secs_f64() - 2.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn resolve_section_second_section() {
+        let song = make_song_with_beat_grid();
+        let (start, end) = song.resolve_section("chorus").unwrap();
+        assert!(
+            (start.as_secs_f64() - 2.0).abs() < 0.001,
+            "chorus start should be ~2.0, got {}",
+            start.as_secs_f64()
+        );
+        // end_measure=3 is past the last measure, so it should use the last beat.
+        assert!(
+            (end.as_secs_f64() - 3.5).abs() < 0.001,
+            "chorus end should be ~3.5 (last beat), got {}",
+            end.as_secs_f64()
+        );
+    }
+
+    #[test]
+    fn resolve_section_not_found() {
+        let song = make_song_with_beat_grid();
+        assert!(song.resolve_section("bridge").is_none());
+    }
+
+    #[test]
+    fn resolve_section_no_beat_grid() {
+        let mut song = super::Song::new_for_test("test", &["click"]);
+        song.sections = vec![crate::config::Section {
+            name: "verse".to_string(),
+            start_measure: 1,
+            end_measure: 2,
+        }];
+        // No beat grid set.
+        assert!(song.resolve_section("verse").is_none());
+    }
+
+    #[test]
+    fn resolve_section_measure_zero_returns_none() {
+        let mut song = make_song_with_beat_grid();
+        song.sections = vec![crate::config::Section {
+            name: "bad".to_string(),
+            start_measure: 0, // Invalid: 1-indexed, so 0 means checked_sub fails.
+            end_measure: 2,
+        }];
+        assert!(song.resolve_section("bad").is_none());
+    }
+
+    #[test]
+    fn resolve_section_start_beyond_grid() {
+        let mut song = make_song_with_beat_grid();
+        song.sections = vec![crate::config::Section {
+            name: "far".to_string(),
+            start_measure: 99,
+            end_measure: 100,
+        }];
+        assert!(song.resolve_section("far").is_none());
+    }
+
+    #[test]
+    fn sections_getter_returns_all_sections() {
+        let song = make_song_with_beat_grid();
+        assert_eq!(song.sections().len(), 2);
+        assert_eq!(song.sections()[0].name, "verse");
+        assert_eq!(song.sections()[1].name, "chorus");
+    }
+
+    #[test]
+    fn loop_confirmation_outputs_default_empty() {
+        let song = super::Song::new_for_test("test", &["t1"]);
+        assert!(song.loop_confirmation_outputs().is_empty());
+    }
+
+    #[test]
+    fn to_proto_includes_sections() {
+        let song = make_song_with_beat_grid();
+        let proto = song.to_proto().unwrap();
+        assert_eq!(proto.sections.len(), 2);
+        assert_eq!(proto.sections[0].name, "verse");
+        assert_eq!(proto.sections[0].start_measure, 1);
+        assert_eq!(proto.sections[0].end_measure, 2);
+        assert_eq!(proto.sections[1].name, "chorus");
     }
 }

@@ -49,6 +49,12 @@ app.get("/api/songs/:name", (req, res) => {
   if (song.loop_playback) {
     yaml += `loop_playback: true\n`;
   }
+  if (song.sections && song.sections.length > 0) {
+    yaml += `sections:\n`;
+    for (const s of song.sections) {
+      yaml += `  - name: ${s.name}\n    start_measure: ${s.start_measure}\n    end_measure: ${s.end_measure}\n`;
+    }
+  }
   res.type("text/yaml").send(yaml);
 });
 
@@ -331,14 +337,37 @@ app.delete("/api/calibrate", (_req, res) => {
 // --- Test Control ---
 // POST /test/send-ws — broadcast a WebSocket message to all connected clients.
 // Used by Playwright tests to simulate state changes (e.g., playback starting).
+// WebSocket connections indexed by wsId query parameter.
+// Tests navigate to /?wsId=xxx, causing the app to connect with /ws?wsId=xxx.
+// sendWsMessage targets a specific wsId so messages don't leak between tests.
+const wsConnections = new Map<string, import("ws").WebSocket>();
+
+// Send a WebSocket message to the connection identified by wsId.
 app.post("/test/send-ws", (req, res) => {
-  const msg = JSON.stringify(req.body);
-  for (const client of wss.clients) {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(msg);
+  const { _wsId, ...payload } = req.body;
+  const wsId = _wsId as string;
+  const msg = JSON.stringify(payload);
+
+  if (!wsId) {
+    // No wsId: broadcast to all (backward compat for tests that don't use namespacing).
+    let sent = 0;
+    for (const client of wss.clients) {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(msg);
+        sent++;
+      }
     }
+    res.json({ sent });
+    return;
   }
-  res.json({ sent: wss.clients.size });
+
+  const ws = wsConnections.get(wsId);
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(msg);
+    res.json({ sent: 1, wsId });
+  } else {
+    res.json({ sent: 0, wsId });
+  }
 });
 
 // --- HTTP + WebSocket server ---
@@ -346,7 +375,14 @@ app.post("/test/send-ws", (req, res) => {
 const server = createServer(app);
 const wss = new WebSocketServer({ server, path: "/ws" });
 
-wss.on("connection", (ws) => {
+wss.on("connection", (ws, req) => {
+  // Extract wsId from query parameter for test isolation.
+  const url = new URL(req.url ?? "", "http://localhost");
+  const wsId = url.searchParams.get("wsId");
+  if (wsId) {
+    wsConnections.set(wsId, ws);
+    ws.on("close", () => wsConnections.delete(wsId));
+  }
   // Send initial state in the same order as the real server.
   ws.send(JSON.stringify(METADATA_STATE));
 

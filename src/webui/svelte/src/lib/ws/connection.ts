@@ -23,7 +23,13 @@ let onStatusChange: ((connected: boolean) => void) | null = null;
 
 function url(): string {
   const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-  return `${protocol}//${location.host}/ws`;
+  const base = `${protocol}//${location.host}/ws`;
+  // Support an optional wsId query parameter for test isolation.
+  // Tests navigate to /#/?wsId=xxx which makes the WebSocket connection
+  // identifiable by the mock server for targeted message routing.
+  const params = new URLSearchParams(location.search);
+  const wsId = params.get("wsId");
+  return wsId ? `${base}?wsId=${encodeURIComponent(wsId)}` : base;
 }
 
 export function onConnectionStatus(cb: (connected: boolean) => void): void {

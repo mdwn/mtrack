@@ -61,6 +61,8 @@ impl crate::audio::Device for Device {
         clock: crate::clock::PlaybackClock,
         start_time: Duration,
         _loop_break: Arc<AtomicBool>,
+        _active_section: Arc<parking_lot::RwLock<Option<crate::player::SectionBounds>>>,
+        _section_loop_break: Arc<AtomicBool>,
     ) -> Result<(), Box<dyn Error>> {
         let span = span!(Level::INFO, "play song (mock)");
         let _enter = span.enter();
@@ -189,6 +191,8 @@ mod tests {
                 clock_clone,
                 Duration::from_millis(0),
                 Arc::new(AtomicBool::new(false)),
+                Arc::new(parking_lot::RwLock::new(None)),
+                Arc::new(AtomicBool::new(false)),
             );
         });
 
@@ -231,6 +235,8 @@ mod tests {
                 clock_clone,
                 Duration::from_secs(1), // Start offset > duration → remaining = 0
                 Arc::new(AtomicBool::new(false)),
+                Arc::new(parking_lot::RwLock::new(None)),
+                Arc::new(AtomicBool::new(false)),
             );
         });
 
@@ -269,6 +275,8 @@ mod tests {
                 ready_tx,
                 clock_clone,
                 Duration::from_millis(0),
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(parking_lot::RwLock::new(None)),
                 Arc::new(AtomicBool::new(false)),
             );
         });

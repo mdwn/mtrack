@@ -36,6 +36,7 @@
   import FilePicker from "./FilePicker.svelte";
   import TrackEditor from "./TrackEditor.svelte";
   import SongLightingEditor from "./SongLightingEditor.svelte";
+  import SongSectionEditor from "./SongSectionEditor.svelte";
   import SamplesSection from "../config/SamplesSection.svelte";
   import type { SampleBrowseTarget } from "../config/SamplesSection.svelte";
 
@@ -87,7 +88,13 @@
   let lightingEditorRef: SongLightingEditor | undefined = $state();
 
   // Tab state
-  type TabKey = "tracks" | "midi" | "samples" | "lighting" | "config";
+  type TabKey =
+    | "tracks"
+    | "midi"
+    | "samples"
+    | "sections"
+    | "lighting"
+    | "config";
   function getInitialTab(): TabKey {
     return initialTab ?? "tracks";
   }
@@ -103,6 +110,7 @@
     { key: "tracks", labelKey: "songs.detail.tabs.tracks" },
     { key: "midi", labelKey: "songs.detail.tabs.midi" },
     { key: "samples", labelKey: "songs.detail.tabs.samples" },
+    { key: "sections", labelKey: "songs.detail.tabs.sections" },
     { key: "lighting", labelKey: "songs.detail.tabs.lighting" },
     { key: "config", labelKey: "songs.detail.tabs.config" },
   ];
@@ -117,6 +125,12 @@
 
   // Loop playback state
   let loopPlayback = $state(false);
+
+  // Section editor state
+  let sections = $state<
+    { name: string; start_measure: number; end_measure: number }[]
+  >([]);
+  let sectionsDirty = $state(false);
 
   // File browser state
   type BrowseTarget =
@@ -191,6 +205,13 @@
         }));
         midiEvent = (parsed.midi_event as MidiEvent) ?? null;
         loopPlayback = parsed.loop_playback === true;
+        sections = (parsed.sections ?? []).map(
+          (s: Record<string, unknown>) => ({
+            name: (s.name as string) ?? "",
+            start_measure: (s.start_measure as number) ?? 1,
+            end_measure: (s.end_measure as number) ?? 2,
+          }),
+        );
         const s = parsed.samples;
         songSamples =
           s && typeof s === "object" ? (s as Record<string, any>) : {};
@@ -200,6 +221,7 @@
       tracks = [];
       midiEvent = null;
       loopPlayback = false;
+      sections = [];
       songSamples = {};
     }
   }
@@ -226,6 +248,11 @@
       updated.loop_playback = true;
     } else {
       delete updated.loop_playback;
+    }
+    if (sections.length > 0) {
+      updated.sections = sections;
+    } else {
+      delete updated.sections;
     }
     if (Object.keys(songSamples).length > 0) {
       updated.samples = songSamples;
@@ -322,6 +349,14 @@
     midiEvent = null;
     editedYaml = buildYaml();
   }
+
+  // When sections become dirty, rebuild YAML to update configDirty.
+  $effect(() => {
+    if (sectionsDirty) {
+      editedYaml = buildYaml();
+      sectionsDirty = false;
+    }
+  });
 
   function onSongSamplesChange() {
     editedYaml = buildYaml();
@@ -485,7 +520,7 @@
   }
 
   let configDirty = $derived(editedYaml !== rawYaml);
-  let anyDirty = $derived(configDirty || lightingDirty);
+  let anyDirty = $derived(configDirty || lightingDirty || sectionsDirty);
   let midiFile = $derived(
     parsedConfig
       ? ((parsedConfig.midi_playback as { file?: string })?.file ??
@@ -939,6 +974,10 @@
           onchange={onSongSamplesChange}
           onbrowse={onSampleBrowse}
         />
+      {:else if activeTab === "sections"}
+        {#if song}
+          <SongSectionEditor {song} bind:sections bind:dirty={sectionsDirty} />
+        {/if}
       {:else if activeTab === "lighting"}
         {#if song}
           <SongLightingEditor

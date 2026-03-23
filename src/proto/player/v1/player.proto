@@ -26,6 +26,16 @@ message BeatGrid {
     repeated uint32 measure_starts = 2;
 }
 
+// Section defines a named region of a song by measure boundaries.
+message Section {
+    // Display name for this section.
+    string name = 1;
+    // Start measure (1-indexed, inclusive).
+    uint32 start_measure = 2;
+    // End measure (1-indexed, exclusive).
+    uint32 end_measure = 3;
+}
+
 // Song is a message that contains information about a song.
 message Song {
     reserved 4;
@@ -42,6 +52,9 @@ message Song {
 
     // Beat grid derived from click track analysis.
     BeatGrid beat_grid = 5;
+
+    // Named sections defined by measure boundaries.
+    repeated Section sections = 6;
 }
 
 // PlayRequest is the message for requesting the player to play the current song.
@@ -237,6 +250,21 @@ message UpdateConfigResponse {
     string checksum = 2;
 }
 
+// LoopSectionRequest activates section looping for a named section.
+message LoopSectionRequest {
+    // The name of the section to loop.
+    string section_name = 1;
+}
+
+// LoopSectionResponse is returned after activating a section loop.
+message LoopSectionResponse {}
+
+// StopSectionLoopRequest deactivates section looping.
+message StopSectionLoopRequest {}
+
+// StopSectionLoopResponse is returned after stopping a section loop.
+message StopSectionLoopResponse {}
+
 // PlayerService is a service for controlling the mtrack player.
 service PlayerService {
     // Play will play the current song in the playlist if no other songs
@@ -297,4 +325,11 @@ service PlayerService {
 
     // RemoveProfile removes a profile at a specific index.
     rpc RemoveProfile(RemoveProfileRequest) returns (UpdateConfigResponse);
+
+    // LoopSection activates section looping for the named section.
+    rpc LoopSection(LoopSectionRequest) returns (LoopSectionResponse);
+
+    // StopSectionLoop deactivates section looping. The current iteration
+    // finishes and the song continues from the section end.
+    rpc StopSectionLoop(StopSectionLoopRequest) returns (StopSectionLoopResponse);
 }

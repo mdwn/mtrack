@@ -183,6 +183,8 @@ impl super::Device for Device {
         start_time: Duration,
         clock: PlaybackClock,
         loop_break: Arc<AtomicBool>,
+        active_section: Arc<parking_lot::RwLock<Option<crate::player::SectionBounds>>>,
+        section_loop_break: Arc<AtomicBool>,
     ) -> Result<(), Box<dyn Error>> {
         let span = span!(Level::INFO, "play song (midir)");
         let _enter = span.enter();
@@ -321,6 +323,8 @@ impl super::Device for Device {
                         clock: &clock,
                         loop_playback: song.loop_playback(),
                         loop_break: loop_break.clone(),
+                        active_section: active_section.clone(),
+                        section_loop_break: section_loop_break.clone(),
                     },
                 );
             })
@@ -673,6 +677,8 @@ struct PlaybackContext<'a> {
     clock: &'a PlaybackClock,
     loop_playback: bool,
     loop_break: Arc<AtomicBool>,
+    active_section: Arc<parking_lot::RwLock<Option<crate::player::SectionBounds>>>,
+    section_loop_break: Arc<AtomicBool>,
 }
 
 /// Runs the MIDI playback thread body: signals readiness, waits for the clock
@@ -725,20 +731,66 @@ fn run_playback(sender: &mut dyn MidiSender, ctx: PlaybackContext<'_>) {
         ctx.clock,
     );
 
-    // Loop if the song has loop_playback enabled.
-    while ctx.loop_playback
-        && !ctx.cancel_handle.is_cancelled()
-        && !ctx.loop_break.load(Ordering::Relaxed)
-    {
-        info!("MIDI loop: restarting from beginning");
-        play_precomputed(
-            ctx.precomputed,
-            Duration::ZERO,
-            sender,
-            ctx.cancel_handle,
-            ctx.exclude_channels,
-            ctx.clock,
-        );
+    // Section loop: if active_section is set, loop the section region.
+    // This runs inside the normal playback — after the initial play_precomputed
+    // finishes (or while events are still playing if section starts mid-song).
+    loop {
+        if ctx.cancel_handle.is_cancelled() || ctx.loop_break.load(Ordering::Relaxed) {
+            break;
+        }
+
+        // Check for section loop.
+        let section = ctx.active_section.read().clone();
+        if let Some(ref section) = section {
+            if !ctx.section_loop_break.load(Ordering::Relaxed) {
+                // Wait until we reach the section end time.
+                while ctx.clock.elapsed() < section.end_time {
+                    if ctx.cancel_handle.is_cancelled()
+                        || ctx.section_loop_break.load(Ordering::Relaxed)
+                    {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                }
+
+                if ctx.cancel_handle.is_cancelled() {
+                    break;
+                }
+
+                if !ctx.section_loop_break.load(Ordering::Relaxed) {
+                    info!(section = section.name, "MIDI section loop: restarting");
+                    play_precomputed_until(
+                        ctx.precomputed,
+                        section.start_time,
+                        Some(section.end_time),
+                        sender,
+                        ctx.cancel_handle,
+                        ctx.exclude_channels,
+                        ctx.clock,
+                    );
+                    continue;
+                }
+            }
+        }
+
+        // Whole-song loop check.
+        if ctx.loop_playback
+            && !ctx.cancel_handle.is_cancelled()
+            && !ctx.loop_break.load(Ordering::Relaxed)
+        {
+            info!("MIDI loop: restarting from beginning");
+            play_precomputed(
+                ctx.precomputed,
+                Duration::ZERO,
+                sender,
+                ctx.cancel_handle,
+                ctx.exclude_channels,
+                ctx.clock,
+            );
+            continue;
+        }
+
+        break;
     }
 
     ctx.finished.store(true, Ordering::Relaxed);
@@ -818,12 +870,39 @@ fn play_precomputed(
     exclude_channels: &HashSet<u8>,
     clock: &PlaybackClock,
 ) {
+    play_precomputed_until(
+        precomputed,
+        start_time,
+        None,
+        sender,
+        cancel_handle,
+        exclude_channels,
+        clock,
+    );
+}
+
+fn play_precomputed_until(
+    precomputed: &super::playback::PrecomputedMidi,
+    start_time: Duration,
+    end_time: Option<Duration>,
+    sender: &mut dyn MidiSender,
+    cancel_handle: &CancelHandle,
+    exclude_channels: &HashSet<u8>,
+    clock: &PlaybackClock,
+) {
     let events = precomputed.events_from(start_time);
     let mut buf = Vec::with_capacity(8);
 
     for event in events {
         if cancel_handle.is_cancelled() {
             return;
+        }
+
+        // Stop at section end time if specified.
+        if let Some(end) = end_time {
+            if event.time >= end {
+                return;
+            }
         }
 
         let target_wall = event.time - start_time;
@@ -1469,6 +1548,8 @@ mod test {
                 Duration::ZERO,
                 clock,
                 Arc::new(AtomicBool::new(false)),
+                Arc::new(parking_lot::RwLock::new(None)),
+                Arc::new(AtomicBool::new(false)),
             );
             assert!(result.is_ok());
         }
@@ -1491,6 +1572,8 @@ mod test {
                 ready_tx,
                 Duration::ZERO,
                 clock,
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(parking_lot::RwLock::new(None)),
                 Arc::new(AtomicBool::new(false)),
             );
             assert!(result.is_ok());
@@ -1516,6 +1599,8 @@ mod test {
                 ready_tx,
                 Duration::ZERO,
                 clock,
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(parking_lot::RwLock::new(None)),
                 Arc::new(AtomicBool::new(false)),
             );
             assert!(result.is_ok());
@@ -1846,6 +1931,8 @@ mod test {
                     clock: &clock,
                     loop_playback: false,
                     loop_break: Arc::new(AtomicBool::new(false)),
+                    active_section: Arc::new(parking_lot::RwLock::new(None)),
+                    section_loop_break: Arc::new(AtomicBool::new(false)),
                 },
             );
 
@@ -1879,6 +1966,8 @@ mod test {
                     clock: &clock,
                     loop_playback: false,
                     loop_break: Arc::new(AtomicBool::new(false)),
+                    active_section: Arc::new(parking_lot::RwLock::new(None)),
+                    section_loop_break: Arc::new(AtomicBool::new(false)),
                 },
             );
 
@@ -1919,6 +2008,8 @@ mod test {
                     clock: &clock,
                     loop_playback: false,
                     loop_break: Arc::new(AtomicBool::new(false)),
+                    active_section: Arc::new(parking_lot::RwLock::new(None)),
+                    section_loop_break: Arc::new(AtomicBool::new(false)),
                 },
             );
 
@@ -1953,6 +2044,8 @@ mod test {
                     clock: &clock,
                     loop_playback: false,
                     loop_break: Arc::new(AtomicBool::new(false)),
+                    active_section: Arc::new(parking_lot::RwLock::new(None)),
+                    section_loop_break: Arc::new(AtomicBool::new(false)),
                 },
             );
 
@@ -2004,6 +2097,8 @@ mod test {
                     clock: &clock,
                     loop_playback: false,
                     loop_break: Arc::new(AtomicBool::new(false)),
+                    active_section: Arc::new(parking_lot::RwLock::new(None)),
+                    section_loop_break: Arc::new(AtomicBool::new(false)),
                 },
             );
 
@@ -2041,6 +2136,8 @@ mod test {
                         clock: &clock_clone,
                         loop_playback: false,
                         loop_break: Arc::new(AtomicBool::new(false)),
+                        active_section: Arc::new(parking_lot::RwLock::new(None)),
+                        section_loop_break: Arc::new(AtomicBool::new(false)),
                     },
                 );
                 sender

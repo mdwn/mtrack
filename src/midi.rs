@@ -44,6 +44,7 @@ pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {
     /// Plays the given song through the MIDI interface, starting from a specific time.
     /// The `ready_tx` sender signals that setup is complete. The implementation should
     /// then wait for `clock.elapsed() > Duration::ZERO` as the "go" signal.
+    #[allow(clippy::too_many_arguments)]
     fn play_from(
         &self,
         song: Arc<Song>,
@@ -52,6 +53,8 @@ pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {
         start_time: std::time::Duration,
         clock: PlaybackClock,
         loop_break: Arc<AtomicBool>,
+        active_section: Arc<parking_lot::RwLock<Option<crate::player::SectionBounds>>>,
+        section_loop_break: Arc<AtomicBool>,
     ) -> Result<(), Box<dyn Error>>;
 
     /// Emits an event.

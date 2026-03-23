@@ -14,18 +14,26 @@
 
 import { test, expect } from "@playwright/test";
 
-// Helper to push a WebSocket message to all connected clients via mock server.
+let testCounter = 0;
+
+// Helper to push a WebSocket message to a specific connection via mock server.
 async function sendWsMessage(
   page: import("@playwright/test").Page,
+  wsId: string,
   msg: object,
 ) {
   await page.request.post("http://127.0.0.1:3111/test/send-ws", {
-    data: msg,
+    data: { ...msg, _wsId: wsId },
   });
 }
 
 test.describe("Playback State Transitions", () => {
+  let wsId: string;
+
   test.beforeEach(async ({ page }) => {
+    // Generate a unique wsId for this test to isolate WebSocket messages.
+    wsId = `playback-${++testCounter}-${Date.now()}`;
+
     // Intercept gRPC calls so play/stop don't fail
     await page.route("**/player.v1.PlayerService/**", async (route) => {
       await route.fulfill({
@@ -38,7 +46,7 @@ test.describe("Playback State Transitions", () => {
       });
     });
 
-    await page.goto("/#/");
+    await page.goto(`/?wsId=${wsId}#/`);
     await expect(page.locator(".playback-song")).toContainText(
       "Test Song Alpha",
     );
@@ -54,7 +62,7 @@ test.describe("Playback State Transitions", () => {
     await page.getByRole("button", { name: "Play" }).click();
 
     // Simulate server responding with playing state
-    await sendWsMessage(page, {
+    await sendWsMessage(page, wsId, {
       type: "playback",
       is_playing: true,
       elapsed_ms: 1000,
@@ -81,7 +89,7 @@ test.describe("Playback State Transitions", () => {
 
   test("progress bar updates during playback", async ({ page }) => {
     // Send playing state at 50% progress
-    await sendWsMessage(page, {
+    await sendWsMessage(page, wsId, {
       type: "playback",
       is_playing: true,
       elapsed_ms: 90000,
@@ -113,7 +121,7 @@ test.describe("Playback State Transitions", () => {
     await expect(page.getByRole("button", { name: "Play" })).toBeEnabled();
 
     // Simulate server advancing to next song
-    await sendWsMessage(page, {
+    await sendWsMessage(page, wsId, {
       type: "playback",
       is_playing: false,
       elapsed_ms: 0,
@@ -138,7 +146,7 @@ test.describe("Playback State Transitions", () => {
 
   test("stop returns to stopped state", async ({ page }) => {
     // First put into playing state
-    await sendWsMessage(page, {
+    await sendWsMessage(page, wsId, {
       type: "playback",
       is_playing: true,
       elapsed_ms: 5000,
@@ -157,7 +165,7 @@ test.describe("Playback State Transitions", () => {
     await page.getByRole("button", { name: "Stop" }).click();
 
     // Simulate server stopping
-    await sendWsMessage(page, {
+    await sendWsMessage(page, wsId, {
       type: "playback",
       is_playing: false,
       elapsed_ms: 0,
@@ -177,7 +185,7 @@ test.describe("Playback State Transitions", () => {
   });
 
   test("playing state updates page title with song name", async ({ page }) => {
-    await sendWsMessage(page, {
+    await sendWsMessage(page, wsId, {
       type: "playback",
       is_playing: true,
       elapsed_ms: 1000,
@@ -198,7 +206,7 @@ test.describe("Playback State Transitions", () => {
 
   test("playlist position highlights correct song", async ({ page }) => {
     // Move to second song
-    await sendWsMessage(page, {
+    await sendWsMessage(page, wsId, {
       type: "playback",
       is_playing: false,
       elapsed_ms: 0,
@@ -218,7 +226,7 @@ test.describe("Playback State Transitions", () => {
   });
 
   test("elapsed time updates in progress display", async ({ page }) => {
-    await sendWsMessage(page, {
+    await sendWsMessage(page, wsId, {
       type: "playback",
       is_playing: true,
       elapsed_ms: 65000,

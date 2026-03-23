@@ -21,6 +21,7 @@ use crate::songs::Song;
 use std::collections::HashMap;
 
 pub mod click_analysis;
+pub mod confirmation;
 pub mod context;
 pub mod cpal;
 pub mod crossfade;
@@ -60,6 +61,8 @@ pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {
         clock: crate::clock::PlaybackClock,
         start_time: Duration,
         loop_break: Arc<AtomicBool>,
+        active_section: Arc<parking_lot::RwLock<Option<crate::player::SectionBounds>>>,
+        section_loop_break: Arc<AtomicBool>,
     ) -> Result<(), Box<dyn Error>>;
 
     /// Gets the mixer for adding triggered samples.
@@ -184,6 +187,8 @@ mod test {
                 _clock: crate::clock::PlaybackClock,
                 _start_time: Duration,
                 _loop_break: Arc<AtomicBool>,
+                _active_section: Arc<parking_lot::RwLock<Option<crate::player::SectionBounds>>>,
+                _section_loop_break: Arc<AtomicBool>,
             ) -> Result<(), Box<dyn Error>> {
                 Ok(())
             }
