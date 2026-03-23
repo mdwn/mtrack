@@ -135,6 +135,10 @@ struct PlaybackContext {
     play_start_time: Arc<Mutex<Option<SystemTime>>>,
     /// Shared flag to break out of the loop gracefully.
     loop_break: Arc<AtomicBool>,
+    /// Active section loop bounds (shared with player).
+    active_section: Arc<parking_lot::RwLock<Option<SectionBounds>>>,
+    /// Shared flag to break out of a section loop.
+    section_loop_break: Arc<AtomicBool>,
 }
 
 /// Groups hardware devices for constructing a Player without discovering real hardware.
@@ -211,6 +215,20 @@ pub struct Player {
     /// loop checks this flag and exits cleanly, allowing the cleanup task
     /// to advance the playlist and start the next song.
     loop_break: Arc<AtomicBool>,
+    /// Active section loop bounds. When Some, audio/MIDI/DMX subsystems
+    /// loop the specified time region instead of the full song.
+    active_section: Arc<parking_lot::RwLock<Option<SectionBounds>>>,
+    /// Signal to stop section looping. The current iteration finishes and
+    /// the song continues from the section end.
+    section_loop_break: Arc<AtomicBool>,
+}
+
+/// Bounds of an active section loop.
+#[derive(Debug, Clone)]
+pub struct SectionBounds {
+    pub name: String,
+    pub start_time: Duration,
+    pub end_time: Duration,
 }
 
 impl Player {
@@ -597,6 +615,8 @@ impl Player {
             locked: Arc::new(AtomicBool::new(true)),
             controller: Arc::new(parking_lot::Mutex::new(None)),
             loop_break: Arc::new(AtomicBool::new(false)),
+            active_section: Arc::new(parking_lot::RwLock::new(None)),
+            section_loop_break: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -1065,6 +1085,8 @@ impl Player {
                 start_time,
                 play_start_time: play_start_time.clone(),
                 loop_break: self.loop_break.clone(),
+                active_section: self.active_section.clone(),
+                section_loop_break: self.section_loop_break.clone(),
             };
             tokio::task::spawn_blocking(move || {
                 Player::play_files(ctx);
@@ -1150,6 +1172,8 @@ impl Player {
             start_time,
             play_start_time,
             loop_break,
+            active_section,
+            section_loop_break,
         } = ctx;
 
         // Check if any subsystems are active.
@@ -1183,6 +1207,8 @@ impl Player {
             let ready_tx = ready_tx.clone();
             let clock = clock.clone();
             let loop_break = loop_break.clone();
+            let active_section = active_section.clone();
+            let section_loop_break = section_loop_break.clone();
             expected_ready += 1;
 
             Some(thread::spawn(move || {
@@ -1195,6 +1221,8 @@ impl Player {
                     clock,
                     start_time,
                     loop_break,
+                    active_section,
+                    section_loop_break,
                 );
                 if let Err(ref e) = result {
                     error!(
@@ -1218,6 +1246,8 @@ impl Player {
             let clock = clock.clone();
             let ready_tx = ready_tx.clone();
             let loop_break = loop_break.clone();
+            let active_section = active_section.clone();
+            let section_loop_break = section_loop_break.clone();
             expected_ready += 1;
 
             thread::spawn(move || {
@@ -1231,6 +1261,8 @@ impl Player {
                     start_time,
                     clock,
                     loop_break,
+                    active_section,
+                    section_loop_break,
                 ) {
                     error!(
                         err = e.as_ref(),
@@ -1248,6 +1280,8 @@ impl Player {
             let ready_tx = ready_tx.clone();
             let clock = clock.clone();
             let loop_break = loop_break.clone();
+            let active_section = active_section.clone();
+            let section_loop_break = section_loop_break.clone();
             expected_ready += 1;
 
             Some(thread::spawn(move || {
@@ -1260,6 +1294,8 @@ impl Player {
                     start_time,
                     clock,
                     loop_break,
+                    active_section,
+                    section_loop_break,
                 ) {
                     error!(
                         err = e.as_ref(),
@@ -1555,6 +1591,131 @@ impl Player {
             .current()
             .map(|song| song.loop_playback())
             .unwrap_or(false)
+    }
+
+    /// Activates section looping for the named section in the current song.
+    /// The song must be playing and the section must exist with a valid beat grid.
+    pub async fn loop_section(&self, section_name: &str) -> Result<(), Box<dyn Error>> {
+        let join = self.join.lock().await;
+        if join.is_none() {
+            return Err("Cannot loop section: no song is playing".into());
+        }
+
+        let playlist = self.get_playlist();
+        let song = playlist
+            .current()
+            .ok_or("Cannot loop section: no current song")?;
+
+        let (start_time, end_time) = song.resolve_section(section_name).ok_or_else(|| {
+            format!(
+                "Section '{}' not found or cannot be resolved (missing beat grid?)",
+                section_name
+            )
+        })?;
+
+        info!(
+            song = song.name(),
+            section = section_name,
+            start = ?start_time,
+            end = ?end_time,
+            "Activating section loop"
+        );
+
+        {
+            let mut active = self.active_section.write();
+            *active = Some(SectionBounds {
+                name: section_name.to_string(),
+                start_time,
+                end_time,
+            });
+        }
+
+        // Reset section_loop_break so the loop runs.
+        self.section_loop_break.store(false, Ordering::Relaxed);
+
+        // Play confirmation tone.
+        self.play_confirmation_tone(&song);
+
+        Ok(())
+    }
+
+    /// Deactivates section looping. The current iteration finishes and the
+    /// song continues from the section end point.
+    pub fn stop_section_loop(&self) {
+        info!("Stopping section loop");
+        self.section_loop_break.store(true, Ordering::Relaxed);
+    }
+
+    /// Returns the currently active section bounds, if any.
+    pub fn active_section(&self) -> Option<SectionBounds> {
+        self.active_section.read().clone()
+    }
+
+    /// Plays the section loop confirmation tone through the mixer.
+    fn play_confirmation_tone(&self, song: &Song) {
+        let outputs = song.loop_confirmation_outputs();
+        if outputs.is_empty() {
+            return;
+        }
+
+        let hw = self.hardware.read();
+        let device = match hw.device.as_ref() {
+            Some(d) => d,
+            None => return,
+        };
+        let mixer = match device.mixer() {
+            Some(m) => m,
+            None => return,
+        };
+
+        let sample_rate = mixer.sample_rate();
+        use crate::audio::confirmation::ConfirmationSound;
+        let tone = crate::audio::confirmation::SineTone::default();
+        let samples = tone.generate(sample_rate);
+        let samples = Arc::new(samples);
+
+        // Create a one-shot source from the tone samples.
+        let source = crate::audio::sample_source::MemorySampleSource::from_shared(
+            samples,
+            1, // mono
+            sample_rate,
+            1.0,
+        );
+
+        // Build channel mappings: route mono to each configured output.
+        let mut labels = Vec::new();
+        for &ch in outputs {
+            labels.push(format!("__confirmation_ch{}", ch));
+        }
+        let channel_mappings = vec![labels.clone()];
+
+        let mapped = crate::audio::sample_source::channel_mapped::ChannelMappedSource::new(
+            Box::new(source),
+            channel_mappings,
+            1,
+        );
+
+        // Build track mappings: map labels to output channels.
+        let mut track_mappings = std::collections::HashMap::new();
+        for (i, label) in labels.iter().enumerate() {
+            track_mappings.insert(label.clone(), vec![outputs[i]]);
+        }
+
+        let is_finished = Arc::new(AtomicBool::new(false));
+        let active_source = crate::audio::mixer::ActiveSource {
+            id: crate::audio::next_source_id(),
+            source: Box::new(mapped),
+            track_mappings,
+            channel_mappings: Vec::new(),
+            cached_source_channel_count: 1,
+            cancel_handle: crate::playsync::CancelHandle::new(),
+            is_finished,
+            start_at_sample: None,
+            cancel_at_sample: None,
+            gain_envelope: None,
+        };
+
+        mixer.add_source(active_source);
     }
 
     /// Sets fade-out envelopes on all current audio sources for a smooth

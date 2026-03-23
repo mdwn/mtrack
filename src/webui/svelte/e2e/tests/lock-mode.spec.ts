@@ -14,13 +14,16 @@
 
 import { test, expect } from "@playwright/test";
 
-// Helper to push a WebSocket message to all connected clients via mock server.
+let lockTestCounter = 0;
+
+// Helper to push a WebSocket message to a specific connection via mock server.
 async function sendWsMessage(
   page: import("@playwright/test").Page,
+  wsId: string,
   msg: object,
 ) {
   await page.request.post("http://127.0.0.1:3111/test/send-ws", {
-    data: msg,
+    data: { ...msg, _wsId: wsId },
   });
 }
 
@@ -59,13 +62,14 @@ test.describe("Lock Mode", () => {
   });
 
   test("locked state prevents config save", async ({ page }) => {
-    await page.goto("/#/config");
+    const wsId = `lock-config-${++lockTestCounter}-${Date.now()}`;
+    await page.goto(`/?wsId=${wsId}#/config`);
     await expect(
       page.getByRole("heading", { name: "Hardware Profiles" }),
     ).toBeVisible();
 
     // Lock the player via WebSocket
-    await sendWsMessage(page, {
+    await sendWsMessage(page, wsId, {
       type: "playback",
       is_playing: false,
       elapsed_ms: 0,
@@ -96,13 +100,14 @@ test.describe("Lock Mode", () => {
   });
 
   test("locked state prevents playlist save", async ({ page }) => {
-    await page.goto("/#/playlists");
+    const wsId = `lock-playlist-${++lockTestCounter}-${Date.now()}`;
+    await page.goto(`/?wsId=${wsId}#/playlists`);
 
     // Wait for WebSocket connection to be established
     await expect(page.locator(".status-indicator.connected")).toBeVisible();
 
     // Lock the player via WebSocket
-    await sendWsMessage(page, {
+    await sendWsMessage(page, wsId, {
       type: "playback",
       is_playing: false,
       elapsed_ms: 0,

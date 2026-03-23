@@ -53,6 +53,25 @@ pub struct Song {
     /// Whether this song should loop when it finishes playing.
     #[serde(default)]
     loop_playback: bool,
+    /// Named sections of the song, defined by measure boundaries.
+    /// Used for section looping during playback.
+    #[serde(default)]
+    sections: Vec<Section>,
+    /// Output channels (1-indexed) for the section loop confirmation tone.
+    /// If empty, no confirmation tone is played.
+    #[serde(default)]
+    loop_confirmation_outputs: Vec<u16>,
+}
+
+/// A named section of a song defined by measure boundaries.
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct Section {
+    /// Display name for this section (e.g., "verse", "chorus").
+    pub name: String,
+    /// Start measure (1-indexed, inclusive).
+    pub start_measure: usize,
+    /// End measure (1-indexed, exclusive).
+    pub end_measure: usize,
 }
 
 impl Song {
@@ -81,6 +100,8 @@ impl Song {
             samples,
             sample_triggers,
             loop_playback: false,
+            sections: Vec::new(),
+            loop_confirmation_outputs: Vec::new(),
         }
     }
 
@@ -197,6 +218,16 @@ impl Song {
     /// Returns whether this song should loop when it finishes playing.
     pub fn loop_playback(&self) -> bool {
         self.loop_playback
+    }
+
+    /// Gets the named sections of this song.
+    pub fn sections(&self) -> &[Section] {
+        &self.sections
+    }
+
+    /// Gets the output channels for the section loop confirmation tone.
+    pub fn loop_confirmation_outputs(&self) -> &[u16] {
+        &self.loop_confirmation_outputs
     }
 
     /// Gets the song-specific samples configuration.
@@ -657,5 +688,52 @@ mod tests {
             "Expected at least 4 errors, got: {:?}",
             errors
         );
+    }
+
+    #[test]
+    fn sections_default_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("song.yaml");
+        std::fs::write(
+            &path,
+            "name: test\ntracks:\n  - name: t1\n    file: t1.wav\n",
+        )
+        .unwrap();
+        let song = Song::deserialize(&path).unwrap();
+        assert!(song.sections().is_empty());
+        assert!(song.loop_confirmation_outputs().is_empty());
+    }
+
+    #[test]
+    fn sections_deserialize_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("song.yaml");
+        std::fs::write(
+            &path,
+            "name: test\ntracks:\n  - name: t1\n    file: t1.wav\nsections:\n  - name: verse\n    start_measure: 1\n    end_measure: 8\n  - name: chorus\n    start_measure: 9\n    end_measure: 16\nloop_confirmation_outputs:\n  - 1\n  - 3\n",
+        )
+        .unwrap();
+        let song = Song::deserialize(&path).unwrap();
+        assert_eq!(song.sections().len(), 2);
+        assert_eq!(song.sections()[0].name, "verse");
+        assert_eq!(song.sections()[0].start_measure, 1);
+        assert_eq!(song.sections()[0].end_measure, 8);
+        assert_eq!(song.sections()[1].name, "chorus");
+        assert_eq!(song.sections()[1].start_measure, 9);
+        assert_eq!(song.sections()[1].end_measure, 16);
+        assert_eq!(song.loop_confirmation_outputs(), &[1, 3]);
+    }
+
+    #[test]
+    fn loop_playback_deserializes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("song.yaml");
+        std::fs::write(
+            &path,
+            "name: test\ntracks:\n  - name: t1\n    file: t1.wav\nloop_playback: true\n",
+        )
+        .unwrap();
+        let song = Song::deserialize(&path).unwrap();
+        assert!(song.loop_playback());
     }
 }

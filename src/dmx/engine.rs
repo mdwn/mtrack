@@ -401,6 +401,7 @@ impl Engine {
     }
 
     /// Plays the given song through the DMX interface.
+    #[allow(clippy::too_many_arguments)]
     pub fn play(
         dmx_engine: Arc<Engine>,
         song: Arc<Song>,
@@ -409,6 +410,8 @@ impl Engine {
         start_time: Duration,
         clock: crate::clock::PlaybackClock,
         loop_break: Arc<AtomicBool>,
+        _active_section: Arc<parking_lot::RwLock<Option<crate::player::SectionBounds>>>,
+        _section_loop_break: Arc<AtomicBool>,
     ) -> Result<(), Box<dyn Error>> {
         let span = span!(Level::INFO, "play song (dmx)");
         let _enter = span.enter();
@@ -1736,6 +1739,8 @@ mod test {
             std::time::Duration::ZERO,
             clock,
             Arc::new(AtomicBool::new(false)),
+            Arc::new(parking_lot::RwLock::new(None)),
+            Arc::new(AtomicBool::new(false)),
         )?;
 
         // Verify timeline was created (may be None if no lighting config)
@@ -2020,6 +2025,8 @@ mod test {
             std::time::Duration::ZERO,
             clock,
             Arc::new(AtomicBool::new(false)),
+            Arc::new(parking_lot::RwLock::new(None)),
+            Arc::new(AtomicBool::new(false)),
         )?;
 
         // The tempo map should have been cleared (not inherited from the seeded state).
@@ -2075,6 +2082,8 @@ mod test {
             ready_tx,
             std::time::Duration::ZERO,
             clock,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(parking_lot::RwLock::new(None)),
             Arc::new(AtomicBool::new(false)),
         )?;
 
@@ -3516,6 +3525,8 @@ mod test {
                 std::time::Duration::ZERO,
                 clock,
                 Arc::new(AtomicBool::new(false)),
+                Arc::new(parking_lot::RwLock::new(None)),
+                Arc::new(AtomicBool::new(false)),
             );
             assert!(result.is_ok());
             Ok(())
@@ -3547,6 +3558,8 @@ mod test {
                 ready_tx,
                 std::time::Duration::ZERO,
                 clock,
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(parking_lot::RwLock::new(None)),
                 Arc::new(AtomicBool::new(false)),
             );
             assert!(result.is_ok());
@@ -3580,6 +3593,8 @@ mod test {
                 ready_tx,
                 std::time::Duration::from_secs(3),
                 clock,
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(parking_lot::RwLock::new(None)),
                 Arc::new(AtomicBool::new(false)),
             );
             assert!(result.is_ok());
@@ -3619,6 +3634,8 @@ mod test {
                 ready_tx,
                 std::time::Duration::ZERO,
                 clock,
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(parking_lot::RwLock::new(None)),
                 Arc::new(AtomicBool::new(false)),
             );
             assert!(result.is_ok());
@@ -3666,6 +3683,8 @@ mod test {
                 ready_tx,
                 std::time::Duration::ZERO,
                 clock,
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(parking_lot::RwLock::new(None)),
                 Arc::new(AtomicBool::new(false)),
             );
             assert!(result.is_ok(), "play failed: {:?}", result.err());
@@ -4336,6 +4355,8 @@ mod test {
                 std::time::Duration::ZERO,
                 clock,
                 Arc::new(AtomicBool::new(false)),
+                Arc::new(parking_lot::RwLock::new(None)),
+                Arc::new(AtomicBool::new(false)),
             );
             assert!(result.is_ok(), "play failed: {:?}", result.err());
             Ok(())
@@ -4378,6 +4399,8 @@ mod test {
                 ready_tx,
                 std::time::Duration::from_secs(10),
                 clock,
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(parking_lot::RwLock::new(None)),
                 Arc::new(AtomicBool::new(false)),
             );
             assert!(result.is_ok(), "play failed: {:?}", result.err());
@@ -4427,6 +4450,8 @@ mod test {
                 ready_tx,
                 std::time::Duration::ZERO,
                 clock,
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(parking_lot::RwLock::new(None)),
                 Arc::new(AtomicBool::new(false)),
             );
             assert!(result.is_ok(), "play failed: {:?}", result.err());
@@ -4504,6 +4529,8 @@ mod test {
                 std::time::Duration::ZERO,
                 clock,
                 Arc::new(AtomicBool::new(false)),
+                Arc::new(parking_lot::RwLock::new(None)),
+                Arc::new(AtomicBool::new(false)),
             );
             assert!(result.is_ok(), "play failed: {:?}", result.err());
             Ok(())
@@ -4565,6 +4592,8 @@ mod test {
                 ready_tx,
                 std::time::Duration::ZERO,
                 clock,
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(parking_lot::RwLock::new(None)),
                 Arc::new(AtomicBool::new(false)),
             );
             assert!(result.is_ok(), "play failed: {:?}", result.err());
@@ -4678,6 +4707,8 @@ mod test {
                 ready_tx,
                 std::time::Duration::ZERO,
                 clock,
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(parking_lot::RwLock::new(None)),
                 Arc::new(AtomicBool::new(false)),
             );
             assert!(result.is_ok());

@@ -29,6 +29,7 @@ export const SONGS = {
       midi_dmx_files: [],
       beat_grid: null,
       loop_playback: false,
+      sections: [],
     },
     {
       name: "Test Song Beta",
@@ -45,6 +46,10 @@ export const SONGS = {
       midi_dmx_files: [],
       beat_grid: null,
       loop_playback: true,
+      sections: [
+        { name: "verse", start_measure: 1, end_measure: 4 },
+        { name: "chorus", start_measure: 5, end_measure: 8 },
+      ],
     },
   ],
   failures: [
@@ -182,6 +187,8 @@ export const PLAYBACK_STATE = {
   locked: false,
   beat_grid: null,
   looping: false,
+  available_sections: [],
+  active_section: null,
 };
 
 export const METADATA_STATE = {

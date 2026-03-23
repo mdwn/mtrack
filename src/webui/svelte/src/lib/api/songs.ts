@@ -34,6 +34,8 @@ export interface SongSummary {
   beat_grid: { beats: number[]; measure_starts: number[] } | null;
   /** Whether this song loops when it finishes playing */
   loop_playback: boolean;
+  /** Named sections defined by measure boundaries */
+  sections: { name: string; start_measure: number; end_measure: number }[];
 }
 
 export interface WaveformTrack {

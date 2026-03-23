@@ -997,6 +997,8 @@ impl AudioDevice for Device {
         clock: crate::clock::PlaybackClock,
         start_time: Duration,
         loop_break: Arc<AtomicBool>,
+        active_section: Arc<parking_lot::RwLock<Option<crate::player::SectionBounds>>>,
+        section_loop_break: Arc<AtomicBool>,
     ) -> Result<(), Box<dyn Error>> {
         let span = span!(Level::INFO, "play song (cpal)");
         let _enter = span.enter();
@@ -1105,36 +1107,111 @@ impl AudioDevice for Device {
             self.output_manager.add_source(active_source)?;
         }
 
-        // Wait for either cancellation or natural completion
-        let finished = Arc::new(AtomicBool::new(false));
+        // Monitor loop: polls for source completion, cancellation, and section boundaries.
+        let crossfade_samples = (0.1 * self.output_manager.mixer.sample_rate() as f64) as u64;
+        let crossfade_duration = Duration::from_millis(100);
 
-        // Start a background thread to monitor if all sources have finished
-        // This is completely lock-free - just checks atomic flags
-        let finished_monitor = finished.clone();
-        let cancel_handle_for_notify = cancel_handle.clone();
-        let num_song_sources = source_finish_flags.len();
-        thread::spawn(move || {
-            loop {
-                // Check if all sources have finished (lock-free)
-                let all_finished = source_finish_flags
-                    .iter()
-                    .all(|flag| flag.load(Ordering::Relaxed));
-
-                if all_finished {
-                    tracing::debug!(
-                        num_song_sources,
-                        "play_from: all song sources finished, notifying"
-                    );
-                    finished_monitor.store(true, Ordering::Relaxed);
-                    cancel_handle_for_notify.notify();
-                    break;
-                }
-
-                thread::sleep(Duration::from_millis(10));
+        'monitor: loop {
+            if cancel_handle.is_cancelled() || loop_break.load(Ordering::Relaxed) {
+                break;
             }
-        });
 
-        cancel_handle.wait(finished);
+            // Check if all sources have finished (EOF).
+            let all_finished = source_finish_flags
+                .iter()
+                .all(|flag| flag.load(Ordering::Relaxed));
+            if all_finished {
+                break;
+            }
+
+            // Check for section loop boundary.
+            if let Some(section) = active_section.read().as_ref() {
+                if !section_loop_break.load(Ordering::Relaxed) {
+                    let elapsed = clock.elapsed();
+                    if elapsed + crossfade_duration >= section.end_time {
+                        info!(
+                            section = section.name,
+                            "Audio section loop: crossfading back to section start"
+                        );
+
+                        // Fade out current sources.
+                        let current_ids: Vec<u64> = {
+                            let sources = self.output_manager.mixer.get_active_sources();
+                            let guard = sources.read();
+                            guard.iter().map(|s| s.lock().id).collect()
+                        };
+                        if !current_ids.is_empty() {
+                            let fade_out =
+                                Arc::new(crate::audio::crossfade::GainEnvelope::fade_out(
+                                    crossfade_samples,
+                                    crate::audio::crossfade::CrossfadeCurve::Linear,
+                                ));
+                            self.output_manager
+                                .mixer
+                                .set_gain_envelope(&current_ids, fade_out);
+                        }
+
+                        // Create new sources at section start with fade-in.
+                        let section_start = section.start_time;
+                        match song.create_channel_mapped_sources_from(
+                            &playback_context,
+                            section_start,
+                            mappings,
+                        ) {
+                            Ok(new_sources) => {
+                                let fade_in =
+                                    Arc::new(crate::audio::crossfade::GainEnvelope::fade_in(
+                                        crossfade_samples,
+                                        crate::audio::crossfade::CrossfadeCurve::Linear,
+                                    ));
+
+                                // Replace finish flags with new source flags.
+                                source_finish_flags.clear();
+                                for source in new_sources {
+                                    let source_id = crate::audio::next_source_id();
+                                    let source_channel_count = source.source_channel_count();
+                                    let is_finished = Arc::new(AtomicBool::new(false));
+                                    source_finish_flags.push(is_finished.clone());
+
+                                    let active_source = MixerActiveSource {
+                                        id: source_id,
+                                        source,
+                                        track_mappings: mappings.clone(),
+                                        channel_mappings: Vec::new(),
+                                        cached_source_channel_count: source_channel_count,
+                                        cancel_handle: cancel_handle.clone(),
+                                        is_finished,
+                                        start_at_sample: None,
+                                        cancel_at_sample: None,
+                                        gain_envelope: Some(fade_in.clone()),
+                                    };
+
+                                    if let Err(e) = self.output_manager.add_source(active_source) {
+                                        error!(err = %e, "Failed to add section loop source");
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!(err = e.as_ref(), "Failed to create section loop sources");
+                                break 'monitor;
+                            }
+                        }
+
+                        // Continue monitoring the new sources.
+                        continue 'monitor;
+                    }
+                }
+            }
+
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        // When section_loop_break is set, clear active_section so the song
+        // continues normally past the section end.
+        if section_loop_break.load(Ordering::Relaxed) {
+            let mut section = active_section.write();
+            *section = None;
+        }
 
         // Loop if the song has loop_playback and we haven't been told to stop.
         while song.loop_playback()

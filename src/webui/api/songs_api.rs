@@ -87,6 +87,11 @@ pub(super) async fn get_songs(State(state): State<WebUiState>) -> impl IntoRespo
                     "measure_starts": g.measure_starts,
                 })),
                 "loop_playback": song.loop_playback(),
+                "sections": song.sections().iter().map(|s| json!({
+                    "name": s.name,
+                    "start_measure": s.start_measure,
+                    "end_measure": s.end_measure,
+                })).collect::<Vec<_>>(),
             })
         })
         .collect();

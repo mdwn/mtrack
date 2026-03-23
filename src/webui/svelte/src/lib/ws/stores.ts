@@ -27,6 +27,18 @@ export interface BeatGrid {
   measure_starts: number[];
 }
 
+export interface SectionInfo {
+  name: string;
+  start_measure: number;
+  end_measure: number;
+}
+
+export interface ActiveSection {
+  name: string;
+  start_ms: number;
+  end_ms: number;
+}
+
 export interface PlaybackState {
   is_playing: boolean;
   elapsed_ms: number;
@@ -41,6 +53,8 @@ export interface PlaybackState {
   locked: boolean;
   beat_grid: BeatGrid | null;
   looping: boolean;
+  available_sections: SectionInfo[];
+  active_section: ActiveSection | null;
 }
 
 export interface FixtureChannels {
@@ -86,6 +100,8 @@ export const playbackStore = writable<PlaybackState>({
   locked: true,
   beat_grid: null,
   looping: false,
+  available_sections: [],
+  active_section: null,
 });
 
 export const fixtureStore = writable<Record<string, FixtureChannels>>({});
@@ -126,6 +142,8 @@ on("playback", (msg) => {
     locked: m.locked ?? true,
     beat_grid: m.beat_grid ?? null,
     looping: m.looping ?? false,
+    available_sections: m.available_sections ?? [],
+    active_section: m.active_section ?? null,
   });
 });
 

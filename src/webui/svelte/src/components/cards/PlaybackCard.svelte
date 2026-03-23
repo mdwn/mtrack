@@ -85,6 +85,24 @@
 
   let loading = $state(false);
 
+  async function loopSection(name: string) {
+    try {
+      await playerClient.loopSection({ sectionName: name });
+    } catch (e) {
+      console.error("loop section failed:", e);
+      showError("Failed to activate section loop");
+    }
+  }
+
+  async function stopSectionLoop() {
+    try {
+      await playerClient.stopSectionLoop({});
+    } catch (e) {
+      console.error("stop section loop failed:", e);
+      showError("Failed to stop section loop");
+    }
+  }
+
   function handleKeydown(e: KeyboardEvent) {
     // Only handle shortcuts on the dashboard page to avoid accidental
     // playback triggers when interacting with forms on other pages.
@@ -236,6 +254,26 @@
         title={$t("playback.nextTooltip")}>{$t("playback.next")}</button
       >
     </div>
+    {#if $playbackStore.is_playing && $playbackStore.available_sections.length > 0}
+      <div class="section-controls">
+        {#if $playbackStore.active_section}
+          <span class="section-active"
+            >{$playbackStore.active_section.name}</span
+          >
+          <button class="btn btn-sm" onclick={stopSectionLoop}>Stop Loop</button
+          >
+        {:else}
+          {#each $playbackStore.available_sections as section (section.name)}
+            <button
+              class="btn btn-sm"
+              onclick={() => loopSection(section.name)}
+              title="Loop {section.name} (m{section.start_measure}-{section.end_measure})"
+              >{section.name}</button
+            >
+          {/each}
+        {/if}
+      </div>
+    {/if}
   </div>
   {#if errorMsg}
     <div class="playback-error">{errorMsg}</div>
@@ -275,6 +313,19 @@
     margin-left: 8px;
     font-family: var(--mono);
     color: var(--text-dim);
+  }
+  .section-controls {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding-top: 8px;
+    flex-wrap: wrap;
+  }
+  .section-active {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--accent);
   }
   .loop-badge {
     margin-left: 8px;

@@ -150,6 +150,8 @@ impl super::Device for Device {
         start_time: Duration,
         clock: PlaybackClock,
         _loop_break: Arc<std::sync::atomic::AtomicBool>,
+        _active_section: Arc<parking_lot::RwLock<Option<crate::player::SectionBounds>>>,
+        _section_loop_break: Arc<std::sync::atomic::AtomicBool>,
     ) -> Result<(), Box<dyn Error>> {
         let span = span!(Level::INFO, "play song (mock)");
         let _enter = span.enter();
