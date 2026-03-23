@@ -198,46 +198,36 @@ test.describe("Song Detail - Section Editor", () => {
     await expect(page.locator(".tab", { hasText: "Sections" })).toBeVisible();
   });
 
-  test("clicking Sections tab shows section editor", async ({ page }) => {
-    await page.goto("/#/songs/Test%20Song%20Alpha");
-    await page.locator(".tab", { hasText: "Sections" }).click();
-    await expect(page.locator(".tab.active")).toContainText("Sections");
-    await expect(page.locator(".sections-editor")).toBeVisible();
-  });
-
-  test("sections tab shows empty state for song without sections", async ({
+  test("clicking Sections tab shows visual timeline editor", async ({
     page,
   }) => {
     await page.goto("/#/songs/Test%20Song%20Alpha");
     await page.locator(".tab", { hasText: "Sections" }).click();
-    await expect(page.getByText(/No sections defined/i)).toBeVisible();
+    await expect(page.locator(".tab.active")).toContainText("Sections");
+    await expect(page.locator(".section-timeline-editor")).toBeVisible();
   });
 
-  test("sections tab shows Add Section button", async ({ page }) => {
+  test("sections tab shows zoom controls", async ({ page }) => {
     await page.goto("/#/songs/Test%20Song%20Alpha");
     await page.locator(".tab", { hasText: "Sections" }).click();
-    await expect(
-      page.getByRole("button", { name: "Add Section" }),
-    ).toBeVisible();
+    await expect(page.getByRole("button", { name: "Fit" })).toBeVisible();
   });
 
-  test("adding section shows section fields", async ({ page }) => {
+  test("sections tab shows section bar", async ({ page }) => {
     await page.goto("/#/songs/Test%20Song%20Alpha");
     await page.locator(".tab", { hasText: "Sections" }).click();
-    await page.getByRole("button", { name: "Add Section" }).click();
-    await expect(page.locator(".section-row")).toBeVisible();
+    await expect(page.locator(".section-bar")).toBeVisible();
   });
 
-  test("adding section marks config as dirty", async ({ page }) => {
-    await page.goto("/#/songs/Test%20Song%20Alpha");
-    await page.locator(".tab", { hasText: "Sections" }).click();
-    await page.getByRole("button", { name: "Add Section" }).click();
-    await expect(page.locator(".unsaved")).toBeVisible();
-  });
-
-  test("song with sections shows existing sections", async ({ page }) => {
+  test("song with sections shows section chips", async ({ page }) => {
     await page.goto("/#/songs/Test%20Song%20Beta");
     await page.locator(".tab", { hasText: "Sections" }).click();
-    await expect(page.locator(".section-row")).toHaveCount(2);
+    await expect(page.locator(".section-chip")).toHaveCount(2);
+  });
+
+  test("song with sections shows section blocks in bar", async ({ page }) => {
+    await page.goto("/#/songs/Test%20Song%20Beta");
+    await page.locator(".tab", { hasText: "Sections" }).click();
+    await expect(page.locator(".section-block")).toHaveCount(2);
   });
 });

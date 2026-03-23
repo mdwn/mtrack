@@ -57,10 +57,6 @@ pub struct Song {
     /// Used for section looping during playback.
     #[serde(default)]
     sections: Vec<Section>,
-    /// Output channels (1-indexed) for the section loop confirmation tone.
-    /// If empty, no confirmation tone is played.
-    #[serde(default)]
-    loop_confirmation_outputs: Vec<u16>,
 }
 
 /// A named section of a song defined by measure boundaries.
@@ -101,7 +97,6 @@ impl Song {
             sample_triggers,
             loop_playback: false,
             sections: Vec::new(),
-            loop_confirmation_outputs: Vec::new(),
         }
     }
 
@@ -223,11 +218,6 @@ impl Song {
     /// Gets the named sections of this song.
     pub fn sections(&self) -> &[Section] {
         &self.sections
-    }
-
-    /// Gets the output channels for the section loop confirmation tone.
-    pub fn loop_confirmation_outputs(&self) -> &[u16] {
-        &self.loop_confirmation_outputs
     }
 
     /// Gets the song-specific samples configuration.
@@ -701,7 +691,6 @@ mod tests {
         .unwrap();
         let song = Song::deserialize(&path).unwrap();
         assert!(song.sections().is_empty());
-        assert!(song.loop_confirmation_outputs().is_empty());
     }
 
     #[test]
@@ -710,7 +699,7 @@ mod tests {
         let path = dir.path().join("song.yaml");
         std::fs::write(
             &path,
-            "name: test\ntracks:\n  - name: t1\n    file: t1.wav\nsections:\n  - name: verse\n    start_measure: 1\n    end_measure: 8\n  - name: chorus\n    start_measure: 9\n    end_measure: 16\nloop_confirmation_outputs:\n  - 1\n  - 3\n",
+            "name: test\ntracks:\n  - name: t1\n    file: t1.wav\nsections:\n  - name: verse\n    start_measure: 1\n    end_measure: 8\n  - name: chorus\n    start_measure: 9\n    end_measure: 16\n",
         )
         .unwrap();
         let song = Song::deserialize(&path).unwrap();
@@ -721,7 +710,6 @@ mod tests {
         assert_eq!(song.sections()[1].name, "chorus");
         assert_eq!(song.sections()[1].start_measure, 9);
         assert_eq!(song.sections()[1].end_measure, 16);
-        assert_eq!(song.loop_confirmation_outputs(), &[1, 3]);
     }
 
     #[test]

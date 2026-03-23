@@ -640,7 +640,7 @@
   "tooltips.audio.bufferThreads": "Number of threads used to decode and buffer audio tracks in parallel. Default is 2.",
   "tooltips.audio.resampler": "Algorithm used when the source sample rate differs from the device. Sinc is higher quality; FFT may be faster for some configurations.",
   "tooltips.audio.playbackDelay": "Delay before audio playback starts, e.g. '500ms'. Used to synchronize audio with other subsystems like DMX or MIDI.",
-  "tooltips.audio.trackMappings": "Maps named audio tracks to specific output channels on your audio device. The track name must match a track in your song, and channels are 1-indexed device output channels.",
+  "tooltips.audio.trackMappings": "Maps named audio tracks to specific output channels on your audio device. The track name must match a track in your song, and channels are 1-indexed device output channels. Use 'mtrack:looping' to route the section loop confirmation tone. Reload hardware after changing mappings.",
 
   "tooltips.midi.playbackDelay": "Delay before MIDI playback starts, e.g. '500ms'. Used to synchronize MIDI output with audio and lighting.",
   "tooltips.midi.beatClock": "Sends MIDI Beat Clock messages to the output device during playback. External gear can sync its tempo to this clock.",

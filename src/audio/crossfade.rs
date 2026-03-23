@@ -20,6 +20,15 @@
 //! and song-to-song transitions.
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+
+/// Default crossfade duration used for loop boundaries and song transitions.
+pub const DEFAULT_CROSSFADE_DURATION: Duration = Duration::from_millis(100);
+
+/// Returns the default crossfade duration in samples for the given sample rate.
+pub fn default_crossfade_samples(sample_rate: u32) -> u64 {
+    (DEFAULT_CROSSFADE_DURATION.as_secs_f64() * sample_rate as f64) as u64
+}
 
 /// Crossfade curve shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,6 +150,21 @@ impl GainEnvelope {
     /// Returns the end gain value (the gain after the envelope completes).
     pub fn end_gain(&self) -> f32 {
         self.end_gain
+    }
+
+    /// Returns the start gain value.
+    pub fn start_gain(&self) -> f32 {
+        self.start_gain
+    }
+
+    /// Returns the total duration in samples.
+    pub fn duration_samples(&self) -> u64 {
+        self.duration_samples
+    }
+
+    /// Returns the crossfade curve.
+    pub fn curve(&self) -> CrossfadeCurve {
+        self.curve
     }
 }
 

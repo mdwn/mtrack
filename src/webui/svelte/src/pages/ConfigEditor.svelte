@@ -182,6 +182,8 @@
           names.add(track);
         }
       }
+      // Always include special mtrack tracks in the suggestions.
+      names.add("mtrack:looping");
       trackNames = [...names].sort();
     } catch (e: any) {
       console.error("Failed to load track names:", e);

@@ -63,6 +63,7 @@ impl crate::audio::Device for Device {
         _loop_break: Arc<AtomicBool>,
         _active_section: Arc<parking_lot::RwLock<Option<crate::player::SectionBounds>>>,
         _section_loop_break: Arc<AtomicBool>,
+        _loop_time_consumed: Arc<parking_lot::Mutex<Duration>>,
     ) -> Result<(), Box<dyn Error>> {
         let span = span!(Level::INFO, "play song (mock)");
         let _enter = span.enter();
@@ -193,6 +194,7 @@ mod tests {
                 Arc::new(AtomicBool::new(false)),
                 Arc::new(parking_lot::RwLock::new(None)),
                 Arc::new(AtomicBool::new(false)),
+                Arc::new(parking_lot::Mutex::new(Duration::ZERO)),
             );
         });
 
@@ -237,6 +239,7 @@ mod tests {
                 Arc::new(AtomicBool::new(false)),
                 Arc::new(parking_lot::RwLock::new(None)),
                 Arc::new(AtomicBool::new(false)),
+                Arc::new(parking_lot::Mutex::new(Duration::ZERO)),
             );
         });
 
@@ -278,6 +281,7 @@ mod tests {
                 Arc::new(AtomicBool::new(false)),
                 Arc::new(parking_lot::RwLock::new(None)),
                 Arc::new(AtomicBool::new(false)),
+                Arc::new(parking_lot::Mutex::new(Duration::ZERO)),
             );
         });
 

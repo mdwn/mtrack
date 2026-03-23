@@ -36,7 +36,7 @@
   import FilePicker from "./FilePicker.svelte";
   import TrackEditor from "./TrackEditor.svelte";
   import SongLightingEditor from "./SongLightingEditor.svelte";
-  import SongSectionEditor from "./SongSectionEditor.svelte";
+  import SectionTimelineEditor from "./SectionTimelineEditor.svelte";
   import SamplesSection from "../config/SamplesSection.svelte";
   import type { SampleBrowseTarget } from "../config/SamplesSection.svelte";
 
@@ -976,7 +976,12 @@
         />
       {:else if activeTab === "sections"}
         {#if song}
-          <SongSectionEditor {song} bind:sections bind:dirty={sectionsDirty} />
+          <SectionTimelineEditor
+            {song}
+            {waveformTracks}
+            bind:sections
+            bind:dirty={sectionsDirty}
+          />
         {/if}
       {:else if activeTab === "lighting"}
         {#if song}

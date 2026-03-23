@@ -410,8 +410,8 @@ impl Engine {
         start_time: Duration,
         clock: crate::clock::PlaybackClock,
         loop_break: Arc<AtomicBool>,
-        _active_section: Arc<parking_lot::RwLock<Option<crate::player::SectionBounds>>>,
-        _section_loop_break: Arc<AtomicBool>,
+        active_section: Arc<parking_lot::RwLock<Option<crate::player::SectionBounds>>>,
+        section_loop_break: Arc<AtomicBool>,
     ) -> Result<(), Box<dyn Error>> {
         let span = span!(Level::INFO, "play song (dmx)");
         let _enter = span.enter();
@@ -570,11 +570,16 @@ impl Engine {
         // Start song time tracking (per-song, tracks elapsed time).
         // Must start AFTER timeline_finished is reset, otherwise the tracker
         // sees true from the previous song and exits immediately.
-        let song_time_tracker = Self::start_song_time_tracker_from(
+        // Flag set by the section loop thread when it takes over song time writes.
+        // Until set, the song time tracker writes normally.
+        let section_owns_time = Arc::new(AtomicBool::new(false));
+
+        let song_time_tracker = Self::start_song_time_tracker_with_section(
             dmx_engine.clone(),
             cancel_handle.clone(),
             start_time,
             clock.clone(),
+            Some(section_owns_time.clone()),
         );
 
         // Store the cancel handle so the effects loop can notify when everything finishes
@@ -614,6 +619,135 @@ impl Engine {
                     &phase,
                     &subphase,
                 );
+            })
+        };
+
+        // Section loop: continuously update song time to wrap within section bounds.
+        // Runs alongside the timeline watcher and song time tracker. When active,
+        // it overrides the song time tracker's writes with the wrapped time.
+        let section_loop_thread = {
+            let cancel_handle = cancel_handle.clone();
+            let active_section = active_section.clone();
+            let section_loop_break = section_loop_break.clone();
+            let section_owns_time = section_owns_time.clone();
+            let dmx_engine = dmx_engine.clone();
+            let clock = clock.clone();
+            let timeline_finished = dmx_engine.timeline_finished.clone();
+            thread::spawn(move || {
+                let mut next_trigger: Option<Duration> = None;
+                let mut iteration_start: Option<Duration> = None;
+                // Cached section bounds so we can handle break even after
+                // active_section is cleared by stop_section_loop().
+                let mut cached_section: Option<crate::player::SectionBounds> = None;
+                // After loop break: (resume_time, clock_at_break). The thread
+                // keeps writing song time advancing from the resume point.
+                let mut continue_from: Option<(Duration, Duration)> = None;
+
+                loop {
+                    if cancel_handle.is_cancelled() || timeline_finished.load(Ordering::Relaxed) {
+                        break;
+                    }
+
+                    // Post-break: advance song time from resume point.
+                    if let Some((resume_time, break_clock)) = continue_from {
+                        let since_break = clock.elapsed().saturating_sub(break_clock);
+                        dmx_engine.update_song_time(resume_time + since_break);
+                        thread::sleep(Duration::from_millis(10));
+                        continue;
+                    }
+
+                    // Check for loop break first (before reading active_section,
+                    // which may already be cleared by stop_section_loop).
+                    if section_loop_break.load(Ordering::Relaxed) {
+                        if let Some(ref section) = cached_section {
+                            let elapsed = clock.elapsed();
+                            let current_pos = if let Some(iter_start) = iteration_start {
+                                let time_since = elapsed.saturating_sub(iter_start);
+                                let sd = section.end_time.saturating_sub(section.start_time);
+                                section.start_time + time_since.min(sd)
+                            } else {
+                                section.end_time
+                            };
+                            info!(
+                                position = ?current_pos,
+                                "DMX section loop: breaking, continuing from current position"
+                            );
+                            dmx_engine.update_song_time(current_pos);
+                            dmx_engine.start_lighting_timeline_at(current_pos);
+                            {
+                                let mut playbacks = dmx_engine.midi_dmx_playbacks.lock();
+                                for playback in playbacks.iter_mut() {
+                                    let events = playback.precomputed.events();
+                                    playback.cursor =
+                                        events.partition_point(|e| e.time < current_pos);
+                                }
+                            }
+                            continue_from = Some((current_pos, elapsed));
+                        } else {
+                            // No cached section — just hand back to tracker.
+                            section_owns_time.store(false, Ordering::Relaxed);
+                        }
+                        thread::sleep(Duration::from_millis(10));
+                        continue;
+                    }
+
+                    let section = active_section.read().clone();
+                    if let Some(ref section) = section {
+                        // Cache section bounds for use during break handling.
+                        cached_section = Some(section.clone());
+
+                        let section_duration = section.end_time.saturating_sub(section.start_time);
+                        if section_duration.is_zero() {
+                            break;
+                        }
+
+                        let elapsed = clock.elapsed();
+
+                        if next_trigger.is_none() {
+                            next_trigger = Some(section.end_time);
+                        }
+
+                        if let Some(iter_start) = iteration_start {
+                            let time_since = elapsed.saturating_sub(iter_start);
+                            let position = time_since.min(section_duration);
+                            dmx_engine.update_song_time(section.start_time + position);
+                        }
+
+                        let crossfade_margin = crate::audio::crossfade::DEFAULT_CROSSFADE_DURATION;
+                        if let Some(trigger) = next_trigger {
+                            if elapsed + crossfade_margin >= trigger {
+                                info!(
+                                    section = section.name,
+                                    "DMX section loop: resetting for next iteration"
+                                );
+                                dmx_engine.start_lighting_timeline_at(section.start_time);
+                                {
+                                    let mut playbacks = dmx_engine.midi_dmx_playbacks.lock();
+                                    for playback in playbacks.iter_mut() {
+                                        let events = playback.precomputed.events();
+                                        playback.cursor =
+                                            events.partition_point(|e| e.time < section.start_time);
+                                    }
+                                }
+                                dmx_engine.update_song_time(section.start_time);
+                                section_owns_time.store(true, Ordering::Relaxed);
+                                iteration_start = Some(elapsed);
+                                next_trigger = Some(elapsed + section_duration);
+                            }
+                        }
+                    } else {
+                        // No active section.
+                        if cached_section.is_some() {
+                            // Section was cleared without break — reset.
+                            cached_section = None;
+                        }
+                        next_trigger = None;
+                        iteration_start = None;
+                        section_owns_time.store(false, Ordering::Relaxed);
+                    }
+
+                    thread::sleep(Duration::from_millis(10));
+                }
             })
         };
 
@@ -687,6 +821,12 @@ impl Engine {
             if let Err(e) = loop_time_tracker.join() {
                 error!("Error waiting for loop time tracker to stop: {:?}", e);
             }
+        }
+
+        // Stop section loop thread.
+        section_loop_break.store(true, Ordering::Relaxed);
+        if let Err(e) = section_loop_thread.join() {
+            error!("Error joining section loop thread: {:?}", e);
         }
 
         // Final cleanup.
@@ -1149,16 +1289,38 @@ impl Engine {
         start_offset: Duration,
         clock: crate::clock::PlaybackClock,
     ) -> JoinHandle<()> {
+        Self::start_song_time_tracker_with_section(
+            dmx_engine,
+            cancel_handle,
+            start_offset,
+            clock,
+            None,
+        )
+    }
+
+    fn start_song_time_tracker_with_section(
+        dmx_engine: Arc<Engine>,
+        cancel_handle: CancelHandle,
+        start_offset: Duration,
+        clock: crate::clock::PlaybackClock,
+        section_owns_time: Option<Arc<AtomicBool>>,
+    ) -> JoinHandle<()> {
         let timeline_finished = dmx_engine.timeline_finished.clone();
         thread::spawn(move || {
-            // Run until cancelled OR timeline finished
             while !cancel_handle.is_cancelled() && !timeline_finished.load(Ordering::Relaxed) {
-                let elapsed = clock.elapsed();
-                let song_time = start_offset + elapsed;
+                // Skip writing when the section loop thread has taken over
+                // song time updates (set when the first section loop triggers).
+                let section_writing = section_owns_time
+                    .as_ref()
+                    .map(|f| f.load(Ordering::Relaxed))
+                    .unwrap_or(false);
 
-                dmx_engine.update_song_time(song_time);
+                if !section_writing {
+                    let elapsed = clock.elapsed();
+                    let song_time = start_offset + elapsed;
+                    dmx_engine.update_song_time(song_time);
+                }
 
-                // Update every 10ms for reasonable precision
                 thread::sleep(Duration::from_millis(10));
             }
         })

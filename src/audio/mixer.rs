@@ -168,7 +168,9 @@ impl AudioMixer {
     }
 
     /// Sets a gain envelope on all active sources matching the given IDs.
-    /// Used to attach fade-out envelopes to running sources during loop crossfades.
+    /// Each source gets its own envelope instance so they don't share the
+    /// atomic position counter (which would cause the fade to advance
+    /// N times faster with N sources).
     pub fn set_gain_envelope(
         &self,
         source_ids: &[u64],
@@ -178,7 +180,13 @@ impl AudioMixer {
         for source_arc in sources.iter() {
             let mut source = source_arc.lock();
             if source_ids.contains(&source.id) {
-                source.gain_envelope = Some(envelope.clone());
+                let own = Arc::new(crate::audio::crossfade::GainEnvelope::new(
+                    envelope.start_gain(),
+                    envelope.end_gain(),
+                    envelope.duration_samples(),
+                    envelope.curve(),
+                ));
+                source.gain_envelope = Some(own);
             }
         }
     }

@@ -999,6 +999,7 @@ impl AudioDevice for Device {
         loop_break: Arc<AtomicBool>,
         active_section: Arc<parking_lot::RwLock<Option<crate::player::SectionBounds>>>,
         section_loop_break: Arc<AtomicBool>,
+        loop_time_consumed: Arc<parking_lot::Mutex<Duration>>,
     ) -> Result<(), Box<dyn Error>> {
         let span = span!(Level::INFO, "play song (cpal)");
         let _enter = span.enter();
@@ -1072,16 +1073,6 @@ impl AudioDevice for Device {
             let guard = sources.read();
             !guard.is_empty()
         };
-        let fade_in_envelope = if has_existing_sources {
-            let crossfade_samples = (0.1 * self.output_manager.mixer.sample_rate() as f64) as u64;
-            Some(Arc::new(crate::audio::crossfade::GainEnvelope::fade_in(
-                crossfade_samples,
-                crate::audio::crossfade::CrossfadeCurve::Linear,
-            )))
-        } else {
-            None
-        };
-
         // Create sources and track their finish flags (no locks needed for monitoring)
         let mut source_finish_flags = Vec::new();
 
@@ -1101,15 +1092,32 @@ impl AudioDevice for Device {
                 is_finished,
                 start_at_sample: None,
                 cancel_at_sample: None,
-                gain_envelope: fade_in_envelope.clone(),
+                gain_envelope: if has_existing_sources {
+                    let cs = crate::audio::crossfade::default_crossfade_samples(
+                        self.output_manager.mixer.sample_rate(),
+                    );
+                    Some(Arc::new(crate::audio::crossfade::GainEnvelope::fade_in(
+                        cs,
+                        crate::audio::crossfade::CrossfadeCurve::Linear,
+                    )))
+                } else {
+                    None
+                },
             };
 
             self.output_manager.add_source(active_source)?;
         }
 
         // Monitor loop: polls for source completion, cancellation, and section boundaries.
-        let crossfade_samples = (0.1 * self.output_manager.mixer.sample_rate() as f64) as u64;
-        let crossfade_duration = Duration::from_millis(100);
+        let crossfade_samples = crate::audio::crossfade::default_crossfade_samples(
+            self.output_manager.mixer.sample_rate(),
+        );
+        let crossfade_duration = crate::audio::crossfade::DEFAULT_CROSSFADE_DURATION;
+
+        // Track the next time a section loop crossfade should trigger.
+        // This prevents re-triggering immediately after a crossfade since the
+        // clock keeps advancing (it doesn't reset on loop).
+        let mut next_section_trigger: Option<Duration> = None;
 
         'monitor: loop {
             if cancel_handle.is_cancelled() || loop_break.load(Ordering::Relaxed) {
@@ -1128,7 +1136,11 @@ impl AudioDevice for Device {
             if let Some(section) = active_section.read().as_ref() {
                 if !section_loop_break.load(Ordering::Relaxed) {
                     let elapsed = clock.elapsed();
-                    if elapsed + crossfade_duration >= section.end_time {
+
+                    // Set up the first trigger point based on the section end.
+                    let trigger_time = next_section_trigger.unwrap_or(section.end_time);
+
+                    if elapsed + crossfade_duration >= trigger_time {
                         info!(
                             section = section.name,
                             "Audio section loop: crossfading back to section start"
@@ -1159,12 +1171,6 @@ impl AudioDevice for Device {
                             mappings,
                         ) {
                             Ok(new_sources) => {
-                                let fade_in =
-                                    Arc::new(crate::audio::crossfade::GainEnvelope::fade_in(
-                                        crossfade_samples,
-                                        crate::audio::crossfade::CrossfadeCurve::Linear,
-                                    ));
-
                                 // Replace finish flags with new source flags.
                                 source_finish_flags.clear();
                                 for source in new_sources {
@@ -1183,7 +1189,12 @@ impl AudioDevice for Device {
                                         is_finished,
                                         start_at_sample: None,
                                         cancel_at_sample: None,
-                                        gain_envelope: Some(fade_in.clone()),
+                                        gain_envelope: Some(Arc::new(
+                                            crate::audio::crossfade::GainEnvelope::fade_in(
+                                                crossfade_samples,
+                                                crate::audio::crossfade::CrossfadeCurve::Linear,
+                                            ),
+                                        )),
                                     };
 
                                     if let Err(e) = self.output_manager.add_source(active_source) {
@@ -1196,6 +1207,13 @@ impl AudioDevice for Device {
                                 break 'monitor;
                             }
                         }
+
+                        // Schedule next trigger: current time + section duration.
+                        let section_duration = section.end_time.saturating_sub(section.start_time);
+                        next_section_trigger = Some(clock.elapsed() + section_duration);
+
+                        // Accumulate consumed time so elapsed() reports correct song position.
+                        *loop_time_consumed.lock() += section_duration;
 
                         // Continue monitoring the new sources.
                         continue 'monitor;
@@ -1220,7 +1238,9 @@ impl AudioDevice for Device {
         {
             info!(song = song.name(), "Audio loop: creating crossfade sources");
 
-            let crossfade_samples = (0.1 * self.output_manager.mixer.sample_rate() as f64) as u64;
+            let crossfade_samples = crate::audio::crossfade::default_crossfade_samples(
+                self.output_manager.mixer.sample_rate(),
+            );
 
             // Fade out any remaining sources from previous iteration.
             let current_ids: Vec<u64> = {
@@ -1251,11 +1271,6 @@ impl AudioDevice for Device {
                 }
             };
 
-            let fade_in = Arc::new(crate::audio::crossfade::GainEnvelope::fade_in(
-                crossfade_samples,
-                crate::audio::crossfade::CrossfadeCurve::Linear,
-            ));
-
             let mut new_finish_flags = Vec::new();
             for source in new_sources {
                 let source_id = crate::audio::next_source_id();
@@ -1273,7 +1288,10 @@ impl AudioDevice for Device {
                     is_finished,
                     start_at_sample: None,
                     cancel_at_sample: None,
-                    gain_envelope: Some(fade_in.clone()),
+                    gain_envelope: Some(Arc::new(crate::audio::crossfade::GainEnvelope::fade_in(
+                        crossfade_samples,
+                        crate::audio::crossfade::CrossfadeCurve::Linear,
+                    ))),
                 };
 
                 if let Err(e) = self.output_manager.add_source(active_source) {
@@ -1404,7 +1422,7 @@ mod test {
     struct ErrorCapturingState {
         alive: Arc<AtomicBool>,
         build_count: std::sync::atomic::AtomicU32,
-        captured_error_notify: std::sync::Mutex<Option<CondvarNotify>>,
+        captured_error_notify: Mutex<Option<CondvarNotify>>,
     }
 
     /// A factory that captures the error_notify so tests can trigger stream error recovery.
@@ -1419,7 +1437,7 @@ mod test {
 
     impl ErrorCapturingHandle {
         fn trigger_error(&self) {
-            if let Some(notify) = self.state.captured_error_notify.lock().unwrap().as_ref() {
+            if let Some(notify) = self.state.captured_error_notify.lock().as_ref() {
                 let (mutex, condvar) = &**notify;
                 let mut guard = mutex.lock();
                 *guard = true;
@@ -1441,7 +1459,7 @@ mod test {
             let state = Arc::new(ErrorCapturingState {
                 alive: Arc::new(AtomicBool::new(false)),
                 build_count: std::sync::atomic::AtomicU32::new(0),
-                captured_error_notify: std::sync::Mutex::new(None),
+                captured_error_notify: Mutex::new(None),
             });
             let handle = ErrorCapturingHandle {
                 state: state.clone(),
@@ -1459,7 +1477,7 @@ mod test {
             error_notify: CondvarNotify,
         ) -> Result<Box<dyn OutputStream>, Box<dyn Error>> {
             self.state.build_count.fetch_add(1, Ordering::Relaxed);
-            *self.state.captured_error_notify.lock().unwrap() = Some(error_notify);
+            *self.state.captured_error_notify.lock() = Some(error_notify);
             self.state.alive.store(true, Ordering::Relaxed);
             Ok(Box::new(MockOutputStream {
                 _alive: self.state.alive.clone(),

@@ -230,7 +230,7 @@ pub async fn log_poller(tx: broadcast::Sender<String>) {
 
         // Acquire the log buffer lock on the blocking thread pool so we never
         // block a tokio worker thread.  The TuiLogLayer acquires this same
-        // std::sync::Mutex on every log event from any thread.
+        // parking_lot::Mutex on every log event from any thread.
         let skip_from = last_sent_count;
         let (new_lines, new_count) = match tokio::task::spawn_blocking(move || {
             let buf = buffer.lock();
