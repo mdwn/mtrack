@@ -230,4 +230,102 @@ test.describe("Song Detail - Section Editor", () => {
     await page.locator(".tab", { hasText: "Sections" }).click();
     await expect(page.locator(".section-block")).toHaveCount(2);
   });
+
+  test("drag on empty area creates a new section", async ({ page }) => {
+    await page.goto("/#/songs/Test%20Song%20Beta");
+    await page.locator(".tab", { hasText: "Sections" }).click();
+    await expect(page.locator(".section-block")).toHaveCount(2);
+
+    // Drag on the bar-content area past the existing sections.
+    const barContent = page.locator(".bar-content");
+    const box = await barContent.boundingBox();
+    if (!box) throw new Error("bar-content not found");
+
+    // Beat grid: 16 measures spanning 0-32s of a 240s song.
+    // Existing sections cover m1-8 (0-16s). Drag in m9-16 range (16-32s = ~7%-13% of bar).
+    const startX = box.x + box.width * 0.08;
+    const endX = box.x + box.width * 0.12;
+    const y = box.y + box.height / 2;
+
+    await page.mouse.move(startX, y);
+    await page.mouse.down();
+    await page.mouse.move(endX, y, { steps: 5 });
+    await page.mouse.up();
+
+    await expect(page.locator(".section-block")).toHaveCount(3);
+    await expect(page.locator(".section-chip")).toHaveCount(3);
+  });
+
+  test("selecting a section and pressing Delete removes it", async ({
+    page,
+  }) => {
+    await page.goto("/#/songs/Test%20Song%20Beta");
+    await page.locator(".tab", { hasText: "Sections" }).click();
+    await expect(page.locator(".section-block")).toHaveCount(2);
+
+    // Click on the first section block to select it.
+    const firstBlock = page.locator(".section-block").first();
+    const blockBox = await firstBlock.boundingBox();
+    if (!blockBox) throw new Error("section block not found");
+
+    // Click the bar-content at the block's center (blocks have pointer-events: none).
+    const barContent = page.locator(".bar-content");
+    const barBox = await barContent.boundingBox();
+    if (!barBox) throw new Error("bar-content not found");
+    await page.mouse.click(
+      blockBox.x + blockBox.width / 2,
+      blockBox.y + blockBox.height / 2,
+    );
+
+    await expect(page.locator(".section-block.selected")).toHaveCount(1);
+    await page.keyboard.press("Delete");
+
+    await expect(page.locator(".section-block")).toHaveCount(1);
+    await expect(page.locator(".section-chip")).toHaveCount(1);
+  });
+
+  test("double-clicking a section allows renaming", async ({ page }) => {
+    await page.goto("/#/songs/Test%20Song%20Beta");
+    await page.locator(".tab", { hasText: "Sections" }).click();
+    await expect(page.locator(".section-block")).toHaveCount(2);
+
+    // Double-click on the first section block to edit its name.
+    const firstBlock = page.locator(".section-block").first();
+    const blockBox = await firstBlock.boundingBox();
+    if (!blockBox) throw new Error("section block not found");
+
+    await page.mouse.dblclick(
+      blockBox.x + blockBox.width / 2,
+      blockBox.y + blockBox.height / 2,
+    );
+
+    // An inline input should appear.
+    const input = page.locator(".section-name-input");
+    await expect(input).toBeVisible();
+
+    // Clear and type a new name.
+    await input.fill("intro");
+    await input.press("Enter");
+
+    // The input should disappear and the name should be updated.
+    await expect(input).not.toBeVisible();
+    await expect(page.locator(".section-chip").first()).toContainText("intro");
+  });
+
+  test("section editing marks config as dirty", async ({ page }) => {
+    await page.goto("/#/songs/Test%20Song%20Beta");
+    await page.locator(".tab", { hasText: "Sections" }).click();
+
+    // Delete a section to trigger a change.
+    const firstBlock = page.locator(".section-block").first();
+    const blockBox = await firstBlock.boundingBox();
+    if (!blockBox) throw new Error("section block not found");
+    await page.mouse.click(
+      blockBox.x + blockBox.width / 2,
+      blockBox.y + blockBox.height / 2,
+    );
+    await page.keyboard.press("Delete");
+
+    await expect(page.locator(".unsaved")).toBeVisible();
+  });
 });

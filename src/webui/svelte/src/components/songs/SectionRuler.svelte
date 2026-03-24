@@ -93,10 +93,22 @@
       ctx.fillText(formatTime(t), x, h - 13);
     }
 
-    // Measure markers from beat grid.
-    if (measureTimesMs.length > 0) {
-      ctx.fillStyle = "rgba(94, 202, 234, 0.9)";
-      ctx.strokeStyle = "rgba(94, 202, 234, 0.5)";
+    // Measure markers from beat grid with density-based thinning.
+    if (measureTimesMs.length > 1) {
+      // Compute the median pixel gap between adjacent measures.
+      const avgGapMs =
+        (measureTimesMs[measureTimesMs.length - 1] - measureTimesMs[0]) /
+        (measureTimesMs.length - 1);
+      const avgGapPx = avgGapMs * pixelsPerMs;
+
+      // Choose stride: power of 2 so labeled measures stay musically meaningful.
+      // Target: at least MIN_LABEL_GAP pixels between labeled measures.
+      const MIN_LABEL_GAP = 32;
+      let stride = 1;
+      while (avgGapPx * stride < MIN_LABEL_GAP) {
+        stride *= 2;
+      }
+
       ctx.font = "9px var(--mono, monospace)";
       ctx.textAlign = "center";
       ctx.lineWidth = 1;
@@ -105,13 +117,22 @@
         const ms = measureTimesMs[i];
         if (ms < viewStartMs || ms > viewEndMs) continue;
         const x = ms * pixelsPerMs - scrollLeft;
+        const isLabeled = i % stride === 0;
 
+        // Tick line — labeled measures get full height, others get a shorter tick.
+        ctx.strokeStyle = isLabeled
+          ? "rgba(94, 202, 234, 0.5)"
+          : "rgba(94, 202, 234, 0.2)";
         ctx.beginPath();
         ctx.moveTo(x, 0);
-        ctx.lineTo(x, 12);
+        ctx.lineTo(x, isLabeled ? 12 : 6);
         ctx.stroke();
 
-        ctx.fillText(`${i + 1}`, x, 10);
+        // Label only at stride intervals.
+        if (isLabeled) {
+          ctx.fillStyle = "rgba(94, 202, 234, 0.9)";
+          ctx.fillText(`${i + 1}`, x, 10);
+        }
       }
     }
 

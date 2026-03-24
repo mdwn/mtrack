@@ -522,8 +522,9 @@ mod test {
         playlist,
         playlist::Playlist,
         proto::player::v1::{
-            player_service_client::PlayerServiceClient, NextRequest, PlayRequest, PreviousRequest,
-            StatusRequest, StopRequest, SwitchToPlaylistRequest,
+            player_service_client::PlayerServiceClient, LoopSectionRequest, NextRequest,
+            PlayRequest, PreviousRequest, StatusRequest, StopRequest, StopSectionLoopRequest,
+            SwitchToPlaylistRequest,
         },
         songs,
         testutil::eventually,
@@ -1053,6 +1054,60 @@ mod test {
             "Expected UNIMPLEMENTED when no config store is available"
         );
         assert!(status.message().contains("config store not available"));
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_grpc_loop_section_not_playing() -> Result<(), Box<dyn Error>> {
+        let (_player, mut client, _device) = setup_grpc().await?;
+
+        let result = client
+            .loop_section(LoopSectionRequest {
+                section_name: "verse".to_string(),
+            })
+            .await;
+        assert!(result.is_err());
+        let status = result.unwrap_err();
+        assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+        assert!(status.message().contains("no song is playing"));
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_grpc_loop_section_not_found() -> Result<(), Box<dyn Error>> {
+        let (_player, mut client, device) = setup_grpc().await?;
+
+        // Start playing first.
+        client.play(PlayRequest {}).await?;
+        eventually(|| device.is_playing(), "Song never started playing");
+
+        // Test songs have no sections, so any name should fail.
+        let result = client
+            .loop_section(LoopSectionRequest {
+                section_name: "nonexistent".to_string(),
+            })
+            .await;
+        assert!(result.is_err());
+        let status = result.unwrap_err();
+        assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+        assert!(status.message().contains("not found"));
+
+        client.stop(StopRequest {}).await?;
+        eventually(|| !device.is_playing(), "Song never stopped");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_grpc_stop_section_loop_succeeds() -> Result<(), Box<dyn Error>> {
+        let (player, mut client, _device) = setup_grpc().await?;
+
+        // stop_section_loop should always succeed (even with no active loop).
+        client.stop_section_loop(StopSectionLoopRequest {}).await?;
+
+        // Verify state was cleared.
+        assert!(player.active_section().is_none());
 
         Ok(())
     }

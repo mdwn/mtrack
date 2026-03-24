@@ -75,11 +75,27 @@
     return 0;
   }
 
-  // Find nearest measure (1-indexed) for a given ms.
+  // Snap stride: matches the label stride in SectionRuler so snap targets
+  // correspond to visible measure labels. Zoom in for finer control.
+  const MIN_LABEL_GAP = 32;
+  let snapStride = $derived.by(() => {
+    if (measureTimesMs.length < 2) return 1;
+    const avgGapMs =
+      (measureTimesMs[measureTimesMs.length - 1] - measureTimesMs[0]) /
+      (measureTimesMs.length - 1);
+    const avgGapPx = avgGapMs * pixelsPerMs;
+    let s = 1;
+    while (avgGapPx * s < MIN_LABEL_GAP) {
+      s *= 2;
+    }
+    return s;
+  });
+
+  // Find nearest measure (1-indexed) at the current snap stride.
   function snapToMeasure(ms: number): number {
     let closest = 1;
     let closestDist = Infinity;
-    for (let i = 0; i < measureTimesMs.length; i++) {
+    for (let i = 0; i < measureTimesMs.length; i += snapStride) {
       const dist = Math.abs(measureTimesMs[i] - ms);
       if (dist < closestDist) {
         closestDist = dist;
@@ -107,6 +123,10 @@
     edge: "start" | "end" | "move";
     originX: number;
     originMeasure: number;
+    /** For move: width of section in measures (preserved during drag) */
+    spanMeasures?: number;
+    /** For move: has the pointer moved far enough to count as a drag? */
+    engaged?: boolean;
   } | null>(null);
 
   // Create state: click-drag on empty area.
@@ -152,8 +172,18 @@
         return;
       }
       if (x > blockLeft && x < blockRight) {
-        // Click on body — select. Don't preventDefault so dblclick can fire.
+        // Body — start potential move drag. If pointer doesn't move far enough,
+        // it stays a click (select). Don't preventDefault so dblclick can fire.
         selectedIndex = block.index;
+        dragState = {
+          index: block.index,
+          edge: "move",
+          originX: x,
+          originMeasure: block.start_measure,
+          spanMeasures: block.end_measure - block.start_measure,
+          engaged: false,
+        };
+        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
         return;
       }
     }
@@ -167,18 +197,34 @@
   }
 
   function handlePointerMove(e: PointerEvent) {
+    updateCursor(e);
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const x = e.clientX - rect.left;
     const ms = (scrollLeft + x) / pixelsPerMs;
     const measure = snapToMeasure(ms);
 
     if (dragState) {
+      // For move drags, require a minimum distance before engaging.
+      const DRAG_THRESHOLD = 4; // px
+      if (dragState.edge === "move" && !dragState.engaged) {
+        if (Math.abs(x - dragState.originX) < DRAG_THRESHOLD) return;
+        dragState = { ...dragState, engaged: true };
+      }
+
       const updated = [...sections];
       const section = { ...updated[dragState.index] };
       if (dragState.edge === "start") {
         section.start_measure = Math.min(measure, section.end_measure - 1);
       } else if (dragState.edge === "end") {
         section.end_measure = Math.max(measure, section.start_measure + 1);
+      } else if (dragState.edge === "move" && dragState.engaged) {
+        const span =
+          dragState.spanMeasures ?? section.end_measure - section.start_measure;
+        // Clamp so section stays within valid measure range.
+        const maxStart = measureTimesMs.length - span + 1; // 1-indexed
+        const newStart = Math.max(1, Math.min(measure, maxStart));
+        section.start_measure = newStart;
+        section.end_measure = newStart + span;
       }
       updated[dragState.index] = section;
       onsectionschange(updated);
@@ -261,6 +307,39 @@
     }
   }
 
+  // Dynamic cursor based on hover position.
+  let cursorStyle = $state("crosshair");
+
+  function updateCursor(e: PointerEvent) {
+    if (dragState?.engaged) {
+      cursorStyle = "grabbing";
+      return;
+    }
+    if (dragState?.edge === "start" || dragState?.edge === "end") {
+      cursorStyle = "ew-resize";
+      return;
+    }
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    for (const block of blocks) {
+      const blockLeft = block.left;
+      const blockRight = block.left + block.width;
+      if (x >= blockLeft - HANDLE_WIDTH && x <= blockLeft + HANDLE_WIDTH) {
+        cursorStyle = "ew-resize";
+        return;
+      }
+      if (x >= blockRight - HANDLE_WIDTH && x <= blockRight + HANDLE_WIDTH) {
+        cursorStyle = "ew-resize";
+        return;
+      }
+      if (x > blockLeft && x < blockRight) {
+        cursorStyle = "grab";
+        return;
+      }
+    }
+    cursorStyle = "crosshair";
+  }
+
   // Create preview block.
   let createPreview = $derived.by(() => {
     if (!createState) return null;
@@ -288,6 +367,7 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class="bar-content"
+    style:cursor={cursorStyle}
     onpointerdown={handlePointerDown}
     onpointermove={handlePointerMove}
     onpointerup={handlePointerUp}
@@ -351,7 +431,6 @@
     flex: 1;
     position: relative;
     overflow: hidden;
-    cursor: crosshair;
     background: rgba(255, 255, 255, 0.02);
   }
   .section-block {
