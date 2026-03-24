@@ -84,6 +84,10 @@ comments:
     extension: any
     files:
       - ^Makefile$
+      - \.sh$
+      - \.toml$
+      - Dockerfile
+      - \.dockerignore$
     commenter:
       type: line
       comment_char: "#"

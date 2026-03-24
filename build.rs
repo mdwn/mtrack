@@ -13,7 +13,31 @@
 //
 use std::{env, error::Error, path::PathBuf, process::Command};
 
+/// Check that a pkg-config library is available and print a helpful message if not.
+fn check_lib(lib: &str, package_hint: &str) {
+    let status = Command::new("pkg-config").args(["--exists", lib]).status();
+    match status {
+        Ok(s) if s.success() => {}
+        _ => {
+            println!(
+                "cargo:warning=System library '{lib}' not found. \
+                 Install it (e.g. `apt install {package_hint}`) or run: ./setup.sh"
+            );
+        }
+    }
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
+    // Check for required system libraries early so the user gets a clear message
+    // instead of cryptic linker errors.
+    if Command::new("pkg-config").arg("--version").status().is_ok() {
+        if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
+            check_lib("alsa", "libasound2-dev");
+            check_lib("libudev", "libudev-dev");
+        }
+        check_lib("openssl", "libssl-dev");
+    }
+
     let out_dir = PathBuf::from(env::var("OUT_DIR")?);
 
     tonic_prost_build::configure()

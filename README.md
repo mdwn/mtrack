@@ -88,10 +88,16 @@ Topics covered include:
 
 ## Building
 
-mtrack uses a Makefile for build tasks. With [devbox](https://www.jetify.com/devbox) installed:
+mtrack uses a Makefile for build tasks. First, install system dependencies:
 
 ```
-$ devbox shell
+$ ./setup.sh          # build dependencies only
+$ ./setup.sh --dev    # include development tools (buf, cargo-tarpaulin, licensure, mdbook)
+```
+
+Then build:
+
+```
 $ make build
 ```
 
