@@ -42,6 +42,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Song change notifier system**: New `SongChangeNotifier` trait on the player enables
   pluggable reactions to song changes. The Morningstar integration is the first consumer;
   the trait is generic and supports multiple concurrent notifiers.
+- **Section looping**: Named sections of a song (defined by measure ranges in song.yaml)
+  can be activated during playback via gRPC `LoopSection`/`StopSectionLoop` RPCs. Audio
+  crossfades at section boundaries (same 100ms linear fade as whole-song looping), MIDI
+  restarts from section start with hard cut, and DMX/lighting timelines reset to the
+  section's start time. Elapsed time reporting accounts for accumulated loop iterations
+  via a `loop_time_consumed` accumulator. Section activation is rejected if playback has
+  already passed the section end. A confirmation tone (1kHz, 50ms, -12dB sine with fade
+  envelope) plays through the `mtrack:looping` track mapping when a section loop activates.
+- **Visual section editor**: The Sections tab in the song detail view now shows a
+  canvas-based timeline with all track waveforms, beat grid measure lines, and interactive
+  section creation/editing. Sections can be created by dragging on empty space (snaps to
+  measure boundaries), resized by dragging edges, moved by dragging the body, renamed by
+  double-clicking, and deleted with the Delete key. Measure label density and snap
+  granularity adapt to zoom level using power-of-2 stride thinning. Zoom controls include
+  +/-, Fit, and Ctrl+scroll wheel with anchor-point zooming.
+- **Section loop UI controls**: The PlaybackCard shows section buttons when playing a song
+  with defined sections. Clicking a section button activates the loop; an active loop shows
+  the section name and a "Stop Loop" button. Next/Prev navigation is allowed during looping.
+- **Section config validation**: Song validation now checks section constraints (name not
+  empty, start_measure >= 1, end_measure > start_measure).
 
 ### Changed
 
@@ -49,6 +69,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `prev_and_emit`, `next_and_emit`, `report_status`) to instance methods, reducing parameter
   passing and simplifying call sites. Playlist navigation now uses a `PlaylistDirection` enum
   instead of function pointers.
+- **Consistent `parking_lot::Mutex` usage**: All `std::sync::Mutex` instances across the
+  codebase have been converted to `parking_lot::Mutex` for consistency (no poisoning, simpler
+  API). The only exception was already using `parking_lot::Condvar`.
+
+### Fixed
+
+- **WebSocket test isolation**: Playwright e2e tests now use namespace-based WebSocket routing
+  (unique `wsId` per test) to prevent cross-test message contamination via the shared mock
+  server.
 
 ## [0.11.2] - 2026-03-21
 

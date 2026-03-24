@@ -156,6 +156,30 @@ impl Song {
             }
         }
 
+        for (i, section) in self.sections.iter().enumerate() {
+            let label = if section.name.is_empty() {
+                format!("section[{}]", i)
+            } else {
+                format!("section \"{}\"", section.name)
+            };
+
+            if section.name.trim().is_empty() {
+                errors.push(format!("{}: name must not be empty", label));
+            }
+            if section.start_measure == 0 {
+                errors.push(format!(
+                    "{}: start_measure must be 1 or greater (measures are 1-indexed)",
+                    label
+                ));
+            }
+            if section.end_measure <= section.start_measure {
+                errors.push(format!(
+                    "{}: end_measure must be greater than start_measure",
+                    label
+                ));
+            }
+        }
+
         if errors.is_empty() {
             Ok(())
         } else {
@@ -710,6 +734,76 @@ mod tests {
         assert_eq!(song.sections()[1].name, "chorus");
         assert_eq!(song.sections()[1].start_measure, 9);
         assert_eq!(song.sections()[1].end_measure, 16);
+    }
+
+    #[test]
+    fn validate_rejects_section_start_measure_zero() {
+        let mut song = minimal_song();
+        song.sections = vec![Section {
+            name: "bad".to_string(),
+            start_measure: 0,
+            end_measure: 4,
+        }];
+        let errors = song.validate().unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("start_measure must be 1")));
+    }
+
+    #[test]
+    fn validate_rejects_section_end_not_greater_than_start() {
+        let mut song = minimal_song();
+        song.sections = vec![Section {
+            name: "bad".to_string(),
+            start_measure: 5,
+            end_measure: 5,
+        }];
+        let errors = song.validate().unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("end_measure must be greater")));
+    }
+
+    #[test]
+    fn validate_rejects_section_end_less_than_start() {
+        let mut song = minimal_song();
+        song.sections = vec![Section {
+            name: "bad".to_string(),
+            start_measure: 8,
+            end_measure: 4,
+        }];
+        let errors = song.validate().unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("end_measure must be greater")));
+    }
+
+    #[test]
+    fn validate_rejects_section_empty_name() {
+        let mut song = minimal_song();
+        song.sections = vec![Section {
+            name: "".to_string(),
+            start_measure: 1,
+            end_measure: 4,
+        }];
+        let errors = song.validate().unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("name must not be empty")));
+    }
+
+    #[test]
+    fn validate_accepts_valid_sections() {
+        let mut song = minimal_song();
+        song.sections = vec![
+            Section {
+                name: "verse".to_string(),
+                start_measure: 1,
+                end_measure: 8,
+            },
+            Section {
+                name: "chorus".to_string(),
+                start_measure: 9,
+                end_measure: 16,
+            },
+        ];
+        assert!(song.validate().is_ok());
     }
 
     #[test]

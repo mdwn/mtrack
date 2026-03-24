@@ -3691,4 +3691,113 @@ mod test {
         eventually(|| !device.is_playing(), "Song never stopped");
         Ok(())
     }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_loop_section_not_playing() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+
+        // loop_section when nothing is playing should error.
+        let result = player.loop_section("verse").await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("no song is playing"));
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_loop_section_not_found() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        let binding = player
+            .audio_device()
+            .expect("audio device should be present");
+        let device = binding.to_mock()?;
+
+        player.play().await?;
+        eventually(|| device.is_playing(), "Song never started playing");
+
+        // Test songs have no sections/beat grid, so any section name should fail.
+        let result = player.loop_section("nonexistent").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+
+        player.stop().await;
+        eventually(|| !device.is_playing(), "Song never stopped playing");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_stop_section_loop_clears_state() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+
+        // active_section should be None initially.
+        assert!(player.active_section().is_none());
+
+        // Manually set active section state to simulate an active loop.
+        {
+            let mut active = player.active_section.write();
+            *active = Some(SectionBounds {
+                name: "test".to_string(),
+                start_time: Duration::from_secs(1),
+                end_time: Duration::from_secs(5),
+            });
+        }
+        assert!(player.active_section().is_some());
+
+        // stop_section_loop should clear it.
+        player.stop_section_loop();
+        assert!(player.active_section().is_none());
+        assert!(player.section_loop_break.load(Ordering::Relaxed));
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_add_loop_time_consumed() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+
+        // Initially zero.
+        assert_eq!(*player.loop_time_consumed.lock(), Duration::ZERO);
+
+        // Accumulates correctly.
+        player.add_loop_time_consumed(Duration::from_secs(2));
+        assert_eq!(*player.loop_time_consumed.lock(), Duration::from_secs(2));
+
+        player.add_loop_time_consumed(Duration::from_secs(3));
+        assert_eq!(*player.loop_time_consumed.lock(), Duration::from_secs(5));
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_active_section_getter() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+
+        assert!(player.active_section().is_none());
+
+        let bounds = SectionBounds {
+            name: "chorus".to_string(),
+            start_time: Duration::from_secs(10),
+            end_time: Duration::from_secs(20),
+        };
+        *player.active_section.write() = Some(bounds.clone());
+
+        let active = player.active_section().unwrap();
+        assert_eq!(active.name, "chorus");
+        assert_eq!(active.start_time, Duration::from_secs(10));
+        assert_eq!(active.end_time, Duration::from_secs(20));
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_is_current_song_looping() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+
+        // Test songs don't have loop_playback set, so this should be false.
+        assert!(!player.is_current_song_looping());
+
+        Ok(())
+    }
 }

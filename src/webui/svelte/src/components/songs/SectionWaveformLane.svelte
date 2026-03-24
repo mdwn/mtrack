@@ -61,17 +61,46 @@
     const msPerPeak = songDurationMs / peaks.length;
     const mid = h / 2;
 
-    // Draw measure grid lines.
-    ctx.strokeStyle = GRID_COLOR;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    for (const ms of measureTimesMs) {
-      if (ms < viewStartMs || ms > viewEndMs) continue;
-      const x = ms * pixelsPerMs - scrollLeft;
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, h);
+    // Draw measure grid lines with density-based thinning.
+    if (measureTimesMs.length > 1) {
+      const avgGapMs =
+        (measureTimesMs[measureTimesMs.length - 1] - measureTimesMs[0]) /
+        (measureTimesMs.length - 1);
+      const avgGapPx = avgGapMs * pixelsPerMs;
+
+      // Same stride logic as SectionRuler so lines stay aligned with labels.
+      const MIN_LABEL_GAP = 32;
+      let stride = 1;
+      while (avgGapPx * stride < MIN_LABEL_GAP) {
+        stride *= 2;
+      }
+
+      ctx.lineWidth = 1;
+
+      // Batch minor lines, then major lines on top.
+      ctx.strokeStyle = "rgba(94, 202, 234, 0.06)";
+      ctx.beginPath();
+      for (let i = 0; i < measureTimesMs.length; i++) {
+        if (i % stride === 0) continue; // skip major lines
+        const ms = measureTimesMs[i];
+        if (ms < viewStartMs || ms > viewEndMs) continue;
+        const x = ms * pixelsPerMs - scrollLeft;
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, h);
+      }
+      ctx.stroke();
+
+      ctx.strokeStyle = GRID_COLOR;
+      ctx.beginPath();
+      for (let i = 0; i < measureTimesMs.length; i += stride) {
+        const ms = measureTimesMs[i];
+        if (ms < viewStartMs || ms > viewEndMs) continue;
+        const x = ms * pixelsPerMs - scrollLeft;
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, h);
+      }
+      ctx.stroke();
     }
-    ctx.stroke();
 
     // Draw waveform.
     ctx.fillStyle = WAVEFORM_COLOR;

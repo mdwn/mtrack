@@ -225,6 +225,111 @@ test.describe("Playback State Transitions", () => {
     await expect(currentSong).toContainText("Test Song Beta");
   });
 
+  test("section buttons appear when playing song with sections", async ({
+    page,
+  }) => {
+    // Send playing state with available_sections.
+    await sendWsMessage(page, wsId, {
+      type: "playback",
+      is_playing: true,
+      elapsed_ms: 1000,
+      song_name: "Test Song Beta",
+      song_duration_ms: 240000,
+      playlist_name: "setlist",
+      playlist_position: 1,
+      playlist_songs: ["Test Song Alpha", "Test Song Beta"],
+      tracks: [],
+      available_playlists: ["all_songs", "setlist"],
+      persisted_playlist_name: "setlist",
+      locked: false,
+      available_sections: [
+        { name: "verse", start_measure: 1, end_measure: 4 },
+        { name: "chorus", start_measure: 5, end_measure: 8 },
+      ],
+      active_section: null,
+    });
+
+    // Section buttons should appear.
+    await expect(page.locator(".section-controls")).toBeVisible();
+    await expect(page.getByRole("button", { name: "verse" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "chorus" })).toBeVisible();
+  });
+
+  test("section buttons hidden when not playing", async ({ page }) => {
+    // Stopped state with sections — buttons should NOT appear.
+    await sendWsMessage(page, wsId, {
+      type: "playback",
+      is_playing: false,
+      elapsed_ms: 0,
+      song_name: "Test Song Beta",
+      song_duration_ms: 240000,
+      playlist_name: "setlist",
+      playlist_position: 1,
+      playlist_songs: ["Test Song Alpha", "Test Song Beta"],
+      tracks: [],
+      available_playlists: ["all_songs", "setlist"],
+      persisted_playlist_name: "setlist",
+      locked: false,
+      available_sections: [{ name: "verse", start_measure: 1, end_measure: 4 }],
+      active_section: null,
+    });
+
+    await expect(page.locator(".section-controls")).not.toBeVisible();
+  });
+
+  test("active section shows name and stop button", async ({ page }) => {
+    // Send playing state with an active section loop.
+    await sendWsMessage(page, wsId, {
+      type: "playback",
+      is_playing: true,
+      elapsed_ms: 3000,
+      song_name: "Test Song Beta",
+      song_duration_ms: 240000,
+      playlist_name: "setlist",
+      playlist_position: 1,
+      playlist_songs: ["Test Song Alpha", "Test Song Beta"],
+      tracks: [],
+      available_playlists: ["all_songs", "setlist"],
+      persisted_playlist_name: "setlist",
+      locked: false,
+      available_sections: [
+        { name: "verse", start_measure: 1, end_measure: 4 },
+        { name: "chorus", start_measure: 5, end_measure: 8 },
+      ],
+      active_section: { name: "verse", start_ms: 0, end_ms: 8000 },
+    });
+
+    // Should show the active section name and a Stop Loop button.
+    await expect(page.locator(".section-active")).toContainText("verse");
+    await expect(page.getByRole("button", { name: "Stop Loop" })).toBeVisible();
+    // Individual section buttons should be replaced by the active state.
+    await expect(page.getByRole("button", { name: "verse" })).not.toBeVisible();
+  });
+
+  test("section buttons hidden when no sections available", async ({
+    page,
+  }) => {
+    // Playing but no sections.
+    await sendWsMessage(page, wsId, {
+      type: "playback",
+      is_playing: true,
+      elapsed_ms: 1000,
+      song_name: "Test Song Alpha",
+      song_duration_ms: 180000,
+      playlist_name: "setlist",
+      playlist_position: 0,
+      playlist_songs: ["Test Song Alpha", "Test Song Beta"],
+      tracks: [],
+      available_playlists: ["all_songs", "setlist"],
+      persisted_playlist_name: "setlist",
+      locked: false,
+      available_sections: [],
+      active_section: null,
+    });
+
+    await expect(page.locator(".section-controls")).not.toBeVisible();
+  });
+
   test("elapsed time updates in progress display", async ({ page }) => {
     await sendWsMessage(page, wsId, {
       type: "playback",
