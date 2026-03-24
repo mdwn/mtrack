@@ -723,17 +723,24 @@ fn run_playback(sender: &mut dyn MidiSender, ctx: PlaybackContext<'_>) {
     }
 
     play_precomputed(
-        ctx.precomputed,
-        ctx.start_time,
+        &MidiPlaybackParams {
+            precomputed: ctx.precomputed,
+            start_time: ctx.start_time,
+            end_time: None,
+            clock_base: ctx.clock.elapsed(),
+            cancel_handle: ctx.cancel_handle,
+            exclude_channels: ctx.exclude_channels,
+            clock: ctx.clock,
+            active_section: Some(&ctx.active_section),
+        },
         sender,
-        ctx.cancel_handle,
-        ctx.exclude_channels,
-        ctx.clock,
     );
 
     // Section loop: if active_section is set, loop the section region.
-    // This runs inside the normal playback — after the initial play_precomputed
-    // finishes (or while events are still playing if section starts mid-song).
+    // The initial play_precomputed exits when it reaches section.end_time
+    // (via the active_section check). This loop then replays the section.
+    let mut midi_section_trigger: Option<Duration> = None;
+
     loop {
         if ctx.cancel_handle.is_cancelled() || ctx.loop_break.load(Ordering::Relaxed) {
             break;
@@ -743,8 +750,14 @@ fn run_playback(sender: &mut dyn MidiSender, ctx: PlaybackContext<'_>) {
         let section = ctx.active_section.read().clone();
         if let Some(ref section) = section {
             if !ctx.section_loop_break.load(Ordering::Relaxed) {
-                // Wait until we reach the section end time.
-                while ctx.clock.elapsed() < section.end_time {
+                let section_duration = section.end_time.saturating_sub(section.start_time);
+                let crossfade_margin = crate::audio::crossfade::DEFAULT_CROSSFADE_DURATION;
+
+                // First iteration: trigger at section end. Subsequent: now + duration.
+                let trigger = *midi_section_trigger.get_or_insert(section.end_time);
+
+                // Wait for the trigger.
+                while ctx.clock.elapsed() + crossfade_margin < trigger {
                     if ctx.cancel_handle.is_cancelled()
                         || ctx.section_loop_break.load(Ordering::Relaxed)
                     {
@@ -759,18 +772,25 @@ fn run_playback(sender: &mut dyn MidiSender, ctx: PlaybackContext<'_>) {
 
                 if !ctx.section_loop_break.load(Ordering::Relaxed) {
                     info!(section = section.name, "MIDI section loop: restarting");
-                    play_precomputed_until(
-                        ctx.precomputed,
-                        section.start_time,
-                        Some(section.end_time),
+                    play_precomputed(
+                        &MidiPlaybackParams {
+                            precomputed: ctx.precomputed,
+                            start_time: section.start_time,
+                            end_time: Some(section.end_time),
+                            clock_base: ctx.clock.elapsed(),
+                            cancel_handle: ctx.cancel_handle,
+                            exclude_channels: ctx.exclude_channels,
+                            clock: ctx.clock,
+                            active_section: None,
+                        },
                         sender,
-                        ctx.cancel_handle,
-                        ctx.exclude_channels,
-                        ctx.clock,
                     );
+                    midi_section_trigger = Some(ctx.clock.elapsed() + section_duration);
                     continue;
                 }
             }
+        } else {
+            midi_section_trigger = None;
         }
 
         // Whole-song loop check.
@@ -780,12 +800,17 @@ fn run_playback(sender: &mut dyn MidiSender, ctx: PlaybackContext<'_>) {
         {
             info!("MIDI loop: restarting from beginning");
             play_precomputed(
-                ctx.precomputed,
-                Duration::ZERO,
+                &MidiPlaybackParams {
+                    precomputed: ctx.precomputed,
+                    start_time: Duration::ZERO,
+                    end_time: None,
+                    clock_base: ctx.clock.elapsed(),
+                    cancel_handle: ctx.cancel_handle,
+                    exclude_channels: ctx.exclude_channels,
+                    clock: ctx.clock,
+                    active_section: Some(&ctx.active_section),
+                },
                 sender,
-                ctx.cancel_handle,
-                ctx.exclude_channels,
-                ctx.clock,
             );
             continue;
         }
@@ -860,61 +885,65 @@ fn run_beat_clock(
     let _ = sender.send(&stop_bytes);
 }
 
-/// Plays pre-computed MIDI events through a MIDI sender.
-/// Sleeps between events using spin_sleep for precision without busy-waiting.
-fn play_precomputed(
-    precomputed: &super::playback::PrecomputedMidi,
+/// Parameters for playing pre-computed MIDI events.
+struct MidiPlaybackParams<'a> {
+    precomputed: &'a super::playback::PrecomputedMidi,
+    /// Start time in the event timeline to begin playback from.
     start_time: Duration,
-    sender: &mut dyn MidiSender,
-    cancel_handle: &CancelHandle,
-    exclude_channels: &HashSet<u8>,
-    clock: &PlaybackClock,
-) {
-    play_precomputed_until(
-        precomputed,
-        start_time,
-        None,
-        sender,
-        cancel_handle,
-        exclude_channels,
-        clock,
-    );
+    /// If set, stop playback when events reach this time.
+    end_time: Option<Duration>,
+    /// What the clock reads at the logical start of this playback iteration.
+    /// Events are timed relative to this so looped iterations work correctly
+    /// even though the clock keeps advancing.
+    clock_base: Duration,
+    cancel_handle: &'a CancelHandle,
+    exclude_channels: &'a HashSet<u8>,
+    clock: &'a PlaybackClock,
+    /// If set, stop playback when this section becomes active and event time
+    /// reaches the section end. Allows the section loop to take over.
+    active_section: Option<&'a Arc<parking_lot::RwLock<Option<crate::player::SectionBounds>>>>,
 }
 
-fn play_precomputed_until(
-    precomputed: &super::playback::PrecomputedMidi,
-    start_time: Duration,
-    end_time: Option<Duration>,
-    sender: &mut dyn MidiSender,
-    cancel_handle: &CancelHandle,
-    exclude_channels: &HashSet<u8>,
-    clock: &PlaybackClock,
-) {
-    let events = precomputed.events_from(start_time);
+/// Plays pre-computed MIDI events through a MIDI sender.
+/// Sleeps between events using spin_sleep for precision without busy-waiting.
+fn play_precomputed(params: &MidiPlaybackParams<'_>, sender: &mut dyn MidiSender) {
+    let events = params.precomputed.events_from(params.start_time);
     let mut buf = Vec::with_capacity(8);
 
     for event in events {
-        if cancel_handle.is_cancelled() {
+        if params.cancel_handle.is_cancelled() {
             return;
         }
 
         // Stop at section end time if specified.
-        if let Some(end) = end_time {
+        if let Some(end) = params.end_time {
             if event.time >= end {
                 return;
             }
         }
 
-        let target_wall = event.time - start_time;
-        let elapsed = clock.elapsed();
+        // Stop if a section loop became active and we've reached its end.
+        // This lets the section loop in run_playback take over.
+        if let Some(active) = params.active_section {
+            if let Some(ref section) = *active.read() {
+                if event.time >= section.end_time {
+                    return;
+                }
+            }
+        }
+
+        // target_wall is relative to the section start, then offset by
+        // clock_base so it aligns with the continuously-advancing clock.
+        let target_wall = params.clock_base + (event.time - params.start_time);
+        let elapsed = params.clock.elapsed();
         if target_wall > elapsed {
             spin_sleep::sleep(target_wall - elapsed);
         }
-        if cancel_handle.is_cancelled() {
+        if params.cancel_handle.is_cancelled() {
             return;
         }
 
-        if let Some(bytes) = serialize_midi_event(event, exclude_channels, &mut buf) {
+        if let Some(bytes) = serialize_midi_event(event, params.exclude_channels, &mut buf) {
             if let Err(e) = sender.send(&bytes) {
                 debug!("MIDI send failed: {:?}", e);
             }
@@ -1615,24 +1644,22 @@ mod test {
         use super::*;
         use crate::midi::playback::{PrecomputedMidi, TimedMidiEvent};
         use crate::playsync::CancelHandle;
-        use std::sync::Mutex;
-
         struct MockSender {
-            sent: Mutex<Vec<Vec<u8>>>,
+            sent: parking_lot::Mutex<Vec<Vec<u8>>>,
             should_fail: bool,
         }
 
         impl MockSender {
             fn new() -> Self {
                 MockSender {
-                    sent: Mutex::new(Vec::new()),
+                    sent: parking_lot::Mutex::new(Vec::new()),
                     should_fail: false,
                 }
             }
 
             fn failing() -> Self {
                 MockSender {
-                    sent: Mutex::new(Vec::new()),
+                    sent: parking_lot::Mutex::new(Vec::new()),
                     should_fail: true,
                 }
             }
@@ -1643,7 +1670,7 @@ mod test {
                 if self.should_fail {
                     return Err("mock send failure".into());
                 }
-                self.sent.lock().unwrap().push(bytes.to_vec());
+                self.sent.lock().push(bytes.to_vec());
                 Ok(())
             }
         }
@@ -1664,6 +1691,30 @@ mod test {
             PrecomputedMidi::from_events(events)
         }
 
+        /// Helper: run play_precomputed with common defaults for tests.
+        fn run_play(
+            midi: &PrecomputedMidi,
+            start: Duration,
+            sender: &mut MockSender,
+            cancel: &CancelHandle,
+            exclude: &HashSet<u8>,
+            clock: &PlaybackClock,
+        ) {
+            play_precomputed(
+                &MidiPlaybackParams {
+                    precomputed: midi,
+                    start_time: start,
+                    end_time: None,
+                    clock_base: clock.elapsed(),
+                    cancel_handle: cancel,
+                    exclude_channels: exclude,
+                    clock,
+                    active_section: None,
+                },
+                sender,
+            );
+        }
+
         #[test]
         fn plays_all_events() {
             let midi = make_events(&[0, 0, 0]);
@@ -1672,7 +1723,7 @@ mod test {
             let mut sender = MockSender::new();
             let clock = PlaybackClock::wall();
 
-            play_precomputed(
+            run_play(
                 &midi,
                 Duration::ZERO,
                 &mut sender,
@@ -1681,7 +1732,7 @@ mod test {
                 &clock,
             );
 
-            let sent = sender.sent.lock().unwrap();
+            let sent = sender.sent.lock();
             assert_eq!(sent.len(), 3);
         }
 
@@ -1694,7 +1745,7 @@ mod test {
             let mut sender = MockSender::new();
             let clock = PlaybackClock::wall();
 
-            play_precomputed(
+            run_play(
                 &midi,
                 Duration::from_millis(100),
                 &mut sender,
@@ -1703,7 +1754,7 @@ mod test {
                 &clock,
             );
 
-            let sent = sender.sent.lock().unwrap();
+            let sent = sender.sent.lock();
             assert_eq!(sent.len(), 2);
         }
 
@@ -1741,7 +1792,7 @@ mod test {
             let mut sender = MockSender::new();
             let clock = PlaybackClock::wall();
 
-            play_precomputed(
+            run_play(
                 &midi,
                 Duration::ZERO,
                 &mut sender,
@@ -1750,7 +1801,7 @@ mod test {
                 &clock,
             );
 
-            let sent = sender.sent.lock().unwrap();
+            let sent = sender.sent.lock();
             assert_eq!(sent.len(), 2); // Channel 5 excluded
         }
 
@@ -1766,7 +1817,7 @@ mod test {
             cancel.cancel();
 
             let clock = PlaybackClock::wall();
-            play_precomputed(
+            run_play(
                 &midi,
                 Duration::ZERO,
                 &mut sender,
@@ -1775,7 +1826,7 @@ mod test {
                 &clock,
             );
 
-            let sent = sender.sent.lock().unwrap();
+            let sent = sender.sent.lock();
             assert_eq!(sent.len(), 0);
         }
 
@@ -1787,7 +1838,7 @@ mod test {
             let mut sender = MockSender::new();
             let clock = PlaybackClock::wall();
 
-            play_precomputed(
+            run_play(
                 &midi,
                 Duration::ZERO,
                 &mut sender,
@@ -1796,7 +1847,7 @@ mod test {
                 &clock,
             );
 
-            let sent = sender.sent.lock().unwrap();
+            let sent = sender.sent.lock();
             assert!(sent.is_empty());
         }
 
@@ -1809,7 +1860,7 @@ mod test {
             let clock = PlaybackClock::wall();
 
             // Should not panic — errors are logged but playback continues
-            play_precomputed(
+            run_play(
                 &midi,
                 Duration::ZERO,
                 &mut sender,
@@ -1835,7 +1886,7 @@ mod test {
             let mut sender = MockSender::new();
             let clock = PlaybackClock::wall();
 
-            play_precomputed(
+            run_play(
                 &midi,
                 Duration::ZERO,
                 &mut sender,
@@ -1844,7 +1895,7 @@ mod test {
                 &clock,
             );
 
-            let sent = sender.sent.lock().unwrap();
+            let sent = sender.sent.lock();
             assert_eq!(sent.len(), 1);
             assert_eq!(sent[0], vec![0x93, 72, 64]); // NoteOn ch3, key 72, vel 64
         }
@@ -1868,23 +1919,21 @@ mod test {
         use super::*;
         use crate::midi::playback::PrecomputedMidi;
         use crate::playsync::CancelHandle;
-        use std::sync::Mutex;
-
         struct MockSender {
-            sent: Mutex<Vec<Vec<u8>>>,
+            sent: parking_lot::Mutex<Vec<Vec<u8>>>,
         }
 
         impl MockSender {
             fn new() -> Self {
                 MockSender {
-                    sent: Mutex::new(Vec::new()),
+                    sent: parking_lot::Mutex::new(Vec::new()),
                 }
             }
         }
 
         impl MidiSender for MockSender {
             fn send(&mut self, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
-                self.sent.lock().unwrap().push(bytes.to_vec());
+                self.sent.lock().push(bytes.to_vec());
                 Ok(())
             }
         }
@@ -1937,7 +1986,7 @@ mod test {
             );
 
             assert!(finished.load(Ordering::Relaxed));
-            assert_eq!(sender.sent.lock().unwrap().len(), 2);
+            assert_eq!(sender.sent.lock().len(), 2);
         }
 
         #[test]
@@ -1973,7 +2022,7 @@ mod test {
 
             assert!(finished.load(Ordering::Relaxed));
             // No events should be sent since we cancelled before playback
-            assert!(sender.sent.lock().unwrap().is_empty());
+            assert!(sender.sent.lock().is_empty());
         }
 
         #[test]
@@ -2016,7 +2065,7 @@ mod test {
             handle.join().unwrap();
             assert!(finished.load(Ordering::Relaxed));
             // Should have been cancelled during delay, no events sent
-            assert!(sender.sent.lock().unwrap().is_empty());
+            assert!(sender.sent.lock().is_empty());
         }
 
         #[test]
@@ -2050,7 +2099,7 @@ mod test {
             );
 
             assert!(finished.load(Ordering::Relaxed));
-            assert_eq!(sender.sent.lock().unwrap().len(), 3);
+            assert_eq!(sender.sent.lock().len(), 3);
         }
 
         #[test]
@@ -2102,7 +2151,7 @@ mod test {
                 },
             );
 
-            assert_eq!(sender.sent.lock().unwrap().len(), 1);
+            assert_eq!(sender.sent.lock().len(), 1);
         }
 
         #[test]
@@ -2152,7 +2201,7 @@ mod test {
 
             let sender = handle.join().unwrap();
             assert!(finished.load(Ordering::Relaxed));
-            assert_eq!(sender.sent.lock().unwrap().len(), 1);
+            assert_eq!(sender.sent.lock().len(), 1);
         }
     }
 
@@ -2160,8 +2209,6 @@ mod test {
         use super::*;
         use crate::playsync::CancelHandle;
         use midly::live::SystemRealtime;
-        use std::sync::Mutex;
-
         fn start_bytes() -> Vec<u8> {
             realtime_bytes(SystemRealtime::Start)
         }
@@ -2176,20 +2223,20 @@ mod test {
         }
 
         struct MockSender {
-            sent: Mutex<Vec<Vec<u8>>>,
+            sent: parking_lot::Mutex<Vec<Vec<u8>>>,
         }
 
         impl MockSender {
             fn new() -> Self {
                 MockSender {
-                    sent: Mutex::new(Vec::new()),
+                    sent: parking_lot::Mutex::new(Vec::new()),
                 }
             }
         }
 
         impl MidiSender for MockSender {
             fn send(&mut self, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
-                self.sent.lock().unwrap().push(bytes.to_vec());
+                self.sent.lock().push(bytes.to_vec());
                 Ok(())
             }
         }
@@ -2212,7 +2259,7 @@ mod test {
 
             run_beat_clock(&mut sender, &ticks, Duration::ZERO, &cancel, &clock);
 
-            let sent = sender.sent.lock().unwrap();
+            let sent = sender.sent.lock();
             // START + 24 clock ticks + STOP
             assert_eq!(sent.len(), 26);
             assert_eq!(sent[0], start_bytes());
@@ -2237,7 +2284,7 @@ mod test {
                 &clock,
             );
 
-            let sent = sender.sent.lock().unwrap();
+            let sent = sender.sent.lock();
             // CONTINUE + 2 ticks + STOP
             assert_eq!(sent.len(), 4);
             assert_eq!(sent[0], continue_bytes());
@@ -2252,7 +2299,7 @@ mod test {
 
             run_beat_clock(&mut sender, &ticks, Duration::ZERO, &cancel, &clock);
 
-            let sent = sender.sent.lock().unwrap();
+            let sent = sender.sent.lock();
             assert_eq!(sent.len(), 2);
             assert_eq!(sent[0], start_bytes());
             assert_eq!(sent[1], stop_bytes());
@@ -2268,7 +2315,7 @@ mod test {
 
             run_beat_clock(&mut sender, &ticks, Duration::ZERO, &cancel, &clock);
 
-            let sent = sender.sent.lock().unwrap();
+            let sent = sender.sent.lock();
             // START + STOP (cancelled before any ticks)
             assert_eq!(sent.len(), 2);
             assert_eq!(sent[0], start_bytes());

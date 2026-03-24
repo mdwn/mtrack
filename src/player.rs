@@ -139,6 +139,8 @@ struct PlaybackContext {
     active_section: Arc<parking_lot::RwLock<Option<SectionBounds>>>,
     /// Shared flag to break out of a section loop.
     section_loop_break: Arc<AtomicBool>,
+    /// Accumulated time consumed by section loop iterations.
+    loop_time_consumed: Arc<parking_lot::Mutex<Duration>>,
 }
 
 /// Groups hardware devices for constructing a Player without discovering real hardware.
@@ -221,6 +223,10 @@ pub struct Player {
     /// Signal to stop section looping. The current iteration finishes and
     /// the song continues from the section end.
     section_loop_break: Arc<AtomicBool>,
+    /// Accumulated real time consumed by section loop iterations.
+    /// Each completed loop iteration adds section_duration to this value.
+    /// Subtracted from raw elapsed to get the true song position.
+    loop_time_consumed: Arc<parking_lot::Mutex<Duration>>,
 }
 
 /// Bounds of an active section loop.
@@ -617,6 +623,7 @@ impl Player {
             loop_break: Arc::new(AtomicBool::new(false)),
             active_section: Arc::new(parking_lot::RwLock::new(None)),
             section_loop_break: Arc::new(AtomicBool::new(false)),
+            loop_time_consumed: Arc::new(parking_lot::Mutex::new(Duration::ZERO)),
         })
     }
 
@@ -1072,6 +1079,9 @@ impl Player {
         let cancel_handle_for_cleanup = cancel_handle.clone();
         let (play_tx, play_rx) = oneshot::channel::<Result<(), String>>();
 
+        // Reset loop time consumed for the new song.
+        *self.loop_time_consumed.lock() = Duration::ZERO;
+
         let join_handle = {
             let ctx = PlaybackContext {
                 device: hw.device.clone(),
@@ -1087,6 +1097,7 @@ impl Player {
                 loop_break: self.loop_break.clone(),
                 active_section: self.active_section.clone(),
                 section_loop_break: self.section_loop_break.clone(),
+                loop_time_consumed: self.loop_time_consumed.clone(),
             };
             tokio::task::spawn_blocking(move || {
                 Player::play_files(ctx);
@@ -1174,6 +1185,7 @@ impl Player {
             loop_break,
             active_section,
             section_loop_break,
+            loop_time_consumed,
         } = ctx;
 
         // Check if any subsystems are active.
@@ -1209,6 +1221,7 @@ impl Player {
             let loop_break = loop_break.clone();
             let active_section = active_section.clone();
             let section_loop_break = section_loop_break.clone();
+            let loop_time_consumed = loop_time_consumed.clone();
             expected_ready += 1;
 
             Some(thread::spawn(move || {
@@ -1223,6 +1236,7 @@ impl Player {
                     loop_break,
                     active_section,
                     section_loop_break,
+                    loop_time_consumed,
                 );
                 if let Err(ref e) = result {
                     error!(
@@ -1613,6 +1627,16 @@ impl Player {
             )
         })?;
 
+        // Reject if playback has already passed the section end.
+        let elapsed = self.elapsed().await?.unwrap_or(Duration::ZERO);
+        if elapsed >= end_time {
+            return Err(format!(
+                "Cannot loop section '{}': playback has already passed the section end",
+                section_name
+            )
+            .into());
+        }
+
         info!(
             song = song.name(),
             section = section_name,
@@ -1634,7 +1658,7 @@ impl Player {
         self.section_loop_break.store(false, Ordering::Relaxed);
 
         // Play confirmation tone.
-        self.play_confirmation_tone(&song);
+        self.play_confirmation_tone();
 
         Ok(())
     }
@@ -1644,6 +1668,9 @@ impl Player {
     pub fn stop_section_loop(&self) {
         info!("Stopping section loop");
         self.section_loop_break.store(true, Ordering::Relaxed);
+        // Clear active section so the UI stops wrapping elapsed time
+        // and shows normal playback state.
+        *self.active_section.write() = None;
     }
 
     /// Returns the currently active section bounds, if any.
@@ -1652,12 +1679,17 @@ impl Player {
     }
 
     /// Plays the section loop confirmation tone through the mixer.
-    fn play_confirmation_tone(&self, song: &Song) {
-        let outputs = song.loop_confirmation_outputs();
-        if outputs.is_empty() {
-            return;
-        }
+    /// Well-known track name for the section loop confirmation tone.
+    /// Users route this in their audio track mappings, e.g.:
+    /// ```yaml
+    /// track_mappings:
+    ///   mtrack:looping: [9]
+    /// ```
+    pub const LOOP_CONFIRMATION_TRACK: &'static str = "mtrack:looping";
 
+    /// Plays the section loop confirmation tone through the mixer,
+    /// routed via the `mtrack:looping` track mapping.
+    fn play_confirmation_tone(&self) {
         let hw = self.hardware.read();
         let device = match hw.device.as_ref() {
             Some(d) => d,
@@ -1667,6 +1699,15 @@ impl Player {
             Some(m) => m,
             None => return,
         };
+        let mappings = match hw.mappings.as_ref() {
+            Some(m) => m,
+            None => return,
+        };
+
+        // Only play if the user has configured the mtrack:looping track mapping.
+        if !mappings.contains_key(Self::LOOP_CONFIRMATION_TRACK) {
+            return;
+        }
 
         let sample_rate = mixer.sample_rate();
         use crate::audio::confirmation::ConfirmationSound;
@@ -1674,7 +1715,6 @@ impl Player {
         let samples = tone.generate(sample_rate);
         let samples = Arc::new(samples);
 
-        // Create a one-shot source from the tone samples.
         let source = crate::audio::sample_source::MemorySampleSource::from_shared(
             samples,
             1, // mono
@@ -1682,30 +1722,18 @@ impl Player {
             1.0,
         );
 
-        // Build channel mappings: route mono to each configured output.
-        let mut labels = Vec::new();
-        for &ch in outputs {
-            labels.push(format!("__confirmation_ch{}", ch));
-        }
-        let channel_mappings = vec![labels.clone()];
-
+        // Map the mono source channel to the well-known track name.
         let mapped = crate::audio::sample_source::channel_mapped::ChannelMappedSource::new(
             Box::new(source),
-            channel_mappings,
+            vec![vec![Self::LOOP_CONFIRMATION_TRACK.to_string()]],
             1,
         );
-
-        // Build track mappings: map labels to output channels.
-        let mut track_mappings = std::collections::HashMap::new();
-        for (i, label) in labels.iter().enumerate() {
-            track_mappings.insert(label.clone(), vec![outputs[i]]);
-        }
 
         let is_finished = Arc::new(AtomicBool::new(false));
         let active_source = crate::audio::mixer::ActiveSource {
             id: crate::audio::next_source_id(),
             source: Box::new(mapped),
-            track_mappings,
+            track_mappings: mappings.as_ref().clone(),
             channel_mappings: Vec::new(),
             cached_source_channel_count: 1,
             cancel_handle: crate::playsync::CancelHandle::new(),
@@ -1724,7 +1752,8 @@ impl Player {
         let hw = self.hardware.read();
         if let Some(ref device) = hw.device {
             if let Some(mixer) = device.mixer() {
-                let crossfade_samples = (0.1 * mixer.sample_rate() as f64) as u64;
+                let crossfade_samples =
+                    crate::audio::crossfade::default_crossfade_samples(mixer.sample_rate());
                 let source_ids: Vec<u64> = {
                     let sources = mixer.get_active_sources();
                     let guard = sources.read();
@@ -1766,9 +1795,20 @@ impl Player {
     pub async fn elapsed(&self) -> Result<Option<Duration>, Box<dyn Error>> {
         let play_start_time = self.play_start_time.lock().await;
         Ok(match *play_start_time {
-            Some(play_start_time) => Some(play_start_time.elapsed()?),
+            Some(play_start_time) => {
+                let raw = play_start_time.elapsed()?;
+                let consumed = *self.loop_time_consumed.lock();
+                Some(raw.saturating_sub(consumed))
+            }
             None => None,
         })
+    }
+
+    /// Adds time consumed by a section loop iteration. Called by subsystems
+    /// when a section loop triggers to keep the reported elapsed time correct.
+    pub fn add_loop_time_consumed(&self, duration: Duration) {
+        let mut consumed = self.loop_time_consumed.lock();
+        *consumed += duration;
     }
 
     /// Gets a formatted string listing all active lighting effects

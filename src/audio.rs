@@ -63,6 +63,7 @@ pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {
         loop_break: Arc<AtomicBool>,
         active_section: Arc<parking_lot::RwLock<Option<crate::player::SectionBounds>>>,
         section_loop_break: Arc<AtomicBool>,
+        loop_time_consumed: Arc<parking_lot::Mutex<Duration>>,
     ) -> Result<(), Box<dyn Error>>;
 
     /// Gets the mixer for adding triggered samples.
@@ -189,6 +190,7 @@ mod test {
                 _loop_break: Arc<AtomicBool>,
                 _active_section: Arc<parking_lot::RwLock<Option<crate::player::SectionBounds>>>,
                 _section_loop_break: Arc<AtomicBool>,
+                _loop_time_consumed: Arc<parking_lot::Mutex<Duration>>,
             ) -> Result<(), Box<dyn Error>> {
                 Ok(())
             }

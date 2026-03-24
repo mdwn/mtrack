@@ -28,7 +28,14 @@
     if (currentHash.startsWith(prefix) && currentHash.length > prefix.length) {
       const rest = decodeURIComponent(currentHash.slice(prefix.length));
       // Strip trailing tab segment if present
-      const tabs = ["tracks", "midi", "samples", "lighting", "config"];
+      const tabs = [
+        "tracks",
+        "midi",
+        "samples",
+        "sections",
+        "lighting",
+        "config",
+      ];
       for (const tab of tabs) {
         if (rest.endsWith("/" + tab)) {
           return rest.slice(0, -(tab.length + 1));
@@ -44,7 +51,14 @@
     if (!currentHash.startsWith(prefix)) return undefined;
     const segments = currentHash.slice(prefix.length).split("/");
     const last = segments[segments.length - 1];
-    const tabs = ["tracks", "midi", "lighting", "config"];
+    const tabs = [
+      "tracks",
+      "midi",
+      "samples",
+      "sections",
+      "lighting",
+      "config",
+    ];
     if (tabs.includes(last) && segments.length > 1) {
       return last as "tracks" | "midi" | "lighting" | "config";
     }

@@ -133,8 +133,6 @@ pub struct Song {
     loop_playback: bool,
     /// Named sections defined by measure boundaries.
     sections: Vec<config::Section>,
-    /// Output channels (1-indexed) for the section loop confirmation tone.
-    loop_confirmation_outputs: Vec<u16>,
 }
 
 /// A simple sample for songs. Boils down to i32 or f32, which we can be reasonably assured that
@@ -244,7 +242,6 @@ impl Song {
             beat_grid,
             loop_playback: config.loop_playback(),
             sections: config.sections().to_vec(),
-            loop_confirmation_outputs: config.loop_confirmation_outputs().to_vec(),
         })
     }
 
@@ -455,11 +452,6 @@ impl Song {
     /// Gets the named sections of this song.
     pub fn sections(&self) -> &[config::Section] {
         &self.sections
-    }
-
-    /// Gets the output channels for the section loop confirmation tone.
-    pub fn loop_confirmation_outputs(&self) -> &[u16] {
-        &self.loop_confirmation_outputs
     }
 
     /// Resolves a named section to absolute time bounds using the beat grid.
@@ -685,7 +677,6 @@ impl Default for Song {
             beat_grid: None,
             loop_playback: false,
             sections: Vec::new(),
-            loop_confirmation_outputs: Vec::new(),
         }
     }
 }
@@ -3108,12 +3099,6 @@ mod test {
         assert_eq!(song.sections().len(), 2);
         assert_eq!(song.sections()[0].name, "verse");
         assert_eq!(song.sections()[1].name, "chorus");
-    }
-
-    #[test]
-    fn loop_confirmation_outputs_default_empty() {
-        let song = super::Song::new_for_test("test", &["t1"]);
-        assert!(song.loop_confirmation_outputs().is_empty());
     }
 
     #[test]
