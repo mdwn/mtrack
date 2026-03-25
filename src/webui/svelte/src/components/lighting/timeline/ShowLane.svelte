@@ -46,7 +46,7 @@
     tempo?: TempoSection;
     selectedCueIndex: number | null;
     snapEnabled: boolean;
-    snapResolution: "beat" | "measure";
+    snapResolution: import("../../../lib/lighting/timeline-state").SnapResolution;
     onselect: (index: number) => void;
     oncuechange: (index: number, cue: Cue) => void;
     oncuedelete: (index: number) => void;
@@ -54,6 +54,7 @@
     ondelete: () => void;
     oneffectresize?: (cueIndex: number, newDurationStr: string) => void;
     onloopchange?: (cueIndex: number, newLoopCount: number) => void;
+    onsequenceedit?: (sequenceName: string) => void;
     subLaneType?: SubLaneType;
     laneHeight?: number;
     hideLabel?: boolean;
@@ -85,6 +86,7 @@
     playheadMs = null,
     oneffectresize,
     onloopchange,
+    onsequenceedit,
     sequenceDefs = [],
   }: Props = $props();
 
@@ -269,8 +271,14 @@
     const viewEndMs = (scrollLeft + viewportWidth) / pixelsPerMs;
     const gridLines =
       offsets.length > 0
-        ? getAdjustedGridLines(tempo, viewStartMs, viewEndMs, offsets)
-        : getGridLines(tempo, viewStartMs, viewEndMs);
+        ? getAdjustedGridLines(
+            tempo,
+            viewStartMs,
+            viewEndMs,
+            offsets,
+            pixelsPerMs,
+          )
+        : getGridLines(tempo, viewStartMs, viewEndMs, pixelsPerMs);
 
     for (const line of gridLines) {
       const x = msToPixel(line.ms, pixelsPerMs) - scrollLeft;
@@ -352,6 +360,12 @@
             ? (count) => onloopchange(cp.index, count)
             : undefined}
           {sequenceDefs}
+          onedit={onsequenceedit && subLaneType === "sequences"
+            ? () => {
+                const ref = cp.cue.sequences.find((s) => !s.stop);
+                if (ref) onsequenceedit(ref.name);
+              }
+            : undefined}
         />
       {/if}
     {/each}

@@ -20,7 +20,7 @@
     pixelsPerMs: number;
     cursorMs: number | null;
     snapEnabled: boolean;
-    snapResolution: "beat" | "measure";
+    snapResolution: import("../../../lib/lighting/timeline-state").SnapResolution;
     hasTempo: boolean;
     isPlaying: boolean;
     canPlay: boolean;
@@ -28,7 +28,10 @@
     playCursorMs?: number | null;
     onzoom: (pixelsPerMs: number) => void;
     onfitview: () => void;
-    onsnapchange: (enabled: boolean, resolution: "beat" | "measure") => void;
+    onsnapchange: (
+      enabled: boolean,
+      resolution: import("../../../lib/lighting/timeline-state").SnapResolution,
+    ) => void;
     onaddshow: () => void;
     onaddsequence: () => void;
     onplay?: () => void;
@@ -145,11 +148,16 @@
           onchange={(e) =>
             onsnapchange(
               true,
-              (e.target as HTMLSelectElement).value as "beat" | "measure",
+              (e.target as HTMLSelectElement)
+                .value as import("../../../lib/lighting/timeline-state").SnapResolution,
             )}
         >
-          <option value="beat">{$t("timeline.toolbar.beat")}</option>
           <option value="measure">{$t("timeline.toolbar.measure")}</option>
+          <option value="beat">{$t("timeline.toolbar.beat")}</option>
+          <option value="1/2">1/2</option>
+          <option value="1/4">1/4</option>
+          <option value="1/8">1/8</option>
+          <option value="1/16">1/16</option>
         </select>
       {/if}
     </div>

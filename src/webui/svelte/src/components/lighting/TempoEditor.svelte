@@ -20,9 +20,10 @@
   interface Props {
     tempo: TempoSection | undefined;
     onchange: (tempo: TempoSection | undefined) => void;
+    onclose?: () => void;
   }
 
-  let { tempo, onchange }: Props = $props();
+  let { tempo, onchange, onclose }: Props = $props();
 
   let expanded = $state(true);
 
@@ -117,10 +118,20 @@
       <button class="btn btn-sm btn-danger" onclick={disableTempo}
         >{$t("common.remove")}</button
       >
+      {#if onclose}
+        <button class="btn btn-sm" onclick={onclose}
+          >{$t("common.close")}</button
+        >
+      {/if}
     {:else}
       <button class="btn btn-sm btn-primary" onclick={enableTempo}
         >{$t("tempo.addTempo")}</button
       >
+      {#if onclose}
+        <button class="btn btn-sm" onclick={onclose}
+          >{$t("common.close")}</button
+        >
+      {/if}
     {/if}
   </div>
 

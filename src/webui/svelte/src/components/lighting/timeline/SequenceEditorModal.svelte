@@ -33,8 +33,6 @@
     groups: string[];
     sequenceNames: string[];
     tempo?: TempoSection;
-    snapEnabled: boolean;
-    snapResolution: "beat" | "measure";
     onchange: (sequence: Sequence) => void;
     ondelete: () => void;
     onclose: () => void;
@@ -45,13 +43,16 @@
     groups,
     sequenceNames,
     tempo,
-    snapEnabled,
-    snapResolution,
     onchange,
     ondelete,
     onclose,
   }: Props = $props();
 
+  let localSnapEnabled = $state(true);
+  let localSnapResolution =
+    $state<import("../../../lib/lighting/timeline-state").SnapResolution>(
+      "beat",
+    );
   let pixelsPerMs = $state(0.3);
   let scrollLeft = $state(0);
   let viewportWidth = $state(600);
@@ -161,6 +162,24 @@
         })}</span
       >
       <span class="seq-modal-hint">{$t("timeline.sequenceEditor.hint")}</span>
+      {#if tempo}
+        <div class="snap-controls">
+          <label class="snap-toggle">
+            <input type="checkbox" bind:checked={localSnapEnabled} />
+            <span class="snap-label">Snap</span>
+          </label>
+          {#if localSnapEnabled}
+            <select class="snap-select" bind:value={localSnapResolution}>
+              <option value="measure">Measure</option>
+              <option value="beat">Beat</option>
+              <option value="1/2">1/2</option>
+              <option value="1/4">1/4</option>
+              <option value="1/8">1/8</option>
+              <option value="1/16">1/16</option>
+            </select>
+          {/if}
+        </div>
+      {/if}
       <div class="seq-modal-actions">
         <button class="btn btn-sm btn-danger" onclick={ondelete}
           >{$t("timeline.sequenceEditor.deleteSequence")}</button
@@ -206,8 +225,8 @@
             {tempo}
             {selectedCueIndex}
             {selectedSubLane}
-            {snapEnabled}
-            {snapResolution}
+            snapEnabled={localSnapEnabled}
+            snapResolution={localSnapResolution}
             onselect={(ci, subLane) => {
               selectedCueIndex = ci;
               selectedSubLane = subLane;
@@ -303,6 +322,34 @@
     display: flex;
     gap: 6px;
     flex-shrink: 0;
+  }
+
+  .snap-controls {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+  .snap-toggle {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+  .snap-toggle input {
+    margin: 0;
+  }
+  .snap-label {
+    color: var(--text-muted);
+  }
+  .snap-select {
+    font-size: 12px;
+    padding: 1px 4px;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 3px;
   }
 
   .seq-modal-body {

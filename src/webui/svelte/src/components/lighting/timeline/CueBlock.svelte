@@ -23,6 +23,7 @@
     ondelete: () => void;
     onresize?: (newDurationStr: string) => void;
     onloopchange?: (newLoopCount: number) => void;
+    onedit?: () => void;
     pixelsPerMs: number;
     subLaneType?: SubLaneType;
     tempo?: TempoSection;
@@ -39,6 +40,7 @@
     ondelete,
     onresize,
     onloopchange,
+    onedit,
     pixelsPerMs,
     subLaneType,
     tempo,
@@ -146,6 +148,29 @@
     return 0;
   });
 
+  // For sequence lanes: the current loop count
+  let seqLoopCount = $derived.by(() => {
+    if (subLaneType !== "sequences" || seqIterMs <= 0) return 0;
+    return Math.round(seqTotalMs / seqIterMs);
+  });
+
+  // During resize: the snapped preview loop count and width
+  let resizePreviewLoopCount = $derived.by(() => {
+    if (!resizing || subLaneType !== "sequences" || seqIterMs <= 0) return 0;
+    const currentWidthMs = blockWidth / pixelsPerMs;
+    const newTotalMs = Math.max(
+      seqIterMs,
+      currentWidthMs + resizeOffsetPx / pixelsPerMs,
+    );
+    return Math.max(1, Math.round(newTotalMs / seqIterMs));
+  });
+
+  let resizePreviewWidth = $derived(
+    resizePreviewLoopCount > 0
+      ? resizePreviewLoopCount * seqIterMs * pixelsPerMs
+      : 0,
+  );
+
   // Compute block width from effect/sequence duration
   let blockWidth = $derived.by(() => {
     if (subLaneType === "commands") {
@@ -222,6 +247,13 @@
     }
   }
 
+  function handleDblClick(e: MouseEvent) {
+    if (onedit) {
+      e.stopPropagation(); // prevent lane from creating a new cue
+      onedit();
+    }
+  }
+
   function handleResizePointerDown(e: PointerEvent) {
     if (e.button !== 0) return;
     e.stopPropagation();
@@ -247,11 +279,14 @@
   class:resizing
   class:from-sequence={isFromSequence}
   style:left="{positionPx + dragOffsetPx}px"
-  style:width="{blockWidth + resizeOffsetPx}px"
+  style:width="{subLaneType === 'sequences' && resizing
+    ? blockWidth
+    : blockWidth + resizeOffsetPx}px"
   style:--cue-color={primaryColor}
   onpointerdown={handlePointerDown}
   onpointermove={handlePointerMove}
   onpointerup={handlePointerUp}
+  ondblclick={handleDblClick}
   onkeydown={handleKeyDown}
   tabindex="0"
   role="button"
@@ -293,11 +328,30 @@
       <span class="cue-label seq-label">{label}</span>
     {/if}
   </div>
+  {#if subLaneType === "sequences" && seqLoopCount > 1}
+    <div class="seq-iter-markers">
+      {#each Array.from({ length: seqLoopCount - 1 }, (_, k) => k) as i (i)}
+        <div
+          class="seq-iter-divider"
+          style:left="{((i + 1) / seqLoopCount) * 100}%"
+        ></div>
+      {/each}
+    </div>
+  {/if}
   {#if isEffectLane || subLaneType === "sequences"}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="resize-handle" onpointerdown={handleResizePointerDown}></div>
   {/if}
 </div>
+{#if subLaneType === "sequences" && resizing && resizePreviewWidth > 0}
+  <div
+    class="seq-resize-ghost"
+    style:left="{positionPx}px"
+    style:width="{resizePreviewWidth}px"
+  >
+    <span class="ghost-label">{resizePreviewLoopCount}x</span>
+  </div>
+{/if}
 
 <style>
   .cue-block {
@@ -398,6 +452,37 @@
   }
   .seq-label {
     color: var(--pink, #ef60a3);
+  }
+  .seq-iter-markers {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+  .seq-iter-divider {
+    position: absolute;
+    top: 2px;
+    bottom: 2px;
+    width: 1px;
+    background: rgba(239, 96, 163, 0.3);
+  }
+  .seq-resize-ghost {
+    position: absolute;
+    top: 3px;
+    bottom: 3px;
+    border-radius: 4px;
+    background: rgba(239, 96, 163, 0.08);
+    border: 1px dashed rgba(239, 96, 163, 0.35);
+    pointer-events: none;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding-right: 8px;
+    z-index: 0;
+  }
+  .ghost-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: rgba(239, 96, 163, 0.6);
   }
   .resize-handle {
     width: 6px;

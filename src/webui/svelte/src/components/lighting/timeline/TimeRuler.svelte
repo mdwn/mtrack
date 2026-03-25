@@ -115,8 +115,14 @@
     if (tempo) {
       const gridLines =
         offsets.length > 0
-          ? getAdjustedGridLines(tempo, viewStartMs, viewEndMs, offsets)
-          : getGridLines(tempo, viewStartMs, viewEndMs);
+          ? getAdjustedGridLines(
+              tempo,
+              viewStartMs,
+              viewEndMs,
+              offsets,
+              pixelsPerMs,
+            )
+          : getGridLines(tempo, viewStartMs, viewEndMs, pixelsPerMs);
       for (const line of gridLines) {
         const x = msToPixel(line.ms, pixelsPerMs) - scrollLeft;
         if (line.type === "measure") {
