@@ -12,7 +12,14 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-import type { Timestamp, TempoSection, Cue } from "./types";
+import type {
+  Timestamp,
+  TempoSection,
+  Cue,
+  Sequence,
+  CueEffect,
+} from "./types";
+import { absoluteTimestamp } from "./types";
 
 /** A segment of constant tempo, used for measure/beat <-> ms conversion. */
 export interface TempoSegment {
@@ -250,6 +257,50 @@ export function formatMs(ms: number): string {
   return `${minutes}:${String(seconds).padStart(2, "0")}.${String(millis).padStart(3, "0")}`;
 }
 
+/**
+ * Convert an effect duration string (e.g. "5s", "500ms", "2beats", "4measures")
+ * to milliseconds. Requires tempo for beat/measure units; returns 0 if tempo is
+ * missing and the unit requires it. An optional `atMs` parameter provides the
+ * playback position for tempo-aware conversions (defaults to 0).
+ */
+export function durationStringToMs(
+  durationStr: string | undefined,
+  tempo?: TempoSection,
+  atMs: number = 0,
+): number {
+  if (!durationStr) return 0;
+  const str = durationStr.trim();
+  const match = str.match(/^(\d+(?:\.\d+)?)\s*(ms|s|beats?|measures?)$/);
+  if (!match) {
+    const val = parseFloat(str);
+    return isNaN(val) ? 0 : val * 1000; // bare number = seconds
+  }
+  const value = parseFloat(match[1]);
+  const rawUnit = match[2];
+  if (rawUnit === "ms") return value;
+  if (rawUnit === "s") return value * 1000;
+  if (!tempo) return 0;
+  if (rawUnit === "beat" || rawUnit === "beats") {
+    return offsetMeasuresToMs(value / tempo.time_signature[0], atMs, tempo);
+  }
+  if (rawUnit === "measure" || rawUnit === "measures") {
+    return offsetMeasuresToMs(value, atMs, tempo);
+  }
+  return value * 1000;
+}
+
+/**
+ * Convert a duration in milliseconds to a duration string suitable for DSL output.
+ * Produces the simplest representation (e.g. "5s", "500ms").
+ */
+export function msToDurationString(ms: number): string {
+  if (ms < 1000 || ms % 1000 !== 0) {
+    // Use ms for sub-second or non-round-second durations
+    return `${Math.round(ms)}ms`;
+  }
+  return `${ms / 1000}s`;
+}
+
 /** Pixel <-> time conversion helpers */
 export function msToPixel(ms: number, pixelsPerMs: number): number {
   return ms * pixelsPerMs;
@@ -412,6 +463,138 @@ export function computeAdjustedCuePositions(
     }
     return result;
   });
+}
+
+/**
+ * Expand sequence references in a show's cues into concrete effect cues.
+ * Returns a new cue array with sequence effects inserted at the correct
+ * timestamps, each marked with `sequenceName`. The original cues are
+ * preserved unchanged; expanded cues are added alongside them.
+ */
+export function expandSequencesIntoCues(
+  showCues: Cue[],
+  sequences: Sequence[],
+  tempo?: TempoSection,
+): Cue[] {
+  const seqMap = new Map<string, Sequence>();
+  for (const s of sequences) seqMap.set(s.name, s);
+
+  const expanded: Cue[] = [];
+
+  for (const cue of showCues) {
+    // Always include the original cue
+    expanded.push(cue);
+
+    // Expand sequence references into additional cues
+    for (const ref of cue.sequences) {
+      if (ref.stop) continue; // stop commands don't produce effects
+      const seq = seqMap.get(ref.name);
+      if (!seq || seq.cues.length === 0) continue;
+
+      const refMs = timestampToMs(cue.timestamp, tempo);
+
+      const seqDurationMs = getSequenceIterationMs(seq, refMs, tempo);
+      const loopCount = parseLoopCount(ref.loop);
+
+      // BPM context for rescaling cue positions within the sequence
+      const seqBaseMs = timestampToMs(seq.cues[0].timestamp, tempo);
+      const seqParseBpm = getTempoAtMs(0, tempo);
+      const refBpm = getTempoAtMs(refMs, tempo);
+      const msPerBeatAtParse = 60000 / seqParseBpm;
+      const msPerBeatAtRef = 60000 / refBpm;
+
+      for (let iter = 0; iter < loopCount; iter++) {
+        const iterOffsetMs = refMs + iter * seqDurationMs;
+
+        for (const seqCue of seq.cues) {
+          // Convert this cue's position to a beat offset, then to ms at ref tempo
+          const scMs = timestampToMs(seqCue.timestamp, tempo);
+          const relBeats = (scMs - seqBaseMs) / msPerBeatAtParse;
+          const relMs = relBeats * msPerBeatAtRef;
+          const absoluteMs = iterOffsetMs + relMs;
+
+          if (seqCue.effects.length === 0) continue;
+
+          const taggedEffects: CueEffect[] = seqCue.effects.map((e) => ({
+            ...e,
+            sequenceName: ref.name,
+          }));
+
+          expanded.push({
+            timestamp: absoluteTimestamp(absoluteMs),
+            effects: taggedEffects,
+            commands: [],
+            sequences: [],
+          });
+        }
+      }
+    }
+  }
+
+  // Sort by timestamp so cue positions compute correctly
+  expanded.sort(
+    (a, b) =>
+      timestampToMs(a.timestamp, tempo) - timestampToMs(b.timestamp, tempo),
+  );
+
+  return expanded;
+}
+
+/**
+ * Compute the duration of a single iteration of a sequence in ms,
+ * rescaled to the tempo active at a given reference point.
+ */
+export function getSequenceIterationMs(
+  seq: Sequence,
+  refMs: number,
+  tempo?: TempoSection,
+): number {
+  if (seq.cues.length === 0) return 1000;
+
+  const seqBaseMs = timestampToMs(seq.cues[0].timestamp, tempo);
+  const seqParseBpm = getTempoAtMs(0, tempo);
+  const refBpm = getTempoAtMs(refMs, tempo);
+  const msPerBeatAtParse = 60000 / seqParseBpm;
+  const msPerBeatAtRef = 60000 / refBpm;
+
+  let maxBeats = 0;
+  for (const sc of seq.cues) {
+    const scMs = timestampToMs(sc.timestamp, tempo);
+    const relBeats = (scMs - seqBaseMs) / msPerBeatAtParse;
+    for (const eff of sc.effects) {
+      const durStr = eff.effect.duration ?? eff.effect.hold_time;
+      const durMs = durationStringToMs(durStr, tempo, refMs);
+      const durBeats = durMs / msPerBeatAtRef;
+      const endBeats = relBeats + durBeats;
+      if (endBeats > maxBeats) maxBeats = endBeats;
+    }
+    if (relBeats > maxBeats) maxBeats = relBeats;
+  }
+  if (maxBeats <= 0) maxBeats = 4;
+
+  return maxBeats * msPerBeatAtRef;
+}
+
+/** Get the BPM active at a given ms position. */
+function getTempoAtMs(ms: number, tempo?: TempoSection): number {
+  if (!tempo) return 120; // default
+  const segments = buildTempoSegments(tempo);
+  let seg = segments[0];
+  for (let i = segments.length - 1; i >= 0; i--) {
+    if (segments[i].startMs <= ms) {
+      seg = segments[i];
+      break;
+    }
+  }
+  return seg.bpm;
+}
+
+function parseLoopCount(loop?: string): number {
+  if (!loop) return 1;
+  const n = parseInt(loop, 10);
+  if (!isNaN(n) && n > 0) return n;
+  if (loop === "loop") return 100; // practical limit for display
+  return 1;
 }
 
 /** Effect type color coding */

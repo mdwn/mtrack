@@ -412,6 +412,23 @@
     onchange({ ...lightFile, shows });
   }
 
+  function handleShowLoopChange(
+    showIndex: number,
+    cueIndex: number,
+    newLoopCount: number,
+  ) {
+    const shows = [...lightFile.shows];
+    const cues = [...shows[showIndex].cues];
+    const cue = { ...cues[cueIndex] };
+    cue.sequences = cue.sequences.map((ref) => {
+      if (ref.stop) return ref;
+      return { ...ref, loop: String(newLoopCount) };
+    });
+    cues[cueIndex] = cue;
+    shows[showIndex] = { ...shows[showIndex], cues };
+    onchange({ ...lightFile, shows });
+  }
+
   function handleShowCueDelete(showIndex: number, cueIndex: number) {
     clearSelection();
     const shows = [...lightFile.shows];
@@ -646,6 +663,7 @@
           <ShowGroup
             name={show.name}
             cues={show.cues}
+            sequences={lightFile.sequences}
             {pixelsPerMs}
             {scrollLeft}
             {viewportWidth}
@@ -663,6 +681,7 @@
             oncuedelete={(ci) => handleShowCueDelete(si, ci)}
             oncueadd={(cue) => handleShowCueAdd(si, cue)}
             ondelete={() => deleteShow(si)}
+            onloopchange={(ci, count) => handleShowLoopChange(si, ci, count)}
           />
         </div>
       {/each}

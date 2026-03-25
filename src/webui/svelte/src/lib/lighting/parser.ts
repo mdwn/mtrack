@@ -261,7 +261,7 @@ function parseCueBlock(lines: string[], startIdx: number): [Cue[], number] {
 
     // Sequence reference: sequence "name"
     const seqRefMatch = line.match(
-      /^(?:stop\s+)?sequence\s+"([^"]+)"(?:\s+(.*))?/,
+      /^(?:stop\s+)?sequence\s+"([^"]+)"(?:[,\s]+(.*))?/,
     );
     if (seqRefMatch) {
       const ref: SequenceRef = { name: seqRefMatch[1] };

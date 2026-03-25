@@ -16,15 +16,19 @@
   import { t } from "svelte-i18n";
   import type {
     Cue,
+    Sequence,
     TempoSection,
     SubLaneType,
   } from "../../../lib/lighting/types";
+  import { LAYERS } from "../../../lib/lighting/types";
   import type { OffsetMarker } from "../../../lib/lighting/timeline-state";
+  import { expandSequencesIntoCues } from "../../../lib/lighting/timeline-state";
   import ShowLane from "./ShowLane.svelte";
 
   interface Props {
     name: string;
     cues: Cue[];
+    sequences?: Sequence[];
     pixelsPerMs: number;
     scrollLeft: number;
     viewportWidth: number;
@@ -41,11 +45,14 @@
     oncuedelete: (index: number) => void;
     oncueadd: (cue: Cue) => void;
     ondelete: () => void;
+    oneffectresize?: (cueIndex: number, newDurationStr: string) => void;
+    onloopchange?: (cueIndex: number, newLoopCount: number) => void;
   }
 
   let {
     name,
     cues,
+    sequences = [],
     pixelsPerMs,
     scrollLeft,
     viewportWidth,
@@ -62,10 +69,30 @@
     oncuedelete,
     oncueadd,
     ondelete,
+    oneffectresize,
+    onloopchange,
   }: Props = $props();
 
+  // Expand sequence references into concrete cues for layer lane display
+  let expandedCues = $derived(
+    sequences.length > 0
+      ? expandSequencesIntoCues(cues, sequences, tempo)
+      : cues,
+  );
+
+  const LAYER_LABELS: Record<string, string> = {
+    foreground: "FG",
+    midground: "MG",
+    background: "BG",
+  };
+
   let subLanes = $derived([
-    { type: "effects" as SubLaneType, label: $t("cue.effects"), height: 44 },
+    // Effect lanes derived from LAYERS (reversed so foreground is on top)
+    ...[...LAYERS].reverse().map((layer) => ({
+      type: `effects:${layer}` as SubLaneType,
+      label: LAYER_LABELS[layer] ?? layer,
+      height: 40,
+    })),
     {
       type: "commands" as SubLaneType,
       label: $t("timeline.showGroup.cmds"),
@@ -81,30 +108,30 @@
 
 <div class="show-group">
   <div class="group-label">
+    <div class="group-header">
+      <span class="group-name" title={name}>{name}</span>
+      <button
+        class="btn-icon group-delete"
+        title={$t("timeline.showGroup.deleteShow")}
+        onclick={ondelete}
+      >
+        &#10005;
+      </button>
+    </div>
     <div class="sublane-labels">
-      {#each subLanes as sl, i (sl.type)}
+      {#each subLanes as sl (sl.type)}
         <div class="sublane-row" style:height="{sl.height}px">
-          {#if i === 0}
-            <span class="group-name" title={name}>{name}</span>
-          {:else}
-            <span class="sublane-type-label">{sl.label}</span>
-          {/if}
+          <span class="sublane-type-label">{sl.label}</span>
         </div>
       {/each}
     </div>
-    <button
-      class="btn-icon group-delete"
-      title={$t("timeline.showGroup.deleteShow")}
-      onclick={ondelete}
-    >
-      &#10005;
-    </button>
   </div>
   <div class="group-lanes">
+    <div class="lane-header-spacer"></div>
     {#each subLanes as sl (sl.type)}
       <ShowLane
         {name}
-        {cues}
+        cues={sl.type.startsWith("effects") ? expandedCues : cues}
         {laneType}
         {pixelsPerMs}
         {scrollLeft}
@@ -123,6 +150,11 @@
         {oncuedelete}
         {oncueadd}
         ondelete={() => {}}
+        oneffectresize={sl.type.startsWith("effects")
+          ? oneffectresize
+          : undefined}
+        onloopchange={sl.type === "sequences" ? onloopchange : undefined}
+        sequenceDefs={sl.type === "sequences" ? sequences : []}
       />
     {/each}
   </div>
@@ -138,20 +170,25 @@
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
-    align-items: flex-start;
-    padding: 0 8px;
     border-right: 1px solid var(--border);
     background: var(--bg-card);
-    position: relative;
+  }
+  .group-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 2px 8px;
+    border-bottom: 1px solid var(--border);
+    min-height: 22px;
   }
   .group-name {
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 600;
     color: var(--text);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    max-width: 100%;
+    min-width: 0;
   }
   .sublane-labels {
     display: flex;
@@ -162,11 +199,12 @@
     display: flex;
     align-items: center;
     min-width: 0;
+    padding: 0 8px;
     border-bottom: 1px solid var(--border);
     box-sizing: content-box;
   }
   .sublane-type-label {
-    font-size: 12px;
+    font-size: 11px;
     color: var(--text-dim);
   }
   .group-delete {
@@ -174,14 +212,12 @@
     border: none;
     color: var(--text-dim);
     cursor: pointer;
-    font-size: 13px;
+    font-size: 11px;
     padding: 1px 3px;
     border-radius: 3px;
     opacity: 0;
     transition: opacity 0.15s;
-    position: absolute;
-    top: 4px;
-    right: 4px;
+    flex-shrink: 0;
   }
   .show-group:hover .group-delete {
     opacity: 1;
@@ -189,6 +225,11 @@
   .group-delete:hover {
     background: rgba(239, 68, 68, 0.15);
     color: var(--red);
+  }
+  .lane-header-spacer {
+    height: 22px;
+    min-height: 22px;
+    border-bottom: 1px solid var(--border);
   }
   .group-lanes {
     flex: 1;

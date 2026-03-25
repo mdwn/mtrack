@@ -537,6 +537,9 @@
   "timeline.properties.noSequences": "No sequence references.",
 
   "timeline.showGroup.deleteShow": "Delete show",
+  "timeline.showGroup.foreground": "FG",
+  "timeline.showGroup.midground": "MG",
+  "timeline.showGroup.background": "BG",
   "timeline.showGroup.cmds": "Cmds",
   "timeline.showGroup.seqs": "Seqs",
   "timeline.showLane.deleteLane": "Delete {type}",

@@ -62,6 +62,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the section name and a "Stop Loop" button. Next/Prev navigation is allowed during looping.
 - **Section config validation**: Song validation now checks section constraints (name not
   empty, start_measure >= 1, end_measure > start_measure).
+- **Visual lighting timeline: duration-based blocks**: Effect blocks in the visual editor
+  now display their actual duration as block width (previously all blocks were a fixed 500ms
+  width). A right-edge drag handle allows resizing effects directly on the timeline, which
+  updates the effect's `duration` parameter. New effects created via double-click default to
+  `duration: 5s`.
+- **Visual lighting timeline: per-layer lanes**: The single "effects" lane is replaced by
+  three layer lanes — Foreground, Midground, Background — each showing only effects assigned
+  to that layer. The show name appears in its own header row above the lanes. Layer lanes are
+  derived from the `LAYERS` array for future configurability.
+- **Visual lighting timeline: sequence expansion**: Sequence references are now expanded
+  inline into the layer lanes, showing each iteration's effects at their correct timeline
+  positions. Sequence-originated blocks are visually distinct with dashed borders and a pink
+  tint. The sequences lane shows sequence references as blocks spanning their full expanded
+  duration (all loop iterations), and dragging the right edge adjusts the loop count, snapping
+  to whole iterations.
 
 ### Changed
 

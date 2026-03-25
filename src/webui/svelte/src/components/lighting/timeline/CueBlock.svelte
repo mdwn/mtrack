@@ -1,8 +1,18 @@
 <script lang="ts">
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
-  import type { Cue, SubLaneType } from "../../../lib/lighting/types";
-  import { effectTypeColor } from "../../../lib/lighting/timeline-state";
+  import type {
+    Cue,
+    Sequence,
+    SubLaneType,
+    TempoSection,
+  } from "../../../lib/lighting/types";
+  import {
+    effectTypeColor,
+    durationStringToMs,
+    msToDurationString,
+    getSequenceIterationMs,
+  } from "../../../lib/lighting/timeline-state";
 
   interface Props {
     cue: Cue;
@@ -11,8 +21,13 @@
     onselect: () => void;
     onmove: (deltaMs: number) => void;
     ondelete: () => void;
+    onresize?: (newDurationStr: string) => void;
+    onloopchange?: (newLoopCount: number) => void;
     pixelsPerMs: number;
     subLaneType?: SubLaneType;
+    tempo?: TempoSection;
+    cueMs?: number;
+    sequenceDefs?: Sequence[];
   }
 
   let {
@@ -22,20 +37,51 @@
     onselect,
     onmove,
     ondelete,
+    onresize,
+    onloopchange,
     pixelsPerMs,
     subLaneType,
+    tempo,
+    cueMs = 0,
+    sequenceDefs = [],
   }: Props = $props();
 
   let dragging = $state(false);
   let dragOffsetPx = $state(0);
   let dragStartX = 0;
 
+  let resizing = $state(false);
+  let resizeOffsetPx = $state(0);
+  let resizeStartX = 0;
+
+  // Filter effects to the current layer lane (if applicable)
+  let visibleEffects = $derived.by(() => {
+    if (subLaneType?.startsWith("effects:")) {
+      const layer = subLaneType.split(":")[1];
+      return cue.effects.filter(
+        (e) => (e.effect.layer ?? "background") === layer,
+      );
+    }
+    return cue.effects;
+  });
+
+  let isEffectLane = $derived(
+    !subLaneType ||
+      subLaneType === "effects" ||
+      subLaneType.startsWith("effects:"),
+  );
+
+  // Check if any visible effect comes from a sequence
+  let isFromSequence = $derived(
+    visibleEffects.some((e) => e.sequenceName != null),
+  );
+
   // Derive visual properties from cue content, branching on subLaneType
   let primaryColor = $derived.by(() => {
     if (subLaneType === "commands") return "#eab308";
     if (subLaneType === "sequences") return "#ef60a3";
-    if (cue.effects.length === 0) return "#555";
-    const firstEffect = cue.effects[0].effect;
+    if (visibleEffects.length === 0) return "#555";
+    const firstEffect = visibleEffects[0].effect;
     if (firstEffect.colors.length > 0) {
       const c = firstEffect.colors[0];
       if (c.startsWith("#") || c.startsWith("rgb")) return c;
@@ -52,29 +98,78 @@
         .map((s) => (s.stop ? "stop " : "") + s.name)
         .join(", ");
     }
-    if (subLaneType === "effects") {
-      if (cue.effects.length === 0) return get(t)("timeline.cueBlock.empty");
+    if (isEffectLane) {
+      if (visibleEffects.length === 0) return get(t)("timeline.cueBlock.empty");
       const parts: string[] = [];
-      for (const eff of cue.effects) {
+      for (const eff of visibleEffects) {
         const groups = eff.groups.filter((g) => g).join(", ");
         parts.push(groups ? `${groups}: ${eff.effect.type}` : eff.effect.type);
       }
       return parts.join(" | ");
     }
     // Combined mode (no subLaneType — e.g. SequenceEditorModal)
-    if (cue.effects.length === 0 && cue.commands.length > 0) {
+    if (visibleEffects.length === 0 && cue.commands.length > 0) {
       return cue.commands.map((c) => c.command).join(", ");
     }
-    if (cue.effects.length === 0) return get(t)("timeline.cueBlock.empty");
+    if (visibleEffects.length === 0) return get(t)("timeline.cueBlock.empty");
     const parts: string[] = [];
-    for (const eff of cue.effects) {
+    for (const eff of visibleEffects) {
       const groups = eff.groups.filter((g) => g).join(", ");
       parts.push(groups ? `${groups}: ${eff.effect.type}` : eff.effect.type);
     }
     return parts.join(" | ");
   });
 
-  let blockWidth = $derived(Math.max(24, pixelsPerMs * 500));
+  // For sequence lanes: find the first non-stop sequence ref and compute its total duration
+  let seqTotalMs = $derived.by(() => {
+    if (subLaneType !== "sequences") return 0;
+    for (const ref of cue.sequences) {
+      if (ref.stop) continue;
+      const def = sequenceDefs.find((s) => s.name === ref.name);
+      if (!def) continue;
+      const iterMs = getSequenceIterationMs(def, cueMs, tempo);
+      const loopCount = ref.loop ? parseInt(ref.loop, 10) || 1 : 1;
+      return iterMs * loopCount;
+    }
+    return 0;
+  });
+
+  // For sequence lanes: the iteration duration (for snapping resize to whole iterations)
+  let seqIterMs = $derived.by(() => {
+    if (subLaneType !== "sequences") return 0;
+    for (const ref of cue.sequences) {
+      if (ref.stop) continue;
+      const def = sequenceDefs.find((s) => s.name === ref.name);
+      if (!def) continue;
+      return getSequenceIterationMs(def, cueMs, tempo);
+    }
+    return 0;
+  });
+
+  // Compute block width from effect/sequence duration
+  let blockWidth = $derived.by(() => {
+    if (subLaneType === "commands") {
+      return Math.max(24, pixelsPerMs * 500);
+    }
+    if (subLaneType === "sequences") {
+      if (seqTotalMs > 0) return Math.max(24, pixelsPerMs * seqTotalMs);
+      return Math.max(24, pixelsPerMs * 500);
+    }
+    if (!isEffectLane) {
+      return Math.max(24, pixelsPerMs * 500);
+    }
+    // For effect blocks, derive width from the first visible effect's duration
+    if (visibleEffects.length > 0) {
+      const firstEffect = visibleEffects[0].effect;
+      const durStr = firstEffect.duration ?? firstEffect.extra?.hold_time;
+      const durMs = durationStringToMs(durStr, tempo, cueMs);
+      if (durMs > 0) {
+        return Math.max(24, pixelsPerMs * durMs);
+      }
+    }
+    // Fallback for effects without duration
+    return Math.max(24, pixelsPerMs * 500);
+  });
 
   function handlePointerDown(e: PointerEvent) {
     if (e.button !== 0) return;
@@ -87,19 +182,54 @@
   }
 
   function handlePointerMove(e: PointerEvent) {
-    if (!dragging) return;
-    dragOffsetPx = e.clientX - dragStartX;
+    if (dragging) {
+      dragOffsetPx = e.clientX - dragStartX;
+    }
+    if (resizing) {
+      resizeOffsetPx = e.clientX - resizeStartX;
+    }
   }
 
   function handlePointerUp() {
-    if (!dragging) return;
-    const deltaPx = dragOffsetPx;
-    dragging = false;
-    dragOffsetPx = 0;
-    if (Math.abs(deltaPx) > 3) {
-      const deltaMs = deltaPx / pixelsPerMs;
-      onmove(deltaMs);
+    if (dragging) {
+      const deltaPx = dragOffsetPx;
+      dragging = false;
+      dragOffsetPx = 0;
+      if (Math.abs(deltaPx) > 3) {
+        const deltaMs = deltaPx / pixelsPerMs;
+        onmove(deltaMs);
+      }
     }
+    if (resizing) {
+      const deltaPx = resizeOffsetPx;
+      resizing = false;
+      resizeOffsetPx = 0;
+      if (Math.abs(deltaPx) > 3) {
+        const currentWidthMs = blockWidth / pixelsPerMs;
+        const newTotalMs = Math.max(
+          100,
+          currentWidthMs + deltaPx / pixelsPerMs,
+        );
+
+        if (subLaneType === "sequences" && seqIterMs > 0 && onloopchange) {
+          // Snap to nearest whole iteration
+          const newLoopCount = Math.max(1, Math.round(newTotalMs / seqIterMs));
+          onloopchange(newLoopCount);
+        } else if (onresize) {
+          onresize(msToDurationString(newTotalMs));
+        }
+      }
+    }
+  }
+
+  function handleResizePointerDown(e: PointerEvent) {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    resizing = true;
+    resizeOffsetPx = 0;
+    resizeStartX = e.clientX;
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    e.preventDefault();
   }
 
   function handleKeyDown(e: KeyboardEvent) {
@@ -114,8 +244,10 @@
   class="cue-block"
   class:selected
   class:dragging
+  class:resizing
+  class:from-sequence={isFromSequence}
   style:left="{positionPx + dragOffsetPx}px"
-  style:width="{blockWidth}px"
+  style:width="{blockWidth + resizeOffsetPx}px"
   style:--cue-color={primaryColor}
   onpointerdown={handlePointerDown}
   onpointermove={handlePointerMove}
@@ -127,54 +259,44 @@
 >
   <div class="cue-color-strip"></div>
   <div class="cue-content">
-    {#if subLaneType === "effects"}
+    {#if isEffectLane}
       <div class="cue-effects">
-        {#each cue.effects.slice(0, 3) as eff, ei (ei)}
+        {#each visibleEffects.slice(0, 3) as eff, ei (ei)}
           <span
             class="effect-dot"
             style:background={effectTypeColor(eff.effect.type)}
             title={eff.effect.type}
           ></span>
         {/each}
-        {#if cue.effects.length > 3}
-          <span class="effect-overflow">+{cue.effects.length - 3}</span>
+        {#if visibleEffects.length > 3}
+          <span class="effect-overflow">+{visibleEffects.length - 3}</span>
         {/if}
       </div>
       <span class="cue-label">{label}</span>
-    {:else if subLaneType === "commands"}
-      <span class="cue-label cmd-label">{label}</span>
-    {:else if subLaneType === "sequences"}
-      <span class="cue-label seq-label">{label}</span>
-    {:else}
-      <div class="cue-effects">
-        {#each cue.effects.slice(0, 3) as eff, ei (ei)}
-          <span
-            class="effect-dot"
-            style:background={effectTypeColor(eff.effect.type)}
-            title={eff.effect.type}
-          ></span>
-        {/each}
-        {#if cue.effects.length > 3}
-          <span class="effect-overflow">+{cue.effects.length - 3}</span>
-        {/if}
-      </div>
-      <span class="cue-label">{label}</span>
-      {#if cue.commands.length > 0}
+      {#if !subLaneType && cue.commands.length > 0}
         <span class="badge cmd-badge"
           >{$t("timeline.cueBlock.cmdCount", {
             values: { count: cue.commands.length },
           })}</span
         >
       {/if}
-      {#if cue.sequences.length > 0}
+      {#if !subLaneType && cue.sequences.length > 0}
         <span class="badge seq-badge"
           >{$t("timeline.cueBlock.seqCount", {
             values: { count: cue.sequences.length },
           })}</span
         >
       {/if}
+    {:else if subLaneType === "commands"}
+      <span class="cue-label cmd-label">{label}</span>
+    {:else if subLaneType === "sequences"}
+      <span class="cue-label seq-label">{label}</span>
     {/if}
   </div>
+  {#if isEffectLane || subLaneType === "sequences"}
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="resize-handle" onpointerdown={handleResizePointerDown}></div>
+  {/if}
 </div>
 
 <style>
@@ -200,9 +322,22 @@
     box-shadow: 0 0 0 1px var(--accent);
     z-index: 2;
   }
+  .cue-block.from-sequence {
+    border-style: dashed;
+    background: rgba(239, 96, 163, 0.06);
+    border-color: rgba(239, 96, 163, 0.25);
+  }
+  .cue-block.from-sequence:hover {
+    background: rgba(239, 96, 163, 0.1);
+    border-color: rgba(239, 96, 163, 0.35);
+  }
   .cue-block.dragging {
     cursor: grabbing;
     opacity: 0.8;
+  }
+  .cue-block.resizing {
+    cursor: ew-resize;
+    opacity: 0.9;
   }
   .cue-block:focus-visible {
     outline: 2px solid var(--accent);
@@ -263,5 +398,17 @@
   }
   .seq-label {
     color: var(--pink, #ef60a3);
+  }
+  .resize-handle {
+    width: 6px;
+    flex-shrink: 0;
+    cursor: ew-resize;
+    background: transparent;
+    border-left: 1px solid rgba(255, 255, 255, 0.08);
+    transition: background 0.1s;
+  }
+  .resize-handle:hover,
+  .resizing .resize-handle {
+    background: rgba(255, 255, 255, 0.15);
   }
 </style>

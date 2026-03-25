@@ -184,6 +184,16 @@ impl LightingTimeline {
             }
         }
 
+        let total_effects = result.effects.len() + result.effects_with_elapsed.len();
+        if total_effects > 20 {
+            tracing::warn!(
+                effects = result.effects.len(),
+                effects_with_elapsed = result.effects_with_elapsed.len(),
+                start_time_ms = start_time.as_millis(),
+                "start_at() yielded unusually large effect batch"
+            );
+        }
+
         result
     }
 
@@ -249,6 +259,15 @@ impl LightingTimeline {
                 // No more cues to process at this time
                 break;
             }
+        }
+
+        if result.effects.len() > 20 {
+            tracing::warn!(
+                effects = result.effects.len(),
+                cue_index = self.next_cue_index,
+                song_time_ms = song_time.as_millis(),
+                "Timeline yielded unusually large effect batch in single update"
+            );
         }
 
         result

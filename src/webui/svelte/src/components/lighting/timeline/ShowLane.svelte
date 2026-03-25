@@ -30,6 +30,8 @@
     snapToNearestGrid,
     computeAdjustedCuePositions,
     offsetMeasuresToMs,
+    durationStringToMs,
+    getSequenceIterationMs,
     type OffsetMarker,
   } from "../../../lib/lighting/timeline-state";
   import CueBlock from "./CueBlock.svelte";
@@ -50,11 +52,14 @@
     oncuedelete: (index: number) => void;
     oncueadd: (cue: Cue) => void;
     ondelete: () => void;
+    oneffectresize?: (cueIndex: number, newDurationStr: string) => void;
+    onloopchange?: (cueIndex: number, newLoopCount: number) => void;
     subLaneType?: SubLaneType;
     laneHeight?: number;
     hideLabel?: boolean;
     offsets?: OffsetMarker[];
     playheadMs?: number | null;
+    sequenceDefs?: import("../../../lib/lighting/types").Sequence[];
   }
 
   let {
@@ -78,6 +83,9 @@
     hideLabel = false,
     offsets = [],
     playheadMs = null,
+    oneffectresize,
+    onloopchange,
+    sequenceDefs = [],
   }: Props = $props();
 
   let canvasEl: HTMLCanvasElement | undefined = $state();
@@ -104,7 +112,35 @@
       .map((ap) => {
         const ms = ap.adjustedMs;
         const px = msToPixel(ms, pixelsPerMs) - scrollLeft;
-        const visible = ms >= viewStartMs - margin && ms <= viewEndMs + margin;
+        // Estimate block end from the longest matching effect's duration
+        let blockEndMs = ms + 500;
+        const layerFilter = subLaneType?.startsWith("effects:")
+          ? subLaneType.split(":")[1]
+          : undefined;
+        let maxDurMs = 0;
+        for (const eff of ap.cue.effects) {
+          if (layerFilter && (eff.effect.layer ?? "background") !== layerFilter)
+            continue;
+          const durStr = eff.effect.duration ?? eff.effect.extra?.hold_time;
+          const durMs = durationStringToMs(durStr, tempo, ms);
+          if (durMs > maxDurMs) maxDurMs = durMs;
+        }
+        if (maxDurMs > 0) blockEndMs = ms + maxDurMs;
+        // For sequence refs, compute total expanded duration
+        if (subLaneType === "sequences") {
+          for (const ref of ap.cue.sequences) {
+            if (ref.stop) continue;
+            const def = sequenceDefs.find((s) => s.name === ref.name);
+            if (!def) continue;
+            const iterMs = getSequenceIterationMs(def, ms, tempo);
+            const loopCount = ref.loop ? parseInt(ref.loop, 10) || 1 : 1;
+            const totalMs = iterMs * loopCount;
+            if (ms + totalMs > blockEndMs) blockEndMs = ms + totalMs;
+          }
+        }
+        // Visible if any part of the block overlaps the viewport
+        const visible =
+          blockEndMs >= viewStartMs - margin && ms <= viewEndMs + margin;
         return {
           cue: ap.cue,
           index: ap.index,
@@ -119,6 +155,12 @@
         if (subLaneType === "effects") return c.effects.length > 0;
         if (subLaneType === "commands") return c.commands.length > 0;
         if (subLaneType === "sequences") return c.sequences.length > 0;
+        if (subLaneType.startsWith("effects:")) {
+          const layer = subLaneType.split(":")[1]; // "background", "midground", "foreground"
+          return c.effects.some(
+            (e) => (e.effect.layer ?? "background") === layer,
+          );
+        }
         return true;
       });
   }
@@ -176,7 +218,10 @@
     const newCue = emptyCue(ts);
     if (subLaneType === "effects") {
       newCue.effects = [
-        { groups: ["all"], effect: { type: "static", colors: [], extra: {} } },
+        {
+          groups: ["all"],
+          effect: { type: "static", colors: [], duration: "5s", extra: {} },
+        },
       ];
     } else if (subLaneType === "commands") {
       newCue.commands = [{ command: "clear" }];
@@ -295,9 +340,18 @@
           selected={selectedCueIndex === cp.index}
           {pixelsPerMs}
           {subLaneType}
+          {tempo}
+          cueMs={cp.ms}
           onselect={() => onselect(cp.index)}
           onmove={(deltaMs) => handleCueMove(cp.index, deltaMs)}
           ondelete={() => oncuedelete(cp.index)}
+          onresize={oneffectresize
+            ? (dur) => oneffectresize(cp.index, dur)
+            : undefined}
+          onloopchange={onloopchange
+            ? (count) => onloopchange(cp.index, count)
+            : undefined}
+          {sequenceDefs}
         />
       {/if}
     {/each}
