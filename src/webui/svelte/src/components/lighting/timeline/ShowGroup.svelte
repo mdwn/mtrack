@@ -36,7 +36,7 @@
     selectedCueIndex: number | null;
     selectedSubLane: SubLaneType | null;
     snapEnabled: boolean;
-    snapResolution: "beat" | "measure";
+    snapResolution: import("../../../lib/lighting/timeline-state").SnapResolution;
     laneType?: "show" | "sequence";
     offsets?: OffsetMarker[];
     playheadMs?: number | null;
@@ -47,6 +47,7 @@
     ondelete: () => void;
     oneffectresize?: (cueIndex: number, newDurationStr: string) => void;
     onloopchange?: (cueIndex: number, newLoopCount: number) => void;
+    onsequenceedit?: (sequenceName: string) => void;
   }
 
   let {
@@ -71,6 +72,7 @@
     ondelete,
     oneffectresize,
     onloopchange,
+    onsequenceedit,
   }: Props = $props();
 
   // Expand sequence references into concrete cues for layer lane display
@@ -154,6 +156,7 @@
           ? oneffectresize
           : undefined}
         onloopchange={sl.type === "sequences" ? onloopchange : undefined}
+        onsequenceedit={sl.type === "sequences" ? onsequenceedit : undefined}
         sequenceDefs={sl.type === "sequences" ? sequences : []}
       />
     {/each}

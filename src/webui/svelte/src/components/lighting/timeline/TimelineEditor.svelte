@@ -32,6 +32,7 @@
   import WaveformLane from "./WaveformLane.svelte";
   import ShowGroup from "./ShowGroup.svelte";
   import TempoLane from "./TempoLane.svelte";
+  import TempoEditor from "../TempoEditor.svelte";
   import CuePropertiesPanel from "./CuePropertiesPanel.svelte";
   import SequenceEditorModal from "./SequenceEditorModal.svelte";
   import StagePreview from "./StagePreview.svelte";
@@ -71,7 +72,11 @@
   let viewportWidth = $state(800);
   let cursorMs = $state<number | null>(null);
   let snapEnabled = $state(true);
-  let snapResolution = $state<"beat" | "measure">("beat");
+  let snapResolution =
+    $state<import("../../../lib/lighting/timeline-state").SnapResolution>(
+      "beat",
+    );
+  let showTempoEditor = $state(false);
 
   // Playback cursor (the ruler position to play from)
   let playCursorMs = $state<number>(0);
@@ -597,6 +602,19 @@
     onskipend={handleSkipEnd}
   />
 
+  {#if showTempoEditor}
+    <div class="tempo-editor-panel">
+      <TempoEditor
+        tempo={lightFile.tempo}
+        onchange={(tempo) => {
+          onchange({ ...lightFile, tempo });
+          if (!tempo) showTempoEditor = false;
+        }}
+        onclose={() => (showTempoEditor = false)}
+      />
+    </div>
+  {/if}
+
   <div class="timeline-body">
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div
@@ -633,8 +651,16 @@
         </div>
       </div>
 
-      {#if lightFile.tempo}
-        <div class="sticky-row">
+      <!-- svelte-ignore a11y_click_events_have_key_events -->
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="sticky-row tempo-lane-clickable"
+        onclick={() => (showTempoEditor = !showTempoEditor)}
+        title={lightFile.tempo
+          ? $t("tempo.title") + " - click to edit"
+          : "Click to add tempo"}
+      >
+        {#if lightFile.tempo}
           <TempoLane
             tempo={lightFile.tempo}
             {pixelsPerMs}
@@ -643,8 +669,12 @@
             {totalDurationMs}
             offsets={getOffsetMarkers()}
           />
-        </div>
-      {/if}
+        {:else}
+          <div class="no-tempo-lane">
+            <span class="no-tempo-label">No tempo - click to add</span>
+          </div>
+        {/if}
+      </div>
 
       {#if getMergedPeaks().length > 0}
         <div class="sticky-row">
@@ -682,6 +712,12 @@
             oncueadd={(cue) => handleShowCueAdd(si, cue)}
             ondelete={() => deleteShow(si)}
             onloopchange={(ci, count) => handleShowLoopChange(si, ci, count)}
+            onsequenceedit={(seqName) => {
+              const idx = lightFile.sequences.findIndex(
+                (s) => s.name === seqName,
+              );
+              if (idx >= 0) editingSequenceIndex = idx;
+            }}
           />
         </div>
       {/each}
@@ -823,8 +859,6 @@
     {groups}
     {sequenceNames}
     tempo={lightFile.tempo}
-    {snapEnabled}
-    {snapResolution}
     onchange={handleSequenceChange}
     ondelete={() => deleteSequence(editingSequenceIndex!)}
     onclose={() => (editingSequenceIndex = null)}
@@ -838,6 +872,26 @@
     gap: 8px;
     flex: 1;
     min-height: 0;
+  }
+  .tempo-editor-panel {
+    flex-shrink: 0;
+  }
+  .tempo-lane-clickable {
+    cursor: pointer;
+  }
+  .tempo-lane-clickable:hover {
+    background: rgba(255, 255, 255, 0.02);
+  }
+  .no-tempo-lane {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 28px;
+    width: 100%;
+  }
+  .no-tempo-label {
+    font-size: 12px;
+    color: var(--text-dim);
   }
   .timeline-body {
     display: flex;

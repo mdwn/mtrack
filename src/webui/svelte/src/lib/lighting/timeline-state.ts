@@ -208,6 +208,7 @@ export function getGridLines(
   tempo: TempoSection,
   viewStartMs: number,
   viewEndMs: number,
+  pixelsPerMs?: number,
 ): GridLine[] {
   const lines: GridLine[] = [];
   const segments = buildTempoSegments(tempo);
@@ -217,6 +218,23 @@ export function getGridLines(
     const segEnd =
       si < segments.length - 1 ? segments[si + 1].startMs : viewEndMs + 10000;
     const beatDurationMs = 60000 / seg.bpm;
+    const measureDurationMs = beatDurationMs * seg.beatsPerMeasure;
+
+    // Determine label and beat-line density based on pixels per measure.
+    // At low zoom, skip labels and beat lines to avoid overlap.
+    const pxPerMeasure = pixelsPerMs
+      ? pixelsPerMs * measureDurationMs
+      : Infinity;
+
+    // labelEvery: show a label every N measures (1 = every measure)
+    let labelEvery = 1;
+    if (pxPerMeasure < 15) labelEvery = 16;
+    else if (pxPerMeasure < 25) labelEvery = 8;
+    else if (pxPerMeasure < 40) labelEvery = 4;
+    else if (pxPerMeasure < 60) labelEvery = 2;
+
+    // Hide beat lines when they'd be < 6px apart
+    const showBeats = pixelsPerMs ? pixelsPerMs * beatDurationMs >= 6 : true;
 
     // Walk beats from this segment's start
     let beatIndex = 0;
@@ -236,8 +254,13 @@ export function getGridLines(
           Math.floor((beatIndex + (seg.startBeat - 1)) / seg.beatsPerMeasure);
 
         if (beatInMeasure === 0) {
-          lines.push({ ms, type: "measure", label: `${measureNum}` });
-        } else {
+          const showLabel = (measureNum - 1) % labelEvery === 0;
+          lines.push({
+            ms,
+            type: "measure",
+            label: showLabel ? `${measureNum}` : undefined,
+          });
+        } else if (showBeats) {
           lines.push({ ms, type: "beat" });
         }
       }
@@ -311,10 +334,18 @@ export function pixelToMs(px: number, pixelsPerMs: number): number {
 }
 
 /** Snap a time to the nearest grid line */
+export type SnapResolution =
+  | "measure"
+  | "beat"
+  | "1/2"
+  | "1/4"
+  | "1/8"
+  | "1/16";
+
 export function snapToNearestGrid(
   ms: number,
   tempo: TempoSection,
-  resolution: "beat" | "measure",
+  resolution: SnapResolution,
 ): number {
   const segments = buildTempoSegments(tempo);
 
@@ -328,10 +359,15 @@ export function snapToNearestGrid(
   }
 
   const beatDurationMs = 60000 / seg.bpm;
-  const step =
-    resolution === "measure"
-      ? beatDurationMs * seg.beatsPerMeasure
-      : beatDurationMs;
+  const subdivisions: Record<SnapResolution, number> = {
+    measure: seg.beatsPerMeasure,
+    beat: 1,
+    "1/2": 0.5,
+    "1/4": 0.25,
+    "1/8": 0.125,
+    "1/16": 0.0625,
+  };
+  const step = beatDurationMs * subdivisions[resolution];
 
   const elapsed = ms - seg.startMs;
   const snapped = Math.round(elapsed / step) * step;
@@ -363,9 +399,10 @@ export function getAdjustedGridLines(
   viewStartMs: number,
   viewEndMs: number,
   offsets: OffsetMarker[],
+  pixelsPerMs?: number,
 ): GridLine[] {
   if (offsets.length === 0) {
-    return getGridLines(tempo, viewStartMs, viewEndMs);
+    return getGridLines(tempo, viewStartMs, viewEndMs, pixelsPerMs);
   }
 
   // Sort offsets by rawMs
@@ -388,7 +425,7 @@ export function getAdjustedGridLines(
   const rawStart = Math.max(0, viewStartMs - totalOffset);
   const rawEnd = viewEndMs;
 
-  const rawLines = getGridLines(tempo, rawStart, rawEnd);
+  const rawLines = getGridLines(tempo, rawStart, rawEnd, pixelsPerMs);
 
   // Shift each grid line by the cumulative offset at its raw position.
   // Use >= so that a grid line coinciding with an offset appears BEFORE the gap.
