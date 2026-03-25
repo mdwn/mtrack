@@ -659,7 +659,7 @@ mod test {
         // Create files and directories
         std::fs::write(subdir.join("aaa_file.txt"), "data").unwrap();
         std::fs::create_dir(subdir.join("zzz_dir")).unwrap();
-        std::fs::write(subdir.join("bbb_file.wav"), &create_test_wav()).unwrap();
+        std::fs::write(subdir.join("bbb_file.wav"), create_test_wav()).unwrap();
         std::fs::create_dir(subdir.join("aaa_dir")).unwrap();
 
         let app = router().with_state(state);

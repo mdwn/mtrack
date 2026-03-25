@@ -74,7 +74,7 @@ fn test_strobe_boundary_at_duty_cycle_transition() {
         "test_effect".to_string(),
         EffectType::Strobe {
             frequency: TempoAwareFrequency::Fixed(2.0),
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -121,7 +121,7 @@ fn test_strobe_effect() {
         "test_effect".to_string(),
         EffectType::Strobe {
             frequency: TempoAwareFrequency::Fixed(2.0), // 2 Hz
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -154,7 +154,7 @@ fn test_clear_layer_resets_strobe_channel() {
         "strobe_effect".to_string(),
         EffectType::Strobe {
             frequency: TempoAwareFrequency::Fixed(5.0), // 5 Hz
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -188,25 +188,20 @@ fn test_clear_layer_resets_strobe_channel() {
     assert_eq!(engine.active_effects_count(), 0);
     assert!(!engine.has_effect("strobe_effect"));
 
-    // Update again - strobe channel should now be 0
+    // Update again - no active effects, so no strobe commands
     let commands_after = engine.update(Duration::from_millis(16), None).unwrap();
 
-    // Find the strobe command
+    // After clear, with no active effects, strobe channel is simply not set
     let strobe_cmd_after = commands_after.iter().find(|cmd| cmd.channel == 6);
     assert!(
-        strobe_cmd_after.is_some(),
-        "Should have strobe command after clear (to reset it to 0)"
-    );
-    assert_eq!(
-        strobe_cmd_after.unwrap().value,
-        0,
-        "Strobe channel should be reset to 0 after clear"
+        strobe_cmd_after.is_none(),
+        "No strobe command after clear (no active effects)"
     );
 }
 
 #[test]
 fn test_clear_all_layers_resets_strobe_channel() {
-    // Test that clearing all layers with strobe effects resets strobe channels to 0
+    // Test that clearing all layers removes strobe effects
     let mut engine = EffectEngine::new();
     let fixture = create_test_fixture("test_fixture", 1, 1);
     engine.register_fixture(fixture);
@@ -216,7 +211,7 @@ fn test_clear_all_layers_resets_strobe_channel() {
         "bg_strobe".to_string(),
         EffectType::Strobe {
             frequency: TempoAwareFrequency::Fixed(3.0),
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -229,7 +224,7 @@ fn test_clear_all_layers_resets_strobe_channel() {
         "fg_strobe".to_string(),
         EffectType::Strobe {
             frequency: TempoAwareFrequency::Fixed(4.0),
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -263,19 +258,14 @@ fn test_clear_all_layers_resets_strobe_channel() {
     // Verify all effects are stopped
     assert_eq!(engine.active_effects_count(), 0);
 
-    // Update again - strobe channel should now be 0
+    // Update again - no active effects, so no strobe commands
     let commands_after = engine.update(Duration::from_millis(16), None).unwrap();
 
-    // Find the strobe command
+    // After clear, with no active effects, strobe channel is simply not set
     let strobe_cmd_after = commands_after.iter().find(|cmd| cmd.channel == 6);
     assert!(
-        strobe_cmd_after.is_some(),
-        "Should have strobe command after clear (to reset it to 0)"
-    );
-    assert_eq!(
-        strobe_cmd_after.unwrap().value,
-        0,
-        "Strobe channel should be reset to 0 after clear_all_layers"
+        strobe_cmd_after.is_none(),
+        "No strobe command after clear_all_layers (no active effects)"
     );
 }
 
@@ -293,7 +283,7 @@ fn test_strobe_with_dmx_offset() {
         "test_effect".to_string(),
         EffectType::Strobe {
             frequency: TempoAwareFrequency::Fixed(10.0),
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -331,7 +321,7 @@ fn test_strobe_without_offset_unchanged() {
         "test_effect".to_string(),
         EffectType::Strobe {
             frequency: TempoAwareFrequency::Fixed(2.0),
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -389,6 +379,7 @@ fn test_pixelbrick_strobe_with_concurrent_effects() {
             speed: TempoAwareSpeed::Fixed(0.5),
             direction: CycleDirection::Forward,
             transition: CycleTransition::Fade,
+            duration: Duration::from_secs(10),
         },
         vec!["Brick1".to_string()],
         None,
@@ -407,6 +398,7 @@ fn test_pixelbrick_strobe_with_concurrent_effects() {
             speed: TempoAwareSpeed::Fixed(1.0),
             direction: ChaseDirection::LeftToRight,
             transition: CycleTransition::Fade,
+            duration: Duration::from_secs(10),
         },
         vec!["Brick1".to_string()],
         None,
@@ -425,6 +417,7 @@ fn test_pixelbrick_strobe_with_concurrent_effects() {
             speed: TempoAwareSpeed::Fixed(2.0),
             direction: ChaseDirection::LeftToRight,
             transition: CycleTransition::Fade,
+            duration: Duration::from_secs(10),
         },
         vec!["Brick1".to_string()],
         None,
@@ -442,7 +435,7 @@ fn test_pixelbrick_strobe_with_concurrent_effects() {
             base_level: 0.5,
             pulse_amplitude: 0.5,
             frequency: TempoAwareFrequency::Fixed(3.0),
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["Brick1".to_string()],
         None,
@@ -458,7 +451,7 @@ fn test_pixelbrick_strobe_with_concurrent_effects() {
         "fg_strobe".to_string(),
         EffectType::Strobe {
             frequency: TempoAwareFrequency::Fixed(10.0),
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["Brick1".to_string()],
         None,
@@ -531,6 +524,7 @@ fn test_esaweg_timeline_strobe_sequence() {
             speed: TempoAwareSpeed::Fixed(0.5),
             direction: CycleDirection::Forward,
             transition: CycleTransition::Fade,
+            duration: Duration::from_secs(10),
         },
         vec!["Brick1".to_string()],
         None,
@@ -549,6 +543,7 @@ fn test_esaweg_timeline_strobe_sequence() {
             speed: TempoAwareSpeed::Fixed(2.0),
             direction: ChaseDirection::LeftToRight,
             transition: CycleTransition::Fade,
+            duration: Duration::from_secs(10),
         },
         vec!["Brick1".to_string()],
         None,
@@ -567,6 +562,7 @@ fn test_esaweg_timeline_strobe_sequence() {
             speed: TempoAwareSpeed::Fixed(2.0),
             direction: ChaseDirection::RightToLeft,
             transition: CycleTransition::Fade,
+            duration: Duration::from_secs(10),
         },
         vec!["Brick1".to_string()],
         None,
@@ -585,6 +581,7 @@ fn test_esaweg_timeline_strobe_sequence() {
             speed: TempoAwareSpeed::Fixed(1.0),
             direction: ChaseDirection::LeftToRight,
             transition: CycleTransition::Fade,
+            duration: Duration::from_secs(10),
         },
         vec!["Brick1".to_string()],
         None,
@@ -613,7 +610,7 @@ fn test_esaweg_timeline_strobe_sequence() {
             base_level: 0.5,
             pulse_amplitude: 0.5,
             frequency: TempoAwareFrequency::Fixed(3.0),
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["Brick1".to_string()],
         None,
@@ -640,7 +637,7 @@ fn test_esaweg_timeline_strobe_sequence() {
         "fg_strobe".to_string(),
         EffectType::Strobe {
             frequency: TempoAwareFrequency::Fixed(10.0),
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["Brick1".to_string()],
         None,
@@ -710,7 +707,7 @@ fn test_esaweg_timeline_strobe_sequence() {
                 p.insert("blue".to_string(), 0.0);
                 p
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["Brick1".to_string()],
         None,
@@ -721,18 +718,15 @@ fn test_esaweg_timeline_strobe_sequence() {
     black_static.blend_mode = BlendMode::Replace;
     engine.start_effect(black_static).unwrap();
 
-    // After clear: strobe channel should be 0, RGB should be 0
+    // After clear: strobe channel is not set (no strobe effect active),
+    // RGB should be 0 from the black static effect
     let commands = engine.update(dt, None).unwrap();
 
+    // Strobe channel is not emitted after clear (no active strobe effect)
     let strobe_cmd = commands.iter().find(|c| c.channel == 4);
     assert!(
-        strobe_cmd.is_some(),
-        "Strobe channel should be present after clear (reset to 0)"
-    );
-    assert_eq!(
-        strobe_cmd.unwrap().value,
-        0,
-        "Strobe channel should be 0 after clear"
+        strobe_cmd.is_none(),
+        "Strobe channel should not be present after clear (no active strobe)"
     );
 
     let red_cmd = commands.iter().find(|c| c.channel == 1);
@@ -766,7 +760,7 @@ fn test_pixelbrick_orange_static_with_strobe_dmx_values() {
                 p.insert("blue".to_string(), 0.0);
                 p
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["Brick1".to_string()],
         None,
@@ -780,7 +774,7 @@ fn test_pixelbrick_orange_static_with_strobe_dmx_values() {
         "strobe_10hz".to_string(),
         EffectType::Strobe {
             frequency: TempoAwareFrequency::Fixed(10.0),
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["Brick1".to_string()],
         None,

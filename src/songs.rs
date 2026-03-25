@@ -2768,7 +2768,7 @@ mod test {
         // Create a valid .light DSL file.
         let dsl = r#"show "test" {
     @00:00.000
-    front: static color: "blue"
+    front: static color: "blue", duration: 5s
 }"#;
         fs::write(song_dir.join("lighting.light"), dsl)?;
 
@@ -2876,7 +2876,7 @@ mod test {
         // DSL lighting show file
         let dsl = r#"show "mixed" {
     @00:00.000
-    front: static color: "blue"
+    front: static color: "blue", duration: 5s
 }"#;
         fs::write(song_dir.join("show.light"), dsl)?;
 

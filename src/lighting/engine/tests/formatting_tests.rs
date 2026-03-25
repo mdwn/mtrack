@@ -34,7 +34,7 @@ fn test_format_active_effects() {
         "test_effect_1".to_string(),
         EffectType::Static {
             parameters: params,
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -51,6 +51,7 @@ fn test_format_active_effects() {
             speed: TempoAwareSpeed::Fixed(1.0),
             direction: ChaseDirection::LeftToRight,
             transition: CycleTransition::Snap,
+            duration: Duration::from_secs(10),
         },
         vec!["test_fixture".to_string()],
         None,

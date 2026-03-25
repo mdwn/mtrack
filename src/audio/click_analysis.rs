@@ -413,7 +413,7 @@ mod tests {
 
         while t < duration_secs {
             let sample_idx = (t * sample_rate as f64) as usize;
-            let is_accented = beat % accented_every == 0;
+            let is_accented = beat.is_multiple_of(accented_every);
 
             // Accented: ~4kHz burst. Normal: ~1kHz burst.
             let freq = if is_accented { 4000.0 } else { 1000.0 };

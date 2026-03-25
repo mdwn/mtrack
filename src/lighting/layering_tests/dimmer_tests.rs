@@ -52,7 +52,7 @@ fn test_dimmer_multiplier_passes_through_locks_rgb_only() {
                 p.insert("blue".to_string(), 1.0);
                 p
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["front_wash".to_string()],
         None,
@@ -110,8 +110,8 @@ fn test_dimmer_multiplier_passes_through_locks_rgb_only() {
         blue_15s
     );
 
-    // After fade completes (exceed 2s): foreground Replace static is temporary but the dimmer
-    // that faded it to black is permanent, so the final dimmed value (0) persists
+    // After fade completes (exceed 2s): dimmer is removed, so the underlying
+    // static blue shows through at full brightness
     let cmds_after = engine.update(Duration::from_millis(500), None).unwrap();
     let blue_after = cmds_after
         .iter()
@@ -119,8 +119,8 @@ fn test_dimmer_multiplier_passes_through_locks_rgb_only() {
         .map(|c| c.value)
         .unwrap_or(0);
     assert_eq!(
-        blue_after, 0,
-        "blue should remain at 0 after dimmer completes (dimmers are permanent)"
+        blue_after, 255,
+        "blue should return to full after dimmer completes (dimmer no longer persists)"
     );
 }
 #[test]
@@ -157,7 +157,7 @@ fn test_dedicated_dimmer_preserves_rgb() {
                 p.insert("dimmer".to_string(), 1.0);
                 p
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["front_wash".to_string()],
         None,
@@ -238,7 +238,7 @@ fn test_effect_layering_static_blue_and_dimmer() {
         "static_blue".to_string(),
         EffectType::Static {
             parameters: blue_params,
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         EffectLayer::Background,
@@ -334,7 +334,7 @@ fn test_dimmer_without_dedicated_channel() {
                 params.insert("blue".to_string(), 1.0);
                 params
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["rgb_only_fixture".to_string()],
         None,
@@ -440,7 +440,7 @@ fn test_dimmer_precedence_and_selective_dimming() {
         "blue_static".to_string(),
         EffectType::Static {
             parameters: static_params,
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         EffectLayer::Background,
@@ -522,12 +522,16 @@ fn test_dimmer_precedence_and_selective_dimming() {
 
     // Verify the behavior is correct
     let final_commands = engine.update(Duration::from_millis(2000), None).unwrap();
-    // At the end (4000ms), the dimmer effect has completed and persisted at 0.0
+    // At the end (4000ms), the dimmer effect has completed and been removed.
+    // The static blue effect shows through at full brightness.
     assert_eq!(final_commands.len(), 1); // Only blue channel from static effect
 
-    // Blue channel should be at 0 (dimmed to 0 and persisted)
+    // Blue channel should be at full brightness (dimmer no longer persists)
     let blue_cmd = final_commands.iter().find(|cmd| cmd.channel == 3).unwrap();
-    assert_eq!(blue_cmd.value, 0, "Blue should be dimmed to 0 and persist");
+    assert_eq!(
+        blue_cmd.value, 255,
+        "Blue should return to full after dimmer completes"
+    );
 
     println!("✅ Dimmer precedence and selective dimming test passed!");
     println!("✅ RGB channels are used for layering with Multiply mode");
@@ -565,7 +569,7 @@ fn test_dimmer_debug() {
         "static_blue".to_string(),
         EffectType::Static {
             parameters: blue_params,
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         EffectLayer::Background,
@@ -676,7 +680,7 @@ fn test_static_with_dimmer_parameter() {
         "static_blue_with_dimmer".to_string(),
         EffectType::Static {
             parameters: static_params,
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["front_wash".to_string()],
         EffectLayer::Background,
@@ -760,7 +764,7 @@ fn test_dimmer_replace_vs_multiply() {
         "static_blue".to_string(),
         EffectType::Static {
             parameters: blue_params,
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         EffectLayer::Background,
@@ -887,7 +891,7 @@ fn test_astera_pixelblock_dimmer() {
         "static_blue".to_string(),
         EffectType::Static {
             parameters: blue_params,
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["astera_pixelblock".to_string()],
         EffectLayer::Background,
@@ -1007,6 +1011,7 @@ fn test_chase_effect_without_dimmer_channel() {
             speed: TempoAwareSpeed::Fixed(1.0),
             direction: ChaseDirection::LeftToRight,
             transition: CycleTransition::Snap,
+            duration: Duration::from_secs(5),
         },
         vec!["rgb_fixture".to_string()],
         EffectLayer::Background,
@@ -1067,6 +1072,7 @@ fn test_chase_effect_with_dimmer_channel() {
             speed: TempoAwareSpeed::Fixed(1.0),
             direction: ChaseDirection::LeftToRight,
             transition: CycleTransition::Snap,
+            duration: Duration::from_secs(5),
         },
         vec!["rgb_dimmer_fixture".to_string()],
         EffectLayer::Background,
@@ -1129,7 +1135,7 @@ fn test_software_strobing_dimmer_only_fixture() {
         "strobe_effect".to_string(),
         EffectType::Strobe {
             frequency: TempoAwareFrequency::Fixed(4.0), // 4 Hz for easy testing
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["dimmer_only_fixture".to_string()],
         EffectLayer::Foreground,
@@ -1330,7 +1336,7 @@ fn test_dimmer_effect_mid_level_start() {
                 params.insert("blue".to_string(), 1.0);
                 params
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -1358,12 +1364,13 @@ fn test_dimmer_effect_mid_level_start() {
     let blue_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
     assert_eq!(blue_cmd.value, 63, "Blue should be at 25% (63) at 1s"); // 255 * 0.25 ≈ 63
 
-    // At 2s (end of fade) - dimmer persists at end_level (0.0)
+    // At 2s (end of fade) - dimmer completes and is removed.
+    // The underlying static blue shows through at full brightness.
     let commands = engine.update(Duration::from_secs(1), None).unwrap();
     let blue_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
     assert_eq!(
-        blue_cmd.value, 0,
-        "Blue should be at 0% (0) at 2s and persist"
+        blue_cmd.value, 255,
+        "Blue should return to full after dimmer completes"
     );
     assert_eq!(
         engine.active_effects_count(),
@@ -1402,7 +1409,7 @@ fn test_dimmer_curves() {
                 params.insert("blue".to_string(), 1.0);
                 params
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -1448,7 +1455,7 @@ fn test_dimmer_curves() {
                     params.insert("blue".to_string(), 1.0);
                     params
                 },
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             vec!["test_fixture".to_string()],
             None,
@@ -1491,17 +1498,27 @@ fn test_dimmer_curves() {
             let commands = test_engine
                 .update(Duration::from_millis(time_ms), None)
                 .unwrap();
-            let blue_cmd = commands.iter().find(|c| c.channel == 3).unwrap();
-            values.push(blue_cmd.value);
-            println!("  {} ({:4}ms): {}", label, time_ms, blue_cmd.value);
+            // After dimmer completes, blue returns to 255 from static effect
+            let blue_value = commands
+                .iter()
+                .find(|c| c.channel == 3)
+                .map(|c| c.value)
+                .unwrap_or(255);
+            values.push(blue_value);
+            println!("  {} ({:4}ms): {}", label, time_ms, blue_value);
         }
 
         // Verify curve characteristics
+        // Note: cumulative time at values[4] is 5000ms, well past the 2s dimmer.
+        // After dimmer completes, the underlying static blue shows through (255).
         match curve {
             DimmerCurve::Linear => {
                 // Linear should be evenly spaced
                 assert_eq!(values[0], 255, "Linear start should be 255");
-                assert_eq!(values[4], 0, "Linear end should be 0");
+                assert_eq!(
+                    values[4], 255,
+                    "After dimmer completes, blue returns to full"
+                );
             }
             DimmerCurve::Exponential => {
                 // Exponential should fade slowly at first, then faster
@@ -1514,7 +1531,10 @@ fn test_dimmer_curves() {
                     early_drop,
                     mid_drop
                 );
-                assert_eq!(values[4], 0, "Exponential end should be 0");
+                assert_eq!(
+                    values[4], 255,
+                    "After dimmer completes, blue returns to full"
+                );
             }
             DimmerCurve::Logarithmic => {
                 // Logarithmic should fade fast at first, then slower
@@ -1527,17 +1547,26 @@ fn test_dimmer_curves() {
                     early_drop,
                     mid_drop
                 );
-                assert_eq!(values[4], 0, "Logarithmic end should be 0");
+                assert_eq!(
+                    values[4], 255,
+                    "After dimmer completes, blue returns to full"
+                );
             }
             DimmerCurve::Sine => {
                 // Sine should be smooth ease-in-out
                 assert_eq!(values[0], 255, "Sine start should be 255");
-                assert_eq!(values[4], 0, "Sine end should be 0");
+                assert_eq!(
+                    values[4], 255,
+                    "After dimmer completes, blue returns to full"
+                );
             }
             DimmerCurve::Cosine => {
                 // Cosine should be smooth ease-in
                 assert_eq!(values[0], 255, "Cosine start should be 255");
-                assert_eq!(values[4], 0, "Cosine end should be 0");
+                assert_eq!(
+                    values[4], 255,
+                    "After dimmer completes, blue returns to full"
+                );
             }
         }
     }

@@ -1,11 +1,11 @@
 show "Main Show" {
     # Intro - blue wash
     @00:00.000
-    front_wash: static color: "blue", dimmer: 60%
+    front_wash: static color: "blue", duration: 5s, dimmer: 60%
     
     # Add back wash with fade
     @00:04.000
-    back_wash: static color: "orange", dimmer: 50%, fade: 500ms
+    back_wash: static color: "orange", duration: 5s, dimmer: 50%, fade: 500ms
     
     # Color cycle effect (keeps color info)
     @00:16.000
@@ -13,7 +13,7 @@ show "Main Show" {
     
     # Moving head chase (no color - applies to existing fixtures)
     @00:30.000
-    movers: chase pattern: linear, speed: 1.5, direction: left_to_right
+    movers: chase pattern: linear, speed: 1.5, direction: left_to_right, duration: 10s
     
     # Strobe effect (no color - applies to existing fixtures)
     @01:00.000

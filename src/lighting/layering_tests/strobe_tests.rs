@@ -35,7 +35,7 @@ fn test_effect_layering_with_strobe() {
         "static_blue".to_string(),
         EffectType::Static {
             parameters: blue_params,
-            duration: None,
+            duration: Duration::from_secs(10),
         },
         vec!["test_fixture".to_string()],
         EffectLayer::Background,
@@ -47,7 +47,7 @@ fn test_effect_layering_with_strobe() {
         "strobe".to_string(),
         EffectType::Strobe {
             frequency: TempoAwareFrequency::Fixed(1.0), // 1 Hz for easy testing
-            duration: None,
+            duration: Duration::from_secs(10),
         },
         vec!["test_fixture".to_string()],
         EffectLayer::Foreground,
@@ -94,7 +94,7 @@ fn test_strobe_effect_crossfade() {
         "strobe_test".to_string(),
         EffectType::Strobe {
             frequency: TempoAwareFrequency::Fixed(16.0), // 16 Hz (should give value > 200)
-            duration: Some(Duration::from_secs(5)),
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         EffectLayer::Foreground,

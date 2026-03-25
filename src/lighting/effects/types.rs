@@ -18,13 +18,14 @@ use std::time::Duration;
 use super::color::Color;
 use super::tempo_aware::{TempoAwareFrequency, TempoAwareSpeed};
 
-/// Core effect types for lighting
+/// Core effect types for lighting.
+/// All effects have an explicit, finite duration.
 #[derive(Debug, Clone)]
 pub enum EffectType {
     /// Static effect with fixed parameter values
     Static {
         parameters: HashMap<String, f64>,
-        duration: Option<Duration>,
+        duration: Duration,
     },
 
     /// Color cycle effect
@@ -33,12 +34,13 @@ pub enum EffectType {
         speed: TempoAwareSpeed, // cycles per second (can be tempo-aware)
         direction: CycleDirection,
         transition: CycleTransition, // how to transition between colors
+        duration: Duration,
     },
 
     /// Strobe effect
     Strobe {
         frequency: TempoAwareFrequency, // Hz (can be tempo-aware)
-        duration: Option<Duration>,
+        duration: Duration,
     },
 
     /// Dimmer effect with smooth transitions
@@ -55,6 +57,7 @@ pub enum EffectType {
         speed: TempoAwareSpeed, // cycles per second (can be tempo-aware)
         direction: ChaseDirection,
         transition: CycleTransition, // how to transition between fixtures (fade in/out)
+        duration: Duration,
     },
 
     /// Rainbow effect
@@ -62,6 +65,7 @@ pub enum EffectType {
         speed: TempoAwareSpeed, // cycles per second (can be tempo-aware)
         saturation: f64,
         brightness: f64,
+        duration: Duration,
     },
 
     /// Pulse effect
@@ -69,23 +73,22 @@ pub enum EffectType {
         base_level: f64,
         pulse_amplitude: f64,
         frequency: TempoAwareFrequency, // Hz (can be tempo-aware)
-        duration: Option<Duration>,
+        duration: Duration,
     },
 }
 
 impl EffectType {
-    /// Get the duration field from the effect type if it exists
-    /// Used in tests to verify duration parsing
+    /// Get the duration field from the effect type
     #[cfg(test)]
-    pub fn get_duration(&self) -> Option<Duration> {
+    pub fn get_duration(&self) -> Duration {
         match self {
-            EffectType::Static { duration, .. } => *duration,
-            EffectType::Strobe { duration, .. } => *duration,
-            EffectType::Pulse { duration, .. } => *duration,
-            EffectType::Dimmer { duration, .. } => Some(*duration),
-            EffectType::ColorCycle { .. } => None,
-            EffectType::Chase { .. } => None,
-            EffectType::Rainbow { .. } => None,
+            EffectType::Static { duration, .. }
+            | EffectType::Strobe { duration, .. }
+            | EffectType::Pulse { duration, .. }
+            | EffectType::Dimmer { duration, .. }
+            | EffectType::ColorCycle { duration, .. }
+            | EffectType::Chase { duration, .. }
+            | EffectType::Rainbow { duration, .. } => *duration,
         }
     }
 }
@@ -167,27 +170,18 @@ mod tests {
     fn effect_type_static_duration() {
         let effect = EffectType::Static {
             parameters: HashMap::new(),
-            duration: Some(Duration::from_secs(5)),
+            duration: Duration::from_secs(5),
         };
-        assert_eq!(effect.get_duration(), Some(Duration::from_secs(5)));
-    }
-
-    #[test]
-    fn effect_type_static_no_duration() {
-        let effect = EffectType::Static {
-            parameters: HashMap::new(),
-            duration: None,
-        };
-        assert_eq!(effect.get_duration(), None);
+        assert_eq!(effect.get_duration(), Duration::from_secs(5));
     }
 
     #[test]
     fn effect_type_strobe_duration() {
         let effect = EffectType::Strobe {
             frequency: TempoAwareFrequency::Fixed(10.0),
-            duration: Some(Duration::from_millis(500)),
+            duration: Duration::from_millis(500),
         };
-        assert_eq!(effect.get_duration(), Some(Duration::from_millis(500)));
+        assert_eq!(effect.get_duration(), Duration::from_millis(500));
     }
 
     #[test]
@@ -196,52 +190,55 @@ mod tests {
             base_level: 0.0,
             pulse_amplitude: 1.0,
             frequency: TempoAwareFrequency::Fixed(2.0),
-            duration: Some(Duration::from_secs(3)),
+            duration: Duration::from_secs(3),
         };
-        assert_eq!(effect.get_duration(), Some(Duration::from_secs(3)));
+        assert_eq!(effect.get_duration(), Duration::from_secs(3));
     }
 
     #[test]
-    fn effect_type_dimmer_always_has_duration() {
+    fn effect_type_dimmer_duration() {
         let effect = EffectType::Dimmer {
             start_level: 0.0,
             end_level: 1.0,
             duration: Duration::from_secs(2),
             curve: DimmerCurve::Linear,
         };
-        assert_eq!(effect.get_duration(), Some(Duration::from_secs(2)));
+        assert_eq!(effect.get_duration(), Duration::from_secs(2));
     }
 
     #[test]
-    fn effect_type_color_cycle_no_duration() {
+    fn effect_type_color_cycle_duration() {
         let effect = EffectType::ColorCycle {
             colors: vec![Color::new(255, 0, 0), Color::new(0, 0, 255)],
             speed: TempoAwareSpeed::Fixed(1.0),
             direction: CycleDirection::Forward,
             transition: CycleTransition::Fade,
+            duration: Duration::from_secs(10),
         };
-        assert_eq!(effect.get_duration(), None);
+        assert_eq!(effect.get_duration(), Duration::from_secs(10));
     }
 
     #[test]
-    fn effect_type_chase_no_duration() {
+    fn effect_type_chase_duration() {
         let effect = EffectType::Chase {
             pattern: ChasePattern::Linear,
             speed: TempoAwareSpeed::Fixed(1.0),
             direction: ChaseDirection::LeftToRight,
             transition: CycleTransition::Snap,
+            duration: Duration::from_secs(5),
         };
-        assert_eq!(effect.get_duration(), None);
+        assert_eq!(effect.get_duration(), Duration::from_secs(5));
     }
 
     #[test]
-    fn effect_type_rainbow_no_duration() {
+    fn effect_type_rainbow_duration() {
         let effect = EffectType::Rainbow {
             speed: TempoAwareSpeed::Fixed(0.5),
             saturation: 1.0,
             brightness: 1.0,
+            duration: Duration::from_secs(8),
         };
-        assert_eq!(effect.get_duration(), None);
+        assert_eq!(effect.get_duration(), Duration::from_secs(8));
     }
 
     #[test]

@@ -71,7 +71,7 @@ pub(crate) fn parse_effect_definition(
     let mut groups = Vec::new();
     let mut effect_type = EffectType::Static {
         parameters: HashMap::new(),
-        duration: None,
+        duration: Duration::ZERO,
     };
     let mut parameters = HashMap::new();
     let mut color_parameters = Vec::new();
@@ -94,29 +94,31 @@ pub(crate) fn parse_effect_definition(
                 effect_type = match inner_pair.as_str() {
                     "static" => EffectType::Static {
                         parameters: HashMap::new(),
-                        duration: None,
+                        duration: Duration::ZERO,
                     },
                     "cycle" => EffectType::ColorCycle {
                         colors: Vec::new(),
                         speed: TempoAwareSpeed::Fixed(1.0),
                         direction: CycleDirection::Forward,
                         transition: CycleTransition::Snap,
+                        duration: Duration::ZERO,
                     },
                     "strobe" => EffectType::Strobe {
                         frequency: TempoAwareFrequency::Fixed(8.0),
-                        duration: None,
+                        duration: Duration::ZERO,
                     },
                     "pulse" => EffectType::Pulse {
                         base_level: 0.5,
                         pulse_amplitude: 0.5,
                         frequency: TempoAwareFrequency::Fixed(1.0),
-                        duration: None,
+                        duration: Duration::ZERO,
                     },
                     "chase" => EffectType::Chase {
                         pattern: ChasePattern::Linear,
                         speed: TempoAwareSpeed::Fixed(1.0),
                         direction: ChaseDirection::LeftToRight,
                         transition: CycleTransition::Snap,
+                        duration: Duration::ZERO,
                     },
                     "dimmer" => EffectType::Dimmer {
                         start_level: 0.0,
@@ -128,6 +130,7 @@ pub(crate) fn parse_effect_definition(
                         speed: TempoAwareSpeed::Fixed(1.0),
                         saturation: 1.0,
                         brightness: 1.0,
+                        duration: Duration::ZERO,
                     },
                     _ => return Err(format!("Unknown effect type: {}", inner_pair.as_str()).into()),
                 };
@@ -262,6 +265,38 @@ pub(crate) fn parse_effect_definition(
         offset_secs,
     )?;
 
+    // Validate that every effect has an explicit duration.
+    // Dimmer always has a duration (defaults to 1s). For all other types,
+    // either the effect's duration field or hold_time must be set.
+    if !matches!(&final_effect_type, EffectType::Dimmer { .. }) {
+        let effect_duration = match &final_effect_type {
+            EffectType::Static { duration, .. }
+            | EffectType::Strobe { duration, .. }
+            | EffectType::Pulse { duration, .. }
+            | EffectType::ColorCycle { duration, .. }
+            | EffectType::Chase { duration, .. }
+            | EffectType::Rainbow { duration, .. } => *duration,
+            EffectType::Dimmer { .. } => unreachable!(),
+        };
+        if effect_duration.is_zero() && hold_time.is_none() {
+            let effect_name = match &final_effect_type {
+                EffectType::Static { .. } => "static",
+                EffectType::ColorCycle { .. } => "cycle",
+                EffectType::Strobe { .. } => "strobe",
+                EffectType::Pulse { .. } => "pulse",
+                EffectType::Chase { .. } => "chase",
+                EffectType::Rainbow { .. } => "rainbow",
+                EffectType::Dimmer { .. } => unreachable!(),
+            };
+            return Err(format!(
+                "Effect '{}' requires a 'duration' or 'hold_time' parameter. \
+                 All effects must have an explicit, finite duration.",
+                effect_name
+            )
+            .into());
+        }
+    }
+
     Ok(Effect {
         groups,
         effect_type: final_effect_type,
@@ -312,7 +347,7 @@ pub(crate) fn apply_parameters_to_effect_type(
                         // Convert shifted cue_time back to score-space for duration calculation
                         let dur =
                             parse_duration_in_score_space(value, tempo_map, cue_time, offset_secs)?;
-                        *duration = Some(dur);
+                        *duration = dur;
                     }
                     _ => {
                         if let Ok(val) = value.parse::<f64>() {
@@ -327,6 +362,7 @@ pub(crate) fn apply_parameters_to_effect_type(
             speed,
             direction,
             transition,
+            duration,
         } => {
             // Add all color parameters
             for color_str in color_parameters {
@@ -365,6 +401,11 @@ pub(crate) fn apply_parameters_to_effect_type(
                             }
                         };
                     }
+                    "duration" => {
+                        let dur =
+                            parse_duration_in_score_space(value, tempo_map, cue_time, offset_secs)?;
+                        *duration = dur;
+                    }
                     _ => {}
                 }
             }
@@ -387,7 +428,7 @@ pub(crate) fn apply_parameters_to_effect_type(
                         // Convert shifted cue_time back to score-space for duration calculation
                         let dur =
                             parse_duration_in_score_space(value, tempo_map, cue_time, offset_secs)?;
-                        *duration = Some(dur);
+                        *duration = dur;
                     }
                     _ => {}
                 }
@@ -423,7 +464,7 @@ pub(crate) fn apply_parameters_to_effect_type(
                         // Convert shifted cue_time back to score-space for duration calculation
                         let dur =
                             parse_duration_in_score_space(value, tempo_map, cue_time, offset_secs)?;
-                        *duration = Some(dur);
+                        *duration = dur;
                     }
                     _ => {}
                 }
@@ -434,6 +475,7 @@ pub(crate) fn apply_parameters_to_effect_type(
             speed,
             direction,
             transition,
+            duration,
         } => {
             for (key, value) in parameters {
                 match key.as_str() {
@@ -481,6 +523,11 @@ pub(crate) fn apply_parameters_to_effect_type(
                             }
                         };
                     }
+                    "duration" => {
+                        let dur =
+                            parse_duration_in_score_space(value, tempo_map, cue_time, offset_secs)?;
+                        *duration = dur;
+                    }
                     _ => {}
                 }
             }
@@ -526,6 +573,7 @@ pub(crate) fn apply_parameters_to_effect_type(
             speed,
             saturation,
             brightness,
+            duration,
         } => {
             for (key, value) in parameters {
                 match key.as_str() {
@@ -544,6 +592,11 @@ pub(crate) fn apply_parameters_to_effect_type(
                         if let Ok(val) = parse_percentage_to_f64(value) {
                             *brightness = val;
                         }
+                    }
+                    "duration" => {
+                        let dur =
+                            parse_duration_in_score_space(value, tempo_map, cue_time, offset_secs)?;
+                        *duration = dur;
                     }
                     _ => {}
                 }
@@ -651,7 +704,7 @@ mod tests {
     fn apply_static_dimmer() {
         let et = EffectType::Static {
             parameters: HashMap::new(),
-            duration: None,
+            duration: Duration::ZERO,
         };
         let mut params = HashMap::new();
         params.insert("dimmer".to_string(), "50%".to_string());
@@ -668,7 +721,7 @@ mod tests {
     fn apply_static_color() {
         let et = EffectType::Static {
             parameters: HashMap::new(),
-            duration: None,
+            duration: Duration::ZERO,
         };
         let mut params = HashMap::new();
         params.insert("color".to_string(), "#FF8000".to_string());
@@ -687,7 +740,7 @@ mod tests {
     fn apply_static_rgb_channels() {
         let et = EffectType::Static {
             parameters: HashMap::new(),
-            duration: None,
+            duration: Duration::ZERO,
         };
         let mut params = HashMap::new();
         params.insert("red".to_string(), "100%".to_string());
@@ -708,14 +761,14 @@ mod tests {
     fn apply_static_duration() {
         let et = EffectType::Static {
             parameters: HashMap::new(),
-            duration: None,
+            duration: Duration::ZERO,
         };
         let mut params = HashMap::new();
         params.insert("duration".to_string(), "2s".to_string());
         let result =
             apply_parameters_to_effect_type(et, &params, &[], &None, Duration::ZERO, 0.0).unwrap();
         if let EffectType::Static { duration, .. } = result {
-            assert_eq!(duration, Some(Duration::from_secs(2)));
+            assert_eq!(duration, Duration::from_secs(2));
         } else {
             panic!("Expected Static");
         }
@@ -730,6 +783,7 @@ mod tests {
             speed: TempoAwareSpeed::Fixed(1.0),
             direction: CycleDirection::Forward,
             transition: CycleTransition::Snap,
+            duration: Duration::ZERO,
         };
         let colors = vec!["red".to_string(), "#0000FF".to_string()];
         let result = apply_parameters_to_effect_type(
@@ -757,6 +811,7 @@ mod tests {
             speed: TempoAwareSpeed::Fixed(1.0),
             direction: CycleDirection::Forward,
             transition: CycleTransition::Snap,
+            duration: Duration::ZERO,
         };
         let mut params = HashMap::new();
         params.insert("direction".to_string(), "backward".to_string());
@@ -776,6 +831,7 @@ mod tests {
             speed: TempoAwareSpeed::Fixed(1.0),
             direction: CycleDirection::Forward,
             transition: CycleTransition::Snap,
+            duration: Duration::ZERO,
         };
         let mut params = HashMap::new();
         params.insert("transition".to_string(), "crossfade".to_string());
@@ -794,7 +850,7 @@ mod tests {
     fn apply_strobe_frequency() {
         let et = EffectType::Strobe {
             frequency: TempoAwareFrequency::Fixed(8.0),
-            duration: None,
+            duration: Duration::ZERO,
         };
         let mut params = HashMap::new();
         params.insert("frequency".to_string(), "15.0".to_string());
@@ -811,7 +867,7 @@ mod tests {
     fn apply_strobe_rate_alias() {
         let et = EffectType::Strobe {
             frequency: TempoAwareFrequency::Fixed(8.0),
-            duration: None,
+            duration: Duration::ZERO,
         };
         let mut params = HashMap::new();
         params.insert("rate".to_string(), "20.0".to_string());
@@ -832,7 +888,7 @@ mod tests {
             base_level: 0.5,
             pulse_amplitude: 0.5,
             frequency: TempoAwareFrequency::Fixed(1.0),
-            duration: None,
+            duration: Duration::ZERO,
         };
         let mut params = HashMap::new();
         params.insert("base_level".to_string(), "20%".to_string());
@@ -864,6 +920,7 @@ mod tests {
             speed: TempoAwareSpeed::Fixed(1.0),
             direction: ChaseDirection::LeftToRight,
             transition: CycleTransition::Snap,
+            duration: Duration::ZERO,
         };
         let mut params = HashMap::new();
         params.insert("pattern".to_string(), "snake".to_string());
@@ -941,6 +998,7 @@ mod tests {
             speed: TempoAwareSpeed::Fixed(1.0),
             saturation: 1.0,
             brightness: 1.0,
+            duration: Duration::ZERO,
         };
         let mut params = HashMap::new();
         params.insert("saturation".to_string(), "80%".to_string());
@@ -952,6 +1010,7 @@ mod tests {
             speed,
             saturation,
             brightness,
+            ..
         } = result
         {
             assert_eq!(speed, TempoAwareSpeed::Fixed(2.0));
@@ -971,6 +1030,7 @@ mod tests {
             speed: TempoAwareSpeed::Fixed(1.0),
             direction: CycleDirection::Forward,
             transition: CycleTransition::Snap,
+            duration: Duration::ZERO,
         };
         let mut params = HashMap::new();
         params.insert("direction".to_string(), "sideways".to_string());
@@ -985,6 +1045,7 @@ mod tests {
             speed: TempoAwareSpeed::Fixed(1.0),
             direction: ChaseDirection::LeftToRight,
             transition: CycleTransition::Snap,
+            duration: Duration::ZERO,
         };
         let mut params = HashMap::new();
         params.insert("direction".to_string(), "diagonal".to_string());
@@ -999,6 +1060,7 @@ mod tests {
             speed: TempoAwareSpeed::Fixed(1.0),
             direction: CycleDirection::Forward,
             transition: CycleTransition::Snap,
+            duration: Duration::ZERO,
         };
         let mut params = HashMap::new();
         params.insert("transition".to_string(), "dissolve".to_string());
@@ -1036,6 +1098,7 @@ mod tests {
             speed: TempoAwareSpeed::Fixed(1.0),
             direction: CycleDirection::Forward,
             transition: CycleTransition::Snap,
+            duration: Duration::ZERO,
         };
         let mut params = HashMap::new();
         params.insert("direction".to_string(), "pingpong".to_string());
@@ -1057,6 +1120,7 @@ mod tests {
             speed: TempoAwareSpeed::Fixed(1.0),
             direction: ChaseDirection::LeftToRight,
             transition: CycleTransition::Snap,
+            duration: Duration::ZERO,
         };
         let mut params = HashMap::new();
         params.insert("direction".to_string(), "right_to_left".to_string());
@@ -1078,6 +1142,7 @@ mod tests {
             speed: TempoAwareSpeed::Fixed(1.0),
             direction: ChaseDirection::LeftToRight,
             transition: CycleTransition::Snap,
+            duration: Duration::ZERO,
         };
         let mut params = HashMap::new();
         params.insert("pattern".to_string(), "random".to_string());
@@ -1099,6 +1164,7 @@ mod tests {
             speed: TempoAwareSpeed::Fixed(1.0),
             direction: ChaseDirection::LeftToRight,
             transition: CycleTransition::Snap,
+            duration: Duration::ZERO,
         };
         let mut params = HashMap::new();
         params.insert("pattern".to_string(), "invalid_pattern".to_string());
@@ -1115,6 +1181,7 @@ mod tests {
             speed: TempoAwareSpeed::Fixed(1.0),
             direction: ChaseDirection::LeftToRight,
             transition: CycleTransition::Snap,
+            duration: Duration::ZERO,
         };
         let mut params = HashMap::new();
         params.insert("transition".to_string(), "crossfade".to_string());
@@ -1134,6 +1201,7 @@ mod tests {
             speed: TempoAwareSpeed::Fixed(1.0),
             direction: ChaseDirection::LeftToRight,
             transition: CycleTransition::Snap,
+            duration: Duration::ZERO,
         };
         let mut params = HashMap::new();
         params.insert("transition".to_string(), "wipe".to_string());
@@ -1148,7 +1216,7 @@ mod tests {
         // Unknown key with numeric value should still be stored
         let et = EffectType::Static {
             parameters: HashMap::new(),
-            duration: None,
+            duration: Duration::ZERO,
         };
         let mut params = HashMap::new();
         params.insert("custom_param".to_string(), "0.75".to_string());
@@ -1197,14 +1265,14 @@ mod tests {
             base_level: 0.5,
             pulse_amplitude: 0.5,
             frequency: TempoAwareFrequency::Fixed(1.0),
-            duration: None,
+            duration: Duration::ZERO,
         };
         let mut params = HashMap::new();
         params.insert("duration".to_string(), "5s".to_string());
         let result =
             apply_parameters_to_effect_type(et, &params, &[], &None, Duration::ZERO, 0.0).unwrap();
         if let EffectType::Pulse { duration, .. } = result {
-            assert_eq!(duration, Some(Duration::from_secs(5)));
+            assert_eq!(duration, Duration::from_secs(5));
         } else {
             panic!("Expected Pulse");
         }
@@ -1216,14 +1284,14 @@ mod tests {
     fn apply_strobe_duration() {
         let et = EffectType::Strobe {
             frequency: TempoAwareFrequency::Fixed(10.0),
-            duration: None,
+            duration: Duration::ZERO,
         };
         let mut params = HashMap::new();
         params.insert("duration".to_string(), "3s".to_string());
         let result =
             apply_parameters_to_effect_type(et, &params, &[], &None, Duration::ZERO, 0.0).unwrap();
         if let EffectType::Strobe { duration, .. } = result {
-            assert_eq!(duration, Some(Duration::from_secs(3)));
+            assert_eq!(duration, Duration::from_secs(3));
         } else {
             panic!("Expected Strobe");
         }
@@ -1238,6 +1306,7 @@ mod tests {
             speed: TempoAwareSpeed::Fixed(1.0),
             direction: CycleDirection::Forward,
             transition: CycleTransition::Snap,
+            duration: Duration::ZERO,
         };
         let mut params = HashMap::new();
         params.insert("speed".to_string(), "2.5".to_string());
@@ -1259,6 +1328,7 @@ mod tests {
             speed: TempoAwareSpeed::Fixed(1.0),
             direction: ChaseDirection::LeftToRight,
             transition: CycleTransition::Snap,
+            duration: Duration::ZERO,
         };
         let mut params = HashMap::new();
         params.insert("speed".to_string(), "3.0".to_string());
@@ -1280,6 +1350,7 @@ mod tests {
             speed: TempoAwareSpeed::Fixed(1.0),
             direction: CycleDirection::Forward,
             transition: CycleTransition::Snap,
+            duration: Duration::ZERO,
         };
         let mut params = HashMap::new();
         params.insert("speed".to_string(), "not_a_number".to_string());
@@ -1294,6 +1365,7 @@ mod tests {
             speed: TempoAwareSpeed::Fixed(1.0),
             direction: ChaseDirection::LeftToRight,
             transition: CycleTransition::Snap,
+            duration: Duration::ZERO,
         };
         let mut params = HashMap::new();
         params.insert("speed".to_string(), "invalid".to_string());
@@ -1307,6 +1379,7 @@ mod tests {
             speed: TempoAwareSpeed::Fixed(1.0),
             saturation: 1.0,
             brightness: 1.0,
+            duration: Duration::ZERO,
         };
         let mut params = HashMap::new();
         params.insert("speed".to_string(), "bad".to_string());
@@ -1320,7 +1393,7 @@ mod tests {
     fn apply_strobe_invalid_frequency_error() {
         let et = EffectType::Strobe {
             frequency: TempoAwareFrequency::Fixed(8.0),
-            duration: None,
+            duration: Duration::ZERO,
         };
         let mut params = HashMap::new();
         params.insert("frequency".to_string(), "not_valid".to_string());
@@ -1334,7 +1407,7 @@ mod tests {
             base_level: 0.5,
             pulse_amplitude: 0.5,
             frequency: TempoAwareFrequency::Fixed(1.0),
-            duration: None,
+            duration: Duration::ZERO,
         };
         let mut params = HashMap::new();
         params.insert("frequency".to_string(), "xyz".to_string());
@@ -1350,7 +1423,7 @@ mod tests {
             base_level: 0.5,
             pulse_amplitude: 0.5,
             frequency: TempoAwareFrequency::Fixed(1.0),
-            duration: None,
+            duration: Duration::ZERO,
         };
         let mut params = HashMap::new();
         params.insert("pulse_amplitude".to_string(), "70%".to_string());

@@ -31,7 +31,7 @@ fn test_start_effect_with_elapsed_static_effect() {
         "test_effect".to_string(),
         EffectType::Static {
             parameters: params,
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -113,10 +113,10 @@ fn test_start_effect_with_elapsed_dimmer_complete() {
         .start_effect_with_elapsed(effect, Duration::from_secs(2))
         .unwrap();
 
-    // Update immediately - should be at 100% (completed)
+    // Dimmer has already completed (2s elapsed > 1s duration), so it's
+    // removed immediately. No commands are emitted.
     let commands = engine.update(Duration::from_millis(16), None).unwrap();
-    assert_eq!(commands.len(), 1);
-    assert_eq!(commands[0].value, 255);
+    assert_eq!(commands.len(), 0, "Completed dimmer produces no commands");
 }
 
 #[test]
@@ -139,6 +139,7 @@ fn test_start_effect_with_elapsed_color_cycle() {
             speed: TempoAwareSpeed::Fixed(1.0), // 1 cycle per second
             direction: CycleDirection::Forward,
             transition: CycleTransition::Snap,
+            duration: Duration::from_secs(10),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -190,7 +191,7 @@ fn test_start_effect_with_elapsed_pulse() {
             base_level: 0.5,
             pulse_amplitude: 0.5,
             frequency: TempoAwareFrequency::Fixed(1.0), // 1 Hz
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -228,6 +229,7 @@ fn test_start_effect_with_elapsed_rainbow() {
             speed: TempoAwareSpeed::Fixed(1.0), // 1 cycle per second
             saturation: 1.0,
             brightness: 1.0,
+            duration: Duration::from_secs(10),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -278,7 +280,7 @@ fn test_start_effect_with_elapsed_timed_effect_completion() {
         "timed".to_string(),
         EffectType::Static {
             parameters: params,
-            duration: Some(Duration::from_secs(1)),
+            duration: Duration::from_secs(1),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -311,7 +313,7 @@ fn test_start_effect_with_elapsed_zero_elapsed() {
         "effect1".to_string(),
         EffectType::Static {
             parameters: params.clone(),
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -329,7 +331,7 @@ fn test_start_effect_with_elapsed_zero_elapsed() {
         "effect2".to_string(),
         EffectType::Static {
             parameters: params,
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -364,7 +366,7 @@ fn test_start_effect_with_elapsed_conflict_resolution() {
         "bg".to_string(),
         EffectType::Static {
             parameters: bg_params,
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -382,7 +384,7 @@ fn test_start_effect_with_elapsed_conflict_resolution() {
         "fg".to_string(),
         EffectType::Static {
             parameters: fg_params,
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,

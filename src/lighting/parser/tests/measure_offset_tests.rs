@@ -26,18 +26,18 @@ fn test_measure_offset() {
 
 show "Test" {
     @1/1
-    all_wash: static, color: "blue"
-    
+    all_wash: static, color: "blue", duration: 5s, duration: 5s
+
     offset 8 measures
-    
+
     @1/1
-    all_wash: static, color: "green"
-    
+    all_wash: static, color: "green", duration: 5s, duration: 5s
+
     @8/1
-    all_wash: static, color: "yellow"
-    
+    all_wash: static, color: "yellow", duration: 5s, duration: 5s
+
     @9/1
-    all_wash: static, color: "red"
+    all_wash: static, color: "red", duration: 5s, duration: 5s
 }
 "#;
 
@@ -107,17 +107,17 @@ fn test_reset_measures() {
 
 show "Test" {
     @1/1
-    all_wash: static, color: "blue"
+    all_wash: static, color: "blue", duration: 5s
     
     offset 8 measures
     
     @1/1
-    all_wash: static, color: "green"
+    all_wash: static, color: "green", duration: 5s
     
     reset_measures
     
     @1/1
-    all_wash: static, color: "red"
+    all_wash: static, color: "red", duration: 5s
 }
 "#;
 
@@ -172,17 +172,17 @@ fn test_measure_offset_accumulation() {
 
 show "Test" {
     @1/1
-    all_wash: static, color: "blue"
+    all_wash: static, color: "blue", duration: 5s
     
     offset 4 measures
     
     @1/1
-    all_wash: static, color: "green"
+    all_wash: static, color: "green", duration: 5s
     
     offset 4 measures
     
     @1/1
-    all_wash: static, color: "red"
+    all_wash: static, color: "red", duration: 5s
 }
 "#;
 
@@ -230,15 +230,15 @@ fn test_measure_offset_in_sequence() {
 
 sequence "verse" {
     @1/1
-    all_wash: static, color: "blue"
+    all_wash: static, color: "blue", duration: 5s
     
     offset 8 measures
     
     @1/1
-    all_wash: static, color: "green"
+    all_wash: static, color: "green", duration: 5s
     
     @9/1
-    all_wash: static, color: "red"
+    all_wash: static, color: "red", duration: 5s
 }
 
 show "Test" {
@@ -294,12 +294,12 @@ fn test_measure_offset_with_fractional_beats() {
 
 show "Test" {
     @1/1.5
-    all_wash: static, color: "blue"
+    all_wash: static, color: "blue", duration: 5s
     
     offset 8 measures
     
     @1/2.5
-    all_wash: static, color: "green"
+    all_wash: static, color: "green", duration: 5s
 }
 "#;
 
@@ -346,12 +346,12 @@ fn test_measure_offset_with_tempo_changes() {
 
 show "Test" {
     @1/1
-    all_wash: static, color: "blue"
+    all_wash: static, color: "blue", duration: 5s
     
     offset 8 measures
     
     @1/1
-    all_wash: static, color: "green"
+    all_wash: static, color: "green", duration: 5s
 }
 "#;
 
@@ -404,17 +404,17 @@ fn test_measure_offset_in_same_cue() {
 
 show "Test" {
     @70/1
-    all_wash: static, color: "blue"
+    all_wash: static, color: "blue", duration: 5s
     
     @74/1
-    all_wash: static, color: "green"
+    all_wash: static, color: "green", duration: 5s
     offset 5 measures
     
     @70/1
-    all_wash: static, color: "red"
+    all_wash: static, color: "red", duration: 5s
     
     @74/1
-    all_wash: static, color: "yellow"
+    all_wash: static, color: "yellow", duration: 5s
 }
 "#;
 
@@ -495,14 +495,14 @@ fn test_measure_offset_with_measure_time_in_same_cue() {
 
 show "Test" {
     @1/1
-    all_wash: static, color: "blue"
+    all_wash: static, color: "blue", duration: 5s
     
     @5/1
-    all_wash: static, color: "green"
+    all_wash: static, color: "green", duration: 5s
     offset 10 measures
     
     @1/1
-    all_wash: static, color: "red"
+    all_wash: static, color: "red", duration: 5s
 }
 "#;
 
@@ -581,14 +581,14 @@ fn test_offset_timing_at_180_bpm_with_tempo_change() {
 
 show "Test" {
     @70/1
-    all_wash: static, color: "blue"
+    all_wash: static, color: "blue", duration: 5s
     
     @74/1
-    all_wash: static, color: "green"
+    all_wash: static, color: "green", duration: 5s
     offset 5 measures
     
     @70/1
-    all_wash: static, color: "red"
+    all_wash: static, color: "red", duration: 5s
 }
 "#;
 
@@ -665,7 +665,7 @@ show "Test" {
     offset 8 measures
     
     @1/1
-    all_wash: static, color: "blue"
+    all_wash: static, color: "blue", duration: 5s
 }
 "#;
 
@@ -707,20 +707,20 @@ fn test_measure_offset_reset_and_reoffset() {
 
 show "Test" {
     @1/1
-    all_wash: static, color: "blue"
+    all_wash: static, color: "blue", duration: 5s
     
     offset 8 measures
     
     @1/1
-    all_wash: static, color: "green"
+    all_wash: static, color: "green", duration: 5s
     
     @1/1
-    all_wash: static, color: "yellow"
+    all_wash: static, color: "yellow", duration: 5s
     reset_measures
     offset 4 measures
     
     @1/1
-    all_wash: static, color: "red"
+    all_wash: static, color: "red", duration: 5s
 }
 "#;
 
@@ -776,24 +776,24 @@ fn test_measure_offset_with_alternate_endings_scenario() {
 
 show "Test" {
     @1/1
-    all_wash: static, color: "blue"
+    all_wash: static, color: "blue", duration: 5s
     
     @8/1
-    all_wash: static, color: "yellow"
+    all_wash: static, color: "yellow", duration: 5s
     
     offset 8 measures
     
     @1/1
-    all_wash: static, color: "green"
+    all_wash: static, color: "green", duration: 5s
     
     @7/1
-    all_wash: static, color: "orange"
+    all_wash: static, color: "orange", duration: 5s
     
     @9/1
-    all_wash: static, color: "red"
+    all_wash: static, color: "red", duration: 5s
     
     @10/1
-    all_wash: static, color: "purple"
+    all_wash: static, color: "purple", duration: 5s
 }
 "#;
 
@@ -871,17 +871,17 @@ show "Esaweg" {
 
     @221/1
     clear()
-    all_wash: static, color: "#FF4400", layer: background, blend_mode: replace
+    all_wash: static, color: "#FF4400", layer: background, blend_mode: replace, duration: 5s
 
     @228/1
-    all_wash: pulse, frequency: 3, layer: foreground, blend_mode: overlay
+    all_wash: pulse, frequency: 3, layer: foreground, blend_mode: overlay, duration: 5s
 
     @236/1
-    all_wash: strobe, frequency: 10, layer: foreground, blend_mode: overlay
+    all_wash: strobe, frequency: 10, layer: foreground, blend_mode: overlay, duration: 5s
 
     @236/4.75
     clear()
-    all_wash: static, color: "black", layer: background, blend_mode: replace
+    all_wash: static, color: "black", layer: background, blend_mode: replace, duration: 5s
 }"##;
 
     let shows = parse_light_shows(content).expect("Should parse Esaweg show");

@@ -23,13 +23,13 @@ fn test_layering_show_dsl_parsing() {
     // Test the exact DSL from layering_show.light
     let dsl_content = r#"show "Effect Layering Demo" {
     @00:00.000
-    front_wash: static color: "blue", dimmer: 100%, layer: background, blend_mode: replace
-    
+    front_wash: static color: "blue", duration: 5s, dimmer: 100%, layer: background, blend_mode: replace
+
     @00:02.000
     front_wash: dimmer start_level: 1.0, end_level: 0.5, duration: 5s, layer: midground, blend_mode: multiply
-    
+
     @00:04.000
-    front_wash: strobe frequency: 2, layer: foreground, blend_mode: overlay
+    front_wash: strobe frequency: 2, duration: 5s, layer: foreground, blend_mode: overlay
 }"#;
 
     let shows = match parse_light_shows(dsl_content) {
@@ -71,8 +71,8 @@ fn test_dsl_blend_mode_parsing() {
     // Test DSL with multiply blend mode
     let dsl_with_multiply = r#"show "Blend Mode Test" {
     @00:00.000
-    front_wash: static color: "blue", layer: background, blend_mode: replace
-    
+    front_wash: static color: "blue", duration: 5s, layer: background, blend_mode: replace
+
     @00:02.000
     front_wash: dimmer start_level: 1.0, end_level: 0.5, duration: 5s, layer: midground, blend_mode: multiply
 }"#;
@@ -130,8 +130,8 @@ fn test_dsl_parsing_debug() {
 
     let dsl = r#"show "Test" {
     @00:00.000
-    front_wash: static color: "blue", dimmer: 100%, layer: background, blend_mode: replace
-    
+    front_wash: static color: "blue", duration: 5s, dimmer: 100%, layer: background, blend_mode: replace
+
     @00:02.000
     front_wash: dimmer start_level: 1.0, end_level: 0.5, duration: 5s, layer: midground, blend_mode: multiply
 }"#;
@@ -161,8 +161,8 @@ fn test_dsl_layering_parsing() {
 
     let dsl_content = r#"show "DSL Layering Test" {
     @00:00.000
-    front_wash: static color: "blue", dimmer: 60%, layer: background
-    
+    front_wash: static color: "blue", duration: 5s, dimmer: 60%, layer: background
+
     @00:02.000
     front_wash: dimmer start_level: 1.0, end_level: 0.5, duration: 5s, layer: midground, blend_mode: multiply
 }"#;

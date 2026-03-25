@@ -12,12 +12,12 @@ Sets fixed parameter values for fixtures. Useful for solid colors, fixed dimmer 
 - `color`: Color name (e.g., `"red"`, `"blue"`), hex (`#FF0000`), or RGB (`rgb(255,0,0)`)
 - `dimmer`: Dimmer level (0-100% or 0.0-1.0)
 - `red`, `green`, `blue`, `white`: Individual color channel levels (0-100% or 0.0-1.0)
-- `duration`: Optional duration after which effect stops (e.g., `5s`, `2measures`)
+- `duration`: **Required.** Duration after which effect stops (e.g., `5s`, `2measures`)
 
 **Example:**
 ```light
 @00:05.000
-front_wash: static color: "red", dimmer: 80%
+front_wash: static color: "red", dimmer: 80%, duration: 10s
 
 @00:10.000
 back_wash: static red: 100%, green: 50%, blue: 0%, dimmer: 60%, duration: 5s
@@ -32,12 +32,12 @@ Cycles through a list of colors continuously. Colors transition smoothly or inst
 - `speed`: Cycles per second, or tempo-aware (e.g., `1.5`, `1measure`, `2beats`)
 - `direction`: `forward`, `backward`, or `pingpong`
 - `transition`: `snap` (instant) or `fade` (smooth)
-- `duration`: Optional duration
+- `duration`: **Required.** Total duration of the effect (e.g., `10s`, `4measures`)
 
 **Example:**
 ```light
 @00:10.000
-movers: cycle color: "red", color: "blue", color: "green", speed: 2.0, direction: forward, transition: fade
+movers: cycle color: "red", color: "blue", color: "green", speed: 2.0, direction: forward, transition: fade, duration: 10s
 ```
 
 ### Strobe Effect
@@ -46,7 +46,7 @@ Rapidly flashes fixtures on and off at a specified frequency.
 
 **Parameters:**
 - `frequency`: Flashes per second (Hz), or tempo-aware (e.g., `8`, `1beat`, `0.5measures`)
-- `duration`: Optional duration (e.g., `3s`, `4measures`)
+- `duration`: **Required.** Duration of the strobe effect (e.g., `3s`, `4measures`)
 
 **Example:**
 ```light
@@ -65,7 +65,7 @@ Smoothly pulses the dimmer level up and down, creating a breathing effect.
 - `base_level`: Base dimmer level (0-100% or 0.0-1.0)
 - `pulse_amplitude` or `intensity`: Amplitude of the pulse (0-100% or 0.0-1.0)
 - `frequency`: Pulses per second (Hz), or tempo-aware (e.g., `2`, `1beat`)
-- `duration`: Optional duration
+- `duration`: **Required.** Duration of the pulse effect
 
 **Example:**
 ```light
@@ -82,11 +82,12 @@ Moves an effect pattern across multiple fixtures in a spatial pattern.
 - `speed`: Steps per second, or tempo-aware (e.g., `2.0`, `1measure`)
 - `direction`: `left_to_right`, `right_to_left`, `top_to_bottom`, `bottom_to_top`, `clockwise`, `counter_clockwise`
 - `transition`: `snap` or `fade` for transitions between fixtures
+- `duration`: **Required.** Duration of the chase effect (e.g., `10s`, `8measures`)
 
 **Example:**
 ```light
 @00:25.000
-movers: chase pattern: linear, speed: 2.0, direction: left_to_right, transition: fade
+movers: chase pattern: linear, speed: 2.0, direction: left_to_right, transition: fade, duration: 10s
 ```
 
 ### Dimmer Effect
@@ -113,11 +114,12 @@ Generates a continuous rainbow color cycle across the color spectrum.
 - `speed`: Cycles per second, or tempo-aware (e.g., `1.0`, `1measure`)
 - `saturation`: Color saturation (0-100% or 0.0-1.0)
 - `brightness`: Overall brightness (0-100% or 0.0-1.0)
+- `duration`: **Required.** Duration of the rainbow effect (e.g., `10s`, `8measures`)
 
 **Example:**
 ```light
 @00:35.000
-all_lights: rainbow speed: 1.0, saturation: 100%, brightness: 80%
+all_lights: rainbow speed: 1.0, saturation: 100%, brightness: 80%, duration: 10s
 ```
 
 ## Common Effect Parameters

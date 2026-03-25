@@ -70,7 +70,7 @@ mod layering_behavior_tests {
                     p.insert("blue".to_string(), 1.0);
                     p
                 },
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             vec!["front_wash".to_string()],
             None,
@@ -86,7 +86,7 @@ mod layering_behavior_tests {
             EffectType::Dimmer {
                 start_level: 0.5,
                 end_level: 0.5,
-                duration: Duration::from_millis(0),
+                duration: Duration::from_secs(60),
                 curve: DimmerCurve::Linear,
             },
             vec!["front_wash".to_string()],
@@ -105,7 +105,7 @@ mod layering_behavior_tests {
             EffectType::Dimmer {
                 start_level: 0.5,
                 end_level: 0.5,
-                duration: Duration::from_millis(0),
+                duration: Duration::from_secs(60),
                 curve: DimmerCurve::Linear,
             },
             vec!["front_wash".to_string()],
@@ -124,7 +124,7 @@ mod layering_behavior_tests {
             EffectType::Dimmer {
                 start_level: 1.0,
                 end_level: 1.0,
-                duration: Duration::from_millis(0),
+                duration: Duration::from_secs(60),
                 curve: DimmerCurve::Linear,
             },
             vec!["front_wash".to_string()],
@@ -161,7 +161,7 @@ mod layering_behavior_tests {
                     p.insert("blue".to_string(), 1.0);
                     p
                 },
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             vec!["front_wash".to_string()],
             None,
@@ -177,7 +177,7 @@ mod layering_behavior_tests {
             EffectType::Dimmer {
                 start_level: 0.5,
                 end_level: 0.5,
-                duration: Duration::from_millis(0),
+                duration: Duration::from_secs(60),
                 curve: DimmerCurve::Linear,
             },
             vec!["front_wash".to_string()],
@@ -196,7 +196,7 @@ mod layering_behavior_tests {
             EffectType::Dimmer {
                 start_level: 0.5,
                 end_level: 0.5,
-                duration: Duration::from_millis(0),
+                duration: Duration::from_secs(60),
                 curve: DimmerCurve::Linear,
             },
             vec!["front_wash".to_string()],
@@ -215,7 +215,7 @@ mod layering_behavior_tests {
             EffectType::Dimmer {
                 start_level: 1.0,
                 end_level: 1.0,
-                duration: Duration::from_millis(0),
+                duration: Duration::from_secs(60),
                 curve: DimmerCurve::Linear,
             },
             vec!["front_wash".to_string()],
@@ -252,7 +252,7 @@ mod layering_behavior_tests {
                     p.insert("blue".to_string(), 1.0);
                     p
                 },
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             vec!["front_wash".to_string()],
             None,
@@ -268,7 +268,7 @@ mod layering_behavior_tests {
             EffectType::Dimmer {
                 start_level: 0.5,
                 end_level: 0.5,
-                duration: Duration::from_millis(0),
+                duration: Duration::from_secs(60),
                 curve: DimmerCurve::Linear,
             },
             vec!["front_wash".to_string()],
@@ -304,7 +304,7 @@ mod layering_behavior_tests {
                     p.insert("blue".to_string(), 1.0);
                     p
                 },
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             vec!["front_wash".to_string()],
             None,
@@ -323,7 +323,7 @@ mod layering_behavior_tests {
                     p.insert("red".to_string(), 1.0);
                     p
                 },
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             vec!["front_wash".to_string()],
             None,
@@ -358,7 +358,7 @@ mod layering_behavior_tests {
                     p.insert("blue".to_string(), 1.0);
                     p
                 },
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             vec!["front_wash".to_string()],
             None,
@@ -377,7 +377,7 @@ mod layering_behavior_tests {
                     p.insert("red".to_string(), 1.0);
                     p
                 },
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             vec!["front_wash".to_string()],
             None,
@@ -398,7 +398,7 @@ mod layering_behavior_tests {
                     p.insert("green".to_string(), 1.0);
                     p
                 },
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             vec!["front_wash".to_string()],
             None,
@@ -433,7 +433,7 @@ mod layering_behavior_tests {
                     p.insert("blue".to_string(), 1.0);
                     p
                 },
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             vec!["front_wash".to_string()],
             None,
@@ -452,7 +452,7 @@ mod layering_behavior_tests {
                     p.insert("red".to_string(), 1.0);
                     p
                 },
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             vec!["front_wash".to_string()],
             None,
@@ -487,7 +487,7 @@ mod layering_behavior_tests {
                     p.insert("blue".to_string(), 1.0);
                     p
                 },
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             vec!["front_wash".to_string()],
             None,
@@ -506,7 +506,7 @@ mod layering_behavior_tests {
                     p.insert("red".to_string(), 1.0);
                     p
                 },
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             vec!["front_wash".to_string()],
             None,
@@ -524,7 +524,7 @@ mod layering_behavior_tests {
             EffectType::Dimmer {
                 start_level: 0.5,
                 end_level: 0.5,
-                duration: Duration::from_millis(0),
+                duration: Duration::from_secs(60),
                 curve: DimmerCurve::Linear,
             },
             vec!["front_wash".to_string()],
@@ -594,7 +594,7 @@ mod layering_show_regression {
                     p.insert("blue".to_string(), 1.0);
                     p
                 },
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             targets.clone(),
             None,
@@ -612,7 +612,7 @@ mod layering_show_regression {
             EffectType::Dimmer {
                 start_level: 0.5,
                 end_level: 0.5,
-                duration: Duration::from_millis(0),
+                duration: Duration::from_secs(60),
                 curve: DimmerCurve::Linear,
             },
             targets,

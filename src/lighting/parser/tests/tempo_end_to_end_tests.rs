@@ -26,13 +26,13 @@ fn test_end_to_end_measure_to_time_conversion() {
 
 show "Measure Conversion Test" {
     @1/1
-    front_wash: static color: "blue"
+    front_wash: static color: "blue", duration: 5s
     
     @2/1
-    back_wash: static color: "red"
+    back_wash: static color: "red", duration: 5s
     
     @4/1
-    side_wash: static color: "green"
+    side_wash: static color: "green", duration: 5s
 }"#;
 
     let result = parse_light_shows(content);
@@ -65,13 +65,13 @@ fn test_end_to_end_fractional_beat_conversion() {
 
 show "Fractional Beat Test" {
     @1/1
-    front_wash: static color: "blue"
+    front_wash: static color: "blue", duration: 5s
     
     @1/2
-    back_wash: static color: "red"
+    back_wash: static color: "red", duration: 5s
     
     @1/2.5
-    side_wash: static color: "green"
+    side_wash: static color: "green", duration: 5s
 }"#;
 
     let result = parse_light_shows(content);
@@ -126,8 +126,7 @@ show "Beat Duration Test" {
 
     // At 120 BPM: 4 beats = 2.0s
     let effect = &show.cues[0].effects[0];
-    assert!(effect.effect_type.get_duration().is_some());
-    let duration = effect.effect_type.get_duration().unwrap();
+    let duration = effect.effect_type.get_duration();
     assert!(
         (duration.as_secs_f64() - 2.0).abs() < 0.001,
         "4 beats should be 2.0s at 120 BPM"
@@ -158,8 +157,7 @@ show "Measure Duration Test" {
 
     // At 120 BPM in 4/4: 2 measures = 4.0s
     let effect = &show.cues[0].effects[0];
-    assert!(effect.effect_type.get_duration().is_some());
-    let duration = effect.effect_type.get_duration().unwrap();
+    let duration = effect.effect_type.get_duration();
     assert!(
         (duration.as_secs_f64() - 4.0).abs() < 0.001,
         "2 measures should be 4.0s at 120 BPM in 4/4"
@@ -180,13 +178,13 @@ fn test_end_to_end_tempo_change_affects_timing() {
 
 show "Tempo Change Test" {
     @4/1
-    front_wash: static color: "blue"
+    front_wash: static color: "blue", duration: 5s
     
     @8/1
-    back_wash: static color: "red"
+    back_wash: static color: "red", duration: 5s
     
     @12/1
-    side_wash: static color: "green"
+    side_wash: static color: "green", duration: 5s
 }"#;
 
     let result = parse_light_shows(content);
@@ -221,10 +219,10 @@ fn test_end_to_end_time_signature_change_affects_timing() {
 
 show "Time Signature Change Test" {
     @4/1
-    front_wash: static color: "blue"
+    front_wash: static color: "blue", duration: 5s
     
     @5/1
-    back_wash: static color: "red"
+    back_wash: static color: "red", duration: 5s
 }"#;
 
     let result = parse_light_shows(content);
@@ -278,7 +276,7 @@ show "Beat Duration Tempo Change Test" {
 
     // At 120 BPM: 4 beats = 2.0s
     let effect1 = &show.cues[0].effects[0];
-    let duration1 = effect1.effect_type.get_duration().unwrap();
+    let duration1 = effect1.effect_type.get_duration();
     assert!(
         (duration1.as_secs_f64() - 2.0).abs() < 0.001,
         "4 beats at 120 BPM should be 2.0s"
@@ -288,7 +286,7 @@ show "Beat Duration Tempo Change Test" {
     // The tempo changes to 60 BPM at @4/1, so @5/1 should use 60 BPM
     let cue1_time = show.cues[1].time;
     let effect2 = &show.cues[1].effects[0];
-    let duration2 = effect2.effect_type.get_duration().unwrap();
+    let duration2 = effect2.effect_type.get_duration();
     let actual_duration = duration2.as_secs_f64();
     println!("Beat duration with tempo change test: cue 0 at @2/1 (time={:?}), cue 1 at @5/1 (time={:?}), duration = {}s (expected 4.0s at 60 BPM)", show.cues[0].time, cue1_time, actual_duration);
     if let Some(tm) = &show.tempo_map {
@@ -326,7 +324,7 @@ fn test_end_to_end_up_time_and_down_time_with_beats() {
 
 show "Beat Fade Times Test" {
     @1/1
-    front_wash: static color: "blue", up_time: 2beats, down_time: 2beats
+    front_wash: static color: "blue", up_time: 2beats, down_time: 2beats, hold_time: 5s
 }"#;
 
     let result = parse_light_shows(content);
@@ -361,19 +359,19 @@ fn test_end_to_end_complex_tempo_changes() {
 
 show "Complex Tempo Test" {
     @1/1
-    front_wash: static color: "blue"
+    front_wash: static color: "blue", duration: 5s
     
     @4/1
-    back_wash: static color: "red"
+    back_wash: static color: "red", duration: 5s
     
     @8/1
-    side_wash: static color: "green"
+    side_wash: static color: "green", duration: 5s
     
     @12/1
-    top_wash: static color: "yellow"
+    top_wash: static color: "yellow", duration: 5s
     
     @13/1
-    bottom_wash: static color: "purple"
+    bottom_wash: static color: "purple", duration: 5s
 }"#;
 
     let result = parse_light_shows(content);
@@ -415,7 +413,7 @@ fn test_end_to_end_non_zero_start_offset() {
 
 show "Start Offset Test" {
     @1/1
-    front_wash: static color: "blue"
+    front_wash: static color: "blue", duration: 5s
 }"#;
 
     let result = parse_light_shows(content);
@@ -446,7 +444,7 @@ fn test_end_to_end_measure_notation_without_tempo_error() {
     // Test that using measure notation without tempo section fails
     let content = r#"show "No Tempo Test" {
     @1/1
-    front_wash: static color: "blue"
+    front_wash: static color: "blue", duration: 5s
 }"#;
 
     let result = parse_light_shows(content);
@@ -503,7 +501,7 @@ fn test_end_to_end_tempo_map_is_present() {
 
 show "Tempo Map Test" {
     @1/1
-    front_wash: static color: "blue"
+    front_wash: static color: "blue", duration: 5s
 }"#;
 
     let result = parse_light_shows(content);
@@ -532,16 +530,16 @@ fn test_end_to_end_mixed_absolute_and_measure_timing() {
 
 show "Mixed Timing Test" {
     @00:00.000
-    front_wash: static color: "blue"
+    front_wash: static color: "blue", duration: 5s
     
     @1/1
-    back_wash: static color: "red"
+    back_wash: static color: "red", duration: 5s
     
     @00:02.000
-    side_wash: static color: "green"
+    side_wash: static color: "green", duration: 5s
     
     @2/1
-    top_wash: static color: "yellow"
+    top_wash: static color: "yellow", duration: 5s
 }"#;
 
     let result = parse_light_shows(content);
@@ -581,10 +579,10 @@ fn test_end_to_end_gradual_tempo_transition() {
 
 show "Gradual Transition Test" {
     @4/1
-    front_wash: static color: "blue"
+    front_wash: static color: "blue", duration: 5s
     
     @6/1
-    back_wash: static color: "red"
+    back_wash: static color: "red", duration: 5s
 }"#;
 
     let result = parse_light_shows(content);
@@ -621,7 +619,7 @@ fn test_end_to_end_bpm_interpolation_during_gradual_transition() {
 
 show "BPM Interpolation Test" {
     @4/1
-    front_wash: static color: "blue"
+    front_wash: static color: "blue", duration: 5s
 }"#;
 
     let result = parse_light_shows(content);
@@ -670,12 +668,12 @@ fn test_end_to_end_file_level_tempo_applies_to_multiple_shows() {
 
 show "Show 1" {
     @1/1
-    front_wash: static color: "blue"
+    front_wash: static color: "blue", duration: 5s
 }
 
 show "Show 2" {
     @2/1
-    back_wash: static color: "red"
+    back_wash: static color: "red", duration: 5s
 }"#;
 
     let result = parse_light_shows(content);
@@ -715,12 +713,12 @@ show "Show With Own Tempo" {
     }
     
     @1/1
-    front_wash: static color: "blue"
+    front_wash: static color: "blue", duration: 5s
 }
 
 show "Show Using Global Tempo" {
     @1/1
-    back_wash: static color: "red"
+    back_wash: static color: "red", duration: 5s
 }"#;
 
     let result = parse_light_shows(content);
@@ -790,7 +788,7 @@ show "Beat Duration During Transition" {
     // We need 2 beats starting at the beginning of the transition
     // Since BPM is increasing during the transition, 2 beats will take slightly less than 1.0s
     // The exact calculation integrates through the curve: approximately 0.899s
-    let duration = effect.effect_type.get_duration().unwrap();
+    let duration = effect.effect_type.get_duration();
     // The duration should be less than 1.0s (which would be at constant 120 BPM)
     // and more than 0.667s (which would be at constant 180 BPM)
     assert!(
@@ -814,13 +812,13 @@ fn test_end_to_end_absolute_time_tempo_changes() {
 
 show "Absolute Time Tempo Change" {
     @1/1
-    front_wash: static color: "blue"
+    front_wash: static color: "blue", duration: 5s
     
     @4/1
-    back_wash: static color: "red"
+    back_wash: static color: "red", duration: 5s
     
     @8/1
-    side_wash: static color: "green"
+    side_wash: static color: "green", duration: 5s
 }"#;
 
     let result = parse_light_shows(content);
@@ -878,7 +876,7 @@ show "Duration Spanning Change" {
     // 8 beats: 4 beats at 120 BPM (measure 3) = 2.0s, then 4 beats at 60 BPM (measure 4) = 4.0s
     // Total = 6.0s
     let effect = &show.cues[0].effects[0];
-    let duration = effect.effect_type.get_duration().unwrap();
+    let duration = effect.effect_type.get_duration();
 
     // Measure 3 has 4 beats at 120 BPM = 2.0s
     // Measure 4 starts when tempo changes to 60 BPM
@@ -922,7 +920,7 @@ show "Duration Spanning Gradual Transition" {
     // Then 2 beats at 180 BPM = 2 * 60 / 180 = ~0.667s
     // The transition: 4 beats at average BPM (150) = 1.6s
     let effect = &show.cues[0].effects[0];
-    let duration = effect.effect_type.get_duration().unwrap();
+    let duration = effect.effect_type.get_duration();
 
     // Verify it integrates through the gradual transition
     // 2 beats at 120 BPM = 1.0s
@@ -975,7 +973,7 @@ show "Duration Mid Transition" {
     // BPM at that point: 120 + (180-120) * 0.375 = 142.5 BPM
     // We need to calculate duration for 2 beats starting from this point
     let effect = &show.cues[0].effects[0];
-    let duration = effect.effect_type.get_duration().unwrap();
+    let duration = effect.effect_type.get_duration();
 
     // The duration should integrate through the remaining transition
     // At 0.75s into transition: bpm = 142.5
@@ -1018,7 +1016,7 @@ show "Pulse Duration Spanning Change" {
     // 8 beats: 4 beats at 120 BPM (measure 3) = 2.0s, then 4 beats at 60 BPM (measure 4) = 4.0s
     // Total = 6.0s (same as static effect)
     let effect = &show.cues[0].effects[0];
-    let duration = effect.effect_type.get_duration().unwrap();
+    let duration = effect.effect_type.get_duration();
 
     // Measure 3 has 4 beats at 120 BPM = 2.0s
     // Measure 4 starts when tempo changes to 60 BPM
@@ -1059,7 +1057,7 @@ show "Strobe Duration Spanning Change" {
     // 8 beats: 4 beats at 120 BPM (measure 3) = 2.0s, then 4 beats at 60 BPM (measure 4) = 4.0s
     // Total = 6.0s (same as static effect)
     let effect = &show.cues[0].effects[0];
-    let duration = effect.effect_type.get_duration().unwrap();
+    let duration = effect.effect_type.get_duration();
 
     // Measure 3 has 4 beats at 120 BPM = 2.0s
     // Measure 4 starts when tempo changes to 60 BPM
@@ -1104,7 +1102,7 @@ show "Pulse Duration Spanning Gradual Transition" {
     // Then 4 beats during transition (120 -> 180 linearly)
     // Then 2 beats at 180 BPM = 2 * 60 / 180 = ~0.667s
     let effect = &show.cues[0].effects[0];
-    let duration = effect.effect_type.get_duration().unwrap();
+    let duration = effect.effect_type.get_duration();
 
     // Verify it integrates through the gradual transition
     // 2 beats at 120 BPM = 1.0s
@@ -1157,7 +1155,7 @@ show "Strobe Duration Spanning Gradual Transition" {
     // Then 4 beats during transition (120 -> 180 linearly)
     // Then 2 beats at 180 BPM = 2 * 60 / 180 = ~0.667s
     let effect = &show.cues[0].effects[0];
-    let duration = effect.effect_type.get_duration().unwrap();
+    let duration = effect.effect_type.get_duration();
 
     // Verify it integrates through the gradual transition
     // 2 beats at 120 BPM = 1.0s
@@ -1194,7 +1192,7 @@ fn test_end_to_end_measure_based_transition() {
 
 show "Measure Transition Test" {
     @4/1
-    front_wash: static color: "blue"
+    front_wash: static color: "blue", duration: 5s
 }"#;
 
     let result = parse_light_shows(content);
@@ -1250,7 +1248,7 @@ tempo {
 
 show "Multiple Tempo Test" {
     @1/1
-    front_wash: static color: "blue"
+    front_wash: static color: "blue", duration: 5s
 }"#;
 
     let result = parse_light_shows(content);
@@ -1280,7 +1278,7 @@ fn test_end_to_end_multiple_tempo_sections_in_show() {
     }
     
     @1/1
-    front_wash: static color: "blue"
+    front_wash: static color: "blue", duration: 5s
 }"#;
 
     let result = parse_light_shows(content);
@@ -1314,7 +1312,7 @@ show "Fractional Measure Duration" {
 
     // At 120 BPM in 4/4: 1.5 measures = 6 beats = 3.0s
     let effect = &show.cues[0].effects[0];
-    let duration = effect.effect_type.get_duration().unwrap();
+    let duration = effect.effect_type.get_duration();
     assert!(
         (duration.as_secs_f64() - 3.0).abs() < 0.001,
         "1.5 measures should be 3.0s at 120 BPM in 4/4, got {}s",
@@ -1337,10 +1335,10 @@ fn test_end_to_end_consecutive_gradual_transitions() {
 
 show "Consecutive Transitions" {
     @4/1
-    front_wash: static color: "blue"
+    front_wash: static color: "blue", duration: 5s
     
     @6/1
-    back_wash: static color: "red"
+    back_wash: static color: "red", duration: 5s
 }"#;
 
     let result = parse_light_shows(content);
@@ -1385,7 +1383,7 @@ fn test_end_to_end_measure_transition_with_time_signature_change() {
 
 show "Measure Transition Time Sig Change" {
     @4/1
-    front_wash: static color: "blue"
+    front_wash: static color: "blue", duration: 5s
 }"#;
 
     let result = parse_light_shows(content);
@@ -1411,10 +1409,10 @@ fn test_end_to_end_empty_tempo_section_with_measure_timing() {
 
 show "Empty Tempo Test" {
     @1/1
-    front_wash: static color: "blue"
+    front_wash: static color: "blue", duration: 5s
     
     @2/1
-    back_wash: static color: "red"
+    back_wash: static color: "red", duration: 5s
 }"#;
 
     let result = parse_light_shows(content);
@@ -1446,7 +1444,7 @@ fn test_end_to_end_incomplete_tempo_section_with_measure_timing() {
 
 show "Incomplete Tempo Test" {
     @1/1
-    front_wash: static color: "blue"
+    front_wash: static color: "blue", duration: 5s
 }"#;
 
     let result = parse_light_shows(content);
@@ -1477,7 +1475,7 @@ fn test_end_to_end_negative_start_offset_rejected() {
 
 show "Negative Start Test" {
     @1/1
-    front_wash: static color: "blue"
+    front_wash: static color: "blue", duration: 5s
 }"#;
 
     let result = parse_light_shows(content);
@@ -1508,10 +1506,10 @@ fn test_t_end_to_end_very_high_measure_numbers() {
 
 show "High Measures Test" {
     @1000/1
-    front_wash: static color: "blue"
+    front_wash: static color: "blue", duration: 5s
     
     @5000/1
-    back_wash: static color: "red"
+    back_wash: static color: "red", duration: 5s
 }"#;
 
     let result = parse_light_shows(content);
@@ -1554,10 +1552,10 @@ fn test_end_to_end_transition_spanning_multiple_changes() {
 
 show "Transition Spanning Changes" {
     @4/1
-    front_wash: static color: "blue"
+    front_wash: static color: "blue", duration: 5s
     
     @10/1
-    back_wash: static color: "red"
+    back_wash: static color: "red", duration: 5s
 }"#;
 
     let result = parse_light_shows(content);

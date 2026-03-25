@@ -218,11 +218,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     // No cue_time available, can't calculate elapsed
                     0.0
                 };
-                let duration_str = if let Some(total) = effect.total_duration() {
-                    format!(" / {:.2}s", total.as_secs_f64())
-                } else {
-                    " (perpetual)".to_string()
-                };
+                let duration_str = format!(" / {:.2}s", effect.total_duration().as_secs_f64());
                 println!(
                     "    {}: elapsed {:.2}s{}, hold_time={:?}",
                     id, elapsed, duration_str, effect.hold_time

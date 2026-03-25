@@ -193,7 +193,7 @@ impl super::Driver for Driver {
 
 #[cfg(test)]
 mod test {
-    use std::{collections::HashMap, error::Error, path::Path, sync::Arc};
+    use std::{collections::HashMap, error::Error, path::Path};
 
     use crate::{
         config::{self, midi::ToMidiEvent, MidiController},

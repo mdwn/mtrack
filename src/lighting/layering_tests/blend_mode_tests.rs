@@ -80,8 +80,8 @@ fn test_blend_mode_loss_debug() {
     // Test DSL that should use multiply blend mode
     let dsl_with_multiply = r#"show "Blend Mode Loss Test" {
     @00:00.000
-    front_wash: static color: "blue", layer: background, blend_mode: replace
-    
+    front_wash: static color: "blue", duration: 10s, layer: background, blend_mode: replace
+
     @00:02.000
     front_wash: dimmer start_level: 1.0, end_level: 0.5, duration: 5s, layer: midground, blend_mode: multiply
 }"#;
@@ -138,7 +138,7 @@ fn test_blend_mode_loss_debug() {
                 params.insert("blue".to_string(), 1.0);
                 params
             },
-            duration: None,
+            duration: Duration::from_secs(10),
         },
         vec!["front_wash".to_string()],
         EffectLayer::Background,
@@ -197,8 +197,8 @@ fn test_timeline_blend_mode_loss() {
     // Test DSL that should use multiply blend mode
     let dsl_with_multiply = r#"show "Timeline Blend Mode Test" {
     @00:00.000
-    front_wash: static color: "blue", layer: background, blend_mode: replace
-    
+    front_wash: static color: "blue", duration: 10s, layer: background, blend_mode: replace
+
     @00:02.000
     front_wash: dimmer start_level: 1.0, end_level: 0.5, duration: 5s, layer: midground, blend_mode: multiply
 }"#;
@@ -320,7 +320,7 @@ fn test_blend_mode_compatibility_matrix() {
                 params.insert("red".to_string(), 1.0);
                 params
             },
-            duration: None,
+            duration: Duration::from_secs(10),
         },
         vec!["test_fixture".to_string()],
         EffectLayer::Background,
@@ -335,7 +335,7 @@ fn test_blend_mode_compatibility_matrix() {
                 params.insert("blue".to_string(), 1.0);
                 params
             },
-            duration: None,
+            duration: Duration::from_secs(10),
         },
         vec!["test_fixture".to_string()],
         EffectLayer::Background, // Same layer
@@ -345,9 +345,9 @@ fn test_blend_mode_compatibility_matrix() {
     engine.start_effect(replace_effect).unwrap();
     engine.start_effect(multiply_effect).unwrap();
 
-    // Replace should conflict with Multiply (same layer, same type)
-    assert_eq!(engine.active_effects_count(), 1);
-    assert!(!engine.has_effect("replace_effect"));
+    // Effects now always coexist (no conflict resolution)
+    assert_eq!(engine.active_effects_count(), 2);
+    assert!(engine.has_effect("replace_effect"));
     assert!(engine.has_effect("multiply_effect"));
 
     // Test compatible blend modes can layer
@@ -370,7 +370,7 @@ fn test_blend_mode_compatibility_matrix() {
             base_level: 0.5,
             pulse_amplitude: 0.3,
             frequency: TempoAwareFrequency::Fixed(2.0),
-            duration: None,
+            duration: Duration::from_secs(10),
         },
         vec!["test_fixture".to_string()],
         EffectLayer::Background, // Same layer
@@ -380,77 +380,8 @@ fn test_blend_mode_compatibility_matrix() {
     engine.start_effect(add_effect).unwrap();
     engine.start_effect(overlay_effect).unwrap();
 
-    // Add and Overlay should be compatible (different types, compatible blend modes)
-    assert_eq!(engine.active_effects_count(), 3); // multiply + add + overlay
+    // All effects coexist (no conflict resolution)
+    assert_eq!(engine.active_effects_count(), 4); // replace + multiply + add + overlay
     assert!(engine.has_effect("add_effect"));
     assert!(engine.has_effect("overlay_effect"));
-
-    // Test all blend mode combinations
-    let blend_modes = [
-        BlendMode::Replace,
-        BlendMode::Multiply,
-        BlendMode::Add,
-        BlendMode::Overlay,
-        BlendMode::Screen,
-    ];
-
-    for (i, mode1) in blend_modes.iter().enumerate() {
-        for (j, mode2) in blend_modes.iter().enumerate() {
-            let effect1 = create_effect_with_layering(
-                format!("test_mode1_{}_{}", i, j),
-                EffectType::Static {
-                    parameters: {
-                        let mut params = HashMap::new();
-                        params.insert("red".to_string(), 1.0);
-                        params
-                    },
-                    duration: None,
-                },
-                vec!["test_fixture".to_string()],
-                EffectLayer::Background,
-                *mode1,
-            );
-
-            let effect2 = create_effect_with_layering(
-                format!("test_mode2_{}_{}", i, j),
-                EffectType::Static {
-                    parameters: {
-                        let mut params = HashMap::new();
-                        params.insert("blue".to_string(), 1.0);
-                        params
-                    },
-                    duration: None,
-                },
-                vec!["test_fixture".to_string()],
-                EffectLayer::Background, // Same layer
-                *mode2,
-            );
-
-            // Clear engine for each test
-            engine.stop_all_effects();
-
-            engine.start_effect(effect1).unwrap();
-            let count_before = engine.active_effects_count();
-            engine.start_effect(effect2).unwrap();
-            let count_after = engine.active_effects_count();
-
-            // Verify expected behavior based on blend mode compatibility
-            let should_conflict = !engine.blend_modes_are_compatible_public(*mode1, *mode2);
-            if should_conflict {
-                assert_eq!(
-                    count_after, count_before,
-                    "Blend modes {:?} and {:?} should conflict",
-                    mode1, mode2
-                );
-            } else {
-                assert_eq!(
-                    count_after,
-                    count_before + 1,
-                    "Blend modes {:?} and {:?} should be compatible",
-                    mode1,
-                    mode2
-                );
-            }
-        }
-    }
 }

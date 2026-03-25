@@ -38,10 +38,6 @@ pub struct EffectEngine {
     current_time: Instant,
     /// Elapsed simulated time since engine start
     engine_elapsed: Duration,
-    /// Persistent fixture states - maintains the current state of each fixture
-    fixture_states: HashMap<String, FixtureState>,
-    /// Channel locks - prevents lower-layer effects from affecting locked channels
-    channel_locks: HashMap<String, std::collections::HashSet<String>>,
     /// Optional tempo map for tempo-aware effects (measure/beat-based timing)
     tempo_map: Option<TempoMap>,
     /// Layer intensity masters (0.0 to 1.0) - multiplies effect output per layer
@@ -95,8 +91,6 @@ impl EffectEngine {
             fixture_registry: HashMap::new(),
             current_time: Instant::now(),
             engine_elapsed: Duration::ZERO,
-            fixture_states: HashMap::new(),
-            channel_locks: HashMap::new(),
             tempo_map: None,
             layer_intensity_masters: HashMap::new(),
             layer_speed_masters: HashMap::new(),
@@ -145,6 +139,7 @@ impl EffectEngine {
                 speed,
                 direction,
                 transition,
+                ..
             } => (
                 "ColorCycle",
                 format!(
@@ -175,7 +170,7 @@ impl EffectEngine {
                 pattern,
                 speed,
                 direction,
-                transition: _,
+                ..
             } => (
                 "Chase",
                 format!(
@@ -187,6 +182,7 @@ impl EffectEngine {
                 speed,
                 saturation,
                 brightness,
+                ..
             } => (
                 "Rainbow",
                 format!(
@@ -207,66 +203,6 @@ impl EffectEngine {
                 ),
             ),
         }
-    }
-
-    /// Preserve state of permanent effects that will be stopped by a new effect
-    fn preserve_conflicting_permanent_effects(
-        &mut self,
-        new_effect: &EffectInstance,
-    ) -> Result<(), EffectError> {
-        // Find conflicting effects
-        let conflicting_effect_ids: Vec<String> = self
-            .active_effects
-            .iter()
-            .filter(|(_, existing_effect)| {
-                existing_effect.enabled
-                    && layers::should_effects_conflict(existing_effect, new_effect)
-            })
-            .map(|(id, _)| id.clone())
-            .collect();
-
-        // Only preserve if the new effect is also permanent
-        let new_effect_is_permanent = new_effect.is_permanent();
-        if !new_effect_is_permanent {
-            return Ok(());
-        }
-
-        // Collect permanent effects to preserve
-        let mut permanent_effects_to_preserve = Vec::new();
-        for effect_id in &conflicting_effect_ids {
-            if let Some(effect) = self.active_effects.get(effect_id) {
-                if effect.is_permanent() {
-                    permanent_effects_to_preserve.push(effect.clone());
-                }
-            }
-        }
-
-        // Process and preserve state
-        for conflicting_effect in permanent_effects_to_preserve {
-            let elapsed = conflicting_effect
-                .start_time
-                .map(|start| self.current_time.duration_since(start))
-                .unwrap_or(Duration::ZERO);
-
-            if let Some(final_states) = processing::process_effect(
-                &self.fixture_registry,
-                &conflicting_effect,
-                elapsed,
-                self.last_song_time.unwrap_or(self.engine_elapsed),
-                self.tempo_map.as_ref(),
-            )? {
-                for (fixture_name, final_state) in final_states {
-                    if self.fixture_registry.contains_key(&fixture_name) {
-                        self.fixture_states
-                            .entry(fixture_name)
-                            .or_default()
-                            .blend_with(&final_state);
-                    }
-                }
-            }
-        }
-
-        Ok(())
     }
 
     /// Register a fixture with the engine
@@ -324,12 +260,6 @@ impl EffectEngine {
             "Starting lighting effect"
         );
 
-        // Preserve state of permanent effects that will be stopped
-        self.preserve_conflicting_permanent_effects(&effect)?;
-
-        // Stop any conflicting effects
-        layers::stop_conflicting_effects(&mut self.active_effects, &effect);
-
         // Set the start time to the current engine time
         effect.start_time = Some(self.current_time);
         self.active_effects.insert(effect.id.clone(), effect);
@@ -364,12 +294,6 @@ impl EffectEngine {
             "Starting lighting effect with elapsed time"
         );
 
-        // Preserve state of permanent effects that will be stopped
-        self.preserve_conflicting_permanent_effects(&effect)?;
-
-        // Stop any conflicting effects
-        layers::stop_conflicting_effects(&mut self.active_effects, &effect);
-
         // Set the start time to be in the past by the elapsed amount
         effect.start_time = Some(
             self.current_time
@@ -393,14 +317,10 @@ impl EffectEngine {
         self.engine_elapsed += dt;
         self.last_song_time = song_time;
 
-        // Fast path for MIDI-DMX-only frames: when no DSL effects are running and
-        // no permanent state exists, generate DmxCommands directly from the store.
-        // This skips all HashMap cloning, fixture state rebuilding, and the full
-        // merge pipeline — significant savings during active MIDI playback.
-        if !self.cache_dirty
-            && self.active_effects.is_empty()
-            && self.releasing_effects.is_empty()
-            && self.fixture_states.is_empty()
+        // Fast path for MIDI-DMX-only frames: when no DSL effects are running,
+        // generate DmxCommands directly from the store. This skips all HashMap
+        // cloning, fixture state rebuilding, and the full pipeline.
+        if !self.cache_dirty && self.active_effects.is_empty() && self.releasing_effects.is_empty()
         {
             let store_gen = self
                 .midi_dmx_store
@@ -415,7 +335,7 @@ impl EffectEngine {
             }
 
             // Store changed — rebuild commands directly from store (no intermediate
-            // fixture_states/permanent_channels/merge pipeline).
+            // active effects pipeline).
             let mut commands = Vec::new();
             self.last_merged_states.clear();
 
@@ -476,27 +396,12 @@ impl EffectEngine {
         // Falls back to engine_elapsed when no song is playing.
         let absolute_time = song_time.unwrap_or(self.engine_elapsed);
 
-        // Start with only states from permanent effects as the base
+        // Start with empty fixture states — no persistent state carried between frames
         let mut current_fixture_states = HashMap::new();
-
-        // Always include persisted permanent states as the base
-        for (fixture_name, state) in &self.fixture_states {
-            current_fixture_states.insert(fixture_name.clone(), state.clone());
-        }
-
-        // Track which channels come from permanent effects to preserve them later.
-        // This MUST be computed before injecting direct values so that MIDI DMX
-        // channel states are not accidentally persisted as permanent effect state.
-        let mut permanent_channels: HashMap<String, std::collections::HashSet<String>> =
-            current_fixture_states
-                .iter()
-                .map(|(name, state)| (name.clone(), state.channels.keys().cloned().collect()))
-                .collect();
 
         self.update_subphase.store(30, Ordering::Relaxed);
 
         // Inject MIDI DMX values from the lockless store (lowest priority).
-        // Only set channels that aren't already claimed by persisted permanent effects.
         if let Some(ref store) = self.midi_dmx_store {
             let store = store.read();
             for (slot_idx, normalized_value) in store.iter_active() {
@@ -683,31 +588,10 @@ impl EffectEngine {
                     // Blend the effect states into the current fixture states
                     for (fixture_name, effect_state) in effect_states {
                         if self.fixture_registry.contains_key(&fixture_name) {
-                            // Check if any channels are locked for this fixture
-                            let locked_channels = self.channel_locks.get(&fixture_name);
-
-                            // Filter out locked channels from the effect state
-                            let mut filtered_state = effect_state.clone();
-                            if let Some(locked) = locked_channels {
-                                // Remove locked channels from the effect state, but always allow
-                                // brightness/pulse multipliers to pass through
-                                filtered_state.channels.retain(|channel_name, _| {
-                                    use super::effects::is_multiplier_channel;
-                                    is_multiplier_channel(channel_name)
-                                        || channel_name == "dimmer"
-                                        || !locked.contains(channel_name)
-                                });
-                            }
-
-                            // Only blend if there are unlocked channels
-                            if !filtered_state.channels.is_empty() {
-                                current_fixture_states
-                                    .entry(fixture_name.clone())
-                                    .or_insert_with(FixtureState::new)
-                                    .blend_with(&filtered_state);
-
-                                // Do not mark permanent channels during active frames; persist only on completion
-                            }
+                            current_fixture_states
+                                .entry(fixture_name.clone())
+                                .or_insert_with(FixtureState::new)
+                                .blend_with(&effect_state);
                         }
                     }
                 }
@@ -716,79 +600,19 @@ impl EffectEngine {
 
         self.update_subphase.store(60, Ordering::Relaxed);
 
-        // Handle completed effects by preserving their final state
+        // Handle completed effects — simply remove them. No state persists after completion.
         for effect_id in completed_effects {
-            // Clean up releasing effects tracking
             self.releasing_effects.remove(&effect_id);
 
             if let Some(effect) = self.active_effects.remove(&effect_id) {
-                // Calculate the final state of the completed effect
-                if let Some(final_states) = self.process_effect_final_state(&effect)? {
-                    // Only preserve the final state for permanent effects
-                    if effect.is_permanent() {
-                        // Preserve the final state in persistent storage
-                        for (fixture_name, final_state) in final_states {
-                            if self.fixture_registry.contains_key(&fixture_name) {
-                                current_fixture_states
-                                    .entry(fixture_name.clone())
-                                    .or_insert_with(FixtureState::new)
-                                    .blend_with(&final_state);
+                // Clean up per-layer multipliers for completed effects
+                let dimmer_key = multiplier_key("dimmer", effect.layer);
+                let pulse_key = multiplier_key("pulse", effect.layer);
 
-                                // Lock channels if this is a foreground Replace effect
-                                if effect.layer == EffectLayer::Foreground
-                                    && effect.blend_mode == BlendMode::Replace
-                                {
-                                    let locked_channels =
-                                        self.channel_locks.entry(fixture_name.clone()).or_default();
-
-                                    // Lock all channels that this effect affected
-                                    for channel_name in final_state.channels.keys() {
-                                        locked_channels.insert(channel_name.clone());
-                                    }
-                                }
-
-                                // Ensure channels from this permanent effect are saved
-                                let entry =
-                                    permanent_channels.entry(fixture_name.clone()).or_default();
-                                // Include original final channels
-                                for ch in final_state.channels.keys() {
-                                    entry.insert(ch.clone());
-                                }
-                                // Also include any per-layer multiplier channels materialized by blend_with
-                                if let Some(cur) = current_fixture_states.get(&fixture_name) {
-                                    use super::effects::is_multiplier_channel;
-                                    for ch in cur.channels.keys() {
-                                        if is_multiplier_channel(ch) {
-                                            entry.insert(ch.clone());
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        // Temporary effects complete and end — remove per-layer multipliers for this effect's layer
-                        let dimmer_key = multiplier_key("dimmer", effect.layer);
-                        let pulse_key = multiplier_key("pulse", effect.layer);
-
-                        for (fixture_name, _final_state) in final_states {
-                            if self.fixture_registry.contains_key(&fixture_name) {
-                                // Remove per-layer multipliers for this layer from current_fixture_states
-                                if let Some(current_state) =
-                                    current_fixture_states.get_mut(&fixture_name)
-                                {
-                                    current_state.channels.remove(&dimmer_key);
-                                    current_state.channels.remove(&pulse_key);
-                                }
-
-                                // Also remove from persisted fixture_states
-                                if let Some(persisted_state) =
-                                    self.fixture_states.get_mut(&fixture_name)
-                                {
-                                    persisted_state.channels.remove(&dimmer_key);
-                                    persisted_state.channels.remove(&pulse_key);
-                                }
-                            }
-                        }
+                for fixture_name in &effect.target_fixtures {
+                    if let Some(current_state) = current_fixture_states.get_mut(fixture_name) {
+                        current_state.channels.remove(&dimmer_key);
+                        current_state.channels.remove(&pulse_key);
                     }
                 }
             }
@@ -796,60 +620,16 @@ impl EffectEngine {
 
         self.update_subphase.store(70, Ordering::Relaxed);
 
-        // Update persistent fixture states - only save channels from permanent effects
-        self.fixture_states.clear();
-        for (fixture_name, state) in &current_fixture_states {
-            if let Some(perm_channels) = permanent_channels.get(fixture_name) {
-                // Only save channels that were from permanent effects
-                let mut preserved_state = FixtureState::new();
-                for channel_name in perm_channels {
-                    if let Some(channel_state) = state.channels.get(channel_name) {
-                        preserved_state
-                            .channels
-                            .insert(channel_name.clone(), *channel_state);
-                    }
-                }
-                if !preserved_state.channels.is_empty() {
-                    self.fixture_states
-                        .insert(fixture_name.clone(), preserved_state);
-                }
-            }
-        }
-
-        // Merge current frame states with persisted permanent states for emission,
-        // so permanent dimming (e.g., RGB multipliers) persists even when no effect is active.
-        let mut merged_states: HashMap<String, FixtureState> = HashMap::new();
-        for name in self.fixture_registry.keys() {
-            match (
-                current_fixture_states.get(name),
-                self.fixture_states.get(name),
-            ) {
-                (Some(current), Some(persisted)) => {
-                    // Start from persisted, then overlay current so current wins
-                    let mut merged = persisted.clone();
-                    merged.blend_with(current);
-                    merged_states.insert(name.clone(), merged);
-                }
-                (Some(current), None) => {
-                    merged_states.insert(name.clone(), current.clone());
-                }
-                (None, Some(persisted)) => {
-                    merged_states.insert(name.clone(), persisted.clone());
-                }
-                (None, None) => {}
-            }
-        }
+        // Use current frame states directly — no persistent state merge needed
 
         self.update_subphase.store(80, Ordering::Relaxed);
 
-        // Store merged states for preview/debugging (before converting to DMX)
-        self.last_merged_states = merged_states.clone();
+        // Store states for preview/debugging (before converting to DMX)
+        self.last_merged_states = current_fixture_states.clone();
 
         // Convert fixture states to DMX commands.
-        // All commands pass through — MIDI DMX values are now handled via the
-        // MidiDmxStore → EffectEngine injection path (no suppression needed).
         let mut commands = Vec::new();
-        for (fixture_name, fixture_state) in merged_states {
+        for (fixture_name, fixture_state) in current_fixture_states {
             if let Some(fixture_info) = self.fixture_registry.get(&fixture_name) {
                 commands.extend(fixture_state.to_dmx_commands(fixture_info));
             }
@@ -869,57 +649,10 @@ impl EffectEngine {
         Ok(commands)
     }
 
-    /// Process the final state of a completed effect
-    fn process_effect_final_state(
-        &mut self,
-        effect: &EffectInstance,
-    ) -> Result<Option<HashMap<String, FixtureState>>, EffectError> {
-        if !effect.enabled {
-            return Ok(None);
-        }
-
-        // Calculate the final state by processing the effect at its end time
-        let absolute_time = self.last_song_time.unwrap_or(self.engine_elapsed);
-        if effect.start_time.is_some() {
-            if let Some(total_duration) = effect.total_duration() {
-                let final_elapsed = total_duration;
-                processing::process_effect(
-                    &self.fixture_registry,
-                    effect,
-                    final_elapsed,
-                    absolute_time,
-                    self.tempo_map.as_ref(),
-                )
-            } else {
-                // Indefinite effect - use current state
-                processing::process_effect(
-                    &self.fixture_registry,
-                    effect,
-                    Duration::ZERO,
-                    absolute_time,
-                    self.tempo_map.as_ref(),
-                )
-            }
-        } else {
-            // Effect has no timing, use current state
-            processing::process_effect(
-                &self.fixture_registry,
-                effect,
-                Duration::ZERO,
-                absolute_time,
-                self.tempo_map.as_ref(),
-            )
-        }
-    }
-
     /// Stop all active effects
     pub fn stop_all_effects(&mut self) {
         self.active_effects.clear();
         self.releasing_effects.clear();
-        // Also clear persisted fixture states and channel locks to ensure clean state
-        // This ensures consistent behavior when starting a new timeline or seeking
-        self.fixture_states.clear();
-        self.channel_locks.clear();
         self.last_merged_states.clear();
         // Clear MIDI DMX values so they don't bleed into the next song.
         // Uses a read lock because MidiDmxStore uses interior mutability
@@ -956,110 +689,25 @@ impl EffectEngine {
     /// Clear a layer - immediately stops all effects on the specified layer
     /// This is equivalent to a "kill" or panic button for a layer
     pub fn clear_layer(&mut self, layer: EffectLayer) {
-        // Collect fixtures that have strobe effects on this layer before clearing
-        let mut fixtures_with_strobe: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
-        for effect in self.active_effects.values() {
-            if effect.layer == layer {
-                if let EffectType::Strobe { .. } = effect.effect_type {
-                    for fixture_name in &effect.target_fixtures {
-                        if let Some(fixture_info) = self.fixture_registry.get(fixture_name) {
-                            // Check if fixture has dedicated strobe channel
-                            if fixture_info.has_capability(FixtureCapabilities::STROBING)
-                                && fixture_info.channels.contains_key("strobe")
-                            {
-                                fixtures_with_strobe.insert(fixture_name.clone());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
         layers::clear_layer(
             &mut self.active_effects,
             &mut self.releasing_effects,
             &mut self.frozen_layers,
             layer,
         );
-        // Also clear persisted fixture states and channel locks for this layer
-        // Note: We can't easily track which layer a persisted state came from,
-        // so we clear all persisted states to ensure clean state
-        // This is a bit aggressive but ensures clear works correctly
-        self.fixture_states.clear();
-        self.channel_locks.clear();
         self.last_merged_states.clear();
-
-        // Explicitly set strobe channels to 0 for fixtures that had strobe effects
-        // This ensures dedicated strobe channels are turned off when effects are cleared
-        // Use the cleared layer with Replace mode - if there are strobe effects on higher
-        // layers, they will override this (which is desired behavior)
-        for fixture_name in fixtures_with_strobe {
-            if let Some(fixture_info) = self.fixture_registry.get(&fixture_name) {
-                if fixture_info.channels.contains_key("strobe") {
-                    // Set strobe channel to 0 using Replace blend mode
-                    // This will turn off strobe for this layer, but higher layers can still override
-                    let mut strobe_state = FixtureState::new();
-                    strobe_state.set_channel(
-                        "strobe".to_string(),
-                        ChannelState::new(0.0, layer, BlendMode::Replace),
-                    );
-                    // Store in fixture_states so it gets emitted in the next frame
-                    self.fixture_states.insert(fixture_name, strobe_state);
-                }
-            }
-        }
         self.cache_dirty = true;
     }
 
     /// Clear all layers - immediately stops all effects on all layers
     /// This is equivalent to a "kill all" or panic button for everything
     pub fn clear_all_layers(&mut self) {
-        // Collect all fixtures that have strobe effects before clearing
-        let mut fixtures_with_strobe: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
-        for effect in self.active_effects.values() {
-            if let EffectType::Strobe { .. } = effect.effect_type {
-                for fixture_name in &effect.target_fixtures {
-                    if let Some(fixture_info) = self.fixture_registry.get(fixture_name) {
-                        // Check if fixture has dedicated strobe channel
-                        if fixture_info.has_capability(FixtureCapabilities::STROBING)
-                            && fixture_info.channels.contains_key("strobe")
-                        {
-                            fixtures_with_strobe.insert(fixture_name.clone());
-                        }
-                    }
-                }
-            }
-        }
-
         layers::clear_all_layers(
             &mut self.active_effects,
             &mut self.releasing_effects,
             &mut self.frozen_layers,
         );
-        // Clear all persisted fixture states and channel locks
-        self.fixture_states.clear();
-        self.channel_locks.clear();
         self.last_merged_states.clear();
-
-        // Explicitly set strobe channels to 0 for all fixtures that had strobe effects
-        // This ensures dedicated strobe channels are turned off when effects are cleared
-        for fixture_name in fixtures_with_strobe {
-            if let Some(fixture_info) = self.fixture_registry.get(&fixture_name) {
-                if fixture_info.channels.contains_key("strobe") {
-                    // Set strobe channel to 0 using Replace blend mode to ensure it overrides
-                    // Use foreground layer since we're clearing everything
-                    let mut strobe_state = FixtureState::new();
-                    strobe_state.set_channel(
-                        "strobe".to_string(),
-                        ChannelState::new(0.0, EffectLayer::Foreground, BlendMode::Replace),
-                    );
-                    // Store in fixture_states so it gets emitted in the next frame
-                    self.fixture_states.insert(fixture_name, strobe_state);
-                }
-            }
-        }
         self.cache_dirty = true;
     }
 
@@ -1201,12 +849,6 @@ impl EffectEngine {
         self.active_effects.contains_key(effect_id)
     }
 
-    /// Check if two blend modes are compatible (can layer together) - public for tests
-    #[cfg(test)]
-    pub fn blend_modes_are_compatible_public(&self, existing: BlendMode, new: BlendMode) -> bool {
-        layers::blend_modes_are_compatible(existing, new)
-    }
-
     /// Get all active effects (for debugging/simulation)
     #[allow(dead_code)]
     pub fn get_active_effects(&self) -> &HashMap<String, EffectInstance> {
@@ -1279,11 +921,8 @@ impl EffectEngine {
                     EffectType::Pulse { .. } => "Pulse",
                 };
 
-                let duration_str = if let Some(total) = effect.total_duration() {
-                    format!(" (duration: {:.2}s)", total.as_secs_f64())
-                } else {
-                    " (perpetual)".to_string()
-                };
+                let total = effect.total_duration();
+                let duration_str = format!(" (duration: {:.2}s)", total.as_secs_f64());
 
                 writeln!(
                     output,

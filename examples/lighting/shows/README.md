@@ -52,7 +52,7 @@ The lighting system supports professional-grade crossfades for smooth transition
 effect_name: effect_type parameters..., fade_in: 2s, fade_out: 1s, duration: 5s
 
 # Examples
-front_wash: static color: "blue", dimmer: 100%, fade_in: 2s
+front_wash: static color: "blue", dimmer: 100%, duration: 5s, fade_in: 2s
 back_wash: cycle color: "red", color: "green", speed: 1.0, fade_in: 1s, fade_out: 1s, duration: 8s
 strobe_lights: strobe frequency: 4, fade_in: 0.5s, fade_out: 0.5s, duration: 3s
 ```
@@ -60,9 +60,9 @@ strobe_lights: strobe frequency: 4, fade_in: 0.5s, fade_out: 0.5s, duration: 3s
 ### Crossfade Parameters
 
 - `fade_in: <duration>` - Time to fade in from 0% to 100% intensity
-- `fade_out: <duration>` - Time to fade out from 100% to 0% intensity  
-- `duration: <duration>` - Total effect duration (optional)
-- Both fade parameters are optional
+- `fade_out: <duration>` - Time to fade out from 100% to 0% intensity
+- `duration: <duration>` - Total effect duration (**required** for all effect types except dimmer)
+- Fade parameters are optional; duration is required
 - Duration can be specified in seconds (s), milliseconds (ms), or as time values (e.g., 2.5s)
 
 ### Crossfade Behavior
@@ -172,13 +172,13 @@ tempo {
 
 show "My Show" {
     @1/1
-    front_wash: static color: "blue", dimmer: 100%
-    
+    front_wash: static color: "blue", dimmer: 100%, duration: 4measures
+
     @2/1
     front_wash: pulse color: "blue", duration: 500ms
-    
+
     @8/1  # When tempo changes to 140 BPM
-    back_lights: chase colors: ["red", "green"], duration: 1s
+    back_lights: chase colors: ["red", "green"], duration: 10s
 }
 ```
 
@@ -188,10 +188,10 @@ You can mix absolute and measure-based timing in the same show:
 
 ```light
 @00:00.000  # Absolute time
-front_wash: static color: "blue"
+front_wash: static color: "blue", duration: 5s
 
 @1/1        # Measure-based
-back_lights: chase colors: ["red", "green"]
+back_lights: chase colors: ["red", "green"], duration: 10s
 ```
 
 However, tempo changes can only be specified at measure/beat positions.
@@ -269,8 +269,8 @@ master(layer: foreground, intensity: 75%, speed: 50%)
 show "Layer Control Demo" {
     # Start with background color
     @00:00.000
-        front_wash: static color: "blue", layer: background
-        back_wash: rainbow speed: 0.5, layer: midground
+        front_wash: static color: "blue", layer: background, duration: 45s
+        back_wash: rainbow speed: 0.5, layer: midground, duration: 45s
 
     # Dim the background to 50%
     @00:05.000
@@ -278,7 +278,7 @@ show "Layer Control Demo" {
 
     # Add a foreground strobe
     @00:10.000
-        strobes: strobe frequency: 8, layer: foreground
+        strobes: strobe frequency: 8, layer: foreground, duration: 30s
 
     # Freeze the rainbow effect
     @00:15.000
@@ -325,7 +325,7 @@ Layer commands can be in the same cue as effects:
 @00:10.000
     # Clear old effects and start new ones in one cue
     clear(layer: foreground)
-    front_wash: strobe frequency: 10, layer: foreground
+    front_wash: strobe frequency: 10, layer: foreground, duration: 5s
     master(layer: background, intensity: 50%)
 ```
 

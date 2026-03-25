@@ -91,11 +91,10 @@ fn test_dimmer_effect_dim_down() {
         "At midpoint, dimmer should be at 50%"
     );
 
-    // At end (1000ms), dimmer should be at end_level (0.0 = 0)
+    // At end (1000ms), dimmer effect has completed and is removed.
+    // No active effects remain, so no commands are emitted.
     let commands = engine.update(Duration::from_millis(500), None).unwrap();
-    assert_eq!(commands.len(), 1);
-    let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
-    assert_eq!(dimmer_cmd.value, 0, "At end, dimmer should be at 0%");
+    assert_eq!(commands.len(), 0, "No commands after dimmer completes");
 }
 
 #[test]
@@ -142,14 +141,8 @@ fn test_dimmer_effect_dim_down_partial() {
         dimmer_cmd.value
     );
 
-    // At end (1000ms), dimmer should be at end_level (0.3 = 76)
+    // At end (1000ms), dimmer effect has completed and is removed.
+    // No active effects remain, so no commands are emitted.
     let commands = engine.update(Duration::from_millis(500), None).unwrap();
-    assert_eq!(commands.len(), 1);
-    let dimmer_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
-    // 0.3 * 255 = 76.5, so expect 76 or 77
-    assert!(
-        (76..=77).contains(&dimmer_cmd.value),
-        "At end, dimmer should be at ~30% (76-77), got {}",
-        dimmer_cmd.value
-    );
+    assert_eq!(commands.len(), 0, "No commands after dimmer completes");
 }

@@ -36,6 +36,7 @@ fn test_color_cycle_effect() {
             speed: TempoAwareSpeed::Fixed(1.0), // 1 cycle per second
             direction: CycleDirection::Forward,
             transition: CycleTransition::Snap,
+            duration: Duration::from_secs(10),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -98,6 +99,7 @@ fn test_color_cycle_pingpong_peak() {
             speed: TempoAwareSpeed::Fixed(1.0), // 1 cycle per second
             direction: CycleDirection::PingPong,
             transition: CycleTransition::Snap,
+            duration: Duration::from_secs(10),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -165,6 +167,7 @@ fn test_color_cycle_backward_boundary() {
             speed: TempoAwareSpeed::Fixed(1.0), // 1 cycle per second
             direction: CycleDirection::Backward,
             transition: CycleTransition::Snap,
+            duration: Duration::from_secs(10),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -237,6 +240,7 @@ fn test_color_cycle_backward_fade_boundary() {
             speed: TempoAwareSpeed::Fixed(1.0),
             direction: CycleDirection::Backward,
             transition: CycleTransition::Fade, // Key difference from Snap test
+            duration: Duration::from_secs(10),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -296,6 +300,7 @@ fn test_color_cycle_fade_interpolation() {
             speed: TempoAwareSpeed::Fixed(1.0), // 1 cycle per second
             direction: CycleDirection::Forward,
             transition: CycleTransition::Fade,
+            duration: Duration::from_secs(10),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -382,6 +387,7 @@ fn test_color_cycle_forward_wraparound() {
             speed: TempoAwareSpeed::Fixed(1.0), // 1 cycle per second
             direction: CycleDirection::Forward,
             transition: CycleTransition::Snap,
+            duration: Duration::from_secs(10),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -441,6 +447,7 @@ fn test_color_cycle_two_colors_all_directions() {
                 speed: TempoAwareSpeed::Fixed(1.0),
                 direction,
                 transition: CycleTransition::Snap,
+                duration: Duration::from_secs(10),
             },
             vec!["test_fixture".to_string()],
             None,
@@ -499,6 +506,7 @@ fn test_color_cycle_zero_speed() {
             speed: TempoAwareSpeed::Fixed(0.0), // Zero speed!
             direction: CycleDirection::Forward,
             transition: CycleTransition::Snap,
+            duration: Duration::from_secs(10),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -552,6 +560,7 @@ fn test_single_color_cycle() {
                 speed: TempoAwareSpeed::Fixed(1.0),
                 direction,
                 transition: CycleTransition::Snap,
+                duration: Duration::from_secs(10),
             },
             vec!["test_fixture".to_string()],
             None,

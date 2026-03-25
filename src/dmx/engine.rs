@@ -1415,6 +1415,7 @@ mod test {
         error::Error,
         net::{Ipv4Addr, SocketAddr, TcpListener},
         sync::{atomic::AtomicBool, Arc},
+        time::Duration,
     };
 
     use midly::num::u7;
@@ -1504,7 +1505,7 @@ mod test {
             "test_effect".to_string(),
             EffectType::Static {
                 parameters: parameters.clone(),
-                duration: None,
+                duration: Duration::ZERO,
             },
             vec!["test_fixture".to_string()],
             None,
@@ -1633,7 +1634,7 @@ mod test {
             "test_effect".to_string(),
             EffectType::Static {
                 parameters,
-                duration: None,
+                duration: Duration::ZERO,
             },
             vec!["test_fixture".to_string()],
             None,
@@ -1719,7 +1720,7 @@ mod test {
             "test_effect".to_string(),
             EffectType::Static {
                 parameters: std::collections::HashMap::new(),
-                duration: None,
+                duration: Duration::ZERO,
             },
             vec!["test_fixture".to_string()],
             None,
@@ -1810,7 +1811,7 @@ mod test {
             "test_effect".to_string(),
             EffectType::Static {
                 parameters,
-                duration: None,
+                duration: Duration::ZERO,
             },
             vec!["test_group".to_string()],
             None,
@@ -1845,7 +1846,7 @@ mod test {
             "test_effect".to_string(),
             EffectType::Static {
                 parameters,
-                duration: None,
+                duration: Duration::ZERO,
             },
             vec!["unknown_group".to_string()],
             None,
@@ -1936,7 +1937,7 @@ mod test {
             "test_effect".to_string(),
             EffectType::Static {
                 parameters,
-                duration: None,
+                duration: Duration::ZERO,
             },
             vec!["fixture1".to_string()],
             None,
@@ -2077,7 +2078,7 @@ mod test {
             "test_effect".to_string(),
             EffectType::Static {
                 parameters,
-                duration: None,
+                duration: Duration::ZERO,
             },
             vec!["test_fixture".to_string()],
             None,
@@ -2153,7 +2154,7 @@ mod test {
             &dsl_path,
             r#"show "no_tempo" {
     @00:00.000
-    front_wash: static color: "blue", dimmer: 100%
+    front_wash: static color: "blue", duration: 5s, dimmer: 100%
 }"#,
         )?;
 
@@ -3020,7 +3021,7 @@ mod test {
                 &dsl_path,
                 r#"show "test" {
     @00:00.000
-    front_wash: static color: "blue", dimmer: 100%
+    front_wash: static color: "blue", duration: 5s, dimmer: 100%
 }"#,
             )?;
 
@@ -3139,7 +3140,7 @@ mod test {
                         p.insert("dimmer".to_string(), 1.0);
                         p
                     },
-                    duration: None,
+                    duration: Duration::ZERO,
                 },
                 up_time: None,
                 hold_time: None,
@@ -3233,7 +3234,7 @@ mod test {
                             p.insert("dimmer".to_string(), 0.5);
                             p
                         },
-                        duration: None,
+                        duration: Duration::ZERO,
                     },
                     up_time: None,
                     hold_time: None,
@@ -3520,7 +3521,7 @@ mod test {
                 "test".to_string(),
                 EffectType::Static {
                     parameters: std::collections::HashMap::new(),
-                    duration: None,
+                    duration: Duration::ZERO,
                 },
                 vec!["some_group".to_string()],
                 None,
@@ -3548,7 +3549,7 @@ mod test {
                 "test".to_string(),
                 EffectType::Static {
                     parameters: std::collections::HashMap::new(),
-                    duration: None,
+                    duration: Duration::ZERO,
                 },
                 vec!["some_group".to_string()],
                 None,
@@ -3702,7 +3703,7 @@ mod test {
             let (_tmp_dir, song) = create_dsl_song_with_content(
                 r#"show "test" {
     @00:00.000
-    front_wash: static color: "blue", dimmer: 100%
+    front_wash: static color: "blue", duration: 5s, dimmer: 100%
 }"#,
             )?;
 
@@ -3736,9 +3737,9 @@ mod test {
             let (_tmp_dir, song) = create_dsl_song_with_content(
                 r#"show "test" {
     @00:00.000
-    front_wash: static color: "red", dimmer: 100%
+    front_wash: static color: "red", duration: 5s, dimmer: 100%
     @00:05.000
-    front_wash: static color: "blue", dimmer: 50%
+    front_wash: static color: "blue", duration: 5s, dimmer: 50%
 }"#,
             )?;
 
@@ -3922,7 +3923,7 @@ mod test {
                         p.insert("dimmer".to_string(), 0.5);
                         p
                     },
-                    duration: None,
+                    duration: Duration::ZERO,
                 },
                 vec!["test_fixture".to_string()],
                 None,
@@ -3974,7 +3975,7 @@ mod test {
                         p.insert("dimmer".to_string(), 1.0);
                         p
                     },
-                    duration: None,
+                    duration: Duration::ZERO,
                 },
                 vec!["test_fixture".to_string()],
                 None,
@@ -4220,7 +4221,7 @@ mod test {
                 "test".to_string(),
                 crate::lighting::effects::EffectType::Static {
                     parameters: std::collections::HashMap::new(),
-                    duration: None,
+                    duration: Duration::ZERO,
                 },
                 vec!["some_group".to_string()],
                 None,
@@ -4370,7 +4371,7 @@ mod test {
                 &dsl_path,
                 r#"show "test" {
     @00:00.000
-    front_wash: static color: "blue", dimmer: 100%
+    front_wash: static color: "blue", duration: 5s, dimmer: 100%
 }"#,
             )?;
 
@@ -4426,7 +4427,7 @@ mod test {
                 &dsl_path,
                 r#"show "test" {
     @00:00.000
-    unknown_group: static color: "blue", dimmer: 100%
+    unknown_group: static color: "blue", duration: 5s, dimmer: 100%
 }"#,
             )?;
 
@@ -4721,7 +4722,7 @@ mod test {
                 &dsl_path,
                 r#"show "test" {
     @00:00.000
-    front_wash: static color: "blue", dimmer: 100%
+    front_wash: static color: "blue", duration: 5s, dimmer: 100%
 }"#,
             )?;
 
@@ -4838,7 +4839,7 @@ mod test {
                 &dsl_path,
                 r#"show "test" {
     @00:00.000
-    front_wash: static color: "blue", dimmer: 100%
+    front_wash: static color: "blue", duration: 5s, dimmer: 100%
 }"#,
             )?;
 

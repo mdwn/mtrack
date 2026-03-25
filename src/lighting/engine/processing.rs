@@ -155,6 +155,7 @@ pub(crate) fn process_effect(
             speed,
             direction,
             transition,
+            ..
         } => {
             let current_speed = speed.to_cycles_per_second(tempo_map, absolute_time);
             apply_color_cycle(
@@ -190,6 +191,7 @@ pub(crate) fn process_effect(
             speed,
             direction,
             transition,
+            ..
         } => {
             let current_speed = speed.to_cycles_per_second(tempo_map, absolute_time);
             apply_chase(
@@ -206,6 +208,7 @@ pub(crate) fn process_effect(
             speed,
             saturation,
             brightness,
+            ..
         } => {
             let current_speed = speed.to_cycles_per_second(tempo_map, absolute_time);
             apply_rainbow(
@@ -957,7 +960,7 @@ mod tests {
             "test".to_string(),
             EffectType::Static {
                 parameters: HashMap::new(),
-                duration: None,
+                duration: Duration::ZERO,
             },
             vec![],
             None,
@@ -979,7 +982,7 @@ mod tests {
             "test".to_string(),
             EffectType::Static {
                 parameters: HashMap::new(),
-                duration: None,
+                duration: Duration::ZERO,
             },
             vec!["unknown_fixture".to_string()],
             None,
@@ -1009,7 +1012,7 @@ mod tests {
             "test".to_string(),
             EffectType::Static {
                 parameters: HashMap::new(),
-                duration: None,
+                duration: Duration::ZERO,
             },
             vec!["test_fix".to_string()],
             None,

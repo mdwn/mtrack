@@ -33,7 +33,7 @@ fn test_get_active_effects_returns_correct_effects() {
                 p.insert("dimmer".to_string(), 0.5);
                 p
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -49,7 +49,7 @@ fn test_get_active_effects_returns_correct_effects() {
                 p.insert("red".to_string(), 1.0);
                 p
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -94,7 +94,7 @@ fn test_get_active_effects_returns_reference() {
                 p.insert("dimmer".to_string(), 0.5);
                 p
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -140,7 +140,7 @@ fn test_get_fixture_states_returns_states_after_update() {
         "test_effect".to_string(),
         EffectType::Static {
             parameters: parameters.clone(),
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -188,7 +188,7 @@ fn test_get_fixture_states_reflects_latest_update() {
         "effect1".to_string(),
         EffectType::Static {
             parameters: parameters1,
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -214,7 +214,7 @@ fn test_get_fixture_states_reflects_latest_update() {
         "effect2".to_string(),
         EffectType::Static {
             parameters: parameters2,
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -255,7 +255,7 @@ fn test_get_fixture_states_cleared_on_stop_all() {
         "test_effect".to_string(),
         EffectType::Static {
             parameters,
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -292,7 +292,7 @@ fn test_get_fixture_states_multiple_fixtures() {
         "effect1".to_string(),
         EffectType::Static {
             parameters: parameters1,
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["fixture1".to_string()],
         None,
@@ -308,7 +308,7 @@ fn test_get_fixture_states_multiple_fixtures() {
         "effect2".to_string(),
         EffectType::Static {
             parameters: parameters2,
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["fixture2".to_string()],
         None,
@@ -351,7 +351,7 @@ fn test_update_with_zero_duration() {
                 p.insert("dimmer".to_string(), 0.5);
                 p
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -381,7 +381,7 @@ fn test_update_with_very_large_duration() {
                 p.insert("dimmer".to_string(), 0.5);
                 p
             },
-            duration: Some(Duration::from_secs(1)),
+            duration: Duration::from_secs(1),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -422,7 +422,7 @@ fn test_update_with_none_song_time() {
                 p.insert("dimmer".to_string(), 0.5);
                 p
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -459,7 +459,7 @@ fn test_multiple_fixture_registration() {
                 p.insert("dimmer".to_string(), 0.5);
                 p
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["fixture1".to_string()],
         None,
@@ -475,7 +475,7 @@ fn test_multiple_fixture_registration() {
                 p.insert("red".to_string(), 1.0);
                 p
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["fixture2".to_string()],
         None,
@@ -491,7 +491,7 @@ fn test_multiple_fixture_registration() {
                 p.insert("green".to_string(), 1.0);
                 p
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["fixture3".to_string()],
         None,
@@ -525,7 +525,7 @@ fn test_register_same_fixture_name_twice() {
                 p.insert("dimmer".to_string(), 0.5);
                 p
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -584,7 +584,7 @@ fn test_set_tempo_map_none() {
                 p.insert("dimmer".to_string(), 0.5);
                 p
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -611,7 +611,7 @@ fn test_effect_with_empty_target_fixtures() {
                 p.insert("dimmer".to_string(), 0.5);
                 p
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec![], // Empty target fixtures
         None,
@@ -642,7 +642,7 @@ fn test_update_multiple_times_sequential() {
                 p.insert("dimmer".to_string(), 0.5);
                 p
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -677,7 +677,7 @@ fn test_active_effects_count_matches_get_active_effects() {
                 p.insert("dimmer".to_string(), 0.5);
                 p
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -694,7 +694,7 @@ fn test_active_effects_count_matches_get_active_effects() {
                 p.insert("red".to_string(), 1.0);
                 p
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,

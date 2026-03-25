@@ -148,7 +148,7 @@ fn test_parse_dsl_lighting_shows() {
     // Test with a simple DSL first
     let simple_content = r#"show "Test Show" {
     @00:00.000
-    front_wash: static color: "blue", dimmer: 60%
+    front_wash: static color: "blue", duration: 5s, dimmer: 60%
 }"#;
 
     let simple_shows = crate::lighting::parser::parse_light_shows(simple_content)
@@ -188,7 +188,7 @@ fn test_parse_outro_lighting_show() {
     // Test with a simple outro show
     let simple_outro = r#"show "Outro Show" {
     @00:00.000
-    all_fixtures: static color: "blue", dimmer: 20%
+    all_fixtures: static color: "blue", duration: 5s, dimmer: 20%
 }"#;
 
     let shows = crate::lighting::parser::parse_light_shows(simple_outro)
@@ -355,10 +355,10 @@ fn test_song_with_lighting_shows() {
     // Test that the DSL content can be parsed
     let dsl_content = r#"show "Shieldbrother" {
     @00:00.000
-    front_wash: static color: "blue", dimmer: 60%
+    front_wash: static color: "blue", duration: 5s, dimmer: 60%
 
     @00:05.000
-    front_wash: static color: "red", dimmer: 80%
+    front_wash: static color: "red", duration: 5s, dimmer: 80%
 }"#;
     let shows = crate::lighting::parser::parse_light_shows(dsl_content).unwrap();
     assert_eq!(shows.len(), 1);

@@ -15,6 +15,7 @@ use crate::lighting::effects::*;
 use crate::lighting::engine::tests::common::create_test_fixture;
 use crate::lighting::engine::EffectEngine;
 use std::collections::HashMap;
+use std::time::Duration;
 
 #[test]
 fn test_effect_engine_creation() {
@@ -35,7 +36,7 @@ fn test_fixture_registration() {
         "test_effect".to_string(),
         EffectType::Static {
             parameters,
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,

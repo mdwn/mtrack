@@ -50,6 +50,7 @@ show "Test" {
             speed: _,
             direction: _,
             transition: _,
+            ..
         } => {
             println!("Parsed pattern: {:?}", pattern);
             println!("Pattern debug: pattern={:?}", pattern);
@@ -80,7 +81,7 @@ fn test_chase_direction_as_last_parameter() {
     // (This tests direction_parameter, not bare_identifier - see test_bare_identifier_as_last_parameter)
     let content = r#"show "Test" {
     @0.000
-    test_fixture: chase, transition: fade, layer: foreground, blend_mode: multiply, direction: right_to_left
+    test_fixture: chase, transition: fade, layer: foreground, blend_mode: multiply, direction: right_to_left, duration: 10s
 }
 "#;
 
@@ -119,7 +120,7 @@ fn test_bare_identifier_as_last_parameter() {
     // This tests the atomic rule fix for bare_identifier at the end of parameter lists
     let content = r#"show "Test" {
     @0.000
-    test_fixture: static, dimmer: 50%, custom_param: my_custom_value
+    test_fixture: static, dimmer: 50%, custom_param: my_custom_value, duration: 5s
 }
 "#;
 

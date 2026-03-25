@@ -184,7 +184,7 @@ fn test_midi_dmx_store_values_overridden_by_effects() {
         "override_test".to_string(),
         EffectType::Static {
             parameters,
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["wash1".to_string()],
         None,

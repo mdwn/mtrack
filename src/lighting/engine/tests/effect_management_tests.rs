@@ -31,7 +31,7 @@ fn test_effect_priority() {
         "low_effect".to_string(),
         EffectType::Static {
             parameters: low_priority_params,
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -48,7 +48,7 @@ fn test_effect_priority() {
         "high_effect".to_string(),
         EffectType::Static {
             parameters: high_priority_params,
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -82,7 +82,7 @@ fn test_effect_stop() {
         "test_effect".to_string(),
         EffectType::Static {
             parameters,
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -114,7 +114,7 @@ fn test_invalid_fixture_error() {
         "test_effect".to_string(),
         EffectType::Static {
             parameters,
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["nonexistent_fixture".to_string()],
         None,
@@ -145,7 +145,7 @@ fn test_effect_duration_expiry() {
         "test_effect".to_string(),
         EffectType::Static {
             parameters,
-            duration: Some(Duration::from_millis(100)), // Set duration for expiry test
+            duration: Duration::from_millis(100), // Set duration for expiry test
         },
         vec!["test_fixture".to_string()],
         None,                             // up_time

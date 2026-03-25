@@ -2269,7 +2269,7 @@ mod test {
         // Create a valid lighting show file with invalid group reference
         let lighting_show_content = r#"show "Test Show" {
     @00:00.000
-    invalid_group: static color: "blue", dimmer: 60%
+    invalid_group: static color: "blue", duration: 5s, dimmer: 60%
 }"#;
         let lighting_file = temp_path.join("invalid_show.light");
         fs::write(&lighting_file, lighting_show_content)?;
@@ -2548,8 +2548,8 @@ mod test {
         // Create a valid lighting show file with multiple invalid group references
         let lighting_show_content = r#"show "Test Show" {
     @00:00.000
-    invalid_group_1: static color: "blue", dimmer: 60%
-    invalid_group_2: static color: "red", dimmer: 80%
+    invalid_group_1: static color: "blue", duration: 5s, dimmer: 60%
+    invalid_group_2: static color: "red", duration: 5s, dimmer: 80%
 }"#;
         let lighting_file = temp_path.join("invalid_groups.light");
         fs::write(&lighting_file, lighting_show_content)?;

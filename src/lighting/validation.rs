@@ -113,14 +113,14 @@ mod tests {
     fn create_test_shows() -> HashMap<String, crate::lighting::parser::LightShow> {
         let content = r#"show "Test Show 1" {
     @00:00.000
-    front_wash: static color: "blue", dimmer: 60%
-    back_wash: static color: "red", dimmer: 80%
+    front_wash: static color: "blue", duration: 5s, dimmer: 60%
+    back_wash: static color: "red", duration: 5s, dimmer: 80%
 }
 
 show "Test Show 2" {
     @00:00.000
-    movers: cycle color: "green", color: "yellow", speed: 1.0
-    strobes: strobe frequency: 4
+    movers: cycle color: "green", color: "yellow", speed: 1.0, duration: 10s
+    strobes: strobe frequency: 4, duration: 5s
 }"#;
 
         parse_light_shows(content).expect("Failed to parse test shows")
@@ -206,9 +206,9 @@ show "Test Show 2" {
     fn test_collect_groups_duplicate_groups() {
         let content = r#"show "Duplicate Groups" {
     @00:00.000
-    front_wash: static color: "blue"
+    front_wash: static color: "blue", duration: 5s
     @00:05.000
-    front_wash: static color: "red"
+    front_wash: static color: "red", duration: 5s
 }"#;
         let shows = parse_light_shows(content).expect("Failed to parse show");
         let groups = collect_groups(&shows);
@@ -243,9 +243,9 @@ show "Test Show 2" {
     fn test_validate_groups_with_invalid_groups() {
         let content = r#"show "Invalid Show" {
     @00:00.000
-    front_wash: static color: "blue"
-    invalid_group: static color: "red"
-    another_invalid: static color: "green"
+    front_wash: static color: "blue", duration: 5s
+    invalid_group: static color: "red", duration: 5s
+    another_invalid: static color: "green", duration: 5s
 }"#;
         let shows = parse_light_shows(content).expect("Failed to parse show");
         let config = create_test_config();
@@ -266,7 +266,7 @@ show "Test Show 2" {
     fn test_validate_groups_with_fixtures() {
         let content = r#"show "Fixture Show" {
     @00:00.000
-    emergency_light: static color: "red"
+    emergency_light: static color: "red", duration: 5s
 }"#;
         let shows = parse_light_shows(content).expect("Failed to parse show");
         let config = create_test_config();
@@ -299,8 +299,8 @@ show "Test Show 2" {
     fn test_validate_light_shows_invalid() {
         let content = r#"show "Invalid Show" {
     @00:00.000
-    front_wash: static color: "blue"
-    invalid_group: static color: "red"
+    front_wash: static color: "blue", duration: 5s
+    invalid_group: static color: "red", duration: 5s
 }"#;
         let shows = parse_light_shows(content).expect("Failed to parse show");
         let config = create_test_config();
@@ -317,9 +317,9 @@ show "Test Show 2" {
     fn test_validate_light_shows_multiple_invalid() {
         let content = r#"show "Multiple Invalid" {
     @00:00.000
-    invalid1: static color: "blue"
-    invalid2: static color: "red"
-    invalid3: static color: "green"
+    invalid1: static color: "blue", duration: 5s
+    invalid2: static color: "red", duration: 5s
+    invalid3: static color: "green", duration: 5s
 }"#;
         let shows = parse_light_shows(content).expect("Failed to parse show");
         let config = create_test_config();
@@ -361,14 +361,14 @@ show "Test Show 2" {
     fn test_collect_groups_multiple_shows() {
         let content = r#"show "Show 1" {
     @00:00.000
-    group_a: static color: "blue"
-    group_b: static color: "red"
+    group_a: static color: "blue", duration: 5s
+    group_b: static color: "red", duration: 5s
 }
 
 show "Show 2" {
     @00:00.000
-    group_b: static color: "green"
-    group_c: static color: "yellow"
+    group_b: static color: "green", duration: 5s
+    group_c: static color: "yellow", duration: 5s
 }"#;
         let shows = parse_light_shows(content).expect("Failed to parse shows");
         let groups = collect_groups(&shows);
@@ -384,9 +384,9 @@ show "Show 2" {
     fn test_validate_groups_partial_match() {
         let content = r#"show "Partial Match" {
     @00:00.000
-    front_wash: static color: "blue"
-    valid_group: static color: "red"
-    invalid_group: static color: "green"
+    front_wash: static color: "blue", duration: 5s
+    valid_group: static color: "red", duration: 5s
+    invalid_group: static color: "green", duration: 5s
 }"#;
         let shows = parse_light_shows(content).expect("Failed to parse show");
 

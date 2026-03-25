@@ -20,12 +20,12 @@ use std::time::Duration;
 fn test_parse_multiple_shows() {
     let content = r#"show "Show 1" {
     @00:00.000
-    front_wash: static color: "blue", dimmer: 60%
+    front_wash: static color: "blue", dimmer: 60%, duration: 5s
 }
 
 show "Show 2" {
     @00:00.000
-    back_wash: static color: "red", dimmer: 80%
+    back_wash: static color: "red", dimmer: 80%, duration: 5s
 }"#;
 
     let result = parse_light_shows(content);
@@ -55,7 +55,7 @@ fn test_parse_invalid_syntax() {
 fn test_parse_malformed_timing() {
     let content = r#"show "Invalid Timing" {
     @invalid_time
-    front_wash: static color: "blue", dimmer: 60%
+    front_wash: static color: "blue", dimmer: 60%, duration: 5s
 }"#;
 
     let result = parse_light_shows(content);
@@ -118,7 +118,7 @@ fn test_time_parsing() {
 fn test_parse_crossfade_example() {
     let content = r#"show "Crossfade Test" {
     @00:00.000
-    front_wash: static color: "blue", up_time: 2s, down_time: 1s
+    front_wash: static color: "blue", up_time: 2s, down_time: 1s, hold_time: 5s
 }"#;
 
     let result = parse_light_shows(content);
@@ -152,7 +152,7 @@ fn test_parse_crossfade_example() {
 fn test_parse_zero_fade() {
     let content = r#"show "Zero Fade Test" {
     @00:00.000
-    front_wash: static color: "blue", up_time: 0s, down_time: 0s
+    front_wash: static color: "blue", up_time: 0s, down_time: 0s, hold_time: 5s
 }"#;
 
     let result = parse_light_shows(content);
@@ -178,7 +178,7 @@ fn test_parse_layering_partial() {
     let content = r#"show "Effect Layering Demo" {
     @00:00.000
     # Background layer: Static blue color with 2 second fade in
-    front_wash: static color: "blue", dimmer: 100%, layer: background, blend_mode: replace, up_time: 2s
+    front_wash: static color: "blue", dimmer: 100%, layer: background, blend_mode: replace, up_time: 2s, hold_time: 5s
 }"#;
 
     let result = parse_light_shows(content);
@@ -203,7 +203,7 @@ fn test_parse_layering_2lines() {
     let content = r#"show "Effect Layering Demo" {
     @00:00.000
     # Background layer: Static blue color with 2 second fade in
-    front_wash: static color: "blue", dimmer: 100%, layer: background, blend_mode: replace, up_time: 2s
+    front_wash: static color: "blue", dimmer: 100%, layer: background, blend_mode: replace, up_time: 2s, hold_time: 5s
 
     @00:02.000
     # Midground layer: Dimmer effect that slowly dims the blue with crossfades
@@ -227,7 +227,7 @@ fn test_parse_layering_3lines() {
     let content = r#"show "Effect Layering Demo" {
     @00:00.000
     # Background layer: Static blue color with 2 second fade in
-    front_wash: static color: "blue", dimmer: 100%, layer: background, blend_mode: replace, up_time: 2s
+    front_wash: static color: "blue", dimmer: 100%, layer: background, blend_mode: replace, up_time: 2s, hold_time: 5s
 
     @00:02.000
     # Midground layer: Dimmer effect that slowly dims the blue with crossfades
@@ -254,7 +254,7 @@ fn test_parse_layering_3lines() {
 fn test_parse_strobe_simple() {
     let content = r#"show "Test" {
     @00:00.000
-    front_wash: strobe frequency: 2, up_time: 0.5s, down_time: 0.5s
+    front_wash: strobe frequency: 2, up_time: 0.5s, down_time: 0.5s, hold_time: 5s
 }"#;
 
     let result = parse_light_shows(content);
@@ -279,7 +279,7 @@ fn test_parse_strobe_simple() {
 fn test_parse_strobe_no_crossfade() {
     let content = r#"show "Test" {
     @00:00.000
-    front_wash: strobe frequency: 2
+    front_wash: strobe frequency: 2, duration: 5s
 }"#;
 
     let result = parse_light_shows(content);
@@ -301,7 +301,7 @@ fn test_parse_strobe_no_crossfade() {
 fn test_parse_strobe_crossfade_minimal() {
     let content = r#"show "Test" {
     @00:00.000
-    front_wash: strobe frequency: 2, up_time: 0.5s
+    front_wash: strobe frequency: 2, up_time: 0.5s, hold_time: 5s
 }"#;
 
     let result = parse_light_shows(content);
@@ -326,7 +326,7 @@ fn test_parse_strobe_crossfade_minimal() {
 fn test_parse_static_crossfade() {
     let content = r#"show "Test" {
     @00:00.000
-    front_wash: static color: "blue", up_time: 0.5s, down_time: 0.5s
+    front_wash: static color: "blue", up_time: 0.5s, down_time: 0.5s, hold_time: 5s
 }"#;
 
     let result = parse_light_shows(content);
@@ -351,7 +351,7 @@ fn test_parse_static_crossfade() {
 fn test_parse_fade_in_only() {
     let content = r#"show "Test" {
     @00:00.000
-    front_wash: static color: "blue", up_time: 0.5s
+    front_wash: static color: "blue", up_time: 0.5s, hold_time: 5s
 }"#;
 
     let result = parse_light_shows(content);
@@ -373,7 +373,7 @@ fn test_parse_fade_in_only() {
 fn test_parse_fade_in_simple() {
     let content = r#"show "Test" {
     @00:00.000
-    front_wash: static color: "blue", up_time: 2s
+    front_wash: static color: "blue", up_time: 2s, hold_time: 5s
 }"#;
 
     let result = parse_light_shows(content);
@@ -526,9 +526,7 @@ fn test_inline_loop_respects_tempo_for_durations() {
     assert_eq!(times.len(), 2, "expected 2 cues, got {}", times.len());
 
     // Verify the duration parsed via tempo map (2 beats at 120 BPM = 1.0s)
-    let dur = show.cues[0].effects[0]
-        .total_duration()
-        .expect("duration should be set");
+    let dur = show.cues[0].effects[0].total_duration();
     assert!(
         (dur.as_secs_f64() - 1.0).abs() < 0.01,
         "expected duration ~1.0s, got {:?}",
@@ -760,9 +758,7 @@ fn test_static_effect_duration_includes_up_and_down_time() {
     assert_eq!(show.cues.len(), 1, "Should have one cue");
 
     let effect = &show.cues[0].effects[0];
-    let total_duration = effect
-        .total_duration()
-        .expect("effect should have a duration");
+    let total_duration = effect.total_duration();
 
     // Total should be: 0.5s (up_time) + 1.0s (duration) + 0.3s (down_time) = 1.8s
     let expected_duration = Duration::from_secs_f64(1.8);

@@ -19,10 +19,10 @@ fn test_parameter_population() {
     // Test that parameters are properly populated in effect types
     let simple_dsl = r#"show "Parameter Test" {
     @00:00.000
-    front_wash: static color: "blue", dimmer: 60%
+    front_wash: static color: "blue", dimmer: 60%, duration: 5s
     
     @00:05.000
-    back_wash: static color: "red", dimmer: 80%
+    back_wash: static color: "red", dimmer: 80%, duration: 5s
 }"#;
 
     let result = parse_light_shows(simple_dsl);
@@ -59,7 +59,7 @@ fn test_parameter_population() {
     match &first_effect.effect_type {
         EffectType::Static {
             parameters: static_params,
-            duration,
+            ..
         } => {
             // Check that parameters were applied to the effect type
             assert!(static_params.contains_key("red"));
@@ -72,9 +72,6 @@ fn test_parameter_population() {
             assert_eq!(static_params.get("blue"), Some(&1.0)); // Blue color should be 1.0
             assert_eq!(static_params.get("red"), Some(&0.0)); // Red should be 0.0
             assert_eq!(static_params.get("green"), Some(&0.0)); // Green should be 0.0
-
-            // Duration should be None for static effects without duration parameter
-            assert_eq!(*duration, None);
         }
         _ => panic!("Expected static effect type"),
     }
@@ -118,25 +115,25 @@ fn test_t_advanced_parameter_parsing() {
     // Using the exact syntax the grammar expects
     let advanced_dsl = r#"show "Advanced Show" {
     @00:00.000
-    front_wash: static color: "blue", dimmer: 60%, fade: 2s
+    front_wash: static color: "blue", dimmer: 60%, fade: 2s, duration: 5s
     
     @00:05.000
-    back_wash: cycle speed: 1.5, direction: forward
+    back_wash: cycle speed: 1.5, direction: forward, duration: 10s
     
     @00:10.000
     strobe_lights: strobe frequency: 8, intensity: 0.8, duration: 5s
     
     @00:15.000
-    moving_heads: chase loop: pingpong, direction: random, transition: crossfade
+    moving_heads: chase loop: pingpong, direction: random, transition: crossfade, duration: 10s
     
     @00:20.000
     dimmer_test: dimmer start: 0%, end: 100%, duration: 3s, curve: linear
     
     @00:25.000
-    rainbow_effect: rainbow speed: 2.0, direction: forward
+    rainbow_effect: rainbow speed: 2.0, direction: forward, duration: 10s
     
     @00:30.000
-    pulse_lights: pulse frequency: 4, intensity: 0.6, duty: 50%
+    pulse_lights: pulse frequency: 4, intensity: 0.6, duty: 50%, duration: 5s
 }"#;
 
     let result = parse_light_shows(advanced_dsl);
@@ -153,7 +150,7 @@ fn test_simple_advanced_parameters() {
     // Test with just one advanced parameter at a time to isolate issues
     let simple_advanced = r#"show "Simple Advanced" {
     @00:00.000
-    front_wash: static color: "blue", dimmer: 60%, fade: 2s
+    front_wash: static color: "blue", dimmer: 60%, fade: 2s, duration: 5s
 }"#;
 
     let result = parse_light_shows(simple_advanced);
@@ -168,13 +165,13 @@ fn test_custom_color_formats() {
     // Test all three supported color formats
     let custom_colors_dsl = r##"show "Custom Colors Show" {
     @00:00.000
-    front_wash: static color: "#ff0000", dimmer: 60%
+    front_wash: static color: "#ff0000", dimmer: 60%, duration: 5s
     
     @00:05.000
-    back_wash: static color: rgb(0, 255, 0), dimmer: 80%
+    back_wash: static color: rgb(0, 255, 0), dimmer: 80%, duration: 5s
     
     @00:10.000
-    side_wash: static color: "purple", dimmer: 100%
+    side_wash: static color: "purple", dimmer: 100%, duration: 5s
 }"##;
 
     let result = parse_light_shows(custom_colors_dsl);
@@ -235,10 +232,10 @@ fn test_custom_color_formats() {
 fn test_t_user_dsl_syntax() {
     let content = r#"show "Shieldbrother" {
 @00:00.000
-front_wash: static, color: "blue"
+front_wash: static, color: "blue", duration: 5s
 
 @00:05.000
-all_wash: cycle, color: "red", color: "green", color: "blue", speed: 1.5, direction: "forward"
+all_wash: cycle, color: "red", color: "green", color: "blue", speed: 1.5, direction: "forward", duration: 10s
 }"#;
 
     let result = parse_light_shows(content);
@@ -271,6 +268,7 @@ all_wash: cycle, color: "red", color: "green", color: "blue", speed: 1.5, direct
         speed: _,
         direction: _,
         transition: _,
+        ..
     } = &second_cue.effects[0].effect_type
     {
         assert_eq!(colors.len(), 3, "Cycle effect should have 3 colors");

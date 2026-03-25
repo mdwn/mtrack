@@ -20,7 +20,7 @@ fn test_layer_command_parsing() {
     // Test parsing layer commands in a show
     let content = r#"show "Layer Control Test" {
     @00:00.000
-    front_wash: static color: "blue", layer: foreground
+    front_wash: static color: "blue", duration: 5s, layer: foreground
 
     @00:05.000
     release(layer: foreground, time: 2s)
@@ -93,8 +93,8 @@ fn test_clear_all_layers_command() {
     // Test parsing clear() without layer parameter (clears all layers)
     let content = r#"show "Clear All Test" {
     @00:00.000
-    front_wash: static color: "blue", layer: foreground
-    back_wash: static color: "red", layer: background
+    front_wash: static color: "blue", duration: 5s, layer: foreground
+    back_wash: static color: "red", duration: 5s, layer: background
 
     @00:05.000
     clear()
@@ -133,7 +133,7 @@ fn test_t_dsl_parsing_errors() {
     // Test single unnamed show (allowed)
     let single_unnamed = r#"show {
     @00:00.000
-    front_wash: static color: "blue"
+    front_wash: static color: "blue", duration: 5s
 }"#;
     let result = parse_light_shows(single_unnamed);
     assert!(
@@ -151,12 +151,12 @@ fn test_t_dsl_parsing_errors() {
     // Test multiple shows where one is unnamed (should fail)
     let multiple_with_unnamed = r#"show "Named Show" {
     @00:00.000
-    front_wash: static color: "blue"
+    front_wash: static color: "blue", duration: 5s
 }
 
 show {
     @00:05.000
-    back_wash: static color: "red"
+    back_wash: static color: "red", duration: 5s
 }"#;
     let result = parse_light_shows(multiple_with_unnamed);
     assert!(
@@ -167,7 +167,7 @@ show {
     // Test malformed time string
     let malformed_time = r#"show "Test Show" {
     @invalid_time
-    front_wash: static color: "blue"
+    front_wash: static color: "blue", duration: 5s
 }"#;
     let result = parse_light_shows(malformed_time);
     assert!(result.is_err(), "Malformed time should fail");
@@ -200,10 +200,10 @@ fn test_dsl_edge_cases() {
     // Test show with overlapping cues
     let overlapping_cues = r#"show "Overlapping Show" {
     @00:05.000
-    front_wash: static color: "blue", dimmer: 60%
+    front_wash: static color: "blue", duration: 5s, dimmer: 60%
     
     @00:05.000
-    back_wash: static color: "red", dimmer: 80%
+    back_wash: static color: "red", duration: 5s, dimmer: 80%
 }"#;
     let result = parse_light_shows(overlapping_cues);
     assert!(result.is_ok());
@@ -213,8 +213,8 @@ fn test_dsl_edge_cases() {
     // Test show with multiple effects in one cue
     let multiple_effects = r#"show "Multiple Effects" {
     @00:00.000
-    front_wash: static color: "blue", dimmer: 60%
-    back_wash: static color: "red", dimmer: 80%
+    front_wash: static color: "blue", duration: 5s, dimmer: 60%
+    back_wash: static color: "red", duration: 5s, dimmer: 80%
 }"#;
     let result = parse_light_shows(multiple_effects);
     assert!(result.is_ok());
@@ -222,15 +222,15 @@ fn test_dsl_edge_cases() {
     assert_eq!(shows["Multiple Effects"].cues.len(), 1);
     assert_eq!(shows["Multiple Effects"].cues[0].effects.len(), 2);
 
-    // Test show with missing parameters
+    // Test show with missing parameters (duration is now required)
     let missing_params = r#"show "Missing Params" {
     @00:00.000
     front_wash: static
 }"#;
     let result = parse_light_shows(missing_params);
     assert!(
-        result.is_ok(),
-        "Missing parameters should be handled gracefully"
+        result.is_err(),
+        "Static effect without duration should fail"
     );
 }
 
@@ -249,7 +249,7 @@ fn test_dsl_performance_large_file() {
         large_content.push_str(&format!(
             r#"
     @{:02}:{:02}.{:03}
-    fixture_{}: static color: "blue", dimmer: {}%"#,
+    fixture_{}: static color: "blue", duration: 5s, dimmer: {}%"#,
             minutes,
             seconds,
             milliseconds,
@@ -279,7 +279,8 @@ fn test_dsl_performance_large_file() {
 #[test]
 fn test_whitespace_handling() {
     // Test zero whitespace
-    let no_whitespace = r#"show"Test Show"{@00:00.000 front_wash:static color:"blue",dimmer:60%}"#;
+    let no_whitespace =
+        r#"show"Test Show"{@00:00.000 front_wash:static color:"blue",duration:5s,dimmer:60%}"#;
     let result = parse_light_shows(no_whitespace);
     assert!(
         result.is_ok(),
@@ -296,7 +297,7 @@ fn test_whitespace_handling() {
     // Test minimal whitespace (just what's needed)
     let minimal_whitespace = r#"show "Test Show" {
 @00:00.000
-front_wash: static color: "blue", dimmer: 60%
+front_wash: static color: "blue", duration: 5s, dimmer: 60%
 }"#;
     let result = parse_light_shows(minimal_whitespace);
     assert!(
@@ -314,7 +315,7 @@ front_wash: static color: "blue", dimmer: 60%
     // Test moderate whitespace
     let moderate_whitespace = r#"show "Test Show" {
     @00:00.000
-    front_wash: static color: "blue", dimmer: 60%
+    front_wash: static color: "blue", duration: 5s, dimmer: 60%
 }"#;
     let result = parse_light_shows(moderate_whitespace);
     assert!(
@@ -332,10 +333,11 @@ front_wash: static color: "blue", dimmer: 60%
     // Test excessive whitespace (this might fail due to grammar limitations)
     let excessive_whitespace = r#"
             show    "Test Show"    {
-        @00:00.000    
-        front_wash    :    static    
-        color    :    "blue"    ,    
-        dimmer    :    60%    
+        @00:00.000
+        front_wash    :    static
+        color    :    "blue"    ,
+        duration    :    5s    ,
+        dimmer    :    60%
     }
     "#;
     let result = parse_light_shows(excessive_whitespace);
@@ -349,10 +351,11 @@ front_wash: static color: "blue", dimmer: 60%
 
     // Test mixed whitespace (tabs, spaces, newlines)
     let mixed_whitespace = r#"show	"Test Show"	{
-	@00:00.000	
-	front_wash	:	static	
-	color	:	"blue"	,	
-	dimmer	:	60%	
+	@00:00.000
+	front_wash	:	static
+	color	:	"blue"	,
+	duration	:	5s	,
+	dimmer	:	60%
 }"#;
     let result = parse_light_shows(mixed_whitespace);
     assert!(
@@ -372,7 +375,7 @@ front_wash: static color: "blue", dimmer: 60%
 fn test_extreme_whitespace_handling() {
     // Test with very long whitespace sequences
     let long_whitespace = format!(
-        r#"show "Test Show" {{{}@00:00.000{}front_wash: static color: "blue", dimmer: 60%{}}}"#,
+        r#"show "Test Show" {{{}@00:00.000{}front_wash: static color: "blue", duration: 5s, dimmer: 60%{}}}"#,
         " ".repeat(50),
         " ".repeat(50),
         " ".repeat(50)
@@ -386,8 +389,8 @@ fn test_extreme_whitespace_handling() {
 
     // Test with mixed whitespace characters
     let mixed_whitespace = r#"show	"Test Show"	{
-		@00:00.000		
-		front_wash:	static	color:	"blue",	dimmer:	60%	
+		@00:00.000
+		front_wash:	static	color:	"blue",	duration:	5s,	dimmer:	60%
 	}"#;
     let result = parse_light_shows(mixed_whitespace);
     assert!(
@@ -405,6 +408,8 @@ front_wash:
 static
 color:
 "blue",
+duration:
+5s,
 dimmer:
 60%
 }"#;
@@ -421,37 +426,37 @@ fn test_comprehensive_dsl_parsing() {
     // Test a comprehensive DSL file that uses various parameter types
     let comprehensive_dsl = r#"show "Comprehensive Light Show" {
     @00:00.000
-    front_wash: static color: "blue", dimmer: 60%
+    front_wash: static color: "blue", duration: 5s, dimmer: 60%
     
     @00:05.000
-    back_wash: static color: "red", dimmer: 80%
+    back_wash: static color: "red", duration: 5s, dimmer: 80%
     
     @00:10.000
-    strobe_lights: static color: "green", dimmer: 100%
+    strobe_lights: static color: "green", duration: 5s, dimmer: 100%
     
     @00:15.000
-    moving_heads: static color: "white", dimmer: 50%
+    moving_heads: static color: "white", duration: 5s, dimmer: 50%
     
     @00:20.000
-    dimmer_test: static color: "yellow", dimmer: 75%
+    dimmer_test: static color: "yellow", duration: 5s, dimmer: 75%
     
     @00:25.000
-    rainbow_effect: static color: "cyan", dimmer: 90%
+    rainbow_effect: static color: "cyan", duration: 5s, dimmer: 90%
     
     @00:30.000
-    pulse_lights: static color: "magenta", dimmer: 25%
+    pulse_lights: static color: "magenta", duration: 5s, dimmer: 25%
     
     @00:35.000
-    color_cycle: static color: "orange", dimmer: 85%
+    color_cycle: static color: "orange", duration: 5s, dimmer: 85%
     
     @00:40.000
-    complex_chase: static color: "purple", dimmer: 95%
+    complex_chase: static color: "purple", duration: 5s, dimmer: 95%
     
     @00:45.000
-    strobe_variation: static color: "black", dimmer: 0%
+    strobe_variation: static color: "black", duration: 5s, dimmer: 0%
     
     @00:50.000
-    down_time: static color: "white", dimmer: 100%
+    down_time: static color: "white", duration: 5s, dimmer: 100%
 }"#;
 
     let result = parse_light_shows(comprehensive_dsl);

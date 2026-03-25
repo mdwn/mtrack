@@ -30,17 +30,17 @@ fn test_sequence_cue_with_reset_measures_command() {
 
 sequence "with_reset" {
     @1/1
-    all_wash: static, color: "red"
+    all_wash: static, color: "red", duration: 5s
 
     offset 4 measures
 
     @1/1
-    all_wash: static, color: "green"
+    all_wash: static, color: "green", duration: 5s
 
     reset_measures
 
     @1/1
-    all_wash: static, color: "blue"
+    all_wash: static, color: "blue", duration: 5s
 }
 
 show "Test" {
@@ -95,7 +95,7 @@ fn test_sequence_cue_with_layer_command() {
     let content = r#"
 sequence "with_layers" {
     @0.000
-    all_wash: static, color: "red", layer: foreground
+    all_wash: static, color: "red", layer: foreground, duration: 5s
 
     @2.000
     clear(layer: foreground)
@@ -149,7 +149,7 @@ fn test_sequence_cue_with_stop_sequence_command() {
     let content = r#"
 sequence "looper" {
     @0.000
-    all_wash: static, color: "red"
+    all_wash: static, color: "red", duration: 5s
 }
 
 sequence "main_seq" {
@@ -158,7 +158,7 @@ sequence "main_seq" {
 
     @5.000
     stop sequence "looper"
-    all_wash: static, color: "blue"
+    all_wash: static, color: "blue", duration: 5s
 }
 
 show "Test" {
@@ -199,7 +199,7 @@ fn test_measure_timing_without_tempo_in_show() {
     let content = r#"
 show "No Tempo" {
     @1/1
-    front_wash: static, color: "red"
+    front_wash: static, color: "red", duration: 5s
 }
 "#;
 
@@ -222,7 +222,7 @@ fn test_measure_timing_without_tempo_in_sequence() {
     let content = r#"
 sequence "no_tempo_seq" {
     @1/1
-    front_wash: static, color: "red"
+    front_wash: static, color: "red", duration: 5s
 }
 
 show "Test" {
@@ -258,7 +258,7 @@ fn test_circular_reference_three_sequences() {
     let content = r#"
 sequence "A" {
     @0.000
-    front_wash: static, color: "red"
+    front_wash: static, color: "red", duration: 5s
     @1.000
     sequence "B"
 }
@@ -299,7 +299,7 @@ fn test_direct_self_reference() {
     let content = r#"
 sequence "self_ref" {
     @0.000
-    front_wash: static, color: "red"
+    front_wash: static, color: "red", duration: 5s
     @1.000
     sequence "self_ref"
 }
@@ -331,7 +331,7 @@ fn test_sequence_loop_param_zero() {
     let content = r#"
 sequence "seq" {
     @0.000
-    front_wash: static, color: "red"
+    front_wash: static, color: "red", duration: 5s
 }
 
 show "Test" {
@@ -357,10 +357,10 @@ fn test_sequence_loop_param_valid_count() {
     let content = r#"
 sequence "seq" {
     @0.000
-    front_wash: static, color: "red"
+    front_wash: static, color: "red", duration: 5s
 
     @1.000
-    front_wash: static, color: "blue"
+    front_wash: static, color: "blue", duration: 5s
 }
 
 show "Test" {
@@ -395,12 +395,12 @@ fn test_stop_sequences_in_looped_sequence() {
     let content = r#"
 sequence "bg" {
     @0.000
-    back_wash: static, color: "blue"
+    back_wash: static, color: "blue", duration: 5s
 }
 
 sequence "fg" {
     @0.000
-    front_wash: static, color: "red"
+    front_wash: static, color: "red", duration: 5s
 }
 
 show "Test" {
@@ -446,15 +446,15 @@ fn test_effects_with_sequence_reference_merged() {
     let content = r#"
 sequence "inner" {
     @0.000
-    front_wash: static, color: "blue"
+    front_wash: static, color: "blue", duration: 5s
 
     @1.000
-    front_wash: static, color: "green"
+    front_wash: static, color: "green", duration: 5s
 }
 
 show "Test" {
     @2.000
-    back_wash: static, color: "red"
+    back_wash: static, color: "red", duration: 5s
     sequence "inner"
 }
 "#;
@@ -486,18 +486,18 @@ show "Test" {
 
 #[test]
 fn test_inline_loop_with_perpetual_effects_multi_cue() {
-    // When all effects in a loop are perpetual (no duration), the loop
-    // duration should be calculated from the relative time between
-    // first and last cue. Two perpetual-effect cues 1.0s apart,
-    // repeats 3 => cues at 0, 1, 1, 2, 2, 3.
+    // With explicit durations, the loop duration is calculated from the
+    // max completion time of effects. Two 5s-duration effects at 0.0s and 1.0s:
+    // completion = max(0+5, 1+5) = 6s. Each iteration is 6s apart.
+    // repeats 3 => 6 cues at: 0, 1, 6, 7, 12, 13.
     let content = r#"show "Perpetual Loop" {
     tempo { bpm: 120 }
     @0.0
     loop {
         @0.0
-        effect: static, color: "red"
+        effect: static, color: "red", duration: 5s
         @1.0
-        effect: static, color: "blue"
+        effect: static, color: "blue", duration: 5s
     }, repeats: 3
 }"#;
 
@@ -511,12 +511,12 @@ fn test_inline_loop_with_perpetual_effects_multi_cue() {
     let shows = result.unwrap();
     let show = &shows["Perpetual Loop"];
 
-    // Loop duration = 1.0s (time from first cue 0.0 to last cue 1.0)
-    // 3 repeats => 6 cues at: 0,1, 1,2, 2,3
-    assert_eq!(show.cues.len(), 6, "Expected 6 cues for perpetual loop x3");
+    // Loop duration = 6.0s (max(0+5, 1+5) = 6s)
+    // 3 repeats => 6 cues at: 0, 1, 6, 7, 12, 13
+    assert_eq!(show.cues.len(), 6, "Expected 6 cues for loop x3");
 
     let times: Vec<f64> = show.cues.iter().map(|c| c.time.as_secs_f64()).collect();
-    let expected = [0.0, 1.0, 1.0, 2.0, 2.0, 3.0];
+    let expected = [0.0, 1.0, 6.0, 7.0, 12.0, 13.0];
     for (i, &exp) in expected.iter().enumerate() {
         assert!(
             (times[i] - exp).abs() < 0.01,
@@ -530,35 +530,38 @@ fn test_inline_loop_with_perpetual_effects_multi_cue() {
 
 #[test]
 fn test_inline_loop_single_perpetual_cue() {
-    // A loop with a single perpetual effect should produce duration ZERO,
-    // so all repetitions collapse to the same time.
+    // A loop with a single 5s-duration effect: loop duration = 5s.
+    // 3 repeats => cues at 0, 5, 10.
     let content = r#"show "Single Perpetual" {
     tempo { bpm: 120 }
     @0.0
     loop {
         @0.0
-        effect: static, color: "red"
+        effect: static, color: "red", duration: 5s
     }, repeats: 3
 }"#;
 
     let result = parse_light_shows(content);
     assert!(
         result.is_ok(),
-        "Should parse single perpetual loop: {:?}",
+        "Should parse single loop: {:?}",
         result.err()
     );
 
     let shows = result.unwrap();
     let show = &shows["Single Perpetual"];
 
-    // Duration is 0 for single-cue perpetual loop, so all 3 iterations
-    // should produce cues at 0.0.
+    // Duration is 5s, so 3 iterations produce cues at 0, 5, 10.
     assert_eq!(show.cues.len(), 3, "Expected 3 cues");
 
-    for cue in &show.cues {
+    let expected = [0.0, 5.0, 10.0];
+    for (i, &exp) in expected.iter().enumerate() {
         assert!(
-            cue.time.as_secs_f64().abs() < 0.01,
-            "All cues should be at 0.0s"
+            (show.cues[i].time.as_secs_f64() - exp).abs() < 0.01,
+            "Cue {} should be at {}s, got {}s",
+            i,
+            exp,
+            show.cues[i].time.as_secs_f64()
         );
     }
 }
@@ -574,12 +577,12 @@ fn test_cue_with_layer_command_and_sequence_reference() {
     let content = r#"
 sequence "seq" {
     @0.000
-    front_wash: static, color: "blue"
+    front_wash: static, color: "blue", duration: 5s
 }
 
 show "Test" {
     @0.000
-    front_wash: static, color: "red", layer: background
+    front_wash: static, color: "red", layer: background, duration: 5s
 
     @5.000
     clear(layer: foreground)
@@ -647,17 +650,17 @@ fn test_cue_with_multiple_layer_commands_and_effects() {
     let content = r#"
 sequence "seq" {
     @0.000
-    front_wash: static, color: "blue"
+    front_wash: static, color: "blue", duration: 5s
 }
 
 show "Test" {
     @0.000
-    front_wash: static, color: "red", layer: background
+    front_wash: static, color: "red", layer: background, duration: 5s
 
     @5.000
     clear(layer: foreground)
     master(layer: midground, intensity: 75%)
-    back_wash: static, color: "green"
+    back_wash: static, color: "green", duration: 5s
     sequence "seq"
 }
 "#;
@@ -707,7 +710,7 @@ fn test_stop_sequences_without_sequence_ref_effects() {
     let content = r#"
 sequence "bg" {
     @0.000
-    back_wash: static, color: "blue"
+    back_wash: static, color: "blue", duration: 5s
 }
 
 show "Test" {
@@ -718,7 +721,7 @@ show "Test" {
     stop sequence "bg"
 
     @10.000
-    front_wash: static, color: "red"
+    front_wash: static, color: "red", duration: 5s
 }
 "#;
 
@@ -745,7 +748,7 @@ fn test_sequence_cue_with_layer_and_stop_combined() {
     let content = r#"
 sequence "inner" {
     @0.000
-    front_wash: static, color: "red"
+    front_wash: static, color: "red", duration: 5s
 }
 
 sequence "outer" {
@@ -755,7 +758,7 @@ sequence "outer" {
     @5.000
     stop sequence "inner"
     clear(layer: foreground)
-    back_wash: static, color: "green"
+    back_wash: static, color: "green", duration: 5s
 }
 
 show "Test" {
@@ -774,20 +777,30 @@ show "Test" {
     let shows = result.unwrap();
     let show = shows.get("Test").unwrap();
 
-    // Find the cue at 5.0s with the stop and layer command
-    let combined_cue = show.cues.iter().find(|c| {
-        (c.time.as_secs_f64() - 5.0).abs() < 0.01 && c.stop_sequences.contains(&"inner".to_string())
+    // Find any cue at 5.0s with the stop_sequences containing "inner"
+    let stop_cues: Vec<_> = show
+        .cues
+        .iter()
+        .filter(|c| {
+            (c.time.as_secs_f64() - 5.0).abs() < 0.01
+                && c.stop_sequences.contains(&"inner".to_string())
+        })
+        .collect();
+    assert!(
+        !stop_cues.is_empty(),
+        "Should have at least one cue at 5.0s that stops 'inner'"
+    );
+
+    // Find a cue at 5.0s with the clear layer command (may be the same or different cue)
+    let clear_cue = show.cues.iter().find(|c| {
+        (c.time.as_secs_f64() - 5.0).abs() < 0.01
+            && c.layer_commands
+                .iter()
+                .any(|lc| lc.command_type == LayerCommandType::Clear)
     });
     assert!(
-        combined_cue.is_some(),
-        "Should have a combined stop+layer cue at 5.0s"
-    );
-    let cue = combined_cue.unwrap();
-    assert!(
-        cue.layer_commands
-            .iter()
-            .any(|lc| lc.command_type == LayerCommandType::Clear),
-        "Combined cue should have clear layer command"
+        clear_cue.is_some(),
+        "Should have a cue at 5.0s with clear layer command"
     );
 }
 
@@ -846,10 +859,10 @@ fn test_sequence_loop_once_explicit() {
     let content = r#"
 sequence "seq" {
     @0.000
-    front_wash: static, color: "red"
+    front_wash: static, color: "red", duration: 5s
 
     @1.000
-    front_wash: static, color: "blue"
+    front_wash: static, color: "blue", duration: 5s
 }
 
 show "Test" {
@@ -883,14 +896,14 @@ fn test_forward_sequence_reference() {
     let content = r#"
 sequence "B" {
     @0.000
-    front_wash: static, color: "green"
+    front_wash: static, color: "green", duration: 5s
     @1.000
     sequence "A"
 }
 
 sequence "A" {
     @0.000
-    front_wash: static, color: "red"
+    front_wash: static, color: "red", duration: 5s
 }
 
 show "Test" {
@@ -928,10 +941,10 @@ fn test_looped_sequence_stop_sequences_per_iteration() {
     let content = r#"
 sequence "looped" {
     @0.000
-    front_wash: static, color: "red"
+    front_wash: static, color: "red", duration: 5s
 
     @1.000
-    front_wash: static, color: "blue"
+    front_wash: static, color: "blue", duration: 5s
 }
 
 show "Test" {
@@ -992,10 +1005,10 @@ sequence "slow_seq" {
     }
 
     @1/1
-    front_wash: static, color: "red"
+    front_wash: static, color: "red", duration: 5s
 
     @2/1
-    front_wash: static, color: "blue"
+    front_wash: static, color: "blue", duration: 5s
 }
 
 show "Test" {
@@ -1081,12 +1094,12 @@ fn test_show_cue_stop_and_start_sequence_at_same_time() {
     let content = r#"
 sequence "old" {
     @0.000
-    front_wash: static, color: "red"
+    front_wash: static, color: "red", duration: 5s
 }
 
 sequence "new" {
     @0.000
-    front_wash: static, color: "blue"
+    front_wash: static, color: "blue", duration: 5s
 }
 
 show "Test" {
@@ -1137,12 +1150,12 @@ fn test_multiple_unnamed_shows_error() {
     let content = r#"
 show {
     @0.000
-    front_wash: static, color: "red"
+    front_wash: static, color: "red", duration: 5s
 }
 
 show {
     @0.000
-    front_wash: static, color: "blue"
+    front_wash: static, color: "blue", duration: 5s
 }
 "#;
 
@@ -1168,7 +1181,7 @@ fn test_single_unnamed_show_gets_default_name() {
     let content = r#"
 show {
     @0.000
-    front_wash: static, color: "red"
+    front_wash: static, color: "red", duration: 5s
 }
 "#;
 
@@ -1196,7 +1209,7 @@ fn test_layer_command_master_with_speed_percent() {
     let content = r#"
 show "Test" {
     @0.000
-    front_wash: static, color: "red", layer: background
+    front_wash: static, color: "red", layer: background, duration: 5s
 
     @1.000
     master(layer: background, speed: 150%)
@@ -1239,7 +1252,7 @@ fn test_layer_command_master_with_intensity_percent() {
     let content = r#"
 show "Test" {
     @0.000
-    front_wash: static, color: "red", layer: foreground
+    front_wash: static, color: "red", layer: foreground, duration: 5s
 
     @1.000
     master(layer: foreground, intensity: 50%)
@@ -1282,7 +1295,7 @@ fn test_layer_command_release_with_time() {
     let content = r#"
 show "Test" {
     @0.000
-    front_wash: static, color: "red", layer: background
+    front_wash: static, color: "red", layer: background, duration: 5s
 
     @5.000
     release(layer: background, time: 2s)
@@ -1333,12 +1346,12 @@ fn test_offset_command_without_tempo_in_show() {
     let content = r#"
 show "Test" {
     @0.000
-    front_wash: static, color: "red"
+    front_wash: static, color: "red", duration: 5s
 
     offset 4 measures
 
     @0.000
-    front_wash: static, color: "blue"
+    front_wash: static, color: "blue", duration: 5s
 }
 "#;
 
@@ -1365,7 +1378,7 @@ fn test_sequence_loop_pingpong_error() {
     let content = r#"
 sequence "seq" {
     @0.000
-    front_wash: static, color: "red"
+    front_wash: static, color: "red", duration: 5s
 }
 
 show "Test" {
@@ -1393,7 +1406,7 @@ fn test_sequence_loop_random_error() {
     let content = r#"
 sequence "seq" {
     @0.000
-    front_wash: static, color: "red"
+    front_wash: static, color: "red", duration: 5s
 }
 
 show "Test" {
@@ -1427,7 +1440,7 @@ fn test_sequence_loop_param_invalid_value() {
     let content = r#"
 sequence "seq" {
     @0.000
-    front_wash: static, color: "red"
+    front_wash: static, color: "red", duration: 5s
 }
 
 show "Test" {
@@ -1479,7 +1492,7 @@ fn test_layer_command_master_with_intensity_and_speed() {
     let content = r#"
 show "Test" {
     @0.000
-    front_wash: static, color: "red", layer: foreground
+    front_wash: static, color: "red", layer: foreground, duration: 5s
 
     @1.000
     master(layer: foreground, intensity: 50%, speed: 200%)
@@ -1516,7 +1529,7 @@ fn test_layer_command_freeze_and_unfreeze() {
     let content = r#"
 show "Test" {
     @0.000
-    front_wash: cycle, color: "red", color: "blue", layer: background
+    front_wash: cycle, color: "red", color: "blue", layer: background, duration: 10s
 
     @1.000
     freeze(layer: background)
@@ -1562,7 +1575,7 @@ fn test_layer_command_clear_with_specific_layer() {
     let content = r#"
 show "Test" {
     @0.000
-    front_wash: static, color: "red", layer: foreground
+    front_wash: static, color: "red", layer: foreground, duration: 5s
 
     @1.000
     clear(layer: foreground)
@@ -1598,7 +1611,7 @@ fn test_layer_command_master_numeric_intensity() {
     let content = r#"
 show "Test" {
     @0.000
-    front_wash: static, color: "red", layer: foreground
+    front_wash: static, color: "red", layer: foreground, duration: 5s
 
     @1.000
     master(layer: foreground, intensity: 0.75)
@@ -1634,10 +1647,10 @@ fn test_sequence_loop_once() {
     let content = r#"
 sequence "my_seq" {
     @0.0
-    wash: static, color: "red"
+    wash: static, color: "red", duration: 5s
 
     @1.0
-    wash: static, color: "blue"
+    wash: static, color: "blue", duration: 5s
 }
 
 show "Test" {
@@ -1659,10 +1672,10 @@ fn test_sequence_loop_numeric_count() {
     let content = r#"
 sequence "my_seq" {
     @0.0
-    wash: static, color: "red"
+    wash: static, color: "red", duration: 5s
 
     @1.0
-    wash: static, color: "blue"
+    wash: static, color: "blue", duration: 5s
 }
 
 show "Test" {
@@ -1688,13 +1701,13 @@ fn test_show_with_seconds_and_minutes_format() {
     let content = r#"
 show "Mixed Times" {
     @0.0
-    wash: static, color: "red"
+    wash: static, color: "red", duration: 5s
 
     @0:01.500
-    wash: static, color: "green"
+    wash: static, color: "green", duration: 5s
 
     @2.5s
-    wash: static, color: "blue"
+    wash: static, color: "blue", duration: 5s
 }
 "#;
 
@@ -1766,7 +1779,7 @@ fn test_rainbow_effect_via_dsl() {
     let content = r#"
 show "Rainbow" {
     @0.0
-    wash: rainbow, speed: 2.0, saturation: 80%, brightness: 60%
+    wash: rainbow, speed: 2.0, saturation: 80%, brightness: 60%, duration: 10s
 }
 "#;
 
@@ -1783,7 +1796,7 @@ fn test_chase_effect_via_dsl() {
     let content = r#"
 show "Chase" {
     @0.0
-    wash: chase, pattern: snake, direction: clockwise, speed: 3.0, transition: fade
+    wash: chase, pattern: snake, direction: clockwise, speed: 3.0, transition: fade, duration: 10s
 }
 "#;
 
@@ -1840,9 +1853,9 @@ show "Loop" {
     @0.0
     loop {
         @0.0
-        wash: static, color: "red"
+        wash: static, color: "red", duration: 5s
         @0.5
-        wash: static, color: "blue"
+        wash: static, color: "blue", duration: 5s
     }, repeats: 3
 }
 "#;
@@ -1873,10 +1886,10 @@ fn test_effect_with_blend_mode() {
     let content = r#"
 show "Blend" {
     @0.0
-    wash: static, color: "red", layer: background
+    wash: static, color: "red", layer: background, duration: 5s
 
     @0.0
-    wash: static, color: "blue", layer: foreground, blend: add
+    wash: static, color: "blue", layer: foreground, blend: add, duration: 5s
 }
 "#;
 
@@ -1897,9 +1910,9 @@ fn test_stop_sequence_in_show() {
     let content = r#"
 sequence "running" {
     @0.0
-    wash: static, color: "red"
+    wash: static, color: "red", duration: 5s
     @1.0
-    wash: static, color: "blue"
+    wash: static, color: "blue", duration: 5s
 }
 
 show "Test" {
@@ -1934,9 +1947,9 @@ tempo {
 
 sequence "beat_seq" {
     @1/1
-    wash: static, color: "red"
+    wash: static, color: "red", duration: 5s
     @2/1
-    wash: static, color: "blue"
+    wash: static, color: "blue", duration: 5s
 }
 
 show "GlobalTempo" {

@@ -128,13 +128,12 @@ pub(crate) fn validate_effect(
     }
 
     // Validate timing
-    if let Some(total_duration) = effect.total_duration() {
-        if total_duration.as_secs_f64() < 0.0 {
-            return Err(EffectError::Timing(format!(
-                "Effect total duration must be non-negative, got {}s",
-                total_duration.as_secs_f64()
-            )));
-        }
+    let total_duration = effect.total_duration();
+    if total_duration.as_secs_f64() < 0.0 {
+        return Err(EffectError::Timing(format!(
+            "Effect total duration must be non-negative, got {}s",
+            total_duration.as_secs_f64()
+        )));
     }
 
     Ok(())
@@ -297,7 +296,7 @@ mod tests {
         let effect = make_effect_instance(
             EffectType::Static {
                 parameters: HashMap::new(),
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             vec!["nonexistent"],
         );
@@ -310,7 +309,7 @@ mod tests {
         let effect = make_effect_instance(
             EffectType::Static {
                 parameters: HashMap::new(),
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             vec!["par1"],
         );
@@ -327,7 +326,7 @@ mod tests {
         let effect = make_effect_instance(
             EffectType::Static {
                 parameters: params,
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             vec!["par1"],
         );
@@ -342,7 +341,7 @@ mod tests {
         let effect = make_effect_instance(
             EffectType::Static {
                 parameters: params,
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             vec!["par1"],
         );
@@ -355,7 +354,7 @@ mod tests {
         let effect = make_effect_instance(
             EffectType::Strobe {
                 frequency: TempoAwareFrequency::Fixed(-1.0),
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             vec!["s1"],
         );
@@ -370,7 +369,7 @@ mod tests {
                 base_level: 0.0,
                 pulse_amplitude: 1.0,
                 frequency: TempoAwareFrequency::Fixed(0.0),
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             vec!["par1"],
         );
@@ -388,6 +387,7 @@ mod tests {
                 speed: TempoAwareSpeed::Fixed(1.0),
                 direction: CycleDirection::Forward,
                 transition: CycleTransition::Fade,
+                duration: Duration::from_secs(10),
             },
             vec!["d1"],
         );
@@ -403,6 +403,7 @@ mod tests {
                 speed: TempoAwareSpeed::Fixed(1.0),
                 direction: CycleDirection::Forward,
                 transition: CycleTransition::Fade,
+                duration: Duration::from_secs(10),
             },
             vec!["par1"],
         );
@@ -417,6 +418,7 @@ mod tests {
                 speed: TempoAwareSpeed::Fixed(1.0),
                 saturation: 1.0,
                 brightness: 1.0,
+                duration: Duration::from_secs(10),
             },
             vec!["d1"],
         );
@@ -432,6 +434,7 @@ mod tests {
                 speed: TempoAwareSpeed::Fixed(1.0),
                 direction: ChaseDirection::LeftToRight,
                 transition: CycleTransition::Snap,
+                duration: Duration::from_secs(10),
             },
             vec!["par1"],
         );
@@ -447,6 +450,7 @@ mod tests {
                 speed: TempoAwareSpeed::Fixed(1.0),
                 direction: ChaseDirection::LeftToRight,
                 transition: CycleTransition::Snap,
+                duration: Duration::from_secs(10),
             },
             vec!["d1"],
         );
@@ -459,7 +463,7 @@ mod tests {
         let effect = make_effect_instance(
             EffectType::Strobe {
                 frequency: TempoAwareFrequency::Fixed(10.0),
-                duration: Some(Duration::from_secs(1)),
+                duration: Duration::from_secs(1),
             },
             vec!["d1"],
         );
@@ -472,7 +476,7 @@ mod tests {
         let effect = make_effect_instance(
             EffectType::Static {
                 parameters: HashMap::new(),
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             vec!["d1"],
         );
@@ -489,7 +493,7 @@ mod tests {
         let effect = make_effect_instance(
             EffectType::Strobe {
                 frequency: TempoAwareFrequency::Fixed(10.0),
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             vec!["generic"],
         );
@@ -512,7 +516,7 @@ mod tests {
         let effect = make_effect_instance(
             EffectType::Strobe {
                 frequency: TempoAwareFrequency::Fixed(10.0),
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             vec!["par1"],
         );
@@ -525,7 +529,7 @@ mod tests {
         let effect = make_effect_instance(
             EffectType::Strobe {
                 frequency: TempoAwareFrequency::Fixed(10.0),
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             vec!["s1"],
         );
@@ -545,6 +549,7 @@ mod tests {
                 speed: TempoAwareSpeed::Fixed(1.0),
                 direction: ChaseDirection::LeftToRight,
                 transition: CycleTransition::Snap,
+                duration: Duration::from_secs(10),
             },
             vec!["generic"],
         );
@@ -571,6 +576,7 @@ mod tests {
                 speed: TempoAwareSpeed::Fixed(1.0),
                 saturation: 1.0,
                 brightness: 1.0,
+                duration: Duration::from_secs(10),
             },
             vec!["par1"],
         );
@@ -585,7 +591,7 @@ mod tests {
         let effect = make_effect_instance(
             EffectType::Strobe {
                 frequency: TempoAwareFrequency::Fixed(0.0),
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             vec!["s1"],
         );
@@ -601,7 +607,7 @@ mod tests {
         let effect = make_effect_instance(
             EffectType::Strobe {
                 frequency: TempoAwareFrequency::Beats(2.0),
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             vec!["s1"],
         );
@@ -619,7 +625,7 @@ mod tests {
                 base_level: 0.5,
                 pulse_amplitude: 0.5,
                 frequency: TempoAwareFrequency::Beats(1.0),
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             vec!["par1"],
         );
@@ -637,7 +643,7 @@ mod tests {
         let effect = make_effect_instance(
             EffectType::Static {
                 parameters: HashMap::new(),
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             vec!["not_in_registry"],
         );
