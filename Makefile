@@ -15,9 +15,17 @@ ROOT_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 SVELTE_DIR := $(ROOT_DIR)/src/webui/svelte
 DOCS_DIR := $(ROOT_DIR)/docs
 
-.PHONY: all build gen-proto build-ui build-rust test test-ui test-systemd lint lint-ui lint-rust fmt fmt-ui fmt-rust check clean dev-ui docs docs-serve docs-clean
+.PHONY: all setup setup-dev build gen-proto build-ui build-rust test test-ui test-systemd lint lint-ui lint-rust fmt fmt-ui fmt-rust check clean dev-ui docs docs-serve docs-clean
 
 all: build
+
+## Install system build dependencies
+setup:
+	./setup.sh
+
+## Install system build + development dependencies
+setup-dev:
+	./setup.sh --dev
 
 ## Build everything
 build: build-ui build-rust

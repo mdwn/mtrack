@@ -17,21 +17,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v6
-    - uses: jetify-com/devbox-install-action@v0.14.0
-      with:
-        enable-cache: 'true'
+    - name: Install system dependencies
+      run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev pkg-config libssl-dev protobuf-compiler
+    - uses: dtolnay/rust-toolchain@stable
     - uses: Swatinem/rust-cache@v2
       with:
         shared-key: "cargo"
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '22'
     - uses: actions/cache@v5
       with:
         path: src/webui/svelte/node_modules
         key: node-modules-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
         restore-keys: node-modules-${{ runner.os }}-
     - name: Build frontend
-      run: devbox run -- bash -c 'cd src/webui/svelte && npm ci && buf generate && npm run build'
+      run: cd src/webui/svelte && npm ci && npx @bufbuild/buf generate && npm run build
     - name: Build mtrack
-      run: devbox run -- cargo build --all-targets --all-features
+      run: cargo build --all-targets --all-features
     - name: Check if Cargo.lock is up to date
       run: |
         if git diff --exit-code Cargo.lock; then
@@ -47,21 +50,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v6
-    - uses: jetify-com/devbox-install-action@v0.14.0
+    - name: Install system dependencies
+      run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev pkg-config libssl-dev protobuf-compiler
+    - uses: dtolnay/rust-toolchain@stable
       with:
-        enable-cache: 'true'
+        components: clippy
     - uses: Swatinem/rust-cache@v2
       with:
         shared-key: "cargo"
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '22'
     - uses: actions/cache@v5
       with:
         path: src/webui/svelte/node_modules
         key: node-modules-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
         restore-keys: node-modules-${{ runner.os }}-
     - name: Build frontend
-      run: devbox run -- bash -c 'cd src/webui/svelte && npm ci && buf generate && npm run build'
+      run: cd src/webui/svelte && npm ci && npx @bufbuild/buf generate && npm run build
     - name: Run clippy
-      run: devbox run -- cargo clippy --all --all-targets --all-features
+      run: cargo clippy --all --all-targets --all-features
 
   # Make sure the code is properly formatted.
   rustfmt-check:
@@ -69,11 +77,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v6
-    - uses: jetify-com/devbox-install-action@v0.14.0
+    - uses: dtolnay/rust-toolchain@stable
       with:
-        enable-cache: 'true'
+        components: rustfmt
     - name: Run rustfmt
-      run: devbox run -- cargo fmt --all -- --check
+      run: cargo fmt --all -- --check
 
   # Make sure the tests pass.
   test:
@@ -81,21 +89,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v6
-    - uses: jetify-com/devbox-install-action@v0.14.0
-      with:
-        enable-cache: 'true'
+    - name: Install system dependencies
+      run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev pkg-config libssl-dev protobuf-compiler
+    - uses: dtolnay/rust-toolchain@stable
     - uses: Swatinem/rust-cache@v2
       with:
         shared-key: "cargo-tarpaulin"
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '22'
     - uses: actions/cache@v5
       with:
         path: src/webui/svelte/node_modules
         key: node-modules-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
         restore-keys: node-modules-${{ runner.os }}-
     - name: Build frontend
-      run: devbox run -- bash -c 'cd src/webui/svelte && npm ci && buf generate && npm run build'
+      run: cd src/webui/svelte && npm ci && npx @bufbuild/buf generate && npm run build
+    - uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-tarpaulin
     - name: Test mtrack
-      run: devbox run -- cargo tarpaulin --skip-clean --all-features --timeout 120 --out xml
+      run: cargo tarpaulin --skip-clean --all-features --timeout 120 --out xml
     - name: Upload coverage reports to Codecov
       uses: codecov/codecov-action@v5
       with:
@@ -108,22 +122,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v6
-    - uses: jetify-com/devbox-install-action@v0.14.0
+    - uses: actions/setup-node@v4
       with:
-        enable-cache: 'true'
+        node-version: '22'
     - uses: actions/cache@v5
       with:
         path: src/webui/svelte/node_modules
         key: node-modules-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
         restore-keys: node-modules-${{ runner.os }}-
     - name: Install and generate
-      run: devbox run -- bash -c 'cd src/webui/svelte && npm ci && buf generate'
+      run: cd src/webui/svelte && npm ci && npx @bufbuild/buf generate
     - name: Lint
-      run: devbox run -- bash -c 'cd src/webui/svelte && npm run lint'
+      run: cd src/webui/svelte && npm run lint
     - name: Format check
-      run: devbox run -- bash -c 'cd src/webui/svelte && npm run format:check'
+      run: cd src/webui/svelte && npm run format:check
     - name: Type check
-      run: devbox run -- bash -c 'cd src/webui/svelte && npm run check'
+      run: cd src/webui/svelte && npm run check
 
   # Run Playwright E2E tests against mock backend.
   playwright:
@@ -131,22 +145,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v6
-    - uses: jetify-com/devbox-install-action@v0.14.0
+    - uses: actions/setup-node@v4
       with:
-        enable-cache: 'true'
+        node-version: '22'
     - uses: actions/cache@v5
       with:
         path: src/webui/svelte/node_modules
         key: node-modules-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
         restore-keys: node-modules-${{ runner.os }}-
     - name: Install and generate
-      run: devbox run -- bash -c 'cd src/webui/svelte && npm ci && buf generate'
+      run: cd src/webui/svelte && npm ci && npx @bufbuild/buf generate
     - name: Install Playwright browsers
-      run: devbox run -- bash -c 'cd src/webui/svelte && npx playwright install chromium'
+      run: cd src/webui/svelte && npx playwright install chromium
     - name: Install Playwright system deps
       run: cd src/webui/svelte && npx playwright install-deps chromium
     - name: Run Playwright tests
-      run: devbox run -- bash -c 'cd src/webui/svelte && npx playwright test --project=mock'
+      run: cd src/webui/svelte && npx playwright test --project=mock
     - uses: actions/upload-artifact@v4
       if: ${{ !cancelled() }}
       with:
@@ -160,11 +174,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v6
-    - uses: jetify-com/devbox-install-action@v0.14.0
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: taiki-e/install-action@v2
       with:
-        enable-cache: 'true'
+        tool: licensure
     - name: Check for licenses
-      run: devbox run -- licensure --check -p
+      run: licensure --check -p
 
   # Verify changelog is in keep-a-changelog format.
   verify-changelog:
