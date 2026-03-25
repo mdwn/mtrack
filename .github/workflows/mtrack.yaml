@@ -32,7 +32,7 @@ jobs:
         key: node-modules-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
         restore-keys: node-modules-${{ runner.os }}-
     - name: Build frontend
-      run: cd src/webui/svelte && npm ci && npx @bufbuild/buf generate && npm run build
+      run: make build-ui
     - name: Build mtrack
       run: cargo build --all-targets --all-features
     - name: Check if Cargo.lock is up to date
@@ -67,9 +67,9 @@ jobs:
         key: node-modules-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
         restore-keys: node-modules-${{ runner.os }}-
     - name: Build frontend
-      run: cd src/webui/svelte && npm ci && npx @bufbuild/buf generate && npm run build
+      run: make build-ui
     - name: Run clippy
-      run: cargo clippy --all --all-targets --all-features
+      run: make lint-rust
 
   # Make sure the code is properly formatted.
   rustfmt-check:
@@ -81,7 +81,7 @@ jobs:
       with:
         components: rustfmt
     - name: Run rustfmt
-      run: cargo fmt --all -- --check
+      run: make fmt-rust-check
 
   # Make sure the tests pass.
   test:
@@ -104,7 +104,7 @@ jobs:
         key: node-modules-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
         restore-keys: node-modules-${{ runner.os }}-
     - name: Build frontend
-      run: cd src/webui/svelte && npm ci && npx @bufbuild/buf generate && npm run build
+      run: make build-ui
     - uses: taiki-e/install-action@v2
       with:
         tool: cargo-tarpaulin
@@ -131,13 +131,11 @@ jobs:
         key: node-modules-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
         restore-keys: node-modules-${{ runner.os }}-
     - name: Install and generate
-      run: cd src/webui/svelte && npm ci && npx @bufbuild/buf generate
+      run: make install-ui gen-proto
     - name: Lint
-      run: cd src/webui/svelte && npm run lint
+      run: make lint-ui
     - name: Format check
       run: cd src/webui/svelte && npm run format:check
-    - name: Type check
-      run: cd src/webui/svelte && npm run check
 
   # Run Playwright E2E tests against mock backend.
   playwright:
@@ -154,13 +152,13 @@ jobs:
         key: node-modules-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
         restore-keys: node-modules-${{ runner.os }}-
     - name: Install and generate
-      run: cd src/webui/svelte && npm ci && npx @bufbuild/buf generate
+      run: make install-ui gen-proto
     - name: Install Playwright browsers
       run: cd src/webui/svelte && npx playwright install chromium
     - name: Install Playwright system deps
       run: cd src/webui/svelte && npx playwright install-deps chromium
     - name: Run Playwright tests
-      run: cd src/webui/svelte && npx playwright test --project=mock
+      run: make test-ui
     - uses: actions/upload-artifact@v4
       if: ${{ !cancelled() }}
       with:

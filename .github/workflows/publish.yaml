@@ -27,7 +27,7 @@ jobs:
         key: node-modules-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
         restore-keys: node-modules-${{ runner.os }}-
     - name: Build frontend
-      run: cd src/webui/svelte && npm ci && npx @bufbuild/buf generate && npm run build
+      run: make build-ui
     - name: Run publish
       env:
         CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
