@@ -15,7 +15,7 @@ ROOT_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 SVELTE_DIR := $(ROOT_DIR)/src/webui/svelte
 DOCS_DIR := $(ROOT_DIR)/docs
 
-.PHONY: all setup setup-dev build gen-proto build-ui build-rust test test-ui test-systemd lint lint-ui lint-rust fmt fmt-ui fmt-rust check clean dev-ui docs docs-serve docs-clean
+.PHONY: all setup setup-dev build gen-proto install-ui build-ui build-rust test test-ui test-systemd lint lint-ui lint-rust fmt fmt-ui fmt-rust check fmt-ui-check fmt-rust-check clean dev-ui docs docs-serve docs-clean
 
 all: build
 
@@ -30,13 +30,27 @@ setup-dev:
 ## Build everything
 build: build-ui build-rust
 
+## Compute a hash of all frontend inputs (source, proto, lockfile).
+FRONTEND_HASH := $(shell find $(SVELTE_DIR)/src $(ROOT_DIR)/src/proto -type f 2>/dev/null | sort | xargs cat 2>/dev/null | git hash-object --stdin)
+FRONTEND_STAMP := $(SVELTE_DIR)/dist/.build-stamp
+
+## Install frontend dependencies
+install-ui:
+	cd $(SVELTE_DIR) && npm ci
+
 ## Generate protobuf TypeScript bindings
 gen-proto:
-	cd $(SVELTE_DIR) && buf generate
+	cd $(SVELTE_DIR) && npx @bufbuild/buf generate
 
-## Build the Svelte frontend (generates protobuf bindings first)
-build-ui: gen-proto
-	cd $(SVELTE_DIR) && npm ci && npm run build
+## Build the Svelte frontend (skips if sources unchanged)
+build-ui:
+	@if [ -f "$(FRONTEND_STAMP)" ] && [ "$$(cat "$(FRONTEND_STAMP)")" = "$(FRONTEND_HASH)" ]; then \
+		echo "Frontend up to date, skipping build."; \
+	else \
+		$(MAKE) install-ui gen-proto && \
+		cd $(SVELTE_DIR) && npm run build && \
+		echo "$(FRONTEND_HASH)" > "$(FRONTEND_STAMP)"; \
+	fi
 
 ## Build the Rust binary
 build-rust:
@@ -73,7 +87,7 @@ lint-ui:
 
 ## Lint the Rust code
 lint-rust:
-	cargo clippy --manifest-path $(ROOT_DIR)/Cargo.toml
+	cargo clippy --manifest-path $(ROOT_DIR)/Cargo.toml --all --all-targets --all-features
 
 ## Format everything
 fmt: fmt-ui fmt-rust
@@ -87,8 +101,14 @@ fmt-rust:
 	cargo fmt --manifest-path $(ROOT_DIR)/Cargo.toml
 
 ## Check formatting without writing
-check:
+check: fmt-ui-check fmt-rust-check
+
+## Check frontend formatting
+fmt-ui-check:
 	cd $(SVELTE_DIR) && npm run format:check
+
+## Check Rust formatting
+fmt-rust-check:
 	cargo fmt --manifest-path $(ROOT_DIR)/Cargo.toml --check
 
 ## Start the Vite dev server
