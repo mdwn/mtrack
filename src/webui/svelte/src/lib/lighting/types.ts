@@ -137,6 +137,8 @@ export interface EffectParams {
 export interface CueEffect {
   groups: string[];
   effect: EffectParams;
+  /** Set when this effect was expanded from a sequence reference */
+  sequenceName?: string;
 }
 
 /** Layer command (clear/release/freeze/unfreeze/master) */
@@ -156,7 +158,11 @@ export interface SequenceRef {
 }
 
 /** Sub-lane content type for multi-lane show rendering */
-export type SubLaneType = "effects" | "commands" | "sequences";
+export type SubLaneType =
+  | "effects"
+  | `effects:${Layer}`
+  | "commands"
+  | "sequences";
 
 /** A cue = one timestamp + all effects/commands at that time */
 export interface Cue {

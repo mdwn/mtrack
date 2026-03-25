@@ -223,6 +223,19 @@
               }}
             />
           </label>
+          <label class="param"
+            ><span class="param-label">{$t("effect.duration")}</span><input
+              type="text"
+              class="param-input"
+              placeholder="5s"
+              value={effect.effect.duration ?? ""}
+              onchange={(e) =>
+                updateParam(
+                  "duration",
+                  (e.target as HTMLInputElement).value || undefined,
+                )}
+            /></label
+          >
         {:else if effect.effect.type === "cycle"}
           <label class="param"
             ><span class="param-label">{$t("effect.speed")}</span><input
