@@ -24,13 +24,13 @@ Cues can be specified using absolute time in two formats:
 ```light
 show "Time-Based Show" {
     @00:00.000
-    front_wash: static color: "blue", dimmer: 0%
+    front_wash: static color: "blue", dimmer: 0%, duration: 5s
 
     @00:05.000
-    front_wash: static color: "blue", dimmer: 100%
+    front_wash: static color: "blue", dimmer: 100%, duration: 5s
 
     @00:10.500
-    movers: cycle color: "red", color: "green", speed: 2.0
+    movers: cycle color: "red", color: "green", speed: 2.0, duration: 10s
 }
 ```
 
@@ -56,10 +56,10 @@ tempo {
 
 show "Measure-Based Show" {
     @1/1
-    front_wash: static color: "red", dimmer: 100%
+    front_wash: static color: "red", dimmer: 100%, duration: 4measures
 
     @2/1
-    back_wash: static color: "blue", dimmer: 100%
+    back_wash: static color: "blue", dimmer: 100%, duration: 4measures
 
     @4/2.5
     movers: strobe frequency: 1beat, duration: 2measures
@@ -109,13 +109,13 @@ Repeat a block of cues inline without defining a separate sequence.
 @00:10.000
 loop {
     @0.000
-    front_wash: static color: "red", dimmer: 100%
+    front_wash: static color: "red", dimmer: 100%, duration: 500ms
 
     @0.500
-    front_wash: static color: "blue", dimmer: 100%
+    front_wash: static color: "blue", dimmer: 100%, duration: 500ms
 
     @1.000
-    front_wash: static color: "green", dimmer: 100%
+    front_wash: static color: "green", dimmer: 100%, duration: 500ms
 } repeats: 4
 ```
 
@@ -129,13 +129,13 @@ Define reusable cue sequences that can be referenced multiple times.
 ```light
 sequence "Verse Pattern" {
     @1/1
-    front_wash: static color: "blue", dimmer: 80%
+    front_wash: static color: "blue", dimmer: 80%, duration: 4measures
 
     @2/1
-    front_wash: static color: "red", dimmer: 100%
+    front_wash: static color: "red", dimmer: 100%, duration: 2measures
 
     @4/1
-    front_wash: static color: "blue", dimmer: 80%
+    front_wash: static color: "blue", dimmer: 80%, duration: 4measures
 }
 ```
 
@@ -174,21 +174,21 @@ reset_measures      # Reset measure counter back to actual playback time
 ```light
 show "Complex Timing" {
     @1/1
-    front_wash: static color: "red", dimmer: 100%
+    front_wash: static color: "red", dimmer: 100%, duration: 5s
 
     @4/1
     offset 8 measures    # Shift forward 8 measures
     # Now @4/1 actually plays at measure 12
 
     @4/1
-    back_wash: static color: "blue", dimmer: 100%  # Plays at measure 12
+    back_wash: static color: "blue", dimmer: 100%, duration: 5s  # Plays at measure 12
 
     @8/1
     reset_measures       # Reset counter
     # Now back to actual playback time
 
     @9/1
-    movers: strobe frequency: 4  # Plays at actual measure 9
+    movers: strobe frequency: 4, duration: 5s  # Plays at actual measure 9
 }
 ```
 
@@ -219,26 +219,26 @@ show "Song with Repeats" {
     # Intro section (measures 1-4, plays 3 times)
     # First time through
     @1/1
-    front_wash: static color: "blue", dimmer: 50%
+    front_wash: static color: "blue", dimmer: 50%, duration: 4measures
 
     @4/1
-    front_wash: static color: "blue", dimmer: 100%
+    front_wash: static color: "blue", dimmer: 100%, duration: 4measures
 
     # After first repeat (4 measures later)
     offset 4 measures
     @1/1
-    back_wash: static color: "red", dimmer: 50%  # Actually plays at measure 5
+    back_wash: static color: "red", dimmer: 50%, duration: 4measures  # Actually plays at measure 5
 
     @4/1
-    back_wash: static color: "red", dimmer: 100%  # Actually plays at measure 8
+    back_wash: static color: "red", dimmer: 100%, duration: 4measures  # Actually plays at measure 8
 
     # After second repeat (8 more measures from start, 4 from previous offset)
     offset 4 measures
     @1/1
-    movers: strobe frequency: 2  # Actually plays at measure 9
+    movers: strobe frequency: 2, duration: 4measures  # Actually plays at measure 9
 
     @4/1
-    movers: strobe frequency: 4  # Actually plays at measure 12
+    movers: strobe frequency: 4, duration: 4measures  # Actually plays at measure 12
 
     # Verse starts at measure 13 (after 3x4 measure intro)
     offset 4 measures
@@ -247,10 +247,10 @@ show "Song with Repeats" {
     # Now we're at measure 13 in actual playback
 
     @1/1
-    all_lights: static color: "green", dimmer: 100%  # Plays at actual measure 13
+    all_lights: static color: "green", dimmer: 100%, duration: 4measures  # Plays at actual measure 13
 
     @4/1
-    all_lights: cycle color: "green", color: "yellow", speed: 2.0  # Plays at measure 16
+    all_lights: cycle color: "green", color: "yellow", speed: 2.0, duration: 10s  # Plays at measure 16
 }
 ```
 
@@ -284,10 +284,10 @@ Actual Playback:
 show "Guitar Pro Aligned Show" {
     # Intro section (measures 1-4, plays 3 times = 12 measures total)
     @1/1
-    front_wash: static color: "blue", dimmer: 30%
+    front_wash: static color: "blue", dimmer: 30%, duration: 4measures
 
     @4/1
-    front_wash: static color: "blue", dimmer: 100%
+    front_wash: static color: "blue", dimmer: 100%, duration: 4measures
 
     # After intro repeats, offset by 12 measures (3 repeats × 4 measures)
     offset 12 measures
@@ -295,14 +295,14 @@ show "Guitar Pro Aligned Show" {
     # Verse (score shows measures 5-12, actually plays at 13-20)
     @5/1
     reset_measures  # Reset to actual playback (now at measure 13)
-    all_lights: static color: "green", dimmer: 80%
+    all_lights: static color: "green", dimmer: 80%, duration: 8measures
 
     @12/1
-    all_lights: cycle color: "green", color: "yellow", speed: 1.5
+    all_lights: cycle color: "green", color: "yellow", speed: 1.5, duration: 10s
 
     # Chorus (score shows measures 13-16, actually plays at 21-24)
     @13/1
-    all_lights: static color: "red", dimmer: 100%
+    all_lights: static color: "red", dimmer: 100%, duration: 4measures
 
     @16/1
     movers: strobe frequency: 8, duration: 1measure
@@ -311,13 +311,13 @@ show "Guitar Pro Aligned Show" {
     @17/1
     offset 4 measures  # Chorus was 4 measures, so offset by 4
     reset_measures
-    all_lights: static color: "green", dimmer: 80%
+    all_lights: static color: "green", dimmer: 80%, duration: 4measures
 
     # Chorus repeat (score shows measures 21-24, actually plays at 29-32)
     @21/1
     offset 4 measures
     reset_measures
-    all_lights: static color: "red", dimmer: 100%
+    all_lights: static color: "red", dimmer: 100%, duration: 4measures
 
     # Outro (score shows measure 25, actually plays at measure 33)
     @25/1

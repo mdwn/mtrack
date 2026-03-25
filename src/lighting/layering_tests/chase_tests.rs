@@ -49,6 +49,7 @@ fn test_chase_pattern_linear_left_to_right() {
             speed: TempoAwareSpeed::Fixed(2.0), // 2 Hz for easy testing
             direction: ChaseDirection::LeftToRight,
             transition: CycleTransition::Snap,
+            duration: Duration::from_secs(10),
         },
         vec![
             "fixture_1".to_string(),
@@ -118,6 +119,7 @@ fn test_chase_pattern_linear_right_to_left() {
             speed: TempoAwareSpeed::Fixed(2.0), // 2 Hz for easy testing
             direction: ChaseDirection::RightToLeft,
             transition: CycleTransition::Snap,
+            duration: Duration::from_secs(10),
         },
         vec![
             "fixture_1".to_string(),
@@ -182,6 +184,7 @@ fn test_chase_pattern_snake() {
             speed: TempoAwareSpeed::Fixed(2.0), // 2 Hz for easy testing
             direction: ChaseDirection::LeftToRight,
             transition: CycleTransition::Snap,
+            duration: Duration::from_secs(10),
         },
         vec![
             "fixture_1".to_string(),
@@ -264,6 +267,7 @@ fn test_chase_pattern_random() {
             speed: TempoAwareSpeed::Fixed(2.0), // 2 Hz for easy testing
             direction: ChaseDirection::LeftToRight, // Direction doesn't matter for random
             transition: CycleTransition::Snap,
+            duration: Duration::from_secs(10),
         },
         vec![
             "fixture_1".to_string(),
@@ -324,6 +328,7 @@ fn test_chase_direction_vertical() {
             speed: TempoAwareSpeed::Fixed(2.0),
             direction: ChaseDirection::TopToBottom,
             transition: CycleTransition::Snap,
+            duration: Duration::from_secs(10),
         },
         vec![
             "fixture_1".to_string(),
@@ -373,6 +378,7 @@ fn test_chase_direction_circular() {
             speed: TempoAwareSpeed::Fixed(2.0),
             direction: ChaseDirection::Clockwise,
             transition: CycleTransition::Snap,
+            duration: Duration::from_secs(10),
         },
         vec![
             "fixture_1".to_string(),
@@ -422,6 +428,7 @@ fn test_chase_speed_variations() {
             speed: TempoAwareSpeed::Fixed(0.5), // 0.5 Hz - 2 second cycle
             direction: ChaseDirection::LeftToRight,
             transition: CycleTransition::Snap,
+            duration: Duration::from_secs(10),
         },
         vec![
             "fixture_1".to_string(),
@@ -477,6 +484,7 @@ fn test_chase_single_fixture() {
             speed: TempoAwareSpeed::Fixed(2.0),
             direction: ChaseDirection::LeftToRight,
             transition: CycleTransition::Snap,
+            duration: Duration::from_secs(10),
         },
         vec!["single_fixture".to_string()],
         EffectLayer::Background,
@@ -525,6 +533,7 @@ fn test_chase_rgb_only_fixtures() {
             speed: TempoAwareSpeed::Fixed(2.0),
             direction: ChaseDirection::LeftToRight,
             transition: CycleTransition::Snap,
+            duration: Duration::from_secs(10),
         },
         vec![
             "rgb_fixture_1".to_string(),
@@ -584,6 +593,7 @@ fn test_chase_effect_crossfade() {
             speed: TempoAwareSpeed::Fixed(1.0), // 1 cycle per second
             direction: ChaseDirection::LeftToRight,
             transition: CycleTransition::Snap,
+            duration: Duration::from_secs(10),
         },
         vec![
             "fixture_1".to_string(),
@@ -658,6 +668,7 @@ fn test_random_chase_pattern_visibility() {
             speed: TempoAwareSpeed::Fixed(3.0), // 3 cycles per second
             direction: ChaseDirection::LeftToRight,
             transition: CycleTransition::Snap,
+            duration: Duration::from_secs(10),
         },
         vec![
             "Brick1".to_string(),

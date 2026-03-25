@@ -1873,7 +1873,7 @@ mod test {
         // Create a source file (extension doesn't matter for the source, but
         // the override filename is what gets validated).
         let source_path = dir.path().join("notes.wav");
-        std::fs::write(&source_path, &create_test_wav()).unwrap();
+        std::fs::write(&source_path, create_test_wav()).unwrap();
 
         let app = router().with_state(state);
         let body = serde_json::json!({

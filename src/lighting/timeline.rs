@@ -170,14 +170,9 @@ impl LightingTimeline {
                 let effect_start_time = cue.time;
                 let elapsed_at_start = start_time.saturating_sub(effect_start_time);
 
-                // Get the effect's total duration
-                let should_include = if let Some(duration) = effect_instance.total_duration() {
-                    // Timed effect - only include if it would still be running
-                    elapsed_at_start < duration
-                } else {
-                    // Perpetual effect - always include if it was triggered before start_time
-                    true
-                };
+                // Only include if the effect would still be running at start_time
+                let duration = effect_instance.total_duration();
+                let should_include = elapsed_at_start < duration;
 
                 if should_include {
                     // Store the elapsed time in a map so we can start the effect at the correct point
@@ -369,7 +364,7 @@ mod tests {
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             layer: None,
             blend_mode: None,
@@ -413,7 +408,7 @@ mod tests {
             groups: vec!["front_wash".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             layer: None,
             blend_mode: None,
@@ -452,7 +447,7 @@ mod tests {
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             layer: None,
             blend_mode: None,
@@ -514,7 +509,7 @@ mod tests {
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             layer: None,
             blend_mode: None,
@@ -558,7 +553,7 @@ mod tests {
             groups: vec!["fixture1".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             layer: None,
             blend_mode: None,
@@ -572,7 +567,7 @@ mod tests {
             groups: vec!["fixture2".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             layer: None,
             blend_mode: None,
@@ -716,7 +711,7 @@ mod tests {
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             layer: None,
             blend_mode: None,
@@ -762,7 +757,7 @@ mod tests {
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             layer: None,
             blend_mode: None,
@@ -820,7 +815,7 @@ mod tests {
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             layer: None,
             blend_mode: None,
@@ -884,7 +879,7 @@ mod tests {
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             layer: None,
             blend_mode: None,
@@ -939,7 +934,7 @@ mod tests {
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
-                duration: None,
+                duration: Duration::from_secs(60),
             },
             layer: Some(EffectLayer::Background),
             blend_mode: None,
@@ -953,7 +948,7 @@ mod tests {
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
-                duration: None,
+                duration: Duration::from_secs(60),
             },
             layer: Some(EffectLayer::Foreground),
             blend_mode: None,
@@ -1041,7 +1036,7 @@ mod tests {
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
-                duration: None,
+                duration: Duration::from_secs(60),
             },
             layer: None,
             blend_mode: None,
@@ -1107,7 +1102,7 @@ mod tests {
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
-                duration: None,
+                duration: Duration::from_secs(60),
             },
             layer: None,
             blend_mode: None,
@@ -1182,7 +1177,7 @@ mod tests {
             groups: vec!["test_group".to_string()],
             effect_type: EffectType::Static {
                 parameters: HashMap::new(),
-                duration: None,
+                duration: Duration::from_secs(60),
             },
             layer: None,
             blend_mode: None,

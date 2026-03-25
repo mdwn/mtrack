@@ -31,7 +31,7 @@ fn test_static_effect() {
         "test_effect".to_string(),
         EffectType::Static {
             parameters: parameters.clone(),
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,

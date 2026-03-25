@@ -73,7 +73,7 @@ fn test_static_replace_blend_mode() {
         "static_blue_with_dimmer".to_string(),
         EffectType::Static {
             parameters: static_params,
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["front_wash".to_string()],
         EffectLayer::Background,
@@ -138,7 +138,7 @@ fn test_static_effect_timing() {
                 params.insert("blue".to_string(), 0.0);
                 params
             },
-            duration: None, // Indefinite
+            duration: Duration::from_secs(5), // Indefinite
         },
         vec!["test_fixture".to_string()],
         None,
@@ -181,7 +181,7 @@ fn test_static_effect_timing() {
                 params.insert("blue".to_string(), 0.0);
                 params
             },
-            duration: Some(Duration::from_secs(3)), // 3 seconds
+            duration: Duration::from_secs(3), // 3 seconds
         },
         vec!["test_fixture".to_string()],
         None,
@@ -291,7 +291,7 @@ fn test_static_effect_with_up_time() {
                 params.insert("dimmer".to_string(), 1.0);
                 params
             },
-            duration: None, // Indefinite
+            duration: Duration::from_secs(5), // Indefinite
         },
         vec!["test_fixture".to_string()],
         None,
@@ -442,7 +442,7 @@ fn test_static_effect_with_down_time() {
                 params.insert("dimmer".to_string(), 1.0);
                 params
             },
-            duration: Some(Duration::from_secs(5)), // 5 second total duration
+            duration: Duration::from_secs(5), // 5 second total duration
         },
         vec!["test_fixture".to_string()],
         Some(Duration::from_secs(1)), // 1 second fade in
@@ -701,7 +701,7 @@ fn test_static_effect_fade_out() {
                 params.insert("dimmer".to_string(), 0.8);
                 params
             },
-            duration: Some(Duration::from_secs(2)), // Timed static effect
+            duration: Duration::from_secs(2), // Timed static effect
         },
         vec!["test_fixture".to_string()],
         Some(Duration::from_secs(0)), // up_time

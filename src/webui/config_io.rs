@@ -86,7 +86,7 @@ mod tests {
         let content = r#"
 show "test" {
     @00:00.000
-    lights: static color: "red"
+    lights: static color: "red", duration: 5s
 }
 "#;
         assert!(validate_light_show(content).is_ok());

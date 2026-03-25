@@ -944,7 +944,7 @@ mod test {
         let body = r#"
 show "test" {
     @00:00.000
-    lights: static color: "red"
+    lights: static color: "red", duration: 5s
 }
 "#;
         let response = app
@@ -987,7 +987,8 @@ show "test" {
     async fn put_lighting_file_valid() {
         let (state, _dir) = test_state();
         let file_path = state.songs_path.join("new.light");
-        let content = "show \"test\" {\n    @00:00.000\n    lights: static color: \"red\"\n}\n";
+        let content =
+            "show \"test\" {\n    @00:00.000\n    lights: static color: \"red\", duration: 5s\n}\n";
         let app = router().with_state(state);
 
         let response = app
@@ -1049,7 +1050,8 @@ show "test" {
         let outside_dir = tempfile::tempdir().unwrap();
         std::os::unix::fs::symlink(outside_dir.path(), state.songs_path.join("escape")).unwrap();
 
-        let content = "show \"test\" {\n    @00:00.000\n    lights: static color: \"red\"\n}\n";
+        let content =
+            "show \"test\" {\n    @00:00.000\n    lights: static color: \"red\", duration: 5s\n}\n";
         let app = router().with_state(state);
         let response = app
             .oneshot(
@@ -1268,7 +1270,7 @@ show "test" {
                     .method("PUT")
                     .uri("/lighting/..%2Fevil.light")
                     .body(Body::from(
-                        "show \"test\" {\n    @00:00.000\n    lights: static color: \"red\"\n}\n",
+                        "show \"test\" {\n    @00:00.000\n    lights: static color: \"red\", duration: 5s\n}\n",
                     ))
                     .unwrap(),
             )
@@ -1293,7 +1295,8 @@ show "test" {
         std::fs::create_dir(&sub).unwrap();
         std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o555)).unwrap();
 
-        let content = "show \"test\" {\n    @00:00.000\n    lights: static color: \"red\"\n}\n";
+        let content =
+            "show \"test\" {\n    @00:00.000\n    lights: static color: \"red\", duration: 5s\n}\n";
         let app = router().with_state(state.clone());
         let response = app
             .oneshot(
@@ -1570,11 +1573,7 @@ show "test" {
     #[test]
     fn load_light_files_from_dir_processes_light_files() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("a.light"),
-            &sample_fixture_type_dsl("TypeA"),
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("a.light"), sample_fixture_type_dsl("TypeA")).unwrap();
         std::fs::write(dir.path().join("b.txt"), "not a light file").unwrap();
 
         let mut count = 0;
@@ -1675,7 +1674,7 @@ show "test" {
         std::fs::create_dir(&ft_dir).unwrap();
         std::fs::write(
             ft_dir.join("led_par.light"),
-            &sample_fixture_type_dsl("LED_Par"),
+            sample_fixture_type_dsl("LED_Par"),
         )
         .unwrap();
         let rel = ft_dir.strip_prefix(_dir.path()).unwrap().to_str().unwrap();
@@ -1704,7 +1703,7 @@ show "test" {
         std::fs::create_dir(&ft_dir).unwrap();
         std::fs::write(
             ft_dir.join("led_par.light"),
-            &sample_fixture_type_dsl("LED_Par"),
+            sample_fixture_type_dsl("LED_Par"),
         )
         .unwrap();
         let rel = ft_dir.strip_prefix(_dir.path()).unwrap().to_str().unwrap();
@@ -1883,7 +1882,7 @@ show "test" {
         let ft_dir = _dir.path().join("ft_del");
         std::fs::create_dir(&ft_dir).unwrap();
         let file_path = ft_dir.join("todelete.light");
-        std::fs::write(&file_path, &sample_fixture_type_dsl("ToDelete")).unwrap();
+        std::fs::write(&file_path, sample_fixture_type_dsl("ToDelete")).unwrap();
         let rel = ft_dir.strip_prefix(_dir.path()).unwrap().to_str().unwrap();
         let app = router().with_state(state);
 
@@ -1982,7 +1981,7 @@ show "test" {
         let (state, _dir) = test_state();
         let v_dir = _dir.path().join("v_test");
         std::fs::create_dir(&v_dir).unwrap();
-        std::fs::write(v_dir.join("club.light"), &sample_venue_dsl("Club")).unwrap();
+        std::fs::write(v_dir.join("club.light"), sample_venue_dsl("Club")).unwrap();
         let rel = v_dir.strip_prefix(_dir.path()).unwrap().to_str().unwrap();
         let app = router().with_state(state);
 
@@ -2007,7 +2006,7 @@ show "test" {
         let (state, _dir) = test_state();
         let v_dir = _dir.path().join("v_get");
         std::fs::create_dir(&v_dir).unwrap();
-        std::fs::write(v_dir.join("club.light"), &sample_venue_dsl("Club")).unwrap();
+        std::fs::write(v_dir.join("club.light"), sample_venue_dsl("Club")).unwrap();
         let rel = v_dir.strip_prefix(_dir.path()).unwrap().to_str().unwrap();
         let app = router().with_state(state);
 
@@ -2192,7 +2191,7 @@ show "test" {
         let v_dir = _dir.path().join("v_del");
         std::fs::create_dir(&v_dir).unwrap();
         let file_path = v_dir.join("todelete.light");
-        std::fs::write(&file_path, &sample_venue_dsl("ToDelete")).unwrap();
+        std::fs::write(&file_path, sample_venue_dsl("ToDelete")).unwrap();
         let rel = v_dir.strip_prefix(_dir.path()).unwrap().to_str().unwrap();
         let app = router().with_state(state);
 
@@ -2463,8 +2462,8 @@ show "test" {
         let (state, _dir) = test_state();
         let ft_dir = _dir.path().join("ft_multi");
         std::fs::create_dir(&ft_dir).unwrap();
-        std::fs::write(ft_dir.join("a.light"), &sample_fixture_type_dsl("TypeA")).unwrap();
-        std::fs::write(ft_dir.join("b.light"), &sample_fixture_type_dsl("TypeB")).unwrap();
+        std::fs::write(ft_dir.join("a.light"), sample_fixture_type_dsl("TypeA")).unwrap();
+        std::fs::write(ft_dir.join("b.light"), sample_fixture_type_dsl("TypeB")).unwrap();
         let rel = ft_dir.strip_prefix(_dir.path()).unwrap().to_str().unwrap();
         let app = router().with_state(state);
 
@@ -2492,8 +2491,8 @@ show "test" {
         let (state, _dir) = test_state();
         let v_dir = _dir.path().join("v_multi");
         std::fs::create_dir(&v_dir).unwrap();
-        std::fs::write(v_dir.join("a.light"), &sample_venue_dsl("VenueA")).unwrap();
-        std::fs::write(v_dir.join("b.light"), &sample_venue_dsl("VenueB")).unwrap();
+        std::fs::write(v_dir.join("a.light"), sample_venue_dsl("VenueA")).unwrap();
+        std::fs::write(v_dir.join("b.light"), sample_venue_dsl("VenueB")).unwrap();
         let rel = v_dir.strip_prefix(_dir.path()).unwrap().to_str().unwrap();
         let app = router().with_state(state);
 

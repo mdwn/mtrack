@@ -32,7 +32,7 @@ fn test_clear_layer() {
                 p.insert("dimmer".to_string(), 0.5);
                 p
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -48,7 +48,7 @@ fn test_clear_layer() {
                 p.insert("dimmer".to_string(), 1.0);
                 p
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -94,6 +94,7 @@ fn test_freeze_unfreeze_layer() {
             speed: TempoAwareSpeed::Fixed(1.0), // 1 cycle per second
             saturation: 1.0,
             brightness: 1.0,
+            duration: Duration::from_secs(10),
         },
         vec!["rgb_fixture".to_string()],
         None,
@@ -197,6 +198,7 @@ fn test_release_frozen_layer_maintains_animation_continuity() {
             speed: TempoAwareSpeed::Fixed(1.0), // 1 cycle per second
             saturation: 1.0,
             brightness: 1.0,
+            duration: Duration::from_secs(10),
         },
         vec!["rgb_fixture".to_string()],
         None,
@@ -308,7 +310,7 @@ fn test_layer_intensity_master() {
                 p.insert("dimmer".to_string(), 1.0);
                 p
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -367,7 +369,7 @@ fn test_release_layer_fade_behavior() {
                 p.insert("dimmer".to_string(), 1.0);
                 p
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -447,7 +449,7 @@ fn test_speed_master_affects_effect_progression() {
             base_level: 0.5,
             pulse_amplitude: 0.5,
             frequency: TempoAwareFrequency::Fixed(1.0), // 1 cycle per second
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -498,7 +500,7 @@ fn test_speed_master_resume_from_zero() {
             base_level: 0.5,
             pulse_amplitude: 0.5,
             frequency: TempoAwareFrequency::Fixed(1.0),
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -562,7 +564,7 @@ fn test_multiple_layers_independent() {
                 p.insert("dimmer".to_string(), 1.0);
                 p
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -579,7 +581,7 @@ fn test_multiple_layers_independent() {
                 p.insert("dimmer".to_string(), 0.8);
                 p
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,

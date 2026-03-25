@@ -34,37 +34,26 @@ pub struct Sequence {
 }
 
 impl Sequence {
-    /// Calculate the duration of this sequence based on when all effects complete
-    /// Returns None if the sequence contains perpetual effects (never finishes)
-    /// Otherwise returns the time from sequence start (0) to when the last effect completes
-    pub fn duration(&self) -> Option<Duration> {
+    /// Calculate the duration of this sequence based on when all effects complete.
+    /// Returns the time from sequence start (0) to when the last effect completes.
+    pub fn duration(&self) -> Duration {
         if self.cues.is_empty() {
-            return Some(Duration::ZERO);
+            return Duration::ZERO;
         }
 
         let mut max_completion_time = Duration::ZERO;
-        let mut has_any_duration = false;
 
         for cue in &self.cues {
             for effect in &cue.effects {
-                if let Some(effect_duration) = effect.total_duration() {
-                    // Effect completes at: cue_time + effect_duration
-                    let completion_time = cue.time + effect_duration;
-                    if completion_time > max_completion_time {
-                        max_completion_time = completion_time;
-                    }
-                    has_any_duration = true;
+                let effect_duration = effect.total_duration();
+                let completion_time = cue.time + effect_duration;
+                if completion_time > max_completion_time {
+                    max_completion_time = completion_time;
                 }
-                // Perpetual effects are ignored for duration calculation
             }
         }
 
-        if has_any_duration {
-            Some(max_completion_time)
-        } else {
-            // All effects are perpetual - sequence never finishes
-            None
-        }
+        max_completion_time
     }
 }
 
@@ -110,53 +99,30 @@ pub struct Effect {
 }
 
 impl Effect {
-    /// Calculate the total duration of this effect
-    /// Returns None for perpetual/indefinite effects
-    pub fn total_duration(&self) -> Option<Duration> {
-        // Check if this is an indefinite effect (no hold_time and no down_time)
-        let hold = self.hold_time.unwrap_or(Duration::from_secs(0));
-        let down = self.down_time.unwrap_or(Duration::from_secs(0));
-        let is_indefinite = hold.is_zero() && down.is_zero();
-
-        // Effects are perpetual if they are indefinite AND have no explicit duration
-        if is_indefinite {
-            match &self.effect_type {
-                // Static effects with no duration are perpetual
-                EffectType::Static { duration: None, .. } => return None,
-                // ColorCycle, Chase, Rainbow have no duration field - perpetual by design
-                EffectType::ColorCycle { .. } => return None,
-                EffectType::Chase { .. } => return None,
-                EffectType::Rainbow { .. } => return None,
-                // Strobe and Pulse with no duration are perpetual
-                EffectType::Strobe { duration: None, .. } => return None,
-                EffectType::Pulse { duration: None, .. } => return None,
-                _ => {} // Fall through to calculate duration
-            }
-        }
-
-        // For dimmers, use duration field (timing params not used)
+    /// Calculate the total duration of this effect.
+    /// All effects have a finite duration.
+    pub fn total_duration(&self) -> Duration {
+        // For dimmers, use the effect's own duration field (timing params not used)
         if let EffectType::Dimmer { duration, .. } = &self.effect_type {
-            return Some(*duration);
+            return *duration;
         }
 
-        // For static effects, if duration is specified in effect_type, use it as the hold_time
-        // and include up_time and down_time in the total calculation
-        if let EffectType::Static {
-            duration: Some(static_duration),
-            ..
-        } = &self.effect_type
-        {
-            let duration = self.up_time.unwrap_or(Duration::from_secs(0))
-                + *static_duration
-                + self.down_time.unwrap_or(Duration::from_secs(0));
-            return Some(duration);
-        }
+        // Extract the effect type's duration field
+        let effect_duration = match &self.effect_type {
+            EffectType::Static { duration, .. }
+            | EffectType::Strobe { duration, .. }
+            | EffectType::Pulse { duration, .. }
+            | EffectType::ColorCycle { duration, .. }
+            | EffectType::Chase { duration, .. }
+            | EffectType::Rainbow { duration, .. } => *duration,
+            EffectType::Dimmer { .. } => unreachable!(),
+        };
 
-        let duration = self.up_time.unwrap_or(Duration::from_secs(0))
-            + self.hold_time.unwrap_or(Duration::from_secs(0))
-            + self.down_time.unwrap_or(Duration::from_secs(0));
+        // If hold_time is explicitly set, use up + hold + down.
+        // Otherwise use up + effect_duration + down.
+        let hold = self.hold_time.unwrap_or(effect_duration);
 
-        Some(duration)
+        self.up_time.unwrap_or(Duration::ZERO) + hold + self.down_time.unwrap_or(Duration::ZERO)
     }
 }
 
@@ -195,7 +161,7 @@ mod tests {
         TempoAwareFrequency, TempoAwareSpeed,
     };
 
-    fn static_effect(duration: Option<Duration>) -> Effect {
+    fn static_effect(duration: Duration) -> Effect {
         Effect {
             groups: vec![],
             effect_type: EffectType::Static {
@@ -232,16 +198,10 @@ mod tests {
     // ── Effect::total_duration ──────────────────────────────────────
 
     #[test]
-    fn effect_perpetual_static_no_duration() {
-        let e = static_effect(None);
-        assert_eq!(e.total_duration(), None);
-    }
-
-    #[test]
     fn effect_static_with_duration() {
-        let e = static_effect(Some(Duration::from_secs(5)));
+        let e = static_effect(Duration::from_secs(5));
         // Static with duration uses: up + static_duration + down
-        assert_eq!(e.total_duration(), Some(Duration::from_secs(5)));
+        assert_eq!(e.total_duration(), Duration::from_secs(5));
     }
 
     #[test]
@@ -249,14 +209,14 @@ mod tests {
         let e = timed_effect(
             EffectType::Static {
                 parameters: HashMap::new(),
-                duration: Some(Duration::from_secs(5)),
+                duration: Duration::from_secs(5),
             },
             Some(Duration::from_secs(1)),
             None, // hold_time not used; static_duration acts as hold
             Some(Duration::from_secs(2)),
         );
         // up(1) + static_duration(5) + down(2) = 8
-        assert_eq!(e.total_duration(), Some(Duration::from_secs(8)));
+        assert_eq!(e.total_duration(), Duration::from_secs(8));
     }
 
     #[test]
@@ -272,84 +232,87 @@ mod tests {
             None,
             None,
         );
-        assert_eq!(e.total_duration(), Some(Duration::from_secs(3)));
+        assert_eq!(e.total_duration(), Duration::from_secs(3));
     }
 
     #[test]
-    fn effect_strobe_no_duration_perpetual() {
+    fn effect_strobe_with_duration() {
         let e = timed_effect(
             EffectType::Strobe {
                 frequency: TempoAwareFrequency::Fixed(10.0),
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             None,
             None,
             None,
         );
-        assert_eq!(e.total_duration(), None);
+        assert_eq!(e.total_duration(), Duration::from_secs(5));
     }
 
     #[test]
-    fn effect_pulse_no_duration_perpetual() {
+    fn effect_pulse_with_duration() {
         let e = timed_effect(
             EffectType::Pulse {
                 base_level: 0.0,
                 pulse_amplitude: 1.0,
                 frequency: TempoAwareFrequency::Fixed(2.0),
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             None,
             None,
             None,
         );
-        assert_eq!(e.total_duration(), None);
+        assert_eq!(e.total_duration(), Duration::from_secs(5));
     }
 
     #[test]
-    fn effect_color_cycle_perpetual() {
+    fn effect_color_cycle_with_duration() {
         let e = timed_effect(
             EffectType::ColorCycle {
                 colors: vec![Color::new(255, 0, 0)],
                 speed: TempoAwareSpeed::Fixed(1.0),
                 direction: CycleDirection::Forward,
                 transition: CycleTransition::Fade,
+                duration: Duration::from_secs(5),
             },
             None,
             None,
             None,
         );
-        assert_eq!(e.total_duration(), None);
+        assert_eq!(e.total_duration(), Duration::from_secs(5));
     }
 
     #[test]
-    fn effect_chase_perpetual() {
+    fn effect_chase_with_duration() {
         let e = timed_effect(
             EffectType::Chase {
                 pattern: ChasePattern::Linear,
                 speed: TempoAwareSpeed::Fixed(1.0),
                 direction: ChaseDirection::LeftToRight,
                 transition: CycleTransition::Snap,
+                duration: Duration::from_secs(5),
             },
             None,
             None,
             None,
         );
-        assert_eq!(e.total_duration(), None);
+        assert_eq!(e.total_duration(), Duration::from_secs(5));
     }
 
     #[test]
-    fn effect_rainbow_perpetual() {
+    fn effect_rainbow_with_duration() {
         let e = timed_effect(
             EffectType::Rainbow {
                 speed: TempoAwareSpeed::Fixed(0.5),
                 saturation: 1.0,
                 brightness: 1.0,
+                duration: Duration::from_secs(5),
             },
             None,
             None,
             None,
         );
-        assert_eq!(e.total_duration(), None);
+        assert_eq!(e.total_duration(), Duration::from_secs(5));
     }
 
     #[test]
@@ -357,14 +320,14 @@ mod tests {
         let e = timed_effect(
             EffectType::Strobe {
                 frequency: TempoAwareFrequency::Fixed(10.0),
-                duration: Some(Duration::from_secs(5)),
+                duration: Duration::from_secs(5),
             },
             Some(Duration::from_secs(1)),
             Some(Duration::from_secs(3)),
             Some(Duration::from_secs(1)),
         );
         // up(1) + hold(3) + down(1) = 5
-        assert_eq!(e.total_duration(), Some(Duration::from_secs(5)));
+        assert_eq!(e.total_duration(), Duration::from_secs(5));
     }
 
     // ── Sequence::duration ─────────────────────────────────────────
@@ -375,22 +338,7 @@ mod tests {
             cues: vec![],
             bpm: 120.0,
         };
-        assert_eq!(seq.duration(), Some(Duration::ZERO));
-    }
-
-    #[test]
-    fn sequence_all_perpetual() {
-        let seq = Sequence {
-            cues: vec![Cue {
-                time: Duration::ZERO,
-                effects: vec![static_effect(None)],
-                layer_commands: vec![],
-                stop_sequences: vec![],
-                start_sequences: vec![],
-            }],
-            bpm: 120.0,
-        };
-        assert_eq!(seq.duration(), None);
+        assert_eq!(seq.duration(), Duration::ZERO);
     }
 
     #[test]
@@ -398,7 +346,7 @@ mod tests {
         let seq = Sequence {
             cues: vec![Cue {
                 time: Duration::from_secs(2),
-                effects: vec![static_effect(Some(Duration::from_secs(3)))],
+                effects: vec![static_effect(Duration::from_secs(3))],
                 layer_commands: vec![],
                 stop_sequences: vec![],
                 start_sequences: vec![],
@@ -406,7 +354,7 @@ mod tests {
             bpm: 120.0,
         };
         // cue_time(2) + effect_duration(3) = 5
-        assert_eq!(seq.duration(), Some(Duration::from_secs(5)));
+        assert_eq!(seq.duration(), Duration::from_secs(5));
     }
 
     #[test]
@@ -415,14 +363,14 @@ mod tests {
             cues: vec![
                 Cue {
                     time: Duration::from_secs(0),
-                    effects: vec![static_effect(Some(Duration::from_secs(3)))],
+                    effects: vec![static_effect(Duration::from_secs(3))],
                     layer_commands: vec![],
                     stop_sequences: vec![],
                     start_sequences: vec![],
                 },
                 Cue {
                     time: Duration::from_secs(5),
-                    effects: vec![static_effect(Some(Duration::from_secs(10)))],
+                    effects: vec![static_effect(Duration::from_secs(10))],
                     layer_commands: vec![],
                     stop_sequences: vec![],
                     start_sequences: vec![],
@@ -431,18 +379,17 @@ mod tests {
             bpm: 120.0,
         };
         // max(0+3, 5+10) = 15
-        assert_eq!(seq.duration(), Some(Duration::from_secs(15)));
+        assert_eq!(seq.duration(), Duration::from_secs(15));
     }
 
     #[test]
-    fn sequence_mixed_perpetual_and_timed() {
-        // Perpetual effects are ignored; only timed effects count
+    fn sequence_mixed_short_and_long() {
         let seq = Sequence {
             cues: vec![Cue {
                 time: Duration::from_secs(1),
                 effects: vec![
-                    static_effect(None),                         // perpetual, ignored
-                    static_effect(Some(Duration::from_secs(4))), // timed: 1+4=5
+                    static_effect(Duration::from_secs(1)), // short: 1+1=2
+                    static_effect(Duration::from_secs(4)), // long: 1+4=5
                 ],
                 layer_commands: vec![],
                 stop_sequences: vec![],
@@ -450,7 +397,7 @@ mod tests {
             }],
             bpm: 120.0,
         };
-        assert_eq!(seq.duration(), Some(Duration::from_secs(5)));
+        assert_eq!(seq.duration(), Duration::from_secs(5));
     }
 
     // ── LayerCommandType ───────────────────────────────────────────

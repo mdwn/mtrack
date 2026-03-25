@@ -17,8 +17,6 @@ mod common;
 #[cfg(test)]
 mod basic_tests;
 #[cfg(test)]
-mod channel_locking_tests;
-#[cfg(test)]
 mod chase_tests;
 #[cfg(test)]
 mod color_cycle_tests;

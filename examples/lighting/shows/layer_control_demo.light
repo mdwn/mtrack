@@ -10,9 +10,9 @@
 show "Layer Control Demo" {
     // Start with effects on multiple layers
     @00:00.000
-        front_wash: static color: "#0066ff", dimmer: 100%, layer: background
-        back_wash: rainbow speed: 0.5, layer: midground
-        accent: pulse frequency: 2, dimmer: 80%, layer: foreground
+        front_wash: static color: "#0066ff", dimmer: 100%, layer: background, duration: 5s
+        back_wash: rainbow speed: 0.5, layer: midground, duration: 10s
+        accent: pulse frequency: 2, dimmer: 80%, layer: foreground, duration: 5s
 
     // Dim the background to 50%
     @00:05.000
@@ -36,7 +36,7 @@ show "Layer Control Demo" {
 
     // Add a new strobe effect on foreground (previous one is fading out)
     @00:16.000
-        strobe_fx: strobe frequency: 8, layer: foreground
+        strobe_fx: strobe frequency: 8, layer: foreground, duration: 5s
 
     // Slow down the midground rainbow to half speed
     @00:18.000

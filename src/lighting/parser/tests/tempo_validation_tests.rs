@@ -185,10 +185,10 @@ fn test_beat_position_exceeds_time_signature() {
 
 show "Invalid Beat Position" {
     @1/1
-    front_wash: static color: "blue"
+    front_wash: static color: "blue", duration: 5s
     
     @2/5
-    back_wash: static color: "red"
+    back_wash: static color: "red", duration: 5s
 }"#;
 
     let result = LightingParser::parse(Rule::file, content);
@@ -216,19 +216,19 @@ fn test_beat_position_valid_after_time_signature_change() {
 
 show "Beat Valid After Change" {
     @1/1
-    front_wash: static color: "blue"
+    front_wash: static color: "blue", duration: 5s
     
     @1/4
-    back_wash: static color: "red"
+    back_wash: static color: "red", duration: 5s
     
     @8/1
-    front_wash: static color: "green"
+    front_wash: static color: "green", duration: 5s
     
     @9/5
-    back_wash: static color: "yellow"
+    back_wash: static color: "yellow", duration: 5s
     
     @9/6
-    front_wash: static color: "purple"
+    front_wash: static color: "purple", duration: 5s
 }"#;
 
     let result = LightingParser::parse(Rule::file, content);
@@ -255,16 +255,16 @@ fn test_beat_position_invalid_after_time_signature_change() {
 
 show "Beat Invalid After Change" {
     @1/1
-    front_wash: static color: "blue"
+    front_wash: static color: "blue", duration: 5s
     
     @1/4
-    back_wash: static color: "red"
+    back_wash: static color: "red", duration: 5s
     
     @8/1
-    front_wash: static color: "green"
+    front_wash: static color: "green", duration: 5s
     
     @9/4
-    back_wash: static color: "yellow"
+    back_wash: static color: "yellow", duration: 5s
 }"#;
 
     let result = LightingParser::parse(Rule::file, content);
@@ -288,7 +288,7 @@ fn test_beat_zero_is_invalid() {
 
 show "Beat Zero" {
     @1/0
-    front_wash: static color: "blue"
+    front_wash: static color: "blue", duration: 5s
 }"#;
 
     let result = LightingParser::parse(Rule::file, content);
@@ -314,10 +314,10 @@ fn test_fractional_beat_exceeds_time_signature() {
 
 show "Fractional Beat Beyond Time Sig" {
     @1/4.5
-    front_wash: static color: "blue"
+    front_wash: static color: "blue", duration: 5s
     
     @2/4.9
-    back_wash: static color: "red"
+    back_wash: static color: "red", duration: 5s
 }"#;
 
     let result = LightingParser::parse(Rule::file, content);
@@ -341,13 +341,13 @@ fn test_beat_position_edge_cases_at_boundary() {
 
 show "Boundary Cases" {
     @1/1.0
-    front_wash: static color: "blue"
+    front_wash: static color: "blue", duration: 5s
     
     @1/4.0
-    back_wash: static color: "red"
+    back_wash: static color: "red", duration: 5s
     
     @1/4.999
-    side_wash: static color: "green"
+    side_wash: static color: "green", duration: 5s
 }"#;
 
     let result = LightingParser::parse(Rule::file, content);
@@ -377,16 +377,16 @@ fn test_multiple_time_sig_changes_with_beat_validation() {
 
 show "Complex Time Sig Changes" {
     @1/4
-    front_wash: static color: "blue"
+    front_wash: static color: "blue", duration: 5s
     
     @6/3
-    back_wash: static color: "red"
+    back_wash: static color: "red", duration: 5s
     
     @11/6
-    side_wash: static color: "green"
+    side_wash: static color: "green", duration: 5s
     
     @16/5
-    top_wash: static color: "yellow"
+    top_wash: static color: "yellow", duration: 5s
 }"#;
 
     let result = LightingParser::parse(Rule::file, content);
@@ -522,7 +522,7 @@ fn test_measure_zero_is_invalid() {
 
 show "Measure Zero" {
     @0/1
-    front_wash: static color: "blue"
+    front_wash: static color: "blue", duration: 5s
 }"#;
 
     let result = LightingParser::parse(Rule::file, content);
@@ -541,7 +541,7 @@ fn test_negative_measure_numbers() {
     // Negative measure numbers don't make sense
     let content = r#"show "Negative Measure" {
     @-1/1
-    front_wash: static color: "blue"
+    front_wash: static color: "blue", duration: 5s
 }"#;
 
     let result = LightingParser::parse(Rule::file, content);

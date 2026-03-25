@@ -35,7 +35,7 @@ fn test_stop_sequence_stops_all_effects_from_sequence() {
                 p.insert("dimmer".to_string(), 0.5);
                 p
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture_1".to_string()],
         None,
@@ -53,7 +53,7 @@ fn test_stop_sequence_stops_all_effects_from_sequence() {
                 p.insert("red".to_string(), 1.0);
                 p
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture_1".to_string()],
         None,
@@ -72,7 +72,7 @@ fn test_stop_sequence_stops_all_effects_from_sequence() {
                 p.insert("green".to_string(), 1.0);
                 p
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture_2".to_string()],
         None,
@@ -91,7 +91,7 @@ fn test_stop_sequence_stops_all_effects_from_sequence() {
                 p.insert("blue".to_string(), 1.0);
                 p
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture_2".to_string()],
         None,
@@ -134,7 +134,7 @@ fn test_stop_sequence_handles_releasing_effects() {
                 p.insert("dimmer".to_string(), 1.0);
                 p
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -179,7 +179,7 @@ fn test_stop_sequence_with_no_matching_effects() {
                 p.insert("dimmer".to_string(), 0.5);
                 p
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -222,7 +222,7 @@ fn test_clear_all_layers_stops_all_effects() {
                 p.insert("dimmer".to_string(), 0.3);
                 p
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -239,7 +239,7 @@ fn test_clear_all_layers_stops_all_effects() {
                 p.insert("red".to_string(), 1.0);
                 p
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -256,7 +256,7 @@ fn test_clear_all_layers_stops_all_effects() {
                 p.insert("green".to_string(), 1.0);
                 p
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -296,7 +296,7 @@ fn test_clear_all_layers_clears_frozen_layers() {
                 p.insert("dimmer".to_string(), 0.5);
                 p
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -334,7 +334,7 @@ fn test_clear_all_layers_clears_releasing_effects() {
                 p.insert("dimmer".to_string(), 0.5);
                 p
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -351,7 +351,7 @@ fn test_clear_all_layers_clears_releasing_effects() {
                 p.insert("red".to_string(), 1.0);
                 p
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -392,7 +392,7 @@ fn test_clear_all_layers_clears_fixture_states_and_locks() {
                 p.insert("blue".to_string(), 1.0);
                 p
             },
-            duration: None, // Permanent effect
+            duration: Duration::from_secs(5), // Permanent effect
         },
         vec!["test_fixture".to_string()],
         None,
@@ -428,7 +428,7 @@ fn test_clear_all_layers_clears_fixture_states_and_locks() {
                 p.insert("green".to_string(), 1.0); // Different color to verify it works
                 p
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -486,6 +486,7 @@ fn test_freeze_unfreeze_multiple_effects_same_layer() {
             speed: TempoAwareSpeed::Fixed(1.0),
             saturation: 1.0,
             brightness: 1.0,
+            duration: Duration::from_secs(5),
         },
         vec!["rgb_fixture".to_string()],
         None,
@@ -505,6 +506,7 @@ fn test_freeze_unfreeze_multiple_effects_same_layer() {
             speed: TempoAwareSpeed::Fixed(2.0),
             direction: CycleDirection::Forward,
             transition: CycleTransition::Snap,
+            duration: Duration::from_secs(5),
         },
         vec!["rgb_fixture".to_string()],
         None,
@@ -575,7 +577,7 @@ fn test_freeze_unfreeze_different_layers_independently() {
                 p.insert("dimmer".to_string(), 0.5);
                 p
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -592,7 +594,7 @@ fn test_freeze_unfreeze_different_layers_independently() {
                 p.insert("red".to_string(), 1.0);
                 p
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -636,7 +638,7 @@ fn test_freeze_unfreeze_with_releasing_effects() {
                 p.insert("dimmer".to_string(), 1.0);
                 p
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,

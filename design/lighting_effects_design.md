@@ -7,7 +7,8 @@ This document outlines the design for a comprehensive effects and chasers system
 ## Core Concepts
 
 ### Effects
-Effects are dynamic lighting patterns that modify fixture parameters over time. They can be:
+Effects are dynamic lighting patterns that modify fixture parameters over time. All effects
+have an explicit, finite duration — there are no perpetual or permanent effects. They can be:
 - **Static**: Fixed parameter values (e.g., "Red at 100%")
 - **Dynamic**: Animated parameter changes (e.g., "Color cycle through rainbow")
 - **Spatial**: Effects that move across fixtures (e.g., "Chase from left to right")
@@ -28,22 +29,23 @@ Chasers are sequences of effects that play in order, creating complex lighting s
 #[derive(Debug, Clone)]
 pub enum EffectType {
     // Static effects
-    Static { 
+    Static {
         parameters: HashMap<String, f64>,
-        duration: Option<Duration> 
+        duration: Duration, // required — all effects have explicit duration
     },
-    
+
     // Dynamic effects
     ColorCycle {
         colors: Vec<Color>,
         speed: f64, // cycles per second
         direction: CycleDirection,
+        duration: Duration,
     },
-    
+
     Strobe {
         frequency: f64, // Hz
         intensity: f64, // 0.0 to 1.0
-        duration: Option<Duration>,
+        duration: Duration,
     },
     
     Dimmer {
@@ -58,20 +60,22 @@ pub enum EffectType {
         pattern: ChasePattern,
         speed: f64,
         direction: ChaseDirection,
+        duration: Duration,
     },
-    
+
     // Complex effects
     Rainbow {
         speed: f64,
         saturation: f64,
         brightness: f64,
+        duration: Duration,
     },
-    
+
     Pulse {
         base_level: f64,
         pulse_amplitude: f64,
         frequency: f64,
-        duration: Option<Duration>,
+        duration: Duration,
     },
 }
 
@@ -121,7 +125,6 @@ pub struct EffectInstance {
     pub target_fixtures: Vec<String>, // Fixture names or group names
     pub priority: u8, // Higher priority overrides lower
     pub start_time: Option<Instant>,
-    pub duration: Option<Duration>,
     pub fade_in: Option<Duration>,
     pub fade_out: Option<Duration>,
     pub enabled: bool,
@@ -135,7 +138,6 @@ impl EffectInstance {
             target_fixtures,
             priority: 0,
             start_time: None,
-            duration: None,
             fade_in: None,
             fade_out: None,
             enabled: true,
@@ -147,9 +149,8 @@ impl EffectInstance {
         self
     }
     
-    pub fn with_timing(mut self, start_time: Option<Instant>, duration: Option<Duration>) -> Self {
+    pub fn with_start_time(mut self, start_time: Option<Instant>) -> Self {
         self.start_time = start_time;
-        self.duration = duration;
         self
     }
     
@@ -281,11 +282,8 @@ impl EffectEngine {
     pub fn start_effect(&mut self, effect: EffectInstance) -> Result<(), EffectError> {
         // Validate effect
         self.validate_effect(&effect)?;
-        
-        // Stop any conflicting effects
-        self.stop_conflicting_effects(&effect);
-        
-        // Start the effect
+
+        // Start the effect — effects coexist, blend mode determines overlap behavior
         self.active_effects.insert(effect.id.clone(), effect);
         Ok(())
     }

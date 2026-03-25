@@ -807,7 +807,7 @@ mod tests {
                 &show_path,
                 r#"show "test" {
     @00:00.000
-    front_wash: static color: "blue", dimmer: 100%
+    front_wash: static color: "blue", duration: 5s, dimmer: 100%
 }"#,
             )
             .unwrap();
@@ -839,7 +839,7 @@ mod tests {
                 &show_path,
                 r#"show "test" {
     @00:00.000
-    front_wash: static color: "blue", dimmer: 100%
+    front_wash: static color: "blue", duration: 5s, dimmer: 100%
 }"#,
             )
             .unwrap();
@@ -864,7 +864,7 @@ mod tests {
                 &show_path,
                 r#"show "test" {
     @00:00.000
-    front_wash: static color: "blue", dimmer: 100%
+    front_wash: static color: "blue", duration: 5s, dimmer: 100%
 }"#,
             )
             .unwrap();
@@ -885,7 +885,7 @@ mod tests {
                 &show_path,
                 r#"show "test" {
     @00:00.000
-    front_wash: static color: "blue", dimmer: 100%
+    front_wash: static color: "blue", duration: 5s, dimmer: 100%
 }"#,
             )
             .unwrap();
@@ -909,12 +909,12 @@ mod tests {
                 &show_path,
                 r#"show "show1" {
     @00:00.000
-    front_wash: static color: "blue", dimmer: 100%
+    front_wash: static color: "blue", duration: 5s, dimmer: 100%
 }
 
 show "show2" {
     @00:00.000
-    rear_wash: static color: "red", dimmer: 50%
+    rear_wash: static color: "red", duration: 5s, dimmer: 50%
 }"#,
             )
             .unwrap();
@@ -929,7 +929,7 @@ show "show2" {
                 &show_path,
                 r#"show "test" {
     @00:00.000
-    front_wash: static color: "blue", dimmer: 100%
+    front_wash: static color: "blue", duration: 5s, dimmer: 100%
 }"#,
             )
             .unwrap();
@@ -958,7 +958,7 @@ show "show2" {
                 &show_path,
                 r#"show "test" {
     @00:00.000
-    front_wash: static color: "blue", dimmer: 100%
+    front_wash: static color: "blue", duration: 5s, dimmer: 100%
 }"#,
             )
             .unwrap();
@@ -1002,7 +1002,7 @@ dmx:
                 &show_path,
                 r#"show "test" {
     @00:00.000
-    front_wash: static color: "blue", dimmer: 100%
+    front_wash: static color: "blue", duration: 5s, dimmer: 100%
 }"#,
             )
             .unwrap();

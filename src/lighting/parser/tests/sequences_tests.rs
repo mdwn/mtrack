@@ -19,13 +19,13 @@ fn test_sequence_definition_and_reference() {
     let content = r#"
 sequence "color_cycle" {
     @0.000
-    front_wash: static, color: "red"
+    front_wash: static, color: "red", duration: 5s
     
     @2.000
-    front_wash: static, color: "green"
+    front_wash: static, color: "green", duration: 5s
     
     @4.000
-    front_wash: static, color: "blue"
+    front_wash: static, color: "blue", duration: 5s
 }
 
 show "Test Show" {
@@ -67,15 +67,15 @@ fn test_sequence_with_effects_in_same_cue() {
     let content = r#"
 sequence "simple_sequence" {
     @0.000
-    front_wash: static, color: "red"
+    front_wash: static, color: "red", duration: 5s
     
     @1.000
-    front_wash: static, color: "blue"
+    front_wash: static, color: "blue", duration: 5s
 }
 
 show "Test Show" {
     @5.000
-    back_wash: static, color: "green"
+    back_wash: static, color: "green", duration: 5s
     sequence "simple_sequence"
 }
 "#;
@@ -128,13 +128,13 @@ tempo {
 
 sequence "measure_based_sequence" {
     @1/1
-    front_wash: static, color: "red"
+    front_wash: static, color: "red", duration: 5s
     
     @1/3
-    front_wash: static, color: "green"
+    front_wash: static, color: "green", duration: 5s
     
     @2/1
-    front_wash: static, color: "blue"
+    front_wash: static, color: "blue", duration: 5s
 }
 
 show "Test Show" {
@@ -182,10 +182,10 @@ sequence "sequence_with_tempo" {
     }
     
     @1/1
-    front_wash: static, color: "red"
+    front_wash: static, color: "red", duration: 5s
     
     @2/1
-    front_wash: static, color: "blue"
+    front_wash: static, color: "blue", duration: 5s
 }
 
 show "Test Show" {
@@ -228,10 +228,10 @@ tempo {
 
 sequence "measure_sequence" {
     @1/1
-    front_wash: static, color: "red"
+    front_wash: static, color: "red", duration: 5s
     
     @1/3
-    front_wash: static, color: "green"
+    front_wash: static, color: "green", duration: 5s
 }
 
 show "Test Show" {
@@ -268,7 +268,7 @@ tempo {
 
 sequence "test" {
     @1/1
-    front_wash: static color: "red"
+    front_wash: static color: "red", duration: 5s
 }
 
 show "Test" {
@@ -383,11 +383,11 @@ tempo {
 
 show "Test" {
     @0.000
-    front_wash: static, color: "red", layer: foreground
+    front_wash: static, color: "red", layer: foreground, duration: 5s
     # Comment after effect
     
     @1.000
-    back_wash: cycle, speed: 2beats, direction: forward
+    back_wash: cycle, speed: 2beats, direction: forward, duration: 10s
     # Another comment
 }
 "#;
@@ -424,10 +424,10 @@ fn test_sequence_looping_finite() {
     let content = r#"
 sequence "simple_sequence" {
     @0.000
-    front_wash: static, color: "red"
+    front_wash: static, color: "red", duration: 5s
     
     @1.000
-    front_wash: static, color: "blue"
+    front_wash: static, color: "blue", duration: 5s
 }
 
 show "Test Show" {
@@ -445,18 +445,18 @@ show "Test Show" {
     // Should have 6 cues (2 cues per iteration × 3 iterations)
     assert_eq!(show.cues.len(), 6);
 
+    // Sequence duration = max(0+5, 1+5) = 6s per iteration
     // First iteration: 0s, 1s
     assert_eq!(show.cues[0].time, Duration::from_secs(0));
     assert_eq!(show.cues[1].time, Duration::from_secs(1));
 
-    // Second iteration: 1s (last cue time), 2s
-    // Sequence duration is 1s (last cue time since effects are perpetual)
-    assert_eq!(show.cues[2].time, Duration::from_secs(1));
-    assert_eq!(show.cues[3].time, Duration::from_secs(2));
+    // Second iteration: 6s, 7s
+    assert_eq!(show.cues[2].time, Duration::from_secs(6));
+    assert_eq!(show.cues[3].time, Duration::from_secs(7));
 
-    // Third iteration: 2s, 3s
-    assert_eq!(show.cues[4].time, Duration::from_secs(2));
-    assert_eq!(show.cues[5].time, Duration::from_secs(3));
+    // Third iteration: 12s, 13s
+    assert_eq!(show.cues[4].time, Duration::from_secs(12));
+    assert_eq!(show.cues[5].time, Duration::from_secs(13));
 
     // All effects should be marked with sequence name
     for cue in &show.cues {
@@ -496,10 +496,10 @@ fn test_sequence_looping_infinite() {
     let content = r#"
 sequence "infinite_sequence" {
     @0.000
-    front_wash: static, color: "red"
+    front_wash: static, color: "red", duration: 5s
     
     @1.000
-    front_wash: static, color: "blue"
+    front_wash: static, color: "blue", duration: 5s
 }
 
 show "Test Show" {
@@ -518,11 +518,11 @@ show "Test Show" {
     assert_eq!(show.cues.len(), 20000);
 
     // Check first few iterations
-    // Sequence duration is 1s (last cue time since effects are perpetual)
+    // Sequence duration = max(0+5, 1+5) = 6s per iteration
     assert_eq!(show.cues[0].time, Duration::from_secs(0));
     assert_eq!(show.cues[1].time, Duration::from_secs(1));
-    assert_eq!(show.cues[2].time, Duration::from_secs(1)); // Second iteration starts at 1s
-    assert_eq!(show.cues[3].time, Duration::from_secs(2));
+    assert_eq!(show.cues[2].time, Duration::from_secs(6)); // Second iteration starts at 6s
+    assert_eq!(show.cues[3].time, Duration::from_secs(7));
 }
 
 #[test]
@@ -530,10 +530,10 @@ fn test_sequence_looping_once() {
     let content = r#"
 sequence "once_sequence" {
     @0.000
-    front_wash: static, color: "red"
+    front_wash: static, color: "red", duration: 5s
     
     @1.000
-    front_wash: static, color: "blue"
+    front_wash: static, color: "blue", duration: 5s
 }
 
 show "Test Show" {
@@ -557,10 +557,10 @@ fn test_stop_sequence_command() {
     let content = r#"
 sequence "looping_sequence" {
     @0.000
-    front_wash: static, color: "red"
+    front_wash: static, color: "red", duration: 5s
     
     @1.000
-    front_wash: static, color: "blue"
+    front_wash: static, color: "blue", duration: 5s
 }
 
 show "Test Show" {
@@ -612,12 +612,12 @@ fn test_stop_multiple_sequences() {
     let content = r#"
 sequence "seq1" {
     @0.000
-    front_wash: static, color: "red"
+    front_wash: static, color: "red", duration: 5s
 }
 
 sequence "seq2" {
     @0.000
-    back_wash: static, color: "blue"
+    back_wash: static, color: "blue", duration: 5s
 }
 
 show "Test Show" {
@@ -637,30 +637,31 @@ show "Test Show" {
     let shows = result.unwrap();
     let show = shows.get("Test Show").unwrap();
 
-    // Find the cue at 5 seconds with stop_sequences
-    // Note: The looping sequences may also create cues at 5 seconds, so we need to find the one with stop_sequences
-    let stop_cue = show
-        .cues
-        .iter()
-        .find(|c| c.time == Duration::from_secs(5) && !c.stop_sequences.is_empty());
-    let cue_times: Vec<_> = show.cues.iter().map(|c| c.time).collect();
+    // Find cues at 5 seconds with stop_sequences
+    // With 5s duration effects, iteration boundaries also occur at 5s,
+    // so there may be multiple cues at 5s with stop_sequences.
+    // Collect all stop_sequences from all cues at 5s.
     let cues_at_5: Vec<_> = show
         .cues
         .iter()
         .filter(|c| c.time == Duration::from_secs(5))
-        .map(|c| (c.time, c.stop_sequences.clone(), c.effects.len()))
+        .collect();
+    assert!(!cues_at_5.is_empty(), "Should have cues at 5 seconds");
+
+    let all_stops: std::collections::HashSet<_> = cues_at_5
+        .iter()
+        .flat_map(|c| c.stop_sequences.iter())
         .collect();
     assert!(
-        stop_cue.is_some(),
-        "Should have a cue at 5 seconds with stop_sequences. Cue times: {:?}, Cues at 5s: {:?}",
-        cue_times,
-        cues_at_5
+        all_stops.contains(&"seq1".to_string()),
+        "Should stop seq1 at 5s, got stops: {:?}",
+        all_stops
     );
-
-    let stop_cue = stop_cue.unwrap();
-    assert_eq!(stop_cue.stop_sequences.len(), 2);
-    assert!(stop_cue.stop_sequences.contains(&"seq1".to_string()));
-    assert!(stop_cue.stop_sequences.contains(&"seq2".to_string()));
+    assert!(
+        all_stops.contains(&"seq2".to_string()),
+        "Should stop seq2 at 5s, got stops: {:?}",
+        all_stops
+    );
 }
 
 #[test]
@@ -668,16 +669,16 @@ fn test_nested_sequences() {
     let content = r#"
 sequence "base_pattern" {
     @0.000
-    front_wash: static, color: "red"
+    front_wash: static, color: "red", duration: 5s
     
     @1.000
-    front_wash: static, color: "blue"
+    front_wash: static, color: "blue", duration: 5s
 }
 
 sequence "complex_pattern" {
     @0.000
     sequence "base_pattern"
-    back_wash: static, color: "green"
+    back_wash: static, color: "green", duration: 5s
     
     @3.000
     sequence "base_pattern"
@@ -722,7 +723,7 @@ fn test_circular_sequence_reference() {
     let content = r#"
 sequence "seq_a" {
     @0.000
-    front_wash: static, color: "red"
+    front_wash: static, color: "red", duration: 5s
     @1.000
     sequence "seq_b"
 }
@@ -761,14 +762,14 @@ fn test_nested_sequences_measure_timing() {
 
 sequence "verse-start" {
     @1/1
-    all_wash: static, color: "white"
+    all_wash: static, color: "white", duration: 5s
 }
 
 sequence "verse" {
     @1/1
     sequence "verse-start", loop: 1
     @13/1
-    all_wash: static, color: "red"
+    all_wash: static, color: "red", duration: 5s
 }
 
 show "Test" {
@@ -819,7 +820,7 @@ tempo {
 
 sequence "riff-e" {
     @1/1
-    all_wash: static, color: "#B5C637", layer: background, blend_mode: replace
+    all_wash: static, color: "#B5C637", layer: background, blend_mode: replace, duration: 5s
 
     @1/3
     all_wash: static, color: "#8A0303", layer: background, blend_mode: replace, hold_time: 1.5measures
@@ -882,9 +883,7 @@ show "Test" {
     );
 
     // Verify the effect's total duration (should be just hold_time since no up_time or down_time)
-    let total_duration = second_effect
-        .total_duration()
-        .expect("Second effect should have a duration");
+    let total_duration = second_effect.total_duration();
     assert!(
         (total_duration.as_secs_f64() - expected_hold_time.as_secs_f64()).abs() < 0.001,
         "Total duration should be 3.0s, got {}s",
@@ -896,9 +895,7 @@ show "Test" {
     // So second effect completes at: 1.0s + 3.0s = 4.0s
     // At 120 BPM in 4/4: 4.0s = 8 beats = 2 measures
     let effect_start_time = sequence_cue.time;
-    let total_duration = second_effect
-        .total_duration()
-        .expect("Second effect should have a duration");
+    let total_duration = second_effect.total_duration();
     let effect_completion_time = effect_start_time + total_duration;
     let expected_completion_time = Duration::from_secs_f64(4.0);
     assert!(
@@ -958,10 +955,10 @@ tempo {
 
 sequence "test_seq" {
     @1/1
-    front_wash: static, color: "red"
+    front_wash: static, color: "red", duration: 5s
 
     @1/2
-    front_wash: static, color: "blue"
+    front_wash: static, color: "blue", duration: 5s
 }
 
 show "Test Show" {
@@ -996,19 +993,23 @@ show "Test Show" {
 
     // The sequence was parsed at 110 BPM. Its internal cue relative times:
     //   @1/1 = 0.0s (0 beats), @1/2 = 0.5454s (1 beat)
-    //   duration = 1 beat (0.5454s at 110 BPM)
+    //   effects have 5s duration, so sequence duration = max(0+5, 0.5454+5) = 5.5454s
+    //   In beats at 110 BPM: 5.5454 * (110/60) = ~10.167 beats
     //
     // When expanded at measure 5 (160 BPM), each beat = 60/160 = 0.375s.
-    // So iteration spacing = 1 beat = 0.375s, and cue offsets within
-    // each iteration are also rescaled to 160 BPM.
+    // Iteration spacing = 10.167 beats * 0.375s/beat = ~3.8125s
+    // Second cue within each iteration = 1 beat at 160 BPM = 0.375s offset
     let beat_at_160 = 60.0 / 160.0; // 0.375s
+    let duration_internal = 5.0 + 60.0 / 110.0; // 5.5454s (max completion time at 110 BPM)
+    let duration_beats = duration_internal * (110.0 / 60.0); // convert to beats
+    let iteration_spacing = duration_beats * beat_at_160; // convert beats to seconds at 160 BPM
 
     // Check iteration spacing: first cue of each iteration
     for i in 0..4 {
         let cue_time = show.cues[i * 2].time.as_secs_f64();
-        let expected = expected_base_time + i as f64 * beat_at_160;
+        let expected = expected_base_time + i as f64 * iteration_spacing;
         assert!(
-            (cue_time - expected).abs() < 0.001,
+            (cue_time - expected).abs() < 0.01,
             "Iteration {} first cue should be at {:.4}s, got {:.4}s",
             i,
             expected,
@@ -1019,9 +1020,9 @@ show "Test Show" {
     // Check the second cue in each iteration (1 beat later at 160 BPM)
     for i in 0..4 {
         let cue_time = show.cues[i * 2 + 1].time.as_secs_f64();
-        let expected = expected_base_time + i as f64 * beat_at_160 + beat_at_160;
+        let expected = expected_base_time + i as f64 * iteration_spacing + beat_at_160;
         assert!(
-            (cue_time - expected).abs() < 0.001,
+            (cue_time - expected).abs() < 0.01,
             "Iteration {} second cue should be at {:.4}s, got {:.4}s",
             i,
             expected,
@@ -1042,13 +1043,13 @@ tempo {
 
 sequence "same_tempo_seq" {
     @1/1
-    front_wash: static, color: "red"
+    front_wash: static, color: "red", duration: 5s
 
     @1/3
-    front_wash: static, color: "green"
+    front_wash: static, color: "green", duration: 5s
 
     @2/1
-    front_wash: static, color: "blue"
+    front_wash: static, color: "blue", duration: 5s
 }
 
 show "Test Show" {

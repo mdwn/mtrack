@@ -271,7 +271,7 @@ mod test {
             &dsl_path,
             r#"show "test" {
     @00:00.000
-    front_wash: static color: "blue", dimmer: 100%
+    front_wash: static color: "blue", duration: 5s, dimmer: 100%
 }"#,
         )
         .unwrap();
@@ -300,9 +300,9 @@ mod test {
             &dsl_path,
             r#"show "test" {
     @00:00.000
-    front_wash: static color: "blue", dimmer: 100%
+    front_wash: static color: "blue", duration: 5s, dimmer: 100%
     @00:05.000
-    front_wash: static color: "red", dimmer: 50%
+    front_wash: static color: "red", duration: 5s, dimmer: 50%
 }"#,
         )
         .unwrap();
@@ -369,7 +369,7 @@ mod test {
             &dsl_path,
             r#"show "test" {
     @00:00.000
-    front_wash: static color: "blue", dimmer: 100%
+    front_wash: static color: "blue", duration: 5s, dimmer: 100%
 }"#,
         )
         .unwrap();
@@ -409,7 +409,7 @@ mod test {
             &dsl_path,
             r#"show "test" {
     @00:00.000
-    unknown_fixture: static color: "blue", dimmer: 100%
+    unknown_fixture: static color: "blue", duration: 5s, dimmer: 100%
 }"#,
         )
         .unwrap();
@@ -449,7 +449,7 @@ mod test {
             &dsl_path,
             r#"show "test" {
     @00:00.000
-    front_wash: static color: "blue", dimmer: 100%
+    front_wash: static color: "blue", duration: 5s, dimmer: 100%
 }"#,
         )
         .unwrap();
@@ -509,11 +509,11 @@ mod test {
             &dsl_path,
             r#"show "test" {
     @00:00.000
-    front_wash: static color: "blue", dimmer: 100%
+    front_wash: static color: "blue", duration: 5s, dimmer: 100%
     @00:01.000
     clear()
     @00:02.000
-    front_wash: static color: "red", dimmer: 50%
+    front_wash: static color: "red", duration: 5s, dimmer: 50%
 }"#,
         )
         .unwrap();
@@ -544,9 +544,9 @@ mod test {
             r#"
 sequence "flash" {
     @00:00.000
-    front_wash: static color: "white", dimmer: 100%
+    front_wash: static color: "white", duration: 5s, dimmer: 100%
     @00:00.500
-    front_wash: static color: "black", dimmer: 0%
+    front_wash: static color: "black", duration: 5s, dimmer: 0%
 }
 
 show "test" {
@@ -555,7 +555,7 @@ show "test" {
     @00:01.000
     stop sequence "flash"
     @00:02.000
-    front_wash: static color: "red", dimmer: 50%
+    front_wash: static color: "red", duration: 5s, dimmer: 50%
 }"#,
         )
         .unwrap();
@@ -582,7 +582,7 @@ show "test" {
             "test".to_string(),
             crate::lighting::effects::EffectType::Static {
                 parameters: std::collections::HashMap::new(),
-                duration: None,
+                duration: Duration::ZERO,
             },
             vec!["group1".to_string()],
             None,
@@ -603,7 +603,7 @@ show "test" {
             "test".to_string(),
             crate::lighting::effects::EffectType::Static {
                 parameters: std::collections::HashMap::new(),
-                duration: None,
+                duration: Duration::ZERO,
             },
             vec!["group1".to_string()],
             None,
@@ -623,7 +623,7 @@ show "test" {
             &dsl_path1,
             r#"show "show1" {
     @00:00.000
-    front_wash: static color: "blue", dimmer: 100%
+    front_wash: static color: "blue", duration: 5s, dimmer: 100%
 }"#,
         )
         .unwrap();
@@ -631,7 +631,7 @@ show "test" {
             &dsl_path2,
             r#"show "show2" {
     @00:01.000
-    rear_wash: static color: "red", dimmer: 50%
+    rear_wash: static color: "red", duration: 5s, dimmer: 50%
 }"#,
         )
         .unwrap();
@@ -659,7 +659,7 @@ show "test" {
             &dsl_path,
             r#"show "test" {
     @00:00.000
-    front_wash: static color: "blue", dimmer: 100%
+    front_wash: static color: "blue", duration: 5s, dimmer: 100%
 }"#,
         )
         .unwrap();
@@ -686,7 +686,7 @@ show "test" {
             &dsl_path,
             r#"show "test" {
     @00:00.000
-    front_wash: static color: "red", dimmer: 50%
+    front_wash: static color: "red", duration: 5s, dimmer: 50%
 }"#,
         )
         .unwrap();
@@ -729,7 +729,7 @@ show "test" {
             &dsl_path,
             r#"show "test" {
     @00:00.000
-    front_wash: static color: "blue", dimmer: 100%
+    front_wash: static color: "blue", duration: 5s, dimmer: 100%
 }"#,
         )
         .unwrap();
@@ -784,7 +784,7 @@ show "test" {
             &dsl_path,
             r#"show "test" {
     @00:00.000
-    front_wash: static color: "blue", dimmer: 100%
+    front_wash: static color: "blue", duration: 5s, dimmer: 100%
 }"#,
         )
         .unwrap();

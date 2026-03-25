@@ -15,107 +15,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use super::super::effects::{BlendMode, EffectInstance, EffectLayer, EffectType};
-
-/// Stop effects that conflict with the new effect
-pub(crate) fn stop_conflicting_effects(
-    active_effects: &mut HashMap<String, EffectInstance>,
-    new_effect: &EffectInstance,
-) {
-    let mut to_remove = Vec::new();
-
-    for (effect_id, effect) in active_effects.iter() {
-        // Skip if effect is already disabled
-        if !effect.enabled {
-            continue;
-        }
-
-        // Check if effects should conflict based on sophisticated rules
-        if should_effects_conflict(effect, new_effect) {
-            to_remove.push(effect_id.clone());
-        }
-    }
-
-    for effect_id in to_remove {
-        active_effects.remove(&effect_id);
-    }
-}
-
-/// Determine if two effects should conflict based on sophisticated rules
-pub(crate) fn should_effects_conflict(existing: &EffectInstance, new: &EffectInstance) -> bool {
-    // 1. Layer-based conflict resolution
-    // Effects in different layers don't conflict — the layering system
-    // is designed to allow effects in different layers to coexist and blend
-    if existing.layer != new.layer {
-        return false;
-    }
-
-    // 2. Priority-based conflict resolution within the same layer
-    if existing.priority < new.priority {
-        return have_fixture_overlap(existing, new);
-    }
-
-    // 3. Effect type specific conflict rules
-    effects_conflict_by_type(existing, new)
-}
-
-/// Check if effects have overlapping target fixtures
-fn have_fixture_overlap(existing: &EffectInstance, new: &EffectInstance) -> bool {
-    existing
-        .target_fixtures
-        .iter()
-        .any(|fixture| new.target_fixtures.contains(fixture))
-}
-
-/// Determine conflicts based on effect types and blend modes
-fn effects_conflict_by_type(existing: &EffectInstance, new: &EffectInstance) -> bool {
-    use EffectType::{Chase, ColorCycle, Dimmer, Pulse, Rainbow, Static, Strobe};
-
-    // If effects don't overlap fixtures, they don't conflict
-    if !have_fixture_overlap(existing, new) {
-        return false;
-    }
-
-    // Check blend mode compatibility
-    if blend_modes_are_compatible(existing.blend_mode, new.blend_mode) {
-        return false;
-    }
-
-    // Effect type specific conflict rules
-    match (&existing.effect_type, &new.effect_type) {
-        // Same type conflicts (except dimmer/pulse which layer)
-        (Static { .. }, Static { .. })
-        | (ColorCycle { .. }, ColorCycle { .. })
-        | (Strobe { .. }, Strobe { .. })
-        | (Chase { .. }, Chase { .. })
-        | (Rainbow { .. }, Rainbow { .. }) => true,
-
-        // Cross-type conflicts between color effects
-        (Static { .. }, ColorCycle { .. })
-        | (ColorCycle { .. }, Static { .. })
-        | (Rainbow { .. }, Static { .. })
-        | (Static { .. }, Rainbow { .. })
-        | (Rainbow { .. }, ColorCycle { .. })
-        | (ColorCycle { .. }, Rainbow { .. }) => true,
-
-        // Dimmer and pulse effects are generally compatible (they layer)
-        (Dimmer { .. }, _) | (_, Dimmer { .. }) | (Pulse { .. }, _) | (_, Pulse { .. }) => false,
-
-        // Default: effects of different types don't conflict
-        _ => false,
-    }
-}
-
-/// Check if two blend modes are compatible (can layer together)
-pub(crate) fn blend_modes_are_compatible(existing: BlendMode, new: BlendMode) -> bool {
-    // Replace mode conflicts with everything
-    if existing == BlendMode::Replace || new == BlendMode::Replace {
-        return false;
-    }
-
-    // All other blend modes (Multiply, Add, Overlay, Screen) can layer together
-    true
-}
+use super::super::effects::{EffectInstance, EffectLayer};
 
 /// Clear a layer - immediately stops all effects on the specified layer
 pub(crate) fn clear_layer(
@@ -254,13 +154,15 @@ pub(crate) fn set_layer_speed_master(
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::time::Duration;
 
+    use super::super::super::effects::EffectType;
     use super::*;
 
     fn static_effect() -> EffectType {
         EffectType::Static {
             parameters: HashMap::new(),
-            duration: None,
+            duration: Duration::from_secs(5),
         }
     }
 
@@ -275,141 +177,6 @@ mod tests {
         );
         inst.layer = layer;
         inst
-    }
-
-    fn make_effect_with_blend(
-        id: &str,
-        fixtures: Vec<&str>,
-        layer: EffectLayer,
-        blend: BlendMode,
-    ) -> EffectInstance {
-        let mut inst = make_effect(id, fixtures, layer);
-        inst.blend_mode = blend;
-        inst
-    }
-
-    fn make_effect_with_priority(
-        id: &str,
-        fixtures: Vec<&str>,
-        layer: EffectLayer,
-        priority: u8,
-    ) -> EffectInstance {
-        let mut inst = make_effect(id, fixtures, layer);
-        inst.priority = priority;
-        inst
-    }
-
-    // ── blend_modes_are_compatible ─────────────────────────────────
-
-    #[test]
-    fn replace_incompatible_with_anything() {
-        assert!(!blend_modes_are_compatible(
-            BlendMode::Replace,
-            BlendMode::Add
-        ));
-        assert!(!blend_modes_are_compatible(
-            BlendMode::Add,
-            BlendMode::Replace
-        ));
-        assert!(!blend_modes_are_compatible(
-            BlendMode::Replace,
-            BlendMode::Replace
-        ));
-    }
-
-    #[test]
-    fn non_replace_modes_compatible() {
-        assert!(blend_modes_are_compatible(
-            BlendMode::Add,
-            BlendMode::Multiply
-        ));
-        assert!(blend_modes_are_compatible(
-            BlendMode::Multiply,
-            BlendMode::Screen
-        ));
-        assert!(blend_modes_are_compatible(
-            BlendMode::Overlay,
-            BlendMode::Add
-        ));
-    }
-
-    // ── should_effects_conflict ────────────────────────────────────
-
-    #[test]
-    fn different_layers_no_conflict() {
-        let e1 = make_effect("a", vec!["f1"], EffectLayer::Background);
-        let e2 = make_effect("b", vec!["f1"], EffectLayer::Foreground);
-        assert!(!should_effects_conflict(&e1, &e2));
-    }
-
-    #[test]
-    fn same_layer_same_fixtures_conflicts() {
-        let e1 = make_effect("a", vec!["f1"], EffectLayer::Background);
-        let e2 = make_effect("b", vec!["f1"], EffectLayer::Background);
-        assert!(should_effects_conflict(&e1, &e2));
-    }
-
-    #[test]
-    fn same_layer_no_fixture_overlap_no_conflict() {
-        let e1 = make_effect("a", vec!["f1"], EffectLayer::Background);
-        let e2 = make_effect("b", vec!["f2"], EffectLayer::Background);
-        assert!(!should_effects_conflict(&e1, &e2));
-    }
-
-    #[test]
-    fn higher_priority_new_effect_conflicts_with_overlap() {
-        let e1 = make_effect_with_priority("a", vec!["f1"], EffectLayer::Background, 0);
-        let e2 = make_effect_with_priority("b", vec!["f1"], EffectLayer::Background, 5);
-        assert!(should_effects_conflict(&e1, &e2));
-    }
-
-    #[test]
-    fn compatible_blend_modes_no_conflict() {
-        let e1 = make_effect_with_blend("a", vec!["f1"], EffectLayer::Background, BlendMode::Add);
-        let e2 = make_effect_with_blend(
-            "b",
-            vec!["f1"],
-            EffectLayer::Background,
-            BlendMode::Multiply,
-        );
-        assert!(!should_effects_conflict(&e1, &e2));
-    }
-
-    // ── stop_conflicting_effects ───────────────────────────────────
-
-    #[test]
-    fn stop_removes_conflicting() {
-        let mut active = HashMap::new();
-        active.insert(
-            "a".to_string(),
-            make_effect("a", vec!["f1"], EffectLayer::Background),
-        );
-        let new_effect = make_effect("b", vec!["f1"], EffectLayer::Background);
-        stop_conflicting_effects(&mut active, &new_effect);
-        assert!(!active.contains_key("a"));
-    }
-
-    #[test]
-    fn stop_keeps_non_conflicting() {
-        let mut active = HashMap::new();
-        active.insert(
-            "a".to_string(),
-            make_effect("a", vec!["f2"], EffectLayer::Background),
-        );
-        let new_effect = make_effect("b", vec!["f1"], EffectLayer::Background);
-        stop_conflicting_effects(&mut active, &new_effect);
-        assert!(active.contains_key("a"));
-    }
-
-    #[test]
-    fn stop_skips_disabled_effects() {
-        let mut active = HashMap::new();
-        let mut disabled = make_effect("a", vec!["f1"], EffectLayer::Background);
-        disabled.enabled = false;
-        active.insert("a".to_string(), disabled);
-        let new_effect = make_effect("b", vec!["f1"], EffectLayer::Background);
-        stop_conflicting_effects(&mut active, &new_effect);
-        assert!(active.contains_key("a")); // Disabled effect not removed
     }
 
     // ── clear_layer ────────────────────────────────────────────────

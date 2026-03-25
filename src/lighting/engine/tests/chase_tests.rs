@@ -39,6 +39,7 @@ fn test_chase_fixture_boundaries() {
             speed: TempoAwareSpeed::Fixed(1.0),
             direction: ChaseDirection::LeftToRight,
             transition: CycleTransition::Snap,
+            duration: Duration::from_secs(10),
         },
         vec![
             "fixture_0".to_string(),
@@ -114,6 +115,7 @@ fn test_chase_zero_speed() {
             speed: TempoAwareSpeed::Fixed(0.0), // Zero speed!
             direction: ChaseDirection::LeftToRight,
             transition: CycleTransition::Snap,
+            duration: Duration::from_secs(10),
         },
         vec![
             "fixture_0".to_string(),
@@ -165,6 +167,7 @@ fn test_chase_empty_fixtures() {
             speed: TempoAwareSpeed::Fixed(1.0),
             direction: ChaseDirection::LeftToRight,
             transition: CycleTransition::Snap,
+            duration: Duration::from_secs(10),
         },
         vec![], // Empty fixture list!
         None,
@@ -207,6 +210,7 @@ fn test_chase_effect() {
             speed: TempoAwareSpeed::Fixed(1.0),
             direction: ChaseDirection::LeftToRight,
             transition: CycleTransition::Snap,
+            duration: Duration::from_secs(10),
         },
         vec![
             "fixture1".to_string(),

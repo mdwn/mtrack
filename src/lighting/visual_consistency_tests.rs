@@ -158,7 +158,7 @@ mod tests {
                 base_level: 0.5,
                 pulse_amplitude: 0.5,
                 frequency: TempoAwareFrequency::Fixed(1.0), // 1 Hz
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             vec![
                 "rgb_fixture".to_string(),
@@ -219,7 +219,7 @@ mod tests {
             "strobe_test".to_string(),
             EffectType::Strobe {
                 frequency: TempoAwareFrequency::Fixed(2.0), // 2 Hz
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             vec![
                 "rgb_fixture".to_string(),
@@ -284,6 +284,7 @@ mod tests {
                 speed: TempoAwareSpeed::Fixed(1.0),
                 direction: ChaseDirection::LeftToRight,
                 transition: CycleTransition::Snap,
+                duration: Duration::from_secs(5),
             },
             vec![
                 "rgb_fixture".to_string(),

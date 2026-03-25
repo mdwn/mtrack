@@ -1,7 +1,7 @@
 show "Effect Layering Demo" {
     @00:00.000
     # Background layer: Static blue color with 2 second fade in
-    front_wash: static color: "blue", dimmer: 100%, layer: background, blend_mode: replace, up_time: 2s
+    front_wash: static color: "blue", dimmer: 100%, layer: background, blend_mode: replace, up_time: 2s, duration: 5s
     
     @00:02.000
     # Midground layer: Dimmer with exponential curve - slow start, fast end (persists)
@@ -9,15 +9,15 @@ show "Effect Layering Demo" {
     
     @00:04.000
     # Foreground layer: Strobe effect on top of the dimmed blue with crossfades
-    front_wash: strobe frequency: 2, layer: foreground, blend_mode: overlay, up_time: 0.5s, down_time: 0.5s, hold_time: 5s
+    front_wash: strobe frequency: 2, layer: foreground, blend_mode: overlay, up_time: 0.5s, down_time: 0.5s, hold_time: 5s, duration: 5s
     
     @00:10.000
     # Stop the strobe
-    front_wash: strobe frequency: 0, layer: foreground, blend_mode: replace
+    front_wash: strobe frequency: 0, layer: foreground, blend_mode: replace, duration: 5s
     
     @00:12.000
     # Add a color cycle on midground layer with crossfades
-    back_wash: cycle color: "red", color: "green", color: "blue", speed: 1.0, direction: forward, layer: midground, blend_mode: replace, up_time: 1.5s, down_time: 1s, hold_time: 5.5s
+    back_wash: cycle color: "red", color: "green", color: "blue", speed: 1.0, direction: forward, layer: midground, blend_mode: replace, up_time: 1.5s, down_time: 1s, hold_time: 5.5s, duration: 10s
     
     @00:15.000
     # Add a dimmer with logarithmic curve - fast start, slow end (persists)
@@ -25,7 +25,7 @@ show "Effect Layering Demo" {
     
     @00:18.000
     # Add a pulse effect on top with crossfades
-    back_wash: pulse frequency: 4, layer: foreground, blend_mode: overlay, up_time: 1s, down_time: 1s, hold_time: 5s
+    back_wash: pulse frequency: 4, layer: foreground, blend_mode: overlay, up_time: 1s, down_time: 1s, hold_time: 5s, duration: 5s
     
     @00:25.000
     # Fade to black with sine curve - smooth ease-in-out (persists)

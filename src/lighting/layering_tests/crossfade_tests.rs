@@ -28,7 +28,7 @@ fn test_crossfade_multiplier_calculation() {
         "test".to_string(),
         EffectType::Static {
             parameters: HashMap::new(),
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -142,7 +142,7 @@ fn test_crossfade_multiplier_no_up_time_no_hold_time() {
         "test".to_string(),
         EffectType::Static {
             parameters: HashMap::new(),
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -219,7 +219,7 @@ fn test_static_effect_crossfade_comprehensive() {
         "static_test".to_string(),
         EffectType::Static {
             parameters,
-            duration: Some(Duration::from_secs(10)), // Total duration
+            duration: Duration::from_secs(10), // Total duration
         },
         vec!["test_fixture".to_string()],
         EffectLayer::Background,
@@ -307,6 +307,7 @@ fn test_color_cycle_effect_crossfade() {
             speed: TempoAwareSpeed::Fixed(1.0), // 1 cycle per second
             direction: CycleDirection::Forward,
             transition: CycleTransition::Snap,
+            duration: Duration::from_secs(11),
         },
         vec!["test_fixture".to_string()],
         EffectLayer::Background,
@@ -362,7 +363,7 @@ fn test_pulse_effect_crossfade() {
             base_level: 0.5,
             pulse_amplitude: 0.5,
             frequency: TempoAwareFrequency::Fixed(2.0), // 2 Hz
-            duration: Some(Duration::from_secs(5)),
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         EffectLayer::Midground,
@@ -422,6 +423,7 @@ fn test_rainbow_effect_crossfade() {
             speed: TempoAwareSpeed::Fixed(1.0), // 1 cycle per second
             saturation: 1.0,
             brightness: 1.0,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         EffectLayer::Background,
@@ -560,7 +562,7 @@ fn test_static_effect_crossfade() {
         "static_blue".to_string(),
         EffectType::Static {
             parameters,
-            duration: Some(Duration::from_secs(3)),
+            duration: Duration::from_secs(3),
         },
         vec!["test_fixture".to_string()],
         EffectLayer::Background,

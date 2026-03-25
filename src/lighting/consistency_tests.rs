@@ -71,7 +71,7 @@ mod tests {
             format!("static_{}", name),
             EffectType::Static {
                 parameters: params,
-                duration: None,
+                duration: Duration::from_secs(5),
             },
             vec![name.to_string()],
             None,
@@ -287,11 +287,11 @@ mod tests {
         let (_, _, b15) = get_rgb(1, 1, &cmds_15);
         assert!((50..=75).contains(&b15));
 
-        // effect ends at 2.0s; dimmer effects are permanent so final dimmed value (0) persists
+        // effect ends at 2.0s; dimmer is removed, underlying static blue shows through
         let _cmds_2 = eng.update(Duration::from_millis(500), None).unwrap();
         let cmds_after = eng.update(Duration::from_millis(10), None).unwrap();
         let (_, _, b_after) = get_rgb(1, 1, &cmds_after);
-        assert_eq!(b_after, 0, "Dimmer should persist at 0.0 after completion");
+        assert_eq!(b_after, 255, "After dimmer completes, blue returns to full");
     }
 
     #[test]
@@ -317,6 +317,7 @@ mod tests {
                 speed: TempoAwareSpeed::Fixed(1.0),
                 direction: CycleDirection::Forward,
                 transition: CycleTransition::Snap,
+                duration: Duration::from_secs(5),
             },
             vec!["fx_rgb".to_string()],
             None,
@@ -334,6 +335,7 @@ mod tests {
                 speed: TempoAwareSpeed::Fixed(1.0),
                 direction: CycleDirection::Forward,
                 transition: CycleTransition::Snap,
+                duration: Duration::from_secs(5),
             },
             vec!["fx_dim".to_string()],
             None,
@@ -388,7 +390,7 @@ mod tests {
             "strobe_rgb".to_string(),
             EffectType::Strobe {
                 frequency: TempoAwareFrequency::Fixed(10.0),
-                duration: Some(Duration::from_secs(2)),
+                duration: Duration::from_secs(2),
             },
             vec!["fx_rgb".to_string()],
             None,
@@ -403,7 +405,7 @@ mod tests {
             "strobe_dim".to_string(),
             EffectType::Strobe {
                 frequency: TempoAwareFrequency::Fixed(10.0),
-                duration: Some(Duration::from_secs(2)),
+                duration: Duration::from_secs(2),
             },
             vec!["fx_dim".to_string()],
             None,
@@ -460,7 +462,7 @@ mod tests {
                 base_level: 0.2,
                 pulse_amplitude: 0.8,
                 frequency: TempoAwareFrequency::Fixed(1.0),
-                duration: Some(Duration::from_secs(2)),
+                duration: Duration::from_secs(2),
             },
             vec!["fx_rgb".to_string()],
             None,
@@ -477,7 +479,7 @@ mod tests {
                 base_level: 0.2,
                 pulse_amplitude: 0.8,
                 frequency: TempoAwareFrequency::Fixed(1.0),
-                duration: Some(Duration::from_secs(2)),
+                duration: Duration::from_secs(2),
             },
             vec!["fx_dim".to_string()],
             None,
@@ -535,6 +537,7 @@ mod tests {
                 speed: TempoAwareSpeed::Fixed(2.0),
                 direction: ChaseDirection::LeftToRight,
                 transition: CycleTransition::Snap,
+                duration: Duration::from_secs(5),
             },
             vec!["fx_rgb".to_string()],
             None,
@@ -552,6 +555,7 @@ mod tests {
                 speed: TempoAwareSpeed::Fixed(2.0),
                 direction: ChaseDirection::LeftToRight,
                 transition: CycleTransition::Snap,
+                duration: Duration::from_secs(5),
             },
             vec!["fx_dim".to_string()],
             None,
@@ -591,6 +595,7 @@ mod tests {
                 speed: TempoAwareSpeed::Fixed(1.0),
                 saturation: 1.0,
                 brightness: 1.0,
+                duration: Duration::from_secs(5),
             },
             vec!["fx_rgb".to_string()],
             None,
@@ -607,6 +612,7 @@ mod tests {
                 speed: TempoAwareSpeed::Fixed(1.0),
                 saturation: 1.0,
                 brightness: 1.0,
+                duration: Duration::from_secs(5),
             },
             vec!["fx_dim".to_string()],
             None,
@@ -667,6 +673,7 @@ mod tests {
                             speed: TempoAwareSpeed::Fixed(speed),
                             direction,
                             transition: CycleTransition::Snap,
+                            duration: Duration::from_secs(5),
                         },
                         vec!["fx_rgb".to_string()],
                         None,
@@ -684,6 +691,7 @@ mod tests {
                             speed: TempoAwareSpeed::Fixed(speed),
                             direction,
                             transition: CycleTransition::Snap,
+                            duration: Duration::from_secs(5),
                         },
                         vec!["fx_dim".to_string()],
                         None,
@@ -742,7 +750,7 @@ mod tests {
                 "strobe_rgb_param".to_string(),
                 EffectType::Strobe {
                     frequency: TempoAwareFrequency::Fixed(f),
-                    duration: Some(Duration::from_secs(1)),
+                    duration: Duration::from_secs(1),
                 },
                 vec!["fx_rgb".to_string()],
                 None,
@@ -756,7 +764,7 @@ mod tests {
                 "strobe_dim_param".to_string(),
                 EffectType::Strobe {
                     frequency: TempoAwareFrequency::Fixed(f),
-                    duration: Some(Duration::from_secs(1)),
+                    duration: Duration::from_secs(1),
                 },
                 vec!["fx_dim".to_string()],
                 None,
@@ -817,7 +825,7 @@ mod tests {
                             base_level: base,
                             pulse_amplitude: pulse,
                             frequency: TempoAwareFrequency::Fixed(freq),
-                            duration: Some(Duration::from_secs(1)),
+                            duration: Duration::from_secs(1),
                         },
                         vec!["fx_rgb".to_string()],
                         None,
@@ -833,7 +841,7 @@ mod tests {
                             base_level: base,
                             pulse_amplitude: pulse,
                             frequency: TempoAwareFrequency::Fixed(freq),
-                            duration: Some(Duration::from_secs(1)),
+                            duration: Duration::from_secs(1),
                         },
                         vec!["fx_dim".to_string()],
                         None,
@@ -901,6 +909,7 @@ mod tests {
                             speed: TempoAwareSpeed::Fixed(speed),
                             direction: dir,
                             transition: CycleTransition::Snap,
+                            duration: Duration::from_secs(5),
                         },
                         vec!["fx_rgb".to_string()],
                         None,
@@ -917,6 +926,7 @@ mod tests {
                             speed: TempoAwareSpeed::Fixed(speed),
                             direction: dir,
                             transition: CycleTransition::Snap,
+                            duration: Duration::from_secs(5),
                         },
                         vec!["fx_dim".to_string()],
                         None,
@@ -963,6 +973,7 @@ mod tests {
                             speed: TempoAwareSpeed::Fixed(speed),
                             saturation: sat,
                             brightness: bri,
+                            duration: Duration::from_secs(5),
                         },
                         vec!["fx_rgb".to_string()],
                         None,
@@ -978,6 +989,7 @@ mod tests {
                             speed: TempoAwareSpeed::Fixed(speed),
                             saturation: sat,
                             brightness: bri,
+                            duration: Duration::from_secs(5),
                         },
                         vec!["fx_dim".to_string()],
                         None,
@@ -1001,68 +1013,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn test_locks_foreground_replace_with_dimmer_multiply_passthrough() {
-        let mut eng = EffectEngine::new();
-        register_rgb_only_fixture(&mut eng, "fx", 1);
-
-        // Background blue
-        start_static_rgb(&mut eng, "fx", 0.0, 0.0, 1.0, EffectLayer::Background);
-        eng.update(Duration::from_millis(10), None).unwrap();
-
-        // Foreground replace static red locks RGB
-        let mut fg = EffectInstance::new(
-            "fg_lock".to_string(),
-            EffectType::Static {
-                parameters: {
-                    let mut p = HashMap::new();
-                    p.insert("red".to_string(), 1.0);
-                    p.insert("green".to_string(), 0.0);
-                    p.insert("blue".to_string(), 0.0);
-                    p
-                },
-                duration: None,
-            },
-            vec!["fx".to_string()],
-            None,
-            None,
-            None,
-        );
-        fg.layer = EffectLayer::Foreground;
-        fg.blend_mode = BlendMode::Replace;
-        eng.start_effect(fg).unwrap();
-
-        // Let lock engage
-        eng.update(Duration::from_millis(50), None).unwrap();
-
-        // Foreground multiply dimmer - multipliers pass through channel locks
-        start_dimmer(
-            &mut eng,
-            "fx",
-            1.0,
-            0.0,
-            Duration::from_millis(500),
-            EffectLayer::Foreground,
-            BlendMode::Multiply,
-        );
-
-        let cmds_mid = eng.update(Duration::from_millis(250), None).unwrap();
-        let (r_mid, _, _) = get_rgb(1, 1, &cmds_mid);
-        // At midpoint, red should be dimmed to ~50% (multiplier passes through lock)
-        assert!(
-            (120..=135).contains(&r_mid),
-            "Expected red ~127 at midpoint, got {}",
-            r_mid
-        );
-
-        // After dimmer completes, final dimmed value (0) persists (dimmers are permanent)
-        let cmds_end = eng.update(Duration::from_millis(300), None).unwrap();
-        let (r_end, g_end, b_end) = get_rgb(1, 1, &cmds_end);
-        assert_eq!(r_end, 0);
-        assert_eq!(g_end, 0);
-        assert_eq!(b_end, 0);
     }
 
     #[test]
@@ -1114,6 +1064,7 @@ mod tests {
                 speed: TempoAwareSpeed::Fixed(0.1),
                 saturation: 1.0,
                 brightness: 1.0,
+                duration: Duration::from_secs(5),
             },
             vec!["fx".to_string()],
             None,
@@ -1133,6 +1084,7 @@ mod tests {
                 speed: TempoAwareSpeed::Fixed(10.0),
                 saturation: 1.0,
                 brightness: 1.0,
+                duration: Duration::from_secs(5),
             },
             vec!["fx".to_string()],
             None,

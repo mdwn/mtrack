@@ -37,7 +37,7 @@ fn test_layering_demo() {
         "static_blue".to_string(),
         EffectType::Static {
             parameters: blue_params,
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["rgb_par_1".to_string()],
         EffectLayer::Background,
@@ -61,7 +61,7 @@ fn test_layering_demo() {
         "strobe".to_string(),
         EffectType::Strobe {
             frequency: TempoAwareFrequency::Fixed(2.0), // 2 Hz strobe
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["rgb_par_1".to_string()],
         EffectLayer::Foreground,
@@ -157,7 +157,7 @@ fn test_multiple_effects_simultaneous() {
         "static_blue".to_string(),
         EffectType::Static {
             parameters: static_params,
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec![
             "fixture_1".to_string(),
@@ -353,7 +353,7 @@ fn test_astera_pixelblock_real_behavior() {
         "static_blue".to_string(),
         EffectType::Static {
             parameters: static_params,
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["front_wash".to_string()],
         EffectLayer::Background,
@@ -481,7 +481,7 @@ fn test_permanent_vs_temporary_effects() {
                 params.insert("dimmer".to_string(), 1.0);
                 params
             },
-            duration: None, // Indefinite static effect
+            duration: Duration::from_secs(5), // Indefinite static effect
         },
         vec!["test_fixture".to_string()],
         None,
@@ -508,7 +508,7 @@ fn test_permanent_vs_temporary_effects() {
                 params.insert("dimmer".to_string(), 1.0);
                 params
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -593,7 +593,7 @@ fn test_grandma_style_fade_out() {
                 params.insert("dimmer".to_string(), 1.0);
                 params
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["front_wash".to_string()],
         None,
@@ -620,7 +620,7 @@ fn test_grandma_style_fade_out() {
                 params.insert("dimmer".to_string(), 0.0);
                 params
             },
-            duration: Some(Duration::from_secs(2)), // Make it timed
+            duration: Duration::from_secs(2), // Make it timed
         },
         vec!["front_wash".to_string()],
         Some(Duration::from_secs(0)), // up_time
@@ -845,8 +845,8 @@ fn test_layering_show_effect_execution() {
     // Test the exact DSL from layering_show.light
     let dsl_content = r#"show "Effect Layering Demo" {
     @00:00.000
-    front_wash: static color: "blue", dimmer: 100%, layer: background, blend_mode: replace
-    
+    front_wash: static color: "blue", duration: 5s, dimmer: 100%, layer: background, blend_mode: replace
+
     @00:02.000
     front_wash: dimmer start_level: 1.0, end_level: 0.5, duration: 5s, layer: midground, blend_mode: multiply
 }"#;
@@ -996,7 +996,7 @@ fn test_custom_rgb_dimming() {
         "rgb_static".to_string(),
         EffectType::Static {
             parameters: static_params,
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["rgb_fixture".to_string()],
         EffectLayer::Background,
@@ -1075,15 +1075,15 @@ fn test_custom_rgb_dimming() {
     let final_commands = engine.update(Duration::from_millis(2000), None).unwrap();
     assert_eq!(final_commands.len(), 3); // RGB channels only
 
-    // At the end (4000ms), the dimmer effect should have completed and persisted at 0.0
-    // (dimmers are permanent, so the final dimmed value persists)
+    // At the end (4000ms), the dimmer effect has completed and been removed.
+    // The underlying static RGB effect shows through at full brightness.
     let red_cmd = final_commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     let green_cmd = final_commands.iter().find(|cmd| cmd.channel == 2).unwrap();
     let blue_cmd = final_commands.iter().find(|cmd| cmd.channel == 3).unwrap();
 
-    assert_eq!(red_cmd.value, 0); // Dimmed to 0 and persisted
-    assert_eq!(green_cmd.value, 0); // Dimmed to 0 and persisted
-    assert_eq!(blue_cmd.value, 0); // Dimmed to 0 and persisted
+    assert_eq!(red_cmd.value, 255); // Static red returns to full
+    assert_eq!(green_cmd.value, 127); // Static green returns to 50%
+    assert_eq!(blue_cmd.value, 63); // Static blue returns to 25%
 
     println!("✅ Custom RGB dimming test passed!");
     println!("✅ Dimmer maintains relative brightness ratios between colors");
@@ -1157,7 +1157,7 @@ fn test_software_strobing_rgb_only_fixture() {
         "strobe_effect".to_string(),
         EffectType::Strobe {
             frequency: TempoAwareFrequency::Fixed(2.0), // 2 Hz for easy testing
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["rgb_only_fixture".to_string()],
         EffectLayer::Foreground,
@@ -1234,7 +1234,7 @@ fn test_software_strobing_with_layering() {
                 params.insert("blue".to_string(), 1.0);
                 params
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["rgb_fixture".to_string()],
         EffectLayer::Background,
@@ -1246,7 +1246,7 @@ fn test_software_strobing_with_layering() {
         "strobe_effect".to_string(),
         EffectType::Strobe {
             frequency: TempoAwareFrequency::Fixed(2.0), // 2 Hz
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["rgb_fixture".to_string()],
         EffectLayer::Foreground,
@@ -1303,7 +1303,7 @@ fn test_software_strobing_simple() {
         "strobe_effect".to_string(),
         EffectType::Strobe {
             frequency: TempoAwareFrequency::Fixed(2.0), // 2 Hz
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["rgb_fixture".to_string()],
         EffectLayer::Foreground,
@@ -1365,7 +1365,7 @@ fn test_software_strobing_frequency_zero() {
                 params.insert("blue".to_string(), 1.0);
                 params
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["rgb_fixture".to_string()],
         EffectLayer::Background,
@@ -1377,7 +1377,7 @@ fn test_software_strobing_frequency_zero() {
         "strobe_off".to_string(),
         EffectType::Strobe {
             frequency: TempoAwareFrequency::Fixed(0.0), // Off
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["rgb_fixture".to_string()],
         EffectLayer::Foreground,
@@ -1447,7 +1447,7 @@ fn test_full_layering_show_sequence_with_replace() {
                 params.insert("dimmer".to_string(), 1.0);
                 params
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["front_wash".to_string()],
         EffectLayer::Background,
@@ -1497,6 +1497,7 @@ fn test_full_layering_show_sequence_with_replace() {
             speed: TempoAwareSpeed::Fixed(1.0),
             direction: CycleDirection::Forward,
             transition: CycleTransition::Snap,
+            duration: Duration::from_secs(10),
         },
         vec!["back_wash".to_string()],
         EffectLayer::Midground,
@@ -1526,7 +1527,7 @@ fn test_full_layering_show_sequence_with_replace() {
             base_level: 0.5,
             pulse_amplitude: 0.5,
             frequency: TempoAwareFrequency::Fixed(4.0),
-            duration: Some(Duration::from_secs(7)), // 1s up + 5s hold + 1s down
+            duration: Duration::from_secs(7), // 1s up + 5s hold + 1s down
         },
         vec!["back_wash".to_string()],
         EffectLayer::Foreground,
@@ -1572,7 +1573,7 @@ fn test_full_layering_show_sequence_with_replace() {
                 params.insert("dimmer".to_string(), 0.5); // Start at 50%
                 params
             },
-            duration: Some(Duration::from_secs(2)), // 2 second fade out
+            duration: Duration::from_secs(2), // 2 second fade out
         },
         vec!["front_wash".to_string()],
         EffectLayer::Foreground,
@@ -1590,7 +1591,7 @@ fn test_full_layering_show_sequence_with_replace() {
                 params.insert("dimmer".to_string(), 0.3); // Start at 30%
                 params
             },
-            duration: Some(Duration::from_secs(2)), // 2 second fade out
+            duration: Duration::from_secs(2), // 2 second fade out
         },
         vec!["back_wash".to_string()],
         EffectLayer::Foreground,
@@ -1677,7 +1678,7 @@ fn test_complex_multi_layer_multi_effect_scenarios() {
                 params.insert("red".to_string(), 1.0);
                 params
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["fixture1".to_string(), "fixture2".to_string()],
         EffectLayer::Background,
@@ -1703,7 +1704,7 @@ fn test_complex_multi_layer_multi_effect_scenarios() {
             base_level: 0.5,
             pulse_amplitude: 0.3,
             frequency: TempoAwareFrequency::Fixed(2.0),
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["fixture1".to_string()],
         EffectLayer::Midground,
@@ -1714,7 +1715,7 @@ fn test_complex_multi_layer_multi_effect_scenarios() {
         "foreground_strobe".to_string(),
         EffectType::Strobe {
             frequency: TempoAwareFrequency::Fixed(2.0),
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["fixture2".to_string()],
         EffectLayer::Foreground,
@@ -1743,7 +1744,7 @@ fn test_complex_multi_layer_multi_effect_scenarios() {
                 params.insert("blue".to_string(), 1.0);
                 params
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["fixture1".to_string()],
         EffectLayer::Background, // Same layer as background_static
@@ -1754,7 +1755,7 @@ fn test_complex_multi_layer_multi_effect_scenarios() {
         "conflicting_strobe".to_string(),
         EffectType::Strobe {
             frequency: TempoAwareFrequency::Fixed(4.0),
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["fixture2".to_string()],
         EffectLayer::Foreground, // Same layer as foreground_strobe
@@ -1764,16 +1765,16 @@ fn test_complex_multi_layer_multi_effect_scenarios() {
     engine.start_effect(conflicting_static).unwrap();
     engine.start_effect(conflicting_strobe).unwrap();
 
-    // Conflicting effects should stop their counterparts
-    assert_eq!(engine.active_effects_count(), 4); // midground_dimmer + midground_pulse + conflicting_static + conflicting_strobe
-    assert!(!engine.has_effect("background_static"));
+    // With replacement semantics removed, all effects coexist
+    assert_eq!(engine.active_effects_count(), 6);
+    assert!(engine.has_effect("background_static"));
     assert!(engine.has_effect("midground_dimmer"));
     assert!(engine.has_effect("midground_pulse"));
-    assert!(!engine.has_effect("foreground_strobe"));
+    assert!(engine.has_effect("foreground_strobe"));
     assert!(engine.has_effect("conflicting_static"));
     assert!(engine.has_effect("conflicting_strobe"));
 
-    // Add a high-priority effect that should stop others
+    // Add another effect - all should coexist
     let high_priority_effect = create_effect_with_layering(
         "high_priority_effect".to_string(),
         EffectType::Static {
@@ -1782,19 +1783,19 @@ fn test_complex_multi_layer_multi_effect_scenarios() {
                 params.insert("green".to_string(), 1.0);
                 params
             },
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["fixture1".to_string()],
-        EffectLayer::Background, // Same layer as conflicting_static
+        EffectLayer::Background,
         BlendMode::Replace,
     )
-    .with_priority(100); // Very high priority
+    .with_priority(100);
 
     engine.start_effect(high_priority_effect).unwrap();
 
-    // High priority should stop the conflicting static
-    assert_eq!(engine.active_effects_count(), 4); // midground_dimmer + midground_pulse + high_priority + conflicting_strobe
-    assert!(!engine.has_effect("conflicting_static"));
+    // All effects coexist (no automatic replacement)
+    assert_eq!(engine.active_effects_count(), 7);
+    assert!(engine.has_effect("conflicting_static"));
     assert!(engine.has_effect("high_priority_effect"));
     assert!(engine.has_effect("conflicting_strobe"));
 }

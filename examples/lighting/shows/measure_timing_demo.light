@@ -29,7 +29,7 @@ tempo {
 show "Measure Timing Demo" {
     # Intro - measures 1-4
     @1/1
-    front_wash: static color: "blue", dimmer: 0%, layer: background, blend_mode: replace
+    front_wash: static color: "blue", dimmer: 0%, layer: background, blend_mode: replace, duration: 5s
     front_wash: dimmer start_level: 0.0, end_level: 1.0, duration: 2s, curve: linear, layer: foreground, blend_mode: replace
     
     # On each beat of measure 2
@@ -47,12 +47,12 @@ show "Measure Timing Demo" {
     
     # Subdivision example - halfway through beat 3
     @3/2.5
-    back_lights: static color: "red", dimmer: 50%, layer: midground, blend_mode: add
+    back_lights: static color: "red", dimmer: 50%, layer: midground, blend_mode: add, duration: 5s
     
     # Section 2 - tempo change to 140 BPM at measure 8
     @8/1
-    front_wash: static color: "green", dimmer: 100%, layer: background, blend_mode: replace
-    back_lights: static color: "yellow", dimmer: 75%, layer: midground, blend_mode: add
+    front_wash: static color: "green", dimmer: 100%, layer: background, blend_mode: replace, duration: 5s
+    back_lights: static color: "yellow", dimmer: 75%, layer: midground, blend_mode: add, duration: 5s
     
     @10/1
     front_wash: cycle color: "green", color: "cyan", duration: 2s, loop: loop, layer: background
@@ -60,11 +60,11 @@ show "Measure Timing Demo" {
     # Example: Red-green-blue pattern repeating every measure using measure-based speed
     # With 3 colors and speed: 1measure, each color will last 1/3 of a measure
     @12/1
-    front_wash: cycle color: "red", color: "green", color: "blue", speed: 1measure, loop: loop, layer: background
+    front_wash: cycle color: "red", color: "green", color: "blue", speed: 1measure, loop: loop, layer: background, duration: 10s
     
     # Example: Pattern repeating every 2 beats (faster)
     @14/1
-    back_lights: cycle color: "yellow", color: "orange", speed: 2beats, loop: loop, layer: midground
+    back_lights: cycle color: "yellow", color: "orange", speed: 2beats, loop: loop, layer: midground, duration: 10s
     
     # Example: Strobe flashing once per beat using measure-based frequency
     @15/1
@@ -72,21 +72,21 @@ show "Measure Timing Demo" {
     
     # Section 3 - gradual tempo increase to 160 BPM (over 4 beats starting at measure 16)
     @16/1
-    front_wash: static color: "purple", dimmer: 100%, layer: background, blend_mode: replace
+    front_wash: static color: "purple", dimmer: 100%, layer: background, blend_mode: replace, duration: 5s
     
     @18/1
     front_wash: chase color: "purple", color: "magenta", color: "blue", duration: 1s, direction: forward, loop: loop
     
     # Section 4 - gradual tempo increase to 180 BPM (over 2 measures starting at measure 24)
     @24/1
-    front_wash, back_lights: strobe color: "white", frequency: 5, duty_cycle: 50%, layer: foreground, blend_mode: add
+    front_wash, back_lights: strobe color: "white", frequency: 5, duty_cycle: 50%, layer: foreground, blend_mode: add, duration: 5s
     
     @28/1
-    front_wash, back_lights: static color: "white", dimmer: 0%, layer: foreground, blend_mode: replace
+    front_wash, back_lights: static color: "white", dimmer: 0%, layer: foreground, blend_mode: replace, duration: 5s
     
     # Section 5 - time signature change to 3/4 at measure 32
     @32/1
-    front_wash: static color: "orange", dimmer: 100%, layer: background, blend_mode: replace
+    front_wash: static color: "orange", dimmer: 100%, layer: background, blend_mode: replace, duration: 5s
     
     # In 3/4 time - only 3 beats per measure
     @33/1
@@ -100,12 +100,12 @@ show "Measure Timing Demo" {
     
     # Section 6 - gradual slowdown to 100 BPM (over 4 measures starting at measure 40)
     @40/1
-    front_wash: static color: "blue", dimmer: 100%, layer: background, blend_mode: replace
+    front_wash: static color: "blue", dimmer: 100%, layer: background, blend_mode: replace, duration: 5s
     front_wash: dimmer start_level: 1.0, end_level: 0.5, duration: 4s, curve: sine, layer: foreground, blend_mode: multiply
     
     # Section 7 - snap back to 120 BPM at measure 48
     @48/1
-    front_wash, back_lights: static color: "white", dimmer: 100%, layer: background, blend_mode: replace
+    front_wash, back_lights: static color: "white", dimmer: 100%, layer: background, blend_mode: replace, duration: 5s
     
     @50/1
     front_wash, back_lights: rainbow duration: 3s, loop: loop, layer: background

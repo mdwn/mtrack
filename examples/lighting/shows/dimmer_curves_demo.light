@@ -4,7 +4,7 @@ show "Dimmer Curves Demo" {
 
     @00:00.000
     # Start with static blue at full brightness
-    front_wash: static color: "blue", dimmer: 100%, layer: background, blend_mode: replace
+    front_wash: static color: "blue", dimmer: 100%, layer: background, blend_mode: replace, duration: 5s
 
     @00:02.000
     # Linear curve: Constant rate of change (default)

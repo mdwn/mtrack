@@ -722,22 +722,9 @@ fn iteration_offset(base_time: Duration, duration: Duration, iteration: usize) -
 /// Calculate sequence duration from a sequence
 fn calculate_sequence_duration(sequence: &Sequence) -> Duration {
     let sequence_base_time = get_sequence_base_time(sequence);
-
-    match sequence.duration() {
-        Some(completion_time) => {
-            // duration() returns absolute completion time, convert to relative
-            completion_time.saturating_sub(sequence_base_time)
-        }
-        None => {
-            // Sequence has only perpetual effects - use relative time from first to last cue
-            if sequence.cues.is_empty() {
-                Duration::ZERO
-            } else {
-                let last_time = sequence.cues.last().unwrap().time;
-                last_time.saturating_sub(sequence_base_time)
-            }
-        }
-    }
+    let completion_time = sequence.duration();
+    // duration() returns absolute completion time, convert to relative
+    completion_time.saturating_sub(sequence_base_time)
 }
 
 /// Determine loop count from a SequenceLoop parameter
@@ -1092,14 +1079,13 @@ fn parse_and_expand_inline_loop(
     let mut has_any_duration = false;
     for cue in &loop_cues {
         for effect in &cue.effects {
-            if let Some(effect_duration) = effect.total_duration() {
-                let rel_cue_time = relative_time(cue.time, loop_base_time);
-                let completion_time = rel_cue_time + effect_duration;
-                if completion_time > max_completion_time {
-                    max_completion_time = completion_time;
-                }
-                has_any_duration = true;
+            let effect_duration = effect.total_duration();
+            let rel_cue_time = relative_time(cue.time, loop_base_time);
+            let completion_time = rel_cue_time + effect_duration;
+            if completion_time > max_completion_time {
+                max_completion_time = completion_time;
             }
+            has_any_duration = true;
         }
     }
 
@@ -1764,13 +1750,13 @@ mod tests {
     }
 
     #[test]
-    fn sequence_duration_perpetual_effects_only() {
-        // Perpetual effects: duration is time from first to last cue
+    fn sequence_duration_empty_effects() {
+        // Cues with no effects: duration is 0 (no effects to complete)
         let seq = make_sequence(vec![
             make_cue(Duration::from_secs(2)),
             make_cue(Duration::from_secs(7)),
         ]);
-        assert_eq!(calculate_sequence_duration(&seq), Duration::from_secs(5));
+        assert_eq!(calculate_sequence_duration(&seq), Duration::ZERO);
     }
 
     // ── determine_loop_count ─────────────────────────────────────
@@ -1829,7 +1815,7 @@ mod tests {
     fn parse_minimal_show() {
         let content = r#"show "Test Show" {
     @0:00.000
-    front_wash: static color: "red"
+    front_wash: static color: "red", duration: 5s
 }"#;
         let shows = parse_light_shows(content).unwrap();
         assert_eq!(shows.len(), 1);
@@ -1842,10 +1828,10 @@ mod tests {
     fn parse_show_multiple_cues() {
         let content = r#"show "Multi" {
     @0:00.000
-    front_wash: static color: "red"
+    front_wash: static color: "red", duration: 5s
 
     @0:05.000
-    front_wash: static color: "blue"
+    front_wash: static color: "blue", duration: 5s
 }"#;
         let shows = parse_light_shows(content).unwrap();
         let show = shows.get("Multi").unwrap();
@@ -1863,7 +1849,7 @@ mod tests {
 
 show "Tempo Show" {
     @1/1
-    front_wash: static color: "red"
+    front_wash: static color: "red", duration: 5s
 }"#;
         let shows = parse_light_shows(content).unwrap();
         assert_eq!(shows.len(), 1);
@@ -1879,12 +1865,12 @@ show "Tempo Show" {
     fn parse_multiple_shows() {
         let content = r#"show "A" {
     @0:00.000
-    front: static color: "red"
+    front: static color: "red", duration: 5s
 }
 
 show "B" {
     @0:00.000
-    back: static color: "blue"
+    back: static color: "blue", duration: 5s
 }"#;
         let shows = parse_light_shows(content).unwrap();
         assert_eq!(shows.len(), 2);

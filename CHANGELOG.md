@@ -65,6 +65,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Lighting effects: explicit durations required (breaking change)**: The lighting engine no
+  longer supports perpetual or permanent effects. Every effect must have an explicit `duration`
+  or `hold_time` parameter. Effects that previously ran indefinitely until replaced (e.g.,
+  `static color: "red"` with no duration) are no longer valid — the parser will reject them
+  with a clear error message. This is a breaking change to the lighting show file format; old
+  show files must be updated to include durations on all effects.
+
+### Removed
+
+- **Effect replacement semantics**: Effects no longer automatically kill conflicting effects on
+  the same layer. Multiple effects can now coexist on the same layer simultaneously, with the
+  blend mode determining how overlapping effects combine. This simplifies the mental model:
+  effects are independent, finite blocks on a timeline.
+- **Persistent fixture state**: The engine no longer preserves an effect's final state after it
+  completes. When an effect's duration expires, its contribution to the output is gone. Dimmer
+  effects no longer persist their final brightness level. This includes removal of the
+  `fixture_states` store, channel locking, and the `is_permanent()` concept.
+
+### Changed
+
 - **Player method refactoring**: Converted several static `Player` methods (`emit_midi_event`,
   `prev_and_emit`, `next_and_emit`, `report_status`) to instance methods, reducing parameter
   passing and simplifying call sites. Playlist navigation now uses a `PlaylistDirection` enum

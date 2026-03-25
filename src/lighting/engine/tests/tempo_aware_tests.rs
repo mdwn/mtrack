@@ -56,6 +56,7 @@ fn test_tempo_aware_speed_adapts_to_tempo_changes() {
             speed: TempoAwareSpeed::Measures(1.0), // 1 cycle per measure
             direction: CycleDirection::Forward,
             transition: CycleTransition::Snap,
+            duration: Duration::from_secs(10),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -127,7 +128,7 @@ fn test_tempo_aware_frequency_adapts_to_tempo_changes() {
         "bg".to_string(),
         EffectType::Static {
             parameters: bg_params,
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -142,7 +143,7 @@ fn test_tempo_aware_frequency_adapts_to_tempo_changes() {
         "tempo_aware_strobe".to_string(),
         EffectType::Strobe {
             frequency: TempoAwareFrequency::Beats(1.0), // 1 cycle per beat
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -214,6 +215,7 @@ fn test_tempo_aware_chase_adapts_to_tempo_changes() {
             speed: TempoAwareSpeed::Measures(1.0), // 1 cycle per measure
             direction: ChaseDirection::LeftToRight,
             transition: CycleTransition::Snap,
+            duration: Duration::from_secs(10),
         },
         vec![
             "fixture1".to_string(),
@@ -294,6 +296,7 @@ fn test_tempo_aware_chase_beats_speed_never_zero() {
             speed: TempoAwareSpeed::Beats(0.5),
             direction: ChaseDirection::LeftToRight,
             transition: CycleTransition::Snap,
+            duration: Duration::from_secs(10),
         },
         vec![
             "fixture1".to_string(),
@@ -387,6 +390,7 @@ fn test_chase_after_tempo_change_with_measure_offset() {
             speed: TempoAwareSpeed::Beats(1.0),
             direction: ChaseDirection::LeftToRight,
             transition: CycleTransition::Snap,
+            duration: Duration::from_secs(10),
         },
         vec![
             "fixture1".to_string(),
@@ -407,6 +411,7 @@ fn test_chase_after_tempo_change_with_measure_offset() {
             speed: TempoAwareSpeed::Beats(0.5),
             direction: ChaseDirection::RightToLeft,
             transition: CycleTransition::Snap,
+            duration: Duration::from_secs(10),
         },
         vec![
             "fixture1".to_string(),
@@ -427,9 +432,9 @@ fn test_chase_after_tempo_change_with_measure_offset() {
     engine.start_effect(random_chase).unwrap();
 
     // Test that random chase produces output at various times
-    // Test immediately after start
+    // Test immediately after start (delta from time_before_random)
     let commands_at_start = engine
-        .update(random_chase_time + Duration::from_millis(16), None)
+        .update(Duration::from_millis(26), None) // 10ms to reach start + 16ms
         .unwrap();
     assert!(
         !commands_at_start.is_empty(),
@@ -437,25 +442,25 @@ fn test_chase_after_tempo_change_with_measure_offset() {
     );
 
     // Test a bit later (during the chase)
-    let commands_during = engine
-        .update(random_chase_time + Duration::from_millis(100), None)
-        .unwrap();
+    let commands_during = engine.update(Duration::from_millis(100), None).unwrap();
     assert!(
         !commands_during.is_empty(),
         "Random chase should continue generating commands during execution"
     );
 
-    // Advance to just before the linear chase
+    // Advance to just before the linear chase (delta from current time)
+    let elapsed_so_far = time_before_random + Duration::from_millis(126);
     let time_before_linear = linear_chase_time - Duration::from_millis(10);
-    engine.update(time_before_linear, None).unwrap();
+    let delta_to_linear = time_before_linear.saturating_sub(elapsed_so_far);
+    engine.update(delta_to_linear, None).unwrap();
 
     // Start the linear chase
     engine.start_effect(linear_chase).unwrap();
 
     // Test that linear chase produces output at various times
-    // Test immediately after start
+    // Test immediately after start (delta from time_before_linear)
     let commands_linear_start = engine
-        .update(linear_chase_time + Duration::from_millis(16), None)
+        .update(Duration::from_millis(26), None) // 10ms + 16ms
         .unwrap();
     assert!(
         !commands_linear_start.is_empty(),
@@ -463,18 +468,14 @@ fn test_chase_after_tempo_change_with_measure_offset() {
     );
 
     // Test a bit later (during the chase)
-    let commands_linear_during = engine
-        .update(linear_chase_time + Duration::from_millis(100), None)
-        .unwrap();
+    let commands_linear_during = engine.update(Duration::from_millis(100), None).unwrap();
     assert!(
         !commands_linear_during.is_empty(),
         "Linear chase should continue generating commands during execution"
     );
 
     // Test even later to ensure it keeps running
-    let commands_linear_later = engine
-        .update(linear_chase_time + Duration::from_millis(500), None)
-        .unwrap();
+    let commands_linear_later = engine.update(Duration::from_millis(500), None).unwrap();
     assert!(
         !commands_linear_later.is_empty(),
         "Linear chase should continue generating commands well into its execution"
@@ -587,6 +588,7 @@ fn test_tempo_aware_rainbow_adapts_to_tempo_changes() {
             speed: TempoAwareSpeed::Beats(2.0), // 1 cycle per 2 beats
             saturation: 1.0,
             brightness: 1.0,
+            duration: Duration::from_secs(10),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -655,7 +657,7 @@ fn test_tempo_aware_pulse_adapts_to_tempo_changes() {
             base_level: 0.5,
             pulse_amplitude: 0.5,
             frequency: TempoAwareFrequency::Beats(1.0), // 1 cycle per beat
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,

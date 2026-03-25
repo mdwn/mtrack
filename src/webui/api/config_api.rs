@@ -1387,7 +1387,7 @@ mod test {
             .oneshot(
                 http::Request::builder()
                     .method("DELETE")
-                    .uri(&format!(
+                    .uri(format!(
                         "/config/profiles/0?expected_checksum={}",
                         new_checksum
                     ))

@@ -36,7 +36,7 @@ fn test_pulse_at_peaks_and_troughs() {
             base_level: 0.0,
             pulse_amplitude: 1.0,
             frequency: TempoAwareFrequency::Fixed(1.0),
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,
@@ -96,7 +96,7 @@ fn test_pulse_effect() {
             base_level: 0.5,
             pulse_amplitude: 0.5,
             frequency: TempoAwareFrequency::Fixed(1.0), // 1 Hz
-            duration: None,
+            duration: Duration::from_secs(5),
         },
         vec!["test_fixture".to_string()],
         None,

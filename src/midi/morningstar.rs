@@ -166,8 +166,8 @@ mod test {
         assert_eq!(msg[17], b'B');
         assert_eq!(msg[18], b'C');
         // Remaining 29 bytes should be spaces (MC4Pro = 32 char name)
-        for i in 19..48 {
-            assert_eq!(msg[i], b' ', "byte {} should be space padding", i);
+        for (i, &byte) in msg.iter().enumerate().take(48).skip(19) {
+            assert_eq!(byte, b' ', "byte {} should be space padding", i);
         }
         // Total: 16 header + 32 name + checksum + F7 = 50
         assert_eq!(msg.len(), 50);
@@ -181,8 +181,8 @@ mod test {
 
         // 16 header bytes + 32 name bytes + checksum + F7 = 50
         assert_eq!(msg.len(), 50);
-        for i in 16..48 {
-            assert_eq!(msg[i], b'A');
+        for &byte in msg.iter().take(48).skip(16) {
+            assert_eq!(byte, b'A');
         }
     }
 
@@ -196,8 +196,8 @@ mod test {
         assert_eq!(msg[16], b'H');
         assert_eq!(msg[17], b'i');
         // Rest is space padding
-        for i in 18..32 {
-            assert_eq!(msg[i], b' ');
+        for &byte in msg.iter().take(32).skip(18) {
+            assert_eq!(byte, b' ');
         }
     }
 
@@ -258,8 +258,8 @@ mod test {
 
         // 16 header + 32 spaces + checksum + F7 = 50
         assert_eq!(msg.len(), 50);
-        for i in 16..48 {
-            assert_eq!(msg[i], b' ');
+        for &byte in msg.iter().take(48).skip(16) {
+            assert_eq!(byte, b' ');
         }
     }
 
@@ -272,8 +272,8 @@ mod test {
         // 16 + 32 + 1 + 1 = 50
         assert_eq!(msg.len(), 50);
         // No padding needed — name fills the slot exactly
-        for i in 16..48 {
-            assert_eq!(msg[i], b'A');
+        for &byte in msg.iter().take(48).skip(16) {
+            assert_eq!(byte, b'A');
         }
     }
 
