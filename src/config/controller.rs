@@ -42,6 +42,15 @@ fn default_osc_playlist() -> String {
 fn default_osc_stop_samples() -> String {
     "/mtrack/samples/stop".to_string()
 }
+fn default_osc_section_ack() -> String {
+    "/mtrack/section_ack".to_string()
+}
+fn default_osc_stop_section_loop() -> String {
+    "/mtrack/stop_section_loop".to_string()
+}
+fn default_osc_loop_section() -> String {
+    "/mtrack/loop_section".to_string()
+}
 fn default_osc_status() -> String {
     "/mtrack/status".to_string()
 }
@@ -80,6 +89,12 @@ pub struct MidiController {
     all_songs: midi::Event,
     /// The MIDI event to look for to switch back to the current playlist.
     playlist: midi::Event,
+    /// The MIDI event to acknowledge the current section (arm section loop).
+    #[serde(default)]
+    section_ack: Option<midi::Event>,
+    /// The MIDI event to break out of the current section loop.
+    #[serde(default)]
+    stop_section_loop: Option<midi::Event>,
     /// Optional Morningstar controller integration for automatic preset naming.
     #[serde(default)]
     morningstar: Option<MorningstarConfig>,
@@ -102,6 +117,8 @@ impl MidiController {
             stop,
             all_songs,
             playlist,
+            section_ack: None,
+            stop_section_loop: None,
             morningstar: None,
         }
     }
@@ -133,6 +150,22 @@ impl MidiController {
     /// Gets the playlist event.
     pub fn playlist(&self) -> Result<LiveEvent<'static>, Box<dyn Error>> {
         self.playlist.to_midi_event()
+    }
+
+    /// Gets the section ack event, if configured.
+    pub fn section_ack(&self) -> Result<Option<LiveEvent<'static>>, Box<dyn Error>> {
+        self.section_ack
+            .as_ref()
+            .map(|e| e.to_midi_event())
+            .transpose()
+    }
+
+    /// Gets the stop section loop event, if configured.
+    pub fn stop_section_loop(&self) -> Result<Option<LiveEvent<'static>>, Box<dyn Error>> {
+        self.stop_section_loop
+            .as_ref()
+            .map(|e| e.to_midi_event())
+            .transpose()
     }
 
     /// Gets the optional Morningstar configuration.
@@ -190,6 +223,15 @@ pub struct OscController {
     /// The OSC address to look for to stop all triggered samples.
     #[serde(default = "default_osc_stop_samples")]
     stop_samples: String,
+    /// The OSC address to acknowledge the current section (arm section loop).
+    #[serde(default = "default_osc_section_ack")]
+    section_ack: String,
+    /// The OSC address to break out of the current section loop.
+    #[serde(default = "default_osc_stop_section_loop")]
+    stop_section_loop: String,
+    /// The OSC address to loop a specific section by name (takes a string arg).
+    #[serde(default = "default_osc_loop_section")]
+    loop_section: String,
     /// The OSC address to broadcast to display the current player status.
     #[serde(default = "default_osc_status")]
     status: String,
@@ -220,6 +262,9 @@ impl Default for OscController {
             all_songs: default_osc_all_songs(),
             playlist: default_osc_playlist(),
             stop_samples: default_osc_stop_samples(),
+            section_ack: default_osc_section_ack(),
+            stop_section_loop: default_osc_stop_section_loop(),
+            loop_section: default_osc_loop_section(),
             status: default_osc_status(),
             playlist_current: default_osc_playlist_current(),
             playlist_current_song: default_osc_playlist_current_song(),
@@ -277,6 +322,21 @@ impl OscController {
     /// Gets the stop samples OSC address.
     pub fn stop_samples(&self) -> &str {
         &self.stop_samples
+    }
+
+    /// Gets the section ack OSC address.
+    pub fn section_ack(&self) -> &str {
+        &self.section_ack
+    }
+
+    /// Gets the stop section loop OSC address.
+    pub fn stop_section_loop(&self) -> &str {
+        &self.stop_section_loop
+    }
+
+    /// Gets the loop section OSC address.
+    pub fn loop_section(&self) -> &str {
+        &self.loop_section
     }
 
     /// Gets the player status.

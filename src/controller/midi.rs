@@ -28,6 +28,8 @@ enum MidiAction {
     Stop,
     AllSongs,
     Playlist,
+    SectionAck,
+    StopSectionLoop,
     Unrecognized,
 }
 
@@ -39,6 +41,8 @@ struct MidiEvents {
     stop: LiveEvent<'static>,
     all_songs: LiveEvent<'static>,
     playlist: LiveEvent<'static>,
+    section_ack: Option<LiveEvent<'static>>,
+    stop_section_loop: Option<LiveEvent<'static>>,
 }
 
 /// Classifies a parsed MIDI event against the known controller events.
@@ -55,6 +59,10 @@ fn classify_midi_event(events: &MidiEvents, event: &LiveEvent<'_>) -> MidiAction
         MidiAction::AllSongs
     } else if *event == events.playlist {
         MidiAction::Playlist
+    } else if events.section_ack.as_ref() == Some(event) {
+        MidiAction::SectionAck
+    } else if events.stop_section_loop.as_ref() == Some(event) {
+        MidiAction::StopSectionLoop
     } else {
         MidiAction::Unrecognized
     }
@@ -94,6 +102,8 @@ impl Driver {
                         stop: config.stop()?,
                         all_songs: config.all_songs()?,
                         playlist: config.playlist()?,
+                        section_ack: config.section_ack()?,
+                        stop_section_loop: config.stop_section_loop()?,
                     },
                 }))
             }
@@ -114,6 +124,8 @@ impl super::Driver for Driver {
             stop: self.events.stop,
             all_songs: self.events.all_songs,
             playlist: self.events.playlist,
+            section_ack: self.events.section_ack,
+            stop_section_loop: self.events.stop_section_loop,
         };
 
         tokio::task::spawn_blocking(move || {
@@ -183,6 +195,14 @@ impl super::Driver for Driver {
                         if let Err(e) = player.switch_to_playlist(&name).await {
                             error!("Failed to switch to playlist {}: {}", name, e);
                         }
+                    }
+                    MidiAction::SectionAck => {
+                        if let Err(e) = player.section_ack().await {
+                            error!("Failed to ack section: {}", e);
+                        }
+                    }
+                    MidiAction::StopSectionLoop => {
+                        player.stop_section_loop();
                     }
                     MidiAction::Unrecognized => {}
                 }
@@ -431,6 +451,8 @@ mod test {
                 stop: note_on(16, 3, 127).to_midi_event().unwrap(),
                 all_songs: note_on(16, 4, 127).to_midi_event().unwrap(),
                 playlist: note_on(16, 5, 127).to_midi_event().unwrap(),
+                section_ack: Some(note_on(16, 6, 127).to_midi_event().unwrap()),
+                stop_section_loop: Some(note_on(16, 7, 127).to_midi_event().unwrap()),
             }
         }
 

@@ -55,6 +55,9 @@ enum OscAction {
     AllSongs,
     Playlist,
     StopSamples,
+    SectionAck,
+    StopSectionLoop,
+    LoopSection,
     Unrecognized,
 }
 
@@ -85,6 +88,12 @@ pub(super) struct OscEvents {
     playlist: Matcher,
     /// The OSC address to look for to stop all triggered samples.
     stop_samples: Matcher,
+    /// The OSC address to acknowledge the current section (arm section loop).
+    section_ack: Matcher,
+    /// The OSC address to break out of the current section loop.
+    stop_section_loop: Matcher,
+    /// The OSC address to loop a specific section by name.
+    loop_section: Matcher,
     /// The OSC address to use to broadcast the player status.
     status: String,
     /// The OSC address to use to broadcast the current playlist.
@@ -120,6 +129,9 @@ impl Driver {
                 all_songs: Matcher::new(config.all_songs())?,
                 playlist: Matcher::new(config.playlist())?,
                 stop_samples: Matcher::new(config.stop_samples())?,
+                section_ack: Matcher::new(config.section_ack())?,
+                stop_section_loop: Matcher::new(config.stop_section_loop())?,
+                loop_section: Matcher::new(config.loop_section())?,
                 status: config.status().to_string(),
                 playlist_current: config.playlist_current().to_string(),
                 playlist_current_song: config.playlist_current_song().to_string(),
@@ -365,6 +377,30 @@ impl Driver {
                 }
             }
             OscAction::StopSamples => player.stop_samples(),
+            OscAction::SectionAck => {
+                if let Err(e) = player.section_ack().await {
+                    error!("Failed to ack section: {}", e);
+                }
+            }
+            OscAction::StopSectionLoop => {
+                player.stop_section_loop();
+            }
+            OscAction::LoopSection => {
+                // Extract section name from OSC message string argument.
+                let section_name = msg
+                    .args
+                    .first()
+                    .and_then(|arg| match arg {
+                        OscType::String(s) => Some(s.as_str()),
+                        _ => None,
+                    })
+                    .unwrap_or("");
+                if section_name.is_empty() {
+                    error!("loop_section OSC message missing section name argument");
+                } else if let Err(e) = player.loop_section(section_name).await {
+                    error!("Failed to loop section '{}': {}", section_name, e);
+                }
+            }
             OscAction::Unrecognized => return Ok(false),
         }
         Ok(true)
@@ -388,6 +424,12 @@ fn classify_message(osc_events: &OscEvents, addr: &str) -> Result<OscAction, Box
         Ok(OscAction::Playlist)
     } else if osc_events.stop_samples.match_address(&address) {
         Ok(OscAction::StopSamples)
+    } else if osc_events.section_ack.match_address(&address) {
+        Ok(OscAction::SectionAck)
+    } else if osc_events.stop_section_loop.match_address(&address) {
+        Ok(OscAction::StopSectionLoop)
+    } else if osc_events.loop_section.match_address(&address) {
+        Ok(OscAction::LoopSection)
     } else {
         Ok(OscAction::Unrecognized)
     }
@@ -906,6 +948,9 @@ mod test {
             all_songs: Matcher::new(config.all_songs()).unwrap(),
             playlist: Matcher::new(config.playlist()).unwrap(),
             stop_samples: Matcher::new(config.stop_samples()).unwrap(),
+            section_ack: Matcher::new(config.section_ack()).unwrap(),
+            stop_section_loop: Matcher::new(config.stop_section_loop()).unwrap(),
+            loop_section: Matcher::new(config.loop_section()).unwrap(),
             status: config.status().to_string(),
             playlist_current: config.playlist_current().to_string(),
             playlist_current_song: config.playlist_current_song().to_string(),

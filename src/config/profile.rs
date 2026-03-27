@@ -20,6 +20,7 @@ use super::audio::Audio;
 use super::controller::Controller;
 use super::dmx::Dmx;
 use super::midi::Midi;
+use super::notification::NotificationConfig;
 use super::trigger::TriggerConfig;
 
 /// Audio configuration with track mappings.
@@ -106,6 +107,10 @@ pub struct Profile {
     /// Controllers associated with this profile.
     #[serde(default)]
     controllers: Vec<Controller>,
+
+    /// Notification audio configuration (global overrides).
+    #[serde(default)]
+    notifications: Option<NotificationConfig>,
 }
 
 impl Profile {
@@ -124,6 +129,7 @@ impl Profile {
             dmx,
             trigger: None,
             controllers: Vec::new(),
+            notifications: None,
         }
     }
 
@@ -170,6 +176,11 @@ impl Profile {
     /// Sets the controllers (used during legacy config normalization).
     pub(super) fn set_controllers(&mut self, controllers: Vec<Controller>) {
         self.controllers = controllers;
+    }
+
+    /// Returns the notification audio configuration, if present.
+    pub fn notifications(&self) -> Option<&NotificationConfig> {
+        self.notifications.as_ref()
     }
 
     /// Validates the profile configuration for semantic issues.

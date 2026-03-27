@@ -491,17 +491,12 @@ pub(super) async fn get_song_tempo_guess(
         }
     };
 
-    // Get the start offset from the beat grid (when the first beat sounds)
-    let start_offset = song
-        .beat_grid()
-        .and_then(|bg| bg.beats.first().copied())
-        .unwrap_or(0.0);
-
-    // Try MIDI file first — it has authoritative tempo/time-sig events
+    // Try MIDI file first — it has authoritative tempo/time-sig events.
+    // Pass the beat grid for cross-correlation alignment.
     if let Some(midi_playback) = song.midi_playback() {
         if let Some(guessed) = crate::audio::midi_tempo::extract_tempo_from_midi(
             midi_playback.file_path(),
-            start_offset,
+            song.beat_grid(),
         ) {
             return (
                 StatusCode::OK,

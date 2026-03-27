@@ -32,6 +32,12 @@ pub struct GuessedTempo {
     pub bpm: u32,
     pub time_signature: [u32; 2],
     pub changes: Vec<GuessedTempoChange>,
+    /// RMS alignment error in milliseconds between MIDI-predicted beats and the
+    /// click-track beat grid, measured after cross-correlation offset detection.
+    /// `None` when no beat grid was available for comparison.
+    /// Values above ~15ms suggest the MIDI may not match the recorded audio.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alignment_rms_ms: Option<f64>,
 }
 
 /// A single tempo or time-signature change.
@@ -98,6 +104,7 @@ pub fn guess_tempo(grid: &BeatGrid) -> Option<GuessedTempo> {
         bpm: base_bpm,
         time_signature: [base_ts, 4],
         changes,
+        alignment_rms_ms: None,
     })
 }
 
