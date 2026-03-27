@@ -732,6 +732,11 @@ impl MidiPlayback {
     }
 
     /// Returns a MIDI sheet for the song.
+    /// Gets the path to the MIDI file.
+    pub fn file_path(&self) -> &Path {
+        &self.file
+    }
+
     pub fn midi_sheet(&self) -> Result<MidiSheet, Box<dyn Error>> {
         parse_midi(&self.file)
     }

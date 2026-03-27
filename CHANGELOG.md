@@ -77,6 +77,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tint. The sequences lane shows sequence references as blocks spanning their full expanded
   duration (all loop iterations), and dragging the right edge adjusts the loop count, snapping
   to whole iterations.
+- **Tempo map detection from MIDI**: When a song has a MIDI file, the lighting
+  tempo editor can extract an authoritative tempo map directly from MIDI
+  `SetTempo` and `TimeSignature` meta events. Consecutive monotonic BPM changes
+  (ritardandos/accelerandos) are automatically collapsed into single transitions.
+  Falls back to beat grid estimation when no MIDI file is available. The beat
+  grid's start offset (first audible beat) is used in both cases.
+- **Tempo map estimation from beat grid**: Songs with a click track but no MIDI
+  file can estimate a tempo map from the detected beat grid. Finds stable tempo
+  sections, detects time signature changes from measure boundary spacing, and
+  identifies discrete tempo changes. Results are snapped to measure boundaries.
+  Displayed with an "estimated from beat grid" badge to indicate it's a guess.
+- **Beat grid refinement**: Beat positions within stable tempo sections are
+  snapped to an ideal grid after onset detection, removing ±5-15ms jitter from
+  the onset detector. This improves tempo calculation accuracy at section
+  boundaries.
+- **Tempo editor in visual timeline**: The tempo map editor is now accessible
+  by clicking the tempo lane in the visual timeline. Includes controls for BPM,
+  time signature, start offset, and tempo changes. A "Detect from MIDI" or
+  "Guess from beat grid" button populates the tempo map automatically.
+- **Snap subdivisions**: The snap resolution in both the main timeline and the
+  sequence editor now includes 1/2, 1/4, 1/8, and 1/16 beat subdivisions in
+  addition to beat and measure snapping.
 
 ### Changed
 

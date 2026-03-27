@@ -375,15 +375,125 @@ pub fn analyze_click_track(
         .map(|(i, _)| i)
         .collect();
 
-    Some(BeatGrid {
+    let mut grid = BeatGrid {
         beats,
         measure_starts,
-    })
+    };
+
+    // Refine beat positions to remove onset detection jitter
+    refine_beat_grid(&mut grid);
+
+    Some(grid)
 }
 
 /// Convenience wrapper that uses `ZcrClassifier` as the default accent classifier.
 pub fn analyze_click_track_default(file: &Path, file_channel: u16) -> Option<BeatGrid> {
     analyze_click_track(file, file_channel, &ZcrClassifier)
+}
+
+/// Refine beat positions by snapping beats in stable tempo sections to an
+/// ideal grid. This removes onset detection jitter (typically ±5-10ms) which
+/// can cause BPM miscalculations at section boundaries.
+///
+/// Only beats within stable sections (where consecutive intervals are within
+/// `band_bpm` of each other) are adjusted. Beats in ramps/transitions are
+/// left at their detected positions.
+pub fn refine_beat_grid(grid: &mut BeatGrid) {
+    if grid.beats.len() < 2 {
+        return;
+    }
+
+    // Configuration
+    let band_bpm = 4.0; // max BPM deviation within a stable section
+    let min_stable = 8; // minimum beats to form a stable section
+    let max_snap_secs = 0.015; // don't move a beat more than 15ms
+
+    // Compute instantaneous BPM at each beat
+    let mut bpms: Vec<f64> = grid
+        .beats
+        .windows(2)
+        .map(|w| {
+            let interval = w[1] - w[0];
+            if interval > 0.0 {
+                60.0 / interval
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    if let Some(&last) = bpms.last() {
+        bpms.push(last);
+    }
+
+    // Find stable sections using fixed-mean approach
+    let mut sections: Vec<(usize, usize, f64)> = Vec::new(); // (start, end_exclusive, mean_bpm)
+    let mut pos = 0;
+    while pos < bpms.len() {
+        let seed_end = (pos + min_stable).min(bpms.len());
+        if seed_end > bpms.len() || seed_end - pos < min_stable {
+            break;
+        }
+        let seed_bpms = &bpms[pos..seed_end];
+        let seed_mean = seed_bpms.iter().sum::<f64>() / seed_bpms.len() as f64;
+        let max_dev = seed_bpms
+            .iter()
+            .map(|b| (b - seed_mean).abs())
+            .fold(0.0f64, f64::max);
+        if max_dev > band_bpm {
+            pos += 1;
+            continue;
+        }
+
+        // Extend using fixed mean
+        let mut end = seed_end;
+        while end < bpms.len() {
+            if (bpms[end] - seed_mean).abs() > band_bpm {
+                break;
+            }
+            end += 1;
+        }
+
+        if end - pos >= min_stable {
+            // Recompute mean from the full section for precision
+            let mean = bpms[pos..end].iter().sum::<f64>() / (end - pos) as f64;
+            sections.push((pos, end, mean));
+            pos = end;
+        } else {
+            pos += 1;
+        }
+    }
+
+    // Snap beats within each stable section to the ideal grid.
+    // Anchor from a few beats into the section (not the very first beat,
+    // which may be at the boundary and jittery). Snap both forward and
+    // backward from the anchor.
+    for &(start, end, mean_bpm) in &sections {
+        let ideal_interval = 60.0 / mean_bpm;
+        let section_len = end - start;
+
+        // Anchor a few beats in (or at the midpoint for short sections)
+        let anchor_offset = min_stable.min(section_len / 2).max(1);
+        let anchor_idx = start + anchor_offset;
+        let anchor_time = grid.beats[anchor_idx];
+
+        // Snap forward from anchor
+        for i in (anchor_idx + 1)..end.min(grid.beats.len()) {
+            let beats_from_anchor = (i - anchor_idx) as f64;
+            let ideal_time = anchor_time + beats_from_anchor * ideal_interval;
+            if (ideal_time - grid.beats[i]).abs() <= max_snap_secs {
+                grid.beats[i] = ideal_time;
+            }
+        }
+
+        // Snap backward from anchor (including the first beat)
+        for i in (start..anchor_idx).rev() {
+            let beats_from_anchor = (anchor_idx - i) as f64;
+            let ideal_time = anchor_time - beats_from_anchor * ideal_interval;
+            if (ideal_time - grid.beats[i]).abs() <= max_snap_secs {
+                grid.beats[i] = ideal_time;
+            }
+        }
+    }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

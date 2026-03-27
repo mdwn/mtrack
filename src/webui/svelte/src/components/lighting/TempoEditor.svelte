@@ -15,15 +15,62 @@
 <script lang="ts">
   import { t } from "svelte-i18n";
   import type { TempoSection, TempoChange } from "../../lib/lighting/types";
+  import { fetchTempoGuess, type GuessedTempo } from "../../lib/api/songs";
   import TimestampInput from "./TimestampInput.svelte";
 
   interface Props {
     tempo: TempoSection | undefined;
     onchange: (tempo: TempoSection | undefined) => void;
     onclose?: () => void;
+    songName?: string;
+    hasBeatGrid?: boolean;
+    hasMidi?: boolean;
   }
 
-  let { tempo, onchange, onclose }: Props = $props();
+  let {
+    tempo,
+    onchange,
+    onclose,
+    songName,
+    hasBeatGrid = false,
+    hasMidi = false,
+  }: Props = $props();
+
+  let guessSource = $state<"midi" | "beat_grid" | null>(null);
+  let guessing = $state(false);
+
+  function convertGuessToTempo(guessed: GuessedTempo): TempoSection {
+    return {
+      start: { value: guessed.start_seconds, unit: "s" },
+      bpm: guessed.bpm,
+      time_signature: guessed.time_signature,
+      changes: guessed.changes.map((c) => {
+        const change: TempoChange = {
+          timestamp: { type: "measure_beat", measure: c.measure, beat: c.beat },
+          bpm: c.bpm,
+          time_signature: c.time_signature,
+        };
+        if (c.transition_beats) {
+          change.transition = `${c.transition_beats}`;
+        }
+        return change;
+      }),
+    };
+  }
+
+  async function guessTempoMap() {
+    if (!songName) return;
+    guessing = true;
+    try {
+      const result = await fetchTempoGuess(songName);
+      if (result) {
+        guessSource = result.source;
+        onchange(convertGuessToTempo(result.tempo));
+      }
+    } finally {
+      guessing = false;
+    }
+  }
 
   let expanded = $state(true);
 
@@ -115,6 +162,25 @@
         {$t("tempo.bpm")}, {tempo.time_signature[0]}/{tempo
           .time_signature[1]}</span
       >
+      {#if guessSource}
+        <span class="estimated-badge">
+          {guessSource === "midi" ? "from MIDI" : "estimated from beat grid"}
+        </span>
+      {/if}
+      {#if (hasBeatGrid || hasMidi) && songName}
+        <button
+          class="btn btn-sm btn-accent"
+          onclick={guessTempoMap}
+          disabled={guessing}
+          >{guessing
+            ? "Loading..."
+            : guessSource
+              ? "Re-detect"
+              : hasMidi
+                ? "Detect from MIDI"
+                : "Guess from beat grid"}</button
+        >
+      {/if}
       <button class="btn btn-sm btn-danger" onclick={disableTempo}
         >{$t("common.remove")}</button
       >
@@ -127,6 +193,11 @@
       <button class="btn btn-sm btn-primary" onclick={enableTempo}
         >{$t("tempo.addTempo")}</button
       >
+      {#if (hasBeatGrid || hasMidi) && songName}
+        <button class="btn btn-sm btn-accent" onclick={guessTempoMap}
+          >{hasMidi ? "Detect from MIDI" : "Guess from beat grid"}</button
+        >
+      {/if}
       {#if onclose}
         <button class="btn btn-sm" onclick={onclose}
           >{$t("common.close")}</button
@@ -346,6 +417,22 @@
     color: var(--text-muted);
     font-size: 13px;
     flex: 1;
+  }
+  .estimated-badge {
+    font-size: 11px;
+    color: var(--yellow, #eab308);
+    background: rgba(234, 179, 8, 0.12);
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-style: italic;
+  }
+  .btn-accent {
+    background: rgba(94, 202, 234, 0.15);
+    color: var(--accent, #5ecaea);
+    border: 1px solid rgba(94, 202, 234, 0.3);
+  }
+  .btn-accent:hover {
+    background: rgba(94, 202, 234, 0.25);
   }
   .tempo-body {
     padding: 8px 12px 12px;

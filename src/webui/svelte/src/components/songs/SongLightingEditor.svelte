@@ -510,6 +510,9 @@
       {sequenceNames}
       songDurationMs={song.duration_ms}
       {waveformTracks}
+      songName={song.name}
+      hasBeatGrid={!!song.beat_grid}
+      hasMidi={song.has_midi}
       {isPlaying}
       {playheadMs}
       onchange={onTimelineChange}
