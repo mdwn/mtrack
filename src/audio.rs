@@ -26,9 +26,11 @@ pub mod context;
 pub mod cpal;
 pub mod crossfade;
 pub mod format;
+pub mod midi_tempo;
 pub mod mixer;
 pub mod mock;
 pub mod sample_source;
+pub mod tempo_guess;
 
 // Re-export the format types for backward compatibility
 pub use context::PlaybackContext;

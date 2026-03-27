@@ -100,6 +100,10 @@ pub fn router() -> Router<WebUiState> {
                 .delete(songs_api::delete_song),
         )
         .route("/songs/{name}/waveform", get(songs_api::get_song_waveform))
+        .route(
+            "/songs/{name}/tempo-guess",
+            get(songs_api::get_song_tempo_guess),
+        )
         .route("/songs/{name}/files", get(songs_api::get_song_files))
         .route("/songs/{name}/import", post(songs_api::import_file_to_song))
         .route("/browse", get(browse::browse_directory))

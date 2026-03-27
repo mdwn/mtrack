@@ -46,6 +46,9 @@
     sequenceNames: string[];
     songDurationMs: number;
     waveformTracks: WaveformTrack[];
+    songName?: string;
+    hasBeatGrid?: boolean;
+    hasMidi?: boolean;
     isPlaying?: boolean;
     playheadMs?: number | null;
     onchange: (lightFile: LightFile) => void;
@@ -59,6 +62,9 @@
     sequenceNames,
     songDurationMs,
     waveformTracks,
+    songName,
+    hasBeatGrid = false,
+    hasMidi = false,
     isPlaying = false,
     playheadMs = null,
     onchange,
@@ -606,6 +612,9 @@
     <div class="tempo-editor-panel">
       <TempoEditor
         tempo={lightFile.tempo}
+        {songName}
+        {hasBeatGrid}
+        {hasMidi}
         onchange={(tempo) => {
           onchange({ ...lightFile, tempo });
           if (!tempo) showTempoEditor = false;

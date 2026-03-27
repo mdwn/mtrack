@@ -469,6 +469,80 @@ pub(super) async fn get_song_waveform(
     }
 }
 
+/// GET /api/songs/:name/tempo-guess — estimate a tempo map.
+///
+/// Tries MIDI file first (authoritative tempo events), then falls back to
+/// beat grid analysis (estimated from click track). The beat grid's start
+/// offset is used in both cases.
+/// Returns 404 if neither source is available.
+pub(super) async fn get_song_tempo_guess(
+    State(state): State<WebUiState>,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    let all_songs = state.player.songs();
+    let song = match all_songs.get(&name) {
+        Ok(s) => s,
+        Err(_) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": format!("Song not found: {}", name)})),
+            )
+                .into_response();
+        }
+    };
+
+    // Get the start offset from the beat grid (when the first beat sounds)
+    let start_offset = song
+        .beat_grid()
+        .and_then(|bg| bg.beats.first().copied())
+        .unwrap_or(0.0);
+
+    // Try MIDI file first — it has authoritative tempo/time-sig events
+    if let Some(midi_playback) = song.midi_playback() {
+        if let Some(guessed) = crate::audio::midi_tempo::extract_tempo_from_midi(
+            midi_playback.file_path(),
+            start_offset,
+        ) {
+            return (
+                StatusCode::OK,
+                Json(json!({
+                    "source": "midi",
+                    "tempo": guessed,
+                })),
+            )
+                .into_response();
+        }
+    }
+
+    // Fall back to beat grid analysis
+    let beat_grid = match song.beat_grid() {
+        Some(bg) => bg,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "Song has no MIDI file or beat grid"})),
+            )
+                .into_response();
+        }
+    };
+
+    match crate::audio::tempo_guess::guess_tempo(beat_grid) {
+        Some(guessed) => (
+            StatusCode::OK,
+            Json(json!({
+                "source": "beat_grid",
+                "tempo": guessed,
+            })),
+        )
+            .into_response(),
+        None => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"error": "Beat grid has too few beats to estimate tempo"})),
+        )
+            .into_response(),
+    }
+}
+
 /// GET /api/songs/:name/files — lists files in a song's directory.
 ///
 /// Returns audio, MIDI, and lighting files with type classification.

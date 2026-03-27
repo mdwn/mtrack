@@ -119,6 +119,33 @@ export async function deleteSong(name: string): Promise<Response> {
   return fetch(`/api/songs/${encodeURIComponent(name)}`, { method: "DELETE" });
 }
 
+export interface GuessedTempo {
+  start_seconds: number;
+  bpm: number;
+  time_signature: [number, number];
+  changes: {
+    measure: number;
+    beat: number;
+    bpm: number;
+    time_signature: [number, number];
+    transition_beats?: number;
+  }[];
+}
+
+export interface TempoGuessResult {
+  source: "midi" | "beat_grid";
+  tempo: GuessedTempo;
+}
+
+export async function fetchTempoGuess(
+  name: string,
+): Promise<TempoGuessResult | null> {
+  const res = await get(`/songs/${encodeURIComponent(name)}/tempo-guess`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Failed to fetch tempo guess: ${res.status}`);
+  return res.json();
+}
+
 export async function fetchWaveform(name: string): Promise<WaveformData> {
   const res = await get(`/songs/${encodeURIComponent(name)}/waveform`);
   if (!res.ok) throw new Error(`Failed to fetch waveform: ${res.status}`);
