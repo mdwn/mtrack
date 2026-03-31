@@ -1208,9 +1208,9 @@ impl AudioDevice for Device {
                             }
                         }
 
-                        // Schedule next trigger: current time + section duration.
+                        // Schedule next trigger: ideal trigger time + section duration.
                         let section_duration = section.end_time.saturating_sub(section.start_time);
-                        next_section_trigger = Some(clock.elapsed() + section_duration);
+                        next_section_trigger = Some(trigger_time + section_duration);
 
                         // Accumulate consumed time so elapsed() reports correct song position.
                         *loop_time_consumed.lock() += section_duration;

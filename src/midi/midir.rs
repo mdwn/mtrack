@@ -785,7 +785,7 @@ fn run_playback(sender: &mut dyn MidiSender, ctx: PlaybackContext<'_>) {
                         },
                         sender,
                     );
-                    midi_section_trigger = Some(ctx.clock.elapsed() + section_duration);
+                    midi_section_trigger = Some(trigger + section_duration);
                     continue;
                 }
             }
