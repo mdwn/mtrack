@@ -256,17 +256,40 @@ app.delete("/api/lighting/fixture-types/:name", (_req, res) => {
 });
 
 app.get("/api/lighting/venues", (_req, res) => {
-  res.json({ venues: {} });
+  res.json({
+    venues: {
+      "test-venue": {
+        name: "test-venue",
+        fixtures: {
+          "front-left": {
+            name: "front-left",
+            fixture_type: "par",
+            universe: 1,
+            start_channel: 1,
+            tags: ["front", "left"],
+          },
+        },
+        groups: {},
+      },
+    },
+  });
 });
 
 app.get("/api/lighting/venues/:name", (_req, res) => {
   res.json({
     venue: {
-      name: "default",
-      fixtures: {},
+      name: "test-venue",
+      fixtures: {
+        "front-left": {
+          fixture_type: "par",
+          universe: 1,
+          start_channel: 1,
+          tags: ["front", "left"],
+        },
+      },
       groups: {},
     },
-    dsl: "venue default {}",
+    dsl: "venue test-venue {\n  fixture front-left par@1:1 [front, left]\n}",
   });
 });
 

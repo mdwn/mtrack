@@ -234,6 +234,29 @@ pub struct Player {
 }
 
 /// Bounds of an active section loop.
+///
+/// Used together with `section_loop_break: Arc<AtomicBool>` to form a
+/// state machine shared by the audio, MIDI, and DMX engine threads:
+///
+/// | State    | `active_section`  | `section_loop_break` |
+/// |----------|-------------------|----------------------|
+/// | Idle     | `None`            | `false`              |
+/// | Looping  | `Some(bounds)`    | `false`              |
+/// | Breaking | `Some(bounds)`*   | `true`               |
+///
+/// Transitions:
+///   - `start_section_loop()`: Idle → Looping (sets `active_section`,
+///     clears `section_loop_break`)
+///   - `stop_section_loop()`: Looping → Breaking → Idle (sets
+///     `section_loop_break` first, then clears `active_section`)
+///   - Each engine thread detects the break and exits its loop
+///
+/// (*) `active_section` is cleared shortly after `section_loop_break` is
+/// set. DMX caches the section bounds so it can compute a resume position
+/// even after the field is cleared.
+///
+/// Trigger scheduling within each engine is handled by
+/// [`crate::section_loop::SectionLoopTrigger`].
 #[derive(Debug, Clone)]
 pub struct SectionBounds {
     pub name: String,
