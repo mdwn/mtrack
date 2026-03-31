@@ -732,7 +732,7 @@ impl Engine {
                                 dmx_engine.update_song_time(section.start_time);
                                 section_owns_time.store(true, Ordering::Relaxed);
                                 iteration_start = Some(elapsed);
-                                next_trigger = Some(elapsed + section_duration);
+                                next_trigger = Some(trigger + section_duration);
                             }
                         }
                     } else {

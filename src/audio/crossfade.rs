@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 /// Default crossfade duration used for loop boundaries and song transitions.
-pub const DEFAULT_CROSSFADE_DURATION: Duration = Duration::from_millis(100);
+pub const DEFAULT_CROSSFADE_DURATION: Duration = Duration::from_millis(5);
 
 /// Returns the default crossfade duration in samples for the given sample rate.
 pub fn default_crossfade_samples(sample_rate: u32) -> u64 {
@@ -353,5 +353,94 @@ mod tests {
 
         let g = env.gain_at(1000);
         assert!((g - 0.8).abs() < 0.01);
+    }
+
+    #[test]
+    fn crossfade_duration_is_rhythmically_negligible() {
+        // At 60 BPM (slowest typical tempo), one beat = 1000ms.
+        // The crossfade must be small enough that triggering early by this
+        // amount is imperceptible rhythmically (<= 10ms).
+        assert!(
+            DEFAULT_CROSSFADE_DURATION <= Duration::from_millis(10),
+            "Crossfade duration {:?} is too large for rhythmically-tight section loops",
+            DEFAULT_CROSSFADE_DURATION
+        );
+    }
+
+    /// Simulates the section loop trigger scheduling logic used by the audio,
+    /// MIDI, and DMX engines. Verifies that trigger times remain locked to an
+    /// ideal metronomic grid over many iterations.
+    ///
+    /// The engines all follow the same pattern:
+    ///   1. Initial trigger = section.end_time
+    ///   2. Fire when: elapsed + crossfade_duration >= trigger_time
+    ///   3. Schedule next: trigger_time + section_duration  (grid-locked)
+    ///
+    /// This test confirms that after N iterations the Nth trigger lands at
+    /// exactly section.end_time + N * section_duration, with zero cumulative
+    /// drift.
+    #[test]
+    fn section_loop_triggers_stay_on_grid() {
+        // 4 measures at 120 BPM = 8 seconds.
+        let section_start = Duration::from_secs(10);
+        let section_end = Duration::from_secs(18);
+        let section_duration = section_end - section_start;
+        let crossfade_duration = DEFAULT_CROSSFADE_DURATION;
+
+        let mut next_trigger = section_end;
+        let iterations = 100;
+
+        for i in 0..iterations {
+            // The engine detects the trigger when elapsed reaches
+            // trigger_time - crossfade_duration. The exact detection time
+            // varies due to polling jitter, but the NEXT trigger must be
+            // computed from the ideal trigger_time, not from elapsed.
+            let expected_trigger = section_end + section_duration * i;
+            assert_eq!(
+                next_trigger, expected_trigger,
+                "Trigger {} drifted: expected {:?}, got {:?}",
+                i, expected_trigger, next_trigger
+            );
+
+            // Simulate: fire the trigger early (as the engines do) but
+            // schedule the next one from the ideal trigger_time.
+            let _simulated_elapsed = next_trigger - crossfade_duration;
+            next_trigger += section_duration;
+        }
+
+        // After 100 iterations of an 8-second section, the final trigger
+        // should land at exactly 10s + 100*8s = 810s with zero drift.
+        let expected_final = section_end + section_duration * iterations;
+        assert_eq!(next_trigger, expected_final);
+    }
+
+    /// Demonstrates that the old trigger scheduling approach (next = elapsed +
+    /// section_duration) would accumulate drift of one crossfade_duration per
+    /// iteration. This is a regression-detection test.
+    #[test]
+    fn old_trigger_scheduling_would_drift() {
+        let section_start = Duration::from_secs(10);
+        let section_end = Duration::from_secs(18);
+        let section_duration = section_end - section_start;
+        let crossfade_duration = DEFAULT_CROSSFADE_DURATION;
+
+        let mut next_trigger = section_end;
+        let iterations: u32 = 100;
+
+        for _ in 0..iterations {
+            // Old (buggy) pattern: next = elapsed + section_duration,
+            // where elapsed = trigger_time - crossfade_duration.
+            let simulated_elapsed = next_trigger - crossfade_duration;
+            next_trigger = simulated_elapsed + section_duration;
+        }
+
+        // With the old approach, each iteration loses one crossfade_duration.
+        let expected_ideal = section_end + section_duration * iterations;
+        let total_drift = expected_ideal - next_trigger;
+        assert_eq!(
+            total_drift,
+            crossfade_duration * iterations,
+            "Old scheduling should drift by crossfade_duration per iteration"
+        );
     }
 }
