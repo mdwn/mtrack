@@ -150,6 +150,49 @@
       : 0,
   );
 
+  const SECTION_COLORS = [
+    "94, 202, 234",
+    "139, 92, 246",
+    "234, 179, 8",
+    "239, 96, 163",
+    "34, 197, 94",
+    "249, 115, 22",
+  ];
+
+  function measureToMs(
+    grid: { beats: number[]; measure_starts: number[] },
+    measure: number,
+    durationMs: number,
+  ): number {
+    const idx = measure - 1;
+    if (idx < 0) return 0;
+    if (idx >= grid.measure_starts.length) return durationMs;
+    return grid.beats[grid.measure_starts[idx]] * 1000;
+  }
+
+  let sectionRegions = $derived.by(() => {
+    const grid = $playbackStore.beat_grid;
+    const dur = $playbackStore.song_duration_ms;
+    const sections = $playbackStore.available_sections;
+    const active = $playbackStore.active_section;
+    if (!grid || dur <= 0 || sections.length === 0) return [];
+
+    return sections.map((s, i) => {
+      const startPct = (measureToMs(grid, s.start_measure, dur) / dur) * 100;
+      // end_measure is inclusive, so the region extends to the start of the next measure
+      const endPct = (measureToMs(grid, s.end_measure + 1, dur) / dur) * 100;
+      const isActive = active?.name === s.name;
+      const rgb = SECTION_COLORS[i % SECTION_COLORS.length];
+      return {
+        name: s.name,
+        startPct,
+        widthPct: endPct - startPct,
+        rgb,
+        isActive,
+      };
+    });
+  });
+
   let currentBeatInfo = $derived.by(() => {
     const grid = $playbackStore.beat_grid;
     if (!grid || grid.beats.length === 0) return null;
@@ -214,6 +257,16 @@
         aria-valuemax={100}
         aria-label={$t("playback.songProgress")}
       >
+        {#each sectionRegions as region (region.name)}
+          <div
+            class="section-region"
+            class:section-active-region={region.isActive}
+            style:left="{region.startPct}%"
+            style:width="{region.widthPct}%"
+            style:--section-rgb={region.rgb}
+            title={region.name}
+          ></div>
+        {/each}
         <div class="progress-fill" style:width="{progressPct}%"></div>
       </div>
       <div class="progress-time">
@@ -337,17 +390,34 @@
     color: var(--bg);
   }
   .progress-bar {
-    height: 4px;
+    position: relative;
+    height: 6px;
     background: var(--border);
-    border-radius: 2px;
+    border-radius: 3px;
     overflow: hidden;
     margin-bottom: 6px;
   }
   .progress-fill {
+    position: relative;
+    z-index: 2;
     height: 100%;
     background: var(--accent);
-    border-radius: 2px;
+    border-radius: 3px;
     transition: width 0.2s linear;
+  }
+  .section-region {
+    position: absolute;
+    top: 0;
+    height: 100%;
+    z-index: 1;
+    background: rgba(var(--section-rgb), 0.18);
+    border-left: 1px solid rgba(var(--section-rgb), 0.4);
+    border-right: 1px solid rgba(var(--section-rgb), 0.4);
+  }
+  .section-active-region {
+    background: rgba(var(--section-rgb), 0.35);
+    border-left: 1px solid rgba(var(--section-rgb), 0.7);
+    border-right: 1px solid rgba(var(--section-rgb), 0.7);
   }
   .progress-time {
     display: flex;

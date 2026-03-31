@@ -135,6 +135,7 @@ install_build_deps_macos() {
     pkg-config
     openssl
     protobuf
+    node
   )
   confirm "Will install (brew): ${pkgs[*]}"
   brew install "${pkgs[@]}"

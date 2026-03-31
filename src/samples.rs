@@ -22,7 +22,7 @@
 //! - Integration with the audio mixer
 
 mod engine;
-mod loader;
+pub(crate) mod loader;
 mod trigger;
 mod voice;
 

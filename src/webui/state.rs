@@ -126,6 +126,30 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
             })
         });
 
+        // Get reactive loop state info.
+        let reactive_loop_state = {
+            use crate::player::ReactiveLoopState;
+            let state = player.reactive_loop_state();
+            match &state {
+                ReactiveLoopState::Idle => json!({"state": "idle"}),
+                ReactiveLoopState::SectionOffered(b) => json!({
+                    "state": "section_offered",
+                    "section_name": b.name,
+                }),
+                ReactiveLoopState::LoopArmed(b) => json!({
+                    "state": "loop_armed",
+                    "section_name": b.name,
+                }),
+                ReactiveLoopState::Looping(b) => json!({
+                    "state": "looping",
+                    "section_name": b.name,
+                }),
+                ReactiveLoopState::BreakRequested(b) => json!({
+                    "state": "break_requested",
+                    "section_name": b.name,
+                }),
+            }
+        };
         // For looping, wrap elapsed time to show position within the current
         // loop/section iteration rather than total time since first play.
         let elapsed_ms = if let Some(ref section) = player.active_section() {
@@ -160,6 +184,7 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
             "available_sections": available_sections,
             "active_section": active_section,
             "looping": looping,
+            "reactive_loop_state": reactive_loop_state,
         });
 
         let _ = tx.send(msg.to_string());

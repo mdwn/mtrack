@@ -20,6 +20,7 @@ use tracing::info;
 
 use super::{
     midi::{self, ToMidiEvent},
+    notification::SongNotificationConfig,
     samples::{SampleDefinition, SampleTrigger, SamplesConfig},
     track::Track,
 };
@@ -57,6 +58,9 @@ pub struct Song {
     /// Used for section looping during playback.
     #[serde(default)]
     sections: Vec<Section>,
+    /// Per-song notification audio overrides.
+    #[serde(default)]
+    notification_audio: Option<SongNotificationConfig>,
 }
 
 /// A named section of a song defined by measure boundaries.
@@ -97,6 +101,7 @@ impl Song {
             sample_triggers,
             loop_playback: false,
             sections: Vec::new(),
+            notification_audio: None,
         }
     }
 
@@ -242,6 +247,11 @@ impl Song {
     /// Gets the named sections of this song.
     pub fn sections(&self) -> &[Section] {
         &self.sections
+    }
+
+    /// Gets the per-song notification audio overrides.
+    pub fn notification_audio(&self) -> Option<&SongNotificationConfig> {
+        self.notification_audio.as_ref()
     }
 
     /// Gets the song-specific samples configuration.

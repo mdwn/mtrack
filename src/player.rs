@@ -227,6 +227,10 @@ pub struct Player {
     /// Each completed loop iteration adds section_duration to this value.
     /// Subtracted from raw elapsed to get the true song position.
     loop_time_consumed: Arc<parking_lot::Mutex<Duration>>,
+    /// Reactive loop state machine.
+    reactive_loop_state: Arc<parking_lot::RwLock<ReactiveLoopState>>,
+    /// Notification engine for section loop audio feedback.
+    notification_engine: Arc<crate::notification::NotificationEngine>,
 }
 
 /// Bounds of an active section loop.
@@ -235,6 +239,26 @@ pub struct SectionBounds {
     pub name: String,
     pub start_time: Duration,
     pub end_time: Duration,
+}
+
+/// State machine for reactive section looping.
+///
+/// In reactive mode, sections are "offered" to the performer as playback
+/// enters each section boundary. The performer can ack to arm the loop,
+/// and later break to exit.
+#[derive(Debug, Clone, Default)]
+pub enum ReactiveLoopState {
+    /// No section is currently being offered or looped.
+    #[default]
+    Idle,
+    /// Playback entered a section; waiting for performer ack.
+    SectionOffered(SectionBounds),
+    /// Performer acked; loop will engage at section end.
+    LoopArmed(SectionBounds),
+    /// Section loop is active.
+    Looping(SectionBounds),
+    /// Break requested; will exit at end of current iteration.
+    BreakRequested(SectionBounds),
 }
 
 impl Player {
@@ -624,6 +648,10 @@ impl Player {
             active_section: Arc::new(parking_lot::RwLock::new(None)),
             section_loop_break: Arc::new(AtomicBool::new(false)),
             loop_time_consumed: Arc::new(parking_lot::Mutex::new(Duration::ZERO)),
+            reactive_loop_state: Arc::new(parking_lot::RwLock::new(ReactiveLoopState::Idle)),
+            notification_engine: Arc::new(crate::notification::NotificationEngine::with_defaults(
+                44100,
+            )),
         })
     }
 
@@ -1053,6 +1081,18 @@ impl Player {
         // Load samples for this song (if not already loaded)
         self.load_song_samples(&song);
 
+        // Load per-song notification audio overrides.
+        if let Some(notif_config) = song.notification_audio() {
+            let base_path = song.base_path();
+            self.notification_engine.set_song_overrides(
+                &notif_config.event_overrides(),
+                notif_config.section_overrides(),
+                base_path,
+            );
+        } else {
+            self.notification_engine.clear_song_overrides();
+        }
+
         // Clone hardware Arcs under a short read lock.
         let hw = self.hardware.read().clone();
 
@@ -1105,8 +1145,28 @@ impl Player {
         };
         *join = Some(PlayHandles {
             join: join_handle,
-            cancel: cancel_handle,
+            cancel: cancel_handle.clone(),
         });
+
+        // Spawn section boundary polling task for reactive looping.
+        {
+            let player = self.clone();
+            let cancel = cancel_handle.clone();
+            // Reset reactive state for new song.
+            *self.reactive_loop_state.write() = ReactiveLoopState::Idle;
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_millis(50));
+                loop {
+                    interval.tick().await;
+                    if cancel.is_cancelled() {
+                        break;
+                    }
+                    if let Ok(Some(elapsed)) = player.elapsed().await {
+                        player.check_section_boundaries(elapsed);
+                    }
+                }
+            });
+        }
 
         {
             let player = self.clone();
@@ -1667,6 +1727,27 @@ impl Player {
     /// song continues from the section end point.
     pub fn stop_section_loop(&self) {
         info!("Stopping section loop");
+
+        // Update reactive state machine.
+        {
+            let mut state = self.reactive_loop_state.write();
+            match &*state {
+                ReactiveLoopState::Looping(_) | ReactiveLoopState::BreakRequested(_) => {
+                    if let ReactiveLoopState::Looping(bounds) = state.clone() {
+                        *state = ReactiveLoopState::BreakRequested(bounds);
+                        self.play_notification(
+                            crate::notification::NotificationEvent::BreakRequested,
+                        );
+                    }
+                }
+                ReactiveLoopState::LoopArmed(_) => {
+                    // Cancel the arm, return to idle.
+                    *state = ReactiveLoopState::Idle;
+                }
+                _ => {}
+            }
+        }
+
         self.section_loop_break.store(true, Ordering::Relaxed);
         // Clear active section so the UI stops wrapping elapsed time
         // and shows normal playback state.
@@ -1678,7 +1759,131 @@ impl Player {
         self.active_section.read().clone()
     }
 
-    /// Plays the section loop confirmation tone through the mixer.
+    /// Returns the current reactive loop state.
+    pub fn reactive_loop_state(&self) -> ReactiveLoopState {
+        self.reactive_loop_state.read().clone()
+    }
+
+    /// Acknowledges the current section in reactive looping mode.
+    ///
+    /// When a section has been offered (state is `SectionOffered`), this
+    /// arms the loop so it will engage at the section end.
+    pub async fn section_ack(&self) -> Result<(), Box<dyn Error>> {
+        let mut state = self.reactive_loop_state.write();
+        match state.clone() {
+            ReactiveLoopState::SectionOffered(bounds) => {
+                info!(section = bounds.name.as_str(), "Section loop armed via ack");
+                *state = ReactiveLoopState::LoopArmed(bounds.clone());
+
+                // Set active_section to engage the existing loop machinery.
+                {
+                    let mut active = self.active_section.write();
+                    *active = Some(bounds);
+                }
+                self.section_loop_break.store(false, Ordering::Relaxed);
+                drop(state);
+
+                self.play_notification(crate::notification::NotificationEvent::LoopArmed);
+
+                Ok(())
+            }
+            _ => Err("No section currently offered to acknowledge".into()),
+        }
+    }
+
+    /// Checks whether the playhead has entered or left a section boundary.
+    ///
+    /// Called periodically by the section boundary polling task. Handles
+    /// reactive state transitions: offering sections, detecting no-ack
+    /// timeouts, and firing exit notifications.
+    pub fn check_section_boundaries(&self, elapsed: Duration) {
+        let playlist = self.get_playlist();
+        let song = match playlist.current() {
+            Some(s) => s,
+            None => return,
+        };
+
+        let sections = song.sections();
+        if sections.is_empty() {
+            return;
+        }
+
+        // Find which section the playhead is currently in.
+        let current_section = sections.iter().find_map(|s| {
+            let (start, end) = song.resolve_section(&s.name)?;
+            if elapsed >= start && elapsed < end {
+                Some(SectionBounds {
+                    name: s.name.clone(),
+                    start_time: start,
+                    end_time: end,
+                })
+            } else {
+                None
+            }
+        });
+
+        let mut state = self.reactive_loop_state.write();
+
+        match (&*state, current_section) {
+            // Idle + entered a section → offer it.
+            (ReactiveLoopState::Idle, Some(bounds)) => {
+                info!(
+                    section = bounds.name.as_str(),
+                    "Offering section for reactive loop"
+                );
+                self.play_notification(crate::notification::NotificationEvent::SectionEntering {
+                    section_name: bounds.name.clone(),
+                });
+                *state = ReactiveLoopState::SectionOffered(bounds);
+            }
+
+            // SectionOffered but playhead has left the section → no ack, return to idle.
+            (ReactiveLoopState::SectionOffered(offered), None) => {
+                info!(
+                    section = offered.name.as_str(),
+                    "Section passed without ack, returning to idle"
+                );
+                self.play_notification(crate::notification::NotificationEvent::LoopExited);
+                *state = ReactiveLoopState::Idle;
+            }
+
+            // SectionOffered but in a different section → update the offer.
+            (ReactiveLoopState::SectionOffered(offered), Some(bounds))
+                if offered.name != bounds.name =>
+            {
+                info!(
+                    old = offered.name.as_str(),
+                    new = bounds.name.as_str(),
+                    "Section changed, updating offer"
+                );
+                self.play_notification(crate::notification::NotificationEvent::SectionEntering {
+                    section_name: bounds.name.clone(),
+                });
+                *state = ReactiveLoopState::SectionOffered(bounds);
+            }
+
+            // BreakRequested + left section → loop exited.
+            (ReactiveLoopState::BreakRequested(_), None) => {
+                info!("Section loop exited after break");
+                self.play_notification(crate::notification::NotificationEvent::LoopExited);
+                *state = ReactiveLoopState::Idle;
+            }
+
+            // LoopArmed → Looping transition happens when the audio engine
+            // actually begins looping. We detect this by checking if
+            // active_section is set and we've wrapped around.
+            (ReactiveLoopState::LoopArmed(bounds), Some(_)) => {
+                // Check if the audio engine has started looping.
+                let loop_consumed = *self.loop_time_consumed.lock();
+                if loop_consumed > Duration::ZERO {
+                    *state = ReactiveLoopState::Looping(bounds.clone());
+                }
+            }
+
+            _ => {}
+        }
+    }
+
     /// Well-known track name for the section loop confirmation tone.
     /// Users route this in their audio track mappings, e.g.:
     /// ```yaml
@@ -1687,9 +1892,8 @@ impl Player {
     /// ```
     pub const LOOP_CONFIRMATION_TRACK: &'static str = "mtrack:looping";
 
-    /// Plays the section loop confirmation tone through the mixer,
-    /// routed via the `mtrack:looping` track mapping.
-    fn play_confirmation_tone(&self) {
+    /// Plays a notification sound through the mixer via the notification engine.
+    fn play_notification(&self, event: crate::notification::NotificationEvent) {
         let hw = self.hardware.read();
         let device = match hw.device.as_ref() {
             Some(d) => d,
@@ -1704,46 +1908,13 @@ impl Player {
             None => return,
         };
 
-        // Only play if the user has configured the mtrack:looping track mapping.
-        if !mappings.contains_key(Self::LOOP_CONFIRMATION_TRACK) {
-            return;
-        }
+        self.notification_engine.play(event, &mixer, mappings);
+    }
 
-        let sample_rate = mixer.sample_rate();
-        use crate::audio::confirmation::ConfirmationSound;
-        let tone = crate::audio::confirmation::SineTone::default();
-        let samples = tone.generate(sample_rate);
-        let samples = Arc::new(samples);
-
-        let source = crate::audio::sample_source::MemorySampleSource::from_shared(
-            samples,
-            1, // mono
-            sample_rate,
-            1.0,
-        );
-
-        // Map the mono source channel to the well-known track name.
-        let mapped = crate::audio::sample_source::channel_mapped::ChannelMappedSource::new(
-            Box::new(source),
-            vec![vec![Self::LOOP_CONFIRMATION_TRACK.to_string()]],
-            1,
-        );
-
-        let is_finished = Arc::new(AtomicBool::new(false));
-        let active_source = crate::audio::mixer::ActiveSource {
-            id: crate::audio::next_source_id(),
-            source: Box::new(mapped),
-            track_mappings: mappings.as_ref().clone(),
-            channel_mappings: Vec::new(),
-            cached_source_channel_count: 1,
-            cancel_handle: crate::playsync::CancelHandle::new(),
-            is_finished,
-            start_at_sample: None,
-            cancel_at_sample: None,
-            gain_envelope: None,
-        };
-
-        mixer.add_source(active_source);
+    /// Plays the section loop confirmation tone through the mixer.
+    /// Delegates to the notification engine.
+    fn play_confirmation_tone(&self) {
+        self.play_notification(crate::notification::NotificationEvent::LoopArmed);
     }
 
     /// Sets fade-out envelopes on all current audio sources for a smooth

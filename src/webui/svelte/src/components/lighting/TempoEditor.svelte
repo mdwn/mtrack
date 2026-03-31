@@ -37,7 +37,10 @@
   }: Props = $props();
 
   let guessSource = $state<"midi" | "beat_grid" | null>(null);
+  let guessAlignmentRms = $state<number | null>(null);
   let guessing = $state(false);
+
+  const ALIGNMENT_WARN_THRESHOLD_MS = 15;
 
   function convertGuessToTempo(guessed: GuessedTempo): TempoSection {
     return {
@@ -65,6 +68,7 @@
       const result = await fetchTempoGuess(songName);
       if (result) {
         guessSource = result.source;
+        guessAlignmentRms = result.tempo.alignment_rms_ms ?? null;
         onchange(convertGuessToTempo(result.tempo));
       }
     } finally {
@@ -165,6 +169,16 @@
       {#if guessSource}
         <span class="estimated-badge">
           {guessSource === "midi" ? "from MIDI" : "estimated from beat grid"}
+        </span>
+      {/if}
+      {#if guessSource === "midi" && guessAlignmentRms !== null && guessAlignmentRms > ALIGNMENT_WARN_THRESHOLD_MS}
+        <span
+          class="alignment-warn-badge"
+          title="MIDI beat alignment error: {guessAlignmentRms.toFixed(
+            1,
+          )}ms RMS. The MIDI file may not match this recording."
+        >
+          ⚠ MIDI may not match audio ({guessAlignmentRms.toFixed(0)}ms)
         </span>
       {/if}
       {#if (hasBeatGrid || hasMidi) && songName}
@@ -425,6 +439,14 @@
     padding: 2px 8px;
     border-radius: 3px;
     font-style: italic;
+  }
+  .alignment-warn-badge {
+    font-size: 11px;
+    color: var(--red, #ef4444);
+    background: rgba(239, 68, 68, 0.12);
+    padding: 2px 8px;
+    border-radius: 3px;
+    cursor: default;
   }
   .btn-accent {
     background: rgba(94, 202, 234, 0.15);

@@ -130,6 +130,10 @@ export interface GuessedTempo {
     time_signature: [number, number];
     transition_beats?: number;
   }[];
+  /** RMS alignment error in ms vs the click-track beat grid. Only present for
+   *  MIDI-sourced tempos. Values above 15ms suggest the MIDI may not match
+   *  the recorded audio. */
+  alignment_rms_ms?: number;
 }
 
 export interface TempoGuessResult {

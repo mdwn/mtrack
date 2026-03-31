@@ -12,30 +12,15 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
+//! Audio notification subsystem for section loop feedback.
+//!
+//! Provides audio notifications (tones and user-overridable sound files)
+//! for section loop lifecycle events: entering a section, arming a loop,
+//! requesting a break, and exiting a loop.
+
 pub mod audio;
-pub mod build_info;
-pub mod calibrate;
-pub mod cli;
-pub(crate) mod clock;
-pub mod config;
-pub mod controller;
-pub mod dmx;
-pub mod lighting;
-pub mod midi;
-pub mod notification;
-pub mod player;
-pub mod playlist;
-pub mod playsync;
-pub mod proto;
-pub mod samples;
-pub mod song_cache;
-pub mod songs;
-pub mod state;
-#[cfg(test)]
-pub mod testutil;
-pub(crate) mod thread_priority;
-pub mod trigger;
-pub mod tui;
-pub mod util;
-pub mod verify;
-pub mod webui;
+pub mod engine;
+pub mod events;
+
+pub use engine::NotificationEngine;
+pub use events::NotificationEvent;

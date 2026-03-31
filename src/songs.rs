@@ -133,6 +133,8 @@ pub struct Song {
     loop_playback: bool,
     /// Named sections defined by measure boundaries.
     sections: Vec<config::Section>,
+    /// Per-song notification audio overrides.
+    notification_audio: Option<config::SongNotificationConfig>,
 }
 
 /// A simple sample for songs. Boils down to i32 or f32, which we can be reasonably assured that
@@ -242,6 +244,7 @@ impl Song {
             beat_grid,
             loop_playback: config.loop_playback(),
             sections: config.sections().to_vec(),
+            notification_audio: config.notification_audio().cloned(),
         })
     }
 
@@ -452,6 +455,11 @@ impl Song {
     /// Gets the named sections of this song.
     pub fn sections(&self) -> &[config::Section] {
         &self.sections
+    }
+
+    /// Gets the per-song notification audio overrides.
+    pub fn notification_audio(&self) -> Option<&config::SongNotificationConfig> {
+        self.notification_audio.as_ref()
     }
 
     /// Resolves a named section to absolute time bounds using the beat grid.
@@ -677,6 +685,7 @@ impl Default for Song {
             beat_grid: None,
             loop_playback: false,
             sections: Vec::new(),
+            notification_audio: None,
         }
     }
 }

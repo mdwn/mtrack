@@ -26,11 +26,11 @@ use crate::{
         GetConfigRequest, GetConfigResponse, GetCuesRequest, GetCuesResponse, LoopSectionRequest,
         LoopSectionResponse, NextRequest, NextResponse, PlayFromRequest, PlayRequest, PlayResponse,
         PlaySongFromRequest, PreviousRequest, PreviousResponse, RemoveProfileRequest,
-        StatusRequest, StatusResponse, StopRequest, StopResponse, StopSamplesRequest,
-        StopSamplesResponse, StopSectionLoopRequest, StopSectionLoopResponse,
-        SwitchToPlaylistRequest, SwitchToPlaylistResponse, UpdateAudioRequest,
-        UpdateConfigResponse, UpdateControllersRequest, UpdateDmxRequest, UpdateMidiRequest,
-        UpdateProfileRequest, FILE_DESCRIPTOR_SET,
+        SectionAckRequest, SectionAckResponse, StatusRequest, StatusResponse, StopRequest,
+        StopResponse, StopSamplesRequest, StopSamplesResponse, StopSectionLoopRequest,
+        StopSectionLoopResponse, SwitchToPlaylistRequest, SwitchToPlaylistResponse,
+        UpdateAudioRequest, UpdateConfigResponse, UpdateControllersRequest, UpdateDmxRequest,
+        UpdateMidiRequest, UpdateProfileRequest, FILE_DESCRIPTOR_SET,
     },
 };
 
@@ -499,6 +499,17 @@ impl PlayerService for PlayerServer {
     ) -> Result<Response<StopSectionLoopResponse>, Status> {
         self.player.stop_section_loop();
         Ok(Response::new(StopSectionLoopResponse {}))
+    }
+
+    async fn section_ack(
+        &self,
+        _request: Request<SectionAckRequest>,
+    ) -> Result<Response<SectionAckResponse>, Status> {
+        self.player
+            .section_ack()
+            .await
+            .map_err(|e| Status::failed_precondition(e.to_string()))?;
+        Ok(Response::new(SectionAckResponse {}))
     }
 }
 

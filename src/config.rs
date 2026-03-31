@@ -21,6 +21,7 @@ pub mod lighting;
 pub mod midi;
 #[cfg(not(test))]
 mod midi;
+pub mod notification;
 mod player;
 mod playlist;
 mod profile;
@@ -52,6 +53,7 @@ pub use self::player::Player;
 pub use self::playlist::Playlist;
 // Sample types are exported for external configuration
 pub use self::hostname::resolve_hostname;
+pub use self::notification::{NotificationConfig, SongNotificationConfig};
 pub use self::profile::Profile;
 #[allow(unused_imports)]
 pub use self::samples::{

@@ -265,6 +265,12 @@ message StopSectionLoopRequest {}
 // StopSectionLoopResponse is returned after stopping a section loop.
 message StopSectionLoopResponse {}
 
+// SectionAckRequest acknowledges the current section in reactive looping mode.
+message SectionAckRequest {}
+
+// SectionAckResponse is returned after acknowledging a section.
+message SectionAckResponse {}
+
 // PlayerService is a service for controlling the mtrack player.
 service PlayerService {
     // Play will play the current song in the playlist if no other songs
@@ -332,4 +338,8 @@ service PlayerService {
     // StopSectionLoop deactivates section looping. The current iteration
     // finishes and the song continues from the section end.
     rpc StopSectionLoop(StopSectionLoopRequest) returns (StopSectionLoopResponse);
+
+    // SectionAck acknowledges the current section in reactive looping mode,
+    // arming the loop so it engages at the section end.
+    rpc SectionAck(SectionAckRequest) returns (SectionAckResponse);
 }

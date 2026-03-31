@@ -99,6 +99,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Snap subdivisions**: The snap resolution in both the main timeline and the
   sequence editor now includes 1/2, 1/4, 1/8, and 1/16 beat subdivisions in
   addition to beat and measure snapping.
+- **MIDI alignment quality warning**: After detecting a tempo map from MIDI,
+  the lighting editor computes a beat-alignment RMSE between MIDI-predicted
+  beat positions and click-track detections. If the error exceeds 15 ms, a
+  warning badge is shown indicating the MIDI file may not match the recording.
+  The `alignment_rms_ms` field is included in the `GuessedTempo` API response.
+- **Compound meter beat stepping**: Tempo detection from MIDI now correctly
+  handles 6/8, 9/8, and 12/8 time signatures by stepping by dotted-quarter
+  note pulses (three eighth notes) rather than quarter notes, matching the
+  natural click-track pulse for compound meters.
 
 ### Changed
 

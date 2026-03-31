@@ -330,6 +330,108 @@ test.describe("Playback State Transitions", () => {
     await expect(page.locator(".section-controls")).not.toBeVisible();
   });
 
+  test("section regions render on progress bar with beat grid", async ({
+    page,
+  }) => {
+    // Send playing state with sections AND a beat grid so regions can be computed.
+    // 8 measures at 120bpm, 4 beats per measure = 32 beats over 16 seconds.
+    const beats: number[] = [];
+    for (let i = 0; i < 32; i++) {
+      beats.push(i * 0.5); // 120bpm = 0.5s per beat
+    }
+    const measure_starts = [0, 4, 8, 12, 16, 20, 24, 28]; // every 4 beats
+
+    await sendWsMessage(page, wsId, {
+      type: "playback",
+      is_playing: true,
+      elapsed_ms: 1000,
+      song_name: "Test Song Beta",
+      song_duration_ms: 16000,
+      playlist_name: "setlist",
+      playlist_position: 1,
+      playlist_songs: ["Test Song Alpha", "Test Song Beta"],
+      tracks: [],
+      available_playlists: ["all_songs", "setlist"],
+      persisted_playlist_name: "setlist",
+      locked: false,
+      beat_grid: { beats, measure_starts },
+      available_sections: [
+        { name: "verse", start_measure: 1, end_measure: 4 },
+        { name: "chorus", start_measure: 5, end_measure: 8 },
+      ],
+      active_section: null,
+    });
+
+    // Two section regions should appear inside the progress bar.
+    const regions = page.locator(".section-region");
+    await expect(regions).toHaveCount(2);
+
+    // Verify they have title attributes for tooltip.
+    await expect(regions.nth(0)).toHaveAttribute("title", "verse");
+    await expect(regions.nth(1)).toHaveAttribute("title", "chorus");
+  });
+
+  test("section regions not rendered without beat grid", async ({ page }) => {
+    // Sections present but no beat grid — regions should not render.
+    await sendWsMessage(page, wsId, {
+      type: "playback",
+      is_playing: true,
+      elapsed_ms: 1000,
+      song_name: "Test Song Beta",
+      song_duration_ms: 240000,
+      playlist_name: "setlist",
+      playlist_position: 1,
+      playlist_songs: ["Test Song Alpha", "Test Song Beta"],
+      tracks: [],
+      available_playlists: ["all_songs", "setlist"],
+      persisted_playlist_name: "setlist",
+      locked: false,
+      beat_grid: null,
+      available_sections: [{ name: "verse", start_measure: 1, end_measure: 4 }],
+      active_section: null,
+    });
+
+    await expect(page.locator(".section-region")).toHaveCount(0);
+  });
+
+  test("active section region gets highlighted class", async ({ page }) => {
+    const beats: number[] = [];
+    for (let i = 0; i < 32; i++) {
+      beats.push(i * 0.5);
+    }
+    const measure_starts = [0, 4, 8, 12, 16, 20, 24, 28];
+
+    await sendWsMessage(page, wsId, {
+      type: "playback",
+      is_playing: true,
+      elapsed_ms: 3000,
+      song_name: "Test Song Beta",
+      song_duration_ms: 16000,
+      playlist_name: "setlist",
+      playlist_position: 1,
+      playlist_songs: ["Test Song Alpha", "Test Song Beta"],
+      tracks: [],
+      available_playlists: ["all_songs", "setlist"],
+      persisted_playlist_name: "setlist",
+      locked: false,
+      beat_grid: { beats, measure_starts },
+      available_sections: [
+        { name: "verse", start_measure: 1, end_measure: 4 },
+        { name: "chorus", start_measure: 5, end_measure: 8 },
+      ],
+      active_section: { name: "verse", start_ms: 0, end_ms: 8000 },
+    });
+
+    // The active section should have the highlight class.
+    const activeRegions = page.locator(".section-active-region");
+    await expect(activeRegions).toHaveCount(1);
+    await expect(activeRegions).toHaveAttribute("title", "verse");
+
+    // The other section should not have the active class.
+    const allRegions = page.locator(".section-region");
+    await expect(allRegions).toHaveCount(2);
+  });
+
   test("elapsed time updates in progress display", async ({ page }) => {
     await sendWsMessage(page, wsId, {
       type: "playback",
