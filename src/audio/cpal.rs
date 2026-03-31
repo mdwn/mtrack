@@ -1096,6 +1096,9 @@ impl AudioDevice for Device {
                     let cs = crate::audio::crossfade::default_crossfade_samples(
                         self.output_manager.mixer.sample_rate(),
                     );
+                    // Linear is fine for ≤5ms crossfades — perceptual difference
+                    // from EqualPower is inaudible at this duration, and Linear
+                    // is cheaper (no trig).
                     Some(Arc::new(crate::audio::crossfade::GainEnvelope::fade_in(
                         cs,
                         crate::audio::crossfade::CrossfadeCurve::Linear,
@@ -1114,10 +1117,7 @@ impl AudioDevice for Device {
         );
         let crossfade_duration = crate::audio::crossfade::DEFAULT_CROSSFADE_DURATION;
 
-        // Track the next time a section loop crossfade should trigger.
-        // This prevents re-triggering immediately after a crossfade since the
-        // clock keeps advancing (it doesn't reset on loop).
-        let mut next_section_trigger: Option<Duration> = None;
+        let mut section_trigger = crate::section_loop::SectionLoopTrigger::new();
 
         'monitor: loop {
             if cancel_handle.is_cancelled() || loop_break.load(Ordering::Relaxed) {
@@ -1137,10 +1137,10 @@ impl AudioDevice for Device {
                 if !section_loop_break.load(Ordering::Relaxed) {
                     let elapsed = clock.elapsed();
 
-                    // Set up the first trigger point based on the section end.
-                    let trigger_time = next_section_trigger.unwrap_or(section.end_time);
-
-                    if elapsed + crossfade_duration >= trigger_time {
+                    if section_trigger
+                        .check(section, elapsed, crossfade_duration)
+                        .is_some()
+                    {
                         info!(
                             section = section.name,
                             "Audio section loop: crossfading back to section start"
@@ -1203,16 +1203,13 @@ impl AudioDevice for Device {
                                 }
                             }
                             Err(e) => {
-                                error!(err = e.as_ref(), "Failed to create section loop sources");
+                                error!(err = %e, "Failed to create section loop sources");
                                 break 'monitor;
                             }
                         }
 
-                        // Schedule next trigger: ideal trigger time + section duration.
-                        let section_duration = section.end_time.saturating_sub(section.start_time);
-                        next_section_trigger = Some(trigger_time + section_duration);
-
                         // Accumulate consumed time so elapsed() reports correct song position.
+                        let section_duration = section.end_time.saturating_sub(section.start_time);
                         *loop_time_consumed.lock() += section_duration;
 
                         // Continue monitoring the new sources.

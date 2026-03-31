@@ -634,7 +634,7 @@ impl Engine {
             let clock = clock.clone();
             let timeline_finished = dmx_engine.timeline_finished.clone();
             thread::spawn(move || {
-                let mut next_trigger: Option<Duration> = None;
+                let mut section_trigger = crate::section_loop::SectionLoopTrigger::new();
                 let mut iteration_start: Option<Duration> = None;
                 // Cached section bounds so we can handle break even after
                 // active_section is cleared by stop_section_loop().
@@ -703,10 +703,6 @@ impl Engine {
 
                         let elapsed = clock.elapsed();
 
-                        if next_trigger.is_none() {
-                            next_trigger = Some(section.end_time);
-                        }
-
                         if let Some(iter_start) = iteration_start {
                             let time_since = elapsed.saturating_sub(iter_start);
                             let position = time_since.min(section_duration);
@@ -714,26 +710,26 @@ impl Engine {
                         }
 
                         let crossfade_margin = crate::audio::crossfade::DEFAULT_CROSSFADE_DURATION;
-                        if let Some(trigger) = next_trigger {
-                            if elapsed + crossfade_margin >= trigger {
-                                info!(
-                                    section = section.name,
-                                    "DMX section loop: resetting for next iteration"
-                                );
-                                dmx_engine.start_lighting_timeline_at(section.start_time);
-                                {
-                                    let mut playbacks = dmx_engine.midi_dmx_playbacks.lock();
-                                    for playback in playbacks.iter_mut() {
-                                        let events = playback.precomputed.events();
-                                        playback.cursor =
-                                            events.partition_point(|e| e.time < section.start_time);
-                                    }
+                        if section_trigger
+                            .check(section, elapsed, crossfade_margin)
+                            .is_some()
+                        {
+                            info!(
+                                section = section.name,
+                                "DMX section loop: resetting for next iteration"
+                            );
+                            dmx_engine.start_lighting_timeline_at(section.start_time);
+                            {
+                                let mut playbacks = dmx_engine.midi_dmx_playbacks.lock();
+                                for playback in playbacks.iter_mut() {
+                                    let events = playback.precomputed.events();
+                                    playback.cursor =
+                                        events.partition_point(|e| e.time < section.start_time);
                                 }
-                                dmx_engine.update_song_time(section.start_time);
-                                section_owns_time.store(true, Ordering::Relaxed);
-                                iteration_start = Some(elapsed);
-                                next_trigger = Some(trigger + section_duration);
                             }
+                            dmx_engine.update_song_time(section.start_time);
+                            section_owns_time.store(true, Ordering::Relaxed);
+                            iteration_start = Some(elapsed);
                         }
                     } else {
                         // No active section.
@@ -741,7 +737,7 @@ impl Engine {
                             // Section was cleared without break — reset.
                             cached_section = None;
                         }
-                        next_trigger = None;
+                        section_trigger.reset();
                         iteration_start = None;
                         section_owns_time.store(false, Ordering::Relaxed);
                     }

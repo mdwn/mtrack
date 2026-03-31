@@ -23,6 +23,20 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 /// Default crossfade duration used for loop boundaries and song transitions.
+///
+/// At 5ms this is rhythmically invisible — less than 1% of a beat at 60 BPM
+/// (1000ms). The value was reduced from 100ms to eliminate cumulative timing
+/// drift in section loops (each iteration was drifting by one crossfade
+/// duration under the old trigger scheduling).
+///
+/// Constraint: must remain ≤ 10ms to stay imperceptible at the slowest
+/// typical tempos. Validated by the `crossfade_duration_is_rhythmically_negligible`
+/// test. If click artifacts appear, check sample rate, buffer size, and
+/// audio format before increasing this value.
+///
+/// Trigger scheduling is handled by [`crate::section_loop::SectionLoopTrigger`],
+/// which uses this margin to fire transitions slightly early so the crossfade
+/// completes exactly at the ideal boundary.
 pub const DEFAULT_CROSSFADE_DURATION: Duration = Duration::from_millis(5);
 
 /// Returns the default crossfade duration in samples for the given sample rate.

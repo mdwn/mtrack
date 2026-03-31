@@ -61,6 +61,48 @@ pub fn start_sampler_cancellable(
     tokio::spawn(sampler_loop_cancellable(effect_engine, tx, cancel))
 }
 
+/// Builds the dimmer map by querying the fixture registry on the blocking
+/// thread pool (the effect engine uses a `parking_lot::Mutex` shared with
+/// a std::thread, so we must never block a tokio worker on it).
+async fn init_dimmer_map(effect_engine: &Arc<Mutex<EffectEngine>>) -> HashMap<String, bool> {
+    let engine_ref = effect_engine.clone();
+    tokio::task::spawn_blocking(move || {
+        let engine = engine_ref.lock();
+        engine
+            .get_fixture_registry()
+            .iter()
+            .map(|(name, info)| (name.clone(), info.channels.contains_key("dimmer")))
+            .collect()
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// Samples the current fixture state from the effect engine (on the blocking
+/// thread pool) and returns a snapshot, or `None` if the blocking task panicked.
+async fn sample_tick(
+    effect_engine: &Arc<Mutex<EffectEngine>>,
+    has_dimmer_map: &HashMap<String, bool>,
+) -> Option<Arc<StateSnapshot>> {
+    let engine_ref = effect_engine.clone();
+    let (states, mut active_effects) = tokio::task::spawn_blocking(move || {
+        let engine = engine_ref.lock();
+        let states = engine.get_fixture_states();
+        let effects: Vec<String> = engine.get_active_effects().keys().cloned().collect();
+        (states, effects)
+    })
+    .await
+    .ok()?;
+
+    active_effects.sort();
+    let fixtures = compute_fixture_snapshots(&states, has_dimmer_map);
+
+    Some(Arc::new(StateSnapshot {
+        fixtures,
+        active_effects,
+    }))
+}
+
 #[cfg(test)]
 async fn sampler_loop(
     effect_engine: Arc<Mutex<EffectEngine>>,
@@ -68,61 +110,14 @@ async fn sampler_loop(
 ) {
     let mut interval = time::interval(Duration::from_millis(50));
     interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
-
-    // Cache the dimmer map — fixture registry doesn't change at runtime.
-    // Use spawn_blocking because effect_engine is a parking_lot::Mutex shared
-    // with the 44Hz effects loop on a std::thread — we must never block a
-    // tokio worker thread on it.
-    let has_dimmer_map: HashMap<String, bool> = {
-        let engine_ref = effect_engine.clone();
-        tokio::task::spawn_blocking(move || {
-            let engine = engine_ref.lock();
-            engine
-                .get_fixture_registry()
-                .iter()
-                .map(|(name, info)| (name.clone(), info.channels.contains_key("dimmer")))
-                .collect()
-        })
-        .await
-        .unwrap_or_default()
-    };
+    let has_dimmer_map = init_dimmer_map(&effect_engine).await;
 
     loop {
         interval.tick().await;
 
-        // Acquire the effect engine lock on the blocking thread pool so we
-        // never block a tokio worker thread.
-        let engine_ref = effect_engine.clone();
-        let (states, mut active_effects) = match tokio::task::spawn_blocking(move || {
-            let lock_start = std::time::Instant::now();
-            let engine = engine_ref.lock();
-            let wait = lock_start.elapsed();
-            if wait > std::time::Duration::from_secs(1) {
-                tracing::warn!(
-                    wait_ms = wait.as_millis() as u64,
-                    "Sampler waited >1s for effect_engine lock"
-                );
-            }
-            let states = engine.get_fixture_states();
-            let effects: Vec<String> = engine.get_active_effects().keys().cloned().collect();
-            (states, effects)
-        })
-        .await
-        {
-            Ok(result) => result,
-            Err(_) => continue,
-        };
-
-        active_effects.sort();
-        let fixtures = compute_fixture_snapshots(&states, &has_dimmer_map);
-
-        let snapshot = Arc::new(StateSnapshot {
-            fixtures,
-            active_effects,
-        });
-
-        // Send fails only when all receivers are dropped; ignore.
-        let _ = tx.send(snapshot);
+        if let Some(snapshot) = sample_tick(&effect_engine, &has_dimmer_map).await {
+            let _ = tx.send(snapshot);
+        }
     }
 }
 
@@ -134,20 +129,7 @@ async fn sampler_loop_cancellable(
 ) {
     let mut interval = time::interval(Duration::from_millis(50));
     interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
-
-    let has_dimmer_map: HashMap<String, bool> = {
-        let engine_ref = effect_engine.clone();
-        tokio::task::spawn_blocking(move || {
-            let engine = engine_ref.lock();
-            engine
-                .get_fixture_registry()
-                .iter()
-                .map(|(name, info)| (name.clone(), info.channels.contains_key("dimmer")))
-                .collect()
-        })
-        .await
-        .unwrap_or_default()
-    };
+    let has_dimmer_map = init_dimmer_map(&effect_engine).await;
 
     loop {
         tokio::select! {
@@ -155,28 +137,9 @@ async fn sampler_loop_cancellable(
             _ = interval.tick() => {}
         }
 
-        let engine_ref = effect_engine.clone();
-        let (states, mut active_effects) = match tokio::task::spawn_blocking(move || {
-            let engine = engine_ref.lock();
-            let states = engine.get_fixture_states();
-            let effects: Vec<String> = engine.get_active_effects().keys().cloned().collect();
-            (states, effects)
-        })
-        .await
-        {
-            Ok(result) => result,
-            Err(_) => continue,
-        };
-
-        active_effects.sort();
-        let fixtures = compute_fixture_snapshots(&states, &has_dimmer_map);
-
-        let snapshot = Arc::new(StateSnapshot {
-            fixtures,
-            active_effects,
-        });
-
-        let _ = tx.send(snapshot);
+        if let Some(snapshot) = sample_tick(&effect_engine, &has_dimmer_map).await {
+            let _ = tx.send(snapshot);
+        }
     }
 }
 

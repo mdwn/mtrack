@@ -739,7 +739,7 @@ fn run_playback(sender: &mut dyn MidiSender, ctx: PlaybackContext<'_>) {
     // Section loop: if active_section is set, loop the section region.
     // The initial play_precomputed exits when it reaches section.end_time
     // (via the active_section check). This loop then replays the section.
-    let mut midi_section_trigger: Option<Duration> = None;
+    let mut section_trigger = crate::section_loop::SectionLoopTrigger::new();
 
     loop {
         if ctx.cancel_handle.is_cancelled() || ctx.loop_break.load(Ordering::Relaxed) {
@@ -750,47 +750,37 @@ fn run_playback(sender: &mut dyn MidiSender, ctx: PlaybackContext<'_>) {
         let section = ctx.active_section.read().clone();
         if let Some(ref section) = section {
             if !ctx.section_loop_break.load(Ordering::Relaxed) {
-                let section_duration = section.end_time.saturating_sub(section.start_time);
                 let crossfade_margin = crate::audio::crossfade::DEFAULT_CROSSFADE_DURATION;
+                let elapsed = ctx.clock.elapsed();
 
-                // First iteration: trigger at section end. Subsequent: now + duration.
-                let trigger = *midi_section_trigger.get_or_insert(section.end_time);
-
-                // Wait for the trigger.
-                while ctx.clock.elapsed() + crossfade_margin < trigger {
-                    if ctx.cancel_handle.is_cancelled()
-                        || ctx.section_loop_break.load(Ordering::Relaxed)
-                    {
+                if let Some(_trigger_time) =
+                    section_trigger.check(section, elapsed, crossfade_margin)
+                {
+                    if ctx.cancel_handle.is_cancelled() {
                         break;
                     }
-                    thread::sleep(Duration::from_millis(10));
-                }
 
-                if ctx.cancel_handle.is_cancelled() {
-                    break;
-                }
-
-                if !ctx.section_loop_break.load(Ordering::Relaxed) {
-                    info!(section = section.name, "MIDI section loop: restarting");
-                    play_precomputed(
-                        &MidiPlaybackParams {
-                            precomputed: ctx.precomputed,
-                            start_time: section.start_time,
-                            end_time: Some(section.end_time),
-                            clock_base: ctx.clock.elapsed(),
-                            cancel_handle: ctx.cancel_handle,
-                            exclude_channels: ctx.exclude_channels,
-                            clock: ctx.clock,
-                            active_section: None,
-                        },
-                        sender,
-                    );
-                    midi_section_trigger = Some(trigger + section_duration);
-                    continue;
+                    if !ctx.section_loop_break.load(Ordering::Relaxed) {
+                        info!(section = section.name, "MIDI section loop: restarting");
+                        play_precomputed(
+                            &MidiPlaybackParams {
+                                precomputed: ctx.precomputed,
+                                start_time: section.start_time,
+                                end_time: Some(section.end_time),
+                                clock_base: ctx.clock.elapsed(),
+                                cancel_handle: ctx.cancel_handle,
+                                exclude_channels: ctx.exclude_channels,
+                                clock: ctx.clock,
+                                active_section: None,
+                            },
+                            sender,
+                        );
+                        continue;
+                    }
                 }
             }
         } else {
-            midi_section_trigger = None;
+            section_trigger.reset();
         }
 
         // Whole-song loop check.
