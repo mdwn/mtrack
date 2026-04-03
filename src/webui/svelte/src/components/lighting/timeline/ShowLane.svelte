@@ -16,6 +16,7 @@
   import { t } from "svelte-i18n";
   import type {
     Cue,
+    Layer,
     TempoSection,
     Timestamp,
     SubLaneType,
@@ -218,11 +219,21 @@
       : absoluteTimestamp(rawMs);
 
     const newCue = emptyCue(ts);
-    if (subLaneType === "effects") {
+    if (subLaneType === "effects" || subLaneType?.startsWith("effects:")) {
+      const layer = subLaneType?.startsWith("effects:")
+        ? (subLaneType.split(":")[1] as Layer)
+        : undefined;
+      const defaultDuration = tempo ? "1measure" : "5s";
       newCue.effects = [
         {
           groups: ["all"],
-          effect: { type: "static", colors: [], duration: "5s", extra: {} },
+          effect: {
+            type: "static",
+            colors: [],
+            duration: defaultDuration,
+            layer,
+            extra: {},
+          },
         },
       ];
     } else if (subLaneType === "commands") {
@@ -360,6 +371,8 @@
             ? (count) => onloopchange(cp.index, count)
             : undefined}
           {sequenceDefs}
+          {snapEnabled}
+          {snapResolution}
           onedit={onsequenceedit && subLaneType === "sequences"
             ? () => {
                 const ref = cp.cue.sequences.find((s) => !s.stop);

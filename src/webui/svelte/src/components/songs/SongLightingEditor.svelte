@@ -17,6 +17,7 @@
   import {
     fetchLightingFile,
     saveLightingFile,
+    deleteLightingFile,
     validateLighting,
     fetchVenues,
   } from "../../lib/api/config";
@@ -39,7 +40,7 @@
   import FileUpload from "./FileUpload.svelte";
   import FileBrowser from "./FileBrowser.svelte";
   import { t } from "svelte-i18n";
-  import { showPrompt } from "../../lib/dialog.svelte";
+  import { showConfirm, showPrompt } from "../../lib/dialog.svelte";
   import { playerClient } from "../../lib/grpc/client";
   import { playbackStore, wsConnected } from "../../lib/ws/stores";
   import { create } from "@bufbuild/protobuf";
@@ -58,9 +59,18 @@
     onreload: () => void;
     dirty?: boolean;
     onchange?: () => void;
+    onaddlightfile?: (path: string) => void;
+    onremovelightfile?: (path: string) => void;
   }
 
-  let { song, onreload, dirty = $bindable(false), onchange }: Props = $props();
+  let {
+    song,
+    onreload,
+    dirty = $bindable(false),
+    onchange,
+    onaddlightfile,
+    onremovelightfile,
+  }: Props = $props();
 
   let error = $state("");
   let tab = $state<"timeline" | "raw">("timeline");
@@ -74,6 +84,7 @@
     null,
   );
   let venueGroups = $state<string[]>([]);
+  let pendingDeletes = $state<string[]>([]);
   let sequenceNames = $derived(mergedLightFile.sequences.map((s) => s.name));
   let uploading = $state(false);
   let showMidiDmxModal = $state(false);
@@ -83,9 +94,7 @@
   let pbState = $state(get(playbackStore));
   const unsubPlayback = playbackStore.subscribe((v) => (pbState = v));
 
-  // WebSocket connection state
-  let connected = $state(get(wsConnected));
-  const unsubConnected = wsConnected.subscribe((v) => (connected = v));
+  // WebSocket connection state (accessed via $wsConnected in template)
 
   // Client-side interpolation for smooth playhead
   let lastKnownMs = $state(0);
@@ -224,6 +233,23 @@
         }
       }
       lightFiles = loaded;
+
+      // If no lighting files exist, create an implicit one so the editor
+      // is immediately usable. It only gets written to disk on save.
+      if (lightFiles.length === 0) {
+        const implicitPath = `${song.name.replace(/[^a-zA-Z0-9_-]/g, "_") || "show"}.light`;
+        lightFiles = [
+          {
+            path: implicitPath,
+            raw: "",
+            parsed: {
+              sequences: [],
+              shows: [{ name: "Main", cues: [] }],
+            },
+          },
+        ];
+      }
+
       rebuildMergedLightFile();
 
       rawFileIndex = 0;
@@ -277,9 +303,23 @@
       seqOffset += origSeqCount;
     }
 
-    if (showOffset < lf.shows.length || seqOffset < lf.sequences.length) {
+    // If there are no light files yet but we have tempo/shows/sequences to store,
+    // auto-create a file so the data is persisted on save.
+    const hasOverflow =
+      showOffset < lf.shows.length || seqOffset < lf.sequences.length;
+    const hasTempoOnly =
+      lightFiles.length === 0 && !hasOverflow && lf.tempo != null;
+
+    if (hasOverflow || hasTempoOnly) {
       if (lightFiles.length === 0) {
         const newPath = `${song.name.replace(/[^a-zA-Z0-9_-]/g, "_") || "show"}.light`;
+        const shows = lf.shows.slice(showOffset);
+        // When auto-creating for tempo-only, add a default show so lanes appear
+        if (shows.length === 0) {
+          shows.push({ name: "Main", cues: [] });
+          // Update the merged file so the timeline renders the new show
+          mergedLightFile = { ...lf, shows: [...lf.shows, ...shows] };
+        }
         lightFiles = [
           ...lightFiles,
           {
@@ -287,11 +327,12 @@
             raw: "",
             parsed: {
               tempo: lf.tempo,
-              shows: lf.shows.slice(showOffset),
+              shows,
               sequences: lf.sequences.slice(seqOffset),
             },
           },
         ];
+        onaddlightfile?.(newPath);
       } else {
         const first = lightFiles[0];
         if (!first.parseError) {
@@ -310,8 +351,23 @@
 
   /** Save all modified lighting files. Called by parent's unified Save button. */
   export async function saveLightingFiles() {
+    // Process pending deletions
+    for (const path of pendingDeletes) {
+      try {
+        await deleteLightingFile(path);
+      } catch {
+        // File may already be gone
+      }
+    }
+    pendingDeletes = [];
+
+    // Save all current lighting files
     for (const lf of lightFiles) {
       if (lf.parseError) continue;
+      // Register newly created files with song.yaml
+      if (!song.lighting_files.includes(lf.path)) {
+        onaddlightfile?.(lf.path);
+      }
       const content = serializeLightFile(lf.parsed);
       lf.raw = content;
       await saveLightingFile(lf.path, content);
@@ -371,7 +427,11 @@
   }
 
   async function addLightFile() {
-    const name = await showPrompt("Light show filename (e.g. verse_lights):");
+    if (pbState.locked) {
+      error = $t("common.locked");
+      return;
+    }
+    const name = await showPrompt($t("songLighting.addDslPrompt"));
     if (!name) return;
     const fileName = name.endsWith(".light") ? name : `${name}.light`;
     const showName = fileName.replace(/\.light$/, "");
@@ -381,18 +441,44 @@
     const fullPath = baseDir ? `${baseDir}/${fileName}` : fileName;
 
     try {
-      await saveLightingFile(fullPath, defaultContent);
       const parsed = parseLightFile(defaultContent);
+      // Inherit tempo from current merged state so it isn't lost
+      if (mergedLightFile.tempo && !parsed.tempo) {
+        parsed.tempo = mergedLightFile.tempo;
+      }
       lightFiles = [
         ...lightFiles,
         { path: fullPath, raw: defaultContent, parsed },
       ];
       rebuildMergedLightFile();
+      onaddlightfile?.(fullPath);
       dirty = true;
       onchange?.();
     } catch (e: any) {
       error = e.message;
     }
+  }
+
+  async function removeLightFile(index: number) {
+    const lf = lightFiles[index];
+    if (!lf) return;
+    if (pbState.locked) {
+      error = $t("common.locked");
+      return;
+    }
+    const confirmed = await showConfirm(
+      $t("songLighting.confirmRemove", {
+        values: { name: lf.path.replace(/^.*\//, "") },
+      }),
+    );
+    if (!confirmed) return;
+
+    pendingDeletes = [...pendingDeletes, lf.path];
+    onremovelightfile?.(lf.path);
+    lightFiles = lightFiles.filter((_, i) => i !== index);
+    rebuildMergedLightFile();
+    dirty = true;
+    onchange?.();
   }
 
   async function handleFileUpload(files: File[], mode: "dsl" | "midi") {
@@ -448,14 +534,13 @@
     loadVenueGroups();
     return () => {
       unsubPlayback();
-      unsubConnected();
       stopInterpolation();
     };
   });
 </script>
 
 <div class="lighting-section">
-  {#if !connected}
+  {#if !$wsConnected}
     <div class="warn-banner">
       {$t("songLighting.notConnected")}
     </div>
@@ -496,6 +581,28 @@
       </button>
     </div>
   </div>
+
+  {#if lightFiles.length > 0}
+    <div class="light-file-list">
+      {#each lightFiles as lf, i (lf.path)}
+        <div class="light-file-entry">
+          <span class="light-file-name" title={lf.path}
+            >{lf.path.replace(/^.*\//, "")}</span
+          >
+          {#if lf.parseError}
+            <span class="light-file-error" title={lf.parseError}
+              >{$t("songLighting.parseError")}</span
+            >
+          {/if}
+          <button
+            class="light-file-remove"
+            title={$t("songLighting.removeFile")}
+            onclick={() => removeLightFile(i)}>&#10005;</button
+          >
+        </div>
+      {/each}
+    </div>
+  {/if}
 
   {#if lightFiles.some((f) => f.parseError)}
     <div class="error-banner">
@@ -649,6 +756,47 @@
     flex-direction: column;
     gap: 12px;
     min-height: calc(100vh - 280px);
+  }
+  .light-file-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .light-file-entry {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    font-family: var(--mono);
+    color: var(--text-muted);
+    background: rgba(255, 255, 255, 0.04);
+    padding: 2px 6px;
+    border-radius: 3px;
+    border: 1px solid var(--border);
+  }
+  .light-file-name {
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .light-file-error {
+    color: var(--red);
+    font-size: 11px;
+  }
+  .light-file-remove {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 12px;
+    padding: 0 2px;
+    opacity: 0.5;
+    line-height: 1;
+  }
+  .light-file-remove:hover {
+    opacity: 1;
+    color: var(--red);
   }
   .warn-banner {
     background: rgba(234, 179, 8, 0.15);

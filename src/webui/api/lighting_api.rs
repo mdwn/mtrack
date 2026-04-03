@@ -164,6 +164,47 @@ pub(super) async fn put_lighting_file(
     }
 }
 
+/// DELETE /api/lighting/:name — deletes a .light file from disk.
+pub(super) async fn delete_lighting_file(
+    State(state): State<WebUiState>,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    use super::super::safe_path::{SafePath, VerifiedRoot};
+
+    let root = match VerifiedRoot::new(&state.songs_path) {
+        Ok(r) => r,
+        Err(e) => return e.into_response(),
+    };
+    let safe = match SafePath::resolve(&state.songs_path.join(&name), &root) {
+        Ok(p) => p,
+        Err(_) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": format!("Lighting file not found: {}", name)})),
+            )
+                .into_response();
+        }
+    };
+
+    if safe.as_path().extension().and_then(|e| e.to_str()) != Some("light") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "Can only delete .light files"})),
+        )
+            .into_response();
+    }
+
+    // codeql[rust/path-injection] safe is verified via SafePath::resolve against songs_path root.
+    match std::fs::remove_file(safe.as_path()) {
+        Ok(()) => (StatusCode::OK, Json(json!({"status": "deleted"}))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("Failed to delete file: {}", e)})),
+        )
+            .into_response(),
+    }
+}
+
 /// POST /api/lighting/validate — validates lighting DSL content without saving.
 pub(super) async fn validate_lighting(body: String) -> impl IntoResponse {
     match config_io::validate_light_show(&body) {

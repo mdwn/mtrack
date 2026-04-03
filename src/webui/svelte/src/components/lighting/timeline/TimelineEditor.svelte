@@ -423,6 +423,23 @@
     onchange({ ...lightFile, shows });
   }
 
+  function handleShowEffectResize(
+    showIndex: number,
+    cueIndex: number,
+    newDurationStr: string,
+  ) {
+    const shows = [...lightFile.shows];
+    const cues = [...shows[showIndex].cues];
+    const cue = { ...cues[cueIndex] };
+    cue.effects = cue.effects.map((eff) => ({
+      ...eff,
+      effect: { ...eff.effect, duration: newDurationStr },
+    }));
+    cues[cueIndex] = cue;
+    shows[showIndex] = { ...shows[showIndex], cues };
+    onchange({ ...lightFile, shows });
+  }
+
   function handleShowLoopChange(
     showIndex: number,
     cueIndex: number,
@@ -720,6 +737,7 @@
             oncuedelete={(ci) => handleShowCueDelete(si, ci)}
             oncueadd={(cue) => handleShowCueAdd(si, cue)}
             ondelete={() => deleteShow(si)}
+            oneffectresize={(ci, dur) => handleShowEffectResize(si, ci, dur)}
             onloopchange={(ci, count) => handleShowLoopChange(si, ci, count)}
             onsequenceedit={(seqName) => {
               const idx = lightFile.sequences.findIndex(

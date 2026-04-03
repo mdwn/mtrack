@@ -57,8 +57,13 @@
   }: Props = $props();
 
   // Use focusTab from the sub-lane selection; fall back to "effects" when
-  // no sub-lane is set (e.g. sequence editor combined view)
-  let activeTab = $derived(focusTab ?? "effects");
+  // no sub-lane is set (e.g. sequence editor combined view).
+  // Normalize "effects:layer" sub-lane types to plain "effects" for tab matching.
+  let activeTab = $derived.by(() => {
+    const tab = focusTab ?? "effects";
+    if (tab.startsWith("effects:")) return "effects";
+    return tab;
+  });
   let absTime = $derived(formatMs(timestampToMs(cue.timestamp, tempo)));
 
   let sectionLabels = $derived({

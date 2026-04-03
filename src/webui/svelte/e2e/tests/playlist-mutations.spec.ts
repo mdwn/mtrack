@@ -70,10 +70,8 @@ test.describe("Playlist Mutations", () => {
   });
 
   test("save calls API", async ({ page }) => {
-    let saveCalled = false;
     await page.route("**/api/playlists/setlist", async (route) => {
       if (route.request().method() === "PUT") {
-        saveCalled = true;
         await route.fulfill({
           status: 200,
           contentType: "application/json",
@@ -91,8 +89,12 @@ test.describe("Playlist Mutations", () => {
       .locator('.btn-icon[title="Add"]');
     await addBtn.click();
 
+    const saveRequest = page.waitForRequest(
+      (req) =>
+        req.url().includes("/api/playlists/setlist") && req.method() === "PUT",
+    );
     await playlists.saveButton.click();
-    expect(saveCalled).toBe(true);
+    await saveRequest;
   });
 
   test("activate playlist calls API for non-active playlist", async ({

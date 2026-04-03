@@ -259,6 +259,14 @@
     } else {
       delete updated.samples;
     }
+    const lightingEntries = parsedConfig.lighting as
+      | { file: string }[]
+      | undefined;
+    if (lightingEntries && lightingEntries.length > 0) {
+      updated.lighting = lightingEntries;
+    } else {
+      delete updated.lighting;
+    }
     return YAML.stringify(updated, { lineWidth: 0 });
   }
 
@@ -334,6 +342,18 @@
       };
       editedYaml = buildYaml();
     }
+  }
+
+  function removeLightingFile(filename: string) {
+    if (!parsedConfig) return;
+    const existing =
+      (parsedConfig.lighting as { file: string }[] | undefined) ?? [];
+    const filtered = existing.filter((l) => l.file !== filename);
+    parsedConfig = {
+      ...parsedConfig,
+      lighting: filtered.length > 0 ? filtered : undefined,
+    };
+    editedYaml = buildYaml();
   }
 
   function onMidiEventChange() {
@@ -990,6 +1010,8 @@
             bind:dirty={lightingDirty}
             {song}
             onreload={load}
+            onaddlightfile={setLightingFile}
+            onremovelightfile={removeLightingFile}
           />
         {/if}
       {:else if activeTab === "config"}

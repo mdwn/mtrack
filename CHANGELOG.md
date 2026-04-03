@@ -108,6 +108,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   handles 6/8, 9/8, and 12/8 time signatures by stepping by dotted-quarter
   note pulses (three eighth notes) rather than quarter notes, matching the
   natural click-track pulse for compound meters.
+- **Lighting file management in song editor**: Light show files (`.light`) can
+  now be added and removed directly from the song detail lighting tab. Each file
+  is listed with a remove button; adding or removing files updates the song.yaml
+  `lighting:` array. File creation and deletion are deferred until Save, so
+  navigating away without saving leaves the disk untouched. Both operations
+  respect the player lock.
+- **Delete lighting file API**: New `DELETE /api/lighting/:name` endpoint for
+  removing `.light` files from disk, with SafePath validation and `.light`
+  extension enforcement.
+- **Implicit lighting file on editor load**: Opening the lighting tab for a song
+  with no `.light` files automatically creates an implicit file with a default
+  "Main" show, so effect lanes are immediately visible. The file is only written
+  to disk when the user saves.
+- **Resize snap to grid**: Dragging an effect's resize handle now snaps the
+  duration to the nearest beat or measure boundary (matching the timeline's snap
+  resolution setting). Hold Ctrl/Cmd while releasing to bypass snap for
+  free-form sizing.
+- **Measure-based duration output**: Effect durations produced by resize and
+  other UI operations now prefer measure/beat units (e.g. `1measure`, `2beats`)
+  over time units when the duration aligns cleanly to the tempo grid. Falls back
+  to `ms`/`s` for non-aligned values.
+- **Double-click creates effect on layer lanes**: Double-clicking on a
+  foreground/midground/background lane now creates a default static effect
+  assigned to the correct layer, with a `1measure` duration when tempo is
+  available. Previously, double-click only worked on the combined "effects" lane.
+
+### Fixed
+
+- **Effect block width uses max duration**: CueBlock width now reflects the
+  maximum duration across all effects in the cue, rather than only the first
+  effect's duration.
+- **Effect resize was non-functional**: The `oneffectresize` callback was never
+  wired from `TimelineEditor` to `ShowGroup`, so dragging the resize handle had
+  no effect. Now connected with a handler that updates all effects in the cue.
+- **CuePropertiesPanel not showing for layer lanes**: Clicking an effect on a
+  layer lane (e.g. `effects:foreground`) didn't show the properties panel because
+  the tab matching required an exact `"effects"` string. Now normalizes
+  `"effects:*"` sub-lane types to `"effects"` for tab selection.
+- **Tempo lost when adding light files**: Setting tempo on a song with no
+  existing `.light` files, then adding a file, would lose the tempo because it
+  was only stored in the merged state and never persisted to a file. Now
+  auto-creates a backing file for tempo-only changes and inherits the current
+  tempo when creating new files.
+- **WebSocket connection banner**: The "Not connected to server" banner in the
+  lighting editor used a manual store subscription pattern that could miss
+  updates. Switched to the reactive `$wsConnected` store syntax.
+- **song.yaml lighting key handling**: `buildYaml()` now explicitly manages the
+  `lighting` key — non-empty arrays are preserved, empty arrays clean up the key
+  entirely.
+- **Flaky playlist save test**: The playlist mutations "save calls API" test
+  checked a boolean synchronously after clicking Save, racing against the async
+  fetch. Replaced with `page.waitForRequest()`.
 
 ### Changed
 

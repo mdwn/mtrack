@@ -55,6 +55,12 @@ app.get("/api/songs/:name", (req, res) => {
       yaml += `  - name: ${s.name}\n    start_measure: ${s.start_measure}\n    end_measure: ${s.end_measure}\n`;
     }
   }
+  if (song.lighting_files && song.lighting_files.length > 0) {
+    yaml += `lighting:\n`;
+    for (const f of song.lighting_files) {
+      yaml += `  - file: ${f}\n`;
+    }
+  }
   res.type("text/yaml").send(yaml);
 });
 
@@ -302,11 +308,19 @@ app.delete("/api/lighting/venues/:name", (_req, res) => {
 });
 
 app.get("/api/lighting/:name", (_req, res) => {
-  res.type("text/plain").send("// Lighting show\n");
+  res
+    .type("text/plain")
+    .send(
+      'show "Main" {\n    @00:00.000\n    front: static, color: "blue", duration: 5s\n}\n',
+    );
 });
 
 app.put("/api/lighting/:name", (_req, res) => {
   res.json({ status: "saved" });
+});
+
+app.delete("/api/lighting/:name", (_req, res) => {
+  res.json({ status: "deleted" });
 });
 
 // --- Browse ---

@@ -314,11 +314,41 @@ export function durationStringToMs(
 
 /**
  * Convert a duration in milliseconds to a duration string suitable for DSL output.
- * Produces the simplest representation (e.g. "5s", "500ms").
+ * When tempo is available, prefers measure/beat-based units if the duration aligns
+ * cleanly. Falls back to time-based representation (e.g. "5s", "500ms").
  */
-export function msToDurationString(ms: number): string {
+export function msToDurationString(
+  ms: number,
+  tempo?: TempoSection,
+  atMs: number = 0,
+): string {
+  if (tempo) {
+    const segments = buildTempoSegments(tempo);
+    let seg = segments[0];
+    for (let i = segments.length - 1; i >= 0; i--) {
+      if (segments[i].startMs <= atMs) {
+        seg = segments[i];
+        break;
+      }
+    }
+    const beatDurationMs = 60000 / seg.bpm;
+    const measureDurationMs = beatDurationMs * seg.beatsPerMeasure;
+
+    // Prefer whole measures
+    const measures = ms / measureDurationMs;
+    if (measures >= 1 && Math.abs(measures - Math.round(measures)) < 0.001) {
+      const rounded = Math.round(measures);
+      return rounded === 1 ? "1measure" : `${rounded}measures`;
+    }
+    // Then whole beats
+    const beats = ms / beatDurationMs;
+    if (beats >= 1 && Math.abs(beats - Math.round(beats)) < 0.001) {
+      const rounded = Math.round(beats);
+      return rounded === 1 ? "1beat" : `${rounded}beats`;
+    }
+  }
+  // Fall back to time-based
   if (ms < 1000 || ms % 1000 !== 0) {
-    // Use ms for sub-second or non-round-second durations
     return `${Math.round(ms)}ms`;
   }
   return `${ms / 1000}s`;
@@ -372,6 +402,35 @@ export function snapToNearestGrid(
   const elapsed = ms - seg.startMs;
   const snapped = Math.round(elapsed / step) * step;
   return seg.startMs + snapped;
+}
+
+/** Snap a duration to the nearest grid step at a given playback position. */
+export function snapDurationToGrid(
+  durationMs: number,
+  atMs: number,
+  tempo: TempoSection,
+  resolution: SnapResolution,
+): number {
+  const segments = buildTempoSegments(tempo);
+  let seg = segments[0];
+  for (let i = segments.length - 1; i >= 0; i--) {
+    if (segments[i].startMs <= atMs) {
+      seg = segments[i];
+      break;
+    }
+  }
+
+  const beatDurationMs = 60000 / seg.bpm;
+  const subdivisions: Record<SnapResolution, number> = {
+    measure: seg.beatsPerMeasure,
+    beat: 1,
+    "1/2": 0.5,
+    "1/4": 0.25,
+    "1/8": 0.125,
+    "1/16": 0.0625,
+  };
+  const step = beatDurationMs * subdivisions[resolution];
+  return Math.max(step, Math.round(durationMs / step) * step);
 }
 
 /** An offset marker on the timeline. */
