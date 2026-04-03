@@ -160,7 +160,19 @@
   "midi.playbackDelay": "Playback Delay",
   "midi.playbackDelayPlaceholder": "e.g. 500ms",
   "midi.enableBeatClock": "Enable Beat Clock",
-  "midi.midiToDmxNote": "MIDI-to-DMX mappings configured. Edit in raw YAML for advanced configuration.",
+  "midi.midiToDmx": "MIDI to DMX",
+  "midi.midiToDmxHint": "Route MIDI channels to DMX universes with optional note/CC transformations.",
+  "midi.mapping": "Mapping",
+  "midi.midiChannel": "Channel",
+  "midi.universe": "Universe",
+  "midi.universePlaceholder": "universe name",
+  "midi.transformers": "Transformers",
+  "midi.noteMapper": "Note Mapper",
+  "midi.ccMapper": "CC Mapper",
+  "midi.inputNote": "Input Note",
+  "midi.convertToNotes": "Output Notes",
+  "midi.inputController": "Input CC",
+  "midi.convertToControllers": "Output CCs",
 
   "dmx.olaPort": "OLA Port",
   "dmx.dimSpeedModifier": "Dim Speed Modifier",
@@ -696,6 +708,7 @@
 
   "tooltips.midi.playbackDelay": "Delay before MIDI playback starts, e.g. '500ms'. Used to synchronize MIDI output with audio and lighting.",
   "tooltips.midi.beatClock": "Sends MIDI Beat Clock messages to the output device during playback. External gear can sync its tempo to this clock.",
+  "tooltips.midi.midiToDmx": "Maps MIDI channels from the song's MIDI file to DMX universes. Notes and CCs on the mapped channel are converted to DMX values. Transformers can remap note/CC numbers before output.",
 
   "tooltips.dmx.olaPort": "Port number for the Open Lighting Architecture (OLA) server. OLA must be running to send DMX data. Default is 9010.",
   "tooltips.dmx.dimSpeedModifier": "Multiplier that scales the speed of all dimming transitions. Values above 1.0 speed up fades; below 1.0 slows them down.",

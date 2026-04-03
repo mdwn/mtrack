@@ -33,12 +33,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Events tab. Each state supports a list of MIDI events. Legacy top-level `status_events`
   is automatically normalized into the profile.
 
+- **MIDI-to-DMX editor in web UI**: The MIDI section now has a full editor for MIDI-to-DMX
+  passthrough mappings, replacing the previous read-only note. Each mapping configures a
+  MIDI channel routed to a DMX universe, with optional Note Mapper and CC Mapper
+  transformers that remap note/CC numbers before output.
+
 ### Fixed
 
 - **Missing OSC path overrides**: Added section_ack, stop_section_loop, and loop_section
   to the OSC controller advanced path overrides panel.
 - **Flaky save test**: Fixed race condition in song config save test by replacing a
   synchronous boolean flag with `waitForRequest`.
+- **Config editor URL rewrite on refresh**: Navigating to a deep-linked profile tab URL
+  (e.g. `#/config/profile-name/midi`) no longer rewrites to the bare profile URL on load,
+  so refreshing the page preserves the active tab.
 
 - **Song looping with crossfade**: Songs can now be configured to loop indefinitely by
   setting `loop_playback: true` in song.yaml. Audio crossfades seamlessly at loop boundaries
