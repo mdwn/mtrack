@@ -51,6 +51,18 @@ test.describe("OSC Path Overrides", () => {
     await expect(page.locator('[id^="osc-playlist-"]').first()).toBeVisible();
   });
 
+  test("shows section_ack path input", async ({ page }) => {
+    await expect(page.locator('[id^="osc-section_ack-"]')).toBeVisible();
+  });
+
+  test("shows stop_section_loop path input", async ({ page }) => {
+    await expect(page.locator('[id^="osc-stop_section_loop-"]')).toBeVisible();
+  });
+
+  test("shows loop_section path input", async ({ page }) => {
+    await expect(page.locator('[id^="osc-loop_section-"]')).toBeVisible();
+  });
+
   test("hide button collapses path overrides", async ({ page }) => {
     await page.getByRole("button", { name: /hide osc path/i }).click();
     await expect(page.locator(".osc-paths")).not.toBeVisible();

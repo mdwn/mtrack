@@ -39,6 +39,8 @@
   import SectionTimelineEditor from "./SectionTimelineEditor.svelte";
   import SamplesSection from "../config/SamplesSection.svelte";
   import type { SampleBrowseTarget } from "../config/SamplesSection.svelte";
+  import MidiEventEditor from "../config/MidiEventEditor.svelte";
+  import type { MidiEvent } from "../config/MidiEventEditor.svelte";
 
   interface TrackEntry {
     name: string;
@@ -47,17 +49,6 @@
   }
 
   /* eslint-disable @typescript-eslint/no-explicit-any */
-
-  interface MidiEvent {
-    type: string;
-    channel?: number;
-    key?: number;
-    velocity?: number;
-    program?: number;
-    controller?: number;
-    value?: number;
-    bend?: number;
-  }
 
   interface Props {
     songName: string;
@@ -319,7 +310,18 @@
 
   function setMidiFile(filename: string) {
     if (!parsedConfig) return;
-    parsedConfig = { ...parsedConfig, midi_file: filename };
+    // If midi_playback already exists, update its file; otherwise use legacy midi_file.
+    const mp = parsedConfig.midi_playback as
+      | Record<string, unknown>
+      | undefined;
+    if (mp) {
+      parsedConfig = {
+        ...parsedConfig,
+        midi_playback: { ...mp, file: filename },
+      };
+    } else {
+      parsedConfig = { ...parsedConfig, midi_file: filename };
+    }
     editedYaml = buildYaml();
   }
 
@@ -529,6 +531,62 @@
       : null,
   );
 
+  let excludeMidiChannels = $derived<number[]>(
+    parsedConfig
+      ? ((
+          parsedConfig.midi_playback as {
+            exclude_midi_channels?: number[];
+          }
+        )?.exclude_midi_channels ?? [])
+      : [],
+  );
+
+  function toggleExcludeChannel(channel: number) {
+    if (!parsedConfig) return;
+    const current = [...excludeMidiChannels];
+    const idx = current.indexOf(channel);
+    if (idx >= 0) {
+      current.splice(idx, 1);
+    } else {
+      current.push(channel);
+      current.sort((a, b) => a - b);
+    }
+
+    // Ensure we use midi_playback format (upgrade from legacy midi_file if needed).
+    const mp = (parsedConfig.midi_playback as Record<string, unknown>) ?? {};
+    const file =
+      (mp.file as string | undefined) ??
+      (parsedConfig.midi_file as string | undefined);
+    const updated: Record<string, unknown> = { ...parsedConfig };
+    if (current.length > 0) {
+      updated.midi_playback = {
+        ...mp,
+        ...(file ? { file } : {}),
+        exclude_midi_channels: current,
+      };
+    } else {
+      // No excluded channels — remove the field from midi_playback.
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { exclude_midi_channels: _removed, ...rest } = mp;
+      if (Object.keys(rest).length > 0 || !file) {
+        updated.midi_playback = rest;
+      } else {
+        // If only file remains and was originally midi_file, keep it simple.
+        delete updated.midi_playback;
+        updated.midi_file = file;
+      }
+    }
+    // Clean up legacy midi_file if we have midi_playback with a file.
+    if (
+      updated.midi_playback &&
+      (updated.midi_playback as Record<string, unknown>).file
+    ) {
+      delete updated.midi_file;
+    }
+    parsedConfig = updated;
+    editedYaml = buildYaml();
+  }
+
   function tabHasIndicator(key: TabKey): boolean {
     if (key === "tracks") return tracks.length > 0;
     if (key === "midi") return !!midiFile || !!midiEvent;
@@ -714,6 +772,35 @@
           </div>
         {/if}
 
+        <!-- Exclude MIDI Channels -->
+        {#if midiFile}
+          <div class="midi-event-section">
+            <div class="section-header">
+              <span class="section-label"
+                >{$t("songs.detail.excludeChannels")}</span
+              >
+            </div>
+            <p class="muted hint-text">
+              {$t("songs.detail.excludeChannelsHint")}
+            </p>
+            <div class="channel-grid">
+              {#each Array.from({ length: 16 }, (_, i) => i + 1) as ch (ch)}
+                <label
+                  class="channel-toggle"
+                  class:excluded={excludeMidiChannels.includes(ch)}
+                >
+                  <input
+                    type="checkbox"
+                    checked={excludeMidiChannels.includes(ch)}
+                    onchange={() => toggleExcludeChannel(ch)}
+                  />
+                  {ch}
+                </label>
+              {/each}
+            </div>
+          </div>
+        {/if}
+
         <!-- MIDI Event Editor -->
         <div class="midi-event-section">
           <div class="section-header">
@@ -730,238 +817,11 @@
           </div>
           <p class="muted hint-text">{$t("songs.detail.midiEventHint")}</p>
           {#if midiEvent}
-            <div class="midi-event-fields">
-              <div class="field">
-                <label for="midi-event-type"
-                  >{$t("songs.detail.midiEventType")}</label
-                >
-                <select
-                  id="midi-event-type"
-                  class="input"
-                  value={midiEvent.type}
-                  onchange={(e) => {
-                    const type = (e.target as HTMLSelectElement).value;
-                    if (type === "note_on" || type === "note_off") {
-                      midiEvent = {
-                        type,
-                        channel: midiEvent?.channel ?? 1,
-                        key: 60,
-                        velocity: 100,
-                      };
-                    } else if (type === "aftertouch") {
-                      midiEvent = {
-                        type,
-                        channel: midiEvent?.channel ?? 1,
-                        key: 60,
-                        velocity: 100,
-                      };
-                    } else if (type === "control_change") {
-                      midiEvent = {
-                        type,
-                        channel: midiEvent?.channel ?? 1,
-                        controller: 0,
-                        value: 0,
-                      };
-                    } else if (type === "program_change") {
-                      midiEvent = {
-                        type,
-                        channel: midiEvent?.channel ?? 1,
-                        program: 0,
-                      };
-                    } else if (type === "channel_aftertouch") {
-                      midiEvent = {
-                        type,
-                        channel: midiEvent?.channel ?? 1,
-                        velocity: 64,
-                      };
-                    } else if (type === "pitch_bend") {
-                      midiEvent = {
-                        type,
-                        channel: midiEvent?.channel ?? 1,
-                        bend: 8192,
-                      };
-                    }
-                    onMidiEventChange();
-                  }}
-                >
-                  <option value="note_on"
-                    >{$t("songs.detail.midiEventNoteOn")}</option
-                  >
-                  <option value="note_off"
-                    >{$t("songs.detail.midiEventNoteOff")}</option
-                  >
-                  <option value="aftertouch"
-                    >{$t("songs.detail.midiEventAftertouch")}</option
-                  >
-                  <option value="control_change"
-                    >{$t("songs.detail.midiEventControlChange")}</option
-                  >
-                  <option value="program_change"
-                    >{$t("songs.detail.midiEventProgramChange")}</option
-                  >
-                  <option value="channel_aftertouch"
-                    >{$t("songs.detail.midiEventChannelAftertouch")}</option
-                  >
-                  <option value="pitch_bend"
-                    >{$t("songs.detail.midiEventPitchBend")}</option
-                  >
-                </select>
-              </div>
-
-              <div class="midi-event-params">
-                <div class="field">
-                  <label for="midi-event-channel"
-                    >{$t("songs.detail.midiEventChannel")}</label
-                  >
-                  <input
-                    id="midi-event-channel"
-                    class="input"
-                    type="number"
-                    min="1"
-                    max="16"
-                    value={midiEvent.channel ?? 1}
-                    onchange={(e) => {
-                      midiEvent!.channel =
-                        parseInt((e.target as HTMLInputElement).value) || 1;
-                      onMidiEventChange();
-                    }}
-                  />
-                </div>
-
-                {#if midiEvent.type === "note_on" || midiEvent.type === "note_off" || midiEvent.type === "aftertouch"}
-                  <div class="field">
-                    <label for="midi-event-key"
-                      >{$t("songs.detail.midiEventKey")}</label
-                    >
-                    <input
-                      id="midi-event-key"
-                      class="input"
-                      type="number"
-                      min="0"
-                      max="127"
-                      value={midiEvent.key ?? 60}
-                      onchange={(e) => {
-                        midiEvent!.key =
-                          parseInt((e.target as HTMLInputElement).value) || 0;
-                        onMidiEventChange();
-                      }}
-                    />
-                  </div>
-                  <div class="field">
-                    <label for="midi-event-velocity"
-                      >{$t("songs.detail.midiEventVelocity")}</label
-                    >
-                    <input
-                      id="midi-event-velocity"
-                      class="input"
-                      type="number"
-                      min="0"
-                      max="127"
-                      value={midiEvent.velocity ?? 0}
-                      onchange={(e) => {
-                        midiEvent!.velocity =
-                          parseInt((e.target as HTMLInputElement).value) || 0;
-                        onMidiEventChange();
-                      }}
-                    />
-                  </div>
-                {:else if midiEvent.type === "control_change"}
-                  <div class="field">
-                    <label for="midi-event-controller"
-                      >{$t("songs.detail.midiEventController")}</label
-                    >
-                    <input
-                      id="midi-event-controller"
-                      class="input"
-                      type="number"
-                      min="0"
-                      max="127"
-                      value={midiEvent.controller ?? 0}
-                      onchange={(e) => {
-                        midiEvent!.controller =
-                          parseInt((e.target as HTMLInputElement).value) || 0;
-                        onMidiEventChange();
-                      }}
-                    />
-                  </div>
-                  <div class="field">
-                    <label for="midi-event-value"
-                      >{$t("songs.detail.midiEventValue")}</label
-                    >
-                    <input
-                      id="midi-event-value"
-                      class="input"
-                      type="number"
-                      min="0"
-                      max="127"
-                      value={midiEvent.value ?? 0}
-                      onchange={(e) => {
-                        midiEvent!.value =
-                          parseInt((e.target as HTMLInputElement).value) || 0;
-                        onMidiEventChange();
-                      }}
-                    />
-                  </div>
-                {:else if midiEvent.type === "program_change"}
-                  <div class="field">
-                    <label for="midi-event-program"
-                      >{$t("songs.detail.midiEventProgram")}</label
-                    >
-                    <input
-                      id="midi-event-program"
-                      class="input"
-                      type="number"
-                      min="0"
-                      max="127"
-                      value={midiEvent.program ?? 0}
-                      onchange={(e) => {
-                        midiEvent!.program =
-                          parseInt((e.target as HTMLInputElement).value) || 0;
-                        onMidiEventChange();
-                      }}
-                    />
-                  </div>
-                {:else if midiEvent.type === "channel_aftertouch"}
-                  <div class="field">
-                    <label for="midi-event-velocity"
-                      >{$t("songs.detail.midiEventVelocity")}</label
-                    >
-                    <input
-                      id="midi-event-velocity"
-                      class="input"
-                      type="number"
-                      min="0"
-                      max="127"
-                      value={midiEvent.velocity ?? 0}
-                      onchange={(e) => {
-                        midiEvent!.velocity =
-                          parseInt((e.target as HTMLInputElement).value) || 0;
-                        onMidiEventChange();
-                      }}
-                    />
-                  </div>
-                {:else if midiEvent.type === "pitch_bend"}
-                  <div class="field">
-                    <label for="midi-event-bend"
-                      >{$t("songs.detail.midiEventBend")}</label
-                    >
-                    <input
-                      id="midi-event-bend"
-                      class="input"
-                      type="number"
-                      min="0"
-                      max="16383"
-                      value={midiEvent.bend ?? 8192}
-                      onchange={(e) => {
-                        midiEvent!.bend =
-                          parseInt((e.target as HTMLInputElement).value) || 0;
-                        onMidiEventChange();
-                      }}
-                    />
-                  </div>
-                {/if}
-              </div>
-            </div>
+            <MidiEventEditor
+              bind:event={midiEvent}
+              onchange={onMidiEventChange}
+              idPrefix="song-midi-event"
+            />
           {/if}
         </div>
       {:else if activeTab === "samples"}
@@ -1253,27 +1113,37 @@
     font-size: 13px;
     margin-bottom: 12px;
   }
-  .midi-event-fields {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-  }
-  .midi-event-params {
+  .channel-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
-    gap: 10px;
+    grid-template-columns: repeat(8, 1fr);
+    gap: 6px;
   }
-  .midi-event-fields .field {
+  .channel-toggle {
     display: flex;
-    flex-direction: column;
+    align-items: center;
+    justify-content: center;
     gap: 4px;
-  }
-  .midi-event-fields .field label {
+    padding: 4px 6px;
     font-size: 12px;
     font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    cursor: pointer;
     color: var(--text-muted);
+    background: var(--bg-input);
+  }
+  .channel-toggle.excluded {
+    background: var(--bg-danger, #3a1c1c);
+    border-color: var(--border-danger, #6b2c2c);
+    color: var(--text-danger, #f87171);
+  }
+  .channel-toggle input {
+    display: none;
+  }
+  @media (max-width: 600px) {
+    .channel-grid {
+      grid-template-columns: repeat(4, 1fr);
+    }
   }
   .feature-row {
     display: flex;

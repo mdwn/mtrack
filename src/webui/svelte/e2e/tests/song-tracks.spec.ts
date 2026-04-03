@@ -69,26 +69,17 @@ test.describe("Song Detail - Config Tab", () => {
   });
 
   test("save button calls update API", async ({ page }) => {
-    let updateCalled = false;
-    await page.route("**/api/songs/Test%20Song%20Alpha", async (route) => {
-      if (route.request().method() === "PUT") {
-        updateCalled = true;
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({ status: "updated" }),
-        });
-      } else {
-        await route.continue();
-      }
-    });
-
     const editor = page.locator(".config-editor");
     await editor.click();
     await editor.pressSequentially("\n# test");
 
+    const requestPromise = page.waitForRequest(
+      (req) =>
+        req.url().includes("/api/songs/Test%20Song%20Alpha") &&
+        req.method() === "PUT",
+    );
     await page.getByRole("button", { name: "Save" }).click();
-    expect(updateCalled).toBe(true);
+    await requestPromise;
   });
 });
 
