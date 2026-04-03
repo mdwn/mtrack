@@ -33,6 +33,7 @@
     type AudioDeviceInfo,
     type MidiDeviceInfo,
     type ProfileFileInfo,
+    uploadSampleFile,
   } from "../lib/api/config";
   import { fetchSongs } from "../lib/api/songs";
   import { showConfirm, showPrompt } from "../lib/dialog.svelte";
@@ -43,6 +44,7 @@
     type SampleBrowseTarget,
   } from "../components/config/SamplesSection.svelte";
   import FileBrowser from "../components/songs/FileBrowser.svelte";
+  import Tooltip from "../components/config/Tooltip.svelte";
 
   interface Props {
     currentHash: string;
@@ -120,6 +122,8 @@
   let samplesSaveMsg = $state("");
   let samplesSaveOk = $state(false);
   let samplesSnapshot = $state("");
+  let maxSampleVoices = $state<number | undefined>(undefined);
+  let maxSampleVoicesSnapshot = $state<number | undefined>(undefined);
 
   function parseProfiles() {
     try {
@@ -139,11 +143,18 @@
         sampleNames = [];
       }
       samplesSnapshot = JSON.stringify(samplesMap);
+      maxSampleVoices =
+        typeof parsed?.max_sample_voices === "number"
+          ? parsed.max_sample_voices
+          : undefined;
+      maxSampleVoicesSnapshot = maxSampleVoices;
       samplesDirty = false;
     } catch {
       profiles = [];
       samplesMap = {};
       sampleNames = [];
+      maxSampleVoices = undefined;
+      maxSampleVoicesSnapshot = undefined;
     }
   }
 
@@ -384,7 +395,9 @@
   }
 
   function onSamplesChange() {
-    samplesDirty = JSON.stringify(samplesMap) !== samplesSnapshot;
+    samplesDirty =
+      JSON.stringify(samplesMap) !== samplesSnapshot ||
+      maxSampleVoices !== maxSampleVoicesSnapshot;
     // Update sampleNames for trigger dropdowns
     sampleNames = Object.keys(samplesMap).sort();
   }
@@ -398,9 +411,14 @@
     samplesSaveMsg = "";
     samplesSaveOk = false;
     try {
-      const snapshot = await updateSamples(samplesMap, checksum);
+      const snapshot = await updateSamples(
+        samplesMap,
+        checksum,
+        maxSampleVoices,
+      );
       applySnapshot(snapshot);
       samplesSnapshot = JSON.stringify(samplesMap);
+      maxSampleVoicesSnapshot = maxSampleVoices;
       samplesDirty = false;
       samplesSaveOk = true;
       setTimeout(() => (samplesSaveOk = false), 2000);
@@ -428,6 +446,51 @@
 
   function closeSampleBrowser() {
     sampleBrowseTarget = null;
+  }
+
+  // Notification file browser state
+  import type { NotifBrowseTarget } from "../components/config/NotificationsSection.svelte";
+
+  let notifBrowseTarget = $state<NotifBrowseTarget | null>(null);
+  let profileEditorRef: ProfileEditor | undefined = $state();
+
+  function onNotifBrowse(target: NotifBrowseTarget) {
+    notifBrowseTarget = target;
+  }
+
+  function onNotifBrowseSelect(paths: string[]) {
+    if (paths.length > 0 && notifBrowseTarget && profileEditorRef) {
+      profileEditorRef.applyNotifBrowseResult(notifBrowseTarget, paths[0]);
+    }
+    notifBrowseTarget = null;
+  }
+
+  function closeNotifBrowser() {
+    notifBrowseTarget = null;
+  }
+
+  let notifUploading = $state(false);
+  let notifUploadMsg = $state("");
+
+  async function onNotifUpload(files: File[]) {
+    if (files.length === 0) return;
+    if ($playbackStore.locked) {
+      notifUploadMsg = get(t)("common.locked");
+      return;
+    }
+    notifUploading = true;
+    notifUploadMsg = "";
+    try {
+      await uploadSampleFile(files[0]);
+      notifUploadMsg = get(t)("notifications.uploaded", {
+        values: { name: files[0].name },
+      });
+      setTimeout(() => (notifUploadMsg = ""), 3000);
+    } catch (e: unknown) {
+      notifUploadMsg = e instanceof Error ? e.message : String(e);
+    } finally {
+      notifUploading = false;
+    }
   }
 
   function updateConfigUrl(profileName?: string | null, section?: string) {
@@ -536,6 +599,7 @@
       </div>
 
       <ProfileEditor
+        bind:this={profileEditorRef}
         bind:profile={profiles[selectedIndex]}
         {audioDevices}
         {midiDevices}
@@ -546,6 +610,10 @@
         onchange={onProfileChange}
         onsectionchange={(section) =>
           updateConfigUrl(selectedFilename?.replace(/\.\w+$/, ""), section)}
+        onnotifbrowse={onNotifBrowse}
+        onnotifupload={onNotifUpload}
+        {notifUploadMsg}
+        {notifUploading}
       />
     </div>
   {:else}
@@ -627,6 +695,25 @@
             })}
           </div>
         {/if}
+        <div class="max-voices-field">
+          <label for="max-sample-voices"
+            >{$t("config.maxSampleVoices")}
+            <Tooltip text={$t("tooltips.config.maxSampleVoices")} /></label
+          >
+          <input
+            id="max-sample-voices"
+            class="input"
+            type="number"
+            min="1"
+            placeholder="32"
+            value={maxSampleVoices ?? ""}
+            onchange={(e) => {
+              const v = (e.target as HTMLInputElement).value;
+              maxSampleVoices = v ? parseInt(v) || undefined : undefined;
+              onSamplesChange();
+            }}
+          />
+        </div>
         <SamplesSection
           bind:this={samplesRef}
           bind:samples={samplesMap}
@@ -670,6 +757,7 @@
     </div>
 
     <ProfileEditor
+      bind:this={profileEditorRef}
       bind:profile={profiles[selectedIndex]}
       {audioDevices}
       {midiDevices}
@@ -678,6 +766,10 @@
       initialSection={routeSection}
       onrefreshDevices={loadDevices}
       onchange={onProfileChange}
+      onnotifbrowse={onNotifBrowse}
+      onnotifupload={onNotifUpload}
+      {notifUploadMsg}
+      {notifUploading}
       onsectionchange={(section) => {
         if (selectedIndex === null) return;
         const name =
@@ -743,6 +835,25 @@
           })}
         </div>
       {/if}
+      <div class="max-voices-field">
+        <label for="max-sample-voices-list"
+          >{$t("config.maxSampleVoices")}
+          <Tooltip text={$t("tooltips.config.maxSampleVoices")} /></label
+        >
+        <input
+          id="max-sample-voices-list"
+          class="input"
+          type="number"
+          min="1"
+          placeholder="32"
+          value={maxSampleVoices ?? ""}
+          onchange={(e) => {
+            const v = (e.target as HTMLInputElement).value;
+            maxSampleVoices = v ? parseInt(v) || undefined : undefined;
+            onSamplesChange();
+          }}
+        />
+      </div>
       <SamplesSection
         bind:this={samplesRef}
         bind:samples={samplesMap}
@@ -760,6 +871,18 @@
         filter={["audio"]}
         onselect={onSampleBrowseSelect}
         oncancel={closeSampleBrowser}
+      />
+    </div>
+  </div>
+{/if}
+
+{#if notifBrowseTarget}
+  <div class="browser-overlay">
+    <div class="browser-modal">
+      <FileBrowser
+        filter={["audio"]}
+        onselect={onNotifBrowseSelect}
+        oncancel={closeNotifBrowser}
       />
     </div>
   </div>
@@ -843,6 +966,19 @@
     display: flex;
     flex-direction: column;
     gap: 16px;
+  }
+  .max-voices-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-width: 200px;
+  }
+  .max-voices-field label {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-muted);
   }
   .info-badge {
     font-size: 12px;

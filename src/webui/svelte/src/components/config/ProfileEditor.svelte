@@ -25,6 +25,8 @@
   import TriggerSection from "./TriggerSection.svelte";
   import ControllersSection from "./ControllersSection.svelte";
   import LightingSection from "./LightingSection.svelte";
+  import NotificationsSection from "./NotificationsSection.svelte";
+  import type { NotifBrowseTarget } from "./NotificationsSection.svelte";
 
   interface Props {
     profile: any;
@@ -36,6 +38,10 @@
     onrefreshDevices: () => void;
     onchange: () => void;
     onsectionchange?: (section: string) => void;
+    onnotifbrowse?: (target: NotifBrowseTarget) => void;
+    onnotifupload?: (files: File[]) => void;
+    notifUploadMsg?: string;
+    notifUploading?: boolean;
   }
 
   let {
@@ -48,7 +54,13 @@
     onrefreshDevices,
     onchange,
     onsectionchange,
+    onnotifbrowse,
+    onnotifupload,
+    notifUploadMsg = "",
+    notifUploading = false,
   }: Props = $props();
+
+  let notificationsRef: NotificationsSection | undefined = $state();
 
   const tabs = [
     { key: "audio", labelKey: "profile.tabs.audio" },
@@ -56,6 +68,7 @@
     { key: "lighting", labelKey: "profile.tabs.lighting" },
     { key: "trigger", labelKey: "profile.tabs.trigger" },
     { key: "controllers", labelKey: "profile.tabs.controllers" },
+    { key: "notifications", labelKey: "profile.tabs.notifications" },
   ] as const;
 
   type TabKey = (typeof tabs)[number]["key"];
@@ -80,14 +93,23 @@
         profile.dmx = { universes: [], lighting: {} };
       else if (section === "trigger") profile.trigger = { inputs: [] };
       else if (section === "controllers") profile.controllers = [];
+      else if (section === "notifications") profile.notifications = {};
     } else {
       if (section === "audio") delete profile.audio;
       else if (section === "midi") delete profile.midi;
       else if (section === "lighting") delete profile.dmx;
       else if (section === "trigger") delete profile.trigger;
       else if (section === "controllers") delete profile.controllers;
+      else if (section === "notifications") delete profile.notifications;
     }
     onchange();
+  }
+
+  export function applyNotifBrowseResult(
+    target: NotifBrowseTarget,
+    path: string,
+  ) {
+    notificationsRef?.applyBrowseResult(target, path);
   }
 
   async function handleRemoveSection() {
@@ -219,6 +241,18 @@
     {:else if activeTab === "controllers" && profile.controllers}
       <div class="panel-body">
         <ControllersSection bind:controllers={profile.controllers} {onchange} />
+      </div>
+    {:else if activeTab === "notifications" && profile.notifications}
+      <div class="panel-body">
+        <NotificationsSection
+          bind:this={notificationsRef}
+          bind:notifications={profile.notifications}
+          {onchange}
+          onbrowse={onnotifbrowse}
+          onupload={onnotifupload}
+          uploadMsg={notifUploadMsg}
+          uploading={notifUploading}
+        />
       </div>
     {/if}
 

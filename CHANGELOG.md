@@ -19,6 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Song exclude MIDI channels**: The MIDI tab in the song editor now shows a 16-channel
   toggle grid when a MIDI file is configured, allowing users to exclude specific channels
   from playback. Commonly used to skip drums (channel 10) or lighting data channels.
+- **Notification audio configuration in web UI**: New Notifications tab in the hardware
+  profile editor allows configuring custom audio files for loop armed, break requested,
+  loop exited, and section entering events, plus per-section-name overrides. Includes
+  filesystem browse and drag-and-drop upload.
+- **Per-song notification overrides**: New Notifications tab in the song editor allows
+  overriding profile-level notification sounds for individual songs. Per-section override
+  names autocomplete from the song's defined sections.
+- **Global max sample voices setting**: The samples section in the config editor now
+  includes a max sample voices field (default 32) controlling the global polyphony limit.
 
 ### Fixed
 

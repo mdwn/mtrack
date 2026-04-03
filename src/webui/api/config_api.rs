@@ -428,11 +428,19 @@ pub(super) async fn put_config_samples(
             }
         };
 
+    let max_sample_voices = body
+        .get("max_sample_voices")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32);
+
     let store = match require_config_store(&state) {
         Ok(s) => s,
         Err(e) => return e,
     };
-    match store.update_samples(samples, &checksum).await {
+    match store
+        .update_samples(samples, max_sample_voices, &checksum)
+        .await
+    {
         Ok(snapshot) => {
             reload_hardware_after_mutation(&state).await;
             config_snapshot_response(snapshot, StatusCode::OK)
