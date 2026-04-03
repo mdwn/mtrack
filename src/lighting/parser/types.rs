@@ -108,15 +108,7 @@ impl Effect {
         }
 
         // Extract the effect type's duration field
-        let effect_duration = match &self.effect_type {
-            EffectType::Static { duration, .. }
-            | EffectType::Strobe { duration, .. }
-            | EffectType::Pulse { duration, .. }
-            | EffectType::ColorCycle { duration, .. }
-            | EffectType::Chase { duration, .. }
-            | EffectType::Rainbow { duration, .. } => *duration,
-            EffectType::Dimmer { .. } => unreachable!(),
-        };
+        let effect_duration = self.effect_type.duration();
 
         // If hold_time is explicitly set, use up + hold + down.
         // Otherwise use up + effect_duration + down.

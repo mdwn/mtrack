@@ -67,3 +67,17 @@ pub use self::track::Track;
 
 mod kind;
 pub use self::kind::{peek_kind, ConfigKind};
+
+use std::time::Duration;
+
+/// Parses an optional duration string (e.g. "500ms") into a `Duration`,
+/// returning `default` when `raw` is `None`.
+pub(crate) fn parse_playback_delay(
+    raw: &Option<String>,
+    default: Duration,
+) -> Result<Duration, Box<dyn std::error::Error>> {
+    match raw {
+        Some(s) => Ok(duration_string::DurationString::from_string(s.clone())?.into()),
+        None => Ok(default),
+    }
+}

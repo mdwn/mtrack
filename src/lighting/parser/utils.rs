@@ -182,18 +182,9 @@ pub(crate) fn parse_color_string(value: &str) -> Option<Color> {
         value
     };
 
-    if let Some(hex) = clean_value.strip_prefix('#') {
-        // Hex color
-        if hex.len() == 6 {
-            if let (Ok(r), Ok(g), Ok(b)) = (
-                u8::from_str_radix(&hex[0..2], 16),
-                u8::from_str_radix(&hex[2..4], 16),
-                u8::from_str_radix(&hex[4..6], 16),
-            ) {
-                return Some(Color { r, g, b, w: None });
-            }
-        }
-        None
+    if clean_value.starts_with('#') {
+        // Hex color — delegate to Color::from_hex
+        Color::from_hex(clean_value).ok()
     } else if clean_value.starts_with("rgb(") && clean_value.ends_with(')') {
         // RGB color
         let rgb = &clean_value[4..clean_value.len() - 1];

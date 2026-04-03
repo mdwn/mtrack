@@ -76,8 +76,8 @@ impl LightingSystem {
         }
 
         // Load inline fixtures and groups
-        self.inline_fixtures = config.fixtures();
-        self.logical_groups = config.groups();
+        self.inline_fixtures = config.fixtures().clone();
+        self.logical_groups = config.groups().clone();
 
         // Load directories if configured
         if let Some(dirs) = config.directories() {
@@ -1182,7 +1182,7 @@ mod tests {
         let mut channels = HashMap::new();
         channels.insert("dimmer".to_string(), 1);
         channels.insert("red".to_string(), 2);
-        let ft = super::super::types::FixtureType::new("Par".to_string(), channels, vec![]);
+        let ft = super::super::types::FixtureType::new("Par".to_string(), channels);
         system.fixture_types.insert("Par".to_string(), ft);
 
         // Create venue with a fixture

@@ -163,6 +163,17 @@ impl Player {
         Ok(player)
     }
 
+    /// Deserializes a YAML string directly into a player configuration struct.
+    /// Does not load profiles_dir (no filesystem context). Runs normalize().
+    pub fn deserialize_from_str(yaml: &str) -> Result<Player, ConfigError> {
+        let mut player = Config::builder()
+            .add_source(config::File::from_str(yaml, config::FileFormat::Yaml))
+            .build()?
+            .try_deserialize::<Player>()?;
+        player.normalize();
+        Ok(player)
+    }
+
     /// Validates the player configuration for semantic issues that can be
     /// caught without runtime context. Call this before writing to disk.
     pub fn validate(&self) -> Result<(), Vec<String>> {
@@ -400,17 +411,18 @@ impl Player {
         vec![]
     }
 
+    /// Returns a reference to the first profile, if any.
+    fn first_profile(&self) -> Option<&Profile> {
+        self.profiles.as_ref().and_then(|ps| ps.first())
+    }
+
     /// Gets the controllers configuration from the first profile.
     /// Kept for backward compatibility in tests.
     #[cfg(test)]
     pub fn controllers(&self) -> Vec<Controller> {
-        if let Some(profiles) = &self.profiles {
-            if let Some(first) = profiles.first() {
-                return first.controllers().to_vec();
-            }
-        }
-
-        vec![]
+        self.first_profile()
+            .map(|p| p.controllers().to_vec())
+            .unwrap_or_default()
     }
 
     /// Returns profiles filtered by hostname and ordered by priority.
@@ -440,53 +452,32 @@ impl Player {
     /// Kept for backward compatibility in tests.
     #[cfg(test)]
     pub fn audio(&self) -> Option<Audio> {
-        if let Some(profiles) = &self.profiles {
-            if let Some(first) = profiles.first() {
-                return first.audio_config().map(|ac| ac.audio().clone());
-            }
-        }
-
-        None
+        self.first_profile()
+            .and_then(|p| p.audio_config())
+            .map(|ac| ac.audio().clone())
     }
 
     /// Gets the track mapping configuration from the first profile.
     /// Kept for backward compatibility. Returns a HashMap since callers
     /// (verify, CLI) don't need insertion-order preservation.
     pub fn track_mappings(&self) -> HashMap<String, Vec<u16>> {
-        if let Some(profiles) = &self.profiles {
-            if let Some(first) = profiles.first() {
-                if let Some(audio_config) = first.audio_config() {
-                    return audio_config.track_mappings_hash();
-                }
-            }
-        }
-
-        HashMap::new()
+        self.first_profile()
+            .and_then(|p| p.audio_config())
+            .map(|ac| ac.track_mappings_hash())
+            .unwrap_or_default()
     }
 
     /// Gets the MIDI configuration from the first profile.
     /// Kept for backward compatibility in tests.
     #[cfg(test)]
     pub fn midi(&self) -> Option<Midi> {
-        if let Some(profiles) = &self.profiles {
-            if let Some(first) = profiles.first() {
-                return first.midi().cloned();
-            }
-        }
-
-        None
+        self.first_profile().and_then(|p| p.midi().cloned())
     }
 
     /// Gets the DMX configuration from the first profile.
     /// Kept for backward compatibility.
     pub fn dmx(&self) -> Option<&Dmx> {
-        if let Some(profiles) = &self.profiles {
-            if let Some(first) = profiles.first() {
-                return first.dmx();
-            }
-        }
-
-        None
+        self.first_profile().and_then(|p| p.dmx())
     }
 
     /// Gets the status events configuration.
@@ -677,9 +668,7 @@ impl Player {
     /// Returns a reference to the DMX config's lighting section (through all profiles).
     /// Checks the first profile's DMX config for lighting.
     pub fn lighting_from_profiles(&self) -> Option<&Lighting> {
-        self.profiles
-            .as_ref()
-            .and_then(|ps| ps.first())
+        self.first_profile()
             .and_then(|p| p.dmx())
             .and_then(|d| d.lighting())
     }

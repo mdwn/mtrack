@@ -571,7 +571,7 @@ fn build_transformers(config: &config::Midi) -> Result<TransformerConfig, Box<dy
 
     for midi_to_dmx in config.midi_to_dmx() {
         let midi_channel = midi_to_dmx.midi_channel()?.as_int();
-        midi_to_dmx_mappings.insert(midi_channel, midi_to_dmx.universe());
+        midi_to_dmx_mappings.insert(midi_channel, midi_to_dmx.universe().to_string());
 
         let mut transformers = Vec::new();
         for transformer in midi_to_dmx.transformers() {

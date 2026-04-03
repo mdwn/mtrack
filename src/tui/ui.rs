@@ -20,6 +20,7 @@ use ratatui::widgets::{Block, Borders, Gauge, List, ListItem, ListState, Paragra
 use ratatui::Frame;
 
 use super::app::App;
+use crate::util::duration_minutes_seconds;
 
 /// Renders the entire TUI layout.
 pub fn draw(frame: &mut Frame, app: &App) {
@@ -160,8 +161,8 @@ fn draw_now_playing(frame: &mut Frame, app: &App, area: Rect) {
             0.0
         };
 
-        let elapsed_str = format_duration(elapsed);
-        let total_str = format_duration(total);
+        let elapsed_str = duration_minutes_seconds(elapsed);
+        let total_str = duration_minutes_seconds(total);
         let label = format!("{} / {}", elapsed_str, total_str);
 
         let gauge = Gauge::default()
@@ -312,14 +313,6 @@ fn log_line_color(line: &str) -> Color {
     } else {
         Color::Gray
     }
-}
-
-/// Formats a Duration as "M:SS".
-fn format_duration(d: Duration) -> String {
-    let total_secs = d.as_secs();
-    let minutes = total_secs / 60;
-    let seconds = total_secs % 60;
-    format!("{}:{:02}", minutes, seconds)
 }
 
 #[cfg(test)]
@@ -560,45 +553,6 @@ mod tests {
             let backend = TestBackend::new(80, 24);
             let mut terminal = Terminal::new(backend).unwrap();
             terminal.draw(|frame| draw(frame, &app)).unwrap();
-        }
-    }
-
-    mod format_duration_tests {
-        use super::*;
-
-        #[test]
-        fn zero_duration() {
-            assert_eq!(format_duration(Duration::ZERO), "0:00");
-        }
-
-        #[test]
-        fn seconds_only() {
-            assert_eq!(format_duration(Duration::from_secs(45)), "0:45");
-        }
-
-        #[test]
-        fn one_minute() {
-            assert_eq!(format_duration(Duration::from_secs(60)), "1:00");
-        }
-
-        #[test]
-        fn minutes_and_seconds() {
-            assert_eq!(format_duration(Duration::from_secs(185)), "3:05");
-        }
-
-        #[test]
-        fn pads_single_digit_seconds() {
-            assert_eq!(format_duration(Duration::from_secs(61)), "1:01");
-        }
-
-        #[test]
-        fn large_duration() {
-            assert_eq!(format_duration(Duration::from_secs(3661)), "61:01");
-        }
-
-        #[test]
-        fn subsecond_truncated() {
-            assert_eq!(format_duration(Duration::from_millis(59_999)), "0:59");
         }
     }
 }

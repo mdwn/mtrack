@@ -133,7 +133,7 @@ pub trait ChannelMappedSampleSource: Send + Sync {
     /// Returns a Vec where each element corresponds to a source channel
     /// Each `Vec<String>` contains the labels that source channel maps to
     /// Empty Vec means that source channel is not mapped to any output
-    fn channel_mappings(&self) -> &Vec<Vec<String>>;
+    fn channel_mappings(&self) -> &[Vec<String>];
 
     /// Get the number of source channels in this sample source
     fn source_channel_count(&self) -> u16;

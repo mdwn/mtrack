@@ -79,8 +79,7 @@ pub enum EffectType {
 
 impl EffectType {
     /// Get the duration field from the effect type
-    #[cfg(test)]
-    pub fn get_duration(&self) -> Duration {
+    pub fn duration(&self) -> Duration {
         match self {
             EffectType::Static { duration, .. }
             | EffectType::Strobe { duration, .. }
@@ -172,7 +171,7 @@ mod tests {
             parameters: HashMap::new(),
             duration: Duration::from_secs(5),
         };
-        assert_eq!(effect.get_duration(), Duration::from_secs(5));
+        assert_eq!(effect.duration(), Duration::from_secs(5));
     }
 
     #[test]
@@ -181,7 +180,7 @@ mod tests {
             frequency: TempoAwareFrequency::Fixed(10.0),
             duration: Duration::from_millis(500),
         };
-        assert_eq!(effect.get_duration(), Duration::from_millis(500));
+        assert_eq!(effect.duration(), Duration::from_millis(500));
     }
 
     #[test]
@@ -192,7 +191,7 @@ mod tests {
             frequency: TempoAwareFrequency::Fixed(2.0),
             duration: Duration::from_secs(3),
         };
-        assert_eq!(effect.get_duration(), Duration::from_secs(3));
+        assert_eq!(effect.duration(), Duration::from_secs(3));
     }
 
     #[test]
@@ -203,7 +202,7 @@ mod tests {
             duration: Duration::from_secs(2),
             curve: DimmerCurve::Linear,
         };
-        assert_eq!(effect.get_duration(), Duration::from_secs(2));
+        assert_eq!(effect.duration(), Duration::from_secs(2));
     }
 
     #[test]
@@ -215,7 +214,7 @@ mod tests {
             transition: CycleTransition::Fade,
             duration: Duration::from_secs(10),
         };
-        assert_eq!(effect.get_duration(), Duration::from_secs(10));
+        assert_eq!(effect.duration(), Duration::from_secs(10));
     }
 
     #[test]
@@ -227,7 +226,7 @@ mod tests {
             transition: CycleTransition::Snap,
             duration: Duration::from_secs(5),
         };
-        assert_eq!(effect.get_duration(), Duration::from_secs(5));
+        assert_eq!(effect.duration(), Duration::from_secs(5));
     }
 
     #[test]
@@ -238,7 +237,7 @@ mod tests {
             brightness: 1.0,
             duration: Duration::from_secs(8),
         };
-        assert_eq!(effect.get_duration(), Duration::from_secs(8));
+        assert_eq!(effect.duration(), Duration::from_secs(8));
     }
 
     #[test]

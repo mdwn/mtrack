@@ -869,7 +869,10 @@ pub(super) fn resolve_song_dir(
     let root = VerifiedRoot::new(songs_path).map_err(|e| Box::new(e.into_response()))?;
 
     // Check the registry first — handles songs in nested subdirectories.
-    if let Some(song) = player.get_all_songs_playlist().get_song(name) {
+    if let Some(song) = player
+        .get_all_songs_playlist()
+        .and_then(|p| p.get_song(name))
+    {
         if let Ok(safe) = SafePath::resolve(song.base_path(), &root) {
             if safe.is_dir() {
                 return Ok(safe);

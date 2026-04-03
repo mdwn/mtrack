@@ -968,12 +968,13 @@ impl Player {
         let _enter = self.span.enter();
         info!("Reporting status");
 
-        let midi_device = self
-            .hardware
-            .read()
-            .midi_device
-            .clone()
-            .expect("MIDI device must be present for status reporting");
+        let midi_device = match self.hardware.read().midi_device.clone() {
+            Some(device) => device,
+            None => {
+                warn!("MIDI device not present for status reporting; skipping");
+                return;
+            }
+        };
         let join = self.join.clone();
 
         // This thread will run until the process is terminated.
@@ -1037,7 +1038,9 @@ impl Player {
             return Ok(None);
         }
 
-        let all_songs = self.get_all_songs_playlist();
+        let all_songs = self
+            .get_all_songs_playlist()
+            .ok_or_else(|| -> Box<dyn Error> { "all_songs playlist not available".into() })?;
         if all_songs.navigate_to(song_name).is_none() {
             return Err(format!("Song '{}' not found", song_name).into());
         }
@@ -1616,31 +1619,40 @@ impl Player {
     /// Returns the song registry from the all-songs playlist.
     pub fn songs(&self) -> Arc<Songs> {
         let playlists = self.playlists.read();
-        playlists
-            .get("all_songs")
-            .expect("all_songs must always be present")
-            .registry()
-            .clone()
+        match playlists.get("all_songs") {
+            Some(playlist) => playlist.registry().clone(),
+            None => {
+                error!("all_songs playlist missing from player state");
+                Arc::new(Songs::new(std::collections::HashMap::new()))
+            }
+        }
     }
 
     /// Gets the all-songs playlist (every song in the registry).
-    pub fn get_all_songs_playlist(&self) -> Arc<Playlist> {
+    pub fn get_all_songs_playlist(&self) -> Option<Arc<Playlist>> {
         let playlists = self.playlists.read();
-        playlists
-            .get("all_songs")
-            .expect("all_songs must always be present")
-            .clone()
+        let result = playlists.get("all_songs").cloned();
+        if result.is_none() {
+            error!("all_songs playlist missing from player state");
+        }
+        result
     }
 
     /// Gets the current playlist used by the player.
     pub fn get_playlist(&self) -> Arc<Playlist> {
         let name = self.active_playlist.read().clone();
         let playlists = self.playlists.read();
-        playlists
-            .get(&name)
-            .or_else(|| playlists.get("all_songs"))
-            .expect("all_songs must always be present")
-            .clone()
+        match playlists.get(&name).or_else(|| playlists.get("all_songs")) {
+            Some(playlist) => playlist.clone(),
+            None => {
+                // This should never happen because all_songs is always created
+                // during initialization, but handle it gracefully instead of panicking.
+                error!("No playlist available (not even all_songs) — returning empty fallback");
+                drop(playlists);
+                let empty_songs = Arc::new(Songs::new(std::collections::HashMap::new()));
+                playlist::from_songs(empty_songs).expect("empty playlist construction cannot fail")
+            }
+        }
     }
 
     /// Reinitializes all song-related state by rescanning songs from disk and
@@ -2709,7 +2721,9 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_get_all_songs_playlist() -> Result<(), Box<dyn Error>> {
         let player = make_test_player().await?;
-        let all = player.get_all_songs_playlist();
+        let all = player
+            .get_all_songs_playlist()
+            .expect("all_songs should be present in test");
         assert_eq!(all.name(), "all_songs");
         assert!(!all.songs().is_empty());
         Ok(())

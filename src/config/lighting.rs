@@ -53,7 +53,7 @@ impl LogicalGroup {
         &self.name
     }
 
-    pub fn constraints(&self) -> &Vec<GroupConstraint> {
+    pub fn constraints(&self) -> &[GroupConstraint] {
         &self.constraints
     }
 }
@@ -106,13 +106,17 @@ impl Lighting {
     }
 
     /// Gets the fixtures.
-    pub fn fixtures(&self) -> HashMap<String, String> {
-        self.fixtures.clone().unwrap_or_default()
+    pub fn fixtures(&self) -> &HashMap<String, String> {
+        static EMPTY: std::sync::LazyLock<HashMap<String, String>> =
+            std::sync::LazyLock::new(HashMap::new);
+        self.fixtures.as_ref().unwrap_or(&EMPTY)
     }
 
     /// Gets the logical groups.
-    pub fn groups(&self) -> HashMap<String, LogicalGroup> {
-        self.groups.clone().unwrap_or_default()
+    pub fn groups(&self) -> &HashMap<String, LogicalGroup> {
+        static EMPTY: std::sync::LazyLock<HashMap<String, LogicalGroup>> =
+            std::sync::LazyLock::new(HashMap::new);
+        self.groups.as_ref().unwrap_or(&EMPTY)
     }
 
     /// Gets the directories configuration.

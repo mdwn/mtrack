@@ -82,58 +82,8 @@ impl NotificationConfig {
 
 /// Per-song notification audio overrides.
 ///
-/// Configured in the song YAML to override notifications for that specific song.
-///
-/// ```yaml
-/// notification_audio:
-///   loop_armed: custom_armed.wav
-///   sections:
-///     intro: intro_announce.wav
-///     bridge: bridge_announce.wav
-/// ```
-#[derive(Deserialize, Serialize, Clone, Debug, Default)]
-pub struct SongNotificationConfig {
-    /// Override audio for the "loop armed" notification.
-    #[serde(default)]
-    loop_armed: Option<String>,
-    /// Override audio for the "break requested" notification.
-    #[serde(default)]
-    break_requested: Option<String>,
-    /// Override audio for the "loop exited" notification.
-    #[serde(default)]
-    loop_exited: Option<String>,
-    /// Override audio for the generic "section entering" notification.
-    #[serde(default)]
-    section_entering: Option<String>,
-    /// Per-section-name audio overrides.
-    #[serde(default)]
-    sections: HashMap<String, String>,
-}
-
-impl SongNotificationConfig {
-    /// Returns a map of event key → file path for the configured overrides.
-    pub fn event_overrides(&self) -> HashMap<String, String> {
-        let mut overrides = HashMap::new();
-        if let Some(ref path) = self.loop_armed {
-            overrides.insert("loop_armed".to_string(), path.clone());
-        }
-        if let Some(ref path) = self.break_requested {
-            overrides.insert("break_requested".to_string(), path.clone());
-        }
-        if let Some(ref path) = self.loop_exited {
-            overrides.insert("loop_exited".to_string(), path.clone());
-        }
-        if let Some(ref path) = self.section_entering {
-            overrides.insert("section_entering".to_string(), path.clone());
-        }
-        overrides
-    }
-
-    /// Returns the per-section-name audio overrides.
-    pub fn section_overrides(&self) -> &HashMap<String, String> {
-        &self.sections
-    }
-}
+/// Identical to `NotificationConfig`; kept as a type alias for clarity at usage sites.
+pub type SongNotificationConfig = NotificationConfig;
 
 #[cfg(test)]
 mod tests {

@@ -475,7 +475,10 @@ pub async fn waveform_prewarmer(player: Arc<Player>, cache: WaveformCache) {
         time::sleep(Duration::from_secs(1)).await;
     }
 
-    let all_songs = player.get_all_songs_playlist();
+    let all_songs = match player.get_all_songs_playlist() {
+        Some(playlist) => playlist,
+        None => return,
+    };
     let song_names: Vec<String> = all_songs.songs().clone();
     let total_songs = song_names.len();
 

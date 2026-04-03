@@ -71,7 +71,7 @@ impl Playlist {
 
         Ok(Arc::new(Playlist {
             name: name.to_string(),
-            songs: song_names.clone(),
+            songs: song_names.to_vec(),
             position: Arc::new(RwLock::new(0)),
             registry: Arc::clone(&registry),
             span: span!(Level::INFO, "playlist"),
@@ -108,10 +108,7 @@ impl Playlist {
             *position += 1;
         }
 
-        let current = &self
-            .registry
-            .get(&self.songs[*position])
-            .expect("unable to get song from the registry");
+        let current = self.registry.get(&self.songs[*position]).ok()?;
 
         info!(
             position = *position,
@@ -119,7 +116,7 @@ impl Playlist {
             "Moving to next playlist position."
         );
 
-        Some(current.clone())
+        Some(current)
     }
 
     /// Move to the previous element of the playlist. If we're at the beginning of the playlist, the position
@@ -135,18 +132,15 @@ impl Playlist {
             *position -= 1;
         }
 
-        let current = &self
-            .registry
-            .get(&self.songs[*position])
-            .expect("unable to find song in the registry");
+        let current = self.registry.get(&self.songs[*position]).ok()?;
 
         info!(
             position = *position,
             song = current.name(),
-            "Moving to next previous position."
+            "Moving to previous playlist position."
         );
 
-        Some(current.clone())
+        Some(current)
     }
 
     /// Sets the playlist position to the song matching the given name.
@@ -175,12 +169,7 @@ impl Playlist {
             return None;
         }
         let position = self.position.read();
-        Some(Arc::clone(
-            &self
-                .registry
-                .get(&self.songs[*position])
-                .expect("unable to find song in the registry"),
-        ))
+        self.registry.get(&self.songs[*position]).ok()
     }
 }
 

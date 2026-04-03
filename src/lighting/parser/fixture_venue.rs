@@ -125,7 +125,7 @@ fn parse_fixture_type_definition(pair: Pair<Rule>) -> Result<FixtureType, Box<dy
         }
     }
 
-    let mut fixture_type = FixtureType::new(name, channels, special_cases);
+    let mut fixture_type = FixtureType::new(name, channels);
     fixture_type.max_strobe_frequency = max_strobe_frequency;
     fixture_type.min_strobe_frequency = min_strobe_frequency;
     fixture_type.strobe_dmx_offset = strobe_dmx_offset;
