@@ -126,7 +126,9 @@ pub fn router() -> Router<WebUiState> {
         .route("/lighting", get(lighting_api::get_lighting_files))
         .route(
             "/lighting/{name}",
-            get(lighting_api::get_lighting_file).put(lighting_api::put_lighting_file),
+            get(lighting_api::get_lighting_file)
+                .put(lighting_api::put_lighting_file)
+                .delete(lighting_api::delete_lighting_file),
         )
         .route("/lighting/validate", post(lighting_api::validate_lighting))
         .route("/config/store", get(config_api::get_config_store))

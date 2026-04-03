@@ -12,6 +12,8 @@
     durationStringToMs,
     msToDurationString,
     getSequenceIterationMs,
+    snapDurationToGrid,
+    type SnapResolution,
   } from "../../../lib/lighting/timeline-state";
 
   interface Props {
@@ -29,6 +31,8 @@
     tempo?: TempoSection;
     cueMs?: number;
     sequenceDefs?: Sequence[];
+    snapEnabled?: boolean;
+    snapResolution?: SnapResolution;
   }
 
   let {
@@ -46,6 +50,8 @@
     tempo,
     cueMs = 0,
     sequenceDefs = [],
+    snapEnabled = false,
+    snapResolution = "beat",
   }: Props = $props();
 
   let dragging = $state(false);
@@ -183,13 +189,16 @@
     if (!isEffectLane) {
       return Math.max(24, pixelsPerMs * 500);
     }
-    // For effect blocks, derive width from the first visible effect's duration
+    // For effect blocks, derive width from the maximum duration across all effects
     if (visibleEffects.length > 0) {
-      const firstEffect = visibleEffects[0].effect;
-      const durStr = firstEffect.duration ?? firstEffect.extra?.hold_time;
-      const durMs = durationStringToMs(durStr, tempo, cueMs);
-      if (durMs > 0) {
-        return Math.max(24, pixelsPerMs * durMs);
+      let maxDurMs = 0;
+      for (const eff of visibleEffects) {
+        const durStr = eff.effect.duration ?? eff.effect.extra?.hold_time;
+        const durMs = durationStringToMs(durStr, tempo, cueMs);
+        if (durMs > maxDurMs) maxDurMs = durMs;
+      }
+      if (maxDurMs > 0) {
+        return Math.max(24, pixelsPerMs * maxDurMs);
       }
     }
     // Fallback for effects without duration
@@ -215,7 +224,7 @@
     }
   }
 
-  function handlePointerUp() {
+  function handlePointerUp(e: PointerEvent) {
     if (dragging) {
       const deltaPx = dragOffsetPx;
       dragging = false;
@@ -236,12 +245,19 @@
           currentWidthMs + deltaPx / pixelsPerMs,
         );
 
+        // Hold Ctrl/Cmd to bypass snap
+        const bypassSnap = e.ctrlKey || e.metaKey;
+
         if (subLaneType === "sequences" && seqIterMs > 0 && onloopchange) {
           // Snap to nearest whole iteration
           const newLoopCount = Math.max(1, Math.round(newTotalMs / seqIterMs));
           onloopchange(newLoopCount);
         } else if (onresize) {
-          onresize(msToDurationString(newTotalMs));
+          const snappedMs =
+            snapEnabled && tempo && !bypassSnap
+              ? snapDurationToGrid(newTotalMs, cueMs, tempo, snapResolution)
+              : newTotalMs;
+          onresize(msToDurationString(snappedMs, tempo, cueMs));
         }
       }
     }

@@ -506,6 +506,14 @@ export async function saveLightingFile(
   }
 }
 
+export async function deleteLightingFile(name: string): Promise<void> {
+  const res = await del(`/lighting/${encodeURIComponent(name)}`);
+  if (!res.ok) {
+    const d = await res.json().catch(() => ({}));
+    throw new Error(d.error || `Failed to delete lighting file: ${res.status}`);
+  }
+}
+
 export async function validateLighting(
   content: string,
 ): Promise<{ valid: boolean; errors?: string[] }> {

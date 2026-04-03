@@ -493,6 +493,10 @@
   "songLighting.dropMidiDmx": "Drop MIDI DMX file here or click to upload",
   "songLighting.importFromFs": "Import from Filesystem",
   "songLighting.browseServer": "Browse Server Filesystem...",
+  "songLighting.addDslPrompt": "Light show filename (e.g. verse_lights):",
+  "songLighting.confirmRemove": "Remove \"{name}\" from this song and delete the file?",
+  "songLighting.parseError": "parse error",
+  "songLighting.removeFile": "Remove light file",
 
   "fileBrowser.emptyDir": "Empty directory",
   "fileBrowser.selected": "{count} selected",
