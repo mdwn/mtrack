@@ -16,6 +16,8 @@
   /* eslint-disable @typescript-eslint/no-explicit-any */
   import { t } from "svelte-i18n";
   import Tooltip from "./Tooltip.svelte";
+  import MidiEventEditor from "./MidiEventEditor.svelte";
+  import type { MidiEvent } from "./MidiEventEditor.svelte";
 
   interface Props {
     controllers: any[];
@@ -95,6 +97,9 @@
     ["all_songs", "/mtrack/all_songs"],
     ["playlist", "/mtrack/playlist"],
     ["stop_samples", "/mtrack/samples/stop"],
+    ["section_ack", "/mtrack/section_ack"],
+    ["stop_section_loop", "/mtrack/stop_section_loop"],
+    ["loop_section", "/mtrack/loop_section"],
     ["status", "/mtrack/status"],
     ["playlist_current", "/mtrack/playlist/current"],
     ["playlist_current_song", "/mtrack/playlist/current_song"],
@@ -170,6 +175,51 @@
     controllers[i].morningstar.model = {
       custom: { model_id: value },
     };
+    onchange();
+  }
+
+  // MIDI controller event definitions: [field, i18nKey, required]
+  const midiActions: [string, string, boolean][] = [
+    ["play", "controllers.midiPlay", true],
+    ["prev", "controllers.midiPrev", true],
+    ["next", "controllers.midiNext", true],
+    ["stop", "controllers.midiStop", true],
+    ["all_songs", "controllers.midiAllSongs", true],
+    ["playlist", "controllers.midiPlaylist", true],
+    ["section_ack", "controllers.midiSectionAck", false],
+    ["stop_section_loop", "controllers.midiStopSectionLoop", false],
+  ];
+
+  function defaultMidiEvent(): MidiEvent {
+    return { type: "note_on", channel: 1, key: 60, velocity: 127 };
+  }
+
+  function addMidiController() {
+    const newCtrl: any = {
+      kind: "midi",
+      play: defaultMidiEvent(),
+      prev: { ...defaultMidiEvent(), key: 61 },
+      next: { ...defaultMidiEvent(), key: 62 },
+      stop: { ...defaultMidiEvent(), key: 63 },
+      all_songs: { ...defaultMidiEvent(), key: 64 },
+      playlist: { ...defaultMidiEvent(), key: 65 },
+    };
+    controllers = [...controllers, newCtrl];
+    controllerKeys = [...controllerKeys, nextId++];
+    onchange();
+  }
+
+  function updateMidiAction(ci: number) {
+    controllers[ci] = { ...controllers[ci] };
+    onchange();
+  }
+
+  function toggleOptionalMidiAction(ci: number, field: string) {
+    if (controllers[ci][field]) {
+      delete controllers[ci][field];
+    } else {
+      controllers[ci][field] = defaultMidiEvent();
+    }
     onchange();
   }
 </script>
@@ -283,7 +333,42 @@
           </div>
         {/if}
       {:else if ctrl.kind === "midi"}
-        <div class="note">{$t("controllers.midiNote")}</div>
+        <p class="muted hint-text">{$t("controllers.midiHint")}</p>
+
+        {#each midiActions as [field, labelKey, required] (field)}
+          <div class="midi-action">
+            {#if required}
+              <div class="midi-action-header">
+                <span class="midi-action-label">{$t(labelKey)}</span>
+              </div>
+              {#if ctrl[field]}
+                <MidiEventEditor
+                  bind:event={ctrl[field]}
+                  onchange={() => updateMidiAction(i)}
+                  idPrefix="midi-{i}-{field}"
+                />
+              {/if}
+            {:else}
+              <div class="midi-action-header">
+                <label class="checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={!!ctrl[field]}
+                    onchange={() => toggleOptionalMidiAction(i, field)}
+                  />
+                  {$t(labelKey)}
+                </label>
+              </div>
+              {#if ctrl[field]}
+                <MidiEventEditor
+                  bind:event={ctrl[field]}
+                  onchange={() => updateMidiAction(i)}
+                  idPrefix="midi-{i}-{field}"
+                />
+              {/if}
+            {/if}
+          </div>
+        {/each}
 
         <div class="morningstar-section">
           <label class="checkbox-label">
@@ -373,6 +458,9 @@
     <button class="btn" onclick={() => addController("osc")}
       >{$t("controllers.addOsc")}</button
     >
+    <button class="btn" onclick={addMidiController}
+      >{$t("controllers.addMidi")}</button
+    >
   </div>
 </div>
 
@@ -445,10 +533,30 @@
     display: flex;
     gap: 8px;
   }
-  .note {
+  .hint-text {
     font-size: 13px;
     color: var(--text-dim);
-    font-style: italic;
+    margin: 0;
+  }
+  .midi-action {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+  .midi-action-header {
+    display: flex;
+    align-items: center;
+  }
+  .midi-action-label {
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-muted);
   }
   .morningstar-section {
     display: flex;

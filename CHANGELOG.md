@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **MIDI controller configuration in web UI**: The controllers section now supports full
+  editing of MIDI controller event mappings (play, prev, next, stop, all_songs, playlist)
+  with optional section_ack and stop_section_loop events. Includes an "Add MIDI" button
+  alongside existing gRPC and OSC controller options.
+- **Reusable MIDI event editor component**: Extracted a shared `MidiEventEditor` component
+  used by both the MIDI controller configuration and the song MIDI event editor. Displays
+  the event type dropdown and contextual parameter fields in a compact horizontal layout.
+- **Song exclude MIDI channels**: The MIDI tab in the song editor now shows a 16-channel
+  toggle grid when a MIDI file is configured, allowing users to exclude specific channels
+  from playback. Commonly used to skip drums (channel 10) or lighting data channels.
+
+### Fixed
+
+- **Missing OSC path overrides**: Added section_ack, stop_section_loop, and loop_section
+  to the OSC controller advanced path overrides panel.
+- **Flaky save test**: Fixed race condition in song config save test by replacing a
+  synchronous boolean flag with `waitForRequest`.
+
 - **Song looping with crossfade**: Songs can now be configured to loop indefinitely by
   setting `loop_playback: true` in song.yaml. Audio crossfades seamlessly at loop boundaries
   (100ms linear fade), MIDI restarts from the beginning, and the lighting/DMX timeline resets

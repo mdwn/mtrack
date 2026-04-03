@@ -154,41 +154,80 @@ test.describe("Song Detail - MIDI Event Editor", () => {
 
   test("adding event shows type dropdown and fields", async ({ page }) => {
     await page.getByRole("button", { name: "Add Event" }).click();
-    await expect(page.locator("#midi-event-type")).toBeVisible();
-    await expect(page.locator("#midi-event-channel")).toBeVisible();
+    await expect(page.locator("#song-midi-event-type")).toBeVisible();
+    await expect(page.locator("#song-midi-event-channel")).toBeVisible();
     // Default type is program_change, so program field should be visible
-    await expect(page.locator("#midi-event-program")).toBeVisible();
+    await expect(page.locator("#song-midi-event-program")).toBeVisible();
   });
 
   test("changing type to note_on shows key and velocity fields", async ({
     page,
   }) => {
     await page.getByRole("button", { name: "Add Event" }).click();
-    await page.locator("#midi-event-type").selectOption("note_on");
-    await expect(page.locator("#midi-event-key")).toBeVisible();
-    await expect(page.locator("#midi-event-velocity")).toBeVisible();
+    await page.locator("#song-midi-event-type").selectOption("note_on");
+    await expect(page.locator("#song-midi-event-key")).toBeVisible();
+    await expect(page.locator("#song-midi-event-velocity")).toBeVisible();
   });
 
   test("changing type to control_change shows controller and value fields", async ({
     page,
   }) => {
     await page.getByRole("button", { name: "Add Event" }).click();
-    await page.locator("#midi-event-type").selectOption("control_change");
-    await expect(page.locator("#midi-event-controller")).toBeVisible();
-    await expect(page.locator("#midi-event-value")).toBeVisible();
+    await page.locator("#song-midi-event-type").selectOption("control_change");
+    await expect(page.locator("#song-midi-event-controller")).toBeVisible();
+    await expect(page.locator("#song-midi-event-value")).toBeVisible();
   });
 
   test("Remove button clears the event", async ({ page }) => {
     await page.getByRole("button", { name: "Add Event" }).click();
-    await expect(page.locator("#midi-event-type")).toBeVisible();
+    await expect(page.locator("#song-midi-event-type")).toBeVisible();
     await page.getByRole("button", { name: "Remove", exact: true }).click();
-    await expect(page.locator("#midi-event-type")).not.toBeVisible();
+    await expect(page.locator("#song-midi-event-type")).not.toBeVisible();
     await expect(page.getByRole("button", { name: "Add Event" })).toBeVisible();
   });
 
   test("adding event marks config as dirty", async ({ page }) => {
     await page.getByRole("button", { name: "Add Event" }).click();
     await expect(page.locator(".unsaved")).toBeVisible();
+  });
+});
+
+test.describe("Song Detail - Exclude MIDI Channels", () => {
+  test.beforeEach(async ({ page }) => {
+    // Test Song Alpha has midi_playback with exclude_midi_channels: [10]
+    await page.goto("/#/songs/Test%20Song%20Alpha");
+    await page.locator(".tab", { hasText: "MIDI" }).click();
+  });
+
+  test("shows channel grid when MIDI file is present", async ({ page }) => {
+    await expect(page.locator(".channel-grid")).toBeVisible();
+    await expect(page.getByText(/Exclude MIDI Channels/i)).toBeVisible();
+  });
+
+  test("shows 16 channel toggles", async ({ page }) => {
+    await expect(page.locator(".channel-toggle")).toHaveCount(16);
+  });
+
+  test("channel 10 is pre-selected as excluded", async ({ page }) => {
+    const ch10 = page.locator(".channel-toggle").nth(9);
+    await expect(ch10).toHaveClass(/excluded/);
+  });
+
+  test("toggling a channel marks config as dirty", async ({ page }) => {
+    // Click channel 1 to exclude it
+    await page.locator(".channel-toggle").first().click();
+    await expect(page.locator(".unsaved")).toBeVisible();
+  });
+});
+
+test.describe("Song Detail - No MIDI File", () => {
+  test("does not show channel grid for song without MIDI file", async ({
+    page,
+  }) => {
+    // Test Song Beta has no MIDI — navigate directly without visiting Alpha first
+    await page.goto("/#/songs/Test%20Song%20Beta");
+    await page.locator(".tab", { hasText: "MIDI" }).click();
+    await expect(page.locator(".channel-grid")).not.toBeVisible();
   });
 });
 
