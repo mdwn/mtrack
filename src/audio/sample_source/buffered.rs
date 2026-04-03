@@ -105,7 +105,7 @@ impl BufferedSampleSource {
         let warmup_min_frames = device_buffer_frames.max(1);
         let refill_threshold_frames = capacity_frames / 2;
 
-        let channel_mappings = inner.channel_mappings().clone();
+        let channel_mappings = inner.channel_mappings().to_vec();
 
         let buffer_state = BufferState {
             data: vec![0.0; capacity_frames * channels],
@@ -382,7 +382,7 @@ impl ChannelMappedSampleSource for BufferedSampleSource {
         Ok(frames_read)
     }
 
-    fn channel_mappings(&self) -> &Vec<Vec<String>> {
+    fn channel_mappings(&self) -> &[Vec<String>] {
         &self.channel_mappings
     }
 

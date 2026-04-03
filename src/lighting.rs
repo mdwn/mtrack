@@ -12,17 +12,20 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-pub mod consistency_tests;
+#[cfg(test)]
+mod consistency_tests;
 pub mod effects;
 pub mod engine;
-pub mod layering_tests;
+#[cfg(test)]
+mod layering_tests;
 pub mod parser;
 pub mod system;
 pub mod tempo;
 pub mod timeline;
 pub mod types;
 pub mod validation;
-pub mod visual_consistency_tests;
+#[cfg(test)]
+mod visual_consistency_tests;
 
 // Re-export the main types for convenience
 // These are exported for external use of the lighting module

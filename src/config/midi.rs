@@ -56,10 +56,7 @@ impl Midi {
 
     /// Returns the playback delay from the configuration.
     pub fn playback_delay(&self) -> Result<Duration, Box<dyn Error>> {
-        match &self.playback_delay {
-            Some(playback_delay) => Ok(DurationString::from_string(playback_delay.clone())?.into()),
-            None => Ok(DEFAULT_MIDI_PLAYBACK_DELAY),
-        }
+        super::parse_playback_delay(&self.playback_delay, DEFAULT_MIDI_PLAYBACK_DELAY)
     }
 
     /// Returns whether beat clock output is enabled.
@@ -68,8 +65,8 @@ impl Midi {
     }
 
     /// Returns the MIDI to DMX configuration.
-    pub fn midi_to_dmx(&self) -> Vec<MidiToDmx> {
-        self.midi_to_dmx.clone().unwrap_or_default()
+    pub fn midi_to_dmx(&self) -> &[MidiToDmx] {
+        self.midi_to_dmx.as_deref().unwrap_or_default()
     }
 
     /// Validates the MIDI configuration for semantic issues.
@@ -116,13 +113,13 @@ impl MidiToDmx {
     }
 
     /// The DMX universe to map the MIDI channel to.
-    pub fn universe(&self) -> String {
-        self.universe.clone()
+    pub fn universe(&self) -> &str {
+        &self.universe
     }
 
     /// The transformers to apply to the input MIDI.
-    pub fn transformers(&self) -> Vec<MidiTransformer> {
-        self.transformers.clone().unwrap_or_default()
+    pub fn transformers(&self) -> &[MidiTransformer] {
+        self.transformers.as_deref().unwrap_or_default()
     }
 }
 

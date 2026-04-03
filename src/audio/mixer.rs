@@ -1122,7 +1122,7 @@ mod tests {
             Ok(got)
         }
 
-        fn channel_mappings(&self) -> &Vec<Vec<String>> {
+        fn channel_mappings(&self) -> &[Vec<String>] {
             self.inner.channel_mappings()
         }
 

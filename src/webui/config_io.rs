@@ -39,16 +39,7 @@ pub fn atomic_write(path: &Path, content: &str) -> Result<(), String> {
 
 /// Validates a player config YAML string by attempting to deserialize it.
 pub fn validate_player_config(yaml: &str) -> Result<(), Vec<String>> {
-    // Write to a temp file so config::Player::deserialize can read it
-    let tmp = tempfile::Builder::new()
-        .suffix(".yaml")
-        .tempfile()
-        .map_err(|e| vec![format!("Failed to create temp file: {}", e)])?;
-
-    std::fs::write(tmp.path(), yaml)
-        .map_err(|e| vec![format!("Failed to write temp file: {}", e)])?;
-
-    let player = config::Player::deserialize(tmp.path()).map_err(|e| vec![format!("{}", e)])?;
+    let player = config::Player::deserialize_from_str(yaml).map_err(|e| vec![format!("{}", e)])?;
     player.validate()?;
 
     Ok(())

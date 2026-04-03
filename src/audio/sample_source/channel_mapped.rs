@@ -45,7 +45,7 @@ impl ChannelMappedSampleSource for ChannelMappedSource {
         self.source.next_sample()
     }
 
-    fn channel_mappings(&self) -> &Vec<Vec<String>> {
+    fn channel_mappings(&self) -> &[Vec<String>] {
         &self.channel_mappings
     }
 

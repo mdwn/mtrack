@@ -43,15 +43,11 @@ impl EffectInstance {
         hold_time: Option<Duration>,
         down_time: Option<Duration>,
     ) -> Self {
-        // Extract duration from effect_type
-        let duration = match &effect_type {
-            EffectType::Static { duration, .. }
-            | EffectType::Strobe { duration, .. }
-            | EffectType::Pulse { duration, .. }
-            | EffectType::ColorCycle { duration, .. }
-            | EffectType::Chase { duration, .. }
-            | EffectType::Rainbow { duration, .. } => Some(*duration),
-            EffectType::Dimmer { .. } => None, // Dimmer uses its own duration field directly
+        // Extract duration from effect_type (None for Dimmer, which uses its own timing model)
+        let duration = if matches!(&effect_type, EffectType::Dimmer { .. }) {
+            None
+        } else {
+            Some(effect_type.duration())
         };
 
         // Use the effect type's duration as hold_time if hold_time wasn't explicitly provided.

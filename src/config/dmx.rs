@@ -12,7 +12,7 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-use std::time::Duration;
+use std::{error::Error, time::Duration};
 
 use duration_string::DurationString;
 use serde::{Deserialize, Serialize};
@@ -82,12 +82,8 @@ impl Dmx {
     }
 
     /// Gets the playback delay.
-    pub fn playback_delay(&self) -> Result<Duration, duration_string::Error> {
-        self.playback_delay
-            .as_ref()
-            .map_or(Ok(DEFAULT_DMX_PLAYBACK_DELAY), |duration| {
-                Ok(DurationString::from_string(duration.clone())?.into())
-            })
+    pub fn playback_delay(&self) -> Result<Duration, Box<dyn Error>> {
+        super::parse_playback_delay(&self.playback_delay, DEFAULT_DMX_PLAYBACK_DELAY)
     }
 
     /// Gets the OLA port to use.
@@ -97,8 +93,8 @@ impl Dmx {
     }
 
     /// Converts the configuration into universe configs.
-    pub fn universes(&self) -> Vec<Universe> {
-        self.universes.clone()
+    pub fn universes(&self) -> &[Universe] {
+        &self.universes
     }
 
     /// Gets the lighting configuration.

@@ -126,7 +126,7 @@ show "Beat Duration Test" {
 
     // At 120 BPM: 4 beats = 2.0s
     let effect = &show.cues[0].effects[0];
-    let duration = effect.effect_type.get_duration();
+    let duration = effect.effect_type.duration();
     assert!(
         (duration.as_secs_f64() - 2.0).abs() < 0.001,
         "4 beats should be 2.0s at 120 BPM"
@@ -157,7 +157,7 @@ show "Measure Duration Test" {
 
     // At 120 BPM in 4/4: 2 measures = 4.0s
     let effect = &show.cues[0].effects[0];
-    let duration = effect.effect_type.get_duration();
+    let duration = effect.effect_type.duration();
     assert!(
         (duration.as_secs_f64() - 4.0).abs() < 0.001,
         "2 measures should be 4.0s at 120 BPM in 4/4"
@@ -276,7 +276,7 @@ show "Beat Duration Tempo Change Test" {
 
     // At 120 BPM: 4 beats = 2.0s
     let effect1 = &show.cues[0].effects[0];
-    let duration1 = effect1.effect_type.get_duration();
+    let duration1 = effect1.effect_type.duration();
     assert!(
         (duration1.as_secs_f64() - 2.0).abs() < 0.001,
         "4 beats at 120 BPM should be 2.0s"
@@ -286,7 +286,7 @@ show "Beat Duration Tempo Change Test" {
     // The tempo changes to 60 BPM at @4/1, so @5/1 should use 60 BPM
     let cue1_time = show.cues[1].time;
     let effect2 = &show.cues[1].effects[0];
-    let duration2 = effect2.effect_type.get_duration();
+    let duration2 = effect2.effect_type.duration();
     let actual_duration = duration2.as_secs_f64();
     println!("Beat duration with tempo change test: cue 0 at @2/1 (time={:?}), cue 1 at @5/1 (time={:?}), duration = {}s (expected 4.0s at 60 BPM)", show.cues[0].time, cue1_time, actual_duration);
     if let Some(tm) = &show.tempo_map {
@@ -788,7 +788,7 @@ show "Beat Duration During Transition" {
     // We need 2 beats starting at the beginning of the transition
     // Since BPM is increasing during the transition, 2 beats will take slightly less than 1.0s
     // The exact calculation integrates through the curve: approximately 0.899s
-    let duration = effect.effect_type.get_duration();
+    let duration = effect.effect_type.duration();
     // The duration should be less than 1.0s (which would be at constant 120 BPM)
     // and more than 0.667s (which would be at constant 180 BPM)
     assert!(
@@ -876,7 +876,7 @@ show "Duration Spanning Change" {
     // 8 beats: 4 beats at 120 BPM (measure 3) = 2.0s, then 4 beats at 60 BPM (measure 4) = 4.0s
     // Total = 6.0s
     let effect = &show.cues[0].effects[0];
-    let duration = effect.effect_type.get_duration();
+    let duration = effect.effect_type.duration();
 
     // Measure 3 has 4 beats at 120 BPM = 2.0s
     // Measure 4 starts when tempo changes to 60 BPM
@@ -920,7 +920,7 @@ show "Duration Spanning Gradual Transition" {
     // Then 2 beats at 180 BPM = 2 * 60 / 180 = ~0.667s
     // The transition: 4 beats at average BPM (150) = 1.6s
     let effect = &show.cues[0].effects[0];
-    let duration = effect.effect_type.get_duration();
+    let duration = effect.effect_type.duration();
 
     // Verify it integrates through the gradual transition
     // 2 beats at 120 BPM = 1.0s
@@ -973,7 +973,7 @@ show "Duration Mid Transition" {
     // BPM at that point: 120 + (180-120) * 0.375 = 142.5 BPM
     // We need to calculate duration for 2 beats starting from this point
     let effect = &show.cues[0].effects[0];
-    let duration = effect.effect_type.get_duration();
+    let duration = effect.effect_type.duration();
 
     // The duration should integrate through the remaining transition
     // At 0.75s into transition: bpm = 142.5
@@ -1016,7 +1016,7 @@ show "Pulse Duration Spanning Change" {
     // 8 beats: 4 beats at 120 BPM (measure 3) = 2.0s, then 4 beats at 60 BPM (measure 4) = 4.0s
     // Total = 6.0s (same as static effect)
     let effect = &show.cues[0].effects[0];
-    let duration = effect.effect_type.get_duration();
+    let duration = effect.effect_type.duration();
 
     // Measure 3 has 4 beats at 120 BPM = 2.0s
     // Measure 4 starts when tempo changes to 60 BPM
@@ -1057,7 +1057,7 @@ show "Strobe Duration Spanning Change" {
     // 8 beats: 4 beats at 120 BPM (measure 3) = 2.0s, then 4 beats at 60 BPM (measure 4) = 4.0s
     // Total = 6.0s (same as static effect)
     let effect = &show.cues[0].effects[0];
-    let duration = effect.effect_type.get_duration();
+    let duration = effect.effect_type.duration();
 
     // Measure 3 has 4 beats at 120 BPM = 2.0s
     // Measure 4 starts when tempo changes to 60 BPM
@@ -1102,7 +1102,7 @@ show "Pulse Duration Spanning Gradual Transition" {
     // Then 4 beats during transition (120 -> 180 linearly)
     // Then 2 beats at 180 BPM = 2 * 60 / 180 = ~0.667s
     let effect = &show.cues[0].effects[0];
-    let duration = effect.effect_type.get_duration();
+    let duration = effect.effect_type.duration();
 
     // Verify it integrates through the gradual transition
     // 2 beats at 120 BPM = 1.0s
@@ -1155,7 +1155,7 @@ show "Strobe Duration Spanning Gradual Transition" {
     // Then 4 beats during transition (120 -> 180 linearly)
     // Then 2 beats at 180 BPM = 2 * 60 / 180 = ~0.667s
     let effect = &show.cues[0].effects[0];
-    let duration = effect.effect_type.get_duration();
+    let duration = effect.effect_type.duration();
 
     // Verify it integrates through the gradual transition
     // 2 beats at 120 BPM = 1.0s
@@ -1312,7 +1312,7 @@ show "Fractional Measure Duration" {
 
     // At 120 BPM in 4/4: 1.5 measures = 6 beats = 3.0s
     let effect = &show.cues[0].effects[0];
-    let duration = effect.effect_type.get_duration();
+    let duration = effect.effect_type.duration();
     assert!(
         (duration.as_secs_f64() - 3.0).abs() < 0.001,
         "1.5 measures should be 3.0s at 120 BPM in 4/4, got {}s",

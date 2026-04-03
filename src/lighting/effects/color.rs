@@ -22,12 +22,10 @@ pub struct Color {
 }
 
 impl Color {
-    #[cfg(test)]
     pub fn new(r: u8, g: u8, b: u8) -> Self {
         Self { r, g, b, w: None }
     }
 
-    #[cfg(test)]
     pub fn from_hex(hex: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let hex = hex.trim_start_matches('#');
         if hex.len() != 6 {

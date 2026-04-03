@@ -38,11 +38,7 @@ pub struct FixtureType {
 
 impl FixtureType {
     /// Creates a new fixture type.
-    pub fn new(
-        name: String,
-        channels: HashMap<String, u16>,
-        _special_cases: Vec<String>,
-    ) -> FixtureType {
+    pub fn new(name: String, channels: HashMap<String, u16>) -> FixtureType {
         FixtureType {
             name,
             channels,
@@ -279,7 +275,7 @@ mod tests {
         channels.insert("red".to_string(), 1);
         channels.insert("green".to_string(), 2);
         channels.insert("blue".to_string(), 3);
-        let ft = FixtureType::new("RGB Par".to_string(), channels, vec![]);
+        let ft = FixtureType::new("RGB Par".to_string(), channels);
         assert_eq!(ft.name(), "RGB Par");
         assert_eq!(ft.channels().len(), 3);
         assert_eq!(ft.max_strobe_frequency(), None);
@@ -289,7 +285,7 @@ mod tests {
 
     #[test]
     fn fixture_type_strobe_fields() {
-        let mut ft = FixtureType::new("Strobe".to_string(), HashMap::new(), vec![]);
+        let mut ft = FixtureType::new("Strobe".to_string(), HashMap::new());
         ft.max_strobe_frequency = Some(25.0);
         ft.min_strobe_frequency = Some(1.0);
         ft.strobe_dmx_offset = Some(128);

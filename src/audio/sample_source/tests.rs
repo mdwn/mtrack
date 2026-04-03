@@ -3668,7 +3668,7 @@ mod sample_source_tests {
             Ok(Some(0.5))
         }
 
-        fn channel_mappings(&self) -> &Vec<Vec<String>> {
+        fn channel_mappings(&self) -> &[Vec<String>] {
             // Leak a static vec for testing convenience
             static EMPTY: std::sync::OnceLock<Vec<Vec<String>>> = std::sync::OnceLock::new();
             EMPTY.get_or_init(|| vec![vec!["M".to_string()]])

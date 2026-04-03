@@ -269,15 +269,7 @@ pub(crate) fn parse_effect_definition(
     // Dimmer always has a duration (defaults to 1s). For all other types,
     // either the effect's duration field or hold_time must be set.
     if !matches!(&final_effect_type, EffectType::Dimmer { .. }) {
-        let effect_duration = match &final_effect_type {
-            EffectType::Static { duration, .. }
-            | EffectType::Strobe { duration, .. }
-            | EffectType::Pulse { duration, .. }
-            | EffectType::ColorCycle { duration, .. }
-            | EffectType::Chase { duration, .. }
-            | EffectType::Rainbow { duration, .. } => *duration,
-            EffectType::Dimmer { .. } => unreachable!(),
-        };
+        let effect_duration = final_effect_type.duration();
         if effect_duration.is_zero() && hold_time.is_none() {
             let effect_name = match &final_effect_type {
                 EffectType::Static { .. } => "static",

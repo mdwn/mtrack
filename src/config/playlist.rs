@@ -46,7 +46,7 @@ impl Playlist {
     }
 
     /// Get all songs in the playlist.
-    pub fn songs(&self) -> &Vec<String> {
+    pub fn songs(&self) -> &[String] {
         &self.songs
     }
 }

@@ -103,10 +103,7 @@ impl Audio {
 
     /// Returns the playback delay from the configuration.
     pub fn playback_delay(&self) -> Result<Duration, Box<dyn Error>> {
-        match &self.playback_delay {
-            Some(playback_delay) => Ok(DurationString::from_string(playback_delay.clone())?.into()),
-            None => Ok(DEFAULT_AUDIO_PLAYBACK_DELAY),
-        }
+        super::parse_playback_delay(&self.playback_delay, DEFAULT_AUDIO_PLAYBACK_DELAY)
     }
 
     /// Returns the target sample rate (default: 44100)

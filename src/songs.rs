@@ -819,7 +819,7 @@ impl LightShow {
             return Err(format!("file {} does not exist", dmx_file.display()).into());
         }
         Ok(LightShow {
-            universe_name: config.universe_name(),
+            universe_name: config.universe_name().to_string(),
             dmx_file,
             midi_channels: config.midi_channels(),
         })

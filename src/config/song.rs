@@ -225,17 +225,17 @@ impl Song {
     }
 
     /// Gets the light shows associated with the song.
-    pub fn light_shows(&self) -> Option<&Vec<LightShow>> {
-        self.light_shows.as_ref()
+    pub fn light_shows(&self) -> Option<&[LightShow]> {
+        self.light_shows.as_deref()
     }
 
     /// Gets the DSL lighting shows associated with the song.
-    pub fn lighting(&self) -> Option<&Vec<LightingShow>> {
-        self.lighting.as_ref()
+    pub fn lighting(&self) -> Option<&[LightingShow]> {
+        self.lighting.as_deref()
     }
 
     /// Gets the tracks associated with the song.
-    pub fn tracks(&self) -> &Vec<Track> {
+    pub fn tracks(&self) -> &[Track] {
         &self.tracks
     }
 
@@ -278,8 +278,8 @@ pub struct MidiPlayback {
 
 impl MidiPlayback {
     /// Gets the file associated with the MIDI playback.
-    pub fn file(&self) -> String {
-        self.file.clone()
+    pub fn file(&self) -> &str {
+        &self.file
     }
 
     /// Gets the MIDI channels to exclude.
@@ -319,13 +319,13 @@ impl LightShow {
     }
 
     /// Gets the universe name for the light show.
-    pub fn universe_name(&self) -> String {
-        self.universe_name.clone()
+    pub fn universe_name(&self) -> &str {
+        &self.universe_name
     }
 
     /// Gets the DMX (MIDI) file associated with the light show.
-    pub fn dmx_file(&self) -> String {
-        self.dmx_file.clone()
+    pub fn dmx_file(&self) -> &str {
+        &self.dmx_file
     }
 
     /// Gets the MIDI channels that should be associated with light show data.

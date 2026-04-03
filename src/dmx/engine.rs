@@ -174,11 +174,11 @@ impl Engine {
         let cancel_handle = CancelHandle::new();
         let universes: HashMap<u16, Universe> = config
             .universes()
-            .into_iter()
+            .iter()
             .map(|config| {
                 (
                     config.universe(),
-                    Universe::new(config, cancel_handle.clone(), sender.clone()),
+                    Universe::new(config.clone(), cancel_handle.clone(), sender.clone()),
                 )
             })
             .collect();
@@ -186,7 +186,7 @@ impl Engine {
         // Create mapping from universe names to IDs for MIDI DMX system
         let universe_name_to_id: HashMap<String, u16> = config
             .universes()
-            .into_iter()
+            .iter()
             .map(|config| (config.name().to_string(), config.universe()))
             .collect();
         let join_handles: Vec<JoinHandle<()>> = universes

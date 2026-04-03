@@ -288,11 +288,7 @@ pub async fn run(tui_mode: bool) -> Result<(), Box<dyn Error>> {
             let current_executable_path = env::current_exe()?;
             println!(
                 "{}",
-                render_systemd_service(
-                    current_executable_path
-                        .to_str()
-                        .expect("unable to convert current executable path to string")
-                )
+                render_systemd_service(&current_executable_path.to_string_lossy())
             )
         }
         Commands::CalibrateTriggers {
