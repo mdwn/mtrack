@@ -29,6 +29,13 @@
   import ImportSongs from "./ImportSongs.svelte";
   import Waveform from "./Waveform.svelte";
 
+  interface Props {
+    initialSearch?: string;
+    onSearchChange?: (query: string) => void;
+  }
+
+  let { initialSearch = "", onSearchChange }: Props = $props();
+
   let songs = $state<SongSummary[]>([]);
   let failures = $state<SongFailure[]>([]);
   let waveforms = $state<Record<string, number[]>>({});
@@ -36,7 +43,12 @@
   let error = $state("");
   let showCreate = $state(false);
   let showImport = $state(false);
-  let searchQuery = $state("");
+  let searchQuery = $state(initialSearch);
+
+  $effect(() => {
+    onSearchChange?.(searchQuery);
+  });
+
   let collapsedGroups = new SvelteSet<string>();
 
   type SongOrFailure = SongSummary | SongFailure;
@@ -177,7 +189,7 @@
     <h2>{$t("songs.title")}</h2>
     <div class="header-actions">
       <button
-        class="btn"
+        class="btn btn-primary"
         onclick={() => {
           showImport = true;
           showCreate = false;
@@ -186,7 +198,7 @@
         {$t("songs.importFromFilesystem")}
       </button>
       <button
-        class="btn btn-primary"
+        class="btn"
         onclick={() => {
           showCreate = !showCreate;
           showImport = false;

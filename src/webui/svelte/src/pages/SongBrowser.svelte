@@ -23,21 +23,21 @@
   let { currentHash }: Props = $props();
 
   // Parse: #/songs/SongName or #/songs/SongName/tab
+  const allTabs = [
+    "tracks",
+    "midi",
+    "samples",
+    "sections",
+    "lighting",
+    "notifications",
+    "config",
+  ];
+
   let songName = $derived.by(() => {
     const prefix = "#/songs/";
     if (currentHash.startsWith(prefix) && currentHash.length > prefix.length) {
       const rest = decodeURIComponent(currentHash.slice(prefix.length));
-      // Strip trailing tab segment if present
-      const tabs = [
-        "tracks",
-        "midi",
-        "samples",
-        "sections",
-        "lighting",
-        "notifications",
-        "config",
-      ];
-      for (const tab of tabs) {
+      for (const tab of allTabs) {
         if (rest.endsWith("/" + tab)) {
           return rest.slice(0, -(tab.length + 1));
         }
@@ -52,30 +52,24 @@
     if (!currentHash.startsWith(prefix)) return undefined;
     const segments = currentHash.slice(prefix.length).split("/");
     const last = segments[segments.length - 1];
-    const tabs = [
-      "tracks",
-      "midi",
-      "samples",
-      "sections",
-      "lighting",
-      "notifications",
-      "config",
-    ];
-    if (tabs.includes(last) && segments.length > 1) {
+    if (allTabs.includes(last) && segments.length > 1) {
       return last as
         | "tracks"
         | "midi"
         | "samples"
+        | "sections"
         | "lighting"
         | "notifications"
         | "config";
     }
     return undefined;
   });
+
+  let savedSearch = $state("");
 </script>
 
 {#if songName}
   <SongDetail {songName} {initialTab} />
 {:else}
-  <SongList />
+  <SongList initialSearch={savedSearch} onSearchChange={(q) => savedSearch = q} />
 {/if}
