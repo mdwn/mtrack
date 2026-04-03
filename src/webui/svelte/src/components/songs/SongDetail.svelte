@@ -781,7 +781,10 @@
           class="tab"
           class:active={activeTab === tab_item.key}
           role="tab"
+          id="song-tab-{tab_item.key}"
           aria-selected={activeTab === tab_item.key}
+          aria-controls="song-tabpanel-{tab_item.key}"
+          tabindex={activeTab === tab_item.key ? 0 : -1}
           onclick={() => setTab(tab_item.key)}
         >
           {$t(tab_item.labelKey)}
@@ -811,7 +814,12 @@
     </div>
 
     <!-- Tab content -->
-    <div class="tab-content">
+    <div
+      class="tab-content"
+      role="tabpanel"
+      id="song-tabpanel-{activeTab}"
+      aria-labelledby="song-tab-{activeTab}"
+    >
       {#if activeTab === "tracks"}
         <TrackEditor
           {tracks}

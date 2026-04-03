@@ -57,6 +57,12 @@
   let confirmDelete = $state<string | null>(null);
   let dragIndex = $state<number | null>(null);
   let dragOverIndex = $state<number | null>(null);
+  let slotIdCounter = 0;
+  let editSlotIds = $state<number[]>([]);
+
+  function assignSlotIds(songs: string[]) {
+    editSlotIds = songs.map(() => slotIdCounter++);
+  }
 
   let availableSongs = $derived(
     detail
@@ -87,6 +93,7 @@
       detail = await fetchPlaylist(name);
       selected = name;
       editSongs = [...detail.songs];
+      assignSlotIds(editSongs);
       dirty = false;
       searchQuery = "";
       window.location.hash = `#/playlists/${encodeURIComponent(name)}`;
@@ -138,6 +145,7 @@
         selected = null;
         detail = null;
         editSongs = [];
+        editSlotIds = [];
       }
       confirmDelete = null;
       await loadPlaylists();
@@ -167,20 +175,26 @@
 
   function addSong(song: string) {
     editSongs = [...editSongs, song];
+    editSlotIds = [...editSlotIds, slotIdCounter++];
     dirty = true;
   }
 
   function removeSong(index: number) {
     editSongs = editSongs.filter((_, i) => i !== index);
+    editSlotIds = editSlotIds.filter((_, i) => i !== index);
     dirty = true;
   }
 
   function moveSong(from: number, to: number) {
     if (to < 0 || to >= editSongs.length) return;
     const songs = [...editSongs];
+    const ids = [...editSlotIds];
     const [item] = songs.splice(from, 1);
+    const [id] = ids.splice(from, 1);
     songs.splice(to, 0, item);
+    ids.splice(to, 0, id);
     editSongs = songs;
+    editSlotIds = ids;
     dirty = true;
   }
 
@@ -203,9 +217,13 @@
     if (dragIndex === null || dragIndex === targetIndex) return;
 
     const songs = [...editSongs];
+    const ids = [...editSlotIds];
     const [moved] = songs.splice(dragIndex, 1);
+    const [movedId] = ids.splice(dragIndex, 1);
     songs.splice(targetIndex, 0, moved);
+    ids.splice(targetIndex, 0, movedId);
     editSongs = songs;
+    editSlotIds = ids;
     dirty = true;
     dragIndex = null;
     dragOverIndex = null;
@@ -366,7 +384,7 @@
             </p>
           {:else}
             <ul class="song-list">
-              {#each editSongs as song, i (song + i)}
+              {#each editSongs as song, i (editSlotIds[i])}
                 <li
                   draggable="true"
                   ondragstart={(e) => handleDragStart(e, i)}

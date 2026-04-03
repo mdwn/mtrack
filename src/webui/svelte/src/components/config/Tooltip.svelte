@@ -84,14 +84,28 @@
     onmouseleave={() => {
       if (!usedTouch) open = false;
     }}
+    onfocusin={(e) => {
+      // Only show on keyboard focus (not mouse/touch clicks)
+      if (!(e.target as HTMLElement)?.matches(":focus-visible")) return;
+      open = true;
+    }}
+    onfocusout={() => {
+      open = false;
+    }}
     aria-label="More info"
+    aria-describedby={open ? "tooltip-content" : undefined}
   >
     i
   </button>
 </span>
 
 {#if open}
-  <div class="tooltip-portal" bind:this={portalEl} role="tooltip">
+  <div
+    class="tooltip-portal"
+    bind:this={portalEl}
+    role="tooltip"
+    id="tooltip-content"
+  >
     {text}
   </div>
 {/if}

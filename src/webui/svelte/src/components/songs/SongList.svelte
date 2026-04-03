@@ -278,7 +278,18 @@
                 </div>
               </button>
             {:else}
-              <button class="song-row" onclick={() => navigate(item.name)}>
+              <div
+                class="song-row"
+                onclick={() => navigate(item.name)}
+                onkeydown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    navigate(item.name);
+                  }
+                }}
+                tabindex="0"
+                role="link"
+              >
                 <div class="song-main">
                   <span class="song-name">{item.name}</span>
                   <div class="song-badges">
@@ -304,16 +315,13 @@
                     })}</span
                   >
                 </div>
-                <!-- svelte-ignore a11y_click_events_have_key_events -->
-                <span
+                <button
                   class="song-delete"
-                  role="button"
-                  tabindex="-1"
                   title={$t("songs.removeFromRegistry")}
                   aria-label={$t("songs.removeFromRegistry")}
-                  onclick={(e) => handleDelete(e, item.name)}>&#10005;</span
+                  onclick={(e) => handleDelete(e, item.name)}>&#10005;</button
                 >
-              </button>
+              </div>
             {/if}
           {/each}
         {/if}
@@ -430,7 +438,13 @@
     font-size: 13px;
     padding: 2px 4px;
     border-radius: 3px;
+    border: none;
+    background: none;
+    font: inherit;
     transition: opacity 0.15s;
+  }
+  .song-delete:focus-visible {
+    opacity: 1;
   }
   .song-row:hover .song-delete {
     opacity: 1;

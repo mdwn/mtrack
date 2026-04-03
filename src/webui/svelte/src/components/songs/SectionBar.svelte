@@ -292,8 +292,22 @@
   }
 
   function handleKeydown(e: KeyboardEvent) {
+    // Only handle when the section bar or its children are focused
+    const tag = (e.target as HTMLElement)?.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") {
+      // Allow Enter/Escape for rename input but block Delete/Backspace
+      if (e.key === "Enter" && editingIndex !== null) {
+        finishRename();
+        e.preventDefault();
+      }
+      if (e.key === "Escape") {
+        editingIndex = null;
+        selectedIndex = null;
+      }
+      return;
+    }
     if (e.key === "Delete" || e.key === "Backspace") {
-      if (editingIndex !== null) return; // Don't delete while renaming.
+      if (editingIndex !== null) return;
       deleteSelected();
       e.preventDefault();
     }
@@ -358,9 +372,14 @@
   });
 </script>
 
-<svelte:window onkeydown={handleKeydown} />
-
-<div class="section-bar" style:height="{BAR_HEIGHT}px">
+<div
+  class="section-bar"
+  style:height="{BAR_HEIGHT}px"
+  tabindex="0"
+  onkeydown={handleKeydown}
+  role="toolbar"
+  aria-label={$t("songs.detail.sections", { default: "Sections" })}
+>
   <div class="lane-label" style:width="{LABEL_WIDTH}px">
     {$t("songs.detail.sections")}
   </div>

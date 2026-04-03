@@ -380,7 +380,7 @@
     z-index: 10;
   }
   .seq-label-spacer {
-    width: 80px;
+    width: 100px;
     flex-shrink: 0;
     border-right: 1px solid var(--border);
   }

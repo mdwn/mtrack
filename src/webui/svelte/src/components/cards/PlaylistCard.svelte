@@ -85,14 +85,18 @@
       color 0.15s;
   }
   .playlist-song-btn {
-    all: unset;
+    background: none;
+    border: none;
+    font: inherit;
+    color: var(--text-muted);
+    text-align: left;
     display: block;
     width: 100%;
     padding: 4px 8px;
-    font-size: 13px;
-    color: var(--text-muted);
+    font-size: var(--text-sm);
     cursor: pointer;
     box-sizing: border-box;
+    border-radius: 4px;
   }
   .playlist-songs li:hover {
     background: rgba(255, 255, 255, 0.05);
@@ -101,11 +105,16 @@
     color: var(--text);
   }
   .playlist-songs li.current {
-    background: rgba(94, 202, 234, 0.12);
+    background: var(--accent-subtle);
     color: var(--text);
     font-weight: 500;
+    border-left: 3px solid var(--accent);
+    padding-left: 0;
+  }
+  .playlist-songs li.current .playlist-song-btn {
+    padding-left: 5px;
   }
   .playlist-songs li.current:hover {
-    background: rgba(94, 202, 234, 0.2);
+    background: var(--accent-subtle-hover);
   }
 </style>

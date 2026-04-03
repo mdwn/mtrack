@@ -40,6 +40,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Improved
 
+- **Web UI design system and accessibility overhaul**: Comprehensive design review and
+  redesign pass across all pages, establishing a stronger design language and improving
+  accessibility for assistive technologies.
+
+  **Design system foundations:**
+  - Added type scale tokens (`--text-xs` through `--text-xl`) replacing 7+ ad-hoc font sizes.
+  - Added semantic color tokens (`--accent-subtle`, `--red-subtle`, `--yellow-subtle`,
+    `--blue-subtle`, `--green-subtle`) — hardcoded `rgba()` values throughout components now
+    reference design tokens.
+  - Added `--bg-surface` token (was referenced but undefined).
+  - Added `.sr-only` utility class, `.badge` global component, `.checkbox-row` form utility,
+    and shared form layout classes (`.section-fields`, `.field`, `.field-row`, `.field-header`).
+  - Added `prefers-reduced-motion` media query respecting user motion preferences.
+
+  **Accessibility (WCAG compliance):**
+  - Replaced `all: unset` on playlist buttons with explicit resets so focus indicators work.
+  - Added `aria-expanded` to hamburger menu and sample collapsible headers.
+  - Added `aria-pressed` to log level filter toggles, `role="log"` to log container.
+  - Added `role="img"` and `aria-label` to canvas waveforms.
+  - Added `role="tabpanel"` with `aria-labelledby` to all tab content panels.
+  - Fixed song delete button from inaccessible `<span tabindex="-1">` to proper `<button>`.
+  - Fixed song row from nested `<button>` (invalid HTML) to `<div role="link">`.
+  - Fixed sample header from suppressed-a11y div to `role="button"` with keyboard support.
+  - Added keyboard focus handlers to tooltips (`onfocus`/`onblur`).
+  - Added WAI-ARIA arrow-key navigation to profile editor tab bar.
+  - Added `aria-label` to status page subsystem dots.
+  - Scoped SectionBar keyboard handler to focused container — prevents Delete key from
+    destroying sections while typing in other inputs.
+
+  **Visual polish:**
+  - Replaced all emoji/Unicode icons in nav (play/pause, lock/unlock) with inline SVGs.
+  - Thickened playback progress bar from 6px to 10px for better touch targets.
+  - Improved loop badge sizing and error message treatment (8s timeout, dismiss button,
+    colored background).
+  - Added left-border accent to current playlist song for clearer visual indication.
+  - Added music icon to dashboard empty state.
+  - Added dirty indicator (`*` in yellow) to profile editor title when unsaved.
+  - Improved cue block visibility in timeline (raised base opacity, stronger hover).
+  - Widened cue color strip from 3px to 4px.
+  - Added pulsing animation to disconnected status indicator.
+  - Added tab overflow gradient fade on profile editor tab bar.
+
+  **Layout optimization:**
+  - Dashboard card-pair uses flexible height (`min-height`/`max-height`) instead of rigid 280px.
+  - Effects card uses flexible width instead of fixed 280px.
+  - Status page widened from 700px to 1000px with 2-column grid layout.
+  - Timeline lane labels widened from 80px to 100px across all lane types.
+  - Timeline bottom panel is now collapsible with toggle button.
+
+  **UX improvements:**
+  - Fixed playlist drag-and-drop with stable slot IDs (was using fragile `song + i` key).
+  - Waveform canvas now applies DPR scaling for crisp rendering on HiDPI/Retina displays.
+  - Transport uses CSS Grid layout with section controls spanning full width.
+  - New sequence cue references auto-select the first available sequence definition.
+
 - **Web UI UX overhaul**: Comprehensive usability pass across all pages, focused on
   reducing clicks, preventing data loss, and improving visual consistency.
 

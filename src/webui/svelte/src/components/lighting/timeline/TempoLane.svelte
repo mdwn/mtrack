@@ -133,7 +133,7 @@
     border-bottom: 1px solid var(--border);
   }
   .tempo-label {
-    width: 80px;
+    width: 100px;
     flex-shrink: 0;
     display: flex;
     align-items: center;

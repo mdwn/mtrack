@@ -123,10 +123,13 @@
             <span class="track-name">{track.name}</span>
             <span class="track-channels">{formatChannels(track)}</span>
           </div>
+          <!-- svelte-ignore a11y_no_interactive_element_to_noninteractive_role -->
           <canvas
             class="track-waveform"
             bind:this={canvasRefs[track.name]}
             height={WAVEFORM_HEIGHT}
+            role="img"
+            aria-label="Waveform for {track.name}"
           ></canvas>
         </div>
       {/each}

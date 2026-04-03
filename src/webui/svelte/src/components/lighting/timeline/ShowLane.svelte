@@ -239,7 +239,8 @@
     } else if (subLaneType === "commands") {
       newCue.commands = [{ command: "clear" }];
     } else if (subLaneType === "sequences") {
-      newCue.sequences = [{ name: "" }];
+      const firstName = sequenceDefs.length > 0 ? sequenceDefs[0].name : "";
+      newCue.sequences = [{ name: firstName }];
     }
     oncueadd(newCue);
   }
@@ -395,7 +396,7 @@
     background: rgba(239, 96, 163, 0.03);
   }
   .lane-label {
-    width: 80px;
+    width: 100px;
     flex-shrink: 0;
     display: flex;
     flex-direction: column;

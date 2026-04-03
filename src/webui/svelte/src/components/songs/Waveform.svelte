@@ -37,14 +37,19 @@
       const w = canvas.clientWidth;
       if (w === 0) return;
 
-      if (canvas.width !== w || canvas.height !== h) {
-        canvas.width = w;
-        canvas.height = h;
+      const dpr = window.devicePixelRatio || 1;
+      const scaledW = Math.round(w * dpr);
+      const scaledH = Math.round(h * dpr);
+
+      if (canvas.width !== scaledW || canvas.height !== scaledH) {
+        canvas.width = scaledW;
+        canvas.height = scaledH;
       }
 
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
 
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, w, h);
 
       if (p.length > 0) {
@@ -56,12 +61,6 @@
           const y = (h - barHeight) / 2;
           ctx.fillRect(x, y, Math.max(barWidth - 0.5, 1), barHeight);
         }
-      } else {
-        ctx.strokeStyle = "rgba(94, 202, 234, 0.2)";
-        ctx.beginPath();
-        ctx.moveTo(0, h / 2);
-        ctx.lineTo(w, h / 2);
-        ctx.stroke();
       }
     });
 
