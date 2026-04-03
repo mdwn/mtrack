@@ -452,13 +452,13 @@
   {/each}
 
   <div class="add-buttons">
-    <button class="btn" onclick={() => addController("grpc")}
+    <button class="btn" title={$t("tooltips.controllers.addGrpc")} onclick={() => addController("grpc")}
       >{$t("controllers.addGrpc")}</button
     >
-    <button class="btn" onclick={() => addController("osc")}
+    <button class="btn" title={$t("tooltips.controllers.addOsc")} onclick={() => addController("osc")}
       >{$t("controllers.addOsc")}</button
     >
-    <button class="btn" onclick={addMidiController}
+    <button class="btn" title={$t("tooltips.controllers.addMidi")} onclick={addMidiController}
       >{$t("controllers.addMidi")}</button
     >
   </div>

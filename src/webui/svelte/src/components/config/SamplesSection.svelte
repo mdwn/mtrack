@@ -188,6 +188,18 @@
                 editingName = name;
               }}>{name}</span
             >
+            <button
+              class="rename-btn"
+              title={$t("common.rename")}
+              onclick={(e) => {
+                e.stopPropagation();
+                editingName = name;
+              }}
+            >
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M12.1 1.3a1.5 1.5 0 0 1 2.1 0l.5.5a1.5 1.5 0 0 1 0 2.1L5.8 12.8l-3.5.7.7-3.5L12.1 1.3z"/>
+              </svg>
+            </button>
           {/if}
         </span>
         <div class="sample-controls">
@@ -626,6 +638,23 @@
   }
   .name-text {
     cursor: text;
+  }
+  .rename-btn {
+    display: none;
+    background: none;
+    border: none;
+    padding: 2px;
+    cursor: pointer;
+    color: var(--text-dim);
+    line-height: 1;
+    vertical-align: middle;
+    transition: color 0.15s;
+  }
+  .rename-btn:hover {
+    color: var(--text);
+  }
+  .sample-header:hover .rename-btn {
+    display: inline-flex;
   }
   .name-input {
     width: 200px;

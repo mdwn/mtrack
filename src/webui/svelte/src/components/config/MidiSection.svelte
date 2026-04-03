@@ -21,11 +21,22 @@
   interface Props {
     midi: any;
     devices: MidiDeviceInfo[];
-    onrefresh: () => void;
+    onrefresh: () => void | Promise<void>;
     onchange: () => void;
   }
 
   let { midi = $bindable(), devices, onrefresh, onchange }: Props = $props();
+
+  let refreshing = $state(false);
+
+  async function handleRefresh() {
+    refreshing = true;
+    try {
+      await onrefresh();
+    } finally {
+      refreshing = false;
+    }
+  }
 
   let outputDeviceNames = $derived(
     devices.filter((d) => d.has_output).map((d) => d.name),
@@ -141,7 +152,7 @@
           <option value={name}></option>
         {/each}
       </datalist>
-      <button class="btn" onclick={onrefresh}>{$t("common.refresh")}</button>
+      <button class="btn" onclick={handleRefresh} disabled={refreshing}>{refreshing ? $t("common.refreshing") : $t("common.refresh")}</button>
     </div>
   </div>
 
