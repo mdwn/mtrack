@@ -25,9 +25,25 @@
   let canvasEl: HTMLCanvasElement | undefined = $state();
   let ctx: CanvasRenderingContext2D | null = $state(null);
 
+  const STORAGE_KEY = "mtrack-stage-positions";
+
+  function loadManualPositions(): Record<string, { x: number; y: number }> {
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (stored) return JSON.parse(stored);
+    } catch {}
+    return {};
+  }
+
+  function saveManualPositions() {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(manualPositions));
+    } catch {}
+  }
+
   // Position tracking
   let layoutPositions: Record<string, { x: number; y: number }> = {};
-  let manualPositions: Record<string, { x: number; y: number }> = {};
+  let manualPositions: Record<string, { x: number; y: number }> = loadManualPositions();
   let prevW = 0;
   let prevH = 0;
 
@@ -271,6 +287,7 @@
 
   function onMouseUp() {
     if (dragFixture) {
+      saveManualPositions();
       dragFixture = null;
       canvasEl!.style.cursor = "grab";
     }
@@ -305,6 +322,9 @@
   }
 
   function onTouchEnd() {
+    if (dragFixture) {
+      saveManualPositions();
+    }
     dragFixture = null;
   }
 

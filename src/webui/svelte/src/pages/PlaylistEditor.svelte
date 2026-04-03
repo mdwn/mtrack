@@ -266,30 +266,25 @@
       <p class="muted">{$t("playlists.noPlaylists")}</p>
     {:else}
       <ul class="playlist-list">
-        {#each playlists as pl (pl.name)}
+        {#each playlists.filter(p => p.name !== "all_songs") as pl (pl.name)}
           <li
             class:selected={selected === pl.name}
-            class:all-songs={pl.name === "all_songs"}
           >
             <button
               class="playlist-item"
-              onclick={() => pl.name !== "all_songs" && selectPlaylist(pl.name)}
-              disabled={pl.name === "all_songs"}
-              title={pl.name === "all_songs"
-                ? $t("playlists.allSongsHint")
-                : undefined}
+              onclick={() => selectPlaylist(pl.name)}
             >
               <span class="pl-name">{pl.name}</span>
               <span class="pl-count"
                 >{$t("playlists.songs", {
-                  values: { count: pl.song_count },
+                  values: { count: selected === pl.name ? editSongs.length : pl.song_count },
                 })}</span
               >
             </button>
             <div class="pl-actions">
               {#if pl.is_active}
                 <span class="badge">{$t("playlists.active")}</span>
-              {:else if pl.name !== "all_songs"}
+              {:else}
                 <button
                   class="btn-icon"
                   title={$t("playlists.activate")}
@@ -298,29 +293,27 @@
                   &#9654;
                 </button>
               {/if}
-              {#if pl.name !== "all_songs"}
-                {#if confirmDelete === pl.name}
-                  <button
-                    class="btn-icon danger"
-                    onclick={() => handleDelete(pl.name)}
-                  >
-                    {$t("common.confirm")}
-                  </button>
-                  <button
-                    class="btn-icon"
-                    onclick={() => (confirmDelete = null)}
-                  >
-                    {$t("common.cancel")}
-                  </button>
-                {:else}
-                  <button
-                    class="btn-icon"
-                    title={$t("common.delete")}
-                    onclick={() => (confirmDelete = pl.name)}
-                  >
-                    &#10005;
-                  </button>
-                {/if}
+              {#if confirmDelete === pl.name}
+                <button
+                  class="btn-icon danger"
+                  onclick={() => handleDelete(pl.name)}
+                >
+                  {$t("common.confirm")}
+                </button>
+                <button
+                  class="btn-icon"
+                  onclick={() => (confirmDelete = null)}
+                >
+                  {$t("common.cancel")}
+                </button>
+              {:else}
+                <button
+                  class="btn-icon"
+                  title={$t("common.delete")}
+                  onclick={() => (confirmDelete = pl.name)}
+                >
+                  &#10005;
+                </button>
               {/if}
             </div>
           </li>
@@ -376,7 +369,9 @@
                   ondrop={(e) => handleDrop(e, i)}
                   ondragend={handleDragEnd}
                   class:drag-over={dragOverIndex === i}
+                  style={dragIndex === i ? "opacity: 0.4" : ""}
                 >
+                  <span class="song-position">{i + 1}.</span>
                   <div class="reorder-btns">
                     <button
                       class="btn-icon small"
@@ -479,9 +474,6 @@
   .playlist-list li.selected {
     background: rgba(94, 202, 234, 0.12);
   }
-  .playlist-list li.all-songs {
-    opacity: 0.6;
-  }
   .playlist-item {
     flex: 1;
     display: flex;
@@ -562,6 +554,12 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .song-position {
+    color: var(--text-dim);
+    min-width: 24px;
+    text-align: right;
+    font-size: 13px;
   }
   .reorder-btns {
     display: flex;

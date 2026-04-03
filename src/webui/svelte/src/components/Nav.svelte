@@ -92,8 +92,8 @@
       onclick={toggleLock}
       disabled={toggling}
       title={$playbackStore.locked
-        ? $t("nav.lock.locked")
-        : $t("nav.lock.unlocked")}
+        ? $t("nav.lock.lockedHint")
+        : $t("nav.lock.unlockedHint")}
     >
       {$playbackStore.locked ? "\uD83D\uDD12" : "\uD83D\uDD13"}
     </button>

@@ -49,6 +49,8 @@
   let data = $state<StatusResponse | null>(null);
   let error = $state<string | null>(null);
   let loading = $state(false);
+  let lastFetchTime = $state<number>(Date.now());
+  let secondsAgo = $state<number>(0);
 
   async function fetchStatus() {
     loading = true;
@@ -57,6 +59,8 @@
       const res = await fetch("/api/status");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       data = await res.json();
+      lastFetchTime = Date.now();
+      secondsAgo = 0;
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -66,6 +70,14 @@
 
   $effect(() => {
     fetchStatus();
+    const poll = setInterval(() => fetchStatus(), 5000);
+    const tick = setInterval(() => {
+      secondsAgo = Math.round((Date.now() - lastFetchTime) / 1000);
+    }, 1000);
+    return () => {
+      clearInterval(poll);
+      clearInterval(tick);
+    };
   });
 
   function statusColor(status: string): string {
@@ -74,9 +86,10 @@
     return "var(--text-dim)";
   }
 
-  function statusLabel(status: string): string {
-    if (status === "connected") return get(t)("status.connected");
-    if (status === "initializing") return get(t)("status.initializing");
+  function statusLabel(s: SubsystemStatus): string {
+    if (s.status === "connected") return get(t)("status.connected");
+    if (s.status === "initializing") return get(t)("status.initializing");
+    if (!s.name && s.status !== "connected") return get(t)("status.notConfigured");
     return get(t)("status.notConnected");
   }
 
@@ -113,9 +126,12 @@
 <div class="status-page">
   <div class="status-header">
     <h2>{$t("status.title")}</h2>
-    <button class="btn" onclick={fetchStatus} disabled={loading}>
-      {loading ? $t("common.refreshing") : $t("common.refresh")}
-    </button>
+    <div class="refresh-group">
+      <span class="last-updated">{$t("status.lastUpdated", { values: { seconds: secondsAgo } })}</span>
+      <button class="btn" onclick={fetchStatus} disabled={loading}>
+        {loading ? $t("common.refreshing") : $t("common.refresh")}
+      </button>
+    </div>
   </div>
 
   {#if error}
@@ -126,18 +142,6 @@
 
   {#if data}
     <div class="cards">
-      <div class="card">
-        <h3>{$t("status.buildInfo")}</h3>
-        <div class="info-grid">
-          <span class="info-label">{$t("status.version")}</span>
-          <span class="info-value">{data.build.version}</span>
-          <span class="info-label">{$t("status.gitHash")}</span>
-          <span class="info-value mono">{data.build.git_hash}</span>
-          <span class="info-label">{$t("status.buildTime")}</span>
-          <span class="info-value mono">{data.build.build_time}</span>
-        </div>
-      </div>
-
       <div class="card">
         <h3>{$t("status.hardware")}</h3>
         {#if !data.hardware.init_done}
@@ -164,7 +168,7 @@
                 style="background: {statusColor(s.status)}"
               ></div>
               <span class="subsystem-label">{$t(sub.labelKey)}</span>
-              <span class="subsystem-status">{statusLabel(s.status)}</span>
+              <span class="subsystem-status">{statusLabel(s)}</span>
               {#if s.name}
                 <span class="subsystem-name">{s.name}</span>
               {/if}
@@ -213,6 +217,18 @@
           </div>
         {/if}
       </div>
+
+      <div class="card">
+        <h3>{$t("status.buildInfo")}</h3>
+        <div class="info-grid">
+          <span class="info-label">{$t("status.version")}</span>
+          <span class="info-value">{data.build.version}</span>
+          <span class="info-label">{$t("status.gitHash")}</span>
+          <span class="info-value mono">{data.build.git_hash}</span>
+          <span class="info-label">{$t("status.buildTime")}</span>
+          <span class="info-value mono">{data.build.build_time}</span>
+        </div>
+      </div>
     </div>
   {/if}
 </div>
@@ -231,6 +247,15 @@
     margin: 0;
     font-size: 18px;
     font-weight: 600;
+  }
+  .refresh-group {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .last-updated {
+    font-size: 12px;
+    color: var(--text-dim);
   }
   .cards {
     display: flex;
