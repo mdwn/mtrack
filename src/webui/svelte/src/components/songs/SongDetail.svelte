@@ -700,7 +700,7 @@
 </script>
 
 <div class="detail">
-  <a class="back-link" href="#/songs">&larr; {$t("songs.detail.allSongs")}</a>
+  <a class="back-link" href="#/songs" aria-label={$t("songs.detail.allSongs")}>&larr; {$t("songs.detail.allSongs")}</a>
 
   {#if loading}
     <div class="status">{$t("common.loading")}</div>

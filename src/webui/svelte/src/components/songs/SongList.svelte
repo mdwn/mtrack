@@ -310,6 +310,7 @@
                   role="button"
                   tabindex="-1"
                   title={$t("songs.removeFromRegistry")}
+                  aria-label={$t("songs.removeFromRegistry")}
                   onclick={(e) => handleDelete(e, item.name)}>&#10005;</span
                 >
               </button>

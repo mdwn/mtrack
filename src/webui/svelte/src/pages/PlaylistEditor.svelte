@@ -261,7 +261,7 @@
     {/if}
 
     {#if loading}
-      <p class="muted">{$t("common.loading")}</p>
+      <p class="muted"><span class="spinner sm"></span> {$t("common.loading")}</p>
     {:else if playlists.length === 0}
       <p class="muted">{$t("playlists.noPlaylists")}</p>
     {:else}
@@ -288,6 +288,7 @@
                 <button
                   class="btn-icon"
                   title={$t("playlists.activate")}
+                  aria-label={$t("playlists.activate")}
                   onclick={() => handleActivate(pl.name)}
                 >
                   &#9654;
@@ -310,6 +311,7 @@
                 <button
                   class="btn-icon"
                   title={$t("common.delete")}
+                  aria-label={$t("common.delete")}
                   onclick={() => (confirmDelete = pl.name)}
                 >
                   &#10005;
@@ -375,11 +377,13 @@
                   <div class="reorder-btns">
                     <button
                       class="btn-icon small"
+                      aria-label={$t("cue.moveUp")}
                       disabled={i === 0}
                       onclick={() => moveSong(i, i - 1)}>&#9650;</button
                     >
                     <button
                       class="btn-icon small"
+                      aria-label={$t("cue.moveDown")}
                       disabled={i === editSongs.length - 1}
                       onclick={() => moveSong(i, i + 1)}>&#9660;</button
                     >
@@ -388,6 +392,7 @@
                   <button
                     class="btn-icon"
                     title={$t("common.remove")}
+                    aria-label={$t("common.remove")}
                     onclick={() => removeSong(i)}
                   >
                     &#10005;
@@ -413,6 +418,7 @@
                 <button
                   class="btn-icon"
                   title={$t("common.add")}
+                  aria-label={$t("common.add")}
                   onclick={() => addSong(song)}>+</button
                 >
               </li>

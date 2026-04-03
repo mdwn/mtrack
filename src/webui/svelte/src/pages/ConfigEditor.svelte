@@ -569,7 +569,7 @@
 
 {#if loading}
   <div class="page-placeholder">
-    <p>{$t("config.loadingConfig")}</p>
+    <p><span class="spinner"></span> {$t("config.loadingConfig")}</p>
   </div>
 {:else if error}
   <div class="page-placeholder">
