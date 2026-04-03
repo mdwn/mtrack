@@ -22,6 +22,7 @@
     type WaveformData,
   } from "../../lib/api/songs";
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
+  import { untrack } from "svelte";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
   import { showConfirm, showAlert } from "../../lib/dialog.svelte";
@@ -43,7 +44,7 @@
   let error = $state("");
   let showCreate = $state(false);
   let showImport = $state(false);
-  let searchQuery = $state(initialSearch);
+  let searchQuery = $state(untrack(() => initialSearch) || "");
 
   $effect(() => {
     onSearchChange?.(searchQuery);

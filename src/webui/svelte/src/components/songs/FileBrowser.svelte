@@ -13,6 +13,7 @@
      *
      * -->
 <script lang="ts">
+  import { untrack } from "svelte";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
   import { SvelteSet } from "svelte/reactivity";
@@ -59,7 +60,7 @@
     }
   }
 
-  navigate(initialPath || undefined);
+  navigate(untrack(() => initialPath) || undefined);
 
   function navigateToInput() {
     const trimmed = pathInput.trim();
