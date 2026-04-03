@@ -203,7 +203,7 @@
 
   // --- File-based profile operations ---
 
-  async function selectFileProfile(filename: string) {
+  async function selectFileProfile(filename: string, section?: string) {
     saving = false;
     saveMsg = "";
     saveOk = false;
@@ -215,7 +215,7 @@
       selectedIndex = 0;
       profiles = [data.profile as any];
 
-      updateConfigUrl(filename.replace(/\.\w+$/, ""));
+      updateConfigUrl(filename.replace(/\.\w+$/, ""), section);
     } catch (e: any) {
       error = e.message;
     }
@@ -297,7 +297,7 @@
 
   // --- Inline profile operations ---
 
-  function selectProfile(index: number) {
+  function selectProfile(index: number, section?: string) {
     selectedIndex = index;
     isNew = false;
 
@@ -305,7 +305,7 @@
     saveMsg = "";
     saveOk = false;
     const name = profiles[index]?.hostname || `Profile #${index}`;
-    updateConfigUrl(name);
+    updateConfigUrl(name, section);
   }
 
   function addNewProfile() {
@@ -535,7 +535,7 @@
         (f) => f.filename.replace(/\.\w+$/, "") === routeProfile,
       );
       if (match && selectedFilename !== match.filename) {
-        selectFileProfile(match.filename);
+        selectFileProfile(match.filename, routeSection);
       }
     } else {
       // Inline: match by hostname or index
@@ -544,7 +544,7 @@
           (p.hostname || `Profile #${profiles.indexOf(p)}`) === routeProfile,
       );
       if (idx >= 0) {
-        selectProfile(idx);
+        selectProfile(idx, routeSection);
       }
     }
   });
