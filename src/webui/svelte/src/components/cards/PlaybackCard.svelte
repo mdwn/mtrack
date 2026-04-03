@@ -21,10 +21,17 @@
   import { get } from "svelte/store";
 
   let errorMsg = $state("");
+  let errorTimer: ReturnType<typeof setTimeout> | null = null;
 
   function showError(msg: string) {
     errorMsg = msg;
-    setTimeout(() => (errorMsg = ""), 3000);
+    if (errorTimer) clearTimeout(errorTimer);
+    errorTimer = setTimeout(() => (errorMsg = ""), 8000);
+  }
+
+  function dismissError() {
+    if (errorTimer) clearTimeout(errorTimer);
+    errorMsg = "";
   }
 
   async function play() {
@@ -330,26 +337,32 @@
     {/if}
   </div>
   {#if errorMsg}
-    <div class="playback-error">{errorMsg}</div>
+    <div class="playback-error" role="alert">
+      <span>{errorMsg}</span>
+      <button
+        class="error-dismiss-btn"
+        onclick={dismissError}
+        aria-label={$t("common.dismiss")}>&times;</button
+      >
+    </div>
   {/if}
 </div>
 
 <style>
   .transport {
-    display: flex;
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 8px 16px;
     align-items: center;
-    gap: 20px;
   }
   .transport-info {
-    flex-shrink: 0;
     min-width: 120px;
   }
   .transport-progress {
-    flex: 1;
     min-width: 0;
   }
   .playback-song {
-    font-size: 16px;
+    font-size: var(--text-lg);
     font-weight: 600;
     color: var(--text);
   }
@@ -369,10 +382,10 @@
     color: var(--text-dim);
   }
   .section-controls {
+    grid-column: 1 / -1;
     display: flex;
     align-items: center;
     gap: 6px;
-    padding-top: 8px;
     flex-wrap: wrap;
   }
   .section-active {
@@ -383,18 +396,18 @@
   }
   .loop-badge {
     margin-left: 8px;
-    font-size: 10px;
+    font-size: var(--text-xs);
     font-weight: 600;
-    padding: 1px 5px;
-    border-radius: 3px;
+    padding: 2px 8px;
+    border-radius: var(--radius);
     background: var(--accent);
     color: var(--bg);
   }
   .progress-bar {
     position: relative;
-    height: 6px;
+    height: 10px;
     background: var(--border);
-    border-radius: 3px;
+    border-radius: 5px;
     overflow: hidden;
     margin-bottom: 6px;
   }
@@ -403,7 +416,7 @@
     z-index: 2;
     height: 100%;
     background: var(--accent);
-    border-radius: 3px;
+    border-radius: 5px;
     transition: width 0.2s linear;
   }
   .section-region {
@@ -428,10 +441,29 @@
     color: var(--text-dim);
   }
   .playback-error {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
     font-size: 12px;
     color: var(--red);
-    text-align: center;
-    padding: 2px 0;
+    background: var(--red-subtle);
+    border-radius: var(--radius);
+    padding: 6px 12px;
+    margin-top: 8px;
+  }
+  .error-dismiss-btn {
+    background: none;
+    border: none;
+    color: inherit;
+    cursor: pointer;
+    font-size: 16px;
+    padding: 0 4px;
+    opacity: 0.7;
+    line-height: 1;
+  }
+  .error-dismiss-btn:hover {
+    opacity: 1;
   }
   .controls {
     display: flex;

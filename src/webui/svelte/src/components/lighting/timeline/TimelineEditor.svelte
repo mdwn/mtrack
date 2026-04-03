@@ -83,6 +83,7 @@
       "beat",
     );
   let showTempoEditor = $state(false);
+  let bottomPanelCollapsed = $state(false);
 
   // Playback cursor (the ruler position to play from)
   let playCursorMs = $state<number>(0);
@@ -107,7 +108,7 @@
 
   function scrollToCursorMs(ms: number) {
     if (!scrollContainer) return;
-    const contentWidth = viewportWidth - 80;
+    const contentWidth = viewportWidth - 100;
     scrollContainer.scrollLeft = ms * pixelsPerMs - contentWidth / 2;
   }
 
@@ -306,7 +307,7 @@
   function handleZoom(newPixelsPerMs: number) {
     if (!scrollContainer) return;
     // Anchor on the center of the content area (exclude 80px label column)
-    const contentWidth = viewportWidth - 80;
+    const contentWidth = viewportWidth - 100;
     // Read directly from DOM — the state variable may be stale during rapid zoom.
     const currentScroll = scrollContainer.scrollLeft;
     const centerMs = (currentScroll + contentWidth / 2) / pixelsPerMs;
@@ -760,47 +761,62 @@
   </div>
 
   <!-- Bottom panel: stage preview + detail area -->
-  <div class="bottom-panel">
-    <div class="stage-area">
-      <StagePreview />
-    </div>
-    <div class="detail-area">
-      {#if getSelectedCue()}
-        {@const selCue = getSelectedCue()}
-        {#if selCue}
-          <CuePropertiesPanel
-            cue={selCue.cue}
-            laneName={selCue.laneName}
-            {groups}
-            {sequenceNames}
-            tempo={lightFile.tempo}
-            focusTab={selectedSubLane}
-            onchange={handleSelectedCueChange}
-            ondelete={handleSelectedCueDelete}
-            onclose={clearSelection}
-          />
-        {/if}
-      {:else if lightFile.sequences.length > 0}
-        <div class="detail-sequences">
-          <span class="detail-sequences-label">Sequences</span>
-          <div class="seq-list">
-            {#each lightFile.sequences as seq, i (seq.name)}
-              <button
-                class="seq-chip"
-                onclick={() => (editingSequenceIndex = i)}
-              >
-                <span class="seq-chip-name">{seq.name}</span>
-                <span class="seq-chip-count">{seq.cues.length} cues</span>
-              </button>
-            {/each}
+  <div class="bottom-panel" class:collapsed={bottomPanelCollapsed}>
+    <button
+      class="panel-collapse-toggle"
+      onclick={() => (bottomPanelCollapsed = !bottomPanelCollapsed)}
+      aria-label={bottomPanelCollapsed
+        ? "Expand details panel"
+        : "Collapse details panel"}
+    >
+      <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor"
+        ><path
+          d={bottomPanelCollapsed ? "M2 8L6 4l4 4" : "M2 4l4 4 4-4"}
+        /></svg
+      >
+    </button>
+    {#if !bottomPanelCollapsed}
+      <div class="stage-area">
+        <StagePreview />
+      </div>
+      <div class="detail-area">
+        {#if getSelectedCue()}
+          {@const selCue = getSelectedCue()}
+          {#if selCue}
+            <CuePropertiesPanel
+              cue={selCue.cue}
+              laneName={selCue.laneName}
+              {groups}
+              {sequenceNames}
+              tempo={lightFile.tempo}
+              focusTab={selectedSubLane}
+              onchange={handleSelectedCueChange}
+              ondelete={handleSelectedCueDelete}
+              onclose={clearSelection}
+            />
+          {/if}
+        {:else if lightFile.sequences.length > 0}
+          <div class="detail-sequences">
+            <span class="detail-sequences-label">Sequences</span>
+            <div class="seq-list">
+              {#each lightFile.sequences as seq, i (seq.name)}
+                <button
+                  class="seq-chip"
+                  onclick={() => (editingSequenceIndex = i)}
+                >
+                  <span class="seq-chip-name">{seq.name}</span>
+                  <span class="seq-chip-count">{seq.cues.length} cues</span>
+                </button>
+              {/each}
+            </div>
           </div>
-        </div>
-      {:else}
-        <div class="detail-empty">
-          {$t("timeline.selectCue")}
-        </div>
-      {/if}
-    </div>
+        {:else}
+          <div class="detail-empty">
+            {$t("timeline.selectCue")}
+          </div>
+        {/if}
+      </div>
+    {/if}
   </div>
 </div>
 
@@ -952,7 +968,7 @@
     top: 0;
   }
   .lane-label-spacer {
-    width: 80px;
+    width: 100px;
     flex-shrink: 0;
     border-right: 1px solid var(--border);
   }
@@ -978,6 +994,35 @@
     gap: 8px;
     flex-shrink: 0;
     height: 280px;
+    position: relative;
+  }
+  .bottom-panel.collapsed {
+    height: 32px;
+    align-items: center;
+    border-top: 1px solid var(--border);
+  }
+  .panel-collapse-toggle {
+    position: absolute;
+    top: -14px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 28px;
+    height: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 4px 4px 0 0;
+    color: var(--text-dim);
+    cursor: pointer;
+    z-index: 5;
+    font-size: 10px;
+    padding: 0;
+  }
+  .panel-collapse-toggle:hover {
+    color: var(--text);
+    border-color: var(--text-dim);
   }
   .stage-area {
     width: 320px;

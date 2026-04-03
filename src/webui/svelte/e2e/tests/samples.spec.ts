@@ -58,7 +58,7 @@ test.describe("Samples Section", () => {
     // Click Remove on the sample card
     await page
       .locator(".sample-card")
-      .getByRole("button", { name: "Remove" })
+      .getByRole("button", { name: "Remove", exact: true })
       .click();
 
     // Confirmation dialog should appear
@@ -78,7 +78,7 @@ test.describe("Samples Section", () => {
     // Click Remove again, then confirm
     await page
       .locator(".sample-card")
-      .getByRole("button", { name: "Remove" })
+      .getByRole("button", { name: "Remove", exact: true })
       .click();
     await expect(page.locator(".dialog-overlay")).toBeVisible();
     await page

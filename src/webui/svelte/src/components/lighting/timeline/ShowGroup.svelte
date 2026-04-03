@@ -169,7 +169,7 @@
     border-bottom: 1px solid var(--border);
   }
   .group-label {
-    width: 80px;
+    width: 100px;
     flex-shrink: 0;
     display: flex;
     flex-direction: column;

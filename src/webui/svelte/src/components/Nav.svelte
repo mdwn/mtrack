@@ -66,12 +66,14 @@
     class="hamburger"
     onclick={() => (menuOpen = !menuOpen)}
     aria-label={$t("nav.menu")}
+    aria-expanded={menuOpen}
+    aria-controls="nav-links"
   >
     <span class="hamburger-line"></span>
     <span class="hamburger-line"></span>
     <span class="hamburger-line"></span>
   </button>
-  <div class="nav-links" class:open={menuOpen}>
+  <div class="nav-links" class:open={menuOpen} id="nav-links">
     {#each links as link (link.hash)}
       <a
         href={link.hash}
@@ -85,9 +87,22 @@
   </div>
   {#if $playbackStore.song_name}
     <div class="now-playing">
-      <span class="now-playing-icon"
-        >{$playbackStore.is_playing ? "▶" : "⏸"}</span
-      >
+      <span class="now-playing-icon" aria-hidden="true">
+        {#if $playbackStore.is_playing}
+          <svg width="10" height="12" viewBox="0 0 10 12" fill="currentColor"
+            ><path d="M0 0l10 6-10 6z" /></svg
+          >
+        {:else}
+          <svg width="10" height="12" viewBox="0 0 10 12" fill="currentColor"
+            ><rect x="0" y="0" width="3" height="12" /><rect
+              x="7"
+              y="0"
+              width="3"
+              height="12"
+            /></svg
+          >
+        {/if}
+      </span>
       <span class="now-playing-song">{$playbackStore.song_name}</span>
     </div>
   {/if}
@@ -100,8 +115,39 @@
       title={$playbackStore.locked
         ? $t("nav.lock.lockedHint")
         : $t("nav.lock.unlockedHint")}
+      aria-label={$playbackStore.locked
+        ? $t("nav.lock.lockedHint")
+        : $t("nav.lock.unlockedHint")}
     >
-      {$playbackStore.locked ? "\uD83D\uDD12" : "\uD83D\uDD13"}
+      {#if $playbackStore.locked}
+        <svg
+          width="14"
+          height="16"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          ><rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path
+            d="M7 11V7a5 5 0 0 1 10 0v4"
+          /></svg
+        >
+      {:else}
+        <svg
+          width="14"
+          height="16"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          ><rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path
+            d="M7 11V7a5 5 0 0 1 9.9-1"
+          /></svg
+        >
+      {/if}
     </button>
     <div
       class="status-indicator"
@@ -114,7 +160,13 @@
       aria-label={$wsConnected
         ? $t("nav.connection.serverConnected")
         : $t("nav.connection.serverDisconnected")}
-    ></div>
+    >
+      <span class="sr-only"
+        >{$wsConnected
+          ? $t("nav.connection.connected")
+          : $t("nav.connection.disconnected")}</span
+      >
+    </div>
   </div>
 </nav>
 {#if !$wsConnected}
@@ -189,7 +241,7 @@
   }
   .nav-link.active {
     color: var(--text);
-    background: rgba(94, 202, 234, 0.12);
+    background: var(--accent-subtle);
   }
   .now-playing {
     display: flex;
@@ -201,8 +253,9 @@
   }
   .now-playing-icon {
     flex-shrink: 0;
-    font-size: 11px;
-    color: var(--pink, #ef60a3);
+    display: flex;
+    align-items: center;
+    color: var(--pink);
   }
   .now-playing-song {
     white-space: nowrap;
@@ -240,12 +293,23 @@
     border-radius: 50%;
     background: var(--text-dim);
     transition: background 0.3s;
+    border: 1.5px solid transparent;
   }
   .status-indicator.connected {
     background: var(--green);
   }
   .status-indicator.disconnected {
     background: var(--red);
+    animation: pulse-disconnect 2s ease-in-out infinite;
+  }
+  @keyframes pulse-disconnect {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.4;
+    }
   }
 
   .disconnect-banner {

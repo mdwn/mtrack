@@ -34,7 +34,7 @@ test.describe("Samples - Advanced Features", () => {
     await page
       .locator(".sample-card")
       .first()
-      .getByRole("button", { name: "Remove" })
+      .getByRole("button", { name: "Remove", exact: true })
       .click();
     await page.getByRole("button", { name: "Confirm" }).click();
     await expect(page.locator(".sample-card")).toHaveCount(1);

@@ -64,13 +64,20 @@
           class="log-level-pill level-{level}"
           class:active={enabledLevels.has(level)}
           onclick={() => toggleLevel(level)}
+          aria-pressed={enabledLevels.has(level)}
         >
           {level}
         </button>
       {/each}
     </div>
   </div>
-  <div class="log-container" bind:this={container} onscroll={handleScroll}>
+  <div
+    class="log-container"
+    bind:this={container}
+    onscroll={handleScroll}
+    role="log"
+    aria-label={$t("logs.title")}
+  >
     {#each filteredLogs as line, i (i)}
       <div class="log-line level-{line.level}">
         <span class="log-level">{line.level}</span>
@@ -105,17 +112,17 @@
     border-color: var(--text-dim);
   }
   .log-level-pill.active.level-ERROR {
-    background: rgba(239, 68, 68, 0.15);
+    background: var(--red-subtle);
     color: var(--red);
     border-color: var(--red);
   }
   .log-level-pill.active.level-WARN {
-    background: rgba(234, 179, 8, 0.12);
+    background: var(--yellow-subtle);
     color: var(--yellow);
     border-color: var(--yellow);
   }
   .log-level-pill.active.level-INFO {
-    background: rgba(59, 130, 246, 0.12);
+    background: var(--blue-subtle);
     color: var(--blue);
     border-color: var(--blue);
   }

@@ -185,27 +185,61 @@
     <span class="field-hint">{$t("profile.hostnameHint")}</span>
   </div>
 
-  <div class="tab-bar" role="tablist">
-    {#each tabs as tab (tab.key)}
-      <button
-        class="tab"
-        class:active={activeTab === tab.key}
-        role="tab"
-        aria-selected={activeTab === tab.key}
-        onclick={() => {
-          activeTab = tab.key;
-          onsectionchange?.(tab.key);
-        }}
-      >
-        {$t(tab.labelKey)}
-        {#if isEnabled(tab.key)}
-          <span class="tab-dot"></span>
-        {/if}
-      </button>
-    {/each}
+  <div class="tab-bar-wrapper">
+    <div
+      class="tab-bar"
+      role="tablist"
+      aria-label={$t("profile.tabs.label", {
+        default: "Configuration sections",
+      })}
+    >
+      {#each tabs as tab, i (tab.key)}
+        <button
+          class="tab"
+          class:active={activeTab === tab.key}
+          role="tab"
+          id="tab-{tab.key}"
+          aria-selected={activeTab === tab.key}
+          aria-controls="tabpanel-{tab.key}"
+          tabindex={activeTab === tab.key ? 0 : -1}
+          onclick={() => {
+            activeTab = tab.key;
+            onsectionchange?.(tab.key);
+          }}
+          onkeydown={(e) => {
+            let targetIdx = -1;
+            if (e.key === "ArrowRight") targetIdx = (i + 1) % tabs.length;
+            else if (e.key === "ArrowLeft")
+              targetIdx = (i - 1 + tabs.length) % tabs.length;
+            else if (e.key === "Home") targetIdx = 0;
+            else if (e.key === "End") targetIdx = tabs.length - 1;
+            if (targetIdx >= 0) {
+              e.preventDefault();
+              activeTab = tabs[targetIdx].key;
+              onsectionchange?.(tabs[targetIdx].key);
+              const el = document.getElementById(`tab-${tabs[targetIdx].key}`);
+              el?.focus();
+            }
+          }}
+        >
+          {$t(tab.labelKey)}
+          {#if isEnabled(tab.key)}
+            <span
+              class="tab-dot"
+              aria-label={$t("profile.tabs.enabled", { default: "enabled" })}
+            ></span>
+          {/if}
+        </button>
+      {/each}
+    </div>
   </div>
 
-  <div class="tab-panel" role="tabpanel">
+  <div
+    class="tab-panel"
+    role="tabpanel"
+    id="tabpanel-{activeTab}"
+    aria-labelledby="tab-{activeTab}"
+  >
     {#if !isEnabled(activeTab)}
       <div class="panel-enable">
         <p class="panel-enable-text">
@@ -333,11 +367,28 @@
     font-size: 12px;
     color: var(--text-dim);
   }
+  .tab-bar-wrapper {
+    position: relative;
+  }
+  .tab-bar-wrapper::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 32px;
+    background: linear-gradient(to right, transparent, var(--bg));
+    pointer-events: none;
+  }
   .tab-bar {
     display: flex;
     gap: 0;
     border-bottom: 1px solid var(--border);
     overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .tab-bar::-webkit-scrollbar {
+    display: none;
   }
   .tab {
     position: relative;

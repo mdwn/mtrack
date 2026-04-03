@@ -35,8 +35,8 @@ export class DashboardPage {
     this.playbackStatus = page.locator(".playback-status");
     this.playButton = page.getByRole("button", { name: "Play" });
     this.stopButton = page.getByRole("button", { name: "Stop" });
-    this.prevButton = page.getByRole("button", { name: "Prev" });
-    this.nextButton = page.getByRole("button", { name: "Next" });
+    this.prevButton = page.getByRole("button", { name: "Prev", exact: true });
+    this.nextButton = page.getByRole("button", { name: "Next", exact: true });
     this.progressBar = page.locator(".progress-bar");
     this.progressTime = page.locator(".progress-time");
     this.playlistSelect = page.locator(".playlist-select");

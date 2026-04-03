@@ -375,8 +375,8 @@
     top: 3px;
     bottom: 3px;
     border-radius: 4px;
-    background: rgba(255, 255, 255, 0.06);
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.14);
     cursor: grab;
     overflow: hidden;
     display: flex;
@@ -384,8 +384,8 @@
     z-index: 1;
   }
   .cue-block:hover {
-    background: rgba(255, 255, 255, 0.1);
-    border-color: rgba(255, 255, 255, 0.2);
+    background: rgba(255, 255, 255, 0.13);
+    border-color: rgba(255, 255, 255, 0.25);
   }
   .cue-block.selected {
     border-color: var(--accent);
@@ -414,7 +414,7 @@
     outline-offset: 1px;
   }
   .cue-color-strip {
-    width: 3px;
+    width: 4px;
     flex-shrink: 0;
     background: var(--cue-color);
   }

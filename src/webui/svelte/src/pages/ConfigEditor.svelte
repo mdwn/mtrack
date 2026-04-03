@@ -591,7 +591,14 @@
       <div class="detail-toolbar">
         <button class="btn" onclick={goBackFile}>{$t("common.back")}</button>
         <span class="detail-title">
-          {isNew ? $t("config.newProfile") : selectedFilename || "Profile"}
+          {isNew
+            ? $t("config.newProfile")
+            : selectedFilename || "Profile"}{#if dirty}<span
+              class="dirty-indicator"
+              title={$t("config.unsavedChanges", {
+                default: "Unsaved changes",
+              })}>*</span
+            >{/if}
         </span>
         <div class="toolbar-actions">
           {#if saveOk}
@@ -749,7 +756,12 @@
       <span class="detail-title">
         {isNew
           ? $t("config.newProfile")
-          : profiles[selectedIndex].hostname || `Profile #${selectedIndex}`}
+          : profiles[selectedIndex].hostname ||
+            `Profile #${selectedIndex}`}{#if dirty}<span
+            class="dirty-indicator"
+            title={$t("config.unsavedChanges", { default: "Unsaved changes" })}
+            >*</span
+          >{/if}
       </span>
       <div class="toolbar-actions">
         {#if saveOk}
@@ -960,10 +972,14 @@
     z-index: 10;
   }
   .detail-title {
-    font-size: 16px;
+    font-size: var(--text-lg);
     font-weight: 600;
     color: var(--text);
     flex: 1;
+  }
+  .dirty-indicator {
+    color: var(--yellow);
+    margin-left: 4px;
   }
   .toolbar-actions {
     display: flex;

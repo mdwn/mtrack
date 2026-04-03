@@ -169,6 +169,8 @@
               <div
                 class="status-dot"
                 style="background: {statusColor(s.status)}"
+                role="img"
+                aria-label={statusLabel(s)}
               ></div>
               <span class="subsystem-label">{$t(sub.labelKey)}</span>
               <span class="subsystem-status">{statusLabel(s)}</span>
@@ -238,7 +240,7 @@
 
 <style>
   .status-page {
-    max-width: 700px;
+    max-width: 1000px;
   }
   .status-header {
     display: flex;
@@ -261,9 +263,20 @@
     color: var(--text-dim);
   }
   .cards {
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
     gap: 16px;
+  }
+  .cards .card:last-child {
+    grid-column: 1 / -1;
+  }
+  @media (max-width: 768px) {
+    .cards {
+      grid-template-columns: 1fr;
+    }
+    .cards .card:last-child {
+      grid-column: auto;
+    }
   }
   .card {
     background: var(--bg-card);
@@ -321,6 +334,7 @@
     height: 8px;
     border-radius: 50%;
     flex-shrink: 0;
+    position: relative;
   }
   .subsystem-label {
     font-weight: 500;

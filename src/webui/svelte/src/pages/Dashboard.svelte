@@ -33,6 +33,23 @@
   <PlaybackCard />
   {#if !hasPlaylist}
     <div class="empty-state card">
+      <svg
+        class="empty-icon"
+        width="40"
+        height="40"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.5"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+        ><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle
+          cx="18"
+          cy="16"
+          r="3"
+        /></svg
+      >
       <p class="empty-text">No playlist loaded</p>
       <div class="empty-actions">
         <a href="#/playlists" class="btn btn-primary">Go to Playlists</a>
@@ -71,7 +88,8 @@
     grid-column: 1 / -1;
     display: flex;
     gap: 16px;
-    height: 280px;
+    min-height: 200px;
+    max-height: 400px;
   }
   .card-pair > :global(:first-child) {
     flex: 1;
@@ -89,8 +107,9 @@
     gap: 16px;
   }
   .card-pair-bottom > :global(:first-child) {
-    width: 280px;
-    flex-shrink: 0;
+    min-width: 280px;
+    max-width: 400px;
+    flex: 1;
   }
   .card-pair-bottom > :global(:last-child) {
     flex: 1;
@@ -101,12 +120,16 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 12px;
-    padding: 32px 20px;
+    gap: 16px;
+    padding: 48px 20px;
     text-align: center;
   }
+  .empty-icon {
+    color: var(--text-dim);
+    opacity: 0.5;
+  }
   .empty-text {
-    font-size: 15px;
+    font-size: var(--text-base);
     color: var(--text-dim);
   }
   .empty-actions {

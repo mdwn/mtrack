@@ -167,9 +167,19 @@
 
   {#each sampleEntries as [name, def] (name)}
     <div class="sample-card">
-      <!-- svelte-ignore a11y_click_events_have_key_events -->
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="sample-header" onclick={() => toggleCollapse(name)}>
+      <div
+        class="sample-header"
+        role="button"
+        tabindex="0"
+        onclick={() => toggleCollapse(name)}
+        onkeydown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            toggleCollapse(name);
+          }
+        }}
+        aria-expanded={!collapsed[name]}
+      >
         <span class="sample-title">
           {#if editingName === name}
             <!-- svelte-ignore a11y_autofocus -->
@@ -189,9 +199,17 @@
           {:else}
             <span
               class="name-text"
+              role="button"
+              tabindex="0"
               ondblclick={(e) => {
                 e.stopPropagation();
                 editingName = name;
+              }}
+              onkeydown={(e) => {
+                if (e.key === "Enter") {
+                  e.stopPropagation();
+                  editingName = name;
+                }
               }}>{name}</span
             >
             <button
