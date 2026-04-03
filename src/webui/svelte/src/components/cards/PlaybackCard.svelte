@@ -313,7 +313,8 @@
           <span class="section-active"
             >{$playbackStore.active_section.name}</span
           >
-          <button class="btn btn-sm" onclick={stopSectionLoop}>{$t("playback.stopLoop")}</button
+          <button class="btn btn-sm" onclick={stopSectionLoop}
+            >{$t("playback.stopLoop")}</button
           >
         {:else}
           {#each $playbackStore.available_sections as section (section.name)}

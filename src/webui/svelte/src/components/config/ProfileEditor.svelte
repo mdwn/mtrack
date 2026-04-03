@@ -125,7 +125,9 @@
     const label = get(t)(
       tabs.find((tab) => tab.key === activeTab)?.labelKey ?? "",
     );
-    const base = get(t)("profile.confirmRemoveSection", { values: { section: label } });
+    const base = get(t)("profile.confirmRemoveSection", {
+      values: { section: label },
+    });
     if (activeTab === "audio" && profile.audio) {
       const count = Object.keys(profile.audio.track_mappings || {}).length;
       if (count > 0) {

@@ -35,7 +35,9 @@
     color: var(--text);
     text-decoration: none;
     cursor: pointer;
-    transition: background 0.15s, border-color 0.15s;
+    transition:
+      background 0.15s,
+      border-color 0.15s;
   }
   .back-btn:hover {
     background: var(--bg-card-hover, rgba(255, 255, 255, 0.05));

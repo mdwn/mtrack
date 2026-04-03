@@ -32,7 +32,13 @@
     oncancel: () => void;
   }
 
-  let { filter = [], multiple = false, initialPath, onselect, oncancel }: Props = $props();
+  let {
+    filter = [],
+    multiple = false,
+    initialPath,
+    onselect,
+    oncancel,
+  }: Props = $props();
 
   // Absolute filesystem prefix from the API (used to reconstruct absolute paths for onselect).
   let absoluteRoot = $state("");

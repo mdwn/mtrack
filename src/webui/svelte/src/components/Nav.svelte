@@ -49,9 +49,7 @@
     return currentHash.startsWith(hash);
   }
 
-  let activePageName = $derived(
-    links.find((l) => isActive(l.hash))?.labelKey,
-  );
+  let activePageName = $derived(links.find((l) => isActive(l.hash))?.labelKey);
 
   function closeMenu() {
     menuOpen = false;
@@ -59,7 +57,11 @@
 </script>
 
 <nav class="nav">
-  <span class="nav-brand">mtrack{#if activePageName}<span class="nav-page-name"> / {$t(activePageName)}</span>{/if}</span>
+  <span class="nav-brand"
+    >mtrack{#if activePageName}<span class="nav-page-name">
+        / {$t(activePageName)}</span
+      >{/if}</span
+  >
   <button
     class="hamburger"
     onclick={() => (menuOpen = !menuOpen)}

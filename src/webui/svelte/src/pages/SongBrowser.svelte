@@ -71,5 +71,8 @@
 {#if songName}
   <SongDetail {songName} {initialTab} />
 {:else}
-  <SongList initialSearch={savedSearch} onSearchChange={(q) => savedSearch = q} />
+  <SongList
+    initialSearch={savedSearch}
+    onSearchChange={(q) => (savedSearch = q)}
+  />
 {/if}

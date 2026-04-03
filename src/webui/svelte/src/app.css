@@ -222,10 +222,18 @@ body {
   animation: spin 0.6s linear infinite;
 }
 @keyframes spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
-.spinner.sm { width: 12px; height: 12px; }
-.spinner.lg { width: 24px; height: 24px; }
+.spinner.sm {
+  width: 12px;
+  height: 12px;
+}
+.spinner.lg {
+  width: 24px;
+  height: 24px;
+}
 
 /* === Placeholder pages === */
 .page-placeholder {

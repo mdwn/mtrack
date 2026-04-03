@@ -439,7 +439,10 @@
     </div>
 
     {#if loading}
-      <p class="muted"><span class="spinner sm"></span> {$t("common.loading")}</p>
+      <p class="muted">
+        <span class="spinner sm"></span>
+        {$t("common.loading")}
+      </p>
     {:else if songs.length === 0}
       <p class="muted">{$t("lightingEditor.noSongs")}</p>
     {:else}

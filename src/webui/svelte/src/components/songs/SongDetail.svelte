@@ -88,12 +88,7 @@
   let lightingEditorRef: SongLightingEditor | undefined = $state();
 
   // Tab state
-  type TabKey =
-    | "tracks"
-    | "samples"
-    | "sections"
-    | "lighting"
-    | "config";
+  type TabKey = "tracks" | "samples" | "sections" | "lighting" | "config";
   function getInitialTab(): TabKey {
     // Redirect legacy tab names to their merged destinations
     if (initialTab === "midi") return "tracks";
@@ -646,7 +641,8 @@
     if (key === "tracks") return tracks.length > 0 || !!midiFile || !!midiEvent;
     if (key === "samples") return Object.keys(songSamples).length > 0;
     if (key === "lighting") return song?.has_lighting ?? false;
-    if (key === "config") return configDirty || Object.keys(notificationAudio).length > 0;
+    if (key === "config")
+      return configDirty || Object.keys(notificationAudio).length > 0;
     return false;
   }
 
@@ -700,7 +696,9 @@
 </script>
 
 <div class="detail">
-  <a class="back-link" href="#/songs" aria-label={$t("songs.detail.allSongs")}>&larr; {$t("songs.detail.allSongs")}</a>
+  <a class="back-link" href="#/songs" aria-label={$t("songs.detail.allSongs")}
+    >&larr; {$t("songs.detail.allSongs")}</a
+  >
 
   {#if loading}
     <div class="status">{$t("common.loading")}</div>
@@ -840,8 +838,13 @@
 
         <!-- Collapsible MIDI section -->
         <div class="collapsible-section">
-          <button class="collapsible-header" onclick={() => midiSectionOpen = !midiSectionOpen}>
-            <span class="collapsible-chevron" class:open={midiSectionOpen}>&#9662;</span>
+          <button
+            class="collapsible-header"
+            onclick={() => (midiSectionOpen = !midiSectionOpen)}
+          >
+            <span class="collapsible-chevron" class:open={midiSectionOpen}
+              >&#9662;</span
+            >
             <span class="section-label">{$t("songs.detail.tabs.midi")}</span>
             {#if midiFile || midiEvent}
               <span class="tab-dot"></span>
@@ -866,7 +869,10 @@
                 onpick={setMidiFile}
               />
               <div class="browse-row">
-                <button class="btn" onclick={() => openBrowser({ kind: "midi" })}>
+                <button
+                  class="btn"
+                  onclick={() => openBrowser({ kind: "midi" })}
+                >
                   {$t("samples.browseFilesystem")}
                 </button>
               </div>
@@ -910,18 +916,24 @@
 
               <div class="midi-event-section">
                 <div class="section-header">
-                  <span class="section-label">{$t("songs.detail.midiEvent")}</span>
+                  <span class="section-label"
+                    >{$t("songs.detail.midiEvent")}</span
+                  >
                   {#if !midiEvent}
                     <button class="btn btn-sm" onclick={addMidiEvent}
                       >{$t("songs.detail.addMidiEvent")}</button
                     >
                   {:else}
-                    <button class="btn btn-sm btn-danger" onclick={removeMidiEvent}
+                    <button
+                      class="btn btn-sm btn-danger"
+                      onclick={removeMidiEvent}
                       >{$t("songs.detail.removeMidiEvent")}</button
                     >
                   {/if}
                 </div>
-                <p class="muted hint-text">{$t("songs.detail.midiEventHint")}</p>
+                <p class="muted hint-text">
+                  {$t("songs.detail.midiEventHint")}
+                </p>
                 {#if midiEvent}
                   <MidiEventEditor
                     bind:event={midiEvent}
@@ -974,9 +986,16 @@
 
         <!-- Collapsible Notifications section -->
         <div class="collapsible-section">
-          <button class="collapsible-header" onclick={() => notifSectionOpen = !notifSectionOpen}>
-            <span class="collapsible-chevron" class:open={notifSectionOpen}>&#9662;</span>
-            <span class="section-label">{$t("songs.detail.tabs.notifications")}</span>
+          <button
+            class="collapsible-header"
+            onclick={() => (notifSectionOpen = !notifSectionOpen)}
+          >
+            <span class="collapsible-chevron" class:open={notifSectionOpen}
+              >&#9662;</span
+            >
+            <span class="section-label"
+              >{$t("songs.detail.tabs.notifications")}</span
+            >
             {#if Object.keys(notificationAudio).length > 0}
               <span class="tab-dot"></span>
             {/if}

@@ -16,18 +16,17 @@
   import { logStore } from "../../lib/ws/stores";
   import { tick } from "svelte";
   import { t } from "svelte-i18n";
+  import { SvelteSet } from "svelte/reactivity";
 
   const ALL_LEVELS = ["TRACE", "DEBUG", "INFO", "WARN", "ERROR"] as const;
-  let enabledLevels = $state(new Set(["INFO", "WARN", "ERROR"]));
+  let enabledLevels = new SvelteSet(["INFO", "WARN", "ERROR"]);
 
   function toggleLevel(level: string) {
-    const next = new Set(enabledLevels);
-    if (next.has(level)) {
-      next.delete(level);
+    if (enabledLevels.has(level)) {
+      enabledLevels.delete(level);
     } else {
-      next.add(level);
+      enabledLevels.add(level);
     }
-    enabledLevels = next;
   }
 
   let filteredLogs = $derived(
@@ -60,7 +59,7 @@
   <div class="card-header">
     <span class="card-title">{$t("logs.title")}</span>
     <div class="log-level-filters">
-      {#each ALL_LEVELS as level}
+      {#each ALL_LEVELS as level (level)}
         <button
           class="log-level-pill level-{level}"
           class:active={enabledLevels.has(level)}
@@ -97,7 +96,10 @@
     background: var(--bg-input);
     color: var(--text-dim);
     cursor: pointer;
-    transition: background 0.15s, color 0.15s, border-color 0.15s;
+    transition:
+      background 0.15s,
+      color 0.15s,
+      border-color 0.15s;
   }
   .log-level-pill:hover {
     border-color: var(--text-dim);

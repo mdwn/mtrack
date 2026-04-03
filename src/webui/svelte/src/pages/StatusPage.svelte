@@ -89,7 +89,8 @@
   function statusLabel(s: SubsystemStatus): string {
     if (s.status === "connected") return get(t)("status.connected");
     if (s.status === "initializing") return get(t)("status.initializing");
-    if (!s.name && s.status !== "connected") return get(t)("status.notConfigured");
+    if (!s.name && s.status !== "connected")
+      return get(t)("status.notConfigured");
     return get(t)("status.notConnected");
   }
 
@@ -127,7 +128,9 @@
   <div class="status-header">
     <h2>{$t("status.title")}</h2>
     <div class="refresh-group">
-      <span class="last-updated">{$t("status.lastUpdated", { values: { seconds: secondsAgo } })}</span>
+      <span class="last-updated"
+        >{$t("status.lastUpdated", { values: { seconds: secondsAgo } })}</span
+      >
       <button class="btn" onclick={fetchStatus} disabled={loading}>
         {loading ? $t("common.refreshing") : $t("common.refresh")}
       </button>

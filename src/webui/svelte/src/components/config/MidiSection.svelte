@@ -152,7 +152,9 @@
           <option value={name}></option>
         {/each}
       </datalist>
-      <button class="btn" onclick={handleRefresh} disabled={refreshing}>{refreshing ? $t("common.refreshing") : $t("common.refresh")}</button>
+      <button class="btn" onclick={handleRefresh} disabled={refreshing}
+        >{refreshing ? $t("common.refreshing") : $t("common.refresh")}</button
+      >
     </div>
   </div>
 

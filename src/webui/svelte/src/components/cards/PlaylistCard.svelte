@@ -55,7 +55,9 @@
   <ul class="playlist-songs">
     {#each $playbackStore.playlist_songs as song, i (`${i}:${song}`)}
       <li class:current={i === $playbackStore.playlist_position}>
-        <button class="playlist-song-btn" onclick={() => jumpToSong(song)}>{song}</button>
+        <button class="playlist-song-btn" onclick={() => jumpToSong(song)}
+          >{song}</button
+        >
       </li>
     {/each}
   </ul>
@@ -78,7 +80,9 @@
   }
   .playlist-songs li {
     border-radius: 4px;
-    transition: background 0.15s, color 0.15s;
+    transition:
+      background 0.15s,
+      color 0.15s;
   }
   .playlist-song-btn {
     all: unset;

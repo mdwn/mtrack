@@ -67,7 +67,13 @@
   }
 
   async function removeSample(name: string) {
-    if (!(await showConfirm(get(t)("samples.confirmRemove", { values: { name } }), { danger: true }))) return;
+    if (
+      !(await showConfirm(
+        get(t)("samples.confirmRemove", { values: { name } }),
+        { danger: true },
+      ))
+    )
+      return;
     delete samples[name];
     samples = samples;
     onchange();
@@ -196,8 +202,15 @@
                 editingName = name;
               }}
             >
-              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-                <path d="M12.1 1.3a1.5 1.5 0 0 1 2.1 0l.5.5a1.5 1.5 0 0 1 0 2.1L5.8 12.8l-3.5.7.7-3.5L12.1 1.3z"/>
+              <svg
+                width="12"
+                height="12"
+                viewBox="0 0 16 16"
+                fill="currentColor"
+              >
+                <path
+                  d="M12.1 1.3a1.5 1.5 0 0 1 2.1 0l.5.5a1.5 1.5 0 0 1 0 2.1L5.8 12.8l-3.5.7.7-3.5L12.1 1.3z"
+                />
               </svg>
             </button>
           {/if}

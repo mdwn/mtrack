@@ -31,19 +31,24 @@
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
       if (stored) return JSON.parse(stored);
-    } catch {}
+    } catch {
+      /* ignore */
+    }
     return {};
   }
 
   function saveManualPositions() {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(manualPositions));
-    } catch {}
+    } catch {
+      /* ignore */
+    }
   }
 
   // Position tracking
   let layoutPositions: Record<string, { x: number; y: number }> = {};
-  let manualPositions: Record<string, { x: number; y: number }> = loadManualPositions();
+  let manualPositions: Record<string, { x: number; y: number }> =
+    loadManualPositions();
   let prevW = 0;
   let prevH = 0;
 

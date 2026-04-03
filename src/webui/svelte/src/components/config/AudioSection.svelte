@@ -114,7 +114,10 @@
   let channelErrors: Record<string, string> = $state({});
 
   function validateChannelMapping(value: string): string {
-    const parts = value.split(",").map((s) => s.trim()).filter((s) => s !== "");
+    const parts = value
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s !== "");
     for (const part of parts) {
       const n = Number(part);
       if (!Number.isInteger(n) || n < 1) {
@@ -153,7 +156,9 @@
           >
         {/each}
       </datalist>
-      <button class="btn" onclick={handleRefresh} disabled={refreshing}>{refreshing ? $t("common.refreshing") : $t("common.refresh")}</button>
+      <button class="btn" onclick={handleRefresh} disabled={refreshing}
+        >{refreshing ? $t("common.refreshing") : $t("common.refresh")}</button
+      >
     </div>
   </div>
 
