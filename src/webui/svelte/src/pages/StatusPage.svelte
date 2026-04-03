@@ -113,7 +113,7 @@
 <div class="status-page">
   <div class="status-header">
     <h2>{$t("status.title")}</h2>
-    <button class="refresh-btn" onclick={fetchStatus} disabled={loading}>
+    <button class="btn" onclick={fetchStatus} disabled={loading}>
       {loading ? $t("common.refreshing") : $t("common.refresh")}
     </button>
   </div>
@@ -177,7 +177,7 @@
         <div class="card-header-row">
           <h3>{$t("status.controllers")}</h3>
           <button
-            class="refresh-btn"
+            class="btn"
             onclick={restartControllers}
             disabled={restarting}
           >
@@ -232,35 +232,6 @@
     font-size: 18px;
     font-weight: 600;
   }
-  .refresh-btn {
-    padding: 6px 14px;
-    font-size: 14px;
-    font-weight: 500;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--bg-card);
-    color: var(--text);
-    cursor: pointer;
-    transition:
-      background 0.15s,
-      border-color 0.15s;
-  }
-  .refresh-btn:hover:not(:disabled) {
-    background: var(--bg-card-hover, rgba(255, 255, 255, 0.05));
-    border-color: var(--accent);
-  }
-  .refresh-btn:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-  .error-banner {
-    padding: 10px 14px;
-    margin-bottom: 16px;
-    border-radius: var(--radius);
-    background: rgba(239, 68, 68, 0.12);
-    color: var(--red);
-    font-size: 14px;
-  }
   .cards {
     display: flex;
     flex-direction: column;
@@ -269,7 +240,7 @@
   .card {
     background: var(--bg-card);
     border: 1px solid var(--border);
-    border-radius: var(--radius);
+    border-radius: var(--radius-lg);
     padding: 16px 20px;
   }
   .card h3 {

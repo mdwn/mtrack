@@ -55,13 +55,24 @@
   --radius: 6px;
   --radius-lg: 10px;
 
+  --bg-hover: rgba(255, 255, 255, 0.04);
+  --bg-danger: rgba(220, 38, 38, 0.15);
+  --border-danger: #6b2c2c;
+  --text-danger: #f87171;
+
   /* Spacing */
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
   --space-4: 16px;
+  --space-5: 20px;
   --space-6: 24px;
   --space-8: 32px;
+
+  /* Z-index layers */
+  --z-nav: 100;
+  --z-modal: 200;
+  --z-dialog: 300;
 }
 
 body {
@@ -218,4 +229,77 @@ body {
 
 .page-placeholder p {
   font-size: 14px;
+}
+
+/* === Error banner === */
+.error-banner {
+  background: var(--bg-danger);
+  color: #ef4444;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  font-size: 14px;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.error-dismiss {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 15px;
+  padding: 0 4px;
+  margin-left: 8px;
+  opacity: 0.7;
+}
+.error-dismiss:hover {
+  opacity: 1;
+}
+
+/* === Panel === */
+.panel {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 16px;
+  overflow-y: auto;
+}
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.panel-header h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+/* === Icon buttons === */
+.btn-icon {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 4px 6px;
+  border-radius: 4px;
+}
+.btn-icon:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+}
+.btn-icon:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.btn-icon.danger {
+  color: #ef4444;
+  font-size: 12px;
+}
+.btn-icon.small {
+  font-size: 11px;
+  padding: 1px 4px;
+  line-height: 1;
 }

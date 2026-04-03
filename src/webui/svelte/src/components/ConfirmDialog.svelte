@@ -139,7 +139,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    z-index: 300;
+    z-index: var(--z-dialog);
     padding: 24px;
   }
   .dialog-card {

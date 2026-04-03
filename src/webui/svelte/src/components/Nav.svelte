@@ -128,7 +128,7 @@
     border-bottom: 1px solid var(--border);
     position: sticky;
     top: 0;
-    z-index: 100;
+    z-index: var(--z-nav);
   }
   .nav-brand {
     font-family: var(--sans);

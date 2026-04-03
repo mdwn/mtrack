@@ -436,11 +436,7 @@
     height: calc(100vh - 120px);
   }
   .panel {
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 16px;
-    overflow-y: auto;
+    border-radius: var(--radius-lg);
   }
   .list-panel {
     width: 300px;
@@ -450,16 +446,6 @@
     flex: 1;
     display: flex;
     flex-direction: column;
-  }
-  .panel-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 12px;
-  }
-  .panel-header h3 {
-    margin: 0;
-    font-size: 16px;
   }
   .new-playlist-form {
     display: flex;
@@ -477,32 +463,6 @@
     text-align: center;
     margin-top: 40px;
   }
-  .error-banner {
-    background: rgba(220, 38, 38, 0.15);
-    color: #ef4444;
-    padding: 8px 12px;
-    border-radius: 6px;
-    font-size: 14px;
-    margin-bottom: 12px;
-    position: relative;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-  }
-  .error-dismiss {
-    background: none;
-    border: none;
-    color: inherit;
-    cursor: pointer;
-    font-size: 15px;
-    padding: 0 4px;
-    margin-left: 8px;
-    opacity: 0.7;
-  }
-  .error-dismiss:hover {
-    opacity: 1;
-  }
-
   /* Playlist list */
   .playlist-list {
     list-style: none;
@@ -558,29 +518,6 @@
     background: var(--accent);
     color: white;
   }
-  .btn-icon {
-    background: none;
-    border: none;
-    color: var(--text-muted);
-    cursor: pointer;
-    font-size: 13px;
-    padding: 4px 6px;
-    border-radius: 4px;
-  }
-  .btn-icon:hover {
-    background: rgba(255, 255, 255, 0.08);
-    color: var(--text);
-  }
-  .btn-icon.danger {
-    color: #ef4444;
-    font-size: 12px;
-  }
-  .btn-icon.small {
-    font-size: 11px;
-    padding: 1px 4px;
-    line-height: 1;
-  }
-
   /* Song columns */
   .song-columns {
     display: flex;
