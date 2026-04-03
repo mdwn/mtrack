@@ -319,6 +319,11 @@ impl Player {
             if self.controller.is_some() || self.controllers.is_some() {
                 warn!("top-level 'controller'/'controllers' ignored when 'profiles' is present");
             }
+            if self.status_events.is_some() {
+                warn!(
+                    "top-level 'status_events' ignored when 'profiles' is present; move to profile"
+                );
+            }
             return;
         }
 
@@ -362,16 +367,20 @@ impl Player {
         // Collect controllers from legacy top-level fields.
         let controllers = self.collect_controllers();
 
+        let status_events = self.status_events.take();
+
         // Create a profile if any subsystem is configured.
         if audio_config.is_some()
             || midi.is_some()
             || dmx.is_some()
             || trigger.is_some()
             || !controllers.is_empty()
+            || status_events.is_some()
         {
             let mut profile = Profile::new(None, audio_config, midi, dmx);
             profile.set_trigger(trigger);
             profile.set_controllers(controllers);
+            profile.set_status_events(status_events);
             self.profiles = Some(vec![profile]);
         }
     }

@@ -539,7 +539,12 @@ impl Player {
                 self.emit_song_change(&song);
             }
 
-            let status_events = match StatusEvents::new(config.status_events()) {
+            let status_events = match StatusEvents::new(
+                profile
+                    .status_events()
+                    .cloned()
+                    .or_else(|| config.status_events()),
+            ) {
                 Ok(se) => se,
                 Err(e) => {
                     warn!(error = %e, "Failed to create status events");

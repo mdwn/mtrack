@@ -28,6 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   names autocomplete from the song's defined sections.
 - **Global max sample voices setting**: The samples section in the config editor now
   includes a max sample voices field (default 32) controlling the global polyphony limit.
+- **Status events in hardware profile**: Status events (MIDI events emitted on player
+  state changes for off/idling/playing) are now configured per-profile in the new Status
+  Events tab. Each state supports a list of MIDI events. Legacy top-level `status_events`
+  is automatically normalized into the profile.
 
 ### Fixed
 
