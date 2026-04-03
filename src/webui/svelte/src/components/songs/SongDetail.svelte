@@ -1178,6 +1178,7 @@
   }
   .tab:hover {
     color: var(--text);
+    background: rgba(255, 255, 255, 0.03);
   }
   .tab.active {
     color: var(--accent);

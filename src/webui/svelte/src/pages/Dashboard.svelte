@@ -19,21 +19,46 @@
   import EffectsCard from "../components/cards/EffectsCard.svelte";
   import LogsCard from "../components/cards/LogsCard.svelte";
   import StageView from "../components/StageView.svelte";
+  import { playbackStore } from "../lib/ws/stores";
+  import { effectsStore } from "../lib/ws/stores";
+  import { metadataStore } from "../lib/ws/stores";
+
+  let hasPlaylist = $derived($playbackStore.playlist_songs.length > 0);
+  let hasTracks = $derived($playbackStore.tracks.length > 0);
+  let hasEffects = $derived($effectsStore.length > 0);
+  let hasFixtures = $derived(Object.keys($metadataStore).length > 0);
 </script>
 
 <div class="dashboard-grid">
   <PlaybackCard />
+  {#if !hasPlaylist}
+    <div class="empty-state card">
+      <p class="empty-text">No playlist loaded</p>
+      <div class="empty-actions">
+        <a href="#/playlists" class="btn btn-primary">Go to Playlists</a>
+        <a href="#/songs" class="btn">Browse Songs</a>
+      </div>
+    </div>
+  {/if}
   <div class="card-pair">
     <PlaylistCard />
-    <div class="card-pair-follower">
-      <TracksCard />
+    {#if hasTracks}
+      <div class="card-pair-follower">
+        <TracksCard />
+      </div>
+    {/if}
+  </div>
+  {#if hasFixtures}
+    <StageView />
+  {/if}
+  {#if hasEffects}
+    <div class="card-pair-bottom">
+      <EffectsCard />
+      <LogsCard />
     </div>
-  </div>
-  <StageView />
-  <div class="card-pair-bottom">
-    <EffectsCard />
+  {:else}
     <LogsCard />
-  </div>
+  {/if}
 </div>
 
 <style>
@@ -70,6 +95,23 @@
   .card-pair-bottom > :global(:last-child) {
     flex: 1;
     min-width: 0;
+  }
+  .empty-state {
+    grid-column: 1 / -1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    padding: 32px 20px;
+    text-align: center;
+  }
+  .empty-text {
+    font-size: 15px;
+    color: var(--text-dim);
+  }
+  .empty-actions {
+    display: flex;
+    gap: 8px;
   }
   @media (max-width: 768px) {
     .dashboard-grid {

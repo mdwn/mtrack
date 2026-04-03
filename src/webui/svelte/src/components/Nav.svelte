@@ -49,13 +49,17 @@
     return currentHash.startsWith(hash);
   }
 
+  let activePageName = $derived(
+    links.find((l) => isActive(l.hash))?.labelKey,
+  );
+
   function closeMenu() {
     menuOpen = false;
   }
 </script>
 
 <nav class="nav">
-  <span class="nav-brand">mtrack</span>
+  <span class="nav-brand">mtrack{#if activePageName}<span class="nav-page-name"> / {$t(activePageName)}</span>{/if}</span>
   <button
     class="hamburger"
     onclick={() => (menuOpen = !menuOpen)}
@@ -137,6 +141,12 @@
     color: var(--accent);
     letter-spacing: -0.5px;
   }
+  .nav-page-name {
+    display: none;
+    color: var(--text-muted);
+    font-weight: 400;
+    font-size: 14px;
+  }
   .hamburger {
     display: none;
     flex-direction: column;
@@ -196,7 +206,7 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    max-width: 150px;
+    max-width: 300px;
   }
   .nav-status {
     display: flex;
@@ -247,6 +257,9 @@
   }
 
   @media (max-width: 600px) {
+    .nav-page-name {
+      display: inline;
+    }
     .hamburger {
       display: flex;
     }
@@ -255,7 +268,7 @@
       font-size: 12px;
     }
     .now-playing-song {
-      max-width: 70px;
+      max-width: 150px;
     }
     .nav-status {
       margin-left: 12px;
