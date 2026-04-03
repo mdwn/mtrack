@@ -234,6 +234,8 @@ export const WAVEFORM_DATA = {
 export const LOG_LINES = {
   type: "logs",
   lines: [
+    { level: "TRACE", target: "mtrack::clock", message: "Tick 42" },
+    { level: "DEBUG", target: "mtrack::dmx", message: "DMX frame sent" },
     { level: "INFO", target: "mtrack::player", message: "Player started" },
     {
       level: "INFO",

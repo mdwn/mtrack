@@ -187,28 +187,13 @@ test.describe("Playlist Mutations", () => {
     );
   });
 
-  test("all_songs playlist has explanatory tooltip", async () => {
-    const allSongs = playlists.playlistByName("all_songs");
-    const btn = allSongs.locator(".playlist-item");
-    await expect(btn).toHaveAttribute("title", /auto-generated/i);
+  test("all_songs is not shown in the playlist list", async () => {
+    await expect(playlists.playlistByName("all_songs")).not.toBeVisible();
   });
 
   test("all_songs URL navigation does not select it", async ({ page }) => {
     await page.goto("/#/playlists/all_songs");
     // Should not show the detail panel for all_songs
     await expect(playlists.songColumns).not.toBeVisible();
-  });
-
-  test("all_songs playlist is disabled for selection", async () => {
-    const allSongs = playlists.playlistByName("all_songs");
-    const btn = allSongs.locator(".playlist-item");
-    await expect(btn).toBeDisabled();
-  });
-
-  test("all_songs has no delete button", async () => {
-    const allSongs = playlists.playlistByName("all_songs");
-    await expect(
-      allSongs.locator('.btn-icon[title="Delete"]'),
-    ).not.toBeVisible();
   });
 });

@@ -508,21 +508,22 @@
     loadTrackNames();
   });
 
-  $effect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === "s") {
-        e.preventDefault();
-        if (dirty && !$playbackStore.locked && !saving) {
-          if (profilesDir) {
-            saveFileProfile();
-          } else {
-            saveProfile();
-          }
+  function handleKeydown(e: KeyboardEvent) {
+    if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+      e.preventDefault();
+      if (dirty && !$playbackStore.locked && !saving) {
+        if (profilesDir) {
+          saveFileProfile();
+        } else {
+          saveProfile();
         }
       }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
+    }
+  }
+
+  $effect(() => {
+    window.addEventListener("keydown", handleKeydown);
+    return () => window.removeEventListener("keydown", handleKeydown);
   });
 
   // Sync selection state with URL (deep-linking, browser nav, nav bar clicks).

@@ -30,12 +30,13 @@ test.describe("Samples - Advanced Features", () => {
     await page.getByRole("button", { name: "Add Sample" }).click();
     await expect(page.locator(".sample-card")).toHaveCount(2);
 
-    // Remove the first sample.
+    // Remove the first sample — requires confirmation now.
     await page
       .locator(".sample-card")
       .first()
       .getByRole("button", { name: "Remove" })
       .click();
+    await page.getByRole("button", { name: "Confirm" }).click();
     await expect(page.locator(".sample-card")).toHaveCount(1);
   });
 

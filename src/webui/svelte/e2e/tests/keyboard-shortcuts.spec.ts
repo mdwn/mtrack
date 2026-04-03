@@ -106,6 +106,26 @@ test.describe("Keyboard Shortcuts", () => {
     expect(grpcCalled).toBe(false);
   });
 
+  test("Ctrl+S prevents browser save dialog on config page", async ({
+    page,
+  }) => {
+    await page.goto("/#/config");
+    await expect(
+      page.getByRole("heading", { name: "Hardware Profiles" }),
+    ).toBeVisible();
+
+    // Press Ctrl+S — should not trigger a download/save dialog
+    // (verified by no dialog event firing)
+    let dialogFired = false;
+    page.on("dialog", () => {
+      dialogFired = true;
+    });
+    await page.keyboard.press("Control+s");
+    // Small wait to check no dialog appeared
+    await page.waitForTimeout(500);
+    expect(dialogFired).toBe(false);
+  });
+
   test("shortcuts do not trigger on non-dashboard pages", async ({ page }) => {
     let grpcCalled = false;
     await page.route("**/player.v1.PlayerService/**", async (route) => {

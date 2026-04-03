@@ -28,12 +28,12 @@ test.describe("Playlist Editor", () => {
   });
 
   test("lists playlists from API", async () => {
-    await expect(playlists.playlistByName("all_songs")).toBeVisible();
+    await expect(playlists.playlistByName("all_songs")).not.toBeVisible();
     await expect(playlists.playlistByName("setlist")).toBeVisible();
+    await expect(playlists.playlistByName("rehearsal")).toBeVisible();
   });
 
   test("shows song count for playlists", async () => {
-    await expect(playlists.playlistByName("all_songs")).toContainText("2");
     await expect(playlists.playlistByName("setlist")).toContainText("1");
   });
 
@@ -42,9 +42,8 @@ test.describe("Playlist Editor", () => {
     await expect(setlist.locator(".badge")).toBeVisible();
   });
 
-  test("all_songs playlist has special styling", async () => {
-    const allSongs = playlists.playlistByName("all_songs");
-    await expect(allSongs).toHaveClass(/all-songs/);
+  test("all_songs is not in the playlist list", async () => {
+    await expect(playlists.playlistByName("all_songs")).not.toBeVisible();
   });
 
   test("selecting a playlist shows detail panel", async () => {
@@ -77,6 +76,14 @@ test.describe("Playlist Editor", () => {
     await playlists.newButton.click();
     await expect(playlists.newPlaylistInput).toBeVisible();
     await expect(playlists.createButton).toBeVisible();
+  });
+
+  test("shows position numbers for playlist songs", async () => {
+    await playlists.selectPlaylist("rehearsal");
+    const songs = playlists.playlistSongs();
+    await expect(songs).toHaveCount(2);
+    await expect(songs.nth(0).locator(".song-position")).toHaveText("1.");
+    await expect(songs.nth(1).locator(".song-position")).toHaveText("2.");
   });
 
   test("create new playlist calls API", async ({ page }) => {

@@ -83,17 +83,19 @@ test.describe("Song Detail - Config Tab", () => {
   });
 });
 
-test.describe("Song Detail - MIDI Tab", () => {
+test.describe("Song Detail - MIDI Section", () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto("/#/songs/Test%20Song%20Alpha/midi");
-    await expect(page.locator(".tab.active")).toContainText("MIDI");
+    await page.goto("/#/songs/Test%20Song%20Alpha/tracks");
+    await expect(page.locator(".tab.active")).toContainText("Tracks");
+    // Expand the MIDI collapsible section
+    await page.locator(".collapsible-header", { hasText: "MIDI" }).click();
   });
 
-  test("shows MIDI tab content", async ({ page }) => {
-    await expect(page.locator(".tab-content")).toBeVisible();
+  test("shows MIDI section content", async ({ page }) => {
+    await expect(page.locator(".collapsible-body")).toBeVisible();
   });
 
   test("shows file upload for MIDI files", async ({ page }) => {
-    await expect(page.locator(".drop-zone")).toBeVisible();
+    await expect(page.locator(".collapsible-body .drop-zone")).toBeVisible();
   });
 });

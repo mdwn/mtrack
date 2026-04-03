@@ -67,4 +67,10 @@ test.describe("WebSocket Integration", () => {
     const firstTrack = page.locator(".track-row").first();
     await expect(firstTrack.locator(".track-channels")).toBeVisible();
   });
+
+  test("disconnect banner is not visible when connected", async ({ page }) => {
+    await page.goto("/#/");
+    await expect(page.locator(".status-indicator.connected")).toBeVisible();
+    await expect(page.locator(".disconnect-banner")).not.toBeVisible();
+  });
 });

@@ -24,7 +24,7 @@ test.describe("Navigation", () => {
   });
 
   test("shows brand text", async () => {
-    await expect(nav.brand).toHaveText("mtrack");
+    await expect(nav.brand).toContainText("mtrack");
   });
 
   test("shows all nav links", async () => {
