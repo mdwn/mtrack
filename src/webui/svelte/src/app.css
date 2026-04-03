@@ -36,7 +36,7 @@
   --border-focus: #5ecaea;
   --text: #e4e4e7;
   --text-muted: #9b9a9a;
-  --text-dim: #636464;
+  --text-dim: #7a7a7a;
   --accent: #5ecaea;
   --accent-hover: #7dd4f0;
   --green: #22c55e;
@@ -130,7 +130,7 @@ body {
   font-size: 12px;
 }
 .btn:disabled {
-  opacity: 0.35;
+  opacity: 0.5;
   cursor: default;
   pointer-events: none;
 }

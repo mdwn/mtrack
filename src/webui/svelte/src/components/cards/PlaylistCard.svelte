@@ -25,6 +25,14 @@
     }
   }
 
+  async function jumpToSong(songName: string) {
+    try {
+      await playerClient.playSongFrom({ songName, startTime: {} });
+    } catch (e) {
+      console.error("jumpToSong failed:", e);
+    }
+  }
+
   let playlists = $derived($playbackStore.available_playlists);
   let currentPlaylist = $derived($playbackStore.playlist_name);
 </script>
@@ -46,7 +54,13 @@
   </div>
   <ul class="playlist-songs">
     {#each $playbackStore.playlist_songs as song, i (`${i}:${song}`)}
-      <li class:current={i === $playbackStore.playlist_position}>{song}</li>
+      <li
+        class:current={i === $playbackStore.playlist_position}
+        onclick={() => jumpToSong(song)}
+        onkeydown={(e) => e.key === 'Enter' && jumpToSong(song)}
+        role="button"
+        tabindex="0"
+      >{song}</li>
     {/each}
   </ul>
 </div>
@@ -71,10 +85,19 @@
     font-size: 13px;
     color: var(--text-muted);
     border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+  .playlist-songs li:hover {
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text);
   }
   .playlist-songs li.current {
     background: rgba(94, 202, 234, 0.12);
     color: var(--text);
     font-weight: 500;
+  }
+  .playlist-songs li.current:hover {
+    background: rgba(94, 202, 234, 0.2);
   }
 </style>

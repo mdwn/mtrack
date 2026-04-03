@@ -11,6 +11,7 @@
   "nav.connection.disconnected": "Disconnected",
   "nav.connection.serverConnected": "Server connected",
   "nav.connection.serverDisconnected": "Server disconnected",
+  "nav.connection.banner": "Connection lost \u2014 data may be stale",
 
   "common.save": "Save",
   "common.saving": "Saving...",
@@ -66,6 +67,9 @@
   "playback.error.stop": "Stop failed",
   "playback.error.next": "Next failed",
   "playback.error.prev": "Previous failed",
+  "playback.error.loopSection": "Failed to activate section loop",
+  "playback.error.stopSectionLoop": "Failed to stop section loop",
+  "playback.stopLoop": "Stop Loop",
 
   "playlist.title": "Playlist",
 

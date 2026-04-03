@@ -111,6 +111,11 @@
     ></div>
   </div>
 </nav>
+{#if !$wsConnected}
+  <div class="disconnect-banner" role="alert">
+    {$t("nav.connection.banner")}
+  </div>
+{/if}
 
 <style>
   .nav {
@@ -229,6 +234,16 @@
   }
   .status-indicator.disconnected {
     background: var(--red);
+  }
+
+  .disconnect-banner {
+    background: var(--red-dim);
+    color: var(--red);
+    text-align: center;
+    padding: 6px 12px;
+    font-size: 13px;
+    font-weight: 500;
+    border-bottom: 1px solid var(--red);
   }
 
   @media (max-width: 600px) {
