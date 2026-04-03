@@ -508,6 +508,23 @@
     loadTrackNames();
   });
 
+  $effect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+        e.preventDefault();
+        if (dirty && !$playbackStore.locked && !saving) {
+          if (profilesDir) {
+            saveFileProfile();
+          } else {
+            saveProfile();
+          }
+        }
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  });
+
   // Sync selection state with URL (deep-linking, browser nav, nav bar clicks).
   $effect(() => {
     if (loading) return;

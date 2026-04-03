@@ -131,6 +131,10 @@
   "profile.enableHint": "{section} is not configured for this profile. Enable it to start configuring.",
   "profile.removeSection": "Remove {section}",
   "profile.confirmRemoveSection": "Remove the {section} configuration from this profile? All settings for this section will be cleared.",
+  "profile.removeAudioDetail": "This will delete {count, plural, one {# track mapping} other {# track mappings}} and all audio settings.",
+  "profile.removeLightingDetail": "This will delete {count, plural, one {# universe} other {# universes}} and all lighting settings.",
+  "profile.removeControllersDetail": "This will delete {count, plural, one {# controller} other {# controllers}}.",
+  "profile.removeTriggerDetail": "This will delete {count, plural, one {# trigger input} other {# trigger inputs}}.",
 
   "profile.tabs.audio": "Audio",
   "profile.tabs.midi": "MIDI",
@@ -380,6 +384,7 @@
   "samples.addLayer": "Add Layer",
   "samples.scaleByVelocity": "Scale volume by velocity",
   "samples.layerFilePlaceholder": "path/to/layer-file.wav",
+  "samples.confirmRemove": "Remove sample \"{name}\"?",
   "samples.uploadedFile": "Uploaded {name}",
 
   "songs.title": "Songs",

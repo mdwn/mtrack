@@ -24,6 +24,7 @@
     type PlaylistData,
   } from "../lib/api/config";
   import { playbackStore } from "../lib/ws/stores";
+  import { showConfirm } from "../lib/dialog.svelte";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
 
@@ -80,6 +81,7 @@
   }
 
   async function selectPlaylist(name: string) {
+    if (dirty && !(await showConfirm(get(t)("config.discardUnsaved")))) return;
     try {
       error = "";
       detail = await fetchPlaylist(name);
@@ -222,6 +224,14 @@
     const match = playlists.find((p) => p.name === routePlaylist);
     if (match && match.name !== "all_songs") {
       selectPlaylist(match.name);
+    }
+  });
+
+  $effect(() => {
+    if (dirty) {
+      const handler = (e: BeforeUnloadEvent) => { e.preventDefault(); };
+      window.addEventListener('beforeunload', handler);
+      return () => window.removeEventListener('beforeunload', handler);
     }
   });
 </script>

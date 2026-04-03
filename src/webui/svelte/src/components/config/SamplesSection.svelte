@@ -18,6 +18,7 @@
   import { uploadSampleFile } from "../../lib/api/config";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
+  import { showConfirm } from "../../lib/dialog.svelte";
   import Tooltip from "./Tooltip.svelte";
 
   export type SampleBrowseTarget = {
@@ -65,7 +66,8 @@
     onchange();
   }
 
-  function removeSample(name: string) {
+  async function removeSample(name: string) {
+    if (!(await showConfirm(get(t)("samples.confirmRemove", { values: { name } }), { danger: true }))) return;
     delete samples[name];
     samples = samples;
     onchange();

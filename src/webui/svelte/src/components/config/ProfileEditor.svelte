@@ -121,16 +121,37 @@
     notificationsRef?.applyBrowseResult(target, path);
   }
 
-  async function handleRemoveSection() {
+  function removeSectionDetail(): string {
     const label = get(t)(
       tabs.find((tab) => tab.key === activeTab)?.labelKey ?? "",
     );
-    if (
-      await showConfirm(
-        get(t)("profile.confirmRemoveSection", { values: { section: label } }),
-        { danger: true },
-      )
-    ) {
+    const base = get(t)("profile.confirmRemoveSection", { values: { section: label } });
+    if (activeTab === "audio" && profile.audio) {
+      const count = Object.keys(profile.audio.track_mappings || {}).length;
+      if (count > 0) {
+        return `${base} ${get(t)("profile.removeAudioDetail", { values: { count } })}`;
+      }
+    } else if (activeTab === "lighting" && profile.dmx) {
+      const count = (profile.dmx.universes || []).length;
+      if (count > 0) {
+        return `${base} ${get(t)("profile.removeLightingDetail", { values: { count } })}`;
+      }
+    } else if (activeTab === "controllers" && profile.controllers) {
+      const count = profile.controllers.length;
+      if (count > 0) {
+        return `${base} ${get(t)("profile.removeControllersDetail", { values: { count } })}`;
+      }
+    } else if (activeTab === "trigger" && profile.trigger) {
+      const count = (profile.trigger.inputs || []).length;
+      if (count > 0) {
+        return `${base} ${get(t)("profile.removeTriggerDetail", { values: { count } })}`;
+      }
+    }
+    return base;
+  }
+
+  async function handleRemoveSection() {
+    if (await showConfirm(removeSectionDetail(), { danger: true })) {
       toggleSection(activeTab, false);
     }
   }
