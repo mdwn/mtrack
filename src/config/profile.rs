@@ -111,6 +111,10 @@ pub struct Profile {
     /// Notification audio configuration (global overrides).
     #[serde(default)]
     notifications: Option<NotificationConfig>,
+
+    /// Status events — MIDI events emitted on player state changes.
+    #[serde(default)]
+    status_events: Option<super::statusevents::StatusEvents>,
 }
 
 impl Profile {
@@ -130,6 +134,7 @@ impl Profile {
             trigger: None,
             controllers: Vec::new(),
             notifications: None,
+            status_events: None,
         }
     }
 
@@ -181,6 +186,19 @@ impl Profile {
     /// Returns the notification audio configuration, if present.
     pub fn notifications(&self) -> Option<&NotificationConfig> {
         self.notifications.as_ref()
+    }
+
+    /// Returns the status events configuration, if present.
+    pub fn status_events(&self) -> Option<&super::statusevents::StatusEvents> {
+        self.status_events.as_ref()
+    }
+
+    /// Sets the status events (used during legacy config normalization).
+    pub(super) fn set_status_events(
+        &mut self,
+        status_events: Option<super::statusevents::StatusEvents>,
+    ) {
+        self.status_events = status_events;
     }
 
     /// Validates the profile configuration for semantic issues.

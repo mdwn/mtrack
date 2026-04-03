@@ -27,6 +27,7 @@
   import LightingSection from "./LightingSection.svelte";
   import NotificationsSection from "./NotificationsSection.svelte";
   import type { NotifBrowseTarget } from "./NotificationsSection.svelte";
+  import StatusEventsSection from "./StatusEventsSection.svelte";
 
   interface Props {
     profile: any;
@@ -69,6 +70,7 @@
     { key: "trigger", labelKey: "profile.tabs.trigger" },
     { key: "controllers", labelKey: "profile.tabs.controllers" },
     { key: "notifications", labelKey: "profile.tabs.notifications" },
+    { key: "status_events", labelKey: "profile.tabs.statusEvents" },
   ] as const;
 
   type TabKey = (typeof tabs)[number]["key"];
@@ -94,6 +96,12 @@
       else if (section === "trigger") profile.trigger = { inputs: [] };
       else if (section === "controllers") profile.controllers = [];
       else if (section === "notifications") profile.notifications = {};
+      else if (section === "status_events")
+        profile.status_events = {
+          off_events: [],
+          idling_events: [],
+          playing_events: [],
+        };
     } else {
       if (section === "audio") delete profile.audio;
       else if (section === "midi") delete profile.midi;
@@ -101,6 +109,7 @@
       else if (section === "trigger") delete profile.trigger;
       else if (section === "controllers") delete profile.controllers;
       else if (section === "notifications") delete profile.notifications;
+      else if (section === "status_events") delete profile.status_events;
     }
     onchange();
   }
@@ -252,6 +261,13 @@
           onupload={onnotifupload}
           uploadMsg={notifUploadMsg}
           uploading={notifUploading}
+        />
+      </div>
+    {:else if activeTab === "status_events" && profile.status_events}
+      <div class="panel-body">
+        <StatusEventsSection
+          bind:statusEvents={profile.status_events}
+          {onchange}
         />
       </div>
     {/if}

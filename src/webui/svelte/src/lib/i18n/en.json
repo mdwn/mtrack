@@ -138,6 +138,7 @@
   "profile.tabs.trigger": "Triggers",
   "profile.tabs.controllers": "Controllers",
   "profile.tabs.notifications": "Notifications",
+  "profile.tabs.statusEvents": "Status Events",
 
   "audio.device": "Device",
   "audio.devicePlaceholder": "Type or select a device",
@@ -668,6 +669,21 @@
   "midiEvent.programChange": "Program Change",
   "midiEvent.channelAftertouch": "Channel Aftertouch",
   "midiEvent.pitchBend": "Pitch Bend",
+
+  "statusEvents.title": "Status Events",
+  "statusEvents.hint": "MIDI events emitted when the player state changes. Used to drive external indicators like LEDs on a MIDI controller.",
+  "statusEvents.description": "Configure MIDI events that are sent when the player transitions between off, idling, and playing states.",
+  "statusEvents.enable": "Enable Status Events",
+  "statusEvents.save": "Save Status Events",
+  "statusEvents.remove": "Remove Status Events",
+  "statusEvents.offEvents": "Off Events",
+  "statusEvents.idlingEvents": "Idling Events",
+  "statusEvents.playingEvents": "Playing Events",
+  "statusEvents.noEvents": "No events configured.",
+
+  "tooltips.statusEvents.offEvents": "MIDI events sent to clear the status indicator. Typically turns off LEDs or resets controller state.",
+  "tooltips.statusEvents.idlingEvents": "MIDI events sent when the player is idle and waiting for input. Can drive a steady LED or status display.",
+  "tooltips.statusEvents.playingEvents": "MIDI events sent when the player is actively playing a song. Can drive a different LED color or blinking state.",
 
   "tooltips.profile.hostname": "System hostname this profile applies to. When mtrack starts, it matches the machine's hostname to select the correct profile. Leave empty for a default profile that matches any host.",
 
