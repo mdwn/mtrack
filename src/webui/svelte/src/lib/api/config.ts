@@ -189,11 +189,16 @@ export async function deleteProfileFile(filename: string): Promise<void> {
 export async function updateSamples(
   samples: Record<string, unknown>,
   checksum: string,
+  maxSampleVoices?: number,
 ): Promise<ConfigSnapshot> {
-  const res = await put(
-    "/config/samples",
-    JSON.stringify({ expected_checksum: checksum, samples }),
-  );
+  const body: Record<string, unknown> = {
+    expected_checksum: checksum,
+    samples,
+  };
+  if (maxSampleVoices !== undefined) {
+    body.max_sample_voices = maxSampleVoices;
+  }
+  const res = await put("/config/samples", JSON.stringify(body));
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error || `Failed to update samples: ${res.status}`);

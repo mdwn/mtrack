@@ -41,6 +41,8 @@
   import type { SampleBrowseTarget } from "../config/SamplesSection.svelte";
   import MidiEventEditor from "../config/MidiEventEditor.svelte";
   import type { MidiEvent } from "../config/MidiEventEditor.svelte";
+  import NotificationsSection from "../config/NotificationsSection.svelte";
+  import type { NotifBrowseTarget } from "../config/NotificationsSection.svelte";
 
   interface TrackEntry {
     name: string;
@@ -52,7 +54,13 @@
 
   interface Props {
     songName: string;
-    initialTab?: "tracks" | "midi" | "samples" | "lighting" | "config";
+    initialTab?:
+      | "tracks"
+      | "midi"
+      | "samples"
+      | "lighting"
+      | "notifications"
+      | "config";
   }
 
   let { songName, initialTab }: Props = $props();
@@ -85,6 +93,7 @@
     | "samples"
     | "sections"
     | "lighting"
+    | "notifications"
     | "config";
   function getInitialTab(): TabKey {
     return initialTab ?? "tracks";
@@ -103,6 +112,7 @@
     { key: "samples", labelKey: "songs.detail.tabs.samples" },
     { key: "sections", labelKey: "songs.detail.tabs.sections" },
     { key: "lighting", labelKey: "songs.detail.tabs.lighting" },
+    { key: "notifications", labelKey: "songs.detail.tabs.notifications" },
     { key: "config", labelKey: "songs.detail.tabs.config" },
   ];
 
@@ -113,6 +123,9 @@
 
   // MIDI event state
   let midiEvent = $state<MidiEvent | null>(null);
+
+  // Notification audio state
+  let notificationAudio = $state<Record<string, unknown>>({});
 
   // Loop playback state
   let loopPlayback = $state(false);
@@ -128,8 +141,11 @@
     | { kind: "track"; index: number }
     | { kind: "midi" }
     | { kind: "lighting" }
-    | { kind: "sample" };
+    | { kind: "sample" }
+    | { kind: "notification" };
   let browseTarget = $state<BrowseTarget | null>(null);
+  let notifBrowseTarget = $state<NotifBrowseTarget | null>(null);
+  let songNotifRef: NotificationsSection | undefined = $state();
 
   function openBrowser(target: BrowseTarget) {
     browseTarget = target;
@@ -165,6 +181,9 @@
     } else if (browseTarget.kind === "sample") {
       onSampleBrowseSelect(paths);
       return;
+    } else if (browseTarget.kind === "notification") {
+      onNotifBrowseSelect(paths);
+      return;
     }
     browseTarget = null;
   }
@@ -175,6 +194,7 @@
     if (browseTarget.kind === "midi") return ["midi"];
     if (browseTarget.kind === "lighting") return ["lighting"];
     if (browseTarget.kind === "sample") return ["audio"];
+    if (browseTarget.kind === "notification") return ["audio"];
     return [];
   });
 
@@ -206,6 +226,9 @@
         const s = parsed.samples;
         songSamples =
           s && typeof s === "object" ? (s as Record<string, any>) : {};
+        const na = parsed.notification_audio;
+        notificationAudio =
+          na && typeof na === "object" ? (na as Record<string, unknown>) : {};
       }
     } catch {
       parsedConfig = null;
@@ -214,6 +237,7 @@
       loopPlayback = false;
       sections = [];
       songSamples = {};
+      notificationAudio = {};
     }
   }
 
@@ -249,6 +273,11 @@
       updated.samples = songSamples;
     } else {
       delete updated.samples;
+    }
+    if (Object.keys(notificationAudio).length > 0) {
+      updated.notification_audio = notificationAudio;
+    } else {
+      delete updated.notification_audio;
     }
     const lightingEntries = parsedConfig.lighting as
       | { file: string }[]
@@ -612,8 +641,58 @@
     if (key === "midi") return !!midiFile || !!midiEvent;
     if (key === "samples") return Object.keys(songSamples).length > 0;
     if (key === "lighting") return song?.has_lighting ?? false;
+    if (key === "notifications")
+      return Object.keys(notificationAudio).length > 0;
     if (key === "config") return configDirty;
     return false;
+  }
+
+  function onNotificationAudioChange() {
+    editedYaml = buildYaml();
+  }
+
+  function onNotifBrowse(target: NotifBrowseTarget) {
+    notifBrowseTarget = target;
+    browseTarget = { kind: "notification" };
+  }
+
+  function onNotifBrowseSelect(paths: string[]) {
+    if (paths.length > 0 && notifBrowseTarget && songNotifRef) {
+      songNotifRef.applyBrowseResult(notifBrowseTarget, paths[0]);
+    }
+    notifBrowseTarget = null;
+    browseTarget = null;
+  }
+
+  let notifUploading = $state(false);
+  let notifUploadMsg = $state("");
+
+  async function onNotifUpload(files: File[]) {
+    if (files.length === 0) return;
+    if ($playbackStore.locked) {
+      notifUploadMsg = get(t)("common.locked");
+      return;
+    }
+    notifUploading = true;
+    notifUploadMsg = "";
+    try {
+      const res = await uploadTrack(songName, files[0]);
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        notifUploadMsg = data?.error ?? `Upload failed (${res.status})`;
+        return;
+      }
+      notifUploadMsg = get(t)("notifications.uploaded", {
+        values: { name: files[0].name },
+      });
+      setTimeout(() => (notifUploadMsg = ""), 3000);
+      // Refresh song files so the file is available
+      songFiles = await fetchSongFiles(songName);
+    } catch (e: unknown) {
+      notifUploadMsg = e instanceof Error ? e.message : String(e);
+    } finally {
+      notifUploading = false;
+    }
   }
 </script>
 
@@ -874,6 +953,20 @@
             onremovelightfile={removeLightingFile}
           />
         {/if}
+      {:else if activeTab === "notifications"}
+        <p class="muted hint-text">
+          {$t("songs.detail.notificationHint")}
+        </p>
+        <NotificationsSection
+          bind:this={songNotifRef}
+          bind:notifications={notificationAudio}
+          onchange={onNotificationAudioChange}
+          onbrowse={onNotifBrowse}
+          onupload={onNotifUpload}
+          uploadMsg={notifUploadMsg}
+          uploading={notifUploading}
+          sectionNames={sections.map((s) => s.name)}
+        />
       {:else if activeTab === "config"}
         <div class="config-section">
           <textarea

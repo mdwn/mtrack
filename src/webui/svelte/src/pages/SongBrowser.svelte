@@ -34,6 +34,7 @@
         "samples",
         "sections",
         "lighting",
+        "notifications",
         "config",
       ];
       for (const tab of tabs) {
@@ -57,10 +58,17 @@
       "samples",
       "sections",
       "lighting",
+      "notifications",
       "config",
     ];
     if (tabs.includes(last) && segments.length > 1) {
-      return last as "tracks" | "midi" | "lighting" | "config";
+      return last as
+        | "tracks"
+        | "midi"
+        | "samples"
+        | "lighting"
+        | "notifications"
+        | "config";
     }
     return undefined;
   });

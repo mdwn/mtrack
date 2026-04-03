@@ -606,6 +606,11 @@ impl Player {
         self.samples = samples;
     }
 
+    /// Sets the global max sample voices.
+    pub fn set_max_sample_voices(&mut self, max_voices: Option<u32>) {
+        self.max_sample_voices = max_voices;
+    }
+
     /// Returns the raw `profiles_dir` value (before path resolution).
     pub fn profiles_dir_raw(&self) -> Option<&str> {
         self.profiles_dir.as_deref()

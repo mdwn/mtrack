@@ -231,6 +231,65 @@ test.describe("Song Detail - No MIDI File", () => {
   });
 });
 
+test.describe("Song Detail - Notifications Tab", () => {
+  test("shows Notifications tab", async ({ page }) => {
+    await page.goto("/#/songs/Test%20Song%20Alpha");
+    await expect(
+      page.locator(".tab", { hasText: "Notifications" }),
+    ).toBeVisible();
+  });
+
+  test("clicking Notifications tab shows notification fields", async ({
+    page,
+  }) => {
+    await page.goto("/#/songs/Test%20Song%20Alpha");
+    await page.locator(".tab", { hasText: "Notifications" }).click();
+    await expect(page.locator(".tab.active")).toContainText("Notifications");
+    await expect(page.locator("#notif-loop_armed")).toBeVisible();
+  });
+
+  test("navigates to notifications tab via URL", async ({ page }) => {
+    await page.goto("/#/songs/Test%20Song%20Alpha/notifications");
+    await expect(page.locator(".tab.active")).toContainText("Notifications");
+    await expect(page.locator("#notif-loop_armed")).toBeVisible();
+  });
+
+  test("editing notification field marks config as dirty", async ({ page }) => {
+    await page.goto("/#/songs/Test%20Song%20Alpha/notifications");
+    await page.locator("#notif-loop_armed").fill("armed.wav");
+    await page.locator("#notif-loop_armed").dispatchEvent("change");
+    await expect(page.locator(".unsaved")).toBeVisible();
+  });
+
+  test("shows browse buttons on notification fields", async ({ page }) => {
+    await page.goto("/#/songs/Test%20Song%20Alpha/notifications");
+    await expect(page.locator(".browse-btn").first()).toBeVisible();
+  });
+
+  test("shows file upload drop zone", async ({ page }) => {
+    await page.goto("/#/songs/Test%20Song%20Alpha/notifications");
+    await expect(page.locator(".drop-zone")).toBeVisible();
+  });
+
+  test("section override shows datalist with section names", async ({
+    page,
+  }) => {
+    // Test Song Beta has sections defined
+    await page.goto("/#/songs/Test%20Song%20Beta/notifications");
+    // Add a per-section override
+    await page
+      .locator(".sections-area")
+      .getByRole("button", { name: "Add" })
+      .click();
+    await expect(page.locator(".section-row")).toHaveCount(1);
+    // The datalist should be rendered with section names from the song
+    const datalist = page.locator("#notif-section-names");
+    await expect(datalist).toBeAttached();
+    const options = datalist.locator("option");
+    await expect(options).toHaveCount(2);
+  });
+});
+
 test.describe("Song Detail - Section Editor", () => {
   test("shows Sections tab", async ({ page }) => {
     await page.goto("/#/songs/Test%20Song%20Alpha");

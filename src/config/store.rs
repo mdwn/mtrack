@@ -251,10 +251,12 @@ impl ConfigStore {
     pub async fn update_samples(
         &self,
         samples: std::collections::HashMap<String, super::samples::SampleDefinition>,
+        max_sample_voices: Option<u32>,
         checksum: &str,
     ) -> Result<ConfigSnapshot, ConfigError> {
         self.mutate(checksum, |config| {
             config.set_samples(samples);
+            config.set_max_sample_voices(max_sample_voices);
         })
         .await
     }
