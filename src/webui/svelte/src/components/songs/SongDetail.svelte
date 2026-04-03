@@ -60,6 +60,7 @@
       | "samples"
       | "lighting"
       | "notifications"
+      | "sections"
       | "config";
   }
 
@@ -87,18 +88,20 @@
   let lightingEditorRef: SongLightingEditor | undefined = $state();
 
   // Tab state
-  type TabKey =
-    | "tracks"
-    | "midi"
-    | "samples"
-    | "sections"
-    | "lighting"
-    | "notifications"
-    | "config";
+  type TabKey = "tracks" | "samples" | "sections" | "lighting" | "config";
   function getInitialTab(): TabKey {
-    return initialTab ?? "tracks";
+    // Redirect legacy tab names to their merged destinations
+    if (initialTab === "midi") return "tracks";
+    if (initialTab === "notifications") return "config";
+    return (initialTab as TabKey) ?? "tracks";
   }
   let activeTab = $state<TabKey>(getInitialTab());
+
+  // Collapsible MIDI section within Tracks tab
+  let midiSectionOpen = $state(false);
+
+  // Collapsible Notifications section within Config tab
+  let notifSectionOpen = $state(false);
 
   function setTab(tab: TabKey) {
     activeTab = tab;
@@ -108,11 +111,9 @@
 
   const tabs: { key: TabKey; labelKey: string }[] = [
     { key: "tracks", labelKey: "songs.detail.tabs.tracks" },
-    { key: "midi", labelKey: "songs.detail.tabs.midi" },
     { key: "samples", labelKey: "songs.detail.tabs.samples" },
     { key: "sections", labelKey: "songs.detail.tabs.sections" },
     { key: "lighting", labelKey: "songs.detail.tabs.lighting" },
-    { key: "notifications", labelKey: "songs.detail.tabs.notifications" },
     { key: "config", labelKey: "songs.detail.tabs.config" },
   ];
 
@@ -637,13 +638,11 @@
   }
 
   function tabHasIndicator(key: TabKey): boolean {
-    if (key === "tracks") return tracks.length > 0;
-    if (key === "midi") return !!midiFile || !!midiEvent;
+    if (key === "tracks") return tracks.length > 0 || !!midiFile || !!midiEvent;
     if (key === "samples") return Object.keys(songSamples).length > 0;
     if (key === "lighting") return song?.has_lighting ?? false;
-    if (key === "notifications")
-      return Object.keys(notificationAudio).length > 0;
-    if (key === "config") return configDirty;
+    if (key === "config")
+      return configDirty || Object.keys(notificationAudio).length > 0;
     return false;
   }
 
@@ -697,7 +696,9 @@
 </script>
 
 <div class="detail">
-  <a class="back-link" href="#/songs">&larr; {$t("songs.detail.allSongs")}</a>
+  <a class="back-link" href="#/songs" aria-label={$t("songs.detail.allSongs")}
+    >&larr; {$t("songs.detail.allSongs")}</a
+  >
 
   {#if loading}
     <div class="status">{$t("common.loading")}</div>
@@ -834,93 +835,114 @@
             {uploadMsg}
           </div>
         {/if}
-      {:else if activeTab === "midi"}
-        {#if midiFile}
-          <div class="feature-row">
-            <span class="feature-label"
-              >{$t("songs.detail.currentMidiFile")}</span
+
+        <!-- Collapsible MIDI section -->
+        <div class="collapsible-section">
+          <button
+            class="collapsible-header"
+            onclick={() => (midiSectionOpen = !midiSectionOpen)}
+          >
+            <span class="collapsible-chevron" class:open={midiSectionOpen}
+              >&#9662;</span
             >
-            <span class="feature-value">{midiFile}</span>
-          </div>
-        {:else}
-          <p class="muted">{$t("songs.detail.noMidi")}</p>
-        {/if}
-        <FilePicker
-          files={songFiles}
-          fileType="midi"
-          label={$t("songs.detail.useExistingMidi")}
-          onpick={setMidiFile}
-        />
-        <div class="browse-row">
-          <button class="btn" onclick={() => openBrowser({ kind: "midi" })}>
-            {$t("samples.browseFilesystem")}
-          </button>
-        </div>
-        <div class="upload-area">
-          <FileUpload
-            accept=".mid"
-            label={uploading
-              ? $t("common.uploading")
-              : $t("songs.detail.dropMidi")}
-            onupload={handleMidiUpload}
-          />
-        </div>
-        {#if uploadMsg}
-          <div class="msg" class:error={!uploadOk}>
-            {uploadMsg}
-          </div>
-        {/if}
-
-        <!-- Exclude MIDI Channels -->
-        {#if midiFile}
-          <div class="midi-event-section">
-            <div class="section-header">
-              <span class="section-label"
-                >{$t("songs.detail.excludeChannels")}</span
-              >
-            </div>
-            <p class="muted hint-text">
-              {$t("songs.detail.excludeChannelsHint")}
-            </p>
-            <div class="channel-grid">
-              {#each Array.from({ length: 16 }, (_, i) => i + 1) as ch (ch)}
-                <label
-                  class="channel-toggle"
-                  class:excluded={excludeMidiChannels.includes(ch)}
-                >
-                  <input
-                    type="checkbox"
-                    checked={excludeMidiChannels.includes(ch)}
-                    onchange={() => toggleExcludeChannel(ch)}
-                  />
-                  {ch}
-                </label>
-              {/each}
-            </div>
-          </div>
-        {/if}
-
-        <!-- MIDI Event Editor -->
-        <div class="midi-event-section">
-          <div class="section-header">
-            <span class="section-label">{$t("songs.detail.midiEvent")}</span>
-            {#if !midiEvent}
-              <button class="btn btn-sm" onclick={addMidiEvent}
-                >{$t("songs.detail.addMidiEvent")}</button
-              >
-            {:else}
-              <button class="btn btn-sm btn-danger" onclick={removeMidiEvent}
-                >{$t("songs.detail.removeMidiEvent")}</button
-              >
+            <span class="section-label">{$t("songs.detail.tabs.midi")}</span>
+            {#if midiFile || midiEvent}
+              <span class="tab-dot"></span>
             {/if}
-          </div>
-          <p class="muted hint-text">{$t("songs.detail.midiEventHint")}</p>
-          {#if midiEvent}
-            <MidiEventEditor
-              bind:event={midiEvent}
-              onchange={onMidiEventChange}
-              idPrefix="song-midi-event"
-            />
+          </button>
+          {#if midiSectionOpen}
+            <div class="collapsible-body">
+              {#if midiFile}
+                <div class="feature-row">
+                  <span class="feature-label"
+                    >{$t("songs.detail.currentMidiFile")}</span
+                  >
+                  <span class="feature-value">{midiFile}</span>
+                </div>
+              {:else}
+                <p class="muted">{$t("songs.detail.noMidi")}</p>
+              {/if}
+              <FilePicker
+                files={songFiles}
+                fileType="midi"
+                label={$t("songs.detail.useExistingMidi")}
+                onpick={setMidiFile}
+              />
+              <div class="browse-row">
+                <button
+                  class="btn"
+                  onclick={() => openBrowser({ kind: "midi" })}
+                >
+                  {$t("samples.browseFilesystem")}
+                </button>
+              </div>
+              <div class="upload-area">
+                <FileUpload
+                  accept=".mid"
+                  label={uploading
+                    ? $t("common.uploading")
+                    : $t("songs.detail.dropMidi")}
+                  onupload={handleMidiUpload}
+                />
+              </div>
+
+              {#if midiFile}
+                <div class="midi-event-section">
+                  <div class="section-header">
+                    <span class="section-label"
+                      >{$t("songs.detail.excludeChannels")}</span
+                    >
+                  </div>
+                  <p class="muted hint-text">
+                    {$t("songs.detail.excludeChannelsHint")}
+                  </p>
+                  <div class="channel-grid">
+                    {#each Array.from({ length: 16 }, (_, i) => i + 1) as ch (ch)}
+                      <label
+                        class="channel-toggle"
+                        class:excluded={excludeMidiChannels.includes(ch)}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={excludeMidiChannels.includes(ch)}
+                          onchange={() => toggleExcludeChannel(ch)}
+                        />
+                        {ch}
+                      </label>
+                    {/each}
+                  </div>
+                </div>
+              {/if}
+
+              <div class="midi-event-section">
+                <div class="section-header">
+                  <span class="section-label"
+                    >{$t("songs.detail.midiEvent")}</span
+                  >
+                  {#if !midiEvent}
+                    <button class="btn btn-sm" onclick={addMidiEvent}
+                      >{$t("songs.detail.addMidiEvent")}</button
+                    >
+                  {:else}
+                    <button
+                      class="btn btn-sm btn-danger"
+                      onclick={removeMidiEvent}
+                      >{$t("songs.detail.removeMidiEvent")}</button
+                    >
+                  {/if}
+                </div>
+                <p class="muted hint-text">
+                  {$t("songs.detail.midiEventHint")}
+                </p>
+                {#if midiEvent}
+                  <MidiEventEditor
+                    bind:event={midiEvent}
+                    onchange={onMidiEventChange}
+                    idPrefix="song-midi-event"
+                  />
+                {/if}
+              </div>
+            </div>
           {/if}
         </div>
       {:else if activeTab === "samples"}
@@ -953,20 +975,6 @@
             onremovelightfile={removeLightingFile}
           />
         {/if}
-      {:else if activeTab === "notifications"}
-        <p class="muted hint-text">
-          {$t("songs.detail.notificationHint")}
-        </p>
-        <NotificationsSection
-          bind:this={songNotifRef}
-          bind:notifications={notificationAudio}
-          onchange={onNotificationAudioChange}
-          onbrowse={onNotifBrowse}
-          onupload={onNotifUpload}
-          uploadMsg={notifUploadMsg}
-          uploading={notifUploading}
-          sectionNames={sections.map((s) => s.name)}
-        />
       {:else if activeTab === "config"}
         <div class="config-section">
           <textarea
@@ -974,6 +982,41 @@
             value={editedYaml}
             oninput={(e) => onRawYamlInput(e.currentTarget.value)}
           ></textarea>
+        </div>
+
+        <!-- Collapsible Notifications section -->
+        <div class="collapsible-section">
+          <button
+            class="collapsible-header"
+            onclick={() => (notifSectionOpen = !notifSectionOpen)}
+          >
+            <span class="collapsible-chevron" class:open={notifSectionOpen}
+              >&#9662;</span
+            >
+            <span class="section-label"
+              >{$t("songs.detail.tabs.notifications")}</span
+            >
+            {#if Object.keys(notificationAudio).length > 0}
+              <span class="tab-dot"></span>
+            {/if}
+          </button>
+          {#if notifSectionOpen}
+            <div class="collapsible-body">
+              <p class="muted hint-text">
+                {$t("songs.detail.notificationHint")}
+              </p>
+              <NotificationsSection
+                bind:this={songNotifRef}
+                bind:notifications={notificationAudio}
+                onchange={onNotificationAudioChange}
+                onbrowse={onNotifBrowse}
+                onupload={onNotifUpload}
+                uploadMsg={notifUploadMsg}
+                uploading={notifUploading}
+                sectionNames={sections.map((s) => s.name)}
+              />
+            </div>
+          {/if}
         </div>
       {/if}
     </div>
@@ -986,6 +1029,7 @@
       <FileBrowser
         filter={browseFilter}
         multiple={browseMultiple}
+        initialPath={song?.base_dir}
         onselect={onBrowseSelect}
         oncancel={closeBrowser}
       />
@@ -1153,6 +1197,7 @@
   }
   .tab:hover {
     color: var(--text);
+    background: rgba(255, 255, 255, 0.03);
   }
   .tab.active {
     color: var(--accent);
@@ -1303,6 +1348,36 @@
   }
   .status.error {
     color: var(--red);
+  }
+  .collapsible-section {
+    margin-top: 20px;
+    border-top: 1px solid var(--border);
+  }
+  .collapsible-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    padding: 12px 0;
+    background: none;
+    border: none;
+    cursor: pointer;
+    font: inherit;
+    color: var(--text-muted);
+  }
+  .collapsible-header:hover {
+    color: var(--text);
+  }
+  .collapsible-chevron {
+    font-size: 11px;
+    transition: transform 0.15s;
+    transform: rotate(-90deg);
+  }
+  .collapsible-chevron.open {
+    transform: rotate(0deg);
+  }
+  .collapsible-body {
+    padding-bottom: 8px;
   }
   @media (max-width: 600px) {
     .tab {

@@ -13,6 +13,7 @@
      *
      * -->
 <script lang="ts">
+  import { untrack } from "svelte";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
   import { SvelteSet } from "svelte/reactivity";
@@ -23,13 +24,21 @@
     filter?: string[];
     /** Allow selecting multiple files. */
     multiple?: boolean;
+    /** Initial directory path to navigate to. */
+    initialPath?: string;
     /** Called when user confirms selection. */
     onselect: (paths: string[]) => void;
     /** Called when user cancels. */
     oncancel: () => void;
   }
 
-  let { filter = [], multiple = false, onselect, oncancel }: Props = $props();
+  let {
+    filter = [],
+    multiple = false,
+    initialPath,
+    onselect,
+    oncancel,
+  }: Props = $props();
 
   // Absolute filesystem prefix from the API (used to reconstruct absolute paths for onselect).
   let absoluteRoot = $state("");
@@ -57,8 +66,7 @@
     }
   }
 
-  // Start at the project root
-  navigate();
+  navigate(untrack(() => initialPath) || undefined);
 
   function navigateToInput() {
     const trimmed = pathInput.trim();

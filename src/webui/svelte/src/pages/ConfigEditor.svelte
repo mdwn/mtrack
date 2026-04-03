@@ -508,6 +508,24 @@
     loadTrackNames();
   });
 
+  function handleKeydown(e: KeyboardEvent) {
+    if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+      e.preventDefault();
+      if (dirty && !$playbackStore.locked && !saving) {
+        if (profilesDir) {
+          saveFileProfile();
+        } else {
+          saveProfile();
+        }
+      }
+    }
+  }
+
+  $effect(() => {
+    window.addEventListener("keydown", handleKeydown);
+    return () => window.removeEventListener("keydown", handleKeydown);
+  });
+
   // Sync selection state with URL (deep-linking, browser nav, nav bar clicks).
   $effect(() => {
     if (loading) return;
@@ -552,7 +570,7 @@
 
 {#if loading}
   <div class="page-placeholder">
-    <p>{$t("config.loadingConfig")}</p>
+    <p><span class="spinner"></span> {$t("config.loadingConfig")}</p>
   </div>
 {:else if error}
   <div class="page-placeholder">
@@ -1069,7 +1087,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    z-index: 200;
+    z-index: var(--z-modal);
     padding: 24px;
   }
   .browser-modal {

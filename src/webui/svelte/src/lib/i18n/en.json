@@ -7,10 +7,13 @@
   "nav.menu": "Menu",
   "nav.lock.locked": "Locked — click to unlock editing",
   "nav.lock.unlocked": "Unlocked — click to lock",
+  "nav.lock.lockedHint": "Unlock: allow configuration changes",
+  "nav.lock.unlockedHint": "Lock: prevents configuration changes",
   "nav.connection.connected": "Connected",
   "nav.connection.disconnected": "Disconnected",
   "nav.connection.serverConnected": "Server connected",
   "nav.connection.serverDisconnected": "Server disconnected",
+  "nav.connection.banner": "Connection lost \u2014 data may be stale",
 
   "common.save": "Save",
   "common.saving": "Saving...",
@@ -45,6 +48,7 @@
   "common.uploaded": "Uploaded",
   "common.imported": "Imported",
   "common.uploading": "Uploading...",
+  "common.rename": "Rename",
 
   "notFound.title": "Not Found",
   "notFound.message": "The page you're looking for doesn't exist.",
@@ -66,6 +70,9 @@
   "playback.error.stop": "Stop failed",
   "playback.error.next": "Next failed",
   "playback.error.prev": "Previous failed",
+  "playback.error.loopSection": "Failed to activate section loop",
+  "playback.error.stopSectionLoop": "Failed to stop section loop",
+  "playback.stopLoop": "Stop Loop",
 
   "playlist.title": "Playlist",
 
@@ -96,6 +103,8 @@
   "status.connected": "Connected",
   "status.initializing": "Initializing",
   "status.notConnected": "Not Connected",
+  "status.notConfigured": "Not Configured",
+  "status.lastUpdated": "Updated {seconds}s ago",
   "status.audio": "Audio",
   "status.midi": "MIDI",
   "status.dmx": "DMX",
@@ -131,6 +140,10 @@
   "profile.enableHint": "{section} is not configured for this profile. Enable it to start configuring.",
   "profile.removeSection": "Remove {section}",
   "profile.confirmRemoveSection": "Remove the {section} configuration from this profile? All settings for this section will be cleared.",
+  "profile.removeAudioDetail": "This will delete {count, plural, one {# track mapping} other {# track mappings}} and all audio settings.",
+  "profile.removeLightingDetail": "This will delete {count, plural, one {# universe} other {# universes}} and all lighting settings.",
+  "profile.removeControllersDetail": "This will delete {count, plural, one {# controller} other {# controllers}}.",
+  "profile.removeTriggerDetail": "This will delete {count, plural, one {# trigger input} other {# trigger inputs}}.",
 
   "profile.tabs.audio": "Audio",
   "profile.tabs.midi": "MIDI",
@@ -154,6 +167,7 @@
   "audio.playbackDelayPlaceholder": "e.g. 500ms",
   "audio.trackMappings": "Track Mappings",
   "audio.trackNamePlaceholder": "Track name",
+  "audio.channelMappingError": "Channels must be comma-separated positive numbers (e.g., 1, 2)",
 
   "midi.device": "Device",
   "midi.devicePlaceholder": "Type or select a device",
@@ -380,6 +394,7 @@
   "samples.addLayer": "Add Layer",
   "samples.scaleByVelocity": "Scale volume by velocity",
   "samples.layerFilePlaceholder": "path/to/layer-file.wav",
+  "samples.confirmRemove": "Remove sample \"{name}\"?",
   "samples.uploadedFile": "Uploaded {name}",
 
   "songs.title": "Songs",
@@ -747,6 +762,9 @@
   "tooltips.controllers.morningstarModel": "The Morningstar controller model. Determines the device ID byte in the SysEx message.",
   "tooltips.controllers.morningstarSave": "When enabled, the bank name is saved to flash. When disabled, the name is temporary and resets on power cycle.",
   "tooltips.controllers.morningstarCustomModelId": "The SysEx device ID byte for a custom/unlisted Morningstar model (0-127).",
+  "tooltips.controllers.addGrpc": "Add gRPC controller \u2014 remote control via network API",
+  "tooltips.controllers.addOsc": "Add OSC controller \u2014 Open Sound Control for hardware controllers",
+  "tooltips.controllers.addMidi": "Add MIDI controller \u2014 control via MIDI hardware",
 
   "tooltips.samples.outputChannels": "Device output channels for this sample, as comma-separated numbers (e.g. '1, 2'). If both output channels and output track are empty, uses the default stereo output.",
   "tooltips.samples.outputTrack": "Name of a track mapping (defined in Audio settings) to route this sample's output. Overrides output channels if set.",

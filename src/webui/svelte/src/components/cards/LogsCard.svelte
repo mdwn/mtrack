@@ -16,6 +16,22 @@
   import { logStore } from "../../lib/ws/stores";
   import { tick } from "svelte";
   import { t } from "svelte-i18n";
+  import { SvelteSet } from "svelte/reactivity";
+
+  const ALL_LEVELS = ["TRACE", "DEBUG", "INFO", "WARN", "ERROR"] as const;
+  let enabledLevels = new SvelteSet(["INFO", "WARN", "ERROR"]);
+
+  function toggleLevel(level: string) {
+    if (enabledLevels.has(level)) {
+      enabledLevels.delete(level);
+    } else {
+      enabledLevels.add(level);
+    }
+  }
+
+  let filteredLogs = $derived(
+    $logStore.filter((line) => enabledLevels.has(line.level)),
+  );
 
   let container: HTMLDivElement | undefined = $state();
   let autoScroll = $state(true);
@@ -29,8 +45,8 @@
   }
 
   $effect(() => {
-    // Re-run whenever logStore changes
-    void $logStore;
+    // Re-run whenever filteredLogs changes
+    void filteredLogs;
     if (autoScroll && container) {
       tick().then(() => {
         container!.scrollTop = container!.scrollHeight;
@@ -42,9 +58,20 @@
 <div class="card card-full">
   <div class="card-header">
     <span class="card-title">{$t("logs.title")}</span>
+    <div class="log-level-filters">
+      {#each ALL_LEVELS as level (level)}
+        <button
+          class="log-level-pill level-{level}"
+          class:active={enabledLevels.has(level)}
+          onclick={() => toggleLevel(level)}
+        >
+          {level}
+        </button>
+      {/each}
+    </div>
   </div>
   <div class="log-container" bind:this={container} onscroll={handleScroll}>
-    {#each $logStore as line, i (i)}
+    {#each filteredLogs as line, i (i)}
       <div class="log-line level-{line.level}">
         <span class="log-level">{line.level}</span>
         <span class="log-target">{line.target}</span>:
@@ -55,6 +82,53 @@
 </div>
 
 <style>
+  .log-level-filters {
+    display: flex;
+    gap: 4px;
+  }
+  .log-level-pill {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    background: var(--bg-input);
+    color: var(--text-dim);
+    cursor: pointer;
+    transition:
+      background 0.15s,
+      color 0.15s,
+      border-color 0.15s;
+  }
+  .log-level-pill:hover {
+    border-color: var(--text-dim);
+  }
+  .log-level-pill.active.level-ERROR {
+    background: rgba(239, 68, 68, 0.15);
+    color: var(--red);
+    border-color: var(--red);
+  }
+  .log-level-pill.active.level-WARN {
+    background: rgba(234, 179, 8, 0.12);
+    color: var(--yellow);
+    border-color: var(--yellow);
+  }
+  .log-level-pill.active.level-INFO {
+    background: rgba(59, 130, 246, 0.12);
+    color: var(--blue);
+    border-color: var(--blue);
+  }
+  .log-level-pill.active.level-DEBUG {
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text-muted);
+    border-color: var(--text-muted);
+  }
+  .log-level-pill.active.level-TRACE {
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--text-dim);
+    border-color: var(--text-dim);
+  }
   .log-container {
     font-family: var(--mono);
     font-size: 12px;

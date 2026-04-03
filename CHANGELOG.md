@@ -38,6 +38,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   MIDI channel routed to a DMX universe, with optional Note Mapper and CC Mapper
   transformers that remap note/CC numbers before output.
 
+### Improved
+
+- **Web UI UX overhaul**: Comprehensive usability pass across all pages, focused on
+  reducing clicks, preventing data loss, and improving visual consistency.
+
+  **Data loss prevention:**
+  - Playlist editor warns before switching playlists or leaving the page with unsaved changes.
+  - Sample deletion now requires confirmation.
+  - "Remove section" confirmation in profile editor describes what will be lost (e.g.,
+    "This will delete 5 track mappings and all audio settings.").
+  - Ctrl+S / Cmd+S keyboard shortcut for saving in the config editor.
+
+  **Live performance usability:**
+  - Dashboard playlist songs are now clickable to jump directly to a song during playback.
+  - Full-width disconnection banner when WebSocket connection drops.
+  - Improved text contrast for dim/muted text (WCAG AA compliant).
+  - Hardcoded English strings in playback card moved to i18n.
+
+  **User flow improvements:**
+  - Song detail tabs reduced from 7 to 5: MIDI merged into Tracks, Notifications merged
+    into Config (both as collapsible sections).
+  - File browser now starts in the song's directory instead of filesystem root.
+  - "Import from Filesystem" is now the primary button in the song list; "New Song" is secondary.
+  - Song list search query persists when navigating back from a song detail view.
+
+  **Visual design consistency:**
+  - Added missing CSS variables (`--bg-hover`, `--bg-danger`, `--text-danger`, z-index tokens).
+  - Extracted shared `.error-banner`, `.panel`, `.panel-header`, `.btn-icon` classes from
+    duplicated component styles into global app.css.
+  - Standardized border-radius across all cards and panels.
+  - Unified z-index layering with CSS variable tokens.
+
+  **Polish:**
+  - Status page auto-refreshes every 5 seconds with "Updated Xs ago" indicator; build info
+    moved to the bottom; distinguishes "Not Configured" from "Not Connected."
+  - Playlist editor shows position numbers, drag feedback, and filters out the `all_songs`
+    system playlist.
+  - Dashboard shows a consolidated empty state with action links when no playlist is loaded;
+    hides empty cards (tracks, effects, stage view) to reduce noise.
+  - Log card has level filter pills (TRACE/DEBUG/INFO/WARN/ERROR), defaulting to INFO+.
+  - Loading spinners replace plain "Loading..." text across all pages.
+  - Sample rename is now discoverable via a pencil icon (not just double-click).
+  - Channel mapping inputs validate and show inline errors for non-numeric values.
+  - Controller "Add" buttons have descriptive tooltips explaining each type.
+  - Device refresh buttons show loading state during enumeration.
+  - NotFound page has a "Back to Dashboard" button.
+  - Lock button tooltip explains the consequence of locking/unlocking.
+  - Stage view fixture drag positions persist to localStorage across page reloads.
+  - Nav bar song name truncation relaxed (300px desktop, 150px mobile); mobile nav shows
+    current page name next to the brand.
+  - Tab hover states have subtle background highlight.
+  - Aria-labels added to all icon-only buttons for screen reader accessibility.
+
 ### Fixed
 
 - **Missing OSC path overrides**: Added section_ack, stop_section_loop, and loop_section

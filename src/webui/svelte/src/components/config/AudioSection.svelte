@@ -22,7 +22,7 @@
     audio: any;
     devices: AudioDeviceInfo[];
     trackNames: string[];
-    onrefresh: () => void;
+    onrefresh: () => void | Promise<void>;
     onchange: () => void;
   }
 
@@ -33,6 +33,17 @@
     onrefresh,
     onchange,
   }: Props = $props();
+
+  let refreshing = $state(false);
+
+  async function handleRefresh() {
+    refreshing = true;
+    try {
+      await onrefresh();
+    } finally {
+      refreshing = false;
+    }
+  }
 
   let selectedDevice = $derived(devices.find((d) => d.name === audio.device));
 
@@ -100,7 +111,24 @@
     onchange();
   }
 
+  let channelErrors: Record<string, string> = $state({});
+
+  function validateChannelMapping(value: string): string {
+    const parts = value
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s !== "");
+    for (const part of parts) {
+      const n = Number(part);
+      if (!Number.isInteger(n) || n < 1) {
+        return $t("audio.channelMappingError");
+      }
+    }
+    return "";
+  }
+
   function updateMappingChannels(name: string, value: string) {
+    channelErrors[name] = validateChannelMapping(value);
     audio.track_mappings[name] = value
       .split(",")
       .map((s: string) => parseInt(s.trim()))
@@ -128,7 +156,9 @@
           >
         {/each}
       </datalist>
-      <button class="btn" onclick={onrefresh}>{$t("common.refresh")}</button>
+      <button class="btn" onclick={handleRefresh} disabled={refreshing}
+        >{refreshing ? $t("common.refreshing") : $t("common.refresh")}</button
+      >
     </div>
   </div>
 
@@ -369,6 +399,9 @@
           >X</button
         >
       </div>
+      {#if channelErrors[name]}
+        <div class="channel-error">{channelErrors[name]}</div>
+      {/if}
     {/each}
   </div>
 </div>
@@ -426,6 +459,11 @@
   }
   .mapping-channels {
     flex: 1;
+  }
+  .channel-error {
+    font-size: 12px;
+    color: var(--red);
+    margin-top: -2px;
   }
   @media (max-width: 600px) {
     .field-row-2 {

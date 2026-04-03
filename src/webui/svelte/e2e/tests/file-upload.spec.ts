@@ -52,12 +52,16 @@ test.describe("File Upload - Track Upload", () => {
 
 test.describe("File Upload - MIDI Upload", () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto("/#/songs/Test%20Song%20Alpha/midi");
-    await expect(page.locator(".tab.active")).toContainText("MIDI");
+    await page.goto("/#/songs/Test%20Song%20Alpha/tracks");
+    await expect(page.locator(".tab.active")).toContainText("Tracks");
+    // Expand the MIDI collapsible section
+    await page.locator(".collapsible-header", { hasText: "MIDI" }).click();
   });
 
-  test("MIDI tab drop zone accepts .mid files", async ({ page }) => {
-    const fileInput = page.locator('.drop-zone input[type="file"]');
+  test("MIDI section drop zone accepts .mid files", async ({ page }) => {
+    const fileInput = page.locator(
+      '.collapsible-body .drop-zone input[type="file"]',
+    );
     const accept = await fileInput.getAttribute("accept");
     expect(accept).toContain(".mid");
   });

@@ -48,4 +48,50 @@ test.describe("Effects and Logs Cards", () => {
     const firstLog = page.locator(".log-line").first();
     await expect(firstLog).toContainText("mtrack::player");
   });
+
+  test("log level filter pills are visible", async ({ page }) => {
+    const pills = page.locator(".log-level-pill");
+    await expect(pills).toHaveCount(5);
+  });
+
+  test("INFO, WARN, ERROR pills are active by default", async ({ page }) => {
+    await expect(page.locator(".log-level-pill.level-INFO")).toHaveClass(
+      /active/,
+    );
+    await expect(page.locator(".log-level-pill.level-WARN")).toHaveClass(
+      /active/,
+    );
+    await expect(page.locator(".log-level-pill.level-ERROR")).toHaveClass(
+      /active/,
+    );
+  });
+
+  test("TRACE and DEBUG pills are inactive by default", async ({ page }) => {
+    await expect(page.locator(".log-level-pill.level-TRACE")).not.toHaveClass(
+      /active/,
+    );
+    await expect(page.locator(".log-level-pill.level-DEBUG")).not.toHaveClass(
+      /active/,
+    );
+  });
+
+  test("clicking a pill toggles its state", async ({ page }) => {
+    const infoPill = page.locator(".log-level-pill.level-INFO");
+    await expect(infoPill).toHaveClass(/active/);
+    await infoPill.click();
+    await expect(infoPill).not.toHaveClass(/active/);
+    await expect(page.locator(".log-line")).toHaveCount(0);
+  });
+
+  test("clicking a disabled pill shows its logs", async ({ page }) => {
+    await expect(page.locator(".log-line")).toHaveCount(2);
+    const debugPill = page.locator(".log-level-pill.level-DEBUG");
+    await expect(debugPill).not.toHaveClass(/active/);
+    await debugPill.click();
+    await expect(debugPill).toHaveClass(/active/);
+    await expect(page.locator(".log-line")).toHaveCount(3);
+    await expect(page.locator(".log-line.level-DEBUG")).toContainText(
+      "DMX frame sent",
+    );
+  });
 });

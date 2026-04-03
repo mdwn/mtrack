@@ -439,7 +439,10 @@
     </div>
 
     {#if loading}
-      <p class="muted">{$t("common.loading")}</p>
+      <p class="muted">
+        <span class="spinner sm"></span>
+        {$t("common.loading")}
+      </p>
     {:else if songs.length === 0}
       <p class="muted">{$t("lightingEditor.noSongs")}</p>
     {:else}
@@ -677,11 +680,7 @@
     height: calc(100vh - 120px);
   }
   .panel {
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 16px;
-    overflow-y: auto;
+    border-radius: var(--radius-lg);
   }
   .list-panel {
     width: 280px;
@@ -693,16 +692,6 @@
     flex-direction: column;
     min-width: 0;
   }
-  .panel-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 12px;
-  }
-  .panel-header h3 {
-    margin: 0;
-    font-size: 16px;
-  }
   .muted {
     color: var(--text-muted);
     font-size: 14px;
@@ -711,32 +700,6 @@
     text-align: center;
     margin-top: 40px;
   }
-  .error-banner {
-    background: rgba(220, 38, 38, 0.15);
-    color: #ef4444;
-    padding: 8px 12px;
-    border-radius: 6px;
-    font-size: 14px;
-    margin-bottom: 12px;
-    position: relative;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-  }
-  .error-dismiss {
-    background: none;
-    border: none;
-    color: inherit;
-    cursor: pointer;
-    font-size: 15px;
-    padding: 0 4px;
-    margin-left: 8px;
-    opacity: 0.7;
-  }
-  .error-dismiss:hover {
-    opacity: 1;
-  }
-
   /* Song list */
   .song-list {
     list-style: none;
@@ -853,7 +816,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    z-index: 200;
+    z-index: var(--z-modal);
     padding: 24px;
   }
   .modal {

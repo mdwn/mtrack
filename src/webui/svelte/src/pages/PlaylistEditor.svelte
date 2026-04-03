@@ -24,6 +24,7 @@
     type PlaylistData,
   } from "../lib/api/config";
   import { playbackStore } from "../lib/ws/stores";
+  import { showConfirm } from "../lib/dialog.svelte";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
 
@@ -80,6 +81,7 @@
   }
 
   async function selectPlaylist(name: string) {
+    if (dirty && !(await showConfirm(get(t)("config.discardUnsaved")))) return;
     try {
       error = "";
       detail = await fetchPlaylist(name);
@@ -224,6 +226,16 @@
       selectPlaylist(match.name);
     }
   });
+
+  $effect(() => {
+    if (dirty) {
+      const handler = (e: BeforeUnloadEvent) => {
+        e.preventDefault();
+      };
+      window.addEventListener("beforeunload", handler);
+      return () => window.removeEventListener("beforeunload", handler);
+    }
+  });
 </script>
 
 <div class="playlist-editor">
@@ -251,66 +263,62 @@
     {/if}
 
     {#if loading}
-      <p class="muted">{$t("common.loading")}</p>
+      <p class="muted">
+        <span class="spinner sm"></span>
+        {$t("common.loading")}
+      </p>
     {:else if playlists.length === 0}
       <p class="muted">{$t("playlists.noPlaylists")}</p>
     {:else}
       <ul class="playlist-list">
-        {#each playlists as pl (pl.name)}
-          <li
-            class:selected={selected === pl.name}
-            class:all-songs={pl.name === "all_songs"}
-          >
+        {#each playlists.filter((p) => p.name !== "all_songs") as pl (pl.name)}
+          <li class:selected={selected === pl.name}>
             <button
               class="playlist-item"
-              onclick={() => pl.name !== "all_songs" && selectPlaylist(pl.name)}
-              disabled={pl.name === "all_songs"}
-              title={pl.name === "all_songs"
-                ? $t("playlists.allSongsHint")
-                : undefined}
+              onclick={() => selectPlaylist(pl.name)}
             >
               <span class="pl-name">{pl.name}</span>
               <span class="pl-count"
                 >{$t("playlists.songs", {
-                  values: { count: pl.song_count },
+                  values: {
+                    count:
+                      selected === pl.name ? editSongs.length : pl.song_count,
+                  },
                 })}</span
               >
             </button>
             <div class="pl-actions">
               {#if pl.is_active}
                 <span class="badge">{$t("playlists.active")}</span>
-              {:else if pl.name !== "all_songs"}
+              {:else}
                 <button
                   class="btn-icon"
                   title={$t("playlists.activate")}
+                  aria-label={$t("playlists.activate")}
                   onclick={() => handleActivate(pl.name)}
                 >
                   &#9654;
                 </button>
               {/if}
-              {#if pl.name !== "all_songs"}
-                {#if confirmDelete === pl.name}
-                  <button
-                    class="btn-icon danger"
-                    onclick={() => handleDelete(pl.name)}
-                  >
-                    {$t("common.confirm")}
-                  </button>
-                  <button
-                    class="btn-icon"
-                    onclick={() => (confirmDelete = null)}
-                  >
-                    {$t("common.cancel")}
-                  </button>
-                {:else}
-                  <button
-                    class="btn-icon"
-                    title={$t("common.delete")}
-                    onclick={() => (confirmDelete = pl.name)}
-                  >
-                    &#10005;
-                  </button>
-                {/if}
+              {#if confirmDelete === pl.name}
+                <button
+                  class="btn-icon danger"
+                  onclick={() => handleDelete(pl.name)}
+                >
+                  {$t("common.confirm")}
+                </button>
+                <button class="btn-icon" onclick={() => (confirmDelete = null)}>
+                  {$t("common.cancel")}
+                </button>
+              {:else}
+                <button
+                  class="btn-icon"
+                  title={$t("common.delete")}
+                  aria-label={$t("common.delete")}
+                  onclick={() => (confirmDelete = pl.name)}
+                >
+                  &#10005;
+                </button>
               {/if}
             </div>
           </li>
@@ -366,15 +374,19 @@
                   ondrop={(e) => handleDrop(e, i)}
                   ondragend={handleDragEnd}
                   class:drag-over={dragOverIndex === i}
+                  style={dragIndex === i ? "opacity: 0.4" : ""}
                 >
+                  <span class="song-position">{i + 1}.</span>
                   <div class="reorder-btns">
                     <button
                       class="btn-icon small"
+                      aria-label={$t("cue.moveUp")}
                       disabled={i === 0}
                       onclick={() => moveSong(i, i - 1)}>&#9650;</button
                     >
                     <button
                       class="btn-icon small"
+                      aria-label={$t("cue.moveDown")}
                       disabled={i === editSongs.length - 1}
                       onclick={() => moveSong(i, i + 1)}>&#9660;</button
                     >
@@ -383,6 +395,7 @@
                   <button
                     class="btn-icon"
                     title={$t("common.remove")}
+                    aria-label={$t("common.remove")}
                     onclick={() => removeSong(i)}
                   >
                     &#10005;
@@ -408,6 +421,7 @@
                 <button
                   class="btn-icon"
                   title={$t("common.add")}
+                  aria-label={$t("common.add")}
                   onclick={() => addSong(song)}>+</button
                 >
               </li>
@@ -426,11 +440,7 @@
     height: calc(100vh - 120px);
   }
   .panel {
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 16px;
-    overflow-y: auto;
+    border-radius: var(--radius-lg);
   }
   .list-panel {
     width: 300px;
@@ -440,16 +450,6 @@
     flex: 1;
     display: flex;
     flex-direction: column;
-  }
-  .panel-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 12px;
-  }
-  .panel-header h3 {
-    margin: 0;
-    font-size: 16px;
   }
   .new-playlist-form {
     display: flex;
@@ -467,32 +467,6 @@
     text-align: center;
     margin-top: 40px;
   }
-  .error-banner {
-    background: rgba(220, 38, 38, 0.15);
-    color: #ef4444;
-    padding: 8px 12px;
-    border-radius: 6px;
-    font-size: 14px;
-    margin-bottom: 12px;
-    position: relative;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-  }
-  .error-dismiss {
-    background: none;
-    border: none;
-    color: inherit;
-    cursor: pointer;
-    font-size: 15px;
-    padding: 0 4px;
-    margin-left: 8px;
-    opacity: 0.7;
-  }
-  .error-dismiss:hover {
-    opacity: 1;
-  }
-
   /* Playlist list */
   .playlist-list {
     list-style: none;
@@ -508,9 +482,6 @@
   }
   .playlist-list li.selected {
     background: rgba(94, 202, 234, 0.12);
-  }
-  .playlist-list li.all-songs {
-    opacity: 0.6;
   }
   .playlist-item {
     flex: 1;
@@ -548,29 +519,6 @@
     background: var(--accent);
     color: white;
   }
-  .btn-icon {
-    background: none;
-    border: none;
-    color: var(--text-muted);
-    cursor: pointer;
-    font-size: 13px;
-    padding: 4px 6px;
-    border-radius: 4px;
-  }
-  .btn-icon:hover {
-    background: rgba(255, 255, 255, 0.08);
-    color: var(--text);
-  }
-  .btn-icon.danger {
-    color: #ef4444;
-    font-size: 12px;
-  }
-  .btn-icon.small {
-    font-size: 11px;
-    padding: 1px 4px;
-    line-height: 1;
-  }
-
   /* Song columns */
   .song-columns {
     display: flex;
@@ -615,6 +563,12 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .song-position {
+    color: var(--text-dim);
+    min-width: 24px;
+    text-align: right;
+    font-size: 13px;
   }
   .reorder-btns {
     display: flex;

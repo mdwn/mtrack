@@ -22,12 +22,20 @@
     type WaveformData,
   } from "../../lib/api/songs";
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
+  import { untrack } from "svelte";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
   import { showConfirm, showAlert } from "../../lib/dialog.svelte";
   import CreateSongDialog from "./CreateSongDialog.svelte";
   import ImportSongs from "./ImportSongs.svelte";
   import Waveform from "./Waveform.svelte";
+
+  interface Props {
+    initialSearch?: string;
+    onSearchChange?: (query: string) => void;
+  }
+
+  let { initialSearch = "", onSearchChange }: Props = $props();
 
   let songs = $state<SongSummary[]>([]);
   let failures = $state<SongFailure[]>([]);
@@ -36,7 +44,12 @@
   let error = $state("");
   let showCreate = $state(false);
   let showImport = $state(false);
-  let searchQuery = $state("");
+  let searchQuery = $state(untrack(() => initialSearch) || "");
+
+  $effect(() => {
+    onSearchChange?.(searchQuery);
+  });
+
   let collapsedGroups = new SvelteSet<string>();
 
   type SongOrFailure = SongSummary | SongFailure;
@@ -177,7 +190,7 @@
     <h2>{$t("songs.title")}</h2>
     <div class="header-actions">
       <button
-        class="btn"
+        class="btn btn-primary"
         onclick={() => {
           showImport = true;
           showCreate = false;
@@ -186,7 +199,7 @@
         {$t("songs.importFromFilesystem")}
       </button>
       <button
-        class="btn btn-primary"
+        class="btn"
         onclick={() => {
           showCreate = !showCreate;
           showImport = false;
@@ -297,6 +310,7 @@
                   role="button"
                   tabindex="-1"
                   title={$t("songs.removeFromRegistry")}
+                  aria-label={$t("songs.removeFromRegistry")}
                   onclick={(e) => handleDelete(e, item.name)}>&#10005;</span
                 >
               </button>

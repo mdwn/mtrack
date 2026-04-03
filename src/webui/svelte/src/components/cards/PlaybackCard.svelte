@@ -90,7 +90,7 @@
       await playerClient.loopSection({ sectionName: name });
     } catch (e) {
       console.error("loop section failed:", e);
-      showError("Failed to activate section loop");
+      showError(get(t)("playback.error.loopSection"));
     }
   }
 
@@ -99,7 +99,7 @@
       await playerClient.stopSectionLoop({});
     } catch (e) {
       console.error("stop section loop failed:", e);
-      showError("Failed to stop section loop");
+      showError(get(t)("playback.error.stopSectionLoop"));
     }
   }
 
@@ -313,7 +313,8 @@
           <span class="section-active"
             >{$playbackStore.active_section.name}</span
           >
-          <button class="btn btn-sm" onclick={stopSectionLoop}>Stop Loop</button
+          <button class="btn btn-sm" onclick={stopSectionLoop}
+            >{$t("playback.stopLoop")}</button
           >
         {:else}
           {#each $playbackStore.available_sections as section (section.name)}

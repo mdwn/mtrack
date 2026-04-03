@@ -51,6 +51,44 @@ test.describe("Samples Section", () => {
     await expect(saveBtn).toBeEnabled();
   });
 
+  test("removing a sample requires confirmation dialog", async ({ page }) => {
+    await page.getByRole("button", { name: "Add Sample" }).click();
+    await expect(page.locator(".sample-card")).toBeVisible();
+
+    // Click Remove on the sample card
+    await page
+      .locator(".sample-card")
+      .getByRole("button", { name: "Remove" })
+      .click();
+
+    // Confirmation dialog should appear
+    await expect(page.locator(".dialog-overlay")).toBeVisible();
+    await expect(page.locator(".dialog-message")).toContainText(
+      "Remove sample",
+    );
+
+    // Cancel should keep the sample
+    await page
+      .locator(".dialog-overlay")
+      .getByRole("button", { name: "Cancel" })
+      .click();
+    await expect(page.locator(".dialog-overlay")).not.toBeVisible();
+    await expect(page.locator(".sample-card")).toBeVisible();
+
+    // Click Remove again, then confirm
+    await page
+      .locator(".sample-card")
+      .getByRole("button", { name: "Remove" })
+      .click();
+    await expect(page.locator(".dialog-overlay")).toBeVisible();
+    await page
+      .locator(".dialog-overlay")
+      .getByRole("button", { name: "Confirm" })
+      .click();
+    await expect(page.locator(".dialog-overlay")).not.toBeVisible();
+    await expect(page.locator(".sample-card")).not.toBeVisible();
+  });
+
   test("save samples calls API", async ({ page }) => {
     let saveCalled = false;
     await page.route("**/api/config/samples", async (route) => {

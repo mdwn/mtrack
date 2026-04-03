@@ -67,22 +67,22 @@ test.describe("Status Page", () => {
     await expect(audioRow).toContainText("Default Audio Device");
   });
 
-  test("shows MIDI subsystem as not connected", async () => {
+  test("shows MIDI subsystem as not configured", async () => {
     const midiRow = status.subsystemRow("MIDI");
     await expect(midiRow).toBeVisible();
-    await expect(midiRow).toContainText("Not Connected");
+    await expect(midiRow).toContainText("Not Configured");
   });
 
-  test("shows DMX subsystem as not connected", async () => {
+  test("shows DMX subsystem as not configured", async () => {
     const dmxRow = status.subsystemRow("DMX");
     await expect(dmxRow).toBeVisible();
-    await expect(dmxRow).toContainText("Not Connected");
+    await expect(dmxRow).toContainText("Not Configured");
   });
 
-  test("shows Trigger subsystem as not connected", async () => {
+  test("shows Trigger subsystem as not configured", async () => {
     const triggerRow = status.subsystemRow("Trigger");
     await expect(triggerRow).toBeVisible();
-    await expect(triggerRow).toContainText("Not Connected");
+    await expect(triggerRow).toContainText("Not Configured");
   });
 
   test("shows controllers card", async () => {

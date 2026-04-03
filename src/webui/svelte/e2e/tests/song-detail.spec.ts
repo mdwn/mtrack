@@ -33,20 +33,20 @@ test.describe("Song Detail", () => {
   test("shows tab bar with all tabs", async ({ page }) => {
     await expect(page.locator(".tab-bar")).toBeVisible();
     await expect(page.locator(".tab", { hasText: "Tracks" })).toBeVisible();
-    await expect(page.locator(".tab", { hasText: "MIDI" })).toBeVisible();
     await expect(page.locator(".tab", { hasText: "Samples" })).toBeVisible();
+    await expect(page.locator(".tab", { hasText: "Sections" })).toBeVisible();
     await expect(page.locator(".tab", { hasText: "Lighting" })).toBeVisible();
     await expect(page.locator(".tab", { hasText: "Config" })).toBeVisible();
+    await expect(page.locator(".tab")).toHaveCount(5);
   });
 
   test("tracks tab is active by default", async ({ page }) => {
     await expect(page.locator(".tab.active")).toContainText("Tracks");
   });
 
-  test("clicking MIDI tab changes active tab", async ({ page }) => {
-    await page.locator(".tab", { hasText: "MIDI" }).click();
-    await expect(page.locator(".tab.active")).toContainText("MIDI");
-    await expect(page).toHaveURL(/.*#\/songs\/Test%20Song%20Alpha\/midi/);
+  test("MIDI collapsible section is in Tracks tab", async ({ page }) => {
+    await expect(page.locator(".tab.active")).toContainText("Tracks");
+    await expect(page.locator(".collapsible-section")).toBeVisible();
   });
 
   test("clicking Lighting tab changes active tab", async ({ page }) => {
@@ -138,10 +138,30 @@ test.describe("Song Detail - Loop Playback", () => {
   });
 });
 
+test.describe("Song Detail - MIDI Collapsible", () => {
+  test("navigating to legacy #/songs/SongName/midi redirects to tracks tab", async ({
+    page,
+  }) => {
+    await page.goto("/#/songs/Test%20Song%20Alpha/midi");
+    await expect(page.locator(".tab.active")).toContainText("Tracks");
+  });
+
+  test("MIDI collapsible section expands when clicked", async ({ page }) => {
+    await page.goto("/#/songs/Test%20Song%20Alpha");
+    await expect(page.locator(".collapsible-body")).not.toBeVisible();
+    await page.locator(".collapsible-header", { hasText: "MIDI" }).click();
+    await expect(
+      page
+        .locator(".collapsible-section", { hasText: "MIDI" })
+        .locator(".collapsible-body"),
+    ).toBeVisible();
+  });
+});
+
 test.describe("Song Detail - MIDI Event Editor", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/#/songs/Test%20Song%20Alpha");
-    await page.locator(".tab", { hasText: "MIDI" }).click();
+    await page.locator(".collapsible-header", { hasText: "MIDI" }).click();
   });
 
   test("shows Song Select Event section", async ({ page }) => {
@@ -196,7 +216,7 @@ test.describe("Song Detail - Exclude MIDI Channels", () => {
   test.beforeEach(async ({ page }) => {
     // Test Song Alpha has midi_playback with exclude_midi_channels: [10]
     await page.goto("/#/songs/Test%20Song%20Alpha");
-    await page.locator(".tab", { hasText: "MIDI" }).click();
+    await page.locator(".collapsible-header", { hasText: "MIDI" }).click();
   });
 
   test("shows channel grid when MIDI file is present", async ({ page }) => {
@@ -226,48 +246,64 @@ test.describe("Song Detail - No MIDI File", () => {
   }) => {
     // Test Song Beta has no MIDI — navigate directly without visiting Alpha first
     await page.goto("/#/songs/Test%20Song%20Beta");
-    await page.locator(".tab", { hasText: "MIDI" }).click();
+    await page.locator(".collapsible-header", { hasText: "MIDI" }).click();
     await expect(page.locator(".channel-grid")).not.toBeVisible();
   });
 });
 
-test.describe("Song Detail - Notifications Tab", () => {
-  test("shows Notifications tab", async ({ page }) => {
+test.describe("Song Detail - Notifications in Config Tab", () => {
+  test("shows Notifications collapsible in Config tab", async ({ page }) => {
     await page.goto("/#/songs/Test%20Song%20Alpha");
+    await page.locator(".tab", { hasText: "Config" }).click();
     await expect(
-      page.locator(".tab", { hasText: "Notifications" }),
+      page.locator(".collapsible-header", { hasText: "Notifications" }),
     ).toBeVisible();
   });
 
-  test("clicking Notifications tab shows notification fields", async ({
+  test("clicking Notifications collapsible shows notification fields", async ({
     page,
   }) => {
     await page.goto("/#/songs/Test%20Song%20Alpha");
-    await page.locator(".tab", { hasText: "Notifications" }).click();
-    await expect(page.locator(".tab.active")).toContainText("Notifications");
+    await page.locator(".tab", { hasText: "Config" }).click();
+    await page
+      .locator(".collapsible-header", { hasText: "Notifications" })
+      .click();
     await expect(page.locator("#notif-loop_armed")).toBeVisible();
   });
 
-  test("navigates to notifications tab via URL", async ({ page }) => {
+  test("navigating to legacy #/songs/SongName/notifications redirects to config tab", async ({
+    page,
+  }) => {
     await page.goto("/#/songs/Test%20Song%20Alpha/notifications");
-    await expect(page.locator(".tab.active")).toContainText("Notifications");
-    await expect(page.locator("#notif-loop_armed")).toBeVisible();
+    await expect(page.locator(".tab.active")).toContainText("Config");
   });
 
   test("editing notification field marks config as dirty", async ({ page }) => {
-    await page.goto("/#/songs/Test%20Song%20Alpha/notifications");
+    await page.goto("/#/songs/Test%20Song%20Alpha");
+    await page.locator(".tab", { hasText: "Config" }).click();
+    await page
+      .locator(".collapsible-header", { hasText: "Notifications" })
+      .click();
     await page.locator("#notif-loop_armed").fill("armed.wav");
     await page.locator("#notif-loop_armed").dispatchEvent("change");
     await expect(page.locator(".unsaved")).toBeVisible();
   });
 
   test("shows browse buttons on notification fields", async ({ page }) => {
-    await page.goto("/#/songs/Test%20Song%20Alpha/notifications");
+    await page.goto("/#/songs/Test%20Song%20Alpha");
+    await page.locator(".tab", { hasText: "Config" }).click();
+    await page
+      .locator(".collapsible-header", { hasText: "Notifications" })
+      .click();
     await expect(page.locator(".browse-btn").first()).toBeVisible();
   });
 
   test("shows file upload drop zone", async ({ page }) => {
-    await page.goto("/#/songs/Test%20Song%20Alpha/notifications");
+    await page.goto("/#/songs/Test%20Song%20Alpha");
+    await page.locator(".tab", { hasText: "Config" }).click();
+    await page
+      .locator(".collapsible-header", { hasText: "Notifications" })
+      .click();
     await expect(page.locator(".drop-zone")).toBeVisible();
   });
 
@@ -275,7 +311,11 @@ test.describe("Song Detail - Notifications Tab", () => {
     page,
   }) => {
     // Test Song Beta has sections defined
-    await page.goto("/#/songs/Test%20Song%20Beta/notifications");
+    await page.goto("/#/songs/Test%20Song%20Beta");
+    await page.locator(".tab", { hasText: "Config" }).click();
+    await page
+      .locator(".collapsible-header", { hasText: "Notifications" })
+      .click();
     // Add a per-section override
     await page
       .locator(".sections-area")
