@@ -178,14 +178,21 @@ impl super::Device for Device {
     fn play_from(
         &self,
         song: Arc<Song>,
-        cancel_handle: CancelHandle,
-        ready_tx: std::sync::mpsc::Sender<()>,
-        start_time: Duration,
-        clock: PlaybackClock,
-        loop_break: Arc<AtomicBool>,
-        active_section: Arc<parking_lot::RwLock<Option<crate::player::SectionBounds>>>,
-        section_loop_break: Arc<AtomicBool>,
+        sync: crate::playsync::PlaybackSync,
     ) -> Result<(), Box<dyn Error>> {
+        let crate::playsync::PlaybackSync {
+            cancel_handle,
+            ready_tx,
+            clock,
+            start_time,
+            loop_control,
+        } = sync;
+        let crate::playsync::LoopControl {
+            loop_break,
+            active_section,
+            section_loop_break,
+            ..
+        } = loop_control;
         let span = span!(Level::INFO, "play song (midir)");
         let _enter = span.enter();
 
@@ -1562,13 +1569,13 @@ mod test {
             let result = <Device as crate::midi::Device>::play_from(
                 &device,
                 song,
-                cancel,
-                ready_tx,
-                Duration::ZERO,
-                clock,
-                Arc::new(AtomicBool::new(false)),
-                Arc::new(parking_lot::RwLock::new(None)),
-                Arc::new(AtomicBool::new(false)),
+                crate::playsync::PlaybackSync {
+                    cancel_handle: cancel,
+                    ready_tx,
+                    clock,
+                    start_time: Duration::ZERO,
+                    loop_control: crate::playsync::LoopControl::new(),
+                },
             );
             assert!(result.is_ok());
         }
@@ -1587,23 +1594,19 @@ mod test {
             let result = <Device as crate::midi::Device>::play_from(
                 &device,
                 song,
-                cancel,
-                ready_tx,
-                Duration::ZERO,
-                clock,
-                Arc::new(AtomicBool::new(false)),
-                Arc::new(parking_lot::RwLock::new(None)),
-                Arc::new(AtomicBool::new(false)),
+                crate::playsync::PlaybackSync {
+                    cancel_handle: cancel,
+                    ready_tx,
+                    clock,
+                    start_time: Duration::ZERO,
+                    loop_control: crate::playsync::LoopControl::new(),
+                },
             );
             assert!(result.is_ok());
         }
 
         #[test]
         fn play_from_without_midi_playback_sends_ready() {
-            // When a MIDI device exists but the song has no MIDI sheet,
-            // play_from must still send the ready signal so the playback
-            // clock starts. Without this, all subsystems (audio, DMX)
-            // spin forever waiting for the clock.
             let device = Device::new_default("test".to_string());
             let (_tmp_dir, song) = make_song();
             assert!(song.midi_playback().is_none());
@@ -1614,13 +1617,13 @@ mod test {
             let result = <Device as crate::midi::Device>::play_from(
                 &device,
                 song,
-                cancel,
-                ready_tx,
-                Duration::ZERO,
-                clock,
-                Arc::new(AtomicBool::new(false)),
-                Arc::new(parking_lot::RwLock::new(None)),
-                Arc::new(AtomicBool::new(false)),
+                crate::playsync::PlaybackSync {
+                    cancel_handle: cancel,
+                    ready_tx,
+                    clock,
+                    start_time: Duration::ZERO,
+                    loop_control: crate::playsync::LoopControl::new(),
+                },
             );
             assert!(result.is_ok());
             assert!(

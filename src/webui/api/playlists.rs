@@ -20,10 +20,9 @@ use axum::{
 };
 use serde_json::json;
 
-use std::path::PathBuf;
-
 use super::super::config_io;
 use super::super::server::WebUiState;
+use super::helpers::{require_configured_dir, resolve_resource_path, validate_resource_name};
 use crate::config;
 
 // ---------------------------------------------------------------------------
@@ -33,52 +32,7 @@ use crate::config;
 /// Validates a playlist name for use in file paths.
 #[allow(clippy::result_large_err)]
 fn validate_playlist_name(name: &str) -> Result<(), axum::response::Response> {
-    use super::super::safe_path::SafePath;
-    if name == "all_songs" || SafePath::validate_name(name).is_err() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "Invalid playlist name"})),
-        )
-            .into_response());
-    }
-    Ok(())
-}
-
-/// Returns the playlists directory, or an error response if not configured.
-#[allow(clippy::result_large_err)]
-fn require_playlists_dir(state: &WebUiState) -> Result<PathBuf, axum::response::Response> {
-    state.playlists_dir.clone().ok_or_else(|| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(json!({"error": "No playlists directory configured"})),
-        )
-            .into_response()
-    })
-}
-
-/// Resolves a playlist file path within the playlists directory, verifying
-/// that the result does not escape the directory via symlinks or other tricks.
-/// Uses SafePath for containment verification.
-#[allow(clippy::result_large_err)]
-fn resolve_playlist_path(
-    playlists_dir: &std::path::Path,
-    name: &str,
-    ext: &str,
-) -> Result<PathBuf, axum::response::Response> {
-    use super::super::safe_path::VerifiedRoot;
-
-    let root = VerifiedRoot::new(playlists_dir).map_err(|e| e.into_response())?;
-    // Name is pre-validated by validate_playlist_name (no "..", "/", "\", null).
-    // Joining a validated filename to a canonical root is safe.
-    let file_path = root.as_path().join(format!("{}.{}", name, ext));
-    if file_path.exists() {
-        // Verify existing file hasn't escaped via symlink.
-        let safe = super::super::safe_path::SafePath::resolve(&file_path, &root)
-            .map_err(|e| e.into_response())?;
-        Ok(safe.as_path().to_path_buf())
-    } else {
-        Ok(file_path)
-    }
+    validate_resource_name(name, "playlist", Some("all_songs"))
 }
 
 /// GET /api/playlists — list all playlists with name, song count, and active status.
@@ -146,7 +100,8 @@ pub(super) async fn put_playlist_by_name(
     Json(body): Json<PlaylistBody>,
 ) -> impl IntoResponse {
     validate_playlist_name(&name)?;
-    let playlists_dir = require_playlists_dir(&state)?;
+    let playlists_dir =
+        require_configured_dir(&state.playlists_dir, "playlists", StatusCode::NOT_FOUND)?;
 
     // Write the playlist YAML file.
     let playlist_config = config::Playlist::new(&body.songs);
@@ -161,21 +116,19 @@ pub(super) async fn put_playlist_by_name(
         }
     };
 
-    // Ensure the playlists directory exists.
-    if let Err(e) = std::fs::create_dir_all(&playlists_dir) {
-        return Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to create playlists directory: {}", e)})),
-        )
-            .into_response());
-    }
-
     // codeql[rust/path-injection] name is validated by validate_playlist_name; path is
-    // verified via canonicalize + starts_with containment in resolve_playlist_path.
-    let file_path = resolve_playlist_path(&playlists_dir, &name, "yaml")?;
-    if let Err(e) = config_io::atomic_write(&file_path, &yaml) {
-        return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e}))).into_response());
-    }
+    // verified via canonicalize + starts_with containment in resolve_resource_path.
+    let file_path = resolve_resource_path(&playlists_dir, &name, "yaml")?;
+
+    // Ensure directory exists and write atomically, off the async runtime.
+    let dir = playlists_dir.clone();
+    let fp = file_path.clone();
+    let yaml_owned = yaml;
+    super::helpers::spawn_blocking_io("write playlist", move || {
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        config_io::atomic_write(&fp, &yaml_owned)
+    })
+    .await?;
 
     // Reload songs to pick up the new playlist.
     state.player.reload_songs(
@@ -199,38 +152,28 @@ pub(super) async fn delete_playlist_by_name(
     Path(name): Path<String>,
 ) -> impl IntoResponse {
     validate_playlist_name(&name)?;
-    let playlists_dir = require_playlists_dir(&state)?;
+    let playlists_dir =
+        require_configured_dir(&state.playlists_dir, "playlists", StatusCode::NOT_FOUND)?;
 
     // codeql[rust/path-injection] name is validated by validate_playlist_name; path is
-    // verified via canonicalize + starts_with containment in resolve_playlist_path.
-    let file_path = resolve_playlist_path(&playlists_dir, &name, "yaml")?;
-    if !file_path.is_file() {
-        // Also check .yml extension.
-        let yml_path = resolve_playlist_path(&playlists_dir, &name, "yml")?;
-        if yml_path.is_file() {
-            std::fs::remove_file(&yml_path).map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": format!("Failed to delete file: {}", e)})),
-                )
-                    .into_response()
-            })?;
-        } else {
-            return Err((
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": format!("Playlist '{}' not found", name)})),
-            )
-                .into_response());
-        }
+    // verified via canonicalize + starts_with containment in resolve_resource_path.
+    let file_path = resolve_resource_path(&playlists_dir, &name, "yaml")?;
+    let yml_path = resolve_resource_path(&playlists_dir, &name, "yml")?;
+
+    // Determine which file to delete, then remove it off the async runtime.
+    let target = if file_path.is_file() {
+        file_path
+    } else if yml_path.is_file() {
+        yml_path
     } else {
-        std::fs::remove_file(&file_path).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("Failed to delete file: {}", e)})),
-            )
-                .into_response()
-        })?;
-    }
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": format!("Playlist '{}' not found", name)})),
+        )
+            .into_response());
+    };
+    super::helpers::spawn_blocking_io("delete playlist", move || std::fs::remove_file(&target))
+        .await?;
 
     // Reload songs to remove the playlist.
     state.player.reload_songs(

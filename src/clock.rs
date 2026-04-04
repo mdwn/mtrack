@@ -12,8 +12,10 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
+
+use crate::playsync::CancelHandle;
 
 /// A playback clock that provides elapsed time since playback started.
 ///
@@ -26,10 +28,17 @@ use std::time::{Duration, Instant};
 /// releases) before `elapsed()` returns meaningful values.
 #[derive(Clone)]
 pub struct PlaybackClock {
-    inner: Arc<ClockInner>,
+    inner: Arc<ClockShared>,
 }
 
-enum ClockInner {
+struct ClockShared {
+    source: ClockSource,
+    /// Condvar+Mutex used to wake threads waiting for `start()`.
+    start_condvar: Condvar,
+    start_mutex: Mutex<bool>,
+}
+
+enum ClockSource {
     /// Derives time from the audio interface's sample counter.
     Audio {
         sample_counter: Arc<AtomicU64>,
@@ -49,10 +58,14 @@ impl PlaybackClock {
     pub fn from_sample_counter(sample_counter: Arc<AtomicU64>, sample_rate: u32) -> Self {
         debug_assert!(sample_rate > 0, "sample_rate must be > 0");
         PlaybackClock {
-            inner: Arc::new(ClockInner::Audio {
-                sample_counter,
-                sample_rate,
-                start_sample: AtomicU64::new(u64::MAX),
+            inner: Arc::new(ClockShared {
+                source: ClockSource::Audio {
+                    sample_counter,
+                    sample_rate,
+                    start_sample: AtomicU64::new(u64::MAX),
+                },
+                start_condvar: Condvar::new(),
+                start_mutex: Mutex::new(false),
             }),
         }
     }
@@ -60,8 +73,12 @@ impl PlaybackClock {
     /// Creates a clock backed by `Instant::now()`.
     pub fn wall() -> Self {
         PlaybackClock {
-            inner: Arc::new(ClockInner::Wall {
-                start_instant: parking_lot::Mutex::new(None),
+            inner: Arc::new(ClockShared {
+                source: ClockSource::Wall {
+                    start_instant: parking_lot::Mutex::new(None),
+                },
+                start_condvar: Condvar::new(),
+                start_mutex: Mutex::new(false),
             }),
         }
     }
@@ -70,8 +87,8 @@ impl PlaybackClock {
     /// Called by `play_files` once all subsystems have signaled readiness.
     /// Subsystems wait for `elapsed() > Duration::ZERO` as the "go" signal.
     pub fn start(&self) {
-        match self.inner.as_ref() {
-            ClockInner::Audio {
+        match &self.inner.source {
+            ClockSource::Audio {
                 sample_counter,
                 start_sample,
                 ..
@@ -79,18 +96,42 @@ impl PlaybackClock {
                 let current = sample_counter.load(Ordering::Relaxed);
                 start_sample.store(current, Ordering::Relaxed);
             }
-            ClockInner::Wall { start_instant } => {
+            ClockSource::Wall { start_instant } => {
                 let mut guard = start_instant.lock();
                 *guard = Some(Instant::now());
             }
+        }
+        // Wake any threads blocked in wait_for_start_or_cancel.
+        {
+            let mut started = self.inner.start_mutex.lock().unwrap();
+            *started = true;
+        }
+        self.inner.start_condvar.notify_all();
+    }
+
+    /// Blocks until the clock has been started (`elapsed() > ZERO`) or the
+    /// cancel handle is cancelled. Uses a condvar instead of spinning.
+    pub fn wait_for_start_or_cancel(&self, cancel: &CancelHandle) {
+        let mut started = self.inner.start_mutex.lock().unwrap();
+        while !*started {
+            if cancel.is_cancelled() {
+                return;
+            }
+            // Use a short timeout so we can re-check the cancel handle.
+            let (guard, _) = self
+                .inner
+                .start_condvar
+                .wait_timeout(started, Duration::from_millis(10))
+                .unwrap();
+            started = guard;
         }
     }
 
     /// Returns the elapsed time since `start()` was called.
     /// Returns `Duration::ZERO` if `start()` has not been called yet.
     pub fn elapsed(&self) -> Duration {
-        match self.inner.as_ref() {
-            ClockInner::Audio {
+        match &self.inner.source {
+            ClockSource::Audio {
                 sample_counter,
                 sample_rate,
                 start_sample,
@@ -103,7 +144,7 @@ impl PlaybackClock {
                 let delta = current.saturating_sub(start);
                 Duration::from_secs_f64(delta as f64 / *sample_rate as f64)
             }
-            ClockInner::Wall { start_instant } => {
+            ClockSource::Wall { start_instant } => {
                 let guard = start_instant.lock();
                 match *guard {
                     Some(instant) => instant.elapsed(),

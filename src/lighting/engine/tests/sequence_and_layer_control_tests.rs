@@ -520,15 +520,24 @@ fn test_freeze_unfreeze_multiple_effects_same_layer() {
 
     // Let effects run
     let _commands1 = engine.update(Duration::from_millis(200), None).unwrap();
-    let commands_before = engine.update(Duration::from_millis(10), None).unwrap();
+    let commands_before = engine
+        .update(Duration::from_millis(10), None)
+        .unwrap()
+        .to_vec();
 
     // Freeze the layer
     engine.freeze_layer(EffectLayer::Background);
     assert!(engine.is_layer_frozen(EffectLayer::Background));
 
     // Update multiple times - values should stay frozen
-    let commands_frozen1 = engine.update(Duration::from_millis(500), None).unwrap();
-    let commands_frozen2 = engine.update(Duration::from_millis(500), None).unwrap();
+    let commands_frozen1 = engine
+        .update(Duration::from_millis(500), None)
+        .unwrap()
+        .to_vec();
+    let commands_frozen2 = engine
+        .update(Duration::from_millis(500), None)
+        .unwrap()
+        .to_vec();
 
     // Frozen commands should match (or be very close due to rounding)
     // Sort by channel for comparison

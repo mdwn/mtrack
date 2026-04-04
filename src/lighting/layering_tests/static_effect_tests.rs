@@ -83,7 +83,10 @@ fn test_static_replace_blend_mode() {
     engine.start_effect(static_effect).unwrap();
 
     // Check what the static effect produces
-    let commands = engine.update(Duration::from_secs(0), None).unwrap();
+    let commands = engine
+        .update(Duration::from_secs(0), None)
+        .unwrap()
+        .to_vec();
     println!("Static effect with replace blend mode:");
     for cmd in &commands {
         println!("  Channel {}: {}", cmd.channel, cmd.value);
@@ -153,9 +156,12 @@ fn test_static_effect_timing() {
     // Let it run for a bit
     engine.update(Duration::from_secs(1), None).unwrap();
 
-    let commands_1s = engine.update(Duration::from_secs(1), None).unwrap();
+    let commands_1s = engine
+        .update(Duration::from_secs(1), None)
+        .unwrap()
+        .to_vec();
     println!("Indefinite static at 1s:");
-    for cmd in &commands_1s {
+    for cmd in commands_1s {
         let channel_name = match cmd.channel {
             1 => "Red",
             2 => "Green",
@@ -194,7 +200,10 @@ fn test_static_effect_timing() {
     engine.start_effect(timed_static.clone()).unwrap();
 
     // Test at various times
-    let commands_1s_timed = engine.update(Duration::from_secs(1), None).unwrap();
+    let commands_1s_timed = engine
+        .update(Duration::from_secs(1), None)
+        .unwrap()
+        .to_vec();
     println!("\nTimed static at 1s (should be green):");
     for cmd in &commands_1s_timed {
         let channel_name = match cmd.channel {
@@ -211,7 +220,10 @@ fn test_static_effect_timing() {
         );
     }
 
-    let commands_4s = engine.update(Duration::from_secs(3), None).unwrap();
+    let commands_4s = engine
+        .update(Duration::from_secs(3), None)
+        .unwrap()
+        .to_vec();
     println!("\nTimed static at 4s (should be no commands - timed static ended, indefinite static was stopped):");
     println!("Active effects count: {}", engine.active_effects_count());
     for cmd in &commands_4s {
@@ -303,7 +315,10 @@ fn test_static_effect_with_up_time() {
     engine.start_effect(static_effect).unwrap();
 
     // Test at various times during fade-in
-    let commands_0s = engine.update(Duration::from_secs(0), None).unwrap();
+    let commands_0s = engine
+        .update(Duration::from_secs(0), None)
+        .unwrap()
+        .to_vec();
     println!("Static with up_time at 0s (should be off):");
     for cmd in &commands_0s {
         let channel_name = match cmd.channel {
@@ -321,7 +336,10 @@ fn test_static_effect_with_up_time() {
         );
     }
 
-    let commands_1s = engine.update(Duration::from_secs(1), None).unwrap();
+    let commands_1s = engine
+        .update(Duration::from_secs(1), None)
+        .unwrap()
+        .to_vec();
     println!("\nStatic with up_time at 1s (should be 50%):");
     for cmd in &commands_1s {
         let channel_name = match cmd.channel {
@@ -339,7 +357,10 @@ fn test_static_effect_with_up_time() {
         );
     }
 
-    let commands_2s = engine.update(Duration::from_secs(1), None).unwrap();
+    let commands_2s = engine
+        .update(Duration::from_secs(1), None)
+        .unwrap()
+        .to_vec();
     println!("\nStatic with up_time at 2s (should be 100%):");
     for cmd in &commands_2s {
         let channel_name = match cmd.channel {
@@ -357,7 +378,10 @@ fn test_static_effect_with_up_time() {
         );
     }
 
-    let commands_3s = engine.update(Duration::from_secs(1), None).unwrap();
+    let commands_3s = engine
+        .update(Duration::from_secs(1), None)
+        .unwrap()
+        .to_vec();
     println!("\nStatic with up_time at 3s (should still be 100%):");
     for cmd in &commands_3s {
         let channel_name = match cmd.channel {
@@ -453,7 +477,10 @@ fn test_static_effect_with_down_time() {
     engine.start_effect(static_effect.clone()).unwrap();
 
     // Test at various times during the effect
-    let commands_0s = engine.update(Duration::from_secs(0), None).unwrap();
+    let commands_0s = engine
+        .update(Duration::from_secs(0), None)
+        .unwrap()
+        .to_vec();
     println!("Static with down_time at 0s (should be off):");
     for cmd in &commands_0s {
         let channel_name = match cmd.channel {
@@ -471,7 +498,10 @@ fn test_static_effect_with_down_time() {
         );
     }
 
-    let commands_0_5s = engine.update(Duration::from_millis(500), None).unwrap();
+    let commands_0_5s = engine
+        .update(Duration::from_millis(500), None)
+        .unwrap()
+        .to_vec();
     println!("\nStatic with down_time at 0.5s (should be 50% fade in):");
     for cmd in &commands_0_5s {
         let channel_name = match cmd.channel {
@@ -489,7 +519,10 @@ fn test_static_effect_with_down_time() {
         );
     }
 
-    let commands_1s = engine.update(Duration::from_millis(500), None).unwrap();
+    let commands_1s = engine
+        .update(Duration::from_millis(500), None)
+        .unwrap()
+        .to_vec();
     println!("\nStatic with down_time at 1s (should be 100% - fade in complete):");
     for cmd in &commands_1s {
         let channel_name = match cmd.channel {
@@ -507,7 +540,10 @@ fn test_static_effect_with_down_time() {
         );
     }
 
-    let commands_2s = engine.update(Duration::from_secs(1), None).unwrap();
+    let commands_2s = engine
+        .update(Duration::from_secs(1), None)
+        .unwrap()
+        .to_vec();
     println!("\nStatic with down_time at 2s (should be 100% - hold phase):");
     for cmd in &commands_2s {
         let channel_name = match cmd.channel {
@@ -525,7 +561,10 @@ fn test_static_effect_with_down_time() {
         );
     }
 
-    let commands_3s = engine.update(Duration::from_secs(1), None).unwrap();
+    let commands_3s = engine
+        .update(Duration::from_secs(1), None)
+        .unwrap()
+        .to_vec();
     println!("\nStatic with down_time at 3s (should be 100% - end of hold phase):");
     for cmd in &commands_3s {
         let channel_name = match cmd.channel {
@@ -544,7 +583,10 @@ fn test_static_effect_with_down_time() {
     }
 
     // Test at 3.5s (middle of fade-out phase)
-    let commands_3_5s = engine.update(Duration::from_millis(500), None).unwrap();
+    let commands_3_5s = engine
+        .update(Duration::from_millis(500), None)
+        .unwrap()
+        .to_vec();
     println!("\nStatic with down_time at 3.5s (should be 75% - fade out phase):");
     for cmd in &commands_3_5s {
         let channel_name = match cmd.channel {
@@ -562,7 +604,10 @@ fn test_static_effect_with_down_time() {
         );
     }
 
-    let commands_4s = engine.update(Duration::from_secs(1), None).unwrap();
+    let commands_4s = engine
+        .update(Duration::from_secs(1), None)
+        .unwrap()
+        .to_vec();
     println!("\nStatic with down_time at 4s (should be 50% - middle of fade out):");
     for cmd in &commands_4s {
         let channel_name = match cmd.channel {
@@ -580,7 +625,10 @@ fn test_static_effect_with_down_time() {
         );
     }
 
-    let commands_5s = engine.update(Duration::from_secs(1), None).unwrap();
+    let commands_5s = engine
+        .update(Duration::from_secs(1), None)
+        .unwrap()
+        .to_vec();
     println!("\nStatic with down_time at 5s (should be 0% - effect ended):");
     for cmd in &commands_5s {
         let channel_name = match cmd.channel {
@@ -723,10 +771,13 @@ fn test_static_effect_fade_out() {
         (1500, "75%"),
         (2000, "End"),
     ] {
-        let commands = engine.update(Duration::from_millis(time_ms), None).unwrap();
+        let commands = engine
+            .update(Duration::from_millis(time_ms), None)
+            .unwrap()
+            .to_vec();
         println!("\nAt {} ({}ms):", description, time_ms);
 
-        for cmd in &commands {
+        for cmd in commands {
             let channel_name = match cmd.channel {
                 1 => "Dimmer",
                 2 => "Red",
@@ -744,7 +795,10 @@ fn test_static_effect_fade_out() {
     }
 
     // Verify the behavior
-    let final_commands = engine.update(Duration::from_millis(2000), None).unwrap();
+    let final_commands = engine
+        .update(Duration::from_millis(2000), None)
+        .unwrap()
+        .to_vec();
     assert!(final_commands.is_empty(), "Effect should have ended at 2s");
 
     println!("✅ Static effect fade-out test completed");

@@ -20,12 +20,11 @@ use std::{
         mpsc, Arc,
     },
     thread,
-    time::Duration,
 };
 
 use tracing::{info, span, Level};
 
-use crate::{playsync::CancelHandle, songs::Song};
+use crate::songs::Song;
 
 /// A mock device. Doesn't actually play anything.
 #[derive(Clone)]
@@ -56,15 +55,15 @@ impl crate::audio::Device for Device {
         &self,
         song: Arc<Song>,
         _: &HashMap<String, Vec<u16>>,
-        cancel_handle: CancelHandle,
-        ready_tx: std::sync::mpsc::Sender<()>,
-        clock: crate::clock::PlaybackClock,
-        start_time: Duration,
-        _loop_break: Arc<AtomicBool>,
-        _active_section: Arc<parking_lot::RwLock<Option<crate::player::SectionBounds>>>,
-        _section_loop_break: Arc<AtomicBool>,
-        _loop_time_consumed: Arc<parking_lot::Mutex<Duration>>,
+        sync: crate::playsync::PlaybackSync,
     ) -> Result<(), Box<dyn Error>> {
+        let crate::playsync::PlaybackSync {
+            cancel_handle,
+            ready_tx,
+            clock,
+            start_time,
+            ..
+        } = sync;
         let span = span!(Level::INFO, "play song (mock)");
         let _enter = span.enter();
 
@@ -87,15 +86,7 @@ impl crate::audio::Device for Device {
             thread::spawn(move || {
                 let _ = ready_tx.send(());
 
-                while clock.elapsed() == Duration::ZERO {
-                    if cancel_handle.is_cancelled() {
-                        finished.store(true, Ordering::Relaxed);
-                        cancel_handle.notify();
-                        return;
-                    }
-                    std::hint::spin_loop();
-                }
-
+                clock.wait_for_start_or_cancel(&cancel_handle);
                 if cancel_handle.is_cancelled() {
                     finished.store(true, Ordering::Relaxed);
                     cancel_handle.notify();
@@ -166,8 +157,9 @@ mod tests {
     fn play_from_zero_duration_completes() {
         use crate::audio::Device as DeviceTrait;
         use crate::clock::PlaybackClock;
-        use crate::playsync::CancelHandle;
+        use crate::playsync::{CancelHandle, PlaybackSync};
         use crate::songs::Song;
+        use std::time::Duration;
 
         let device = Device::get("mock-zero");
         // new_for_test creates a song with Duration::ZERO
@@ -187,14 +179,13 @@ mod tests {
             let _ = device_clone.play_from(
                 song,
                 &mappings,
-                cancel_clone,
-                ready_tx,
-                clock_clone,
-                Duration::from_millis(0),
-                Arc::new(AtomicBool::new(false)),
-                Arc::new(parking_lot::RwLock::new(None)),
-                Arc::new(AtomicBool::new(false)),
-                Arc::new(parking_lot::Mutex::new(Duration::ZERO)),
+                PlaybackSync {
+                    cancel_handle: cancel_clone,
+                    ready_tx,
+                    clock: clock_clone,
+                    start_time: Duration::from_millis(0),
+                    loop_control: crate::playsync::LoopControl::new(),
+                },
             );
         });
 
@@ -213,8 +204,9 @@ mod tests {
     fn play_from_with_start_time_offset() {
         use crate::audio::Device as DeviceTrait;
         use crate::clock::PlaybackClock;
-        use crate::playsync::CancelHandle;
+        use crate::playsync::{CancelHandle, PlaybackSync};
         use crate::songs::Song;
+        use std::time::Duration;
 
         let device = Device::get("mock-offset");
         // new_for_test creates zero-duration song; start_time > duration => saturating_sub → 0
@@ -232,14 +224,13 @@ mod tests {
             let _ = device_clone.play_from(
                 song,
                 &mappings,
-                cancel_clone,
-                ready_tx,
-                clock_clone,
-                Duration::from_secs(1), // Start offset > duration → remaining = 0
-                Arc::new(AtomicBool::new(false)),
-                Arc::new(parking_lot::RwLock::new(None)),
-                Arc::new(AtomicBool::new(false)),
-                Arc::new(parking_lot::Mutex::new(Duration::ZERO)),
+                PlaybackSync {
+                    cancel_handle: cancel_clone,
+                    ready_tx,
+                    clock: clock_clone,
+                    start_time: Duration::from_secs(1), // Start offset > duration → remaining = 0
+                    loop_control: crate::playsync::LoopControl::new(),
+                },
             );
         });
 
@@ -253,8 +244,9 @@ mod tests {
     fn play_from_cancel_before_barrier() {
         use crate::audio::Device as DeviceTrait;
         use crate::clock::PlaybackClock;
-        use crate::playsync::CancelHandle;
+        use crate::playsync::{CancelHandle, PlaybackSync};
         use crate::songs::Song;
+        use std::time::Duration;
 
         let device = Device::get("mock-precancel");
         let song = Arc::new(Song::new_for_test("song", &["t1"]));
@@ -274,14 +266,13 @@ mod tests {
             let _ = device_clone.play_from(
                 song,
                 &mappings,
-                cancel_clone,
-                ready_tx,
-                clock_clone,
-                Duration::from_millis(0),
-                Arc::new(AtomicBool::new(false)),
-                Arc::new(parking_lot::RwLock::new(None)),
-                Arc::new(AtomicBool::new(false)),
-                Arc::new(parking_lot::Mutex::new(Duration::ZERO)),
+                PlaybackSync {
+                    cancel_handle: cancel_clone,
+                    ready_tx,
+                    clock: clock_clone,
+                    start_time: Duration::from_millis(0),
+                    loop_control: crate::playsync::LoopControl::new(),
+                },
             );
         });
 

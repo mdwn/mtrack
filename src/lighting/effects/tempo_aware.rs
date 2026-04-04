@@ -55,87 +55,76 @@ fn beats_to_duration_secs(
     }
 }
 
-/// Tempo-aware speed specification that can adapt to tempo changes
+/// Tempo-aware value specification that can adapt to tempo changes.
+///
+/// Used for both speed (cycles per second) and frequency (Hz) parameters,
+/// since both resolve identically: the value either is a fixed rate or is
+/// derived from a musical duration (measures, beats, seconds) via 1/period.
 #[derive(Debug, Clone, PartialEq)]
-pub enum TempoAwareSpeed {
-    /// Fixed speed in cycles per second (not tempo-aware)
+pub enum TempoAwareValue {
+    /// Fixed rate (not tempo-aware)
     Fixed(f64),
-    /// Speed specified in measures (tempo-aware)
+    /// Rate specified in measures (tempo-aware)
     Measures(f64),
-    /// Speed specified in beats (tempo-aware)
+    /// Rate specified in beats (tempo-aware)
     Beats(f64),
-    /// Speed specified in seconds (fixed, not tempo-aware)
+    /// Rate specified in seconds (fixed, not tempo-aware)
     Seconds(f64),
 }
 
-impl TempoAwareSpeed {
-    /// Get the current speed in cycles per second, using tempo map if available
+impl TempoAwareValue {
+    /// Get the current rate (cycles per second / Hz), using tempo map if available
+    pub fn to_rate(
+        &self,
+        tempo_map: Option<&crate::lighting::tempo::TempoMap>,
+        at_time: Duration,
+    ) -> f64 {
+        match self {
+            TempoAwareValue::Fixed(rate) => *rate,
+            TempoAwareValue::Seconds(duration) => duration_to_rate(*duration),
+            TempoAwareValue::Measures(measures) => {
+                if *measures <= 0.0 {
+                    return 0.0;
+                }
+                let duration_secs = measures_to_duration_secs(*measures, tempo_map, at_time);
+                duration_to_rate(duration_secs)
+            }
+            TempoAwareValue::Beats(beats) => {
+                if *beats <= 0.0 {
+                    return 0.0;
+                }
+                let duration_secs = beats_to_duration_secs(*beats, tempo_map, at_time);
+                duration_to_rate(duration_secs)
+            }
+        }
+    }
+
+    /// Alias for `to_rate` — reads naturally when the value represents speed (cycles per second).
+    #[inline]
     pub fn to_cycles_per_second(
         &self,
         tempo_map: Option<&crate::lighting::tempo::TempoMap>,
         at_time: Duration,
     ) -> f64 {
-        match self {
-            TempoAwareSpeed::Fixed(speed) => *speed,
-            TempoAwareSpeed::Seconds(duration) => duration_to_rate(*duration),
-            TempoAwareSpeed::Measures(measures) => {
-                if *measures <= 0.0 {
-                    return 0.0; // Zero/negative measures means stopped
-                }
-                let duration_secs = measures_to_duration_secs(*measures, tempo_map, at_time);
-                duration_to_rate(duration_secs)
-            }
-            TempoAwareSpeed::Beats(beats) => {
-                if *beats <= 0.0 {
-                    return 0.0; // Zero/negative beats means stopped
-                }
-                let duration_secs = beats_to_duration_secs(*beats, tempo_map, at_time);
-                duration_to_rate(duration_secs)
-            }
-        }
+        self.to_rate(tempo_map, at_time)
     }
-}
 
-/// Tempo-aware frequency specification that can adapt to tempo changes
-#[derive(Debug, Clone, PartialEq)]
-pub enum TempoAwareFrequency {
-    /// Fixed frequency in Hz (not tempo-aware)
-    Fixed(f64),
-    /// Frequency specified in measures (tempo-aware)
-    Measures(f64),
-    /// Frequency specified in beats (tempo-aware)
-    Beats(f64),
-    /// Frequency specified in seconds (fixed, not tempo-aware)
-    Seconds(f64),
-}
-
-impl TempoAwareFrequency {
-    /// Get the current frequency in Hz, using tempo map if available
+    /// Alias for `to_rate` — reads naturally when the value represents frequency (Hz).
+    #[inline]
     pub fn to_hz(
         &self,
         tempo_map: Option<&crate::lighting::tempo::TempoMap>,
         at_time: Duration,
     ) -> f64 {
-        match self {
-            TempoAwareFrequency::Fixed(freq) => *freq,
-            TempoAwareFrequency::Seconds(duration) => duration_to_rate(*duration),
-            TempoAwareFrequency::Measures(measures) => {
-                if *measures <= 0.0 {
-                    return 0.0; // Zero/negative measures means stopped
-                }
-                let duration_secs = measures_to_duration_secs(*measures, tempo_map, at_time);
-                duration_to_rate(duration_secs)
-            }
-            TempoAwareFrequency::Beats(beats) => {
-                if *beats <= 0.0 {
-                    return 0.0; // Zero/negative beats means stopped
-                }
-                let duration_secs = beats_to_duration_secs(*beats, tempo_map, at_time);
-                duration_to_rate(duration_secs)
-            }
-        }
+        self.to_rate(tempo_map, at_time)
     }
 }
+
+/// Type alias for tempo-aware speed parameters (cycles per second).
+pub type TempoAwareSpeed = TempoAwareValue;
+
+/// Type alias for tempo-aware frequency parameters (Hz).
+pub type TempoAwareFrequency = TempoAwareValue;
 
 #[cfg(test)]
 mod tests {
@@ -163,163 +152,121 @@ mod tests {
         assert_eq!(duration_to_rate(-1.0), 0.0);
     }
 
-    // ── TempoAwareSpeed — Fixed ────────────────────────────────────
+    // ── TempoAwareValue — Fixed ────────────────────────────────────
 
     #[test]
-    fn speed_fixed() {
+    fn value_fixed() {
+        let val = TempoAwareValue::Fixed(2.5);
+        assert!((val.to_rate(None, Duration::ZERO) - 2.5).abs() < 1e-9);
+    }
+
+    // ── TempoAwareValue — Seconds ──────────────────────────────────
+
+    #[test]
+    fn value_seconds() {
+        let val = TempoAwareValue::Seconds(4.0);
+        assert!((val.to_rate(None, Duration::ZERO) - 0.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn value_seconds_zero() {
+        let val = TempoAwareValue::Seconds(0.0);
+        assert_eq!(val.to_rate(None, Duration::ZERO), 0.0);
+    }
+
+    // ── TempoAwareValue — Beats (no tempo map -> fallback 120 BPM) ─
+
+    #[test]
+    fn value_beats_no_tempo_map() {
+        // 1 beat at 120 BPM = 0.5 seconds -> rate = 2.0
+        let val = TempoAwareValue::Beats(1.0);
+        let rate = val.to_rate(None, Duration::ZERO);
+        assert!((rate - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn value_beats_two_beats_no_tempo_map() {
+        // 2 beats at 120 BPM = 1.0 second -> rate = 1.0
+        let val = TempoAwareValue::Beats(2.0);
+        let rate = val.to_rate(None, Duration::ZERO);
+        assert!((rate - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn value_beats_zero() {
+        let val = TempoAwareValue::Beats(0.0);
+        assert_eq!(val.to_rate(None, Duration::ZERO), 0.0);
+    }
+
+    #[test]
+    fn value_beats_negative() {
+        let val = TempoAwareValue::Beats(-1.0);
+        assert_eq!(val.to_rate(None, Duration::ZERO), 0.0);
+    }
+
+    // ── TempoAwareValue — Measures (no tempo map -> fallback) ──────
+
+    #[test]
+    fn value_measures_no_tempo_map() {
+        // 1 measure = 4 beats at 120 BPM = 2.0 seconds -> rate = 0.5
+        let val = TempoAwareValue::Measures(1.0);
+        let rate = val.to_rate(None, Duration::ZERO);
+        assert!((rate - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn value_measures_zero() {
+        let val = TempoAwareValue::Measures(0.0);
+        assert_eq!(val.to_rate(None, Duration::ZERO), 0.0);
+    }
+
+    #[test]
+    fn value_measures_negative() {
+        let val = TempoAwareValue::Measures(-1.0);
+        assert_eq!(val.to_rate(None, Duration::ZERO), 0.0);
+    }
+
+    // ── Aliases work identically ───────────────────────────────────
+
+    #[test]
+    fn speed_alias_works() {
         let speed = TempoAwareSpeed::Fixed(2.5);
         assert!((speed.to_cycles_per_second(None, Duration::ZERO) - 2.5).abs() < 1e-9);
     }
 
-    // ── TempoAwareSpeed — Seconds ──────────────────────────────────
-
     #[test]
-    fn speed_seconds() {
-        let speed = TempoAwareSpeed::Seconds(4.0);
-        // 1 cycle per 4 seconds = 0.25 cps
-        assert!((speed.to_cycles_per_second(None, Duration::ZERO) - 0.25).abs() < 1e-9);
-    }
-
-    #[test]
-    fn speed_seconds_zero() {
-        let speed = TempoAwareSpeed::Seconds(0.0);
-        assert_eq!(speed.to_cycles_per_second(None, Duration::ZERO), 0.0);
-    }
-
-    // ── TempoAwareSpeed — Beats (no tempo map → fallback 120 BPM) ─
-
-    #[test]
-    fn speed_beats_no_tempo_map() {
-        // 1 beat at 120 BPM = 0.5 seconds → rate = 2.0 cps
-        let speed = TempoAwareSpeed::Beats(1.0);
-        let cps = speed.to_cycles_per_second(None, Duration::ZERO);
-        assert!((cps - 2.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn speed_beats_two_beats_no_tempo_map() {
-        // 2 beats at 120 BPM = 1.0 second → rate = 1.0 cps
-        let speed = TempoAwareSpeed::Beats(2.0);
-        let cps = speed.to_cycles_per_second(None, Duration::ZERO);
-        assert!((cps - 1.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn speed_beats_zero() {
-        let speed = TempoAwareSpeed::Beats(0.0);
-        assert_eq!(speed.to_cycles_per_second(None, Duration::ZERO), 0.0);
-    }
-
-    #[test]
-    fn speed_beats_negative() {
-        let speed = TempoAwareSpeed::Beats(-1.0);
-        assert_eq!(speed.to_cycles_per_second(None, Duration::ZERO), 0.0);
-    }
-
-    // ── TempoAwareSpeed — Measures (no tempo map → fallback) ──────
-
-    #[test]
-    fn speed_measures_no_tempo_map() {
-        // 1 measure = 4 beats at 120 BPM = 2.0 seconds → rate = 0.5 cps
-        let speed = TempoAwareSpeed::Measures(1.0);
-        let cps = speed.to_cycles_per_second(None, Duration::ZERO);
-        assert!((cps - 0.5).abs() < 1e-9);
-    }
-
-    #[test]
-    fn speed_measures_zero() {
-        let speed = TempoAwareSpeed::Measures(0.0);
-        assert_eq!(speed.to_cycles_per_second(None, Duration::ZERO), 0.0);
-    }
-
-    #[test]
-    fn speed_measures_negative() {
-        let speed = TempoAwareSpeed::Measures(-1.0);
-        assert_eq!(speed.to_cycles_per_second(None, Duration::ZERO), 0.0);
-    }
-
-    // ── TempoAwareFrequency — Fixed ────────────────────────────────
-
-    #[test]
-    fn freq_fixed() {
+    fn frequency_alias_works() {
         let freq = TempoAwareFrequency::Fixed(10.0);
         assert!((freq.to_hz(None, Duration::ZERO) - 10.0).abs() < 1e-9);
     }
 
-    // ── TempoAwareFrequency — Seconds ──────────────────────────────
+    // ── TempoAwareValue with TempoMap ──────────────────────────────
 
     #[test]
-    fn freq_seconds() {
-        let freq = TempoAwareFrequency::Seconds(0.5);
-        // 1 / 0.5 = 2.0 Hz
-        assert!((freq.to_hz(None, Duration::ZERO) - 2.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn freq_seconds_zero() {
-        let freq = TempoAwareFrequency::Seconds(0.0);
-        assert_eq!(freq.to_hz(None, Duration::ZERO), 0.0);
-    }
-
-    // ── TempoAwareFrequency — Beats (no tempo map) ─────────────────
-
-    #[test]
-    fn freq_beats_no_tempo_map() {
-        // 1 beat at 120 BPM = 0.5s → 2.0 Hz
-        let freq = TempoAwareFrequency::Beats(1.0);
-        let hz = freq.to_hz(None, Duration::ZERO);
-        assert!((hz - 2.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn freq_beats_zero() {
-        let freq = TempoAwareFrequency::Beats(0.0);
-        assert_eq!(freq.to_hz(None, Duration::ZERO), 0.0);
-    }
-
-    // ── TempoAwareFrequency — Measures (no tempo map) ──────────────
-
-    #[test]
-    fn freq_measures_no_tempo_map() {
-        // 1 measure = 4 beats at 120 BPM = 2.0s → 0.5 Hz
-        let freq = TempoAwareFrequency::Measures(1.0);
-        let hz = freq.to_hz(None, Duration::ZERO);
-        assert!((hz - 0.5).abs() < 1e-9);
-    }
-
-    #[test]
-    fn freq_measures_zero() {
-        let freq = TempoAwareFrequency::Measures(0.0);
-        assert_eq!(freq.to_hz(None, Duration::ZERO), 0.0);
-    }
-
-    // ── TempoAwareSpeed with TempoMap ──────────────────────────────
-
-    #[test]
-    fn speed_beats_with_tempo_map() {
+    fn value_beats_with_tempo_map() {
         use crate::lighting::tempo::{TempoMap, TimeSignature};
         let tm = TempoMap::new(Duration::ZERO, 90.0, TimeSignature::new(4, 4), vec![]);
-        // 1 beat at 90 BPM = 60/90 = 0.667s → rate ≈ 1.5 cps
-        let speed = TempoAwareSpeed::Beats(1.0);
-        let cps = speed.to_cycles_per_second(Some(&tm), Duration::ZERO);
-        assert!((cps - 1.5).abs() < 0.01);
+        // 1 beat at 90 BPM = 60/90 = 0.667s -> rate ~ 1.5
+        let val = TempoAwareValue::Beats(1.0);
+        let rate = val.to_rate(Some(&tm), Duration::ZERO);
+        assert!((rate - 1.5).abs() < 0.01);
     }
 
     #[test]
-    fn speed_measures_with_tempo_map() {
+    fn value_measures_with_tempo_map() {
         use crate::lighting::tempo::{TempoMap, TimeSignature};
         let tm = TempoMap::new(Duration::ZERO, 60.0, TimeSignature::new(4, 4), vec![]);
-        // 1 measure = 4 beats at 60 BPM = 4.0s → rate = 0.25 cps
-        let speed = TempoAwareSpeed::Measures(1.0);
-        let cps = speed.to_cycles_per_second(Some(&tm), Duration::ZERO);
-        assert!((cps - 0.25).abs() < 0.01);
+        // 1 measure = 4 beats at 60 BPM = 4.0s -> rate = 0.25
+        let val = TempoAwareValue::Measures(1.0);
+        let rate = val.to_rate(Some(&tm), Duration::ZERO);
+        assert!((rate - 0.25).abs() < 0.01);
     }
 
     #[test]
-    fn freq_beats_with_tempo_map() {
+    fn value_beats_with_tempo_map_via_hz() {
         use crate::lighting::tempo::{TempoMap, TimeSignature};
         let tm = TempoMap::new(Duration::ZERO, 60.0, TimeSignature::new(4, 4), vec![]);
-        // 1 beat at 60 BPM = 1.0s → 1.0 Hz
+        // 1 beat at 60 BPM = 1.0s -> 1.0 Hz
         let freq = TempoAwareFrequency::Beats(1.0);
         let hz = freq.to_hz(Some(&tm), Duration::ZERO);
         assert!((hz - 1.0).abs() < 0.01);

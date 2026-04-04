@@ -15,6 +15,7 @@
 pub(crate) mod browse;
 pub(crate) mod config_api;
 pub(crate) mod devices;
+pub(crate) mod helpers;
 pub(crate) mod lighting_api;
 pub(crate) mod playlists;
 pub(crate) mod profiles;

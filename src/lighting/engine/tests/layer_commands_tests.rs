@@ -115,9 +115,18 @@ fn test_freeze_unfreeze_layer() {
     assert!(engine.is_layer_frozen(EffectLayer::Background));
 
     // Update multiple times - the values should stay the same while frozen
-    let commands_frozen1 = engine.update(Duration::from_millis(100), None).unwrap();
-    let commands_frozen2 = engine.update(Duration::from_millis(100), None).unwrap();
-    let commands_frozen3 = engine.update(Duration::from_millis(500), None).unwrap();
+    let commands_frozen1 = engine
+        .update(Duration::from_millis(100), None)
+        .unwrap()
+        .to_vec();
+    let commands_frozen2 = engine
+        .update(Duration::from_millis(100), None)
+        .unwrap()
+        .to_vec();
+    let commands_frozen3 = engine
+        .update(Duration::from_millis(500), None)
+        .unwrap()
+        .to_vec();
 
     assert!(!commands_frozen1.is_empty());
     assert!(!commands_frozen2.is_empty());
@@ -148,8 +157,14 @@ fn test_freeze_unfreeze_layer() {
     assert!(!engine.is_layer_frozen(EffectLayer::Background));
 
     // After unfreezing, the effect should resume and values should change
-    let commands_after1 = engine.update(Duration::from_millis(100), None).unwrap();
-    let commands_after2 = engine.update(Duration::from_millis(200), None).unwrap();
+    let commands_after1 = engine
+        .update(Duration::from_millis(100), None)
+        .unwrap()
+        .to_vec();
+    let commands_after2 = engine
+        .update(Duration::from_millis(200), None)
+        .unwrap()
+        .to_vec();
 
     assert!(!commands_after1.is_empty());
     assert!(!commands_after2.is_empty());
@@ -468,8 +483,14 @@ fn test_speed_master_affects_effect_progression() {
 
     // With speed = 0, elapsed time stays at same effective position
     // So values should stay similar
-    let cmd2 = engine.update(Duration::from_millis(500), None).unwrap();
-    let cmd3 = engine.update(Duration::from_millis(500), None).unwrap();
+    let cmd2 = engine
+        .update(Duration::from_millis(500), None)
+        .unwrap()
+        .to_vec();
+    let cmd3 = engine
+        .update(Duration::from_millis(500), None)
+        .unwrap()
+        .to_vec();
 
     assert!(!cmd2.is_empty());
     assert!(!cmd3.is_empty());
@@ -526,8 +547,14 @@ fn test_speed_master_resume_from_zero() {
     engine.set_layer_speed_master(EffectLayer::Background, 1.0);
 
     // The effect should now progress from where it was frozen
-    let resume_cmd1 = engine.update(Duration::from_millis(100), None).unwrap();
-    let resume_cmd2 = engine.update(Duration::from_millis(100), None).unwrap();
+    let resume_cmd1 = engine
+        .update(Duration::from_millis(100), None)
+        .unwrap()
+        .to_vec();
+    let resume_cmd2 = engine
+        .update(Duration::from_millis(100), None)
+        .unwrap()
+        .to_vec();
 
     // After resuming, values should change (effect is running again)
     // We can't predict exact values due to sinusoidal pulse, but they should differ

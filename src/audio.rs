@@ -12,11 +12,11 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 use std::any::Any;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::{error::Error, fmt, sync::Arc, time::Duration};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::{error::Error, fmt, sync::Arc};
 
 use crate::config;
-use crate::playsync::CancelHandle;
+use crate::playsync::PlaybackSync;
 use crate::songs::Song;
 use std::collections::HashMap;
 
@@ -48,7 +48,6 @@ pub fn next_source_id() -> u64 {
 /// Type alias for the channel sender used to add sources to the mixer.
 pub type SourceSender = crossbeam_channel::Sender<mixer::ActiveSource>;
 
-#[allow(clippy::too_many_arguments)]
 pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {
     /// Plays the given song through the audio interface, starting from a specific time.
     /// The `ready_tx` sender signals that setup is complete. The implementation should
@@ -58,14 +57,7 @@ pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {
         &self,
         song: Arc<Song>,
         mappings: &HashMap<String, Vec<u16>>,
-        cancel_handle: CancelHandle,
-        ready_tx: std::sync::mpsc::Sender<()>,
-        clock: crate::clock::PlaybackClock,
-        start_time: Duration,
-        loop_break: Arc<AtomicBool>,
-        active_section: Arc<parking_lot::RwLock<Option<crate::player::SectionBounds>>>,
-        section_loop_break: Arc<AtomicBool>,
-        loop_time_consumed: Arc<parking_lot::Mutex<Duration>>,
+        sync: PlaybackSync,
     ) -> Result<(), Box<dyn Error>>;
 
     /// Gets the mixer for adding triggered samples.
@@ -185,14 +177,7 @@ mod test {
                 &self,
                 _song: Arc<Song>,
                 _mappings: &HashMap<String, Vec<u16>>,
-                _cancel_handle: CancelHandle,
-                _ready_tx: std::sync::mpsc::Sender<()>,
-                _clock: crate::clock::PlaybackClock,
-                _start_time: Duration,
-                _loop_break: Arc<AtomicBool>,
-                _active_section: Arc<parking_lot::RwLock<Option<crate::player::SectionBounds>>>,
-                _section_loop_break: Arc<AtomicBool>,
-                _loop_time_consumed: Arc<parking_lot::Mutex<Duration>>,
+                _sync: PlaybackSync,
             ) -> Result<(), Box<dyn Error>> {
                 Ok(())
             }

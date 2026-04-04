@@ -311,7 +311,7 @@ impl EffectEngine {
         &mut self,
         dt: Duration,
         song_time: Option<Duration>,
-    ) -> Result<Vec<DmxCommand>, EffectError> {
+    ) -> Result<&[DmxCommand], EffectError> {
         self.update_subphase.store(10, Ordering::Relaxed);
         self.current_time += dt;
         self.engine_elapsed += dt;
@@ -331,7 +331,7 @@ impl EffectEngine {
             // Unchanged since last frame — return cached commands.
             if store_gen == self.last_store_generation {
                 self.update_subphase.store(0, Ordering::Relaxed);
-                return Ok(self.cached_commands.clone());
+                return Ok(&self.cached_commands);
             }
 
             // Store changed — rebuild commands directly from store (no intermediate
@@ -369,10 +369,10 @@ impl EffectEngine {
                 }
             }
 
-            self.cached_commands.clone_from(&commands);
+            self.cached_commands = commands;
             self.last_store_generation = store_gen;
             self.update_subphase.store(0, Ordering::Relaxed);
-            return Ok(commands);
+            return Ok(&self.cached_commands);
         }
 
         // Cache-only fast path: effects existed previously but are now done,
@@ -386,7 +386,7 @@ impl EffectEngine {
                 .unwrap_or(0);
             if store_gen == self.last_store_generation {
                 self.update_subphase.store(0, Ordering::Relaxed);
-                return Ok(self.cached_commands.clone());
+                return Ok(&self.cached_commands);
             }
         }
 
@@ -637,7 +637,7 @@ impl EffectEngine {
 
         // Cache commands and store generation for fast-path short-circuit on
         // subsequent frames where nothing changes.
-        self.cached_commands = commands.clone();
+        self.cached_commands = commands;
         self.last_store_generation = self
             .midi_dmx_store
             .as_ref()
@@ -646,7 +646,7 @@ impl EffectEngine {
         self.cache_dirty = false;
 
         self.update_subphase.store(0, Ordering::Relaxed);
-        Ok(commands)
+        Ok(&self.cached_commands)
     }
 
     /// Stop all active effects

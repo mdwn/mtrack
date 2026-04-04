@@ -451,7 +451,7 @@ fn test_dimmer_precedence_and_selective_dimming() {
     let commands = engine.update(Duration::from_millis(0), None).unwrap();
 
     println!("Commands: {:?}", commands);
-    for cmd in &commands {
+    for cmd in commands {
         let channel_name = match cmd.channel {
             1 => "Red",
             2 => "Green",
@@ -497,7 +497,7 @@ fn test_dimmer_precedence_and_selective_dimming() {
             .unwrap();
         previous_time = time_ms;
         println!("\n  At {} ({}ms):", description, time_ms);
-        for cmd in &commands {
+        for cmd in commands {
             let channel_name = match cmd.channel {
                 1 => "Red",
                 2 => "Green",
@@ -598,7 +598,7 @@ fn test_dimmer_debug() {
     let commands = engine.update(Duration::from_millis(16), None).unwrap();
 
     println!("Commands at start:");
-    for cmd in &commands {
+    for cmd in commands {
         println!("  Channel {}: {}", cmd.channel, cmd.value);
     }
 
@@ -607,7 +607,7 @@ fn test_dimmer_debug() {
     let commands = engine.update(Duration::from_millis(16), None).unwrap();
 
     println!("Commands at middle (should be dimmed blue):");
-    for cmd in &commands {
+    for cmd in commands {
         println!("  Channel {}: {}", cmd.channel, cmd.value);
     }
 
@@ -692,7 +692,7 @@ fn test_static_with_dimmer_parameter() {
     // Check what the static effect produces
     let commands = engine.update(Duration::from_secs(0), None).unwrap();
     println!("Static effect with dimmer parameter:");
-    for cmd in &commands {
+    for cmd in commands {
         println!("  Channel {}: {}", cmd.channel, cmd.value);
     }
 
@@ -715,7 +715,7 @@ fn test_static_with_dimmer_parameter() {
     // Check what happens with the dimmer effect
     let commands = engine.update(Duration::from_secs(500), None).unwrap(); // 50% through dimmer
     println!("\nWith dimmer effect (50% through):");
-    for cmd in &commands {
+    for cmd in commands {
         println!("  Channel {}: {}", cmd.channel, cmd.value);
     }
 
@@ -793,7 +793,7 @@ fn test_dimmer_replace_vs_multiply() {
     let commands = engine.update(Duration::from_millis(16), None).unwrap();
 
     println!("Commands with Replace blend mode:");
-    for cmd in &commands {
+    for cmd in commands {
         println!("  Channel {}: {}", cmd.channel, cmd.value);
     }
 
@@ -839,7 +839,7 @@ fn test_dimmer_replace_vs_multiply() {
     let commands = engine2.update(Duration::from_millis(16), None).unwrap();
 
     println!("Commands with Multiply blend mode:");
-    for cmd in &commands {
+    for cmd in commands {
         println!("  Channel {}: {}", cmd.channel, cmd.value);
     }
 
@@ -920,7 +920,7 @@ fn test_astera_pixelblock_dimmer() {
     let commands = engine.update(Duration::from_millis(16), None).unwrap();
 
     println!("Commands with Astera PixelBlock fixture:");
-    for cmd in &commands {
+    for cmd in commands {
         println!("  Channel {}: {}", cmd.channel, cmd.value);
     }
 
@@ -962,7 +962,7 @@ fn test_astera_pixelblock_dimmer() {
     let commands = engine2.update(Duration::from_millis(16), None).unwrap();
 
     println!("Commands with Replace blend mode:");
-    for cmd in &commands {
+    for cmd in commands {
         println!("  Channel {}: {}", cmd.channel, cmd.value);
     }
 
@@ -1282,7 +1282,7 @@ fn test_multiple_dimmer_fade_to_black() {
     let final_commands = engine.update(Duration::from_millis(2000), None).unwrap();
     // Dimmers persist at 0.0, so dimmer channels should be 0
     // (or no commands if fixtures have no RGB to emit)
-    for cmd in &final_commands {
+    for cmd in final_commands {
         assert_eq!(cmd.value, 0, "Dimmer should persist at 0 after completion");
     }
 
