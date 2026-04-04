@@ -67,7 +67,7 @@ fn test_chase_fixture_boundaries() {
     // At t=0ms: first fixture should be active (pattern_index = 0)
     let commands = engine.update(Duration::from_millis(0), None).unwrap();
     assert_eq!(
-        count_active(&commands),
+        count_active(commands),
         1,
         "At t=0ms exactly one fixture should be active"
     );
@@ -75,7 +75,7 @@ fn test_chase_fixture_boundaries() {
     // At t=350ms: second fixture should be active (past 333.33ms)
     let commands = engine.update(Duration::from_millis(350), None).unwrap();
     assert_eq!(
-        count_active(&commands),
+        count_active(commands),
         1,
         "At t=350ms exactly one fixture should be active"
     );
@@ -83,7 +83,7 @@ fn test_chase_fixture_boundaries() {
     // At t=700ms: third fixture should be active (past 666.66ms)
     let commands = engine.update(Duration::from_millis(350), None).unwrap();
     assert_eq!(
-        count_active(&commands),
+        count_active(commands),
         1,
         "At t=700ms exactly one fixture should be active"
     );
@@ -91,7 +91,7 @@ fn test_chase_fixture_boundaries() {
     // At t=1050ms: should wrap back (past 1000ms)
     let commands = engine.update(Duration::from_millis(350), None).unwrap();
     assert_eq!(
-        count_active(&commands),
+        count_active(commands),
         1,
         "At t=1050ms exactly one fixture should be active (wrapped)"
     );

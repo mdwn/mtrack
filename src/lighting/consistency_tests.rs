@@ -190,9 +190,9 @@ mod tests {
 
         // For Multiply, both implementations should yield identical effective brightness
         // RGB-only fixture bakes multiplier into RGB; dedicated uses dimmer channel
-        let (r_rgb, g_rgb, b_rgb) = get_rgb(1, 1, &cmds_rgb_1s);
-        let (r_dim, g_dim, b_dim) = get_rgb(1, 2, &cmds_dim_1s); // base+1 because dimmer occupies ch1
-        let d_dim = get_dimmer(1, 1, &cmds_dim_1s) as f32 / 255.0;
+        let (r_rgb, g_rgb, b_rgb) = get_rgb(1, 1, cmds_rgb_1s);
+        let (r_dim, g_dim, b_dim) = get_rgb(1, 2, cmds_dim_1s); // base+1 because dimmer occupies ch1
+        let d_dim = get_dimmer(1, 1, cmds_dim_1s) as f32 / 255.0;
         let r_dim_eff = ((r_dim as f32) * d_dim).round() as u8;
         let g_dim_eff = ((g_dim as f32) * d_dim).round() as u8;
         let b_dim_eff = ((b_dim as f32) * d_dim).round() as u8;
@@ -245,9 +245,9 @@ mod tests {
         let cmds_dim_r_1s = eng_dim_r.update(Duration::from_secs(1), None).unwrap();
 
         // Visual equivalence: effective RGB should match between the two strategies
-        let (r1, g1, b1) = get_rgb(1, 1, &cmds_rgb_r_1s);
-        let (r2_raw, g2_raw, b2_raw) = get_rgb(1, 2, &cmds_dim_r_1s);
-        let d2 = get_dimmer(1, 1, &cmds_dim_r_1s) as f32 / 255.0;
+        let (r1, g1, b1) = get_rgb(1, 1, cmds_rgb_r_1s);
+        let (r2_raw, g2_raw, b2_raw) = get_rgb(1, 2, cmds_dim_r_1s);
+        let d2 = get_dimmer(1, 1, cmds_dim_r_1s) as f32 / 255.0;
         let r2 = ((r2_raw as f32) * d2).round() as u8;
         let g2 = ((g2_raw as f32) * d2).round() as u8;
         let b2 = ((b2_raw as f32) * d2).round() as u8;
@@ -274,23 +274,23 @@ mod tests {
 
         // t=0
         let cmds_0 = eng.update(Duration::from_millis(0), None).unwrap();
-        let (_, _, b0) = get_rgb(1, 1, &cmds_0);
+        let (_, _, b0) = get_rgb(1, 1, cmds_0);
         assert_eq!(b0, 255);
 
         // t=1.0s -> ~50%
         let cmds_1 = eng.update(Duration::from_secs(1), None).unwrap();
-        let (_, _, b1) = get_rgb(1, 1, &cmds_1);
+        let (_, _, b1) = get_rgb(1, 1, cmds_1);
         assert!((120..=135).contains(&b1));
 
         // t=1.5s -> ~25%
         let cmds_15 = eng.update(Duration::from_millis(500), None).unwrap();
-        let (_, _, b15) = get_rgb(1, 1, &cmds_15);
+        let (_, _, b15) = get_rgb(1, 1, cmds_15);
         assert!((50..=75).contains(&b15));
 
         // effect ends at 2.0s; dimmer is removed, underlying static blue shows through
         let _cmds_2 = eng.update(Duration::from_millis(500), None).unwrap();
         let cmds_after = eng.update(Duration::from_millis(10), None).unwrap();
-        let (_, _, b_after) = get_rgb(1, 1, &cmds_after);
+        let (_, _, b_after) = get_rgb(1, 1, cmds_after);
         assert_eq!(b_after, 255, "After dimmer completes, blue returns to full");
     }
 
@@ -350,9 +350,9 @@ mod tests {
         for dt in [0u64, 500, 1000, 1500, 2000] {
             let cmds_rgb = eng_rgb.update(Duration::from_millis(dt), None).unwrap();
             let cmds_dim = eng_dim.update(Duration::from_millis(dt), None).unwrap();
-            let (r1, g1, b1) = get_rgb(1, 1, &cmds_rgb);
-            let (r2, g2, b2) = get_rgb(1, 2, &cmds_dim);
-            let d2 = get_dimmer(1, 1, &cmds_dim) as f32 / 255.0;
+            let (r1, g1, b1) = get_rgb(1, 1, cmds_rgb);
+            let (r2, g2, b2) = get_rgb(1, 2, cmds_dim);
+            let d2 = get_dimmer(1, 1, cmds_dim) as f32 / 255.0;
             let r2e = ((r2 as f32) * d2).round() as u8;
             let g2e = ((g2 as f32) * d2).round() as u8;
             let b2e = ((b2 as f32) * d2).round() as u8;
@@ -420,9 +420,9 @@ mod tests {
         for dt in [0u64, 50, 100, 150, 200, 500] {
             let cmds_rgb = eng_rgb.update(Duration::from_millis(dt), None).unwrap();
             let cmds_dim = eng_dim.update(Duration::from_millis(dt), None).unwrap();
-            let (r1, g1, b1) = get_rgb(1, 1, &cmds_rgb);
-            let (r2, g2, b2) = get_rgb(1, 2, &cmds_dim);
-            let d2 = get_dimmer(1, 1, &cmds_dim) as f32 / 255.0;
+            let (r1, g1, b1) = get_rgb(1, 1, cmds_rgb);
+            let (r2, g2, b2) = get_rgb(1, 2, cmds_dim);
+            let d2 = get_dimmer(1, 1, cmds_dim) as f32 / 255.0;
             let r2e = ((r2 as f32) * d2).round() as u8;
             let g2e = ((g2 as f32) * d2).round() as u8;
             let b2e = ((b2 as f32) * d2).round() as u8;
@@ -493,9 +493,9 @@ mod tests {
         for dt in [0u64, 250, 500, 750, 1000] {
             let cmds_rgb = eng_rgb.update(Duration::from_millis(dt), None).unwrap();
             let cmds_dim = eng_dim.update(Duration::from_millis(dt), None).unwrap();
-            let (r1, g1, b1) = get_rgb(1, 1, &cmds_rgb);
-            let (r2, g2, b2) = get_rgb(1, 2, &cmds_dim);
-            let d2 = get_dimmer(1, 1, &cmds_dim) as f32 / 255.0;
+            let (r1, g1, b1) = get_rgb(1, 1, cmds_rgb);
+            let (r2, g2, b2) = get_rgb(1, 2, cmds_dim);
+            let d2 = get_dimmer(1, 1, cmds_dim) as f32 / 255.0;
             let r2e = ((r2 as f32) * d2).round() as u8;
             let g2e = ((g2 as f32) * d2).round() as u8;
             let b2e = ((b2 as f32) * d2).round() as u8;
@@ -569,9 +569,9 @@ mod tests {
         for dt in [0u64, 250, 500, 750, 1000] {
             let cmds_rgb = eng_rgb.update(Duration::from_millis(dt), None).unwrap();
             let cmds_dim = eng_dim.update(Duration::from_millis(dt), None).unwrap();
-            let (r1, g1, b1) = get_rgb(1, 1, &cmds_rgb);
-            let (r2, g2, b2) = get_rgb(1, 2, &cmds_dim);
-            let d2 = get_dimmer(1, 1, &cmds_dim) as f32 / 255.0;
+            let (r1, g1, b1) = get_rgb(1, 1, cmds_rgb);
+            let (r2, g2, b2) = get_rgb(1, 2, cmds_dim);
+            let d2 = get_dimmer(1, 1, cmds_dim) as f32 / 255.0;
             let r2e = ((r2 as f32) * d2).round() as u8;
             let g2e = ((g2 as f32) * d2).round() as u8;
             let b2e = ((b2 as f32) * d2).round() as u8;
@@ -626,9 +626,9 @@ mod tests {
         for dt in [0u64, 250, 500, 750, 1000] {
             let cmds_rgb = eng_rgb.update(Duration::from_millis(dt), None).unwrap();
             let cmds_dim = eng_dim.update(Duration::from_millis(dt), None).unwrap();
-            let (r1, g1, b1) = get_rgb(1, 1, &cmds_rgb);
-            let (r2, g2, b2) = get_rgb(1, 2, &cmds_dim);
-            let d2 = get_dimmer(1, 1, &cmds_dim) as f32 / 255.0;
+            let (r1, g1, b1) = get_rgb(1, 1, cmds_rgb);
+            let (r2, g2, b2) = get_rgb(1, 2, cmds_dim);
+            let d2 = get_dimmer(1, 1, cmds_dim) as f32 / 255.0;
             let r2e = ((r2 as f32) * d2).round() as u8;
             let g2e = ((g2 as f32) * d2).round() as u8;
             let b2e = ((b2 as f32) * d2).round() as u8;
@@ -705,9 +705,9 @@ mod tests {
                     for dt in sample_ms {
                         let cmds_rgb = eng_rgb.update(Duration::from_millis(dt), None).unwrap();
                         let cmds_dim = eng_dim.update(Duration::from_millis(dt), None).unwrap();
-                        let (r1, g1, b1) = get_rgb(1, 1, &cmds_rgb);
-                        let (r2, g2, b2) = get_rgb(1, 2, &cmds_dim);
-                        let d2 = get_dimmer(1, 1, &cmds_dim) as f32 / 255.0;
+                        let (r1, g1, b1) = get_rgb(1, 1, cmds_rgb);
+                        let (r2, g2, b2) = get_rgb(1, 2, cmds_dim);
+                        let d2 = get_dimmer(1, 1, cmds_dim) as f32 / 255.0;
                         let r2e = ((r2 as f32) * d2).round() as u8;
                         let g2e = ((g2 as f32) * d2).round() as u8;
                         let b2e = ((b2 as f32) * d2).round() as u8;
@@ -777,9 +777,9 @@ mod tests {
             for dt in sample_ms {
                 let cmds_rgb = eng_rgb.update(Duration::from_millis(dt), None).unwrap();
                 let cmds_dim = eng_dim.update(Duration::from_millis(dt), None).unwrap();
-                let (r1, g1, b1) = get_rgb(1, 1, &cmds_rgb);
-                let (r2, g2, b2) = get_rgb(1, 2, &cmds_dim);
-                let d2 = get_dimmer(1, 1, &cmds_dim) as f32 / 255.0;
+                let (r1, g1, b1) = get_rgb(1, 1, cmds_rgb);
+                let (r2, g2, b2) = get_rgb(1, 2, cmds_dim);
+                let d2 = get_dimmer(1, 1, cmds_dim) as f32 / 255.0;
                 let r2e = ((r2 as f32) * d2).round() as u8;
                 let g2e = ((g2 as f32) * d2).round() as u8;
                 let b2e = ((b2 as f32) * d2).round() as u8;
@@ -854,9 +854,9 @@ mod tests {
                     for dt in sample_ms {
                         let cmds_rgb = eng_rgb.update(Duration::from_millis(dt), None).unwrap();
                         let cmds_dim = eng_dim.update(Duration::from_millis(dt), None).unwrap();
-                        let (r1, g1, b1) = get_rgb(1, 1, &cmds_rgb);
-                        let (r2, g2, b2) = get_rgb(1, 2, &cmds_dim);
-                        let d2 = get_dimmer(1, 1, &cmds_dim) as f32 / 255.0;
+                        let (r1, g1, b1) = get_rgb(1, 1, cmds_rgb);
+                        let (r2, g2, b2) = get_rgb(1, 2, cmds_dim);
+                        let d2 = get_dimmer(1, 1, cmds_dim) as f32 / 255.0;
                         let r2e = ((r2 as f32) * d2).round() as u8;
                         let g2e = ((g2 as f32) * d2).round() as u8;
                         let b2e = ((b2 as f32) * d2).round() as u8;
@@ -939,9 +939,9 @@ mod tests {
                     for dt in sample_ms {
                         let cmds_rgb = eng_rgb.update(Duration::from_millis(dt), None).unwrap();
                         let cmds_dim = eng_dim.update(Duration::from_millis(dt), None).unwrap();
-                        let (r1, g1, b1) = get_rgb(1, 1, &cmds_rgb);
-                        let (r2, g2, b2) = get_rgb(1, 2, &cmds_dim);
-                        let d2 = get_dimmer(1, 1, &cmds_dim) as f32 / 255.0;
+                        let (r1, g1, b1) = get_rgb(1, 1, cmds_rgb);
+                        let (r2, g2, b2) = get_rgb(1, 2, cmds_dim);
+                        let d2 = get_dimmer(1, 1, cmds_dim) as f32 / 255.0;
                         let r2e = ((r2 as f32) * d2).round() as u8;
                         let g2e = ((g2 as f32) * d2).round() as u8;
                         let b2e = ((b2 as f32) * d2).round() as u8;
@@ -1002,9 +1002,9 @@ mod tests {
                     for dt in sample_ms {
                         let cmds_rgb = eng_rgb.update(Duration::from_millis(dt), None).unwrap();
                         let cmds_dim = eng_dim.update(Duration::from_millis(dt), None).unwrap();
-                        let (r1, g1, b1) = get_rgb(1, 1, &cmds_rgb);
-                        let (r2, g2, b2) = get_rgb(1, 2, &cmds_dim);
-                        let d2 = get_dimmer(1, 1, &cmds_dim) as f32 / 255.0;
+                        let (r1, g1, b1) = get_rgb(1, 1, cmds_rgb);
+                        let (r2, g2, b2) = get_rgb(1, 2, cmds_dim);
+                        let d2 = get_dimmer(1, 1, cmds_dim) as f32 / 255.0;
                         let r2e = ((r2 as f32) * d2).round() as u8;
                         let g2e = ((g2 as f32) * d2).round() as u8;
                         let b2e = ((b2 as f32) * d2).round() as u8;
@@ -1047,7 +1047,7 @@ mod tests {
             BlendMode::Multiply,
         );
         let cmds_100ms = eng.update(Duration::from_millis(100), None).unwrap();
-        let (_, _, b_100) = get_rgb(1, 1, &cmds_100ms);
+        let (_, _, b_100) = get_rgb(1, 1, cmds_100ms);
         assert!(b_100 > 240);
     }
 
@@ -1075,7 +1075,7 @@ mod tests {
         r_low.blend_mode = BlendMode::Replace;
         eng.start_effect(r_low).unwrap();
         let c0 = eng.update(Duration::from_millis(0), None).unwrap();
-        let (r0, g0, b0) = get_rgb(1, 1, &c0);
+        let (r0, g0, b0) = get_rgb(1, 1, c0);
 
         // High speed snapshot at non-integer multiple of the cycle (period=100ms at 10Hz); use 125ms
         let mut r_high = EffectInstance::new(
@@ -1095,7 +1095,7 @@ mod tests {
         r_high.blend_mode = BlendMode::Replace;
         eng.start_effect(r_high).unwrap();
         let c1 = eng.update(Duration::from_millis(125), None).unwrap();
-        let (r1, g1, b1) = get_rgb(1, 1, &c1);
+        let (r1, g1, b1) = get_rgb(1, 1, c1);
 
         assert_ne!((r0, g0, b0), (r1, g1, b1));
     }
