@@ -404,12 +404,15 @@ impl Engine {
     pub fn play(
         dmx_engine: Arc<Engine>,
         song: Arc<Song>,
-        cancel_handle: CancelHandle,
-        ready_tx: std::sync::mpsc::Sender<()>,
-        start_time: Duration,
-        clock: crate::clock::PlaybackClock,
-        loop_control: crate::playsync::LoopControl,
+        sync: crate::playsync::PlaybackSync,
     ) -> Result<(), Box<dyn Error>> {
+        let crate::playsync::PlaybackSync {
+            cancel_handle,
+            mut ready_tx,
+            clock,
+            start_time,
+            loop_control,
+        } = sync;
         let crate::playsync::LoopControl {
             loop_break,
             active_section,
@@ -425,7 +428,7 @@ impl Engine {
         let has_lighting = !dsl_lighting_shows.is_empty();
 
         if light_shows.is_empty() && !has_lighting {
-            let _ = ready_tx.send(());
+            ready_tx.send();
             return Ok(());
         }
 
@@ -536,7 +539,7 @@ impl Engine {
 
         if dmx_midi_sheets.is_empty() && !has_lighting {
             info!(song = song.name(), "Song has no matching light shows.");
-            let _ = ready_tx.send(());
+            ready_tx.send();
             return Ok(());
         }
 
@@ -592,7 +595,7 @@ impl Engine {
         }
 
         // Signal readiness — all setup is complete.
-        let _ = ready_tx.send(());
+        ready_tx.send();
 
         // Wait for the clock to start (the "go" signal from play_files).
         while clock.elapsed() == Duration::ZERO {
@@ -637,11 +640,8 @@ impl Engine {
             let clock = clock.clone();
             let timeline_finished = dmx_engine.timeline_finished.clone();
             thread::spawn(move || {
-                let mut section_trigger = crate::section_loop::SectionLoopTrigger::new();
+                let mut section_monitor = crate::section_loop::SectionLoopMonitor::new();
                 let mut iteration_start: Option<Duration> = None;
-                // Cached section bounds so we can handle break even after
-                // active_section is cleared by stop_section_loop().
-                let mut cached_section: Option<crate::player::SectionBounds> = None;
                 // After loop break: (resume_time, clock_at_break). The thread
                 // keeps writing song time advancing from the resume point.
                 let mut continue_from: Option<(Duration, Duration)> = None;
@@ -662,7 +662,7 @@ impl Engine {
                     // Check for loop break first (before reading active_section,
                     // which may already be cleared by stop_section_loop).
                     if section_loop_break.load(Ordering::Relaxed) {
-                        if let Some(ref section) = cached_section {
+                        if let Some(section) = section_monitor.cached_section().cloned() {
                             let elapsed = clock.elapsed();
                             let current_pos = if let Some(iter_start) = iteration_start {
                                 let time_since = elapsed.saturating_sub(iter_start);
@@ -694,29 +694,21 @@ impl Engine {
                         continue;
                     }
 
-                    let section = active_section.read().clone();
-                    if let Some(ref section) = section {
-                        // Cache section bounds for use during break handling.
-                        cached_section = Some(section.clone());
-
-                        let section_duration = section.end_time.saturating_sub(section.start_time);
-                        if section_duration.is_zero() {
-                            break;
+                    let elapsed = clock.elapsed();
+                    match section_monitor.poll(&active_section, elapsed) {
+                        crate::section_loop::LoopPoll::Waiting(ref section) => {
+                            let section_duration =
+                                section.end_time.saturating_sub(section.start_time);
+                            if section_duration.is_zero() {
+                                break;
+                            }
+                            if let Some(iter_start) = iteration_start {
+                                let time_since = elapsed.saturating_sub(iter_start);
+                                let position = time_since.min(section_duration);
+                                dmx_engine.update_song_time(section.start_time + position);
+                            }
                         }
-
-                        let elapsed = clock.elapsed();
-
-                        if let Some(iter_start) = iteration_start {
-                            let time_since = elapsed.saturating_sub(iter_start);
-                            let position = time_since.min(section_duration);
-                            dmx_engine.update_song_time(section.start_time + position);
-                        }
-
-                        let crossfade_margin = crate::audio::crossfade::DEFAULT_CROSSFADE_DURATION;
-                        if section_trigger
-                            .check(section, elapsed, crossfade_margin)
-                            .is_some()
-                        {
+                        crate::section_loop::LoopPoll::Triggered(ref section) => {
                             info!(
                                 section = section.name,
                                 "DMX section loop: resetting for next iteration"
@@ -734,15 +726,14 @@ impl Engine {
                             section_owns_time.store(true, Ordering::Relaxed);
                             iteration_start = Some(elapsed);
                         }
-                    } else {
-                        // No active section.
-                        if cached_section.is_some() {
-                            // Section was cleared without break — reset.
-                            cached_section = None;
+                        crate::section_loop::LoopPoll::SectionCleared => {
+                            iteration_start = None;
+                            section_owns_time.store(false, Ordering::Relaxed);
                         }
-                        section_trigger.reset();
-                        iteration_start = None;
-                        section_owns_time.store(false, Ordering::Relaxed);
+                        crate::section_loop::LoopPoll::NoSection => {
+                            iteration_start = None;
+                            section_owns_time.store(false, Ordering::Relaxed);
+                        }
                     }
 
                     thread::sleep(Duration::from_millis(10));
@@ -1891,11 +1882,13 @@ mod test {
         Engine::play(
             engine.clone(),
             song_arc,
-            cancel_handle,
-            ready_tx,
-            std::time::Duration::ZERO,
-            clock,
-            crate::playsync::LoopControl::new(),
+            crate::playsync::PlaybackSync {
+                cancel_handle,
+                ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
+                clock,
+                start_time: std::time::Duration::ZERO,
+                loop_control: crate::playsync::LoopControl::new(),
+            },
         )?;
 
         // Verify timeline was created (may be None if no lighting config)
@@ -2175,11 +2168,13 @@ mod test {
         Engine::play(
             engine.clone(),
             song,
-            cancel_handle,
-            ready_tx,
-            std::time::Duration::ZERO,
-            clock,
-            crate::playsync::LoopControl::new(),
+            crate::playsync::PlaybackSync {
+                cancel_handle,
+                ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
+                clock,
+                start_time: std::time::Duration::ZERO,
+                loop_control: crate::playsync::LoopControl::new(),
+            },
         )?;
 
         // The tempo map should have been cleared (not inherited from the seeded state).
@@ -2231,11 +2226,13 @@ mod test {
         Engine::play(
             engine.clone(),
             song,
-            cancel_handle,
-            ready_tx,
-            std::time::Duration::ZERO,
-            clock,
-            crate::playsync::LoopControl::new(),
+            crate::playsync::PlaybackSync {
+                cancel_handle,
+                ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
+                clock,
+                start_time: std::time::Duration::ZERO,
+                loop_control: crate::playsync::LoopControl::new(),
+            },
         )?;
 
         assert_lighting_state_cleared(&engine);
@@ -3671,11 +3668,13 @@ mod test {
             let result = Engine::play(
                 engine,
                 song,
-                cancel_handle,
-                ready_tx,
-                std::time::Duration::ZERO,
-                clock,
-                crate::playsync::LoopControl::new(),
+                crate::playsync::PlaybackSync {
+                    cancel_handle,
+                    ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
+                    clock,
+                    start_time: std::time::Duration::ZERO,
+                    loop_control: crate::playsync::LoopControl::new(),
+                },
             );
             assert!(result.is_ok());
             Ok(())
@@ -3703,11 +3702,13 @@ mod test {
             let result = Engine::play(
                 engine.clone(),
                 song,
-                cancel_handle,
-                ready_tx,
-                std::time::Duration::ZERO,
-                clock,
-                crate::playsync::LoopControl::new(),
+                crate::playsync::PlaybackSync {
+                    cancel_handle,
+                    ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
+                    clock,
+                    start_time: std::time::Duration::ZERO,
+                    loop_control: crate::playsync::LoopControl::new(),
+                },
             );
             assert!(result.is_ok());
             Ok(())
@@ -3736,11 +3737,13 @@ mod test {
             let result = Engine::play(
                 engine.clone(),
                 song,
-                cancel_handle,
-                ready_tx,
-                std::time::Duration::from_secs(3),
-                clock,
-                crate::playsync::LoopControl::new(),
+                crate::playsync::PlaybackSync {
+                    cancel_handle,
+                    ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
+                    clock,
+                    start_time: std::time::Duration::from_secs(3),
+                    loop_control: crate::playsync::LoopControl::new(),
+                },
             );
             assert!(result.is_ok());
             Ok(())
@@ -3775,11 +3778,13 @@ mod test {
             let result = Engine::play(
                 engine.clone(),
                 song,
-                cancel_handle,
-                ready_tx,
-                std::time::Duration::ZERO,
-                clock,
-                crate::playsync::LoopControl::new(),
+                crate::playsync::PlaybackSync {
+                    cancel_handle,
+                    ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
+                    clock,
+                    start_time: std::time::Duration::ZERO,
+                    loop_control: crate::playsync::LoopControl::new(),
+                },
             );
             assert!(result.is_ok());
             Ok(())
@@ -3822,11 +3827,13 @@ mod test {
             let result = Engine::play(
                 engine.clone(),
                 song,
-                cancel_handle,
-                ready_tx,
-                std::time::Duration::ZERO,
-                clock,
-                crate::playsync::LoopControl::new(),
+                crate::playsync::PlaybackSync {
+                    cancel_handle,
+                    ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
+                    clock,
+                    start_time: std::time::Duration::ZERO,
+                    loop_control: crate::playsync::LoopControl::new(),
+                },
             );
             assert!(result.is_ok(), "play failed: {:?}", result.err());
             Ok(())
@@ -4491,11 +4498,13 @@ mod test {
             let result = Engine::play(
                 engine.clone(),
                 song,
-                cancel_handle,
-                ready_tx,
-                std::time::Duration::ZERO,
-                clock,
-                crate::playsync::LoopControl::new(),
+                crate::playsync::PlaybackSync {
+                    cancel_handle,
+                    ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
+                    clock,
+                    start_time: std::time::Duration::ZERO,
+                    loop_control: crate::playsync::LoopControl::new(),
+                },
             );
             assert!(result.is_ok(), "play failed: {:?}", result.err());
             Ok(())
@@ -4534,11 +4543,13 @@ mod test {
             let result = Engine::play(
                 engine.clone(),
                 song,
-                cancel_handle,
-                ready_tx,
-                std::time::Duration::from_secs(10),
-                clock,
-                crate::playsync::LoopControl::new(),
+                crate::playsync::PlaybackSync {
+                    cancel_handle,
+                    ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
+                    clock,
+                    start_time: std::time::Duration::from_secs(10),
+                    loop_control: crate::playsync::LoopControl::new(),
+                },
             );
             assert!(result.is_ok(), "play failed: {:?}", result.err());
             Ok(())
@@ -4583,11 +4594,13 @@ mod test {
             let result = Engine::play(
                 engine.clone(),
                 song,
-                cancel_handle,
-                ready_tx,
-                std::time::Duration::ZERO,
-                clock,
-                crate::playsync::LoopControl::new(),
+                crate::playsync::PlaybackSync {
+                    cancel_handle,
+                    ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
+                    clock,
+                    start_time: std::time::Duration::ZERO,
+                    loop_control: crate::playsync::LoopControl::new(),
+                },
             );
             assert!(result.is_ok(), "play failed: {:?}", result.err());
             Ok(())
@@ -4659,11 +4672,13 @@ mod test {
             let result = Engine::play(
                 engine.clone(),
                 song,
-                cancel_handle,
-                ready_tx,
-                std::time::Duration::ZERO,
-                clock,
-                crate::playsync::LoopControl::new(),
+                crate::playsync::PlaybackSync {
+                    cancel_handle,
+                    ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
+                    clock,
+                    start_time: std::time::Duration::ZERO,
+                    loop_control: crate::playsync::LoopControl::new(),
+                },
             );
             assert!(result.is_ok(), "play failed: {:?}", result.err());
             Ok(())
@@ -4721,11 +4736,13 @@ mod test {
             let result = Engine::play(
                 engine.clone(),
                 song,
-                cancel_handle,
-                ready_tx,
-                std::time::Duration::ZERO,
-                clock,
-                crate::playsync::LoopControl::new(),
+                crate::playsync::PlaybackSync {
+                    cancel_handle,
+                    ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
+                    clock,
+                    start_time: std::time::Duration::ZERO,
+                    loop_control: crate::playsync::LoopControl::new(),
+                },
             );
             assert!(result.is_ok(), "play failed: {:?}", result.err());
             Ok(())
@@ -4834,11 +4851,13 @@ mod test {
             let result = Engine::play(
                 engine.clone(),
                 song,
-                cancel_handle,
-                ready_tx,
-                std::time::Duration::ZERO,
-                clock,
-                crate::playsync::LoopControl::new(),
+                crate::playsync::PlaybackSync {
+                    cancel_handle,
+                    ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
+                    clock,
+                    start_time: std::time::Duration::ZERO,
+                    loop_control: crate::playsync::LoopControl::new(),
+                },
             );
             assert!(result.is_ok());
             Ok(())

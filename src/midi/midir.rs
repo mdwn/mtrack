@@ -182,7 +182,7 @@ impl super::Device for Device {
     ) -> Result<(), Box<dyn Error>> {
         let crate::playsync::PlaybackSync {
             cancel_handle,
-            ready_tx,
+            mut ready_tx,
             clock,
             start_time,
             loop_control,
@@ -200,7 +200,8 @@ impl super::Device for Device {
             Some(midi_playback) => midi_playback,
             None => {
                 info!(song = song.name(), "Song has no MIDI sheet.");
-                let _ = ready_tx.send(());
+                // Guard sends on drop, but explicit send is clearer.
+                ready_tx.send();
                 return Ok(());
             }
         };
@@ -212,7 +213,7 @@ impl super::Device for Device {
                     song = song.name(),
                     "No MIDI output device configured, cannot play song."
                 );
-                let _ = ready_tx.send(());
+                ready_tx.send();
                 return Ok(());
             }
         };
@@ -677,7 +678,7 @@ struct PlaybackContext<'a> {
     start_time: Duration,
     playback_delay: Duration,
     cancel_handle: &'a CancelHandle,
-    ready_tx: std::sync::mpsc::Sender<()>,
+    ready_tx: crate::playsync::ReadyGuard,
     finished: Arc<AtomicBool>,
     exclude_channels: &'a HashSet<u8>,
     beat_clock_barrier: Option<Arc<Barrier>>,
@@ -691,8 +692,8 @@ struct PlaybackContext<'a> {
 /// Runs the MIDI playback thread body: signals readiness, waits for the clock
 /// to start, sleeps through the playback delay (checking for cancellation),
 /// then plays events.
-fn run_playback(sender: &mut dyn MidiSender, ctx: PlaybackContext<'_>) {
-    let _ = ctx.ready_tx.send(());
+fn run_playback(sender: &mut dyn MidiSender, mut ctx: PlaybackContext<'_>) {
+    ctx.ready_tx.send();
 
     // Wait for the clock to start (the "go" signal from play_files).
     while ctx.clock.elapsed() == Duration::ZERO {
@@ -746,27 +747,21 @@ fn run_playback(sender: &mut dyn MidiSender, ctx: PlaybackContext<'_>) {
     // Section loop: if active_section is set, loop the section region.
     // The initial play_precomputed exits when it reaches section.end_time
     // (via the active_section check). This loop then replays the section.
-    let mut section_trigger = crate::section_loop::SectionLoopTrigger::new();
+    let mut section_monitor = crate::section_loop::SectionLoopMonitor::new();
 
     loop {
         if ctx.cancel_handle.is_cancelled() || ctx.loop_break.load(Ordering::Relaxed) {
             break;
         }
 
-        // Check for section loop.
-        let section = ctx.active_section.read().clone();
-        if let Some(ref section) = section {
-            if !ctx.section_loop_break.load(Ordering::Relaxed) {
-                let crossfade_margin = crate::audio::crossfade::DEFAULT_CROSSFADE_DURATION;
-                let elapsed = ctx.clock.elapsed();
-
-                if let Some(_trigger_time) =
-                    section_trigger.check(section, elapsed, crossfade_margin)
-                {
+        // Check for section loop using shared monitor.
+        if !ctx.section_loop_break.load(Ordering::Relaxed) {
+            let elapsed = ctx.clock.elapsed();
+            match section_monitor.poll(&ctx.active_section, elapsed) {
+                crate::section_loop::LoopPoll::Triggered(section) => {
                     if ctx.cancel_handle.is_cancelled() {
                         break;
                     }
-
                     if !ctx.section_loop_break.load(Ordering::Relaxed) {
                         info!(section = section.name, "MIDI section loop: restarting");
                         play_precomputed(
@@ -785,9 +780,10 @@ fn run_playback(sender: &mut dyn MidiSender, ctx: PlaybackContext<'_>) {
                         continue;
                     }
                 }
+                crate::section_loop::LoopPoll::Waiting(_) => {}
+                crate::section_loop::LoopPoll::NoSection
+                | crate::section_loop::LoopPoll::SectionCleared => {}
             }
-        } else {
-            section_trigger.reset();
         }
 
         // Whole-song loop check.
@@ -1571,7 +1567,7 @@ mod test {
                 song,
                 crate::playsync::PlaybackSync {
                     cancel_handle: cancel,
-                    ready_tx,
+                    ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
                     clock,
                     start_time: Duration::ZERO,
                     loop_control: crate::playsync::LoopControl::new(),
@@ -1596,7 +1592,7 @@ mod test {
                 song,
                 crate::playsync::PlaybackSync {
                     cancel_handle: cancel,
-                    ready_tx,
+                    ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
                     clock,
                     start_time: Duration::ZERO,
                     loop_control: crate::playsync::LoopControl::new(),
@@ -1619,7 +1615,7 @@ mod test {
                 song,
                 crate::playsync::PlaybackSync {
                     cancel_handle: cancel,
-                    ready_tx,
+                    ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
                     clock,
                     start_time: Duration::ZERO,
                     loop_control: crate::playsync::LoopControl::new(),
@@ -1966,7 +1962,7 @@ mod test {
                     start_time: Duration::ZERO,
                     playback_delay: Duration::ZERO,
                     cancel_handle: &cancel,
-                    ready_tx,
+                    ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
                     finished: finished.clone(),
                     exclude_channels: &exclude,
                     beat_clock_barrier: None,
@@ -2001,7 +1997,7 @@ mod test {
                     start_time: Duration::ZERO,
                     playback_delay: Duration::ZERO,
                     cancel_handle: &cancel,
-                    ready_tx,
+                    ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
                     finished: finished.clone(),
                     exclude_channels: &exclude,
                     beat_clock_barrier: None,
@@ -2043,7 +2039,7 @@ mod test {
                     start_time: Duration::ZERO,
                     playback_delay: Duration::from_secs(10), // Very long delay
                     cancel_handle: &cancel,
-                    ready_tx,
+                    ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
                     finished: finished.clone(),
                     exclude_channels: &exclude,
                     beat_clock_barrier: None,
@@ -2079,7 +2075,7 @@ mod test {
                     start_time: Duration::ZERO,
                     playback_delay: Duration::from_millis(10), // Short delay
                     cancel_handle: &cancel,
-                    ready_tx,
+                    ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
                     finished: finished.clone(),
                     exclude_channels: &exclude,
                     beat_clock_barrier: None,
@@ -2132,7 +2128,7 @@ mod test {
                     start_time: Duration::ZERO,
                     playback_delay: Duration::ZERO,
                     cancel_handle: &cancel,
-                    ready_tx,
+                    ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
                     finished: finished.clone(),
                     exclude_channels: &exclude,
                     beat_clock_barrier: None,
@@ -2171,7 +2167,7 @@ mod test {
                         start_time: Duration::ZERO,
                         playback_delay: Duration::ZERO,
                         cancel_handle: &cancel_clone,
-                        ready_tx,
+                        ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
                         finished: finished_clone,
                         exclude_channels: &exclude,
                         beat_clock_barrier: None,

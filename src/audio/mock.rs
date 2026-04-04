@@ -84,7 +84,8 @@ impl crate::audio::Device for Device {
             let cancel_handle = cancel_handle.clone();
             let finished = finished.clone();
             thread::spawn(move || {
-                let _ = ready_tx.send(());
+                let mut ready_tx = ready_tx;
+                ready_tx.send();
 
                 clock.wait_for_start_or_cancel(&cancel_handle);
                 if cancel_handle.is_cancelled() {
@@ -181,7 +182,7 @@ mod tests {
                 &mappings,
                 PlaybackSync {
                     cancel_handle: cancel_clone,
-                    ready_tx,
+                    ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
                     clock: clock_clone,
                     start_time: Duration::from_millis(0),
                     loop_control: crate::playsync::LoopControl::new(),
@@ -226,7 +227,7 @@ mod tests {
                 &mappings,
                 PlaybackSync {
                     cancel_handle: cancel_clone,
-                    ready_tx,
+                    ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
                     clock: clock_clone,
                     start_time: Duration::from_secs(1), // Start offset > duration → remaining = 0
                     loop_control: crate::playsync::LoopControl::new(),
@@ -268,7 +269,7 @@ mod tests {
                 &mappings,
                 PlaybackSync {
                     cancel_handle: cancel_clone,
-                    ready_tx,
+                    ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
                     clock: clock_clone,
                     start_time: Duration::from_millis(0),
                     loop_control: crate::playsync::LoopControl::new(),

@@ -154,6 +154,7 @@ impl super::Device for Device {
             start_time,
             ..
         } = sync;
+        // Guard moved into spawned thread; sends on drop if not explicit.
         let span = span!(Level::INFO, "play song (mock)");
         let _enter = span.enter();
 
@@ -174,7 +175,8 @@ impl super::Device for Device {
             let finished = finished.clone();
             let clock = clock.clone();
             thread::spawn(move || {
-                let _ = ready_tx.send(());
+                let mut ready_tx = ready_tx;
+                ready_tx.send();
 
                 while clock.elapsed() == Duration::ZERO {
                     if cancel_handle.is_cancelled() {
