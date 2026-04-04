@@ -87,15 +87,7 @@ impl crate::audio::Device for Device {
             thread::spawn(move || {
                 let _ = ready_tx.send(());
 
-                while clock.elapsed() == Duration::ZERO {
-                    if cancel_handle.is_cancelled() {
-                        finished.store(true, Ordering::Relaxed);
-                        cancel_handle.notify();
-                        return;
-                    }
-                    std::hint::spin_loop();
-                }
-
+                clock.wait_for_start_or_cancel(&cancel_handle);
                 if cancel_handle.is_cancelled() {
                     finished.store(true, Ordering::Relaxed);
                     cancel_handle.notify();

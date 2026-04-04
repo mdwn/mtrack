@@ -986,6 +986,36 @@ impl Device {
     }
 }
 
+/// Constructs a `MixerActiveSource` and its finish flag.
+///
+/// Every call site in `play_from` follows the same pattern: allocate a source ID,
+/// create an `is_finished` flag, build the struct, and hand back the flag for
+/// monitoring. This helper captures that boilerplate.
+fn build_active_source(
+    source: Box<dyn crate::audio::sample_source::ChannelMappedSampleSource + Send + Sync>,
+    track_mappings: &HashMap<String, Vec<u16>>,
+    cancel_handle: &CancelHandle,
+    gain_envelope: Option<Arc<crate::audio::crossfade::GainEnvelope>>,
+) -> (MixerActiveSource, Arc<AtomicBool>) {
+    let id = crate::audio::next_source_id();
+    let cached_source_channel_count = source.source_channel_count();
+    let is_finished = Arc::new(AtomicBool::new(false));
+    let flag = is_finished.clone();
+    let active = MixerActiveSource {
+        id,
+        source,
+        track_mappings: track_mappings.clone(),
+        channel_mappings: Vec::new(),
+        cached_source_channel_count,
+        cancel_handle: cancel_handle.clone(),
+        is_finished,
+        start_at_sample: None,
+        cancel_at_sample: None,
+        gain_envelope,
+    };
+    (active, flag)
+}
+
 impl AudioDevice for Device {
     /// Play the given song through the audio device, starting from a specific time.
     fn play_from(
@@ -1022,13 +1052,7 @@ impl AudioDevice for Device {
 
         let _ = ready_tx.send(());
 
-        while clock.elapsed() == Duration::ZERO {
-            if cancel_handle.is_cancelled() {
-                return Ok(());
-            }
-            std::hint::spin_loop();
-        }
-
+        clock.wait_for_start_or_cancel(&cancel_handle);
         if cancel_handle.is_cancelled() {
             return Ok(());
         }
@@ -1076,38 +1100,29 @@ impl AudioDevice for Device {
         // Create sources and track their finish flags (no locks needed for monitoring)
         let mut source_finish_flags = Vec::new();
 
+        let song_crossfade_envelope = if has_existing_sources {
+            let cs = crate::audio::crossfade::default_crossfade_samples(
+                self.output_manager.mixer.sample_rate(),
+            );
+            // Linear is fine for ≤5ms crossfades — perceptual difference
+            // from EqualPower is inaudible at this duration, and Linear
+            // is cheaper (no trig).
+            Some(Arc::new(crate::audio::crossfade::GainEnvelope::fade_in(
+                cs,
+                crate::audio::crossfade::CrossfadeCurve::Linear,
+            )))
+        } else {
+            None
+        };
+
         for source in channel_mapped_sources.into_iter() {
-            let current_source_id = crate::audio::next_source_id();
-            let source_channel_count = source.source_channel_count();
-            let is_finished = Arc::new(AtomicBool::new(false));
-            source_finish_flags.push(is_finished.clone());
-
-            let active_source = MixerActiveSource {
-                id: current_source_id,
+            let (active_source, flag) = build_active_source(
                 source,
-                track_mappings: mappings.clone(),
-                channel_mappings: Vec::new(),
-                cached_source_channel_count: source_channel_count,
-                cancel_handle: cancel_handle.clone(),
-                is_finished,
-                start_at_sample: None,
-                cancel_at_sample: None,
-                gain_envelope: if has_existing_sources {
-                    let cs = crate::audio::crossfade::default_crossfade_samples(
-                        self.output_manager.mixer.sample_rate(),
-                    );
-                    // Linear is fine for ≤5ms crossfades — perceptual difference
-                    // from EqualPower is inaudible at this duration, and Linear
-                    // is cheaper (no trig).
-                    Some(Arc::new(crate::audio::crossfade::GainEnvelope::fade_in(
-                        cs,
-                        crate::audio::crossfade::CrossfadeCurve::Linear,
-                    )))
-                } else {
-                    None
-                },
-            };
-
+                mappings,
+                &cancel_handle,
+                song_crossfade_envelope.clone(),
+            );
+            source_finish_flags.push(flag);
             self.output_manager.add_source(active_source)?;
         }
 
@@ -1173,30 +1188,19 @@ impl AudioDevice for Device {
                             Ok(new_sources) => {
                                 // Replace finish flags with new source flags.
                                 source_finish_flags.clear();
+                                let fade_in_envelope =
+                                    Some(Arc::new(crate::audio::crossfade::GainEnvelope::fade_in(
+                                        crossfade_samples,
+                                        crate::audio::crossfade::CrossfadeCurve::Linear,
+                                    )));
                                 for source in new_sources {
-                                    let source_id = crate::audio::next_source_id();
-                                    let source_channel_count = source.source_channel_count();
-                                    let is_finished = Arc::new(AtomicBool::new(false));
-                                    source_finish_flags.push(is_finished.clone());
-
-                                    let active_source = MixerActiveSource {
-                                        id: source_id,
+                                    let (active_source, flag) = build_active_source(
                                         source,
-                                        track_mappings: mappings.clone(),
-                                        channel_mappings: Vec::new(),
-                                        cached_source_channel_count: source_channel_count,
-                                        cancel_handle: cancel_handle.clone(),
-                                        is_finished,
-                                        start_at_sample: None,
-                                        cancel_at_sample: None,
-                                        gain_envelope: Some(Arc::new(
-                                            crate::audio::crossfade::GainEnvelope::fade_in(
-                                                crossfade_samples,
-                                                crate::audio::crossfade::CrossfadeCurve::Linear,
-                                            ),
-                                        )),
-                                    };
-
+                                        mappings,
+                                        &cancel_handle,
+                                        fade_in_envelope.clone(),
+                                    );
+                                    source_finish_flags.push(flag);
                                     if let Err(e) = self.output_manager.add_source(active_source) {
                                         error!(err = %e, "Failed to add section loop source");
                                     }
@@ -1269,28 +1273,14 @@ impl AudioDevice for Device {
             };
 
             let mut new_finish_flags = Vec::new();
+            let fade_in_envelope = Some(Arc::new(crate::audio::crossfade::GainEnvelope::fade_in(
+                crossfade_samples,
+                crate::audio::crossfade::CrossfadeCurve::Linear,
+            )));
             for source in new_sources {
-                let source_id = crate::audio::next_source_id();
-                let source_channel_count = source.source_channel_count();
-                let is_finished = Arc::new(AtomicBool::new(false));
-                new_finish_flags.push(is_finished.clone());
-
-                let active_source = MixerActiveSource {
-                    id: source_id,
-                    source,
-                    track_mappings: mappings.clone(),
-                    channel_mappings: Vec::new(),
-                    cached_source_channel_count: source_channel_count,
-                    cancel_handle: cancel_handle.clone(),
-                    is_finished,
-                    start_at_sample: None,
-                    cancel_at_sample: None,
-                    gain_envelope: Some(Arc::new(crate::audio::crossfade::GainEnvelope::fade_in(
-                        crossfade_samples,
-                        crate::audio::crossfade::CrossfadeCurve::Linear,
-                    ))),
-                };
-
+                let (active_source, flag) =
+                    build_active_source(source, mappings, &cancel_handle, fade_in_envelope.clone());
+                new_finish_flags.push(flag);
                 if let Err(e) = self.output_manager.add_source(active_source) {
                     error!(err = %e, "Failed to add loop source to mixer");
                     break;

@@ -90,7 +90,7 @@ fn test_layering_demo() {
         if (time * 5.0) as i32 % 2 == 0 {
             println!("Time: {:.1}s", time);
 
-            for cmd in &commands {
+            for cmd in commands {
                 let channel_name = match cmd.channel {
                     1 => "Red",
                     2 => "Green",
@@ -174,7 +174,7 @@ fn test_multiple_effects_simultaneous() {
     // Check at 0s
     let commands = engine.update(Duration::from_secs(0), None).unwrap();
     println!("=== At 0s (Static blue on 4 fixtures) ===");
-    for cmd in &commands {
+    for cmd in commands {
         let fixture_num = ((cmd.channel - 1) / 4) + 1;
         let channel_in_fixture = ((cmd.channel - 1) % 4) + 1;
         let channel_name = match channel_in_fixture {
@@ -214,7 +214,7 @@ fn test_multiple_effects_simultaneous() {
     // Check at 2s (dimmer start)
     let commands = engine.update(Duration::from_secs(2), None).unwrap();
     println!("\n=== At 2s (Dimmer starts on 4 fixtures) ===");
-    for cmd in &commands {
+    for cmd in commands {
         let fixture_num = ((cmd.channel - 1) / 4) + 1;
         let channel_in_fixture = ((cmd.channel - 1) % 4) + 1;
         let channel_name = match channel_in_fixture {
@@ -232,7 +232,10 @@ fn test_multiple_effects_simultaneous() {
 
     // Check at 4.5s (50% through dimmer)
     engine.update(Duration::from_secs(2), None).unwrap();
-    let commands = engine.update(Duration::from_secs(0), None).unwrap();
+    let commands = engine
+        .update(Duration::from_secs(0), None)
+        .unwrap()
+        .to_vec();
     println!("\n=== At 4.5s (50% through dimmer on 4 fixtures) ===");
 
     // Advance to 25s to trigger debug logging
@@ -240,7 +243,7 @@ fn test_multiple_effects_simultaneous() {
     let commands_25s = engine.update(Duration::from_secs(0), None).unwrap();
     println!("\n=== At 25s (Debug logging should appear) ===");
     println!("Commands at 25s: {} commands", commands_25s.len());
-    for cmd in &commands_25s {
+    for cmd in commands_25s {
         println!("  Channel {}: {}", cmd.channel, cmd.value);
     }
     for cmd in &commands {
@@ -365,7 +368,7 @@ fn test_astera_pixelblock_real_behavior() {
     // Check at 0s
     let commands = engine.update(Duration::from_secs(0), None).unwrap();
     println!("\n=== At 0s (Static blue) ===");
-    for cmd in &commands {
+    for cmd in commands {
         let channel_name = match cmd.channel {
             1 => "Red",
             2 => "Green",
@@ -397,7 +400,7 @@ fn test_astera_pixelblock_real_behavior() {
     // Check at 2s (dimmer start)
     let commands = engine.update(Duration::from_secs(0), None).unwrap();
     println!("\n=== At 2s (Dimmer starts) ===");
-    for cmd in &commands {
+    for cmd in commands {
         let channel_name = match cmd.channel {
             1 => "Red",
             2 => "Green",
@@ -412,7 +415,7 @@ fn test_astera_pixelblock_real_behavior() {
     engine.update(Duration::from_secs(2), None).unwrap();
     let commands = engine.update(Duration::from_secs(0), None).unwrap();
     println!("\n=== At 4.5s (50% through dimmer) ===");
-    for cmd in &commands {
+    for cmd in commands {
         let channel_name = match cmd.channel {
             1 => "Red",
             2 => "Green",
@@ -524,7 +527,7 @@ fn test_permanent_vs_temporary_effects() {
     let commands = engine.update(Duration::from_secs(1), None).unwrap();
 
     println!("Testing permanent effect behavior:");
-    for cmd in &commands {
+    for cmd in commands {
         let channel_name = match cmd.channel {
             1 => "Dimmer",
             2 => "Red",
@@ -637,7 +640,7 @@ fn test_grandma_style_fade_out() {
     // Test during fade-out
     let commands_1s = engine.update(Duration::from_secs(1), None).unwrap();
     println!("\nAt 1s (50% through fade-out):");
-    for cmd in &commands_1s {
+    for cmd in commands_1s {
         let channel_name = match cmd.channel {
             1 => "Dimmer",
             2 => "Red",
@@ -656,7 +659,7 @@ fn test_grandma_style_fade_out() {
     // Test at end of fade-out
     let commands_2s = engine.update(Duration::from_secs(1), None).unwrap();
     println!("\nAt 2s (end of fade-out):");
-    for cmd in &commands_2s {
+    for cmd in commands_2s {
         let channel_name = match cmd.channel {
             1 => "Dimmer",
             2 => "Red",
@@ -675,7 +678,7 @@ fn test_grandma_style_fade_out() {
     // Test after fade-out (should stay at 0 - grandMA behavior)
     let commands_3s = engine.update(Duration::from_secs(1), None).unwrap();
     println!("\nAt 3s (after fade-out - should stay at 0):");
-    for cmd in &commands_3s {
+    for cmd in commands_3s {
         let channel_name = match cmd.channel {
             1 => "Dimmer",
             2 => "Red",
@@ -793,7 +796,7 @@ fn test_real_layering_show_file() {
     // At 0 seconds - should have static blue
     let commands = engine.update(Duration::from_secs(0), None).unwrap();
     println!("At 0s (static blue):");
-    for cmd in &commands {
+    for cmd in commands {
         println!("  Channel {}: {}", cmd.channel, cmd.value);
     }
 
@@ -801,7 +804,7 @@ fn test_real_layering_show_file() {
     engine.update(Duration::from_secs(2), None).unwrap();
     let commands = engine.update(Duration::from_secs(0), None).unwrap();
     println!("\nAt 2s (static blue + dimmer start):");
-    for cmd in &commands {
+    for cmd in commands {
         println!("  Channel {}: {}", cmd.channel, cmd.value);
     }
 
@@ -809,7 +812,7 @@ fn test_real_layering_show_file() {
     engine.update(Duration::from_secs(2), None).unwrap();
     let commands = engine.update(Duration::from_secs(0), None).unwrap();
     println!("\nAt 4.5s (50% through dimmer):");
-    for cmd in &commands {
+    for cmd in commands {
         println!("  Channel {}: {}", cmd.channel, cmd.value);
     }
 
@@ -918,7 +921,7 @@ fn test_layering_show_effect_execution() {
     // At 0 seconds - should have static blue
     let commands = engine.update(Duration::from_secs(0), None).unwrap();
     println!("At 0s (static blue):");
-    for cmd in &commands {
+    for cmd in commands {
         println!("  Channel {}: {}", cmd.channel, cmd.value);
     }
 
@@ -926,7 +929,7 @@ fn test_layering_show_effect_execution() {
     engine.update(Duration::from_secs(2), None).unwrap();
     let commands = engine.update(Duration::from_secs(0), None).unwrap();
     println!("\nAt 2s (static blue + dimmer start):");
-    for cmd in &commands {
+    for cmd in commands {
         println!("  Channel {}: {}", cmd.channel, cmd.value);
     }
 
@@ -934,7 +937,7 @@ fn test_layering_show_effect_execution() {
     engine.update(Duration::from_secs(2), None).unwrap();
     let commands = engine.update(Duration::from_secs(0), None).unwrap();
     println!("\nAt 4.5s (50% through dimmer):");
-    for cmd in &commands {
+    for cmd in commands {
         println!("  Channel {}: {}", cmd.channel, cmd.value);
     }
 
@@ -1007,7 +1010,7 @@ fn test_custom_rgb_dimming() {
     let commands = engine.update(Duration::from_millis(0), None).unwrap();
 
     println!("Commands: {:?}", commands);
-    for cmd in &commands {
+    for cmd in commands {
         let channel_name = match cmd.channel {
             1 => "Red",
             2 => "Green",
@@ -1048,7 +1051,7 @@ fn test_custom_rgb_dimming() {
             .unwrap();
         println!("\n  At {} ({}ms):", description, time_ms);
         last_time = time_ms;
-        for cmd in &commands {
+        for cmd in commands {
             let channel_name = match cmd.channel {
                 1 => "Red",
                 2 => "Green",
@@ -1538,7 +1541,7 @@ fn test_full_layering_show_sequence_with_replace() {
     // Check state before fade-out
     println!("\nAt 25s (before fade-out):");
     let commands = engine.update(Duration::from_secs(25), None).unwrap();
-    for cmd in &commands {
+    for cmd in commands {
         let fixture = if cmd.channel <= 4 {
             "front_wash"
         } else {
@@ -1612,7 +1615,7 @@ fn test_full_layering_show_sequence_with_replace() {
         let commands = engine.update(Duration::from_millis(time_ms), None).unwrap();
         println!("\nAt {} ({}ms):", description, time_ms);
 
-        for cmd in &commands {
+        for cmd in commands {
             let fixture = if cmd.channel <= 4 {
                 "front_wash"
             } else {

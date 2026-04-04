@@ -16,6 +16,7 @@ use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
 use parking_lot::Mutex;
 use serde_json::json;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::broadcast;
@@ -43,7 +44,7 @@ pub fn start_watching(
     file_paths: Vec<PathBuf>,
     effect_engine: Arc<Mutex<EffectEngine>>,
     current_song_timeline: Arc<Mutex<Option<LightingTimeline>>>,
-    current_song_time: Arc<Mutex<Duration>>,
+    current_song_time: Arc<AtomicU64>,
     lighting_system: Option<Arc<Mutex<LightingSystem>>>,
     lighting_config: Option<crate::config::Lighting>,
     broadcast_tx: broadcast::Sender<String>,
@@ -136,7 +137,7 @@ fn reload_timeline(
     file_paths: &[PathBuf],
     effect_engine: &Arc<Mutex<EffectEngine>>,
     current_song_timeline: &Arc<Mutex<Option<LightingTimeline>>>,
-    current_song_time: &Arc<Mutex<Duration>>,
+    current_song_time: &Arc<AtomicU64>,
     lighting_system: Option<&Arc<Mutex<LightingSystem>>>,
     lighting_config: Option<&crate::config::Lighting>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -167,7 +168,7 @@ fn reload_timeline(
     let mut new_timeline = LightingTimeline::new(all_shows);
 
     // Get current song time
-    let song_time = { *current_song_time.lock() };
+    let song_time = Duration::from_nanos(current_song_time.load(Ordering::Relaxed));
 
     // Calculate the timeline update before acquiring the engine lock.
     let timeline_update = if song_time > Duration::ZERO {
@@ -245,18 +246,14 @@ fn reload_timeline(
 /// Resolves group names in an effect's target_fixtures to actual fixture names.
 fn resolve_effect_groups(
     lighting_system: Option<&Arc<Mutex<LightingSystem>>>,
-    mut effect: crate::lighting::EffectInstance,
+    effect: crate::lighting::EffectInstance,
 ) -> crate::lighting::EffectInstance {
     if let Some(ls) = lighting_system {
         let mut system = ls.lock();
-        let mut resolved_fixtures = Vec::new();
-        for group_name in &effect.target_fixtures {
-            let fixtures = system.resolve_logical_group_graceful(group_name);
-            resolved_fixtures.extend(fixtures);
-        }
-        effect.target_fixtures = resolved_fixtures;
+        system.resolve_effect_groups(effect)
+    } else {
+        effect
     }
-    effect
 }
 
 #[cfg(test)]
@@ -278,7 +275,7 @@ mod test {
 
         let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
         let timeline = Arc::new(Mutex::new(None));
-        let song_time = Arc::new(Mutex::new(Duration::ZERO));
+        let song_time = Arc::new(AtomicU64::new(0));
 
         let result = reload_timeline(
             &[dsl_path],
@@ -309,7 +306,7 @@ mod test {
 
         let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
         let timeline = Arc::new(Mutex::new(None));
-        let song_time = Arc::new(Mutex::new(Duration::from_secs(3)));
+        let song_time = Arc::new(AtomicU64::new(Duration::from_secs(3).as_nanos() as u64));
 
         let result = reload_timeline(
             &[dsl_path],
@@ -327,7 +324,7 @@ mod test {
     fn reload_timeline_with_missing_file() {
         let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
         let timeline = Arc::new(Mutex::new(None));
-        let song_time = Arc::new(Mutex::new(Duration::ZERO));
+        let song_time = Arc::new(AtomicU64::new(0));
 
         let result = reload_timeline(
             &[PathBuf::from("/nonexistent/show.light")],
@@ -348,7 +345,7 @@ mod test {
 
         let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
         let timeline = Arc::new(Mutex::new(None));
-        let song_time = Arc::new(Mutex::new(Duration::ZERO));
+        let song_time = Arc::new(AtomicU64::new(0));
 
         let result = reload_timeline(
             &[dsl_path],
@@ -388,7 +385,7 @@ mod test {
 
         let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
         let timeline = Arc::new(Mutex::new(None));
-        let song_time = Arc::new(Mutex::new(Duration::ZERO));
+        let song_time = Arc::new(AtomicU64::new(0));
 
         let result = reload_timeline(
             &[dsl_path],
@@ -428,7 +425,7 @@ mod test {
 
         let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
         let timeline = Arc::new(Mutex::new(None));
-        let song_time = Arc::new(Mutex::new(Duration::ZERO));
+        let song_time = Arc::new(AtomicU64::new(0));
 
         let result = reload_timeline(
             &[dsl_path],
@@ -463,7 +460,7 @@ mod test {
 
         let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
         let timeline = Arc::new(Mutex::new(None));
-        let song_time = Arc::new(Mutex::new(Duration::from_secs(1)));
+        let song_time = Arc::new(AtomicU64::new(Duration::from_secs(1).as_nanos() as u64));
 
         let result = reload_timeline(
             &[dsl_path],
@@ -486,7 +483,7 @@ mod test {
 
         let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
         let timeline = Arc::new(Mutex::new(None));
-        let song_time = Arc::new(Mutex::new(Duration::ZERO));
+        let song_time = Arc::new(AtomicU64::new(0));
 
         let result = reload_timeline(
             &[dsl_path],
@@ -521,7 +518,7 @@ mod test {
         let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
         let timeline = Arc::new(Mutex::new(None));
         // Set song_time > 0 to exercise the layer_commands/stop_sequences path
-        let song_time = Arc::new(Mutex::new(Duration::from_secs(3)));
+        let song_time = Arc::new(AtomicU64::new(Duration::from_secs(3).as_nanos() as u64));
 
         let result = reload_timeline(
             &[dsl_path],
@@ -563,7 +560,7 @@ show "test" {
         let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
         let timeline = Arc::new(Mutex::new(None));
         // Set song_time past the stop sequence cue
-        let song_time = Arc::new(Mutex::new(Duration::from_secs(3)));
+        let song_time = Arc::new(AtomicU64::new(Duration::from_secs(3).as_nanos() as u64));
 
         let result = reload_timeline(
             &[dsl_path],
@@ -638,7 +635,7 @@ show "test" {
 
         let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
         let timeline = Arc::new(Mutex::new(None));
-        let song_time = Arc::new(Mutex::new(Duration::ZERO));
+        let song_time = Arc::new(AtomicU64::new(0));
 
         let result = reload_timeline(
             &[dsl_path1, dsl_path2],
@@ -666,7 +663,7 @@ show "test" {
 
         let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
         let timeline = Arc::new(Mutex::new(None));
-        let song_time = Arc::new(Mutex::new(Duration::ZERO));
+        let song_time = Arc::new(AtomicU64::new(0));
         let (tx, mut rx) = broadcast::channel(16);
 
         let _handle = start_watching(
@@ -736,7 +733,7 @@ show "test" {
 
         let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
         let timeline = Arc::new(Mutex::new(None));
-        let song_time = Arc::new(Mutex::new(Duration::ZERO));
+        let song_time = Arc::new(AtomicU64::new(0));
         let (tx, mut rx) = broadcast::channel(16);
 
         let _handle = start_watching(
@@ -791,7 +788,7 @@ show "test" {
 
         let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
         let timeline = Arc::new(Mutex::new(None));
-        let song_time = Arc::new(Mutex::new(Duration::ZERO));
+        let song_time = Arc::new(AtomicU64::new(0));
         let (tx, _rx) = broadcast::channel(16);
 
         let result = start_watching(

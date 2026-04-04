@@ -162,7 +162,7 @@ fn test_start_effect_with_elapsed_color_cycle() {
     let mut red = 0;
     let mut green = 0;
     let mut blue = 0;
-    for cmd in &commands {
+    for cmd in commands {
         if cmd.channel == 2 {
             red = cmd.value;
         } else if cmd.channel == 3 {
@@ -251,7 +251,7 @@ fn test_start_effect_with_elapsed_rainbow() {
     let mut red = 0;
     let mut green = 0;
     let mut blue = 0;
-    for cmd in &commands {
+    for cmd in commands {
         if cmd.channel == 2 {
             red = cmd.value;
         } else if cmd.channel == 3 {
@@ -322,7 +322,10 @@ fn test_start_effect_with_elapsed_zero_elapsed() {
     );
 
     engine.start_effect(effect1).unwrap();
-    let commands1 = engine.update(Duration::from_millis(16), None).unwrap();
+    let commands1 = engine
+        .update(Duration::from_millis(16), None)
+        .unwrap()
+        .to_vec();
 
     // Reset and try with zero elapsed
     engine.stop_all_effects();

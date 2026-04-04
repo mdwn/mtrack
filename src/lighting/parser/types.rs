@@ -15,6 +15,20 @@
 use std::time::Duration;
 
 use super::super::effects::{BlendMode, EffectLayer, EffectType};
+use super::super::tempo::TempoMap;
+
+/// Bundles the per-cue context that flows through the parsing pipeline,
+/// replacing the 5-7 individual parameters previously threaded through
+/// `parse_effect_definition` and friends.
+#[derive(Clone)]
+pub(crate) struct ParseContext {
+    pub tempo_map: Option<TempoMap>,
+    pub cue_time: Duration,
+    pub offset_secs: f64,
+    pub unshifted_score_time: Option<Duration>,
+    pub score_measure: Option<u32>,
+    pub measure_offset: u32,
+}
 
 // Light show DSL data structures
 #[derive(Debug, Clone)]

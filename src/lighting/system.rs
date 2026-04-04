@@ -405,6 +405,22 @@ impl LightingSystem {
 
         Ok(selected)
     }
+
+    /// Resolves group names in an effect's target_fixtures to actual fixture names.
+    /// Each name in `target_fixtures` is looked up as a logical group; if it resolves,
+    /// the individual fixture names replace the group name.
+    pub fn resolve_effect_groups(
+        &mut self,
+        mut effect: super::EffectInstance,
+    ) -> super::EffectInstance {
+        let mut resolved_fixtures = Vec::new();
+        for group_name in &effect.target_fixtures {
+            let fixtures = self.resolve_logical_group_graceful(group_name);
+            resolved_fixtures.extend(fixtures);
+        }
+        effect.target_fixtures = resolved_fixtures;
+        effect
+    }
 }
 
 #[cfg(test)]

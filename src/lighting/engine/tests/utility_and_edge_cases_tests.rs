@@ -653,9 +653,18 @@ fn test_update_multiple_times_sequential() {
     engine.start_effect(effect).unwrap();
 
     // Multiple sequential updates should work
-    let commands1 = engine.update(Duration::from_millis(16), None).unwrap();
-    let commands2 = engine.update(Duration::from_millis(16), None).unwrap();
-    let commands3 = engine.update(Duration::from_millis(16), None).unwrap();
+    let commands1 = engine
+        .update(Duration::from_millis(16), None)
+        .unwrap()
+        .to_vec();
+    let commands2 = engine
+        .update(Duration::from_millis(16), None)
+        .unwrap()
+        .to_vec();
+    let commands3 = engine
+        .update(Duration::from_millis(16), None)
+        .unwrap()
+        .to_vec();
 
     // All should produce commands
     assert!(!commands1.is_empty());

@@ -233,7 +233,7 @@ fn test_chase_effect() {
     assert!(commands.len() >= 3);
 
     // All commands should be for dimmer channels (but may be on different DMX addresses)
-    for cmd in &commands {
+    for cmd in commands {
         // The chase effect generates commands for different DMX addresses
         // but all should be for the dimmer channel (channel 1 relative to fixture address)
         assert!(cmd.channel >= 1 && cmd.channel <= 15); // Within reasonable DMX range

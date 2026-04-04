@@ -22,7 +22,7 @@ use super::effect_parse::parse_effect_definition;
 use super::error::{analyze_parsing_failure, get_error_context};
 use super::grammar::{LightingParser, Rule};
 use super::tempo_parse::parse_tempo_definition;
-use super::types::{Cue, LayerCommand, LayerCommandType, LightShow, Sequence};
+use super::types::{Cue, LayerCommand, LayerCommandType, LightShow, ParseContext, Sequence};
 use super::types::{SequenceLoop, UnexpandedSequenceCue};
 use super::utils::{parse_measure_time, parse_time_string};
 use pest::iterators::Pair;
@@ -584,15 +584,15 @@ fn parse_sequence_cue_structure(
         None
     };
     for effect_pair in effect_pairs {
-        let effect = parse_effect_definition(
-            effect_pair,
-            tempo_map,
-            abs_time,
-            applied_offset_secs,
-            unshifted_for_effects,
+        let effect_ctx = ParseContext {
+            tempo_map: tempo_map.clone(),
+            cue_time: abs_time,
+            offset_secs: applied_offset_secs,
+            unshifted_score_time: unshifted_for_effects,
             score_measure,
-            cumulative_measure_offset,
-        )?;
+            measure_offset: cumulative_measure_offset,
+        };
+        let effect = parse_effect_definition(effect_pair, &effect_ctx)?;
         effects.push(effect);
     }
 
@@ -1308,20 +1308,20 @@ fn parse_cue_definition(
         let mut expanded_cues = Vec::new();
 
         // Parse effects and layer commands for the base cue
+        let seq_effect_ctx = ParseContext {
+            tempo_map: tempo_map.clone(),
+            cue_time: abs_time,
+            offset_secs: applied_offset_secs,
+            unshifted_score_time: if unshifted_score_time_seq != Duration::ZERO {
+                Some(unshifted_score_time_seq)
+            } else {
+                None
+            },
+            score_measure: score_measure_seq,
+            measure_offset: cumulative_measure_offset_seq,
+        };
         for effect_pair in effect_pairs {
-            let effect = parse_effect_definition(
-                effect_pair,
-                tempo_map,
-                abs_time,
-                applied_offset_secs,
-                if unshifted_score_time_seq != Duration::ZERO {
-                    Some(unshifted_score_time_seq)
-                } else {
-                    None
-                },
-                score_measure_seq,
-                cumulative_measure_offset_seq,
-            )?;
+            let effect = parse_effect_definition(effect_pair, &seq_effect_ctx)?;
             effects.push(effect);
         }
 
@@ -1492,20 +1492,20 @@ fn parse_cue_definition(
 
     // No sequence references - return a single cue
     // Second pass: parse effects now that we know the cue time
+    let seq_effect_ctx = ParseContext {
+        tempo_map: tempo_map.clone(),
+        cue_time: abs_time,
+        offset_secs: applied_offset_secs,
+        unshifted_score_time: if unshifted_score_time_seq != Duration::ZERO {
+            Some(unshifted_score_time_seq)
+        } else {
+            None
+        },
+        score_measure: score_measure_seq,
+        measure_offset: cumulative_measure_offset_seq,
+    };
     for effect_pair in effect_pairs {
-        let effect = parse_effect_definition(
-            effect_pair,
-            tempo_map,
-            abs_time,
-            applied_offset_secs,
-            if unshifted_score_time_seq != Duration::ZERO {
-                Some(unshifted_score_time_seq)
-            } else {
-                None
-            },
-            score_measure_seq,
-            cumulative_measure_offset_seq,
-        )?;
+        let effect = parse_effect_definition(effect_pair, &seq_effect_ctx)?;
         effects.push(effect);
     }
 

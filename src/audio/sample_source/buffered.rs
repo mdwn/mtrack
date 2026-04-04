@@ -87,6 +87,8 @@ pub struct BufferedSampleSource {
     warmup_min_frames: usize,
     channel_mappings: Vec<Vec<String>>,
     finished_flag: Arc<AtomicBool>,
+    /// Pre-allocated frame buffer reused by `next_sample` to avoid per-call allocation.
+    frame_buffer: Vec<f32>,
 }
 
 impl BufferedSampleSource {
@@ -134,6 +136,7 @@ impl BufferedSampleSource {
             warmup_min_frames,
             channel_mappings,
             finished_flag: finished_flag.clone(),
+            frame_buffer: vec![0.0f32; channels],
         };
 
         // Kick off initial warmup fill.
@@ -274,10 +277,13 @@ impl BufferedSampleSource {
 
 impl ChannelMappedSampleSource for BufferedSampleSource {
     fn next_sample(&mut self) -> Result<Option<f32>, SampleSourceError> {
-        let channels = self.channels as usize;
-        let mut frame = vec![0.0f32; channels];
-        match self.next_frame(&mut frame)? {
-            Some(count) if count > 0 => Ok(Some(frame[0])),
+        // Take the pre-allocated buffer out to satisfy the borrow checker
+        // (next_frame borrows &mut self, so we can't also borrow self.frame_buffer).
+        let mut frame = std::mem::take(&mut self.frame_buffer);
+        let result = self.next_frame(&mut frame);
+        self.frame_buffer = frame;
+        match result? {
+            Some(count) if count > 0 => Ok(Some(self.frame_buffer[0])),
             _ => Ok(None),
         }
     }

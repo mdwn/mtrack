@@ -107,8 +107,8 @@ pub struct Engine {
     effects_loop_handle: Mutex<Option<JoinHandle<()>>>,
     /// Current song timeline (thread-safe access for effects loop)
     current_song_timeline: Arc<Mutex<Option<LightingTimeline>>>,
-    /// Current song time (thread-safe access for effects loop)
-    current_song_time: Arc<Mutex<Duration>>,
+    /// Current song time in nanoseconds (thread-safe access for effects loop)
+    current_song_time: Arc<AtomicU64>,
     /// Flag indicating the current song's timeline has finished (all cues processed)
     timeline_finished: Arc<AtomicBool>,
     /// Cancel handle for notifying when timeline finishes
@@ -213,7 +213,7 @@ impl Engine {
         let effect_engine = Arc::new(Mutex::new(ee));
         let current_song_timeline: Arc<Mutex<Option<LightingTimeline>>> =
             Arc::new(Mutex::new(None));
-        let current_song_time = Arc::new(Mutex::new(Duration::ZERO));
+        let current_song_time = Arc::new(AtomicU64::new(0));
         let timeline_finished = Arc::new(AtomicBool::new(true));
         let timeline_cancel_handle: Arc<Mutex<Option<CancelHandle>>> = Arc::new(Mutex::new(None));
 
@@ -1122,18 +1122,14 @@ impl Engine {
     /// effect unchanged (groups are passed through as-is).
     fn resolve_effect_groups(
         &self,
-        mut effect: crate::lighting::EffectInstance,
+        effect: crate::lighting::EffectInstance,
     ) -> crate::lighting::EffectInstance {
         if let Some(lighting_system) = &self.lighting_system {
             let mut lighting_system = lighting_system.lock();
-            let mut resolved_fixtures = Vec::new();
-            for group_name in &effect.target_fixtures {
-                let fixtures = lighting_system.resolve_logical_group_graceful(group_name);
-                resolved_fixtures.extend(fixtures);
-            }
-            effect.target_fixtures = resolved_fixtures;
+            lighting_system.resolve_effect_groups(effect)
+        } else {
+            effect
         }
-        effect
     }
 
     /// Stops the lighting timeline
@@ -1151,14 +1147,13 @@ impl Engine {
 
     /// Updates the current song time
     pub fn update_song_time(&self, song_time: Duration) {
-        let mut current_time = self.current_song_time.lock();
-        *current_time = song_time;
+        self.current_song_time
+            .store(song_time.as_nanos() as u64, Ordering::Relaxed);
     }
 
     /// Gets the current song time
     pub fn get_song_time(&self) -> Duration {
-        let current_time = self.current_song_time.lock();
-        *current_time
+        Duration::from_nanos(self.current_song_time.load(Ordering::Relaxed))
     }
 
     /// Sets the broadcast channel so the file watcher can send reload notifications.

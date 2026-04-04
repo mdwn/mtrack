@@ -700,7 +700,7 @@ fn test_random_chase_pattern_visibility() {
 
         // Track which fixtures have non-zero values (active)
         // For PixelBrick, red channel is at address, green at address+1, blue at address+2
-        for cmd in &cmds {
+        for cmd in cmds {
             if cmd.value > 0 {
                 // Find which fixture this command belongs to
                 for i in 1..=8 {
