@@ -1022,15 +1022,21 @@ impl AudioDevice for Device {
         &self,
         song: Arc<Song>,
         mappings: &HashMap<String, Vec<u16>>,
-        cancel_handle: CancelHandle,
-        ready_tx: std::sync::mpsc::Sender<()>,
-        clock: crate::clock::PlaybackClock,
-        start_time: Duration,
-        loop_break: Arc<AtomicBool>,
-        active_section: Arc<parking_lot::RwLock<Option<crate::player::SectionBounds>>>,
-        section_loop_break: Arc<AtomicBool>,
-        loop_time_consumed: Arc<parking_lot::Mutex<Duration>>,
+        sync: crate::playsync::PlaybackSync,
     ) -> Result<(), Box<dyn Error>> {
+        let crate::playsync::PlaybackSync {
+            cancel_handle,
+            ready_tx,
+            clock,
+            start_time,
+            loop_control,
+        } = sync;
+        let crate::playsync::LoopControl {
+            loop_break,
+            active_section,
+            section_loop_break,
+            loop_time_consumed,
+        } = loop_control;
         let span = span!(Level::INFO, "play song (cpal)");
         let _enter = span.enter();
 

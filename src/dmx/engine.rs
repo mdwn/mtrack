@@ -401,7 +401,6 @@ impl Engine {
     }
 
     /// Plays the given song through the DMX interface.
-    #[allow(clippy::too_many_arguments)]
     pub fn play(
         dmx_engine: Arc<Engine>,
         song: Arc<Song>,
@@ -409,10 +408,14 @@ impl Engine {
         ready_tx: std::sync::mpsc::Sender<()>,
         start_time: Duration,
         clock: crate::clock::PlaybackClock,
-        loop_break: Arc<AtomicBool>,
-        active_section: Arc<parking_lot::RwLock<Option<crate::player::SectionBounds>>>,
-        section_loop_break: Arc<AtomicBool>,
+        loop_control: crate::playsync::LoopControl,
     ) -> Result<(), Box<dyn Error>> {
+        let crate::playsync::LoopControl {
+            loop_break,
+            active_section,
+            section_loop_break,
+            ..
+        } = loop_control;
         let span = span!(Level::INFO, "play song (dmx)");
         let _enter = span.enter();
 
@@ -1405,7 +1408,7 @@ mod test {
         collections::HashSet,
         error::Error,
         net::{Ipv4Addr, SocketAddr, TcpListener},
-        sync::{atomic::AtomicBool, Arc},
+        sync::Arc,
         time::Duration,
     };
 
@@ -1892,9 +1895,7 @@ mod test {
             ready_tx,
             std::time::Duration::ZERO,
             clock,
-            Arc::new(AtomicBool::new(false)),
-            Arc::new(parking_lot::RwLock::new(None)),
-            Arc::new(AtomicBool::new(false)),
+            crate::playsync::LoopControl::new(),
         )?;
 
         // Verify timeline was created (may be None if no lighting config)
@@ -2178,9 +2179,7 @@ mod test {
             ready_tx,
             std::time::Duration::ZERO,
             clock,
-            Arc::new(AtomicBool::new(false)),
-            Arc::new(parking_lot::RwLock::new(None)),
-            Arc::new(AtomicBool::new(false)),
+            crate::playsync::LoopControl::new(),
         )?;
 
         // The tempo map should have been cleared (not inherited from the seeded state).
@@ -2236,9 +2235,7 @@ mod test {
             ready_tx,
             std::time::Duration::ZERO,
             clock,
-            Arc::new(AtomicBool::new(false)),
-            Arc::new(parking_lot::RwLock::new(None)),
-            Arc::new(AtomicBool::new(false)),
+            crate::playsync::LoopControl::new(),
         )?;
 
         assert_lighting_state_cleared(&engine);
@@ -3678,9 +3675,7 @@ mod test {
                 ready_tx,
                 std::time::Duration::ZERO,
                 clock,
-                Arc::new(AtomicBool::new(false)),
-                Arc::new(parking_lot::RwLock::new(None)),
-                Arc::new(AtomicBool::new(false)),
+                crate::playsync::LoopControl::new(),
             );
             assert!(result.is_ok());
             Ok(())
@@ -3712,9 +3707,7 @@ mod test {
                 ready_tx,
                 std::time::Duration::ZERO,
                 clock,
-                Arc::new(AtomicBool::new(false)),
-                Arc::new(parking_lot::RwLock::new(None)),
-                Arc::new(AtomicBool::new(false)),
+                crate::playsync::LoopControl::new(),
             );
             assert!(result.is_ok());
             Ok(())
@@ -3747,9 +3740,7 @@ mod test {
                 ready_tx,
                 std::time::Duration::from_secs(3),
                 clock,
-                Arc::new(AtomicBool::new(false)),
-                Arc::new(parking_lot::RwLock::new(None)),
-                Arc::new(AtomicBool::new(false)),
+                crate::playsync::LoopControl::new(),
             );
             assert!(result.is_ok());
             Ok(())
@@ -3788,9 +3779,7 @@ mod test {
                 ready_tx,
                 std::time::Duration::ZERO,
                 clock,
-                Arc::new(AtomicBool::new(false)),
-                Arc::new(parking_lot::RwLock::new(None)),
-                Arc::new(AtomicBool::new(false)),
+                crate::playsync::LoopControl::new(),
             );
             assert!(result.is_ok());
             Ok(())
@@ -3837,9 +3826,7 @@ mod test {
                 ready_tx,
                 std::time::Duration::ZERO,
                 clock,
-                Arc::new(AtomicBool::new(false)),
-                Arc::new(parking_lot::RwLock::new(None)),
-                Arc::new(AtomicBool::new(false)),
+                crate::playsync::LoopControl::new(),
             );
             assert!(result.is_ok(), "play failed: {:?}", result.err());
             Ok(())
@@ -4508,9 +4495,7 @@ mod test {
                 ready_tx,
                 std::time::Duration::ZERO,
                 clock,
-                Arc::new(AtomicBool::new(false)),
-                Arc::new(parking_lot::RwLock::new(None)),
-                Arc::new(AtomicBool::new(false)),
+                crate::playsync::LoopControl::new(),
             );
             assert!(result.is_ok(), "play failed: {:?}", result.err());
             Ok(())
@@ -4553,9 +4538,7 @@ mod test {
                 ready_tx,
                 std::time::Duration::from_secs(10),
                 clock,
-                Arc::new(AtomicBool::new(false)),
-                Arc::new(parking_lot::RwLock::new(None)),
-                Arc::new(AtomicBool::new(false)),
+                crate::playsync::LoopControl::new(),
             );
             assert!(result.is_ok(), "play failed: {:?}", result.err());
             Ok(())
@@ -4604,9 +4587,7 @@ mod test {
                 ready_tx,
                 std::time::Duration::ZERO,
                 clock,
-                Arc::new(AtomicBool::new(false)),
-                Arc::new(parking_lot::RwLock::new(None)),
-                Arc::new(AtomicBool::new(false)),
+                crate::playsync::LoopControl::new(),
             );
             assert!(result.is_ok(), "play failed: {:?}", result.err());
             Ok(())
@@ -4682,9 +4663,7 @@ mod test {
                 ready_tx,
                 std::time::Duration::ZERO,
                 clock,
-                Arc::new(AtomicBool::new(false)),
-                Arc::new(parking_lot::RwLock::new(None)),
-                Arc::new(AtomicBool::new(false)),
+                crate::playsync::LoopControl::new(),
             );
             assert!(result.is_ok(), "play failed: {:?}", result.err());
             Ok(())
@@ -4746,9 +4725,7 @@ mod test {
                 ready_tx,
                 std::time::Duration::ZERO,
                 clock,
-                Arc::new(AtomicBool::new(false)),
-                Arc::new(parking_lot::RwLock::new(None)),
-                Arc::new(AtomicBool::new(false)),
+                crate::playsync::LoopControl::new(),
             );
             assert!(result.is_ok(), "play failed: {:?}", result.err());
             Ok(())
@@ -4861,9 +4838,7 @@ mod test {
                 ready_tx,
                 std::time::Duration::ZERO,
                 clock,
-                Arc::new(AtomicBool::new(false)),
-                Arc::new(parking_lot::RwLock::new(None)),
-                Arc::new(AtomicBool::new(false)),
+                crate::playsync::LoopControl::new(),
             );
             assert!(result.is_ok());
             Ok(())

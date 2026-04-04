@@ -13,6 +13,50 @@
 //
 use parking_lot::{Condvar, Mutex};
 use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc};
+use std::time::Duration;
+
+/// Bundles the playback synchronization state passed to `play_from` / `play`.
+/// Includes the cancel handle, clock, ready signal, start time, and loop control.
+#[derive(Clone)]
+pub struct PlaybackSync {
+    pub cancel_handle: CancelHandle,
+    pub ready_tx: std::sync::mpsc::Sender<()>,
+    pub clock: crate::clock::PlaybackClock,
+    pub start_time: Duration,
+    pub loop_control: LoopControl,
+}
+
+/// Bundles the shared loop-control state threaded through audio, MIDI, and DMX
+/// `play_from` / `play` methods.
+#[derive(Clone)]
+pub struct LoopControl {
+    /// Shared flag to break out of the whole-song loop gracefully.
+    pub loop_break: Arc<AtomicBool>,
+    /// Active section loop bounds (shared with player).
+    pub active_section: Arc<parking_lot::RwLock<Option<crate::player::SectionBounds>>>,
+    /// Shared flag to break out of a section loop.
+    pub section_loop_break: Arc<AtomicBool>,
+    /// Accumulated time consumed by section loop iterations.
+    pub loop_time_consumed: Arc<parking_lot::Mutex<Duration>>,
+}
+
+impl LoopControl {
+    /// Creates a new `LoopControl` with all flags in their default (inactive) state.
+    pub fn new() -> Self {
+        Self {
+            loop_break: Arc::new(AtomicBool::new(false)),
+            active_section: Arc::new(parking_lot::RwLock::new(None)),
+            section_loop_break: Arc::new(AtomicBool::new(false)),
+            loop_time_consumed: Arc::new(parking_lot::Mutex::new(Duration::ZERO)),
+        }
+    }
+}
+
+impl Default for LoopControl {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// Represents the current cancel state.
 #[derive(PartialEq)]

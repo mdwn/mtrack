@@ -11,19 +11,12 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
-use std::{
-    any::Any,
-    error::Error,
-    fmt,
-    sync::{atomic::AtomicBool, Arc},
-};
+use std::{any::Any, error::Error, fmt, sync::Arc};
 
 use midly::live::LiveEvent;
 use tokio::sync::mpsc::Sender;
 
-use crate::{
-    clock::PlaybackClock, config, dmx::engine::Engine, playsync::CancelHandle, songs::Song,
-};
+use crate::{config, dmx::engine::Engine, playsync::PlaybackSync, songs::Song};
 
 pub(crate) mod beat_clock;
 pub(crate) mod midir;
@@ -44,18 +37,7 @@ pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {
     /// Plays the given song through the MIDI interface, starting from a specific time.
     /// The `ready_tx` sender signals that setup is complete. The implementation should
     /// then wait for `clock.elapsed() > Duration::ZERO` as the "go" signal.
-    #[allow(clippy::too_many_arguments)]
-    fn play_from(
-        &self,
-        song: Arc<Song>,
-        cancel_handle: CancelHandle,
-        ready_tx: std::sync::mpsc::Sender<()>,
-        start_time: std::time::Duration,
-        clock: PlaybackClock,
-        loop_break: Arc<AtomicBool>,
-        active_section: Arc<parking_lot::RwLock<Option<crate::player::SectionBounds>>>,
-        section_loop_break: Arc<AtomicBool>,
-    ) -> Result<(), Box<dyn Error>>;
+    fn play_from(&self, song: Arc<Song>, sync: PlaybackSync) -> Result<(), Box<dyn Error>>;
 
     /// Emits an event.
     fn emit(&self, midi_event: Option<LiveEvent<'static>>) -> Result<(), Box<dyn Error>>;

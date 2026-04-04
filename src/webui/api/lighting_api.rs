@@ -27,14 +27,18 @@ use crate::lighting;
 
 /// GET /api/lighting — lists available .light files from the songs directory.
 pub(super) async fn get_lighting_files(State(state): State<WebUiState>) -> impl IntoResponse {
-    let mut light_files: Vec<serde_json::Value> = Vec::new();
-    if let Err(e) = find_light_files(&state.songs_path, &state.songs_path, &mut light_files) {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to scan for lighting files: {}", e)})),
-        )
-            .into_response();
-    }
+    let songs_path = state.songs_path.clone();
+    let mut light_files =
+        match super::helpers::spawn_blocking_io("scan for lighting files", move || {
+            let mut files = Vec::new();
+            find_light_files(&songs_path, &songs_path, &mut files)?;
+            Ok::<_, std::io::Error>(files)
+        })
+        .await
+        {
+            Ok(f) => f,
+            Err(e) => return e,
+        };
     light_files.sort_by(|a, b| {
         a.get("path")
             .and_then(|v| v.as_str())
@@ -105,18 +109,19 @@ pub(super) async fn get_lighting_file(
         }
     };
 
-    match std::fs::read_to_string(safe.as_path()) {
+    let path = safe.as_path().to_path_buf();
+    match super::helpers::spawn_blocking_io("read lighting file", move || {
+        std::fs::read_to_string(&path)
+    })
+    .await
+    {
         Ok(content) => (
             StatusCode::OK,
             [("content-type", "text/plain; charset=utf-8")],
             content,
         )
             .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to read lighting file: {}", e)})),
-        )
-            .into_response(),
+        Err(e) => e,
     }
 }
 
@@ -158,9 +163,15 @@ pub(super) async fn put_lighting_file(
         return (StatusCode::BAD_REQUEST, Json(json!({"errors": errors}))).into_response();
     }
 
-    match config_io::atomic_write(&verified_path, &body) {
+    let vp = verified_path;
+    let body_owned = body;
+    match super::helpers::spawn_blocking_io("write lighting file", move || {
+        config_io::atomic_write(&vp, &body_owned)
+    })
+    .await
+    {
         Ok(()) => (StatusCode::OK, Json(json!({"status": "saved"}))).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e}))).into_response(),
+        Err(e) => e,
     }
 }
 
@@ -195,13 +206,14 @@ pub(super) async fn delete_lighting_file(
     }
 
     // codeql[rust/path-injection] safe is verified via SafePath::resolve against songs_path root.
-    match std::fs::remove_file(safe.as_path()) {
+    let path = safe.as_path().to_path_buf();
+    match super::helpers::spawn_blocking_io("delete lighting file", move || {
+        std::fs::remove_file(&path)
+    })
+    .await
+    {
         Ok(()) => (StatusCode::OK, Json(json!({"status": "deleted"}))).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to delete file: {}", e)})),
-        )
-            .into_response(),
+        Err(e) => e,
     }
 }
 
@@ -296,8 +308,8 @@ pub(super) async fn get_fixture_types(
             (StatusCode::OK, Json(json!({"fixture_types": {}}))).into_response(),
         );
     }
-    let mut all = std::collections::HashMap::new();
-    if let Err(e) =
+    let all = super::helpers::spawn_blocking_io("load fixture types", move || {
+        let mut all = std::collections::HashMap::new();
         load_light_files_from_dir(&dir, |content| match lighting::parser::parse_fixture_types(
             content,
         ) {
@@ -307,13 +319,10 @@ pub(super) async fn get_fixture_types(
             }
             Err(e) => Err(e),
         })
-    {
-        return Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to load fixture types: {}", e)})),
-        )
-            .into_response());
-    }
+        .map_err(|e| e.to_string())?;
+        Ok::<_, String>(all)
+    })
+    .await?;
     Ok((StatusCode::OK, Json(json!({"fixture_types": all}))).into_response())
 }
 
@@ -337,13 +346,11 @@ pub(super) async fn get_fixture_type(
         )
             .into_response());
     }
-    let content = std::fs::read_to_string(&file_path).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to read file: {}", e)})),
-        )
-            .into_response()
-    })?;
+    let fp = file_path.clone();
+    let content = super::helpers::spawn_blocking_io("read fixture type", move || {
+        std::fs::read_to_string(&fp)
+    })
+    .await?;
     let types = lighting::parser::parse_fixture_types(&content).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -418,17 +425,15 @@ pub(super) async fn put_fixture_type(
             .into_response()
     })?;
 
-    // Ensure directory exists
-    ensure_lighting_dir(&dir)?;
-
     let file_path = dir.join(format!("{}.light", sanitize_filename(&name)));
-    config_io::atomic_write(&file_path, &dsl).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to write file: {}", e)})),
-        )
-            .into_response()
-    })?;
+    let dir_owned = dir;
+    let fp = file_path;
+    let dsl_owned = dsl;
+    super::helpers::spawn_blocking_io("write fixture type", move || {
+        ensure_lighting_dir_sync(&dir_owned)?;
+        config_io::atomic_write(&fp, &dsl_owned)
+    })
+    .await?;
 
     Ok::<_, axum::response::Response>(
         (
@@ -459,13 +464,9 @@ pub(super) async fn delete_fixture_type(
         )
             .into_response());
     }
-    std::fs::remove_file(&file_path).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to delete file: {}", e)})),
-        )
-            .into_response()
-    })?;
+    let fp = file_path;
+    super::helpers::spawn_blocking_io("delete fixture type", move || std::fs::remove_file(&fp))
+        .await?;
     Ok::<_, axum::response::Response>(
         (
             StatusCode::OK,
@@ -487,8 +488,8 @@ pub(super) async fn get_venues(
             (StatusCode::OK, Json(json!({"venues": {}}))).into_response(),
         );
     }
-    let mut all = std::collections::HashMap::new();
-    if let Err(e) =
+    let all = super::helpers::spawn_blocking_io("load venues", move || {
+        let mut all = std::collections::HashMap::new();
         load_light_files_from_dir(&dir, |content| {
             match lighting::parser::parse_venues(content) {
                 Ok(venues) => {
@@ -498,13 +499,10 @@ pub(super) async fn get_venues(
                 Err(e) => Err(e),
             }
         })
-    {
-        return Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to load venues: {}", e)})),
-        )
-            .into_response());
-    }
+        .map_err(|e| e.to_string())?;
+        Ok::<_, String>(all)
+    })
+    .await?;
     Ok((StatusCode::OK, Json(json!({"venues": all}))).into_response())
 }
 
@@ -524,13 +522,10 @@ pub(super) async fn get_venue(
         )
             .into_response());
     }
-    let content = std::fs::read_to_string(&file_path).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to read file: {}", e)})),
-        )
-            .into_response()
-    })?;
+    let fp = file_path.clone();
+    let content =
+        super::helpers::spawn_blocking_io("read venue file", move || std::fs::read_to_string(&fp))
+            .await?;
     let venues = lighting::parser::parse_venues(&content).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -593,16 +588,15 @@ pub(super) async fn put_venue(
             .into_response()
     })?;
 
-    ensure_lighting_dir(&dir)?;
-
     let file_path = dir.join(format!("{}.light", sanitize_filename(&name)));
-    config_io::atomic_write(&file_path, &dsl).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to write file: {}", e)})),
-        )
-            .into_response()
-    })?;
+    let dir_owned = dir;
+    let fp = file_path;
+    let dsl_owned = dsl;
+    super::helpers::spawn_blocking_io("write venue", move || {
+        ensure_lighting_dir_sync(&dir_owned)?;
+        config_io::atomic_write(&fp, &dsl_owned)
+    })
+    .await?;
 
     Ok::<_, axum::response::Response>(
         (
@@ -629,13 +623,8 @@ pub(super) async fn delete_venue(
         )
             .into_response());
     }
-    std::fs::remove_file(&file_path).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to delete file: {}", e)})),
-        )
-            .into_response()
-    })?;
+    let fp = file_path;
+    super::helpers::spawn_blocking_io("delete venue", move || std::fs::remove_file(&fp)).await?;
     Ok::<_, axum::response::Response>(
         (
             StatusCode::OK,
@@ -665,17 +654,10 @@ fn load_light_files_from_dir(
     Ok(())
 }
 
-/// Ensures a lighting directory exists, creating it if necessary.
-#[allow(clippy::result_large_err)]
-fn ensure_lighting_dir(dir: &std::path::Path) -> Result<(), axum::response::Response> {
+/// Ensures a lighting directory exists (sync version for use inside spawn_blocking).
+fn ensure_lighting_dir_sync(dir: &std::path::Path) -> Result<(), String> {
     if !dir.exists() {
-        std::fs::create_dir_all(dir).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("Failed to create directory: {}", e)})),
-            )
-                .into_response()
-        })?;
+        std::fs::create_dir_all(dir).map_err(|e| format!("Failed to create directory: {}", e))?;
     }
     Ok(())
 }
@@ -1647,14 +1629,14 @@ show "test" {
         let dir = tempfile::tempdir().unwrap();
         let sub = dir.path().join("new_subdir");
         assert!(!sub.exists());
-        ensure_lighting_dir(&sub).unwrap();
+        ensure_lighting_dir_sync(&sub).unwrap();
         assert!(sub.is_dir());
     }
 
     #[test]
     fn ensure_lighting_dir_existing_is_ok() {
         let dir = tempfile::tempdir().unwrap();
-        ensure_lighting_dir(dir.path()).unwrap();
+        ensure_lighting_dir_sync(dir.path()).unwrap();
         assert!(dir.path().is_dir());
     }
 

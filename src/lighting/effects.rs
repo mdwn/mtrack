@@ -31,7 +31,7 @@ pub use fixture::{
 };
 pub use instance::EffectInstance;
 pub use state::{is_multiplier_channel, ChannelState, DmxCommand, FixtureState};
-pub use tempo_aware::{TempoAwareFrequency, TempoAwareSpeed};
+pub use tempo_aware::{TempoAwareFrequency, TempoAwareSpeed, TempoAwareValue};
 pub use types::{
     BlendMode, ChaseDirection, ChasePattern, CycleDirection, CycleTransition, DimmerCurve,
     EffectLayer, EffectType,

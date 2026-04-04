@@ -20,125 +20,79 @@ use axum::{
 };
 use serde_json::json;
 
-use std::path::PathBuf;
-
 use super::super::config_io;
 use super::super::server::WebUiState;
 use super::config_api::{reject_if_playing, reload_hardware_after_mutation};
+use super::helpers::{
+    require_configured_dir, resolve_resource_path, spawn_blocking_io, validate_resource_name,
+};
 use crate::config::Profile;
 use config::Config;
 
 /// Validates a profile filename for use in file paths.
 #[allow(clippy::result_large_err)]
 fn validate_profile_filename(name: &str) -> Result<(), axum::response::Response> {
-    use super::super::safe_path::SafePath;
-    if SafePath::validate_name(name).is_err() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "Invalid profile filename"})),
-        )
-            .into_response());
-    }
-    Ok(())
-}
-
-/// Returns the profiles directory, or an error response if not configured.
-#[allow(clippy::result_large_err)]
-fn require_profiles_dir(state: &WebUiState) -> Result<PathBuf, axum::response::Response> {
-    state.profiles_dir.clone().ok_or_else(|| {
-        (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({"error": "No profiles directory configured"})),
-        )
-            .into_response()
-    })
-}
-
-/// Resolves a profile file path within the profiles directory, verifying
-/// that the result does not escape the directory via symlinks or other tricks.
-/// Uses SafePath for containment verification.
-#[allow(clippy::result_large_err)]
-fn resolve_profile_path(
-    profiles_dir: &std::path::Path,
-    name: &str,
-    ext: &str,
-) -> Result<PathBuf, axum::response::Response> {
-    use super::super::safe_path::VerifiedRoot;
-
-    let root = VerifiedRoot::new(profiles_dir).map_err(|e| e.into_response())?;
-    // Name is pre-validated by validate_profile_filename (no "..", "/", "\", null).
-    let file_path = root.as_path().join(format!("{}.{}", name, ext));
-    if file_path.exists() {
-        let safe = super::super::safe_path::SafePath::resolve(&file_path, &root)
-            .map_err(|e| e.into_response())?;
-        Ok(safe.as_path().to_path_buf())
-    } else {
-        Ok(file_path)
-    }
+    validate_resource_name(name, "profile", None)
 }
 
 /// GET /api/profiles — list profile files from profiles_dir.
 pub(super) async fn get_profiles(State(state): State<WebUiState>) -> impl IntoResponse {
-    let profiles_dir = require_profiles_dir(&state)?;
+    let profiles_dir = require_configured_dir(
+        &state.profiles_dir,
+        "profiles",
+        StatusCode::SERVICE_UNAVAILABLE,
+    )?;
 
     // codeql[rust/path-injection] profiles_dir comes from server config, not user input.
-    let entries = match std::fs::read_dir(&profiles_dir) {
-        Ok(e) => e,
-        Err(e) => {
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("Failed to read profiles dir: {}", e)})),
-            )
-                .into_response());
+    let result = spawn_blocking_io("read profiles dir", move || {
+        let entries = std::fs::read_dir(&profiles_dir)?;
+        let mut items: Vec<(String, serde_json::Value)> = Vec::new();
+        for entry in entries {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if ext != "yaml" && ext != "yml" {
+                continue;
+            }
+            let filename = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_string();
+
+            // Parse the profile; skip unparseable files.
+            let profile = match Config::builder()
+                .add_source(config::File::from(path.as_path()))
+                .build()
+                .and_then(|c| c.try_deserialize::<Profile>())
+            {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+
+            items.push((
+                filename.clone(),
+                json!({
+                    "filename": filename,
+                    "hostname": profile.hostname(),
+                    "has_audio": profile.audio_config().is_some(),
+                    "has_midi": profile.midi().is_some(),
+                    "has_dmx": profile.dmx().is_some(),
+                    "has_trigger": profile.trigger().is_some(),
+                    "has_controllers": !profile.controllers().is_empty(),
+                }),
+            ));
         }
-    };
-
-    let mut items: Vec<(String, serde_json::Value)> = Vec::new();
-    for entry in entries {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        if ext != "yaml" && ext != "yml" {
-            continue;
-        }
-        let filename = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_string();
-
-        // Parse the profile; skip unparseable files.
-        let profile = match Config::builder()
-            .add_source(config::File::from(path.as_path()))
-            .build()
-            .and_then(|c| c.try_deserialize::<Profile>())
-        {
-            Ok(p) => p,
-            Err(_) => continue,
-        };
-
-        items.push((
-            filename.clone(),
-            json!({
-                "filename": filename,
-                "hostname": profile.hostname(),
-                "has_audio": profile.audio_config().is_some(),
-                "has_midi": profile.midi().is_some(),
-                "has_dmx": profile.dmx().is_some(),
-                "has_trigger": profile.trigger().is_some(),
-                "has_controllers": !profile.controllers().is_empty(),
-            }),
-        ));
-    }
-
-    items.sort_by(|a, b| a.0.cmp(&b.0));
-    let result: Vec<serde_json::Value> = items.into_iter().map(|(_, v)| v).collect();
+        items.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok::<_, std::io::Error>(items.into_iter().map(|(_, v)| v).collect::<Vec<_>>())
+    })
+    .await?;
     Ok::<_, axum::response::Response>((StatusCode::OK, Json(json!(result))).into_response())
 }
 
@@ -148,15 +102,19 @@ pub(super) async fn get_profile(
     Path(filename): Path<String>,
 ) -> impl IntoResponse {
     validate_profile_filename(&filename)?;
-    let profiles_dir = require_profiles_dir(&state)?;
+    let profiles_dir = require_configured_dir(
+        &state.profiles_dir,
+        "profiles",
+        StatusCode::SERVICE_UNAVAILABLE,
+    )?;
 
     // Try .yaml then .yml.
     let file_path = {
-        let yaml_path = resolve_profile_path(&profiles_dir, &filename, "yaml")?;
+        let yaml_path = resolve_resource_path(&profiles_dir, &filename, "yaml")?;
         if yaml_path.is_file() {
             yaml_path
         } else {
-            let yml_path = resolve_profile_path(&profiles_dir, &filename, "yml")?;
+            let yml_path = resolve_resource_path(&profiles_dir, &filename, "yml")?;
             if yml_path.is_file() {
                 yml_path
             } else {
@@ -169,26 +127,19 @@ pub(super) async fn get_profile(
         }
     };
 
-    // codeql[rust/path-injection] file_path is validated via resolve_profile_path.
-    let raw = std::fs::read_to_string(&file_path).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to read profile: {}", e)})),
-        )
-            .into_response()
-    })?;
-
-    let profile: Profile = Config::builder()
-        .add_source(config::File::from(file_path.as_path()))
-        .build()
-        .and_then(|c| c.try_deserialize())
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("Failed to parse profile: {}", e)})),
-            )
-                .into_response()
-        })?;
+    // codeql[rust/path-injection] file_path is validated via resolve_resource_path.
+    let fp = file_path.clone();
+    let (raw, profile) = spawn_blocking_io("read profile", move || {
+        let raw =
+            std::fs::read_to_string(&fp).map_err(|e| format!("Failed to read profile: {}", e))?;
+        let profile: Profile = Config::builder()
+            .add_source(config::File::from(fp.as_path()))
+            .build()
+            .and_then(|c| c.try_deserialize())
+            .map_err(|e| format!("Failed to parse profile: {}", e))?;
+        Ok::<_, String>((raw, profile))
+    })
+    .await?;
 
     let profile_json = serde_json::to_value(&profile).map_err(|e| {
         (
@@ -217,7 +168,11 @@ pub(super) async fn put_profile(
     if let Some(resp) = reject_if_playing(&state).await {
         return Err(resp);
     }
-    let profiles_dir = require_profiles_dir(&state)?;
+    let profiles_dir = require_configured_dir(
+        &state.profiles_dir,
+        "profiles",
+        StatusCode::SERVICE_UNAVAILABLE,
+    )?;
 
     // Validate that the body deserializes as a Profile.
     let profile: Profile = serde_json::from_value(body).map_err(|e| {
@@ -236,20 +191,18 @@ pub(super) async fn put_profile(
             .into_response()
     })?;
 
-    // codeql[rust/path-injection] profiles_dir comes from server config, not user input.
-    if let Err(e) = std::fs::create_dir_all(&profiles_dir) {
-        return Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to create profiles directory: {}", e)})),
-        )
-            .into_response());
-    }
+    // codeql[rust/path-injection] filename is validated; path is verified via resolve_resource_path.
+    let file_path = resolve_resource_path(&profiles_dir, &filename, "yaml")?;
 
-    // codeql[rust/path-injection] filename is validated; path is verified via resolve_profile_path.
-    let file_path = resolve_profile_path(&profiles_dir, &filename, "yaml")?;
-    if let Err(e) = config_io::atomic_write(&file_path, &yaml) {
-        return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e}))).into_response());
-    }
+    // Write directory and file off the async runtime.
+    let dir = profiles_dir;
+    let fp = file_path;
+    let yaml_owned = yaml;
+    spawn_blocking_io("write profile", move || {
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        config_io::atomic_write(&fp, &yaml_owned)
+    })
+    .await?;
 
     reload_hardware_after_mutation(&state).await;
 
@@ -271,37 +224,28 @@ pub(super) async fn delete_profile_file(
     if let Some(resp) = reject_if_playing(&state).await {
         return Err(resp);
     }
-    let profiles_dir = require_profiles_dir(&state)?;
+    let profiles_dir = require_configured_dir(
+        &state.profiles_dir,
+        "profiles",
+        StatusCode::SERVICE_UNAVAILABLE,
+    )?;
 
-    // codeql[rust/path-injection] filename is validated; path is verified via resolve_profile_path.
-    let file_path = resolve_profile_path(&profiles_dir, &filename, "yaml")?;
-    if !file_path.is_file() {
-        // Also check .yml extension.
-        let yml_path = resolve_profile_path(&profiles_dir, &filename, "yml")?;
-        if yml_path.is_file() {
-            std::fs::remove_file(&yml_path).map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": format!("Failed to delete file: {}", e)})),
-                )
-                    .into_response()
-            })?;
-        } else {
-            return Err((
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": format!("Profile '{}' not found", filename)})),
-            )
-                .into_response());
-        }
+    // codeql[rust/path-injection] filename is validated; path is verified via resolve_resource_path.
+    let file_path = resolve_resource_path(&profiles_dir, &filename, "yaml")?;
+    let yml_path = resolve_resource_path(&profiles_dir, &filename, "yml")?;
+
+    let target = if file_path.is_file() {
+        file_path
+    } else if yml_path.is_file() {
+        yml_path
     } else {
-        std::fs::remove_file(&file_path).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("Failed to delete file: {}", e)})),
-            )
-                .into_response()
-        })?;
-    }
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": format!("Profile '{}' not found", filename)})),
+        )
+            .into_response());
+    };
+    spawn_blocking_io("delete profile", move || std::fs::remove_file(&target)).await?;
 
     reload_hardware_after_mutation(&state).await;
 

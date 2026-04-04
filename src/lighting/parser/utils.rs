@@ -15,7 +15,7 @@
 use std::error::Error;
 use std::time::Duration;
 
-use super::super::effects::{Color, TempoAwareFrequency, TempoAwareSpeed};
+use super::super::effects::{Color, TempoAwareFrequency, TempoAwareSpeed, TempoAwareValue};
 use super::super::tempo::TempoMap;
 use super::grammar::Rule;
 use pest::iterators::Pair;
@@ -32,102 +32,71 @@ pub(crate) fn parse_percentage_to_f64(value: &str) -> Result<f64, Box<dyn Error>
     }
 }
 
-/// Parses a frequency value to TempoAwareFrequency
+/// Parses a tempo-aware value string into a `TempoAwareValue`.
 /// Supports:
-/// - Numeric values (e.g., "4.0") -> Fixed Hz
-/// - Time-based values (e.g., "1measure", "2beats", "0.5s") -> TempoAwareFrequency
+/// - Numeric values (e.g., "4.0") -> Fixed
+/// - Time-based values (e.g., "1measure", "2beats", "0.5s", "500ms") -> Measures/Beats/Seconds
 ///
+/// `kind_label` is used in error messages (e.g. "frequency" or "speed").
 /// For beats/measures, requires tempo_map to be available.
+pub(crate) fn parse_tempo_aware_string(
+    value: &str,
+    tempo_map: &Option<TempoMap>,
+    kind_label: &str,
+) -> Result<TempoAwareValue, Box<dyn Error>> {
+    let value = value.trim();
+
+    // Try parsing as a simple number first — fixed rate
+    if let Ok(val) = value.parse::<f64>() {
+        return Ok(TempoAwareValue::Fixed(val));
+    }
+
+    // Try parsing as a time-based value
+    if value.ends_with("ms") {
+        let num_str = value.trim_end_matches("ms");
+        let num = num_str.parse::<f64>()?;
+        let duration_secs = num / 1000.0;
+        Ok(TempoAwareValue::Seconds(duration_secs))
+    } else if value.ends_with("measures") {
+        let num_str = value.trim_end_matches("measures");
+        let num = num_str.parse::<f64>()?;
+        if tempo_map.is_some() {
+            Ok(TempoAwareValue::Measures(num))
+        } else {
+            Err(format!("Measure-based {kind_label} values require a tempo section").into())
+        }
+    } else if value.ends_with("beats") {
+        let num_str = value.trim_end_matches("beats");
+        let num = num_str.parse::<f64>()?;
+        if tempo_map.is_some() {
+            Ok(TempoAwareValue::Beats(num))
+        } else {
+            Err(format!("Beat-based {kind_label} values require a tempo section").into())
+        }
+    } else if value.ends_with('s') {
+        let num_str = value.trim_end_matches('s');
+        let num = num_str.parse::<f64>()?;
+        Ok(TempoAwareValue::Seconds(num))
+    } else {
+        // Fallback: try parsing as a number
+        Ok(TempoAwareValue::Fixed(value.parse::<f64>()?))
+    }
+}
+
+/// Parses a frequency value to TempoAwareFrequency (type alias for TempoAwareValue).
 pub(crate) fn parse_frequency_string(
     value: &str,
     tempo_map: &Option<TempoMap>,
 ) -> Result<TempoAwareFrequency, Box<dyn Error>> {
-    let value = value.trim();
-
-    // Try parsing as a simple number first (Hz) - fixed frequency
-    if let Ok(val) = value.parse::<f64>() {
-        return Ok(TempoAwareFrequency::Fixed(val));
-    }
-
-    // Try parsing as a time-based value
-    if value.ends_with("ms") {
-        let num_str = value.trim_end_matches("ms");
-        let num = num_str.parse::<f64>()?;
-        let duration_secs = num / 1000.0;
-        Ok(TempoAwareFrequency::Seconds(duration_secs))
-    } else if value.ends_with("measures") {
-        let num_str = value.trim_end_matches("measures");
-        let num = num_str.parse::<f64>()?;
-        if tempo_map.is_some() {
-            Ok(TempoAwareFrequency::Measures(num))
-        } else {
-            Err("Measure-based frequencies require a tempo section".into())
-        }
-    } else if value.ends_with("beats") {
-        let num_str = value.trim_end_matches("beats");
-        let num = num_str.parse::<f64>()?;
-        if tempo_map.is_some() {
-            Ok(TempoAwareFrequency::Beats(num))
-        } else {
-            Err("Beat-based frequencies require a tempo section".into())
-        }
-    } else if value.ends_with('s') {
-        let num_str = value.trim_end_matches('s');
-        let num = num_str.parse::<f64>()?;
-        Ok(TempoAwareFrequency::Seconds(num))
-    } else {
-        // Fallback: try parsing as a number
-        Ok(TempoAwareFrequency::Fixed(value.parse::<f64>()?))
-    }
+    parse_tempo_aware_string(value, tempo_map, "frequency")
 }
 
-/// Parses a speed value to TempoAwareSpeed
-/// Supports:
-/// - Numeric values (e.g., "1.5") -> Fixed cycles per second
-/// - Time-based values (e.g., "1measure", "2beats", "0.5s") -> TempoAwareSpeed
-///
-/// For beats/measures, requires tempo_map to be available.
+/// Parses a speed value to TempoAwareSpeed (type alias for TempoAwareValue).
 pub(crate) fn parse_speed_string(
     value: &str,
     tempo_map: &Option<TempoMap>,
 ) -> Result<TempoAwareSpeed, Box<dyn Error>> {
-    let value = value.trim();
-
-    // Try parsing as a simple number first (cycles per second) - fixed speed
-    if let Ok(val) = value.parse::<f64>() {
-        return Ok(TempoAwareSpeed::Fixed(val));
-    }
-
-    // Try parsing as a time-based value
-    if value.ends_with("ms") {
-        let num_str = value.trim_end_matches("ms");
-        let num = num_str.parse::<f64>()?;
-        let duration_secs = num / 1000.0;
-        Ok(TempoAwareSpeed::Seconds(duration_secs))
-    } else if value.ends_with("measures") {
-        let num_str = value.trim_end_matches("measures");
-        let num = num_str.parse::<f64>()?;
-        if tempo_map.is_some() {
-            Ok(TempoAwareSpeed::Measures(num))
-        } else {
-            Err("Measure-based speeds require a tempo section".into())
-        }
-    } else if value.ends_with("beats") {
-        let num_str = value.trim_end_matches("beats");
-        let num = num_str.parse::<f64>()?;
-        if tempo_map.is_some() {
-            Ok(TempoAwareSpeed::Beats(num))
-        } else {
-            Err("Beat-based speeds require a tempo section".into())
-        }
-    } else if value.ends_with('s') {
-        let num_str = value.trim_end_matches('s');
-        let num = num_str.parse::<f64>()?;
-        Ok(TempoAwareSpeed::Seconds(num))
-    } else {
-        // Fallback: try parsing as a number
-        Ok(TempoAwareSpeed::Fixed(value.parse::<f64>()?))
-    }
+    parse_tempo_aware_string(value, tempo_map, "speed")
 }
 
 /// Parses a duration string (e.g., "2s", "500ms", "4beats", "2measures") to Duration

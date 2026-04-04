@@ -29,35 +29,36 @@ use crate::config;
 /// GET /api/config — returns the raw YAML content of the player config file.
 pub(super) async fn get_config_raw(State(state): State<WebUiState>) -> impl IntoResponse {
     // codeql[rust/path-injection] config_path is set at startup, not from user input.
-    match std::fs::read_to_string(&state.config_path) {
+    let path = state.config_path.clone();
+    match super::helpers::spawn_blocking_io("read config", move || std::fs::read_to_string(&path))
+        .await
+    {
         Ok(content) => (
             StatusCode::OK,
             [("content-type", "text/yaml; charset=utf-8")],
             content,
         )
             .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to read config: {}", e)})),
-        )
-            .into_response(),
+        Err(e) => e,
     }
 }
 
 /// GET /api/config/parsed — returns the player config as JSON.
 pub(super) async fn get_config_parsed(State(state): State<WebUiState>) -> impl IntoResponse {
-    match config::Player::deserialize(&state.config_path) {
-        Ok(player_config) => match serde_json::to_value(&player_config) {
-            Ok(json_val) => (StatusCode::OK, Json(json_val)).into_response(),
-            Err(e) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("Failed to serialize config: {}", e)})),
-            )
-                .into_response(),
-        },
+    let path = state.config_path.clone();
+    let player_config = match super::helpers::spawn_blocking_io("parse config", move || {
+        config::Player::deserialize(&path).map_err(|e| e.to_string())
+    })
+    .await
+    {
+        Ok(c) => c,
+        Err(e) => return e,
+    };
+    match serde_json::to_value(&player_config) {
+        Ok(json_val) => (StatusCode::OK, Json(json_val)).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to parse config: {}", e)})),
+            Json(json!({"error": format!("Failed to serialize config: {}", e)})),
         )
             .into_response(),
     }
@@ -69,9 +70,14 @@ pub(super) async fn put_config(State(state): State<WebUiState>, body: String) ->
         return (StatusCode::BAD_REQUEST, Json(json!({"errors": errors}))).into_response();
     }
 
-    match config_io::atomic_write(&state.config_path, &body) {
+    let path = state.config_path.clone();
+    match super::helpers::spawn_blocking_io("write config", move || {
+        config_io::atomic_write(&path, &body)
+    })
+    .await
+    {
         Ok(()) => (StatusCode::OK, Json(json!({"status": "saved"}))).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e}))).into_response(),
+        Err(e) => e,
     }
 }
 
@@ -175,57 +181,115 @@ pub(super) async fn get_config_store(State(state): State<WebUiState>) -> impl In
     }
 }
 
+/// Trait for config section types that support validation.
+trait Validatable {
+    fn validate(&self) -> Result<(), Vec<String>>;
+}
+impl Validatable for config::Audio {
+    fn validate(&self) -> Result<(), Vec<String>> {
+        self.validate()
+    }
+}
+impl Validatable for config::Midi {
+    fn validate(&self) -> Result<(), Vec<String>> {
+        self.validate()
+    }
+}
+impl Validatable for config::Dmx {
+    fn validate(&self) -> Result<(), Vec<String>> {
+        self.validate()
+    }
+}
+
+/// Extracts the expected_checksum from a JSON body, or returns a 400 error.
+#[allow(clippy::result_large_err)]
+fn extract_checksum(body: &serde_json::Value) -> Result<String, axum::response::Response> {
+    body.get("expected_checksum")
+        .and_then(|v| v.as_str())
+        .map(|c| c.to_string())
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "missing expected_checksum"})),
+            )
+                .into_response()
+        })
+}
+
+/// Deserializes an optional config section from a JSON body field.
+/// Returns `None` if the field is absent or null; returns a 400 error on
+/// deserialization failure.
+#[allow(clippy::result_large_err)]
+fn deserialize_optional_section<T: serde::de::DeserializeOwned>(
+    body: &serde_json::Value,
+    field: &str,
+) -> Result<Option<T>, axum::response::Response> {
+    match body.get(field) {
+        Some(v) if !v.is_null() => serde_json::from_value(v.clone()).map(Some).map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": format!("invalid {}: {}", field, e)})),
+            )
+                .into_response()
+        }),
+        _ => Ok(None),
+    }
+}
+
+/// Shared preamble for optional, validatable config section updates.
+///
+/// Handles: reject_if_playing, checksum extraction, deserialization, validation,
+/// config store lookup. Returns the deserialized value, checksum, and store on
+/// success.
+#[allow(clippy::result_large_err)]
+async fn prepare_optional_update<T>(
+    state: &WebUiState,
+    body: &serde_json::Value,
+    field: &str,
+) -> Result<(Option<T>, String, std::sync::Arc<config::ConfigStore>), axum::response::Response>
+where
+    T: serde::de::DeserializeOwned + Validatable,
+{
+    if let Some(resp) = reject_if_playing(state).await {
+        return Err(resp);
+    }
+    let checksum = extract_checksum(body)?;
+    let value: Option<T> = deserialize_optional_section(body, field)?;
+    if let Some(ref v) = value {
+        if let Err(errors) = v.validate() {
+            return Err((StatusCode::BAD_REQUEST, Json(json!({"errors": errors}))).into_response());
+        }
+    }
+    let store = require_config_store(state)?;
+    Ok((value, checksum, store))
+}
+
+/// Completes a config section update: calls the store updater, reloads hardware,
+/// and returns the response.
+async fn finish_config_update(
+    state: &WebUiState,
+    result: Result<config::store::ConfigSnapshot, config::ConfigError>,
+) -> axum::response::Response {
+    match result {
+        Ok(snapshot) => {
+            reload_hardware_after_mutation(state).await;
+            config_snapshot_response(snapshot, StatusCode::OK)
+        }
+        Err(e) => config_store_error_response(e),
+    }
+}
+
 /// PUT /api/config/audio — update audio config section.
 pub(super) async fn put_config_audio(
     State(state): State<WebUiState>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    if let Some(resp) = reject_if_playing(&state).await {
-        return resp;
-    }
-
-    let checksum = match body.get("expected_checksum").and_then(|v| v.as_str()) {
-        Some(c) => c.to_string(),
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": "missing expected_checksum"})),
-            )
-                .into_response()
-        }
-    };
-
-    let audio: Option<config::Audio> = match body.get("audio") {
-        Some(v) if !v.is_null() => match serde_json::from_value(v.clone()) {
-            Ok(a) => Some(a),
-            Err(e) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({"error": format!("invalid audio: {}", e)})),
-                )
-                    .into_response()
-            }
-        },
-        _ => None,
-    };
-
-    if let Some(ref audio) = audio {
-        if let Err(errors) = audio.validate() {
-            return (StatusCode::BAD_REQUEST, Json(json!({"errors": errors}))).into_response();
-        }
-    }
-
-    let store = match require_config_store(&state) {
-        Ok(s) => s,
-        Err(e) => return e,
-    };
-    match store.update_audio(audio, &checksum).await {
-        Ok(snapshot) => {
-            reload_hardware_after_mutation(&state).await;
-            config_snapshot_response(snapshot, StatusCode::OK)
-        }
-        Err(e) => config_store_error_response(e),
-    }
+    let (audio, checksum, store) =
+        match prepare_optional_update::<config::Audio>(&state, &body, "audio").await {
+            Ok(t) => t,
+            Err(e) => return e,
+        };
+    finish_config_update(&state, store.update_audio(audio, &checksum).await).await
 }
 
 /// PUT /api/config/midi — update MIDI config section.
@@ -233,52 +297,12 @@ pub(super) async fn put_config_midi(
     State(state): State<WebUiState>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    if let Some(resp) = reject_if_playing(&state).await {
-        return resp;
-    }
-
-    let checksum = match body.get("expected_checksum").and_then(|v| v.as_str()) {
-        Some(c) => c.to_string(),
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": "missing expected_checksum"})),
-            )
-                .into_response()
-        }
-    };
-
-    let midi: Option<config::Midi> = match body.get("midi") {
-        Some(v) if !v.is_null() => match serde_json::from_value(v.clone()) {
-            Ok(m) => Some(m),
-            Err(e) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({"error": format!("invalid midi: {}", e)})),
-                )
-                    .into_response()
-            }
-        },
-        _ => None,
-    };
-
-    if let Some(ref midi) = midi {
-        if let Err(errors) = midi.validate() {
-            return (StatusCode::BAD_REQUEST, Json(json!({"errors": errors}))).into_response();
-        }
-    }
-
-    let store = match require_config_store(&state) {
-        Ok(s) => s,
-        Err(e) => return e,
-    };
-    match store.update_midi(midi, &checksum).await {
-        Ok(snapshot) => {
-            reload_hardware_after_mutation(&state).await;
-            config_snapshot_response(snapshot, StatusCode::OK)
-        }
-        Err(e) => config_store_error_response(e),
-    }
+    let (midi, checksum, store) =
+        match prepare_optional_update::<config::Midi>(&state, &body, "midi").await {
+            Ok(t) => t,
+            Err(e) => return e,
+        };
+    finish_config_update(&state, store.update_midi(midi, &checksum).await).await
 }
 
 /// PUT /api/config/dmx — update DMX config section.
@@ -286,52 +310,12 @@ pub(super) async fn put_config_dmx(
     State(state): State<WebUiState>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    if let Some(resp) = reject_if_playing(&state).await {
-        return resp;
-    }
-
-    let checksum = match body.get("expected_checksum").and_then(|v| v.as_str()) {
-        Some(c) => c.to_string(),
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": "missing expected_checksum"})),
-            )
-                .into_response()
-        }
-    };
-
-    let dmx: Option<config::Dmx> = match body.get("dmx") {
-        Some(v) if !v.is_null() => match serde_json::from_value(v.clone()) {
-            Ok(d) => Some(d),
-            Err(e) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({"error": format!("invalid dmx: {}", e)})),
-                )
-                    .into_response()
-            }
-        },
-        _ => None,
-    };
-
-    if let Some(ref dmx) = dmx {
-        if let Err(errors) = dmx.validate() {
-            return (StatusCode::BAD_REQUEST, Json(json!({"errors": errors}))).into_response();
-        }
-    }
-
-    let store = match require_config_store(&state) {
-        Ok(s) => s,
-        Err(e) => return e,
-    };
-    match store.update_dmx(dmx, &checksum).await {
-        Ok(snapshot) => {
-            reload_hardware_after_mutation(&state).await;
-            config_snapshot_response(snapshot, StatusCode::OK)
-        }
-        Err(e) => config_store_error_response(e),
-    }
+    let (dmx, checksum, store) =
+        match prepare_optional_update::<config::Dmx>(&state, &body, "dmx").await {
+            Ok(t) => t,
+            Err(e) => return e,
+        };
+    finish_config_update(&state, store.update_dmx(dmx, &checksum).await).await
 }
 
 /// PUT /api/config/controllers — update controllers config.
@@ -342,16 +326,9 @@ pub(super) async fn put_config_controllers(
     if let Some(resp) = reject_if_playing(&state).await {
         return resp;
     }
-
-    let checksum = match body.get("expected_checksum").and_then(|v| v.as_str()) {
-        Some(c) => c.to_string(),
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": "missing expected_checksum"})),
-            )
-                .into_response()
-        }
+    let checksum = match extract_checksum(&body) {
+        Ok(c) => c,
+        Err(e) => return e,
     };
 
     let controllers: Vec<config::Controller> = match body.get("controllers") {
@@ -396,15 +373,9 @@ pub(super) async fn put_config_samples(
         return resp;
     }
 
-    let checksum = match body.get("expected_checksum").and_then(|v| v.as_str()) {
-        Some(c) => c.to_string(),
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": "missing expected_checksum"})),
-            )
-                .into_response()
-        }
+    let checksum = match extract_checksum(&body) {
+        Ok(c) => c,
+        Err(e) => return e,
     };
 
     let samples: std::collections::HashMap<String, config::SampleDefinition> =
@@ -458,15 +429,9 @@ pub(super) async fn post_config_profile(
         return resp;
     }
 
-    let checksum = match body.get("expected_checksum").and_then(|v| v.as_str()) {
-        Some(c) => c.to_string(),
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": "missing expected_checksum"})),
-            )
-                .into_response()
-        }
+    let checksum = match extract_checksum(&body) {
+        Ok(c) => c,
+        Err(e) => return e,
     };
 
     let profile: config::Profile = match body.get("profile") {
@@ -516,15 +481,9 @@ pub(super) async fn put_config_profile(
         return resp;
     }
 
-    let checksum = match body.get("expected_checksum").and_then(|v| v.as_str()) {
-        Some(c) => c.to_string(),
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": "missing expected_checksum"})),
-            )
-                .into_response()
-        }
+    let checksum = match extract_checksum(&body) {
+        Ok(c) => c,
+        Err(e) => return e,
     };
 
     let profile: config::Profile = match body.get("profile") {

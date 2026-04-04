@@ -133,14 +133,8 @@ struct PlaybackContext {
     play_tx: oneshot::Sender<Result<(), String>>,
     start_time: Duration,
     play_start_time: Arc<Mutex<Option<SystemTime>>>,
-    /// Shared flag to break out of the loop gracefully.
-    loop_break: Arc<AtomicBool>,
-    /// Active section loop bounds (shared with player).
-    active_section: Arc<parking_lot::RwLock<Option<SectionBounds>>>,
-    /// Shared flag to break out of a section loop.
-    section_loop_break: Arc<AtomicBool>,
-    /// Accumulated time consumed by section loop iterations.
-    loop_time_consumed: Arc<parking_lot::Mutex<Duration>>,
+    /// Loop control state shared with audio/MIDI/DMX subsystems.
+    loop_control: crate::playsync::LoopControl,
 }
 
 /// Groups hardware devices for constructing a Player without discovering real hardware.
@@ -1165,10 +1159,12 @@ impl Player {
                 play_tx,
                 start_time,
                 play_start_time: play_start_time.clone(),
-                loop_break: self.loop_break.clone(),
-                active_section: self.active_section.clone(),
-                section_loop_break: self.section_loop_break.clone(),
-                loop_time_consumed: self.loop_time_consumed.clone(),
+                loop_control: crate::playsync::LoopControl {
+                    loop_break: self.loop_break.clone(),
+                    active_section: self.active_section.clone(),
+                    section_loop_break: self.section_loop_break.clone(),
+                    loop_time_consumed: self.loop_time_consumed.clone(),
+                },
             };
             tokio::task::spawn_blocking(move || {
                 Player::play_files(ctx);
@@ -1273,10 +1269,7 @@ impl Player {
             play_tx,
             start_time,
             play_start_time,
-            loop_break,
-            active_section,
-            section_loop_break,
-            loop_time_consumed,
+            loop_control,
         } = ctx;
 
         // Check if any subsystems are active.
@@ -1309,10 +1302,7 @@ impl Player {
             let audio_outcome = audio_outcome.clone();
             let ready_tx = ready_tx.clone();
             let clock = clock.clone();
-            let loop_break = loop_break.clone();
-            let active_section = active_section.clone();
-            let section_loop_break = section_loop_break.clone();
-            let loop_time_consumed = loop_time_consumed.clone();
+            let loop_control = loop_control.clone();
             expected_ready += 1;
 
             Some(thread::spawn(move || {
@@ -1320,14 +1310,13 @@ impl Player {
                 let result = device.play_from(
                     song,
                     &mappings,
-                    cancel_handle,
-                    ready_tx,
-                    clock,
-                    start_time,
-                    loop_break,
-                    active_section,
-                    section_loop_break,
-                    loop_time_consumed,
+                    crate::playsync::PlaybackSync {
+                        cancel_handle,
+                        ready_tx,
+                        clock,
+                        start_time,
+                        loop_control,
+                    },
                 );
                 if let Err(ref e) = result {
                     error!(
@@ -1350,9 +1339,7 @@ impl Player {
             let cancel_handle = cancel_handle.clone();
             let clock = clock.clone();
             let ready_tx = ready_tx.clone();
-            let loop_break = loop_break.clone();
-            let active_section = active_section.clone();
-            let section_loop_break = section_loop_break.clone();
+            let loop_control = loop_control.clone();
             expected_ready += 1;
 
             thread::spawn(move || {
@@ -1365,9 +1352,7 @@ impl Player {
                     ready_tx,
                     start_time,
                     clock,
-                    loop_break,
-                    active_section,
-                    section_loop_break,
+                    loop_control,
                 ) {
                     error!(
                         err = e.as_ref(),
@@ -1384,9 +1369,7 @@ impl Player {
             let cancel_handle = cancel_handle.clone();
             let ready_tx = ready_tx.clone();
             let clock = clock.clone();
-            let loop_break = loop_break.clone();
-            let active_section = active_section.clone();
-            let section_loop_break = section_loop_break.clone();
+            let loop_control = loop_control.clone();
             expected_ready += 1;
 
             Some(thread::spawn(move || {
@@ -1394,13 +1377,13 @@ impl Player {
 
                 if let Err(e) = midi_device.play_from(
                     song,
-                    cancel_handle,
-                    ready_tx,
-                    start_time,
-                    clock,
-                    loop_break,
-                    active_section,
-                    section_loop_break,
+                    crate::playsync::PlaybackSync {
+                        cancel_handle,
+                        ready_tx,
+                        clock,
+                        start_time,
+                        loop_control,
+                    },
                 ) {
                     error!(
                         err = e.as_ref(),

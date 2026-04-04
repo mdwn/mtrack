@@ -26,7 +26,7 @@ use midly::live::LiveEvent;
 use tokio::{sync::mpsc::Sender, task::JoinHandle};
 use tracing::{info, span, Level};
 
-use crate::{clock::PlaybackClock, playsync::CancelHandle, songs::Song};
+use crate::songs::Song;
 
 /// A mock device. Doesn't actually play anything.
 #[derive(Clone)]
@@ -145,14 +145,15 @@ impl super::Device for Device {
     fn play_from(
         &self,
         song: Arc<Song>,
-        cancel_handle: CancelHandle,
-        ready_tx: std::sync::mpsc::Sender<()>,
-        start_time: Duration,
-        clock: PlaybackClock,
-        _loop_break: Arc<std::sync::atomic::AtomicBool>,
-        _active_section: Arc<parking_lot::RwLock<Option<crate::player::SectionBounds>>>,
-        _section_loop_break: Arc<std::sync::atomic::AtomicBool>,
+        sync: crate::playsync::PlaybackSync,
     ) -> Result<(), Box<dyn Error>> {
+        let crate::playsync::PlaybackSync {
+            cancel_handle,
+            ready_tx,
+            clock,
+            start_time,
+            ..
+        } = sync;
         let span = span!(Level::INFO, "play song (mock)");
         let _enter = span.enter();
 

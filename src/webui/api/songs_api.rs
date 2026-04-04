@@ -122,40 +122,54 @@ pub(super) async fn get_songs(State(state): State<WebUiState>) -> impl IntoRespo
 }
 
 /// GET /api/songs/:name — returns a single song's config YAML.
+/// Helper to find a song's YAML config path (tries .yaml then .yml).
+fn find_yaml_path(base: &std::path::Path) -> Option<std::path::PathBuf> {
+    let yaml = base.join("song.yaml");
+    if yaml.exists() {
+        return Some(yaml);
+    }
+    let yml = base.join("song.yml");
+    if yml.exists() {
+        return Some(yml);
+    }
+    None
+}
+
+/// Reads a YAML file in a blocking task, returning a text/yaml response.
+async fn read_yaml_response(path: std::path::PathBuf) -> axum::response::Response {
+    match super::helpers::spawn_blocking_io("read song config", move || {
+        std::fs::read_to_string(&path)
+    })
+    .await
+    {
+        Ok(content) => (
+            StatusCode::OK,
+            [("content-type", "text/yaml; charset=utf-8")],
+            content,
+        )
+            .into_response(),
+        Err(e) => e,
+    }
+}
+
 pub(super) async fn get_song(
     State(state): State<WebUiState>,
     Path(name): Path<String>,
-) -> impl IntoResponse {
-    let all_songs = state.player.songs();
-    match all_songs.get(&name) {
-        Ok(song) => {
-            // Try to read the song's config YAML from its base_path
-            let config_path = song.base_path().join("song.yaml");
-            let alt_config_path = song.base_path().join("song.yml");
-            let yaml_path = if config_path.exists() {
-                Some(config_path)
-            } else if alt_config_path.exists() {
-                Some(alt_config_path)
-            } else {
-                None
-            };
+) -> axum::response::Response {
+    // Gather all data we need from the song registry synchronously, then drop
+    // the Arc<Songs> before any .await so the future remains Send.
+    enum GetSongResult {
+        YamlPath(std::path::PathBuf),
+        Summary(axum::response::Response),
+        NotFound(axum::response::Response),
+    }
 
-            match yaml_path {
-                Some(path) => match std::fs::read_to_string(&path) {
-                    Ok(content) => (
-                        StatusCode::OK,
-                        [("content-type", "text/yaml; charset=utf-8")],
-                        content,
-                    )
-                        .into_response(),
-                    Err(e) => (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({"error": format!("Failed to read song config: {}", e)})),
-                    )
-                        .into_response(),
-                },
-                None => {
-                    // Return a JSON summary if no config file found
+    let result = {
+        let all_songs = state.player.songs();
+        match all_songs.get(&name) {
+            Ok(song) => match find_yaml_path(song.base_path()) {
+                Some(path) => GetSongResult::YamlPath(path),
+                None => GetSongResult::Summary(
                     (
                         StatusCode::OK,
                         Json(json!({
@@ -168,51 +182,37 @@ pub(super) async fn get_song(
                             "config_file": false,
                         })),
                     )
-                        .into_response()
+                        .into_response(),
+                ),
+            },
+            Err(_) => {
+                if let Some(failure) = all_songs.failures().iter().find(|f| f.name() == name) {
+                    match find_yaml_path(failure.base_path()) {
+                        Some(path) => GetSongResult::YamlPath(path),
+                        None => GetSongResult::NotFound(
+                            (
+                                StatusCode::NOT_FOUND,
+                                Json(json!({"error": format!("No config file found for failed song: {}", name)})),
+                            )
+                                .into_response(),
+                        ),
+                    }
+                } else {
+                    GetSongResult::NotFound(
+                        (
+                            StatusCode::NOT_FOUND,
+                            Json(json!({"error": format!("Song not found: {}", name)})),
+                        )
+                            .into_response(),
+                    )
                 }
             }
         }
-        Err(_) => {
-            // Check if this is a failed song — serve its raw config for editing.
-            if let Some(failure) = all_songs.failures().iter().find(|f| f.name() == name) {
-                let config_path = failure.base_path().join("song.yaml");
-                let alt_config_path = failure.base_path().join("song.yml");
-                let yaml_path = if config_path.exists() {
-                    Some(config_path)
-                } else if alt_config_path.exists() {
-                    Some(alt_config_path)
-                } else {
-                    None
-                };
+    };
 
-                return match yaml_path {
-                    Some(path) => match std::fs::read_to_string(&path) {
-                        Ok(content) => (
-                            StatusCode::OK,
-                            [("content-type", "text/yaml; charset=utf-8")],
-                            content,
-                        )
-                            .into_response(),
-                        Err(e) => (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(json!({"error": format!("Failed to read song config: {}", e)})),
-                        )
-                            .into_response(),
-                    },
-                    None => (
-                        StatusCode::NOT_FOUND,
-                        Json(json!({"error": format!("No config file found for failed song: {}", name)})),
-                    )
-                        .into_response(),
-                };
-            }
-
-            (
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": format!("Song not found: {}", name)})),
-            )
-                .into_response()
-        }
+    match result {
+        GetSongResult::YamlPath(path) => read_yaml_response(path).await,
+        GetSongResult::Summary(resp) | GetSongResult::NotFound(resp) => resp,
     }
 }
 
@@ -291,12 +291,12 @@ pub(super) async fn import_file_to_song(
     // codeql[rust/path-injection] dest_path is under song_dir (verified by resolve_or_create_song_dir),
     // filename is validated by validate_track_filename (no .. or / allowed).
     let dest_path = song_dir.join_filename(filename);
-    if let Err(e) = std::fs::copy(&source, &dest_path) {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to copy file: {}", e)})),
-        )
-            .into_response();
+    let src = source.as_path().to_path_buf();
+    let dst = dest_path.clone();
+    if let Err(e) =
+        super::helpers::spawn_blocking_io("copy file", move || std::fs::copy(&src, &dst)).await
+    {
+        return e;
     }
 
     if let Err(e) = ensure_song_config(&song_dir) {
@@ -362,20 +362,20 @@ pub(super) async fn delete_song(
             .into_response();
     }
 
-    if let Err(e) = std::fs::remove_file(&config_path) {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to delete song.yaml: {}", e)})),
-        )
-            .into_response();
+    let cp = config_path.clone();
+    let song_name = name.clone();
+    let pl_dir = state.playlists_dir.clone();
+    let legacy_pl = state.legacy_playlist_path.clone();
+    if let Err(e) = super::helpers::spawn_blocking_io("delete song", move || {
+        std::fs::remove_file(&cp)?;
+        // Remove the song from any playlist files on disk so they stay valid.
+        remove_song_from_playlists(&song_name, pl_dir.as_deref(), legacy_pl.as_deref());
+        Ok::<_, std::io::Error>(())
+    })
+    .await
+    {
+        return e;
     }
-
-    // Remove the song from any playlist files on disk so they stay valid.
-    remove_song_from_playlists(
-        &name,
-        state.playlists_dir.as_deref(),
-        state.legacy_playlist_path.as_deref(),
-    );
 
     // Refresh the player's song state.
     state.player.reload_songs(
@@ -559,52 +559,49 @@ pub(super) async fn get_song_files(
         }
     };
 
-    let song_dir = song.base_path();
+    let song_dir = song.base_path().to_path_buf();
 
-    let mut files: Vec<serde_json::Value> = Vec::new();
-    match std::fs::read_dir(song_dir) {
-        Ok(entries) => {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if !path.is_file() {
-                    continue;
-                }
-                let filename = match path.file_name().and_then(|n| n.to_str()) {
-                    Some(n) => n.to_string(),
-                    None => continue,
-                };
-                // Skip song config files
-                if filename == "song.yaml" || filename == "song.yml" {
-                    continue;
-                }
-                let ext = path
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("")
-                    .to_lowercase();
-                let file_type = if songs::is_supported_audio_extension(&ext) {
-                    "audio"
-                } else if ext == "mid" {
-                    "midi"
-                } else if ext == "light" {
-                    "lighting"
-                } else {
-                    "other"
-                };
-                files.push(json!({
-                    "name": filename,
-                    "type": file_type,
-                }));
+    let mut files = match super::helpers::spawn_blocking_io("read song dir", move || {
+        let mut files: Vec<serde_json::Value> = Vec::new();
+        for entry in std::fs::read_dir(&song_dir)?.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
             }
+            let filename = match path.file_name().and_then(|n| n.to_str()) {
+                Some(n) => n.to_string(),
+                None => continue,
+            };
+            // Skip song config files
+            if filename == "song.yaml" || filename == "song.yml" {
+                continue;
+            }
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+            let file_type = if songs::is_supported_audio_extension(&ext) {
+                "audio"
+            } else if ext == "mid" {
+                "midi"
+            } else if ext == "light" {
+                "lighting"
+            } else {
+                "other"
+            };
+            files.push(json!({
+                "name": filename,
+                "type": file_type,
+            }));
         }
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("Failed to read directory: {}", e)})),
-            )
-                .into_response();
-        }
-    }
+        Ok::<_, std::io::Error>(files)
+    })
+    .await
+    {
+        Ok(f) => f,
+        Err(e) => return e,
+    };
 
     files.sort_by(|a, b| {
         a.get("name")
@@ -652,21 +649,26 @@ pub(super) async fn post_song(
             .into_response();
     }
 
-    match config_io::atomic_write(&config_path, &body) {
-        Ok(()) => {
-            state.player.reload_songs(
-                &state.songs_path,
-                state.playlists_dir.as_deref(),
-                state.legacy_playlist_path.as_deref(),
-            );
-            (
-                StatusCode::CREATED,
-                Json(json!({"status": "created", "song": name})),
-            )
-                .into_response()
-        }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e}))).into_response(),
+    let cp = config_path;
+    let body_owned = body;
+    if let Err(e) = super::helpers::spawn_blocking_io("write song config", move || {
+        config_io::atomic_write(&cp, &body_owned)
+    })
+    .await
+    {
+        return e;
     }
+
+    state.player.reload_songs(
+        &state.songs_path,
+        state.playlists_dir.as_deref(),
+        state.legacy_playlist_path.as_deref(),
+    );
+    (
+        StatusCode::CREATED,
+        Json(json!({"status": "created", "song": name})),
+    )
+        .into_response()
 }
 
 /// PUT /api/songs/:name — validates and atomically writes a song config.
@@ -690,17 +692,22 @@ pub(super) async fn put_song(
         return e;
     }
 
-    match config_io::atomic_write(&config_path, &body) {
-        Ok(()) => {
-            state.player.reload_songs(
-                &state.songs_path,
-                state.playlists_dir.as_deref(),
-                state.legacy_playlist_path.as_deref(),
-            );
-            (StatusCode::OK, Json(json!({"status": "saved"}))).into_response()
-        }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e}))).into_response(),
+    let cp = config_path;
+    let body_owned = body;
+    if let Err(e) = super::helpers::spawn_blocking_io("write song config", move || {
+        config_io::atomic_write(&cp, &body_owned)
+    })
+    .await
+    {
+        return e;
     }
+
+    state.player.reload_songs(
+        &state.songs_path,
+        state.playlists_dir.as_deref(),
+        state.legacy_playlist_path.as_deref(),
+    );
+    (StatusCode::OK, Json(json!({"status": "saved"}))).into_response()
 }
 
 /// PUT /api/songs/:name/tracks/:filename — uploads a single track file.
@@ -718,13 +725,9 @@ pub(super) async fn upload_track_single(
 
     let file_path = song_dir.join_filename(&filename);
     let replaced = file_path.exists();
-    if let Err(e) = std::fs::write(&file_path, &body) {
-        return Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to write file: {}", e)})),
-        )
-            .into_response());
-    }
+    let fp = file_path.clone();
+    let data = body.to_vec();
+    super::helpers::spawn_blocking_io("write track", move || std::fs::write(&fp, &data)).await?;
 
     ensure_song_config(&song_dir).map_err(|e| *e)?;
     state.player.reload_songs(
@@ -733,7 +736,7 @@ pub(super) async fn upload_track_single(
         state.legacy_playlist_path.as_deref(),
     );
 
-    Ok((
+    Ok::<_, axum::response::Response>((
         StatusCode::OK,
         Json(json!({
             "status": if replaced { "replaced" } else { "uploaded" },
@@ -782,13 +785,12 @@ pub(super) async fn upload_tracks_multipart(
         })?;
 
         let file_path = song_dir.join_filename(&filename);
-        std::fs::write(&file_path, &data).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("Failed to write file {}: {}", filename, e)})),
-            )
-                .into_response()
-        })?;
+        let fp = file_path.clone();
+        let data_vec = data.to_vec();
+        super::helpers::spawn_blocking_io("write track file", move || {
+            std::fs::write(&fp, &data_vec)
+        })
+        .await?;
 
         uploaded.push(filename);
     }
