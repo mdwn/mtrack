@@ -108,36 +108,9 @@ dmx:
   - universe: 1
     name: light-show
 
-# Status events are emitted to the controller while mtrack is running. This is largely done
-# in order to confirm that mtrack is connected to the controller and operating properly.
-# The statuses are emitted periodically in the following timeline:
-# - Off (1 second)
-# - On (250 milliseconds, either idling or playing)
-# - Off (1 second)
-# - On (250 milliseconds, either idling or playing)
-# - ...
-status_events:
-  # Off events are emitted, in order, when trying to return the status indicator to "normal."
-  # If your MIDI controller has LEDs, for example, this would be to turn the LED off.
-  off_events:
-  - type: control_change
-    channel: 16
-    controller: 3
-    value: 2
-  # Idling events are emitted, in order, when trying to indicate that the player is connected,
-  # but not currently doing anything.
-  idling_events:
-  - type: control_change
-    channel: 16
-    controller: 2
-    value: 2
-  # Playing events are emitted, in order, when trying to indicate that the player is connected,
-  # and actively playing.
-  playing_events:
-  - type: control_change
-    channel: 16
-    controller: 2
-    value: 2
+# Status events are now configured per-profile in the hardware profile configuration.
+# See the Hardware Profiles documentation for details.
+# Legacy top-level status_events are automatically normalized into the profile at startup.
 
 # The controller definitions. As of now, the valid kinds of controllers are:
 # - grpc
@@ -187,6 +160,11 @@ controllers:
   # The duration of the time elapsed since a song was playing and the
   # total duration of the song. Contains a single string argument.
   playlist_current_song_elapsed: /mtrack/playlist/current_song/elapsed
+
+  # Section loop control paths.
+  section_ack: /mtrack/section_ack
+  stop_section_loop: /mtrack/stop_section_loop
+  loop_section: /mtrack/loop_section
 
 
 # The MIDI controller configuration.

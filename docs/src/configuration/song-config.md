@@ -74,6 +74,35 @@ tracks:
 - name: keys
   file: Keys.wav
   file_channel: 1
+
+# (Optional) Loop the song indefinitely. Audio crossfades seamlessly at loop
+# boundaries. Press Play or Next to break out and advance the playlist.
+loop_playback: true
+
+# (Optional) Named sections defined by measure boundaries. Used for section
+# looping during playback. Measure numbers are 1-indexed; end_measure is exclusive.
+sections:
+  - name: verse
+    start_measure: 1
+    end_measure: 17
+  - name: chorus
+    start_measure: 17
+    end_measure: 25
+  - name: bridge
+    start_measure: 33
+    end_measure: 41
+
+# (Optional) Per-song notification audio overrides. These override the
+# profile-level notification sounds for this song only.
+notification_audio:
+  loop_armed: notifications/loop-armed.wav
+  break_requested: notifications/break.wav
+  loop_exited: notifications/exit.wav
+  section_entering: notifications/section.wav
+  # Per-section-name overrides:
+  sections:
+    chorus: notifications/chorus-entering.wav
+    bridge: notifications/bridge-entering.wav
 ```
 
 ## Directory Structure
@@ -103,6 +132,54 @@ songs/
         ├── song.yaml
         └── audio.wav
 ```
+
+## Song Looping
+
+Setting `loop_playback: true` causes the song to loop indefinitely when it reaches the end:
+
+- **Audio** crossfades seamlessly at loop boundaries (100ms linear fade)
+- **MIDI** restarts from the beginning
+- **Lighting/DMX** timelines reset cleanly
+
+During a looping song, pressing Play or Next breaks out of the loop, advances the playlist,
+and auto-plays the next song. Stop cancels everything as usual.
+
+## Sections
+
+Sections define named regions of a song by measure boundaries. They enable section looping
+during playback — activating a section loop causes playback to repeat that section until
+stopped.
+
+Sections require a beat grid (from a click track) or a tempo map (from MIDI) so that measure
+boundaries can be resolved to audio positions.
+
+```yaml
+sections:
+  - name: intro
+    start_measure: 1
+    end_measure: 5
+  - name: verse
+    start_measure: 5
+    end_measure: 21
+```
+
+- `name` — Display name for the section (must not be empty)
+- `start_measure` — Start measure, 1-indexed, inclusive
+- `end_measure` — End measure, 1-indexed, exclusive (must be greater than `start_measure`)
+
+Sections can also be created visually in the web UI's Sections tab with a canvas-based
+timeline editor that supports drag-to-create, resize, move, rename, and delete.
+
+## Beat Grid and Song Analysis Cache
+
+When a song has a track named "click", mtrack analyzes it offline to detect beat positions and
+measure boundaries. The result is a `BeatGrid` with absolute beat times and accented-beat
+indices. Beat grid data is exposed via gRPC and displayed in the web UI (measure/beat position
+during playback, beat/measure counts in song detail).
+
+Computed song data (waveform peaks, beat grids) is persisted to `.mtrack-cache.json` in each
+song's directory. The cache uses file mtime+size for invalidation — if an audio file changes,
+its cached data is recomputed on next access.
 
 ## CLI: Listing Songs
 

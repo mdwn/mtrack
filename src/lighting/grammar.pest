@@ -172,7 +172,7 @@ number_value = { ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? }
 
 time_value = { number_value }
 
-time_unit = @{ "measures" | "beats" | "ms" | "s" }
+time_unit = @{ "measures" | "measure" | "beats" | "beat" | "ms" | "s" }
 
 string = { "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 

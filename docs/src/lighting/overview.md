@@ -37,7 +37,8 @@ you want to.
 - **Tag-Based Group Resolution**: Fixtures are tagged with capabilities and roles.
   The system automatically selects optimal fixtures based on constraints.
 - **Effects Engine**: Built-in effects (static, cycle, chase, strobe, pulse, dimmer,
-  rainbow) with layering, blend modes, and timing control.
+  rainbow) with layering, blend modes, and timing control. All effects require an explicit
+  duration — there are no perpetual or permanent effects.
 - **Timeline Editor**: Visual DAW-style cue authoring in the web UI with integrated
   audio playback and real-time stage preview.
 - **Sequences**: Reusable cue patterns that can be referenced from multiple shows.
@@ -72,6 +73,21 @@ The system supports several constraint types for group resolution:
 4. **Clear Error Handling**: Know exactly what's missing when requirements aren't met
 5. **Visual Authoring**: Timeline editor with playback preview and stage visualization
 6. **Maintainable**: Easy to add new venues and fixture types
+
+## Effect Model
+
+Effects in mtrack are **finite, independent blocks on a timeline**:
+
+- **Explicit durations** — Every effect must have a `duration` (or `hold_time`) parameter.
+  Effects that don't specify a duration are rejected by the parser.
+- **No replacement semantics** — Multiple effects can coexist on the same layer simultaneously.
+  The blend mode determines how overlapping effects combine.
+- **No persistent state** — When an effect's duration expires, its contribution to the output
+  is removed. Dimmer effects do not persist their final brightness level.
+
+This model simplifies reasoning about light shows: each effect is a self-contained block with
+a defined start time and duration. The timeline editor's layer lanes (foreground, midground,
+background) make it easy to visualize how effects overlap and compose.
 
 ## Getting Started
 

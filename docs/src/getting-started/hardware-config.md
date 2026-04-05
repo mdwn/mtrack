@@ -18,13 +18,20 @@ Click a profile to open its settings. Configuration is organized into tabs:
 
 - **Audio** — Select your audio device, set sample rate, buffer size, bit depth, and playback
   delay. The device list is populated from connected hardware.
-- **MIDI** — Select your MIDI device, configure playback delay and beat clock output.
+- **MIDI** — Select your MIDI device, configure playback delay, beat clock output, and
+  MIDI-to-DMX passthrough mappings with transformer editors.
 - **Lighting** — Configure DMX universes and map them to OLA universe numbers.
 - **Triggers** — Set up audio and MIDI-triggered sample playback.
-- **Controllers** — Configure gRPC, OSC, and MIDI control interfaces.
+- **Controllers** — Configure gRPC, OSC, and MIDI control interfaces. MIDI controllers support
+  full event mapping plus optional Morningstar preset naming and section loop control events.
+- **Status Events** — Configure MIDI events emitted on player state changes (off/idling/playing)
+  for driving controller LEDs.
+- **Notifications** — Configure custom audio files for loop and section transition events,
+  with per-section-name overrides.
 
 Enable a section by toggling it on, then fill in the settings. Tooltips on each field explain
-what it does.
+what it does. A dirty indicator (`*` in yellow) appears in the profile editor title when there
+are unsaved changes.
 
 ## Discovering Devices
 

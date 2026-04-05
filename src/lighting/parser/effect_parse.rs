@@ -181,8 +181,12 @@ pub(crate) fn parse_effect_definition(
                             "hold_time" => {
                                 // For hold_time: 30measures means 30 PLAYBACK measures
                                 // Calculate duration in playback measure space
-                                let duration = if value.ends_with("measures") {
-                                    let num_str = value.trim_end_matches("measures");
+                                let duration = if value.ends_with("measures")
+                                    || value.ends_with("measure")
+                                {
+                                    let num_str = value
+                                        .trim_end_matches("measures")
+                                        .trim_end_matches("measure");
                                     if let Ok(playback_measures) = num_str.parse::<f64>() {
                                         if let Some(tm) = tempo_map {
                                             if let Some(score_measure_val) = score_measure {

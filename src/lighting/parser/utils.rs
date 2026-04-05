@@ -57,16 +57,18 @@ pub(crate) fn parse_tempo_aware_string(
         let num = num_str.parse::<f64>()?;
         let duration_secs = num / 1000.0;
         Ok(TempoAwareValue::Seconds(duration_secs))
-    } else if value.ends_with("measures") {
-        let num_str = value.trim_end_matches("measures");
+    } else if value.ends_with("measures") || value.ends_with("measure") {
+        let num_str = value
+            .trim_end_matches("measures")
+            .trim_end_matches("measure");
         let num = num_str.parse::<f64>()?;
         if tempo_map.is_some() {
             Ok(TempoAwareValue::Measures(num))
         } else {
             Err(format!("Measure-based {kind_label} values require a tempo section").into())
         }
-    } else if value.ends_with("beats") {
-        let num_str = value.trim_end_matches("beats");
+    } else if value.ends_with("beats") || value.ends_with("beat") {
+        let num_str = value.trim_end_matches("beats").trim_end_matches("beat");
         let num = num_str.parse::<f64>()?;
         if tempo_map.is_some() {
             Ok(TempoAwareValue::Beats(num))
@@ -113,8 +115,10 @@ pub(crate) fn parse_duration_string(
         let num_str = value.trim_end_matches("ms");
         let num = num_str.parse::<u64>()?;
         Ok(Duration::from_millis(num))
-    } else if value.ends_with("measures") {
-        let num_str = value.trim_end_matches("measures");
+    } else if value.ends_with("measures") || value.ends_with("measure") {
+        let num_str = value
+            .trim_end_matches("measures")
+            .trim_end_matches("measure");
         let num = num_str.parse::<f64>()?;
         if let Some(tm) = tempo_map {
             let time = at_time.unwrap_or(Duration::ZERO);
@@ -122,8 +126,8 @@ pub(crate) fn parse_duration_string(
         } else {
             Err("Measure-based durations require a tempo section".into())
         }
-    } else if value.ends_with("beats") {
-        let num_str = value.trim_end_matches("beats");
+    } else if value.ends_with("beats") || value.ends_with("beat") {
+        let num_str = value.trim_end_matches("beats").trim_end_matches("beat");
         let num = num_str.parse::<f64>()?;
         if let Some(tm) = tempo_map {
             let time = at_time.unwrap_or(Duration::ZERO);
