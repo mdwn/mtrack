@@ -32,6 +32,16 @@ a phone, or any device with a browser — so you never have to babysit a compute
   hostname. Carry the same config across rehearsal and show rigs.
 - **Triggered samples** — Audio and MIDI-triggered sample playback with velocity curves,
   release groups, and voice management.
+- **Song looping** — Loop entire songs or specific sections with seamless audio crossfade.
+  Define named sections by measure boundaries and activate loops during playback.
+- **Beat grid detection** — Automatic beat and measure detection from click tracks, with
+  tempo map extraction from MIDI files. Drives snap-to-grid, section boundaries, and
+  tempo-aware lighting cues.
+- **Notification audio** — Configurable audio cues for loop events and section transitions,
+  with per-song overrides.
+- **Morningstar integration** — Automatic song name display on Morningstar MIDI controllers
+  via SysEx.
+- **Internationalization** — Full i18n support for the web UI.
 
 ## Quick Start
 

@@ -207,3 +207,93 @@ For unlisted models, use a custom device ID:
         custom:
           model_id: 15   # SysEx device ID byte (0-127)
 ```
+
+### Section Loop Control
+
+MIDI controllers can include events for acknowledging section loops and stopping them:
+
+```yaml
+controllers:
+  - kind: midi
+    play: { type: control_change, channel: 16, controller: 100, value: 0 }
+    # ... other events ...
+    section_ack:
+      type: control_change
+      channel: 16
+      controller: 100
+      value: 6
+    stop_section_loop:
+      type: control_change
+      channel: 16
+      controller: 100
+      value: 7
+```
+
+## Status Events
+
+Status events are MIDI events emitted periodically to indicate the player's state. This is
+useful for driving LEDs on MIDI controllers. The statuses are emitted in a repeating cycle:
+Off (1 second) → On (250ms, either idling or playing) → Off → On → ...
+
+Status events are configured per-profile:
+
+```yaml
+profiles:
+  - hostname: my-host
+    audio:
+      device: "UltraLite-mk5"
+      track_mappings:
+        click: [1]
+    midi:
+      device: "UltraLite-mk5"
+    status_events:
+      off_events:
+        - type: control_change
+          channel: 16
+          controller: 3
+          value: 2
+      idling_events:
+        - type: control_change
+          channel: 16
+          controller: 2
+          value: 2
+      playing_events:
+        - type: control_change
+          channel: 16
+          controller: 2
+          value: 2
+```
+
+Legacy top-level `status_events` in `mtrack.yaml` are automatically normalized into the
+matched profile at startup.
+
+## Notification Audio
+
+Profiles can configure custom audio files for loop and section events. These notifications
+play through the `mtrack:looping` track mapping.
+
+```yaml
+profiles:
+  - hostname: my-host
+    audio:
+      device: "UltraLite-mk5"
+      track_mappings:
+        click: [1]
+        mtrack:looping: [1, 2]
+    notifications:
+      # Audio file to play when a section loop is armed
+      loop_armed: notifications/loop-armed.wav
+      # Audio file to play when a break is requested during looping
+      break_requested: notifications/break.wav
+      # Audio file to play when exiting a loop
+      loop_exited: notifications/exit.wav
+      # Audio file to play when entering any section
+      section_entering: notifications/section.wav
+      # Per-section-name overrides
+      sections:
+        chorus: notifications/chorus.wav
+        bridge: notifications/bridge.wav
+```
+
+Per-song overrides can be set in `song.yaml` via the `notification_audio` field. See the
+[Song Configuration](../configuration/song-config.md) documentation.

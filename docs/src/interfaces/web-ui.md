@@ -30,15 +30,20 @@ The dashboard is the landing page, providing an at-a-glance view of the player s
 ![Dashboard](../images/dashboard.png)
 
 - **Playback card** — Play/stop/next/prev with a progress bar showing elapsed and total time.
-  Displays the currently playing song name.
+  Displays the currently playing song name. When playing a song with defined sections,
+  section buttons appear for activating section loops. An active loop shows the section name
+  and a "Stop Loop" button. Beat/measure position is displayed when beat grid data is available.
 - **Playlist selector** — Dropdown to switch between all available playlists. The current
-  playlist's songs are listed below.
-- **Waveform** — Per-track waveform peak display for the current song.
+  playlist's songs are listed below. Songs are clickable to jump directly to a song during
+  playback.
+- **Waveform** — Per-track waveform peak display for the current song, rendered with DPR
+  scaling for crisp display on HiDPI/Retina screens.
 - **Stage view** — Interactive canvas showing fixture positions organized by tags (left, right,
   front, back), with real-time RGB color rendering, glow effects, and strobe animation. Drag
-  fixtures to rearrange the layout.
+  fixtures to rearrange the layout — positions persist in localStorage across page reloads.
 - **Active effects** — Lists currently running lighting effects by name.
-- **Log panel** — Streaming application logs with auto-scroll.
+- **Log panel** — Streaming application logs with level filter pills
+  (TRACE/DEBUG/INFO/WARN/ERROR), defaulting to INFO+.
 
 ## Song Browser
 
@@ -77,33 +82,58 @@ A song that is currently playing cannot be deleted.
 
 ## Song Detail
 
-Click a song to open its detail view with four tabs:
+Click a song to open its detail view with five tabs:
+
+![Song detail](../images/song-detail.png)
 
 ### Tracks Tab
 
 Edit track names, assign audio files, and upload new audio files via drag-and-drop or file
 picker. When uploading a file that already exists, you'll be prompted to confirm the replacement.
+The MIDI playback file is also configured here — pick from existing files, browse the server
+filesystem, or upload a new `.mid` file. When a MIDI file is configured, a 16-channel toggle
+grid lets you exclude specific channels from playback (commonly used to skip drums on channel
+10 or lighting data channels).
 
-Supported formats: WAV, FLAC, MP3, OGG, AAC, M4A, AIFF.
+Supported audio formats: WAV, FLAC, MP3, OGG, AAC, M4A, AIFF.
 
-### MIDI Tab
+### Sections Tab
 
-Configure the MIDI playback file for the song. Pick from existing files in the song directory,
-browse the server filesystem, or upload a new `.mid` file.
+A canvas-based visual editor for defining named song sections (e.g., verse, chorus, bridge).
+The timeline displays all track waveforms and beat grid measure lines. Sections can be:
+
+- **Created** by dragging on empty space (snaps to measure boundaries)
+- **Resized** by dragging edges
+- **Moved** by dragging the body
+- **Renamed** by double-clicking
+- **Deleted** with the Delete key
+
+Zoom controls include +/-, Fit, and Ctrl+scroll wheel with anchor-point zooming. Measure label
+density and snap granularity adapt to zoom level.
+
+Sections are used for [section looping](#section-looping) during playback.
+
+![Section editor](../images/song-sections.png)
 
 ### Lighting Tab
 
 The lighting tab contains the **timeline editor** — a DAW-style visual editor for authoring
 lighting cue shows. See [Timeline Editor](#timeline-editor) below.
 
+Light show files (`.light`) can be added and removed directly from this tab. Adding or removing
+files is deferred until Save, so navigating away without saving leaves the disk untouched.
+
 ### Config Tab
 
-Edit the raw `song.yaml` configuration directly.
+Edit the raw `song.yaml` configuration directly. Song-specific notification audio overrides
+are also configured here — these let you override profile-level notification sounds for
+individual songs, with section names autocompleting from the song's defined sections.
 
 ### Saving
 
 The **Save** button in the tab bar saves both the song configuration and any lighting file
-changes. The button shows "Unsaved" when there are pending changes.
+changes. The button shows "Unsaved" when there are pending changes. Ctrl+S / Cmd+S keyboard
+shortcut is also supported.
 
 ## Timeline Editor
 
@@ -118,9 +148,13 @@ with integrated playback preview.
 - **Time ruler** — Shows absolute timestamps and measure/beat grid (when tempo is defined).
   Click the ruler to set the play cursor position.
 - **Waveform lane** — Reference waveform of the song's audio.
-- **Show lanes** — Each show has three sub-lanes: Effects, Commands, and Sequences. Cue
-  blocks are displayed as colored markers that can be selected, dragged, and edited.
-- **Bottom panel** — Stage preview (left) and cue properties editor (right).
+- **Show lanes** — Each show has three layer lanes (Foreground, Midground, Background) plus
+  Commands and Sequences lanes. Effect blocks display their actual duration as block width and
+  can be resized by dragging a right-edge handle. Sequence references are expanded inline,
+  showing each iteration's effects at their correct timeline positions (visually distinct with
+  dashed borders and pink tint).
+- **Bottom panel** — Stage preview (left) and cue properties editor (right). The bottom panel
+  is collapsible with a toggle button.
 
 ### Transport Controls
 
@@ -156,10 +190,16 @@ dragging, just like the dashboard stage view.
 
 ### Editing Cues
 
-- **Double-click** a lane to create a new cue at that position.
+- **Double-click** a layer lane (foreground/midground/background) to create a new effect
+  at that position, assigned to the correct layer with a default `1measure` duration
+  (when tempo is available).
 - **Click** a cue block to select it and open its properties in the bottom-right panel.
 - **Drag** a cue block to reposition it. When snap-to-grid is enabled, cues snap to
   beat or measure boundaries.
+- **Resize** — Drag the right edge of an effect block to change its duration. Resizing
+  snaps to the nearest beat or measure boundary (matching the snap resolution setting).
+  Hold Ctrl/Cmd while releasing to bypass snap for free-form sizing. Durations prefer
+  measure/beat units (e.g. `1measure`, `2beats`) when aligned to the tempo grid.
 - **Delete** — Select a cue and use the delete button in the properties panel.
 
 ### Effect Properties
@@ -181,7 +221,22 @@ Each effect has:
   (toolbar buttons) or the mouse position (scroll wheel).
 - **Click and drag** the ruler to pan.
 - **Fit** button to fit the entire timeline in view.
-- **Snap** toggle with beat or measure resolution when tempo is defined.
+- **Snap** toggle with beat, measure, or subdivision resolution (1/2, 1/4, 1/8, 1/16 beat)
+  when tempo is defined.
+
+### Tempo Detection
+
+The tempo lane in the timeline shows the song's tempo map. Clicking it opens the tempo editor
+with controls for BPM, time signature, start offset, and tempo changes.
+
+- **Detect from MIDI** — When the song has a MIDI file, the editor can extract an authoritative
+  tempo map directly from MIDI `SetTempo` and `TimeSignature` meta events. Consecutive
+  monotonic BPM changes (ritardandos/accelerandos) are automatically collapsed. If the
+  MIDI-predicted beat positions don't align well with click-track detections (RMSE > 15ms),
+  a warning badge indicates the MIDI file may not match the recording.
+- **Guess from beat grid** — When no MIDI file is available but the song has a click track,
+  the editor can estimate a tempo map from the detected beat grid. Results are displayed with
+  an "estimated from beat grid" badge.
 
 ### Sequences
 
@@ -213,24 +268,64 @@ the dashboard's playlist dropdown.
 The config editor provides a profile-based hardware configuration UI with tabs for:
 
 - **Audio** — Device selection, sample rate, format, buffer size, track mappings
-- **MIDI** — Device selection, beat clock
+- **MIDI** — Device selection, beat clock, MIDI-to-DMX passthrough mappings with Note Mapper
+  and CC Mapper transformer editors
 - **DMX** — OLA host/port, universe mappings
 - **Lighting** — Fixture types, venues, profile settings with constraint editors
 - **Triggers** — Audio and MIDI trigger inputs with calibration
-- **Controllers** — gRPC and OSC controller configuration
+- **Controllers** — gRPC, OSC, and MIDI controller configuration. The MIDI controller section
+  supports full editing of event mappings (play, prev, next, stop, all_songs, playlist) with
+  optional section_ack and stop_section_loop events, plus Morningstar preset naming integration
+- **Status Events** — MIDI events emitted on player state changes (off/idling/playing) for
+  hardware LED feedback
+- **Notifications** — Custom audio files for loop armed, break requested, loop exited, and
+  section entering events, plus per-section-name overrides
 
 ![Configuration editor](../images/config-editor.png)
+
+Click a profile to open its settings with tabs for each subsystem:
+
+![Profile editor](../images/config-editor-profile.png)
 
 Changes are saved with optimistic concurrency (checksums) and trigger automatic hardware
 reinitialization.
 
+## Song Looping
+
+mtrack supports two levels of looping:
+
+### Whole-Song Looping
+
+Songs with `loop_playback: true` in their `song.yaml` loop indefinitely. Audio crossfades
+seamlessly at loop boundaries (100ms linear fade), MIDI restarts from the beginning, and
+lighting/DMX timelines reset cleanly. During a looping song, pressing Play or Next breaks out
+of the loop, advances the playlist, and auto-plays the next song.
+
+### Section Looping
+
+Named sections (defined by measure ranges in the Sections tab or `song.yaml`) can be looped
+during playback. Activate a section loop from the dashboard's section buttons, or via gRPC
+(`LoopSection`/`StopSectionLoop`) or MIDI controller events (`section_ack`, `stop_section_loop`).
+
+When a section loop is active:
+- Audio crossfades at section boundaries (100ms linear fade)
+- MIDI restarts from the section start with hard cut
+- DMX/lighting timelines reset to the section's start time
+- A confirmation tone plays through the `mtrack:looping` track mapping
+- Next/Prev navigation is allowed during looping
+
+Section activation is rejected if playback has already passed the section end.
+
 ## Status Page
 
-The status page shows build information and hardware subsystem status:
+The status page shows build information and hardware subsystem status in a two-column grid
+layout:
 
-- **Audio, MIDI, DMX, Trigger** — Each shows "connected", "initializing", or "not connected"
-  with the device name when connected.
+- **Audio, MIDI, DMX, Trigger** — Each shows "connected", "initializing", "not connected",
+  or "not configured" with the device name when connected.
 - **Profile** — The matched hostname and active profile name.
+
+The page auto-refreshes every 5 seconds with an "Updated Xs ago" indicator.
 
 ![Status page](../images/status-page.png)
 

@@ -181,12 +181,15 @@ The `.light` files use the DSL format and can reference logical groups defined i
 show "Main Show" {
     # Front wash on - uses logical group from mtrack.yaml
     @00:05.000
-    front_wash: static color: "red", dimmer: 80%
+    front_wash: static color: "red", dimmer: 80%, duration: 10s
 
     # Movers join with color cycle - uses logical group
     @00:10.000
-    movers: cycle color: "red", color: "blue", color: "green", speed: 2.0, dimmer: 100%
+    movers: cycle color: "red", color: "blue", color: "green", speed: 2.0, dimmer: 100%, duration: 8s
 }
 ```
+
+> **Note:** All effects require an explicit `duration` parameter. Effects without a duration
+> will be rejected by the parser. See the [Effects Reference](effects.md) for details.
 
 See the [Light Show Verification](verification.md) section for information on validating your `.light` files.

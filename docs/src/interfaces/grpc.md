@@ -16,6 +16,8 @@ $ mtrack switch-to-playlist all_songs|playlist
 $ mtrack status
 $ mtrack active-effects  # Print all active lighting effects
 $ mtrack cues  # List all cues in the current song's lighting timeline
+$ mtrack loop-section "verse"  # Activate section loop during playback
+$ mtrack stop-section-loop     # Stop the active section loop
 ```
 
 This will allow for multiple, arbitrary connections to the player, potentially from clients

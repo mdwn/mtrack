@@ -11,6 +11,7 @@ This has been tested with:
 - MOTU UltraLite-mk5
 - Roland UM-ONE
 - CME U6MIDI Pro
+- Morningstar MC4 Pro (SysEx song name display)
 
 ## DMX
 
