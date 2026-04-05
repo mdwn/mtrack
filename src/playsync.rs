@@ -15,12 +15,45 @@ use parking_lot::{Condvar, Mutex};
 use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc};
 use std::time::Duration;
 
+/// Drop guard for the readiness channel.
+///
+/// Wraps a `Sender<()>` and guarantees that exactly one message is sent — either
+/// explicitly via [`send`] or automatically on [`Drop`]. This prevents deadlocks
+/// in the `play_files` ready-wait loop when a subsystem returns early without
+/// signaling readiness.
+///
+/// [`send`]: ReadyGuard::send
+pub struct ReadyGuard {
+    tx: Option<std::sync::mpsc::Sender<()>>,
+}
+
+impl ReadyGuard {
+    /// Creates a new guard that will send on drop if not already sent.
+    pub fn new(tx: std::sync::mpsc::Sender<()>) -> Self {
+        Self { tx: Some(tx) }
+    }
+
+    /// Explicitly send the ready signal, consuming the inner sender.
+    ///
+    /// Subsequent calls and the `Drop` impl are no-ops.
+    pub fn send(&mut self) {
+        if let Some(tx) = self.tx.take() {
+            let _ = tx.send(());
+        }
+    }
+}
+
+impl Drop for ReadyGuard {
+    fn drop(&mut self) {
+        self.send();
+    }
+}
+
 /// Bundles the playback synchronization state passed to `play_from` / `play`.
 /// Includes the cancel handle, clock, ready signal, start time, and loop control.
-#[derive(Clone)]
 pub struct PlaybackSync {
     pub cancel_handle: CancelHandle,
-    pub ready_tx: std::sync::mpsc::Sender<()>,
+    pub ready_tx: ReadyGuard,
     pub clock: crate::clock::PlaybackClock,
     pub start_time: Duration,
     pub loop_control: LoopControl,
@@ -274,5 +307,47 @@ mod test {
 
         let result = cancel_handle.wait_with_timeout(finished, std::time::Duration::from_millis(1));
         assert!(result);
+    }
+
+    #[test]
+    fn test_ready_guard_explicit_send() {
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let mut guard = ReadyGuard::new(tx);
+        guard.send();
+        assert!(rx.try_recv().is_ok(), "explicit send should deliver");
+        // Second send is a no-op.
+        guard.send();
+        assert!(
+            rx.try_recv().is_err(),
+            "second send should not deliver again"
+        );
+    }
+
+    #[test]
+    fn test_ready_guard_sends_on_drop() {
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        {
+            let _guard = ReadyGuard::new(tx);
+            // guard dropped here without explicit send
+        }
+        assert!(
+            rx.try_recv().is_ok(),
+            "drop should send the ready signal automatically"
+        );
+    }
+
+    #[test]
+    fn test_ready_guard_no_double_send_on_drop() {
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        {
+            let mut guard = ReadyGuard::new(tx);
+            guard.send();
+            // guard dropped here; should not send again
+        }
+        assert!(rx.try_recv().is_ok(), "explicit send should arrive");
+        assert!(
+            rx.try_recv().is_err(),
+            "drop after explicit send should not send again"
+        );
     }
 }

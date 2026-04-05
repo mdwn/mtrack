@@ -91,6 +91,105 @@ impl Default for SectionLoopTrigger {
     }
 }
 
+/// Result of polling a [`SectionLoopMonitor`].
+///
+/// Each variant tells the caller what happened so it can run the
+/// subsystem-specific restart or cleanup logic.
+#[derive(Debug, PartialEq)]
+pub enum LoopPoll {
+    /// No active section — the caller should idle.
+    NoSection,
+    /// A section is active but the trigger time has not been reached yet.
+    /// The contained bounds are the current section.
+    Waiting(SectionBounds),
+    /// The trigger fired — the caller should restart playback from
+    /// `section.start_time`.
+    Triggered(SectionBounds),
+    /// A previously active section was cleared (no break requested).
+    /// The caller should reset any section-specific state.
+    SectionCleared,
+}
+
+/// Combines [`SectionLoopTrigger`] with shared section-reading and caching
+/// so each engine only needs to act on the [`LoopPoll`] result.
+///
+/// Engines that need section looping create one of these and call [`poll`]
+/// on every iteration. The actual restart mechanism (MIDI cursor, DMX
+/// timeline, etc.) remains in the caller.
+///
+/// [`poll`]: SectionLoopMonitor::poll
+pub struct SectionLoopMonitor {
+    trigger: SectionLoopTrigger,
+    /// Cached section bounds for use after `active_section` is cleared.
+    cached_section: Option<SectionBounds>,
+}
+
+impl SectionLoopMonitor {
+    /// Creates a new monitor with no cached state.
+    pub fn new() -> Self {
+        Self {
+            trigger: SectionLoopTrigger::new(),
+            cached_section: None,
+        }
+    }
+
+    /// Returns the currently cached section bounds, if any.
+    pub fn cached_section(&self) -> Option<&SectionBounds> {
+        self.cached_section.as_ref()
+    }
+
+    /// Polls the section loop state.
+    ///
+    /// `active_section` is the shared lock from [`LoopControl`].
+    /// `elapsed` is the current clock time.
+    ///
+    /// The return value tells the caller what action to take. See
+    /// [`LoopPoll`] for the full set of outcomes.
+    ///
+    /// [`LoopControl`]: crate::playsync::LoopControl
+    pub fn poll(
+        &mut self,
+        active_section: &parking_lot::RwLock<Option<SectionBounds>>,
+        elapsed: Duration,
+    ) -> LoopPoll {
+        let section = active_section.read().clone();
+        if let Some(section) = section {
+            self.cached_section = Some(section.clone());
+            let crossfade_margin = crate::audio::crossfade::DEFAULT_CROSSFADE_DURATION;
+            if self
+                .trigger
+                .check(&section, elapsed, crossfade_margin)
+                .is_some()
+            {
+                LoopPoll::Triggered(section)
+            } else {
+                LoopPoll::Waiting(section)
+            }
+        } else {
+            if self.cached_section.take().is_some() {
+                // Had a section, now cleared — notify caller.
+                self.trigger.reset();
+                LoopPoll::SectionCleared
+            } else {
+                self.trigger.reset();
+                LoopPoll::NoSection
+            }
+        }
+    }
+
+    /// Resets the trigger and cached section state.
+    pub fn reset(&mut self) {
+        self.trigger.reset();
+        self.cached_section = None;
+    }
+}
+
+impl Default for SectionLoopMonitor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,5 +295,49 @@ mod tests {
             trigger.check(&section, Duration::from_secs(100), margin),
             None
         );
+    }
+
+    #[test]
+    fn monitor_no_section() {
+        let active = parking_lot::RwLock::new(None);
+        let mut monitor = SectionLoopMonitor::new();
+        assert_eq!(monitor.poll(&active, Duration::ZERO), LoopPoll::NoSection);
+    }
+
+    #[test]
+    fn monitor_waiting_then_triggered() {
+        let section = make_section(10, 18);
+        let active = parking_lot::RwLock::new(Some(section.clone()));
+        let mut monitor = SectionLoopMonitor::new();
+
+        // Well before trigger time — should be Waiting.
+        let result = monitor.poll(&active, Duration::from_secs(5));
+        assert_eq!(result, LoopPoll::Waiting(section.clone()));
+
+        // At trigger time — should fire.
+        let margin = crate::audio::crossfade::DEFAULT_CROSSFADE_DURATION;
+        let elapsed = section.end_time - margin;
+        let result = monitor.poll(&active, elapsed);
+        assert_eq!(result, LoopPoll::Triggered(section));
+    }
+
+    #[test]
+    fn monitor_section_cleared() {
+        let section = make_section(10, 18);
+        let active = parking_lot::RwLock::new(Some(section.clone()));
+        let mut monitor = SectionLoopMonitor::new();
+
+        // Establish cached section.
+        let _ = monitor.poll(&active, Duration::from_secs(5));
+        assert!(monitor.cached_section().is_some());
+
+        // Clear active section.
+        *active.write() = None;
+        let result = monitor.poll(&active, Duration::from_secs(5));
+        assert_eq!(result, LoopPoll::SectionCleared);
+
+        // Second poll with no section — back to NoSection.
+        let result = monitor.poll(&active, Duration::from_secs(5));
+        assert_eq!(result, LoopPoll::NoSection);
     }
 }
