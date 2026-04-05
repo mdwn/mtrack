@@ -25,6 +25,28 @@ pub mod morningstar;
 pub(crate) mod playback;
 mod transform;
 
+/// Typed errors for the MIDI subsystem.
+#[derive(Debug, thiserror::Error)]
+pub enum MidiError {
+    #[error("MIDI device not found: {0}")]
+    DeviceNotFound(String),
+
+    #[error("MIDI port error: {0}")]
+    Port(String),
+
+    #[error("MIDI playback error: {0}")]
+    Playback(String),
+
+    #[error(transparent)]
+    Other(Box<dyn Error + Send + Sync>),
+}
+
+impl From<Box<dyn Error + Send + Sync>> for MidiError {
+    fn from(e: Box<dyn Error + Send + Sync>) -> Self {
+        MidiError::Other(e)
+    }
+}
+
 /// A MIDI device that can play MIDI files and listen for inputs.
 pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {
     /// Watches MIDI input for events and sends them to the given sender. If a DMX engine
