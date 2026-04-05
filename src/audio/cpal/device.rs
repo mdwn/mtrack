@@ -437,7 +437,7 @@ impl AudioDevice for Device {
         song: Arc<Song>,
         mappings: &HashMap<String, Vec<u16>>,
         sync: crate::playsync::PlaybackSync,
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> Result<(), crate::audio::AudioError> {
         let crate::playsync::PlaybackSync {
             cancel_handle,
             mut ready_tx,
@@ -507,7 +507,9 @@ impl AudioDevice for Device {
 
         // Add all sources to the output manager
         if channel_mapped_sources.is_empty() {
-            return Err("No sources found in song".into());
+            return Err(crate::audio::AudioError::Playback(
+                "No sources found in song".to_string(),
+            ));
         }
 
         // If there are already sources in the mixer (fading out from a previous
@@ -755,8 +757,8 @@ impl AudioDevice for Device {
     }
 
     #[cfg(test)]
-    fn to_mock(&self) -> Result<Arc<super::super::mock::Device>, Box<dyn Error>> {
-        Err("not a mock".into())
+    fn to_mock(&self) -> Result<Arc<super::super::mock::Device>, crate::audio::AudioError> {
+        Err(crate::audio::AudioError::Other("not a mock".into()))
     }
 }
 

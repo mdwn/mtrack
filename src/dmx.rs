@@ -30,6 +30,22 @@ use std::time::Duration;
 use std::{error::Error, path::Path, sync::Arc};
 use tracing::info;
 
+/// Typed errors for the DMX subsystem.
+#[derive(Debug, thiserror::Error)]
+pub enum DmxError {
+    #[error("DMX engine initialization error: {0}")]
+    Init(String),
+
+    #[error("DMX playback error: {0}")]
+    Playback(String),
+
+    #[error("DMX validation error: {0}")]
+    Validation(String),
+
+    #[error(transparent)]
+    Other(#[from] Box<dyn Error>),
+}
+
 /// Creates a DMX engine, connecting to the OLA daemon for output.
 /// Falls back to a no-op OLA client if the OLA daemon is unavailable, so the
 /// lighting/effects engine can still run without physical hardware (web UI, etc.).
