@@ -110,7 +110,7 @@ impl Player {
             if let Err(e) = dmx_engine.validate_song_lighting(&song) {
                 error!(
                     song = song.name(),
-                    err = e.as_ref(),
+                    err = %e,
                     "Lighting show validation failed, preventing song playback"
                 );
                 return Err(e);
@@ -304,7 +304,7 @@ impl Player {
                 );
                 if let Err(ref e) = result {
                     error!(
-                        err = e.as_ref(),
+                        err = %e,
                         song = song_name,
                         "Error while playing song"
                     );
@@ -341,7 +341,7 @@ impl Player {
                     },
                 ) {
                     error!(
-                        err = e.as_ref(),
+                        err = %e,
                         song = song_name,
                         "Error while playing DMX"
                     );

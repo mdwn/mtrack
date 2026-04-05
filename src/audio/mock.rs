@@ -13,7 +13,6 @@
 //
 use std::{
     collections::HashMap,
-    error::Error,
     fmt,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -56,7 +55,7 @@ impl crate::audio::Device for Device {
         song: Arc<Song>,
         _: &HashMap<String, Vec<u16>>,
         sync: crate::playsync::PlaybackSync,
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> Result<(), crate::audio::AudioError> {
         let crate::playsync::PlaybackSync {
             cancel_handle,
             ready_tx,
@@ -108,18 +107,22 @@ impl crate::audio::Device for Device {
         // This ensures tests can check is_playing immediately after stop() without races
         self.is_playing.store(false, Ordering::Relaxed);
 
-        sleep_tx.send(())?;
+        sleep_tx
+            .send(())
+            .map_err(|e| crate::audio::AudioError::Playback(e.to_string()))?;
         let join_result = join_handle.join();
 
         if join_result.is_err() {
-            return Err("Error while joining thread!".into());
+            return Err(crate::audio::AudioError::Playback(
+                "Error while joining thread!".to_string(),
+            ));
         }
 
         Ok(())
     }
 
     #[cfg(test)]
-    fn to_mock(&self) -> Result<Arc<Device>, Box<dyn Error>> {
+    fn to_mock(&self) -> Result<Arc<Device>, crate::audio::AudioError> {
         Ok(Arc::new(self.clone()))
     }
 }

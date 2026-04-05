@@ -46,6 +46,15 @@ pub enum ConfigError {
 
     #[error("Invalid profile index {index} (have {len} profiles)")]
     InvalidProfileIndex { index: usize, len: usize },
+
+    #[error("Validation error: {0}")]
+    Validation(String),
+
+    #[error("Missing field: {0}")]
+    MissingField(String),
+
+    #[error(transparent)]
+    Other(Box<dyn std::error::Error + Send + Sync>),
 }
 
 #[cfg(test)]

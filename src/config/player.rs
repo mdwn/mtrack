@@ -27,7 +27,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use super::error::ConfigError;
-use std::error::Error;
 use tracing::{error, info, warn};
 
 fn default_active_playlist() -> String {
@@ -535,7 +534,7 @@ impl Player {
 
     /// Gets the samples configuration, merging inline definitions with any external file.
     /// The player_path is used to resolve relative paths.
-    pub fn samples_config(&self, player_path: &Path) -> Result<SamplesConfig, Box<dyn Error>> {
+    pub fn samples_config(&self, player_path: &Path) -> Result<SamplesConfig, ConfigError> {
         let mut config = SamplesConfig::new(
             self.samples.clone(),
             Vec::new(),

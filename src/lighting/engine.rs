@@ -31,50 +31,137 @@ use tracing::debug;
 
 use crate::dmx::midi_dmx_store::MidiDmxStore;
 
+/// Registry of known fixtures and their DMX mappings.
+pub(crate) struct FixtureRegistry {
+    fixtures: HashMap<String, FixtureInfo>,
+    /// Reverse map from (universe_id, dmx_channel) to (fixture_name, channel_name).
+    /// Only built during tests for validation; not needed in production.
+    #[cfg(test)]
+    dmx_to_fixture_map: HashMap<(u16, u16), (String, String)>,
+}
+
+impl FixtureRegistry {
+    fn new() -> Self {
+        Self {
+            fixtures: HashMap::new(),
+            #[cfg(test)]
+            dmx_to_fixture_map: HashMap::new(),
+        }
+    }
+
+    fn register(&mut self, fixture: FixtureInfo) {
+        #[cfg(test)]
+        {
+            for (channel_name, &offset) in &fixture.channels {
+                let dmx_channel = fixture.address + offset - 1;
+                self.dmx_to_fixture_map.insert(
+                    (fixture.universe, dmx_channel),
+                    (fixture.name.clone(), channel_name.clone()),
+                );
+            }
+        }
+        self.fixtures.insert(fixture.name.clone(), fixture);
+    }
+
+    fn get(&self, name: &str) -> Option<&FixtureInfo> {
+        self.fixtures.get(name)
+    }
+
+    fn contains(&self, name: &str) -> bool {
+        self.fixtures.contains_key(name)
+    }
+
+    fn as_map(&self) -> &HashMap<String, FixtureInfo> {
+        &self.fixtures
+    }
+
+    #[cfg(test)]
+    fn lookup_dmx_channel(&self, universe: u16, dmx_channel: u16) -> Option<&(String, String)> {
+        self.dmx_to_fixture_map.get(&(universe, dmx_channel))
+    }
+}
+
+/// Layer control state: intensity masters, speed masters, and frozen layers.
+struct LayerState {
+    /// Layer intensity masters (0.0 to 1.0) — multiplies effect output per layer.
+    intensity_masters: HashMap<EffectLayer, f64>,
+    /// Layer speed masters (0.0+) — multiplies effect speed per layer (1.0 = normal).
+    speed_masters: HashMap<EffectLayer, f64>,
+    /// Frozen layers — maps layer to the Instant when it was frozen.
+    frozen: HashMap<EffectLayer, Instant>,
+}
+
+impl LayerState {
+    fn new() -> Self {
+        Self {
+            intensity_masters: HashMap::new(),
+            speed_masters: HashMap::new(),
+            frozen: HashMap::new(),
+        }
+    }
+
+    fn intensity_master(&self, layer: &EffectLayer) -> f64 {
+        *self.intensity_masters.get(layer).unwrap_or(&1.0)
+    }
+
+    fn speed_master(&self, layer: &EffectLayer) -> f64 {
+        *self.speed_masters.get(layer).unwrap_or(&1.0)
+    }
+}
+
+/// Caches the last computed DmxCommands so unchanged frames skip recomputation.
+struct EffectCache {
+    commands: Vec<DmxCommand>,
+    /// Last-seen MIDI DMX store generation.
+    last_store_generation: u32,
+    /// True when engine state changed outside update() (e.g. clear_layer).
+    dirty: bool,
+}
+
+impl EffectCache {
+    fn new() -> Self {
+        Self {
+            commands: Vec::new(),
+            last_store_generation: 0,
+            dirty: false,
+        }
+    }
+
+    fn invalidate(&mut self) {
+        self.dirty = true;
+    }
+
+    fn get_cached(&self) -> &[DmxCommand] {
+        &self.commands
+    }
+
+    fn update(&mut self, commands: Vec<DmxCommand>, generation: u32) {
+        self.commands = commands;
+        self.last_store_generation = generation;
+        self.dirty = false;
+    }
+}
+
 /// The main effects engine that manages and processes lighting effects
 pub struct EffectEngine {
     active_effects: HashMap<String, EffectInstance>,
-    fixture_registry: HashMap<String, FixtureInfo>,
+    fixtures: FixtureRegistry,
     current_time: Instant,
     /// Elapsed simulated time since engine start
     engine_elapsed: Duration,
     /// Optional tempo map for tempo-aware effects (measure/beat-based timing)
     tempo_map: Option<TempoMap>,
-    /// Layer intensity masters (0.0 to 1.0) - multiplies effect output per layer
-    layer_intensity_masters: HashMap<EffectLayer, f64>,
-    /// Layer speed masters (0.0+) - multiplies effect speed per layer (1.0 = normal)
-    layer_speed_masters: HashMap<EffectLayer, f64>,
-    /// Frozen layers - maps layer to the Instant when it was frozen
-    /// Effects on frozen layers use this time instead of current_time for elapsed calculation
-    frozen_layers: HashMap<EffectLayer, Instant>,
-    /// Effects being released - tracks (release_fade_time, release_start_time) per effect
+    layer_state: LayerState,
+    /// Effects being released — tracks (release_fade_time, release_start_time) per effect
     releasing_effects: HashMap<String, (Duration, Instant)>,
     /// Last computed merged fixture states (for preview/debugging)
-    /// This stores the merged states from the last update() call
     last_merged_states: HashMap<String, FixtureState>,
     /// Last known song time (score-time) for tempo-aware speed lookups.
-    /// Updated each frame from update(). Used as the time reference for
-    /// tempo map BPM lookups instead of engine_elapsed, which drifts from
-    /// song position if the engine starts before the song.
     last_song_time: Option<Duration>,
-    /// Reverse map from (universe_id, dmx_channel) to (fixture_name, channel_name).
-    /// Only built during tests for validation; not needed in production.
-    #[cfg(test)]
-    dmx_to_fixture_map: HashMap<(u16, u16), (String, String)>,
     /// Reference to the MIDI DMX store for reading interpolated values each frame.
     midi_dmx_store: Option<Arc<parking_lot::RwLock<MidiDmxStore>>>,
-    /// Cached DmxCommands from the last update() — returned when nothing has changed.
-    cached_commands: Vec<DmxCommand>,
-    /// Last-seen MIDI DMX store generation (used to detect when recomputation can be skipped).
-    last_store_generation: u32,
-    /// Set when engine state is mutated outside of update() (e.g. clear_layer,
-    /// stop_all_effects). Forces the next update() to do a full recomputation
-    /// instead of returning cached commands.
-    cache_dirty: bool,
-    /// Sub-phase indicator for update() progress. Shared via Arc so external
-    /// code (heartbeat checker) can read it without holding the effect_engine lock.
-    /// 0=idle, 10=fast_path, 20=state_setup, 30=midi_dmx_inject, 40=effect_sort,
-    /// 50=effect_process, 60=completed_effects, 70=persist_state, 80=dmx_generate.
+    cache: EffectCache,
+    /// Sub-phase indicator for update() progress.
     update_subphase: Arc<AtomicU64>,
 }
 
@@ -88,22 +175,16 @@ impl EffectEngine {
     pub fn new() -> Self {
         Self {
             active_effects: HashMap::new(),
-            fixture_registry: HashMap::new(),
+            fixtures: FixtureRegistry::new(),
             current_time: Instant::now(),
             engine_elapsed: Duration::ZERO,
             tempo_map: None,
-            layer_intensity_masters: HashMap::new(),
-            layer_speed_masters: HashMap::new(),
-            frozen_layers: HashMap::new(),
+            layer_state: LayerState::new(),
             releasing_effects: HashMap::new(),
             last_merged_states: HashMap::new(),
             last_song_time: None,
-            #[cfg(test)]
-            dmx_to_fixture_map: HashMap::new(),
             midi_dmx_store: None,
-            cached_commands: Vec::new(),
-            last_store_generation: 0,
-            cache_dirty: false,
+            cache: EffectCache::new(),
             update_subphase: Arc::new(AtomicU64::new(0)),
         }
     }
@@ -111,6 +192,14 @@ impl EffectEngine {
     /// Returns the shared update sub-phase Arc for external monitoring.
     pub fn update_subphase(&self) -> Arc<AtomicU64> {
         self.update_subphase.clone()
+    }
+
+    /// Returns the current MIDI DMX store generation, or 0 if no store is set.
+    fn store_generation(&self) -> u32 {
+        self.midi_dmx_store
+            .as_ref()
+            .map(|s| s.read().generation())
+            .unwrap_or(0)
     }
 
     /// Set the tempo map for tempo-aware effects
@@ -215,23 +304,13 @@ impl EffectEngine {
             );
         }
 
-        // Build reverse map entries for test validation
-        #[cfg(test)]
-        for (channel_name, &offset) in &fixture.channels {
-            let dmx_channel = fixture.address + offset - 1;
-            self.dmx_to_fixture_map.insert(
-                (fixture.universe, dmx_channel),
-                (fixture.name.clone(), channel_name.clone()),
-            );
-        }
-
-        self.fixture_registry.insert(fixture.name.clone(), fixture);
+        self.fixtures.register(fixture);
     }
 
-    /// Look up which fixture and channel a DMX address belongs to.
+    /// Look up which fixture and channel a DMX address belongs to (test only).
     #[cfg(test)]
     pub fn lookup_dmx_channel(&self, universe: u16, dmx_channel: u16) -> Option<&(String, String)> {
-        self.dmx_to_fixture_map.get(&(universe, dmx_channel))
+        self.fixtures.lookup_dmx_channel(universe, dmx_channel)
     }
 
     /// Set the MIDI DMX store reference for reading interpolated MIDI values.
@@ -242,7 +321,7 @@ impl EffectEngine {
     /// Start an effect
     pub fn start_effect(&mut self, mut effect: EffectInstance) -> Result<(), EffectError> {
         // Validate effect
-        validation::validate_effect(&self.fixture_registry, &effect)?;
+        validation::validate_effect(self.fixtures.as_map(), &effect)?;
 
         // Log effect parameters
         let (effect_kind, effect_params) = Self::format_effect_for_logging(&effect);
@@ -263,7 +342,7 @@ impl EffectEngine {
         // Set the start time to the current engine time
         effect.start_time = Some(self.current_time);
         self.active_effects.insert(effect.id.clone(), effect);
-        self.cache_dirty = true;
+        self.cache.invalidate();
         Ok(())
     }
 
@@ -275,7 +354,7 @@ impl EffectEngine {
         elapsed_time: Duration,
     ) -> Result<(), EffectError> {
         // Validate effect
-        validation::validate_effect(&self.fixture_registry, &effect)?;
+        validation::validate_effect(self.fixtures.as_map(), &effect)?;
 
         // Log effect parameters
         let (effect_kind, effect_params) = Self::format_effect_for_logging(&effect);
@@ -301,7 +380,7 @@ impl EffectEngine {
                 .unwrap_or(self.current_time),
         );
         self.active_effects.insert(effect.id.clone(), effect);
-        self.cache_dirty = true;
+        self.cache.invalidate();
         Ok(())
     }
 
@@ -320,7 +399,7 @@ impl EffectEngine {
         // Fast path for MIDI-DMX-only frames: when no DSL effects are running,
         // generate DmxCommands directly from the store. This skips all HashMap
         // cloning, fixture state rebuilding, and the full pipeline.
-        if !self.cache_dirty && self.active_effects.is_empty() && self.releasing_effects.is_empty()
+        if !self.cache.dirty && self.active_effects.is_empty() && self.releasing_effects.is_empty()
         {
             let store_gen = self
                 .midi_dmx_store
@@ -329,9 +408,9 @@ impl EffectEngine {
                 .unwrap_or(0);
 
             // Unchanged since last frame — return cached commands.
-            if store_gen == self.last_store_generation {
+            if store_gen == self.cache.last_store_generation {
                 self.update_subphase.store(0, Ordering::Relaxed);
-                return Ok(&self.cached_commands);
+                return Ok(self.cache.get_cached());
             }
 
             // Store changed — rebuild commands directly from store (no intermediate
@@ -343,7 +422,7 @@ impl EffectEngine {
                 let store = store.read();
                 for (slot_idx, normalized_value) in store.iter_active() {
                     let (fixture_name, channel_name) = store.fixture_info(slot_idx);
-                    if let Some(fixture_info) = self.fixture_registry.get(fixture_name) {
+                    if let Some(fixture_info) = self.fixtures.get(fixture_name) {
                         if let Some(&offset) = fixture_info.channels.get(channel_name) {
                             let dmx_channel = fixture_info.address + offset - 1;
                             let dmx_value = (normalized_value * 255.0) as u8;
@@ -369,24 +448,23 @@ impl EffectEngine {
                 }
             }
 
-            self.cached_commands = commands;
-            self.last_store_generation = store_gen;
+            self.cache.update(commands, store_gen);
             self.update_subphase.store(0, Ordering::Relaxed);
-            return Ok(&self.cached_commands);
+            return Ok(self.cache.get_cached());
         }
 
         // Cache-only fast path: effects existed previously but are now done,
         // permanent state exists, and nothing has changed.
-        if !self.cache_dirty && self.active_effects.is_empty() && self.releasing_effects.is_empty()
+        if !self.cache.dirty && self.active_effects.is_empty() && self.releasing_effects.is_empty()
         {
             let store_gen = self
                 .midi_dmx_store
                 .as_ref()
                 .map(|s| s.read().generation())
                 .unwrap_or(0);
-            if store_gen == self.last_store_generation {
+            if store_gen == self.cache.last_store_generation {
                 self.update_subphase.store(0, Ordering::Relaxed);
-                return Ok(&self.cached_commands);
+                return Ok(self.cache.get_cached());
             }
         }
 
@@ -406,7 +484,7 @@ impl EffectEngine {
             let store = store.read();
             for (slot_idx, normalized_value) in store.iter_active() {
                 let (fixture_name, channel_name) = store.fixture_info(slot_idx);
-                if self.fixture_registry.contains_key(fixture_name) {
+                if self.fixtures.contains(fixture_name) {
                     let state = current_fixture_states
                         .entry(fixture_name.clone())
                         .or_insert_with(FixtureState::new);
@@ -488,7 +566,7 @@ impl EffectEngine {
             // Get layer masters
             let layer_intensity = self.get_layer_intensity_master(layer);
             let layer_speed = self.get_layer_speed_master(layer);
-            let frozen_at = self.frozen_layers.get(&layer).cloned();
+            let frozen_at = self.layer_state.frozen.get(&layer).cloned();
 
             for effect_id in effect_ids {
                 // Get reference to effect to avoid unnecessary clone
@@ -552,7 +630,7 @@ impl EffectEngine {
 
                 // Process the effect and get fixture states
                 if let Some(mut effect_states) = processing::process_effect(
-                    &self.fixture_registry,
+                    self.fixtures.as_map(),
                     effect,
                     elapsed,
                     absolute_time,
@@ -587,7 +665,7 @@ impl EffectEngine {
 
                     // Blend the effect states into the current fixture states
                     for (fixture_name, effect_state) in effect_states {
-                        if self.fixture_registry.contains_key(&fixture_name) {
+                        if self.fixtures.contains(&fixture_name) {
                             current_fixture_states
                                 .entry(fixture_name.clone())
                                 .or_insert_with(FixtureState::new)
@@ -630,23 +708,18 @@ impl EffectEngine {
         // Convert fixture states to DMX commands.
         let mut commands = Vec::new();
         for (fixture_name, fixture_state) in current_fixture_states {
-            if let Some(fixture_info) = self.fixture_registry.get(&fixture_name) {
+            if let Some(fixture_info) = self.fixtures.get(&fixture_name) {
                 commands.extend(fixture_state.to_dmx_commands(fixture_info));
             }
         }
 
         // Cache commands and store generation for fast-path short-circuit on
         // subsequent frames where nothing changes.
-        self.cached_commands = commands;
-        self.last_store_generation = self
-            .midi_dmx_store
-            .as_ref()
-            .map(|s| s.read().generation())
-            .unwrap_or(0);
-        self.cache_dirty = false;
+        let gen = self.store_generation();
+        self.cache.update(commands, gen);
 
         self.update_subphase.store(0, Ordering::Relaxed);
-        Ok(&self.cached_commands)
+        Ok(self.cache.get_cached())
     }
 
     /// Stop all active effects
@@ -660,7 +733,7 @@ impl EffectEngine {
         if let Some(ref store) = self.midi_dmx_store {
             store.read().clear();
         }
-        self.cache_dirty = true;
+        self.cache.invalidate();
     }
 
     /// Stop all effects from a specific sequence
@@ -681,7 +754,7 @@ impl EffectEngine {
             self.active_effects.remove(&effect_id);
             self.releasing_effects.remove(&effect_id);
         }
-        self.cache_dirty = true;
+        self.cache.invalidate();
     }
 
     // ===== Layer Control Methods (grandMA-inspired) =====
@@ -692,11 +765,11 @@ impl EffectEngine {
         layers::clear_layer(
             &mut self.active_effects,
             &mut self.releasing_effects,
-            &mut self.frozen_layers,
+            &mut self.layer_state.frozen,
             layer,
         );
         self.last_merged_states.clear();
-        self.cache_dirty = true;
+        self.cache.invalidate();
     }
 
     /// Clear all layers - immediately stops all effects on all layers
@@ -705,10 +778,10 @@ impl EffectEngine {
         layers::clear_all_layers(
             &mut self.active_effects,
             &mut self.releasing_effects,
-            &mut self.frozen_layers,
+            &mut self.layer_state.frozen,
         );
         self.last_merged_states.clear();
-        self.cache_dirty = true;
+        self.cache.invalidate();
     }
 
     /// Release a layer - gracefully fades out all effects on the specified layer
@@ -723,41 +796,41 @@ impl EffectEngine {
         layers::release_layer_with_time(
             &mut self.active_effects,
             &mut self.releasing_effects,
-            &mut self.frozen_layers,
+            &mut self.layer_state.frozen,
             layer,
             fade_time,
             self.current_time,
         );
-        self.cache_dirty = true;
+        self.cache.invalidate();
     }
 
     /// Freeze a layer - pauses all effects on the layer at their current state
     /// Effects maintain their current output values but don't advance in time
     pub fn freeze_layer(&mut self, layer: EffectLayer) {
         layers::freeze_layer(
-            &mut self.frozen_layers,
+            &mut self.layer_state.frozen,
             &mut self.active_effects,
             layer,
             self.current_time,
         );
-        self.cache_dirty = true;
+        self.cache.invalidate();
     }
 
     /// Unfreeze a layer - resumes effects on the layer from where they left off
     pub fn unfreeze_layer(&mut self, layer: EffectLayer) {
         layers::unfreeze_layer(
-            &mut self.frozen_layers,
+            &mut self.layer_state.frozen,
             &mut self.active_effects,
             layer,
             self.current_time,
         );
-        self.cache_dirty = true;
+        self.cache.invalidate();
     }
 
     /// Check if a layer is frozen
     #[cfg(test)]
     pub fn is_layer_frozen(&self, layer: EffectLayer) -> bool {
-        self.frozen_layers.contains_key(&layer)
+        self.layer_state.frozen.contains_key(&layer)
     }
 
     // ===== Layer Master Methods =====
@@ -765,13 +838,17 @@ impl EffectEngine {
     /// Set the intensity master for a layer (0.0 to 1.0)
     /// This multiplies with all effect outputs on the layer
     pub fn set_layer_intensity_master(&mut self, layer: EffectLayer, intensity: f64) {
-        layers::set_layer_intensity_master(&mut self.layer_intensity_masters, layer, intensity);
-        self.cache_dirty = true;
+        layers::set_layer_intensity_master(
+            &mut self.layer_state.intensity_masters,
+            layer,
+            intensity,
+        );
+        self.cache.invalidate();
     }
 
     /// Get the intensity master for a layer (defaults to 1.0)
     pub fn get_layer_intensity_master(&self, layer: EffectLayer) -> f64 {
-        *self.layer_intensity_masters.get(&layer).unwrap_or(&1.0)
+        self.layer_state.intensity_master(&layer)
     }
 
     /// Set the speed master for a layer (0.0+ where 1.0 = normal speed)
@@ -779,19 +856,19 @@ impl EffectEngine {
     /// 0.5 = half speed, 2.0 = double speed, 0.0 = frozen at current state
     pub fn set_layer_speed_master(&mut self, layer: EffectLayer, speed: f64) {
         layers::set_layer_speed_master(
-            &mut self.layer_speed_masters,
-            &mut self.frozen_layers,
+            &mut self.layer_state.speed_masters,
+            &mut self.layer_state.frozen,
             &mut self.active_effects,
             layer,
             speed,
             self.current_time,
         );
-        self.cache_dirty = true;
+        self.cache.invalidate();
     }
 
     /// Get the speed master for a layer (defaults to 1.0)
     pub fn get_layer_speed_master(&self, layer: EffectLayer) -> f64 {
-        *self.layer_speed_masters.get(&layer).unwrap_or(&1.0)
+        self.layer_state.speed_master(&layer)
     }
 
     /// Dispatch a single layer command to the appropriate engine method.
@@ -866,7 +943,7 @@ impl EffectEngine {
     /// Get the fixture registry (for simulator to determine fixture capabilities).
     #[allow(dead_code)]
     pub fn get_fixture_registry(&self) -> &HashMap<String, FixtureInfo> {
-        &self.fixture_registry
+        self.fixtures.as_map()
     }
 
     /// Get a formatted string listing all active effects

@@ -48,6 +48,31 @@ pub fn next_source_id() -> u64 {
 /// Type alias for the channel sender used to add sources to the mixer.
 pub type SourceSender = crossbeam_channel::Sender<mixer::ActiveSource>;
 
+/// Typed errors for the audio subsystem.
+#[derive(Debug, thiserror::Error)]
+pub enum AudioError {
+    #[error("Audio device not found: {0}")]
+    DeviceNotFound(String),
+
+    #[error("Audio format mismatch: {0}")]
+    FormatMismatch(String),
+
+    #[error("Audio playback error: {0}")]
+    Playback(String),
+
+    #[error("Audio stream error: {0}")]
+    Stream(String),
+
+    #[error(transparent)]
+    Other(Box<dyn Error + Send + Sync>),
+}
+
+impl From<Box<dyn Error + Send + Sync>> for AudioError {
+    fn from(e: Box<dyn Error + Send + Sync>) -> Self {
+        AudioError::Other(e)
+    }
+}
+
 pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {
     /// Plays the given song through the audio interface, starting from a specific time.
     /// The `ready_tx` sender signals that setup is complete. The implementation should
@@ -58,7 +83,7 @@ pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {
         song: Arc<Song>,
         mappings: &HashMap<String, Vec<u16>>,
         sync: PlaybackSync,
-    ) -> Result<(), Box<dyn Error>>;
+    ) -> Result<(), AudioError>;
 
     /// Gets the mixer for adding triggered samples.
     /// Returns None if the device doesn't support triggered samples.
@@ -84,15 +109,16 @@ pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {
     }
 
     #[cfg(test)]
-    fn to_mock(&self) -> Result<Arc<mock::Device>, Box<dyn Error>>;
+    fn to_mock(&self) -> Result<Arc<mock::Device>, AudioError>;
 }
 
 /// Finds a cpal input device by name, searching all available hosts.
-pub(crate) fn find_input_device(name: &str) -> Result<::cpal::Device, Box<dyn Error>> {
+pub(crate) fn find_input_device(name: &str) -> Result<::cpal::Device, AudioError> {
     use ::cpal::traits::{DeviceTrait, HostTrait};
 
     for host_id in ::cpal::available_hosts() {
-        let host = ::cpal::host_from_id(host_id)?;
+        let host =
+            ::cpal::host_from_id(host_id).map_err(|e| AudioError::Playback(e.to_string()))?;
         let devices = match host.input_devices() {
             Ok(d) => d,
             Err(e) => {
@@ -116,24 +142,28 @@ pub(crate) fn find_input_device(name: &str) -> Result<::cpal::Device, Box<dyn Er
         }
     }
 
-    Err(format!("No input device found with name '{}'", name).into())
+    Err(AudioError::DeviceNotFound(name.to_string()))
 }
 
 /// Lists audio devices as simple info structs for the web UI.
-pub fn list_device_info() -> Result<Vec<AudioDeviceInfo>, Box<dyn Error>> {
-    cpal::list_device_info()
+pub fn list_device_info() -> Result<Vec<AudioDeviceInfo>, AudioError> {
+    cpal::list_device_info().map_err(|e| AudioError::Playback(e.to_string()))
 }
 
 /// Lists devices known to cpal.
-pub fn list_devices() -> Result<Vec<Box<dyn Device>>, Box<dyn Error>> {
-    cpal::Device::list()
+pub fn list_devices() -> Result<Vec<Box<dyn Device>>, AudioError> {
+    cpal::Device::list().map_err(|e| AudioError::Playback(e.to_string()))
 }
 
 /// Gets a device with the given name.
-pub fn get_device(config: Option<config::Audio>) -> Result<Arc<dyn Device>, Box<dyn Error>> {
+pub fn get_device(config: Option<config::Audio>) -> Result<Arc<dyn Device>, AudioError> {
     let config = match config {
         Some(config) => config,
-        None => return Err("there must be an audio device specified".into()),
+        None => {
+            return Err(AudioError::DeviceNotFound(
+                "there must be an audio device specified".to_string(),
+            ))
+        }
     };
 
     let device = config.device();
@@ -141,7 +171,9 @@ pub fn get_device(config: Option<config::Audio>) -> Result<Arc<dyn Device>, Box<
         return Ok(Arc::new(mock::Device::get(device)));
     };
 
-    Ok(Arc::new(cpal::Device::get(config)?))
+    Ok(Arc::new(
+        cpal::Device::get(config).map_err(|e| AudioError::Playback(e.to_string()))?,
+    ))
 }
 
 #[cfg(test)]
@@ -152,7 +184,10 @@ mod test {
     fn get_device_none_returns_error() {
         let result = get_device(None);
         match result {
-            Err(e) => assert!(e.to_string().contains("audio device specified")),
+            Err(AudioError::DeviceNotFound(msg)) => {
+                assert!(msg.contains("audio device specified"))
+            }
+            Err(e) => panic!("expected DeviceNotFound, got: {}", e),
             Ok(_) => panic!("expected error for None config"),
         }
     }
@@ -178,11 +213,11 @@ mod test {
                 _song: Arc<Song>,
                 _mappings: &HashMap<String, Vec<u16>>,
                 _sync: PlaybackSync,
-            ) -> Result<(), Box<dyn Error>> {
+            ) -> Result<(), AudioError> {
                 Ok(())
             }
-            fn to_mock(&self) -> Result<Arc<mock::Device>, Box<dyn Error>> {
-                Err("not a mock".into())
+            fn to_mock(&self) -> Result<Arc<mock::Device>, AudioError> {
+                Err(AudioError::Other("not a mock".into()))
             }
         }
         let d = Dummy;
@@ -252,5 +287,18 @@ mod test {
                 "IDs should be monotonically increasing"
             );
         }
+    }
+
+    #[test]
+    fn audio_error_device_not_found() {
+        let e = AudioError::DeviceNotFound("test-device".to_string());
+        assert!(e.to_string().contains("test-device"));
+    }
+
+    #[test]
+    fn audio_error_from_boxed() {
+        let boxed: Box<dyn Error + Send + Sync> = "something failed".into();
+        let e: AudioError = boxed.into();
+        assert!(e.to_string().contains("something failed"));
     }
 }
