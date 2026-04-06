@@ -73,6 +73,7 @@
   "playback.error.loopSection": "Failed to activate section loop",
   "playback.error.stopSectionLoop": "Failed to stop section loop",
   "playback.stopLoop": "Stop Loop",
+  "playback.sections": "Sections",
 
   "playlist.title": "Playlist",
 

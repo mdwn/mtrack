@@ -80,13 +80,15 @@ test.describe("Section Loop Controls", () => {
   }) => {
     // Put into playing state with sections.
     await sendWsMessage(page, wsId, playbackWithSections(wsId));
-    await expect(page.locator(".section-controls")).toBeVisible();
+    const sectionsBtn = page.getByRole("button", { name: "Sections" });
+    await expect(sectionsBtn).toBeVisible();
 
-    // Click verse section button and wait for gRPC call.
+    // Open dropdown and click verse section button.
+    await sectionsBtn.click();
     const requestPromise = page.waitForRequest((req) =>
       req.url().includes("LoopSection"),
     );
-    await page.getByRole("button", { name: "verse" }).click();
+    await page.locator(".section-menu-item", { hasText: "verse" }).click();
     await requestPromise;
   });
 
@@ -101,6 +103,11 @@ test.describe("Section Loop Controls", () => {
         active_section: { name: "verse", start_ms: 0, end_ms: 8000 },
       }),
     );
+    const loopBtn = page.locator(".btn-loop-active");
+    await expect(loopBtn).toBeVisible();
+
+    // Open dropdown and click Stop Loop.
+    await loopBtn.click();
     await expect(page.getByRole("button", { name: "Stop Loop" })).toBeVisible();
 
     const requestPromise = page.waitForRequest((req) =>
@@ -110,7 +117,7 @@ test.describe("Section Loop Controls", () => {
     await requestPromise;
   });
 
-  test("section buttons re-appear after stopping a loop", async ({ page }) => {
+  test("sections button reverts after stopping a loop", async ({ page }) => {
     // Start with active loop.
     await sendWsMessage(
       page,
@@ -119,7 +126,7 @@ test.describe("Section Loop Controls", () => {
         active_section: { name: "verse", start_ms: 0, end_ms: 8000 },
       }),
     );
-    await expect(page.locator(".section-active")).toBeVisible();
+    await expect(page.locator(".btn-loop-active")).toBeVisible();
 
     // Simulate stop — server clears active section.
     await sendWsMessage(
@@ -127,11 +134,10 @@ test.describe("Section Loop Controls", () => {
       wsId,
       playbackWithSections(wsId, { active_section: null }),
     );
-    await expect(page.locator(".section-active")).not.toBeVisible();
-    await expect(page.getByRole("button", { name: "verse" })).toBeVisible({
+    await expect(page.locator(".btn-loop-active")).not.toBeVisible();
+    await expect(page.getByRole("button", { name: "Sections" })).toBeVisible({
       timeout: 10000,
     });
-    await expect(page.getByRole("button", { name: "chorus" })).toBeVisible();
   });
 
   test("active section shows name", async ({ page }) => {
@@ -142,12 +148,11 @@ test.describe("Section Loop Controls", () => {
         active_section: { name: "chorus", start_ms: 8000, end_ms: 16000 },
       }),
     );
-    await expect(page.locator(".section-active")).toContainText("chorus");
+    const loopBtn = page.locator(".btn-loop-active");
+    await expect(loopBtn).toContainText("chorus");
   });
 
-  test("section controls hidden when song has no sections", async ({
-    page,
-  }) => {
+  test("sections button hidden when song has no sections", async ({ page }) => {
     await sendWsMessage(page, wsId, {
       type: "playback",
       is_playing: true,
@@ -165,6 +170,8 @@ test.describe("Section Loop Controls", () => {
       active_section: null,
     });
 
-    await expect(page.locator(".section-controls")).not.toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Sections" }),
+    ).not.toBeVisible();
   });
 });

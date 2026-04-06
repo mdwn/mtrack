@@ -91,8 +91,18 @@
   }
 
   let loading = $state(false);
+  let sectionMenuOpen = $state(false);
+
+  function toggleSectionMenu() {
+    sectionMenuOpen = !sectionMenuOpen;
+  }
+
+  function closeSectionMenu() {
+    sectionMenuOpen = false;
+  }
 
   async function loopSection(name: string) {
+    sectionMenuOpen = false;
     try {
       await playerClient.loopSection({ sectionName: name });
     } catch (e) {
@@ -102,6 +112,7 @@
   }
 
   async function stopSectionLoop() {
+    sectionMenuOpen = false;
     try {
       await playerClient.stopSectionLoop({});
     } catch (e) {
@@ -233,6 +244,47 @@
 <div class="card card-full">
   <div class="card-header">
     <span class="card-title">{$t("playback.title")}</span>
+    {#if $playbackStore.is_playing && $playbackStore.available_sections.length > 0}
+      <div class="section-menu-anchor">
+        <button
+          class="btn btn-sm"
+          class:btn-loop-active={$playbackStore.active_section != null}
+          onclick={toggleSectionMenu}
+          title={$playbackStore.active_section
+            ? `Looping: ${$playbackStore.active_section.name}`
+            : $t("playback.sections")}
+        >
+          {#if $playbackStore.active_section}
+            <span class="loop-icon">&#x21BB;</span>
+            {$playbackStore.active_section.name}
+          {:else}
+            {$t("playback.sections")}
+          {/if}
+        </button>
+        {#if sectionMenuOpen}
+          <button class="section-menu-backdrop" onclick={closeSectionMenu}
+          ></button>
+          <div class="section-menu">
+            {#if $playbackStore.active_section}
+              <button
+                class="section-menu-item section-menu-stop"
+                onclick={stopSectionLoop}>{$t("playback.stopLoop")}</button
+              >
+            {/if}
+            {#each $playbackStore.available_sections as section (section.name)}
+              <button
+                class="section-menu-item"
+                class:section-menu-item-active={$playbackStore.active_section
+                  ?.name === section.name}
+                onclick={() => loopSection(section.name)}
+                title="m{section.start_measure}-{section.end_measure}"
+                >{section.name}</button
+              >
+            {/each}
+          </div>
+        {/if}
+      </div>
+    {/if}
   </div>
   <div class="transport">
     <div class="transport-info">
@@ -314,27 +366,6 @@
         title={$t("playback.nextTooltip")}>{$t("playback.next")}</button
       >
     </div>
-    {#if $playbackStore.is_playing && $playbackStore.available_sections.length > 0}
-      <div class="section-controls">
-        {#if $playbackStore.active_section}
-          <span class="section-active"
-            >{$playbackStore.active_section.name}</span
-          >
-          <button class="btn btn-sm" onclick={stopSectionLoop}
-            >{$t("playback.stopLoop")}</button
-          >
-        {:else}
-          {#each $playbackStore.available_sections as section (section.name)}
-            <button
-              class="btn btn-sm"
-              onclick={() => loopSection(section.name)}
-              title="Loop {section.name} (m{section.start_measure}-{section.end_measure})"
-              >{section.name}</button
-            >
-          {/each}
-        {/if}
-      </div>
-    {/if}
   </div>
   {#if errorMsg}
     <div class="playback-error" role="alert">
@@ -349,6 +380,9 @@
 </div>
 
 <style>
+  .card-header {
+    min-height: 28px;
+  }
   .transport {
     display: grid;
     grid-template-columns: auto 1fr auto;
@@ -381,18 +415,67 @@
     font-family: var(--mono);
     color: var(--text-dim);
   }
-  .section-controls {
-    grid-column: 1 / -1;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    flex-wrap: wrap;
+  .section-menu-anchor {
+    position: relative;
   }
-  .section-active {
-    font-family: var(--mono);
-    font-size: 12px;
-    font-weight: 600;
+  .section-menu-backdrop {
+    position: fixed;
+    inset: 0;
+    background: transparent;
+    border: none;
+    z-index: 99;
+    cursor: default;
+  }
+  .section-menu {
+    position: absolute;
+    right: 0;
+    top: calc(100% + 4px);
+    z-index: 100;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+    min-width: 120px;
+    padding: 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .section-menu-item {
+    background: none;
+    border: none;
+    color: var(--text);
+    font-size: 13px;
+    padding: 6px 12px;
+    border-radius: var(--radius);
+    cursor: pointer;
+    text-align: left;
+    white-space: nowrap;
+  }
+  .section-menu-item:hover {
+    background: var(--bg-hover);
+  }
+  .section-menu-item-active {
     color: var(--accent);
+    font-weight: 600;
+  }
+  .section-menu-stop {
+    color: var(--red);
+    border-bottom: 1px solid var(--border);
+    border-radius: var(--radius) var(--radius) 0 0;
+    padding-bottom: 8px;
+    margin-bottom: 2px;
+  }
+  .btn-loop-active {
+    background: var(--accent);
+    color: var(--bg);
+    border-color: var(--accent);
+  }
+  .btn-loop-active:hover {
+    opacity: 0.85;
+  }
+  .loop-icon {
+    font-size: 14px;
   }
   .loop-badge {
     margin-left: 8px;
