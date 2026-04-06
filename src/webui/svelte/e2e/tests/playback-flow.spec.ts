@@ -225,7 +225,7 @@ test.describe("Playback State Transitions", () => {
     await expect(currentSong).toContainText("Test Song Beta");
   });
 
-  test("section buttons appear when playing song with sections", async ({
+  test("sections button appears when playing song with sections", async ({
     page,
   }) => {
     // Send playing state with available_sections.
@@ -249,14 +249,23 @@ test.describe("Playback State Transitions", () => {
       active_section: null,
     });
 
-    // Section buttons should appear.
-    await expect(page.locator(".section-controls")).toBeVisible();
-    await expect(page.getByRole("button", { name: "verse" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "chorus" })).toBeVisible();
+    // Sections dropdown button should appear in the header.
+    const sectionsBtn = page.getByRole("button", { name: "Sections" });
+    await expect(sectionsBtn).toBeVisible();
+
+    // Clicking it should reveal section items in the dropdown.
+    await sectionsBtn.click();
+    await expect(page.locator(".section-menu")).toBeVisible();
+    await expect(
+      page.locator(".section-menu-item", { hasText: "verse" }),
+    ).toBeVisible();
+    await expect(
+      page.locator(".section-menu-item", { hasText: "chorus" }),
+    ).toBeVisible();
   });
 
-  test("section buttons hidden when not playing", async ({ page }) => {
-    // Stopped state with sections — buttons should NOT appear.
+  test("sections button hidden when not playing", async ({ page }) => {
+    // Stopped state with sections — button should NOT appear.
     await sendWsMessage(page, wsId, {
       type: "playback",
       is_playing: false,
@@ -274,10 +283,14 @@ test.describe("Playback State Transitions", () => {
       active_section: null,
     });
 
-    await expect(page.locator(".section-controls")).not.toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Sections" }),
+    ).not.toBeVisible();
   });
 
-  test("active section shows name and stop button", async ({ page }) => {
+  test("active section shows name and stop button in dropdown", async ({
+    page,
+  }) => {
     // Send playing state with an active section loop.
     await sendWsMessage(page, wsId, {
       type: "playback",
@@ -299,11 +312,14 @@ test.describe("Playback State Transitions", () => {
       active_section: { name: "verse", start_ms: 0, end_ms: 8000 },
     });
 
-    // Should show the active section name and a Stop Loop button.
-    await expect(page.locator(".section-active")).toContainText("verse");
+    // The button should show the active section name.
+    const sectionsBtn = page.locator(".btn-loop-active");
+    await expect(sectionsBtn).toBeVisible();
+    await expect(sectionsBtn).toContainText("verse");
+
+    // Clicking it should show the dropdown with a Stop Loop option.
+    await sectionsBtn.click();
     await expect(page.getByRole("button", { name: "Stop Loop" })).toBeVisible();
-    // Individual section buttons should be replaced by the active state.
-    await expect(page.getByRole("button", { name: "verse" })).not.toBeVisible();
   });
 
   test("section buttons hidden when no sections available", async ({
