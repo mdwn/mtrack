@@ -18,7 +18,7 @@ test.describe("Keyboard Shortcuts", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/#/");
     // Wait for WebSocket to deliver playback state
-    await expect(page.locator(".playback-song")).toContainText(
+    await expect(page.locator(".playback-card__title")).toContainText(
       "Test Song Alpha",
     );
   });

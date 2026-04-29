@@ -30,19 +30,25 @@ export class DashboardPage {
   readonly trackCount: Locator;
 
   constructor(private page: Page) {
-    this.grid = page.locator(".dashboard-grid");
-    this.songName = page.locator(".playback-song");
-    this.playbackStatus = page.locator(".playback-status");
-    this.playButton = page.getByRole("button", { name: "Play" });
-    this.stopButton = page.getByRole("button", { name: "Stop" });
-    this.prevButton = page.getByRole("button", { name: "Prev", exact: true });
-    this.nextButton = page.getByRole("button", { name: "Next", exact: true });
-    this.progressBar = page.locator(".progress-bar");
-    this.progressTime = page.locator(".progress-time");
-    this.playlistSelect = page.locator(".playlist-select");
-    this.playlistSongs = page.locator(".playlist-songs li");
-    this.trackRows = page.locator(".track-row");
-    this.trackCount = page.locator(".track-count");
+    this.grid = page.locator(".playback-card");
+    this.songName = page.locator(".playback-card__title");
+    this.playbackStatus = page.locator(".playback-card__state");
+    this.playButton = page.locator(".btn-play");
+    this.stopButton = page
+      .locator(".playback-card__transport .btn-icon-circle")
+      .filter({ has: page.locator('svg rect[width="12"]') });
+    this.prevButton = page
+      .locator(".playback-card__transport .btn-icon-circle")
+      .first();
+    this.nextButton = page
+      .locator(".playback-card__transport .btn-icon-circle")
+      .last();
+    this.progressBar = page.locator(".scrub").first();
+    this.progressTime = page.locator(".playback-card__time").first();
+    this.playlistSelect = page.locator(".playlist-card__select");
+    this.playlistSongs = page.locator(".playlist-card__list li");
+    this.trackRows = page.locator(".tracks-card__row");
+    this.trackCount = page.locator(".tracks-card__title");
   }
 
   async goto() {

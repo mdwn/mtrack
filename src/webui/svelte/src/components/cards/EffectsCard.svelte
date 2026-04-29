@@ -15,36 +15,67 @@
 <script lang="ts">
   import { effectsStore } from "../../lib/ws/stores";
   import { t } from "svelte-i18n";
+
+  // Pick a badge kind based on the effect name's namespace.
+  function badgeKindFor(effect: string): string {
+    if (effect.includes("dmx")) return "dmx";
+    if (effect.includes("midi")) return "midi";
+    if (effect.includes("strobe") || effect.includes("flash")) return "trigger";
+    return "ctrl";
+  }
 </script>
 
-<div class="card card-full">
-  <div class="card-header">
-    <span class="card-title">{$t("effects.title")}</span>
+<section class="card effects-card">
+  <header class="effects-card__head">
+    <div>
+      <div class="overline">{$t("effects.title")}</div>
+      <div class="effects-card__title">
+        {$effectsStore.length} active
+      </div>
+    </div>
+  </header>
+  <div class="effects-card__body">
+    {#if $effectsStore.length === 0}
+      <div class="effects-card__empty">{$t("effects.noEffects")}</div>
+    {:else}
+      <div class="effects-card__chips">
+        {#each $effectsStore as effect, i (`${i}:${effect}`)}
+          <span class="badge badge--pill badge--{badgeKindFor(effect)}"
+            >{effect}</span
+          >
+        {/each}
+      </div>
+    {/if}
   </div>
-  {#if $effectsStore.length === 0}
-    <div class="effects-empty">{$t("effects.noEffects")}</div>
-  {:else}
-    <ul class="effects-list">
-      {#each $effectsStore as effect, i (`${i}:${effect}`)}
-        <li>{effect}</li>
-      {/each}
-    </ul>
-  {/if}
-</div>
+</section>
 
 <style>
-  .effects-list {
-    list-style: none;
+  .effects-card {
+    margin-top: 24px;
+    padding: 0;
   }
-  .effects-list li {
-    padding: 4px 0;
-    font-family: var(--mono);
-    font-size: 13px;
-    color: var(--text-muted);
+  .effects-card__head {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--card-border);
   }
-  .effects-empty {
-    font-size: 13px;
-    color: var(--text-dim);
+  .effects-card__title {
+    font-family: var(--nc-font-display);
+    font-weight: 700;
+    font-size: 16px;
+    margin-top: 4px;
+    color: var(--nc-fg-1);
+  }
+  .effects-card__body {
+    padding: 16px 20px;
+  }
+  .effects-card__empty {
+    color: var(--nc-fg-3);
     font-style: italic;
+    font-size: 13px;
+  }
+  .effects-card__chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
   }
 </style>

@@ -359,18 +359,29 @@
   });
 </script>
 
-<div class="card card-full stage-card">
-  <div class="card-header">
-    <span class="card-title">{$t("stage.title")}</span>
+<section class="card stage-card">
+  <header class="stage-card__head">
+    <div>
+      <div class="overline">{$t("stage.title")}</div>
+      <div class="stage-card__title">
+        {$t("stage.title")} · {Object.keys($metadataStore).length} fixtures
+      </div>
+    </div>
     {#if $reloadStore}
-      <span class="reload-badge" class:error={$reloadStore.status === "error"}>
+      <span
+        class="badge stage-card__reload"
+        class:stage-card__reload--error={$reloadStore.status === "error"}
+      >
         {$reloadStore.status === "ok"
           ? $t("stage.reloaded")
           : `Error: ${$reloadStore.error}`}
       </span>
     {/if}
-  </div>
-  <div class="stage-viewport">
+  </header>
+  <div class="stage-card__viewport">
+    <div class="stage-card__caption" aria-hidden="true">
+      {$t("stage.label")}
+    </div>
     <canvas
       bind:this={canvasEl}
       onmousedown={onMouseDown}
@@ -382,36 +393,72 @@
       ontouchend={onTouchEnd}
     ></canvas>
   </div>
-</div>
+</section>
 
 <style>
   .stage-card {
+    padding: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
     min-height: 350px;
   }
-  .stage-viewport {
+  .stage-card__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--card-border);
+    gap: 12px;
+  }
+  .stage-card__title {
+    font-family: var(--nc-font-display);
+    font-weight: 700;
+    font-size: 16px;
+    margin-top: 4px;
+    color: var(--nc-fg-1);
+  }
+  .stage-card__viewport {
     position: relative;
+    flex: 1;
     width: 100%;
-    min-height: 200px;
+    min-height: 240px;
     height: 35vh;
     max-height: 450px;
-    background: #111;
-    border-radius: var(--radius);
+    margin: 16px;
+    border-radius: var(--nc-radius-md);
+    border: 1px dashed var(--card-border);
+    background: var(--inset-bg);
     overflow: hidden;
+  }
+  .stage-card__caption {
+    position: absolute;
+    top: 14px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-family: var(--nc-font-mono);
+    font-weight: 700;
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    color: var(--nc-fg-4);
+    pointer-events: none;
   }
   canvas {
     display: block;
     width: 100%;
     height: 100%;
   }
-  .reload-badge {
-    font-size: 12px;
-    padding: 2px 8px;
-    border-radius: 4px;
-    background: var(--green-dim);
-    color: var(--green);
+  .stage-card__reload {
+    background: rgba(77, 192, 138, 0.18);
+    color: #2a8e5e;
+    border-color: rgba(77, 192, 138, 0.4);
   }
-  .reload-badge.error {
-    background: var(--red-dim);
-    color: var(--red);
+  :global(.nc--dark) .stage-card__reload {
+    color: #6bd9a4;
+  }
+  .stage-card__reload--error {
+    background: rgba(232, 75, 75, 0.18);
+    color: var(--nc-error);
+    border-color: rgba(232, 75, 75, 0.4);
   }
 </style>

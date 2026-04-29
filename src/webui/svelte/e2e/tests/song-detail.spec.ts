@@ -75,8 +75,8 @@ test.describe("Song Detail", () => {
   });
 
   test("shows song metadata", async ({ page }) => {
-    // Should show duration and track info somewhere in the detail header
-    await expect(page.getByText("3:00")).toBeVisible();
+    // Should show duration in the detail header's meta strip.
+    await expect(page.locator(".meta")).toContainText("3:00");
   });
 
   test("shows MIDI badge for song with MIDI", async ({ page }) => {

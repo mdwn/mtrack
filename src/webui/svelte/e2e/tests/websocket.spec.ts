@@ -19,41 +19,46 @@ test.describe("WebSocket Integration", () => {
     page,
   }) => {
     await page.goto("/#/");
-    await expect(page.locator(".status-indicator.connected")).toBeVisible();
+    await expect(page.locator(".topnav__conn")).toBeVisible();
+    await expect(page.locator(".topnav__conn")).not.toHaveClass(
+      /topnav__conn--off/,
+    );
   });
 
   test("playback store populates from WS message", async ({ page }) => {
     await page.goto("/#/");
     // Playback data comes from WebSocket, not REST
-    await expect(page.locator(".playback-song")).toContainText(
+    await expect(page.locator(".playback-card__title")).toContainText(
       "Test Song Alpha",
     );
-    await expect(page.locator(".playback-status")).toContainText(/stopped/i);
+    await expect(page.locator(".playback-card__state")).toContainText(
+      /stopped/i,
+    );
   });
 
   test("waveform data loads from WS message", async ({ page }) => {
     await page.goto("/#/");
     // Waveform data arrives via WebSocket — verify tracks card has track rows
     // (canvas rendering depends on waveform data being present)
-    await expect(page.locator(".track-row").first()).toBeVisible();
-    await expect(page.locator(".track-waveform").first()).toBeVisible();
+    await expect(page.locator(".tracks-card__row").first()).toBeVisible();
+    await expect(page.locator(".tracks-card__waveform").first()).toBeVisible();
   });
 
   test("playlist songs populate from WS message", async ({ page }) => {
     await page.goto("/#/");
-    const songs = page.locator(".playlist-songs li");
+    const songs = page.locator(".playlist-card__list li");
     await expect(songs).toHaveCount(2);
   });
 
   test("available playlists populate from WS message", async ({ page }) => {
     await page.goto("/#/");
-    const options = page.locator(".playlist-select option");
+    const options = page.locator(".playlist-card__select option");
     await expect(options).toHaveCount(2);
   });
 
   test("track info populates from WS message", async ({ page }) => {
     await page.goto("/#/");
-    const tracks = page.locator(".track-row");
+    const tracks = page.locator(".tracks-card__row");
     await expect(tracks).toHaveCount(3);
 
     // Track names
@@ -64,13 +69,16 @@ test.describe("WebSocket Integration", () => {
 
   test("track rows show output channel info", async ({ page }) => {
     await page.goto("/#/");
-    const firstTrack = page.locator(".track-row").first();
-    await expect(firstTrack.locator(".track-channels")).toBeVisible();
+    const firstTrack = page.locator(".tracks-card__row").first();
+    await expect(firstTrack.locator(".tracks-card__channels")).toBeVisible();
   });
 
   test("disconnect banner is not visible when connected", async ({ page }) => {
     await page.goto("/#/");
-    await expect(page.locator(".status-indicator.connected")).toBeVisible();
+    await expect(page.locator(".topnav__conn")).toBeVisible();
+    await expect(page.locator(".topnav__conn")).not.toHaveClass(
+      /topnav__conn--off/,
+    );
     await expect(page.locator(".disconnect-banner")).not.toBeVisible();
   });
 });

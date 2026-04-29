@@ -18,45 +18,50 @@ test.describe("Responsive Layout", () => {
   test("mobile viewport shows hamburger menu", async ({ page }) => {
     await page.setViewportSize({ width: 375, height: 667 });
     await page.goto("/#/");
-    await expect(page.locator(".hamburger")).toBeVisible();
+    await expect(page.locator(".topnav__hamburger")).toBeVisible();
   });
 
   test("desktop viewport hides hamburger menu", async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.goto("/#/");
-    await expect(page.locator(".hamburger")).not.toBeVisible();
+    await expect(page.locator(".topnav__hamburger")).not.toBeVisible();
   });
 
-  test("hamburger toggles nav links on mobile", async ({ page }) => {
+  test("hamburger opens drawer on mobile", async ({ page }) => {
     await page.setViewportSize({ width: 375, height: 667 });
     await page.goto("/#/");
 
-    // Nav links should be hidden initially on mobile
-    const navLinks = page.locator(".nav-links");
+    const drawer = page.locator(".drawer");
+    await expect(drawer).not.toHaveClass(/drawer--open/);
 
-    // Click hamburger to show
-    await page.locator(".hamburger").click();
-    await expect(navLinks).toBeVisible();
+    await page.locator(".topnav__hamburger").click();
+    await expect(drawer).toHaveClass(/drawer--open/);
 
-    // Click again to hide
-    await page.locator(".hamburger").click();
-    await expect(navLinks).not.toBeVisible();
+    // Backdrop click closes the drawer. Click at the far right of the
+    // backdrop, outside the 280px drawer panel.
+    await page
+      .locator(".drawer-backdrop")
+      .click({ position: { x: 360, y: 300 } });
+    await expect(drawer).not.toHaveClass(/drawer--open/);
   });
 
-  test("mobile nav link click navigates and closes menu", async ({ page }) => {
+  test("mobile drawer link click navigates and closes drawer", async ({
+    page,
+  }) => {
     await page.setViewportSize({ width: 375, height: 667 });
     await page.goto("/#/");
 
-    await page.locator(".hamburger").click();
-    await page.locator('a.nav-link[href="#/songs"]').click();
+    await page.locator(".topnav__hamburger").click();
+    await page.locator('.drawer__item[href="#/songs"]').click();
 
     await expect(page).toHaveURL(/.*#\/songs/);
+    await expect(page.locator(".drawer")).not.toHaveClass(/drawer--open/);
   });
 
-  test("dashboard renders in single column on mobile", async ({ page }) => {
+  test("dashboard playback card renders on mobile", async ({ page }) => {
     await page.setViewportSize({ width: 375, height: 667 });
     await page.goto("/#/");
-    await expect(page.locator(".dashboard-grid")).toBeVisible();
+    await expect(page.locator(".playback-card")).toBeVisible();
   });
 
   test("playlist editor stacks panels on mobile", async ({ page }) => {

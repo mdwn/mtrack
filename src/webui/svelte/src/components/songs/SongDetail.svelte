@@ -697,7 +697,7 @@
 
 <div class="detail">
   <a class="back-link" href="#/songs" aria-label={$t("songs.detail.allSongs")}
-    >&larr; {$t("songs.detail.allSongs")}</a
+    >{$t("songs.detail.allSongs")}</a
   >
 
   {#if loading}
@@ -1048,10 +1048,7 @@
 <style>
   .browser-overlay {
     position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
+    inset: 0;
     background: rgba(0, 0, 0, 0.6);
     display: flex;
     align-items: center;
@@ -1072,78 +1069,119 @@
     margin: 0 auto;
   }
   .back-link {
-    display: inline-block;
-    margin-bottom: 12px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-bottom: 16px;
+    font-family: var(--nc-font-display);
+    font-weight: 600;
     font-size: 14px;
-    color: var(--accent);
+    color: var(--nc-cyan-600);
     text-decoration: none;
+    transition: color var(--nc-dur-fast) var(--nc-ease);
+  }
+  :global(.nc--dark) .back-link {
+    color: var(--nc-cyan-300);
+  }
+  .back-link::before {
+    content: "‹";
+    font-size: 18px;
+    line-height: 0.7;
   }
   .back-link:hover {
-    text-decoration: underline;
+    color: var(--nc-cyan-500);
   }
   .title-row {
     display: flex;
     align-items: center;
-    gap: 10px;
-    margin-bottom: 4px;
+    gap: 12px;
+    margin-bottom: 6px;
+    flex-wrap: wrap;
   }
   .song-title {
-    font-size: 22px;
-    font-weight: 600;
+    font-family: var(--nc-font-display);
+    font-weight: 700;
+    font-size: 32px;
+    line-height: 1.1;
+    letter-spacing: -0.02em;
+    margin: 0;
+    color: var(--nc-fg-1);
   }
   .badges {
     display: flex;
     gap: 4px;
   }
+  /* Map legacy badge classes onto Nonchord badge kinds */
   .badge {
-    font-size: 11px;
+    font-family: var(--nc-font-sans);
     font-weight: 700;
-    letter-spacing: 0.5px;
-    padding: 2px 8px;
-    border-radius: 3px;
-    line-height: 1.2;
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    line-height: 1;
+    padding: 5px 8px;
+    border-radius: 5px;
+    border: 1px solid var(--card-border);
+    background: var(--nc-bg-3);
+    color: var(--nc-fg-2);
   }
   .badge.midi {
-    background: var(--blue);
-    color: #fff;
+    background: rgba(94, 202, 234, 0.15);
+    color: var(--nc-cyan-600);
+    border-color: rgba(94, 202, 234, 0.4);
+  }
+  :global(.nc--dark) .badge.midi {
+    color: var(--nc-cyan-300);
   }
   .badge.lighting {
-    background: var(--yellow);
-    color: #000;
+    background: rgba(242, 181, 68, 0.18);
+    color: #b47a1a;
+    border-color: rgba(242, 181, 68, 0.4);
+  }
+  :global(.nc--dark) .badge.lighting {
+    color: var(--nc-warn);
   }
   .badge.midi-dmx {
-    background: var(--green-dim);
-    color: var(--green);
+    background: rgba(77, 192, 138, 0.15);
+    color: #2a8e5e;
+    border-color: rgba(77, 192, 138, 0.4);
+  }
+  :global(.nc--dark) .badge.midi-dmx {
+    color: #6bd9a4;
   }
   .badge.loop {
-    background: var(--accent);
-    color: var(--bg);
+    background: var(--nc-cyan-400);
+    color: var(--nc-ink);
+    border-color: var(--nc-cyan-500);
   }
   .badge.failed {
-    background: rgba(239, 68, 68, 0.15);
-    color: var(--red);
+    background: rgba(232, 75, 75, 0.12);
+    color: var(--nc-error);
+    border-color: rgba(232, 75, 75, 0.45);
   }
   .failure-banner {
-    background: rgba(239, 68, 68, 0.1);
-    border: 1px solid rgba(239, 68, 68, 0.3);
-    border-radius: var(--radius);
+    background: rgba(232, 75, 75, 0.08);
+    border: 1px solid rgba(232, 75, 75, 0.3);
+    border-radius: var(--nc-radius-md);
     padding: 12px 16px;
     margin-bottom: 16px;
     font-size: 14px;
-    color: var(--text);
+    color: var(--nc-fg-1);
   }
   .failure-detail {
     margin-top: 6px;
     font-size: 13px;
-    color: var(--red);
-    font-family: var(--mono);
+    color: var(--nc-error);
+    font-family: var(--nc-font-mono);
   }
   .meta {
     display: flex;
     gap: 16px;
-    font-size: 14px;
-    color: var(--text-muted);
-    margin-bottom: 8px;
+    font-family: var(--nc-font-mono);
+    font-size: 13px;
+    color: var(--nc-fg-3);
+    margin-bottom: 12px;
+    flex-wrap: wrap;
   }
   .field label:has(input[type="checkbox"]) {
     display: flex;
@@ -1151,12 +1189,13 @@
     gap: 8px;
     font-size: 14px;
     cursor: pointer;
+    color: var(--nc-fg-1);
   }
   .field-hint {
     display: block;
     font-size: 12px;
-    color: var(--text-dim);
-    margin-top: 2px;
+    color: var(--nc-fg-3);
+    margin-top: 4px;
     margin-left: 24px;
   }
   .beat-grid-summary {
@@ -1164,81 +1203,102 @@
     align-items: center;
     gap: 12px;
     font-size: 13px;
-    color: var(--text-muted);
+    color: var(--nc-fg-3);
     margin-bottom: 16px;
+    flex-wrap: wrap;
   }
   .beat-grid-label {
-    font-weight: 600;
-    color: var(--text);
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    font-size: 11px;
+    color: var(--nc-fg-3);
   }
   .beat-grid-stat {
-    font-family: var(--mono);
+    font-family: var(--nc-font-mono);
   }
   .tab-bar {
     display: flex;
     align-items: center;
-    gap: 0;
-    border-bottom: 1px solid var(--border);
+    gap: 4px;
+    border-bottom: 1px solid var(--card-border);
     overflow-x: auto;
-    margin-bottom: 16px;
+    margin-bottom: 24px;
     position: sticky;
-    top: 48px;
+    top: 56px;
     z-index: 10;
-    background: var(--bg);
+    background: var(--nc-bg-1);
     padding-top: 4px;
+    -webkit-overflow-scrolling: touch;
+  }
+  .tab-bar::-webkit-scrollbar {
+    display: none;
   }
   .tab {
     position: relative;
-    padding: 10px 16px;
+    padding: 12px 18px 14px;
+    font-family: var(--nc-font-display);
+    font-weight: 600;
     font-size: 14px;
-    font-weight: 500;
-    font-family: var(--sans);
-    color: var(--text-muted);
-    background: none;
+    line-height: 1;
+    color: var(--nc-fg-2);
+    background: transparent;
     border: none;
-    border-bottom: 2px solid transparent;
     cursor: pointer;
     white-space: nowrap;
-    transition:
-      color 0.15s,
-      border-color 0.15s;
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    transition: color var(--nc-dur-fast) var(--nc-ease);
   }
   .tab:hover {
-    color: var(--text);
-    background: rgba(255, 255, 255, 0.03);
+    color: var(--nc-fg-1);
   }
   .tab.active {
-    color: var(--accent);
-    border-bottom-color: var(--accent);
+    color: var(--nc-fg-1);
+  }
+  .tab.active::after {
+    content: "";
+    position: absolute;
+    left: 8px;
+    right: 8px;
+    bottom: -1px;
+    height: 2px;
+    background: var(--nc-cyan-400);
+    border-radius: 1px;
   }
   .tab-dot {
     display: inline-block;
     width: 6px;
     height: 6px;
-    border-radius: 50%;
-    background: var(--green);
-    margin-left: 6px;
-    vertical-align: middle;
+    border-radius: 999px;
+    background: var(--nc-pink-400);
   }
   .tab-dot.config-dot {
-    background: var(--accent);
+    background: var(--nc-cyan-500);
   }
   .tab-save {
     margin-left: auto;
     display: flex;
     align-items: center;
     gap: 8px;
+    padding-right: 4px;
   }
   .unsaved {
+    font-family: var(--nc-font-mono);
     font-size: 12px;
-    color: var(--accent);
+    color: var(--nc-cyan-600);
+  }
+  :global(.nc--dark) .unsaved {
+    color: var(--nc-cyan-300);
   }
   .save-msg {
     font-size: 12px;
-    color: var(--green);
+    color: var(--nc-success);
   }
   .save-msg.error {
-    color: var(--red);
+    color: var(--nc-error);
   }
   .tab-content {
     min-height: 200px;
@@ -1248,34 +1308,35 @@
   }
   .msg {
     font-size: 13px;
-    color: var(--green);
+    color: var(--nc-success);
     margin-top: 8px;
   }
   .msg.error {
-    color: var(--red);
+    color: var(--nc-error);
   }
   .muted {
-    color: var(--text-muted);
+    color: var(--nc-fg-2);
     font-size: 14px;
     margin-bottom: 12px;
   }
   .midi-event-section {
     margin-top: 20px;
     padding-top: 16px;
-    border-top: 1px solid var(--border);
+    border-top: 1px solid var(--card-border);
   }
   .section-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 4px;
+    margin-bottom: 8px;
   }
   .section-label {
-    font-size: 13px;
-    font-weight: 600;
+    font-family: var(--nc-font-sans);
+    font-weight: 700;
+    font-size: 11px;
+    letter-spacing: 0.14em;
     text-transform: uppercase;
-    letter-spacing: 0.5px;
-    color: var(--text-muted);
+    color: var(--nc-fg-3);
   }
   .hint-text {
     font-size: 13px;
@@ -1284,49 +1345,63 @@
   .channel-grid {
     display: grid;
     grid-template-columns: repeat(8, 1fr);
-    gap: 6px;
+    gap: 8px;
   }
   .channel-toggle {
     display: flex;
     align-items: center;
     justify-content: center;
     gap: 4px;
-    padding: 4px 6px;
+    padding: 8px 6px;
+    font-family: var(--nc-font-mono);
     font-size: 12px;
     font-weight: 600;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
     cursor: pointer;
-    color: var(--text-muted);
-    background: var(--bg-input);
+    color: var(--nc-fg-2);
+    background: rgba(94, 202, 234, 0.08);
+    transition:
+      background var(--nc-dur-fast) var(--nc-ease),
+      color var(--nc-dur-fast) var(--nc-ease),
+      border-color var(--nc-dur-fast) var(--nc-ease);
+  }
+  .channel-toggle:hover {
+    background: rgba(94, 202, 234, 0.16);
   }
   .channel-toggle.excluded {
-    background: var(--bg-danger, #3a1c1c);
-    border-color: var(--border-danger, #6b2c2c);
-    color: var(--text-danger, #f87171);
+    background: var(--nc-bg-2);
+    border-color: var(--card-border);
+    color: var(--nc-fg-4);
+    text-decoration: line-through;
   }
   .channel-toggle input {
     display: none;
   }
   @media (max-width: 600px) {
     .channel-grid {
-      grid-template-columns: repeat(4, 1fr);
+      grid-template-columns: repeat(8, 1fr);
+      gap: 6px;
+    }
+    .channel-toggle {
+      height: 44px;
     }
   }
   .feature-row {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 8px 0;
+    gap: 12px;
+    padding: 10px 0;
     margin-bottom: 8px;
     font-size: 14px;
   }
   .feature-label {
-    color: var(--text-muted);
+    color: var(--nc-fg-3);
+    font-weight: 600;
   }
   .feature-value {
-    font-family: var(--mono);
-    color: var(--text);
+    font-family: var(--nc-font-mono);
+    color: var(--nc-fg-1);
   }
   .config-section {
     display: flex;
@@ -1335,50 +1410,54 @@
   .config-editor {
     width: 100%;
     min-height: 400px;
-    padding: 12px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--bg-input);
-    color: var(--text);
-    font-family: var(--mono);
-    font-size: 14px;
-    line-height: 1.5;
+    padding: 16px;
+    border: 1px solid var(--card-border);
+    border-radius: var(--nc-radius-md);
+    background: var(--inset-bg);
+    color: var(--nc-fg-1);
+    font-family: var(--nc-font-mono);
+    font-size: 13px;
+    line-height: 1.6;
     resize: vertical;
     outline: none;
+    transition:
+      border-color var(--nc-dur-fast) var(--nc-ease),
+      box-shadow var(--nc-dur-fast) var(--nc-ease);
   }
   .config-editor:focus {
-    border-color: var(--border-focus);
+    border-color: var(--nc-cyan-400);
+    box-shadow: var(--nc-glow-cyan);
   }
   .status {
     text-align: center;
     padding: 48px 16px;
-    color: var(--text-muted);
+    color: var(--nc-fg-2);
   }
   .status.error {
-    color: var(--red);
+    color: var(--nc-error);
   }
   .collapsible-section {
     margin-top: 20px;
-    border-top: 1px solid var(--border);
+    border-top: 1px solid var(--card-border);
   }
   .collapsible-header {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
     width: 100%;
-    padding: 12px 0;
+    padding: 14px 0;
     background: none;
     border: none;
     cursor: pointer;
     font: inherit;
-    color: var(--text-muted);
+    color: var(--nc-fg-3);
   }
   .collapsible-header:hover {
-    color: var(--text);
+    color: var(--nc-fg-1);
   }
   .collapsible-chevron {
     font-size: 11px;
-    transition: transform 0.15s;
+    transition: transform 0.15s var(--nc-ease);
     transform: rotate(-90deg);
   }
   .collapsible-chevron.open {
@@ -1387,10 +1466,16 @@
   .collapsible-body {
     padding-bottom: 8px;
   }
-  @media (max-width: 600px) {
+  @media (max-width: 720px) {
+    .song-title {
+      font-size: 26px;
+    }
     .tab {
-      padding: 8px 12px;
+      padding: 10px 14px 12px;
       font-size: 13px;
+    }
+    .tab-save {
+      margin-left: 0;
     }
   }
 </style>

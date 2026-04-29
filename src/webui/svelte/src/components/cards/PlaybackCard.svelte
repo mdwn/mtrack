@@ -22,6 +22,7 @@
 
   let errorMsg = $state("");
   let errorTimer: ReturnType<typeof setTimeout> | null = null;
+  let loading = $state(false);
 
   function showError(msg: string) {
     errorMsg = msg;
@@ -64,7 +65,7 @@
       await playerClient.next({});
     } catch (e) {
       if (e instanceof ConnectError && e.code === Code.OutOfRange) {
-        // Already at end of playlist — not an error.
+        // Already at end — silent.
       } else {
         console.error("next failed:", e);
         showError(get(t)("playback.error.next"));
@@ -80,7 +81,7 @@
       await playerClient.previous({});
     } catch (e) {
       if (e instanceof ConnectError && e.code === Code.OutOfRange) {
-        // Already at beginning of playlist — not an error.
+        // Already at start — silent.
       } else {
         console.error("previous failed:", e);
         showError(get(t)("playback.error.prev"));
@@ -90,19 +91,7 @@
     }
   }
 
-  let loading = $state(false);
-  let sectionMenuOpen = $state(false);
-
-  function toggleSectionMenu() {
-    sectionMenuOpen = !sectionMenuOpen;
-  }
-
-  function closeSectionMenu() {
-    sectionMenuOpen = false;
-  }
-
   async function loopSection(name: string) {
-    sectionMenuOpen = false;
     try {
       await playerClient.loopSection({ sectionName: name });
     } catch (e) {
@@ -112,7 +101,6 @@
   }
 
   async function stopSectionLoop() {
-    sectionMenuOpen = false;
     try {
       await playerClient.stopSectionLoop({});
     } catch (e) {
@@ -122,16 +110,12 @@
   }
 
   function handleKeydown(e: KeyboardEvent) {
-    // Only handle shortcuts on the dashboard page to avoid accidental
-    // playback triggers when interacting with forms on other pages.
     if (
       window.location.hash !== "#/" &&
       window.location.hash !== "" &&
       window.location.hash !== "#"
     )
       return;
-
-    // Don't intercept when typing in form fields
     const tag = (e.target as HTMLElement)?.tagName;
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
 
@@ -170,10 +154,10 @@
 
   const SECTION_COLORS = [
     "94, 202, 234",
-    "139, 92, 246",
-    "234, 179, 8",
     "239, 96, 163",
-    "34, 197, 94",
+    "242, 181, 68",
+    "77, 192, 138",
+    "139, 92, 246",
     "249, 115, 22",
   ];
 
@@ -197,7 +181,6 @@
 
     return sections.map((s, i) => {
       const startPct = (measureToMs(grid, s.start_measure, dur) / dur) * 100;
-      // end_measure is inclusive, so the region extends to the start of the next measure
       const endPct = (measureToMs(grid, s.end_measure + 1, dur) / dur) * 100;
       const isActive = active?.name === s.name;
       const rgb = SECTION_COLORS[i % SECTION_COLORS.length];
@@ -216,7 +199,6 @@
     if (!grid || grid.beats.length === 0) return null;
     const elapsed = $playbackStore.elapsed_ms / 1000;
 
-    // Find current beat index.
     let beatIdx = 0;
     for (let i = grid.beats.length - 1; i >= 0; i--) {
       if (grid.beats[i] <= elapsed) {
@@ -225,7 +207,6 @@
       }
     }
 
-    // Find current measure.
     let measureIdx = 0;
     for (let i = grid.measure_starts.length - 1; i >= 0; i--) {
       if (grid.measure_starts[i] <= beatIdx) {
@@ -241,75 +222,133 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<div class="card card-full">
-  <div class="card-header">
-    <span class="card-title">{$t("playback.title")}</span>
-    {#if $playbackStore.is_playing && $playbackStore.available_sections.length > 0}
-      <div class="section-menu-anchor">
+<section
+  class="card card--hero playback-card"
+  aria-label={$t("playback.title")}
+>
+  <div class="playback-card__corner" aria-hidden="true">
+    <span class="pixeq__cell pixeq__cell--cyan"></span>
+    <span class="pixeq__cell"></span>
+    <span class="pixeq__cell pixeq__cell--pink"></span>
+    <span class="pixeq__cell pixeq__cell--cyan"></span>
+    <span class="pixeq__cell pixeq__cell--pink"></span>
+    <span class="pixeq__cell"></span>
+    <span class="pixeq__cell"></span>
+    <span class="pixeq__cell pixeq__cell--cyan"></span>
+    <span class="pixeq__cell pixeq__cell--pink"></span>
+    <span class="pixeq__cell"></span>
+    <span class="pixeq__cell pixeq__cell--cyan"></span>
+    <span class="pixeq__cell"></span>
+  </div>
+
+  <div class="playback-card__body">
+    <div
+      class="overline playback-card__state"
+      class:playback-card__state--playing={$playbackStore.is_playing}
+    >
+      <span class="playback-card__dot" aria-hidden="true">
+        {#if $playbackStore.is_playing}●{:else}■{/if}
+      </span>
+      {#if $playbackStore.is_playing}
+        {$t("playback.playing")}
+      {:else}
+        {$t("playback.stopped")}
+      {/if}
+      {#if $playbackStore.looping}
+        <span class="badge badge--ctrl">LOOP</span>
+      {/if}
+    </div>
+
+    <div class="playback-card__head">
+      <div class="playback-card__heading">
+        <h2 class="playback-card__title">
+          {$playbackStore.song_name || $t("playback.noSong")}
+        </h2>
+        <div class="mono playback-card__meta">
+          {#if $playbackStore.tracks.length > 0}
+            {$playbackStore.tracks.length} tracks
+          {/if}
+          {#if currentBeatInfo}
+            · beat {currentBeatInfo.beat} / measure {currentBeatInfo.measure}
+          {/if}
+        </div>
+      </div>
+      <div class="playback-card__transport">
         <button
-          class="btn btn-sm"
-          class:btn-loop-active={$playbackStore.active_section != null}
-          onclick={toggleSectionMenu}
-          title={$playbackStore.active_section
-            ? `Looping: ${$playbackStore.active_section.name}`
-            : $t("playback.sections")}
+          class="btn-icon-circle"
+          onclick={previous}
+          disabled={($playbackStore.is_playing && !$playbackStore.looping) ||
+            loading ||
+            !canPrev}
+          title={$t("playback.prevTooltip")}
+          aria-label={$t("playback.prev")}
         >
-          {#if $playbackStore.active_section}
-            <span class="loop-icon">&#x21BB;</span>
-            {$playbackStore.active_section.name}
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"
+            ><path d="M6 5h2v14H6zM20 5L9 12l11 7V5z" /></svg
+          >
+        </button>
+        <button
+          class="btn-icon-circle"
+          onclick={stop}
+          disabled={loading || !$playbackStore.is_playing}
+          title={$t("playback.stopTooltip")}
+          aria-label={$t("playback.stop")}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"
+            ><rect x="6" y="6" width="12" height="12" rx="1" /></svg
+          >
+        </button>
+        <button
+          class="btn-play"
+          class:btn-play--playing={$playbackStore.is_playing}
+          onclick={$playbackStore.is_playing ? stop : play}
+          disabled={loading}
+          title={$playbackStore.is_playing
+            ? $t("playback.pauseTooltip")
+            : $t("playback.playTooltip")}
+          aria-label={$playbackStore.is_playing
+            ? $t("playback.pause")
+            : $t("playback.play")}
+        >
+          {#if $playbackStore.is_playing}
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"
+              ><rect x="6" y="5" width="4" height="14" rx="1" /><rect
+                x="14"
+                y="5"
+                width="4"
+                height="14"
+                rx="1"
+              /></svg
+            >
           {:else}
-            {$t("playback.sections")}
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"
+              ><path d="M8 5v14l11-7z" /></svg
+            >
           {/if}
         </button>
-        {#if sectionMenuOpen}
-          <button class="section-menu-backdrop" onclick={closeSectionMenu}
-          ></button>
-          <div class="section-menu">
-            {#if $playbackStore.active_section}
-              <button
-                class="section-menu-item section-menu-stop"
-                onclick={stopSectionLoop}>{$t("playback.stopLoop")}</button
-              >
-            {/if}
-            {#each $playbackStore.available_sections as section (section.name)}
-              <button
-                class="section-menu-item"
-                class:section-menu-item-active={$playbackStore.active_section
-                  ?.name === section.name}
-                onclick={() => loopSection(section.name)}
-                title="m{section.start_measure}-{section.end_measure}"
-                >{section.name}</button
-              >
-            {/each}
-          </div>
-        {/if}
-      </div>
-    {/if}
-  </div>
-  <div class="transport">
-    <div class="transport-info">
-      <div class="playback-song">
-        {$playbackStore.song_name || $t("playback.noSong")}
-      </div>
-      <div class="playback-status">
-        {#if $playbackStore.is_playing}
-          <span class="playing">{$t("playback.playing")}</span>
-        {:else}
-          <span class="stopped">{$t("playback.stopped")}</span>
-        {/if}
-        {#if $playbackStore.looping}
-          <span class="loop-badge">LOOP</span>
-        {/if}
-        {#if currentBeatInfo}
-          <span class="beat-info"
-            >m{currentBeatInfo.measure} b{currentBeatInfo.beat}</span
+        <button
+          class="btn-icon-circle"
+          onclick={next}
+          disabled={($playbackStore.is_playing && !$playbackStore.looping) ||
+            loading ||
+            !canNext}
+          title={$t("playback.nextTooltip")}
+          aria-label={$t("playback.next")}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"
+            ><path d="M16 5h2v14h-2zM4 5l11 7L4 19V5z" /></svg
           >
-        {/if}
+        </button>
       </div>
     </div>
-    <div class="transport-progress">
+
+    <div class="playback-card__progress">
+      <span class="mono playback-card__time"
+        >{formatMs($playbackStore.elapsed_ms)}</span
+      >
       <div
-        class="progress-bar"
+        class="scrub"
+        class:scrub--playing={$playbackStore.is_playing}
         role="progressbar"
         aria-valuenow={progressPct}
         aria-valuemin={0}
@@ -318,191 +357,231 @@
       >
         {#each sectionRegions as region (region.name)}
           <div
-            class="section-region"
-            class:section-active-region={region.isActive}
+            class="scrub__region"
+            class:scrub__region--active={region.isActive}
             style:left="{region.startPct}%"
             style:width="{region.widthPct}%"
             style:--section-rgb={region.rgb}
             title={region.name}
           ></div>
         {/each}
-        <div class="progress-fill" style:width="{progressPct}%"></div>
+        <div class="scrub__fill" style:width="{progressPct}%"></div>
       </div>
-      <div class="progress-time">
-        <span>{formatMs($playbackStore.elapsed_ms)}</span>
-        <span>{formatMs($playbackStore.song_duration_ms)}</span>
-      </div>
-    </div>
-    <div class="controls">
-      <button
-        class="btn"
-        onclick={previous}
-        disabled={($playbackStore.is_playing && !$playbackStore.looping) ||
-          loading ||
-          !canPrev}
-        title={$t("playback.prevTooltip")}>{$t("playback.prev")}</button
-      >
-      {#if $playbackStore.is_playing}
-        <button
-          class="btn btn-primary"
-          onclick={stop}
-          disabled={loading}
-          title={$t("playback.stopTooltip")}>{$t("playback.stop")}</button
-        >
-      {:else}
-        <button
-          class="btn btn-primary"
-          onclick={play}
-          disabled={loading}
-          title={$t("playback.playTooltip")}>{$t("playback.play")}</button
-        >
-      {/if}
-      <button
-        class="btn"
-        onclick={next}
-        disabled={($playbackStore.is_playing && !$playbackStore.looping) ||
-          loading ||
-          !canNext}
-        title={$t("playback.nextTooltip")}>{$t("playback.next")}</button
+      <span class="mono playback-card__time"
+        >{formatMs($playbackStore.song_duration_ms)}</span
       >
     </div>
+
+    {#if $playbackStore.available_sections.length > 0}
+      <div class="playback-card__sections">
+        <span class="overline">{$t("playback.sections")}</span>
+        {#if $playbackStore.active_section}
+          <button
+            class="badge badge--pill badge--active section-chip"
+            onclick={stopSectionLoop}
+            title={$t("playback.stopLoop")}
+          >
+            <span aria-hidden="true">↻</span>
+            {$playbackStore.active_section.name}
+            <span aria-hidden="true">×</span>
+          </button>
+        {/if}
+        {#each $playbackStore.available_sections as section (section.name)}
+          {#if !$playbackStore.active_section || $playbackStore.active_section.name !== section.name}
+            <button
+              class="badge badge--pill section-chip"
+              onclick={() => loopSection(section.name)}
+              title="m{section.start_measure}-{section.end_measure}"
+              disabled={!$playbackStore.is_playing}
+            >
+              {section.name}
+            </button>
+          {/if}
+        {/each}
+      </div>
+    {/if}
+
+    {#if errorMsg}
+      <div class="playback-card__error" role="alert">
+        <span>{errorMsg}</span>
+        <button
+          class="error-dismiss-btn"
+          onclick={dismissError}
+          aria-label={$t("common.dismiss")}>×</button
+        >
+      </div>
+    {/if}
   </div>
-  {#if errorMsg}
-    <div class="playback-error" role="alert">
-      <span>{errorMsg}</span>
-      <button
-        class="error-dismiss-btn"
-        onclick={dismissError}
-        aria-label={$t("common.dismiss")}>&times;</button
-      >
-    </div>
-  {/if}
-</div>
+</section>
 
 <style>
-  .card-header {
-    min-height: 28px;
+  .playback-card {
+    position: relative;
+    overflow: hidden;
+    padding: 0;
+    margin-bottom: 24px;
   }
-  .transport {
+  .playback-card__corner {
+    position: absolute;
+    top: 14px;
+    right: 18px;
     display: grid;
-    grid-template-columns: auto 1fr auto;
-    gap: 8px 16px;
+    grid-template-columns: repeat(4, 6px);
+    grid-template-rows: repeat(3, 6px);
+    gap: 2px;
+    opacity: 0.6;
+    pointer-events: none;
+  }
+  .playback-card__corner :global(.pixeq__cell) {
+    width: 6px;
+    height: 6px;
+    border-radius: 1px;
+    background: var(--nc-gray-300);
+  }
+  :global(.nc--dark) .playback-card__corner :global(.pixeq__cell) {
+    background: var(--nc-gray-700);
+  }
+  .playback-card__body {
+    padding: 28px;
+  }
+  .playback-card__state {
+    display: inline-flex;
     align-items: center;
+    gap: 8px;
+    color: var(--nc-fg-3);
   }
-  .transport-info {
-    min-width: 120px;
+  .playback-card__state--playing {
+    color: var(--nc-pink-500);
   }
-  .transport-progress {
+  :global(.nc--dark) .playback-card__state--playing {
+    color: var(--nc-pink-300);
+  }
+  .playback-card__dot {
+    font-size: 9px;
+    line-height: 1;
+  }
+  .playback-card__head {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    margin-top: 6px;
+    gap: 24px;
+    flex-wrap: wrap;
+  }
+  .playback-card__heading {
+    flex: 1;
     min-width: 0;
   }
-  .playback-song {
-    font-size: var(--text-lg);
-    font-weight: 600;
-    color: var(--text);
+  .playback-card__title {
+    font-family: var(--nc-font-display);
+    font-weight: 800;
+    font-size: 36px;
+    line-height: 1.05;
+    letter-spacing: -0.02em;
+    color: var(--nc-fg-1);
+    margin: 0;
+    overflow-wrap: break-word;
+    word-break: break-word;
   }
-  .playback-status {
-    font-size: 14px;
-    color: var(--text-muted);
+  .playback-card__meta {
+    margin-top: 8px;
+    color: var(--nc-fg-3);
   }
-  .playback-status .playing {
-    color: var(--green);
-  }
-  .playback-status .stopped {
-    color: var(--text-dim);
-  }
-  .beat-info {
-    margin-left: 8px;
-    font-family: var(--mono);
-    color: var(--text-dim);
-  }
-  .section-menu-anchor {
-    position: relative;
-  }
-  .section-menu-backdrop {
-    position: fixed;
-    inset: 0;
-    background: transparent;
-    border: none;
-    z-index: 99;
-    cursor: default;
-  }
-  .section-menu {
-    position: absolute;
-    right: 0;
-    top: calc(100% + 4px);
-    z-index: 100;
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
-    min-width: 120px;
-    padding: 4px;
+  .playback-card__transport {
     display: flex;
-    flex-direction: column;
-    gap: 2px;
+    gap: 8px;
+    align-items: center;
   }
-  .section-menu-item {
-    background: none;
-    border: none;
-    color: var(--text);
-    font-size: 13px;
-    padding: 6px 12px;
-    border-radius: var(--radius);
+  .btn-icon-circle {
+    width: 36px;
+    height: 36px;
+    border-radius: 999px;
+    border: 1px solid var(--nc-border-2);
+    background: var(--card-bg);
+    color: var(--nc-fg-1);
     cursor: pointer;
-    text-align: left;
-    white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition:
+      background var(--nc-dur-fast) var(--nc-ease),
+      border-color var(--nc-dur-fast) var(--nc-ease);
   }
-  .section-menu-item:hover {
-    background: var(--bg-hover);
+  .btn-icon-circle:hover:not(:disabled) {
+    background: var(--nc-bg-2);
+    border-color: var(--nc-fg-3);
   }
-  .section-menu-item-active {
-    color: var(--accent);
-    font-weight: 600;
+  .btn-icon-circle:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
   }
-  .section-menu-stop {
-    color: var(--red);
-    border-bottom: 1px solid var(--border);
-    border-radius: var(--radius) var(--radius) 0 0;
-    padding-bottom: 8px;
-    margin-bottom: 2px;
+  .btn-play {
+    width: 48px;
+    height: 48px;
+    border-radius: 999px;
+    border: 1px solid var(--nc-cyan-500);
+    background: var(--nc-cyan-400);
+    color: var(--nc-ink);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition:
+      background var(--nc-dur-fast) var(--nc-ease),
+      border-color var(--nc-dur-fast) var(--nc-ease),
+      transform var(--nc-dur-fast) var(--nc-ease);
   }
-  .btn-loop-active {
-    background: var(--accent);
-    color: var(--bg);
-    border-color: var(--accent);
+  .btn-play:hover:not(:disabled) {
+    background: var(--nc-cyan-500);
   }
-  .btn-loop-active:hover {
-    opacity: 0.85;
+  .btn-play--playing {
+    background: var(--nc-pink-400);
+    border-color: var(--nc-pink-500);
   }
-  .loop-icon {
-    font-size: 14px;
+  .btn-play--playing:hover:not(:disabled) {
+    background: var(--nc-pink-500);
   }
-  .loop-badge {
-    margin-left: 8px;
-    font-size: var(--text-xs);
-    font-weight: 600;
-    padding: 2px 8px;
-    border-radius: var(--radius);
-    background: var(--accent);
-    color: var(--bg);
+  .btn-play:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
   }
-  .progress-bar {
+
+  .playback-card__progress {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 24px;
+  }
+  .playback-card__time {
+    font-family: var(--nc-font-mono);
+    font-size: 12px;
+    color: var(--nc-fg-3);
+    min-width: 44px;
+  }
+  .playback-card__time:last-child {
+    text-align: right;
+  }
+  .scrub {
+    flex: 1;
     position: relative;
-    height: 10px;
-    background: var(--border);
-    border-radius: 5px;
+    height: 8px;
+    background: var(--nc-bg-3);
+    border-radius: 999px;
     overflow: hidden;
-    margin-bottom: 6px;
   }
-  .progress-fill {
-    position: relative;
-    z-index: 2;
-    height: 100%;
-    background: var(--accent);
-    border-radius: 5px;
+  .scrub__fill {
+    position: absolute;
+    inset: 0;
+    background: var(--nc-cyan-400);
+    width: 0%;
+    border-radius: 999px;
     transition: width 0.2s linear;
+    z-index: 2;
   }
-  .section-region {
+  .scrub--playing .scrub__fill {
+    background: var(--nc-pink-400);
+  }
+  .scrub__region {
     position: absolute;
     top: 0;
     height: 100%;
@@ -511,46 +590,87 @@
     border-left: 1px solid rgba(var(--section-rgb), 0.4);
     border-right: 1px solid rgba(var(--section-rgb), 0.4);
   }
-  .section-active-region {
-    background: rgba(var(--section-rgb), 0.35);
-    border-left: 1px solid rgba(var(--section-rgb), 0.7);
-    border-right: 1px solid rgba(var(--section-rgb), 0.7);
+  .scrub__region--active {
+    background: rgba(var(--section-rgb), 0.4);
+    border-left-color: rgba(var(--section-rgb), 0.7);
+    border-right-color: rgba(var(--section-rgb), 0.7);
   }
-  .progress-time {
-    display: flex;
-    justify-content: space-between;
-    font-family: var(--mono);
-    font-size: 12px;
-    color: var(--text-dim);
-  }
-  .playback-error {
+
+  .playback-card__sections {
     display: flex;
     align-items: center;
-    justify-content: center;
     gap: 8px;
-    font-size: 12px;
-    color: var(--red);
-    background: var(--red-subtle);
-    border-radius: var(--radius);
-    padding: 6px 12px;
-    margin-top: 8px;
+    margin-top: 18px;
+    flex-wrap: wrap;
+  }
+  .section-chip {
+    cursor: pointer;
+    border: 1px solid var(--card-border);
+    background: var(--nc-bg-2);
+    color: var(--nc-fg-2);
+    transition:
+      background var(--nc-dur-fast) var(--nc-ease),
+      color var(--nc-dur-fast) var(--nc-ease),
+      border-color var(--nc-dur-fast) var(--nc-ease);
+  }
+  .section-chip:hover:not(:disabled) {
+    background: var(--nc-bg-3);
+    color: var(--nc-fg-1);
+  }
+  .section-chip:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+  }
+  .badge--pill.badge--active.section-chip {
+    background: var(--nc-cyan-400);
+    border-color: var(--nc-cyan-500);
+    color: var(--nc-ink);
+  }
+  .badge--pill.badge--active.section-chip:hover:not(:disabled) {
+    background: var(--nc-cyan-500);
+    color: var(--nc-ink);
+  }
+
+  .playback-card__error {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-top: 16px;
+    font-size: 13px;
+    color: var(--nc-error);
+    background: rgba(232, 75, 75, 0.12);
+    border: 1px solid rgba(232, 75, 75, 0.4);
+    border-radius: var(--nc-radius-sm);
+    padding: 8px 12px;
   }
   .error-dismiss-btn {
     background: none;
     border: none;
     color: inherit;
     cursor: pointer;
-    font-size: 16px;
+    font-size: 18px;
+    line-height: 1;
     padding: 0 4px;
     opacity: 0.7;
-    line-height: 1;
   }
   .error-dismiss-btn:hover {
     opacity: 1;
   }
-  .controls {
-    display: flex;
-    gap: 8px;
-    flex-shrink: 0;
+
+  @media (max-width: 720px) {
+    .playback-card__body {
+      padding: 20px;
+    }
+    .playback-card__title {
+      font-size: 26px;
+    }
+    .playback-card__head {
+      gap: 16px;
+    }
+    .playback-card__transport {
+      width: 100%;
+      justify-content: flex-end;
+    }
   }
 </style>

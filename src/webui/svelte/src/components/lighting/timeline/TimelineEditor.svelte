@@ -923,7 +923,7 @@
     cursor: pointer;
   }
   .tempo-lane-clickable:hover {
-    background: rgba(255, 255, 255, 0.02);
+    background: var(--bg-hover);
   }
   .no-tempo-lane {
     display: flex;
@@ -941,10 +941,10 @@
     flex-direction: column;
     flex: 1;
     min-height: 0;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
+    border: 1px solid var(--card-border);
+    border-radius: var(--nc-radius-md);
     overflow: hidden;
-    background: #111;
+    background: var(--inset-bg);
   }
   .timeline-scroll {
     flex: 1;

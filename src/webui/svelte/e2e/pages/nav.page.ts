@@ -28,17 +28,17 @@ export class NavPage {
   readonly hamburger: Locator;
 
   constructor(private page: Page) {
-    this.brand = page.locator(".nav-brand");
-    this.dashboardLink = page.locator('a.nav-link[href="#/"]');
-    this.configLink = page.locator('a.nav-link[href="#/config"]');
-    this.songsLink = page.locator('a.nav-link[href="#/songs"]');
-    this.playlistsLink = page.locator('a.nav-link[href="#/playlists"]');
-    this.statusLink = page.locator('a.nav-link[href="#/status"]');
-    this.statusIndicator = page.locator(".status-indicator");
-    this.lockToggle = page.locator(".lock-toggle");
-    this.nowPlaying = page.locator(".now-playing");
-    this.nowPlayingSong = page.locator(".now-playing-song");
-    this.hamburger = page.locator(".hamburger");
+    this.brand = page.locator(".topnav__brand");
+    this.dashboardLink = page.locator('.topnav__tab[href="#/"]');
+    this.configLink = page.locator('.topnav__tab[href="#/config"]');
+    this.songsLink = page.locator('.topnav__tab[href="#/songs"]');
+    this.playlistsLink = page.locator('.topnav__tab[href="#/playlists"]');
+    this.statusLink = page.locator('.topnav__tab[href="#/status"]');
+    this.statusIndicator = page.locator(".topnav__conn");
+    this.lockToggle = page.locator(".topnav__lock");
+    this.nowPlaying = page.locator(".topnav__transport");
+    this.nowPlayingSong = page.locator(".topnav__transport-song");
+    this.hamburger = page.locator(".topnav__hamburger");
   }
 
   async goto(hash: string = "/") {
@@ -46,10 +46,10 @@ export class NavPage {
   }
 
   navLinks(): Locator {
-    return this.page.locator("a.nav-link");
+    return this.page.locator(".topnav__tab");
   }
 
   activeLink(): Locator {
-    return this.page.locator("a.nav-link.active");
+    return this.page.locator(".topnav__tab--active");
   }
 }

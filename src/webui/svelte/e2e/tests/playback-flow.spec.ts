@@ -47,13 +47,15 @@ test.describe("Playback State Transitions", () => {
     });
 
     await page.goto(`/?wsId=${wsId}#/`);
-    await expect(page.locator(".playback-song")).toContainText(
+    await expect(page.locator(".playback-card__title")).toContainText(
       "Test Song Alpha",
     );
   });
 
   test("initial state shows stopped", async ({ page }) => {
-    await expect(page.locator(".playback-status")).toContainText(/stopped/i);
+    await expect(page.locator(".playback-card__state")).toContainText(
+      /stopped/i,
+    );
     await expect(page.getByRole("button", { name: "Play" })).toBeVisible();
   });
 
@@ -82,9 +84,12 @@ test.describe("Playback State Transitions", () => {
     });
 
     // Status should change to playing
-    await expect(page.locator(".playback-status")).toContainText(/playing/i);
-    // Play button should become Stop
-    await expect(page.getByRole("button", { name: "Stop" })).toBeVisible();
+    await expect(page.locator(".playback-card__state")).toContainText(
+      /playing/i,
+    );
+    // Play button should become Pause; the dedicated Stop button becomes enabled.
+    await expect(page.getByRole("button", { name: "Pause" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Stop" })).toBeEnabled();
   });
 
   test("progress bar updates during playback", async ({ page }) => {
@@ -105,7 +110,7 @@ test.describe("Playback State Transitions", () => {
     });
 
     // Progress bar should reflect ~50%
-    const progressBar = page.locator(".progress-bar");
+    const progressBar = page.locator(".scrub");
     await expect(progressBar).toBeVisible();
     const ariaValue = await progressBar.getAttribute("aria-valuenow");
     expect(Number(ariaValue)).toBeGreaterThan(40);
@@ -139,7 +144,7 @@ test.describe("Playback State Transitions", () => {
       locked: false,
     });
 
-    await expect(page.locator(".playback-song")).toContainText(
+    await expect(page.locator(".playback-card__title")).toContainText(
       "Test Song Beta",
     );
   });
@@ -180,7 +185,9 @@ test.describe("Playback State Transitions", () => {
       locked: false,
     });
 
-    await expect(page.locator(".playback-status")).toContainText(/stopped/i);
+    await expect(page.locator(".playback-card__state")).toContainText(
+      /stopped/i,
+    );
     await expect(page.getByRole("button", { name: "Play" })).toBeVisible();
   });
 
@@ -221,11 +228,11 @@ test.describe("Playback State Transitions", () => {
       locked: false,
     });
 
-    const currentSong = page.locator(".playlist-songs li.current");
+    const currentSong = page.locator(".playlist-card__row--active");
     await expect(currentSong).toContainText("Test Song Beta");
   });
 
-  test("sections button appears when playing song with sections", async ({
+  test("section chips appear when playing song with sections", async ({
     page,
   }) => {
     // Send playing state with available_sections.
@@ -249,23 +256,17 @@ test.describe("Playback State Transitions", () => {
       active_section: null,
     });
 
-    // Sections dropdown button should appear in the header.
-    const sectionsBtn = page.getByRole("button", { name: "Sections" });
-    await expect(sectionsBtn).toBeVisible();
-
-    // Clicking it should reveal section items in the dropdown.
-    await sectionsBtn.click();
-    await expect(page.locator(".section-menu")).toBeVisible();
+    // Section chips render inline directly on the playback card — no menu.
     await expect(
-      page.locator(".section-menu-item", { hasText: "verse" }),
+      page.locator(".section-chip", { hasText: "verse" }),
     ).toBeVisible();
     await expect(
-      page.locator(".section-menu-item", { hasText: "chorus" }),
+      page.locator(".section-chip", { hasText: "chorus" }),
     ).toBeVisible();
   });
 
-  test("sections button hidden when not playing", async ({ page }) => {
-    // Stopped state with sections — button should NOT appear.
+  test("section chips disabled when not playing", async ({ page }) => {
+    // Stopped state with sections — chips render but are disabled.
     await sendWsMessage(page, wsId, {
       type: "playback",
       is_playing: false,
@@ -283,12 +284,12 @@ test.describe("Playback State Transitions", () => {
       active_section: null,
     });
 
-    await expect(
-      page.getByRole("button", { name: "Sections" }),
-    ).not.toBeVisible();
+    const chip = page.locator(".section-chip", { hasText: "verse" });
+    await expect(chip).toBeVisible();
+    await expect(chip).toBeDisabled();
   });
 
-  test("active section shows name and stop button in dropdown", async ({
+  test("active section chip shows name and is the only active chip", async ({
     page,
   }) => {
     // Send playing state with an active section loop.
@@ -312,19 +313,14 @@ test.describe("Playback State Transitions", () => {
       active_section: { name: "verse", start_ms: 0, end_ms: 8000 },
     });
 
-    // The button should show the active section name.
-    const sectionsBtn = page.locator(".btn-loop-active");
-    await expect(sectionsBtn).toBeVisible();
-    await expect(sectionsBtn).toContainText("verse");
-
-    // Clicking it should show the dropdown with a Stop Loop option.
-    await sectionsBtn.click();
-    await expect(page.getByRole("button", { name: "Stop Loop" })).toBeVisible();
+    const activeChip = page.locator(".section-chip.badge--active");
+    await expect(activeChip).toBeVisible();
+    await expect(activeChip).toContainText("verse");
+    // Clicking the active chip stops the section loop.
+    await expect(activeChip).toHaveAttribute("title", /stop loop/i);
   });
 
-  test("section buttons hidden when no sections available", async ({
-    page,
-  }) => {
+  test("section chips hidden when no sections available", async ({ page }) => {
     // Playing but no sections.
     await sendWsMessage(page, wsId, {
       type: "playback",
@@ -343,7 +339,7 @@ test.describe("Playback State Transitions", () => {
       active_section: null,
     });
 
-    await expect(page.locator(".section-controls")).not.toBeVisible();
+    await expect(page.locator(".section-chip")).toHaveCount(0);
   });
 
   test("section regions render on progress bar with beat grid", async ({
@@ -379,7 +375,7 @@ test.describe("Playback State Transitions", () => {
     });
 
     // Two section regions should appear inside the progress bar.
-    const regions = page.locator(".section-region");
+    const regions = page.locator(".scrub__region");
     await expect(regions).toHaveCount(2);
 
     // Verify they have title attributes for tooltip.
@@ -407,7 +403,7 @@ test.describe("Playback State Transitions", () => {
       active_section: null,
     });
 
-    await expect(page.locator(".section-region")).toHaveCount(0);
+    await expect(page.locator(".scrub__region")).toHaveCount(0);
   });
 
   test("active section region gets highlighted class", async ({ page }) => {
@@ -439,12 +435,12 @@ test.describe("Playback State Transitions", () => {
     });
 
     // The active section should have the highlight class.
-    const activeRegions = page.locator(".section-active-region");
+    const activeRegions = page.locator(".scrub__region--active");
     await expect(activeRegions).toHaveCount(1);
     await expect(activeRegions).toHaveAttribute("title", "verse");
 
     // The other section should not have the active class.
-    const allRegions = page.locator(".section-region");
+    const allRegions = page.locator(".scrub__region");
     await expect(allRegions).toHaveCount(2);
   });
 
@@ -464,7 +460,9 @@ test.describe("Playback State Transitions", () => {
       locked: false,
     });
 
-    // Should show elapsed time (1:05)
-    await expect(page.locator(".progress-time")).toContainText("1:05");
+    // Should show elapsed time (1:05) in the first time readout (elapsed).
+    await expect(page.locator(".playback-card__time").first()).toContainText(
+      "1:05",
+    );
   });
 });

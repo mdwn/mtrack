@@ -362,8 +362,8 @@
     display: flex;
     flex-direction: column;
     height: 100%;
-    background: #111;
-    border-radius: var(--radius);
+    background: var(--inset-bg);
+    border-radius: var(--nc-radius-sm);
     overflow: hidden;
     position: relative;
   }
@@ -394,7 +394,7 @@
     font-size: 10px;
     font-family: var(--mono);
     color: var(--text-muted);
-    background: rgba(255, 255, 255, 0.06);
+    background: var(--bg-hover);
     padding: 1px 5px;
     border-radius: 3px;
     white-space: nowrap;

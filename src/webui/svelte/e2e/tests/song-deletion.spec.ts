@@ -25,7 +25,7 @@ test.describe("Song Deletion", () => {
   test("song row shows delete button on hover", async ({ page }) => {
     const songRow = page.locator(".song-row", { hasText: "Test Song Alpha" });
     await songRow.hover();
-    await expect(songRow.locator(".song-delete")).toBeVisible();
+    await expect(songRow.locator(".song-row__delete")).toBeVisible();
   });
 
   test("delete calls API", async ({ page }) => {
@@ -45,7 +45,7 @@ test.describe("Song Deletion", () => {
 
     const songRow = page.locator(".song-row", { hasText: "Test Song Alpha" });
     await songRow.hover();
-    await songRow.locator(".song-delete").click();
+    await songRow.locator(".song-row__delete").click();
 
     // Confirm via custom dialog
     const dialog = page.locator('[role="dialog"]');
@@ -66,7 +66,7 @@ test.describe("Song Deletion", () => {
 
     const songRow = page.locator(".song-row", { hasText: "Test Song Alpha" });
     await songRow.hover();
-    await songRow.locator(".song-delete").click();
+    await songRow.locator(".song-row__delete").click();
 
     // Cancel via custom dialog
     const dialog = page.locator('[role="dialog"]');

@@ -186,8 +186,10 @@
 {#if showImport}
   <ImportSongs {onimported} oncancel={() => (showImport = false)} />
 {:else}
-  <div class="header">
-    <h2>{$t("songs.title")}</h2>
+  <div class="page__head">
+    <div>
+      <h1 class="page__title">{$t("songs.title")}</h1>
+    </div>
     <div class="header-actions">
       <button
         class="btn btn-primary"
@@ -226,23 +228,40 @@
     {@const filteredItems = getFilteredItems()}
     {@const groups = groupItems(filteredItems)}
     {@const totalCount = songs.length + failures.length}
-    <div class="search-bar">
-      <input
-        type="text"
-        class="search-input"
-        placeholder={$t("songs.searchPlaceholder")}
-        bind:value={searchQuery}
-      />
-      {#if searchQuery}
-        <button class="search-clear" onclick={() => (searchQuery = "")}
-          >&#10005;</button
+    <div class="card search-card">
+      <div class="search-bar">
+        <span class="search-icon" aria-hidden="true">
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.7"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            ><circle cx="11" cy="11" r="7" /><path d="M21 21l-4.3-4.3" /></svg
+          >
+        </span>
+        <input
+          type="search"
+          class="search-input"
+          placeholder={$t("songs.searchPlaceholder")}
+          bind:value={searchQuery}
+        />
+        {#if searchQuery}
+          <button
+            class="search-clear"
+            onclick={() => (searchQuery = "")}
+            aria-label={$t("common.cancel")}>×</button
+          >
+        {/if}
+        <span class="search-count mono"
+          >{$t("songs.searchCount", {
+            values: { filtered: filteredItems.length, total: totalCount },
+          })}</span
         >
-      {/if}
-      <span class="search-count"
-        >{$t("songs.searchCount", {
-          values: { filtered: filteredItems.length, total: totalCount },
-        })}</span
-      >
+      </div>
     </div>
     <div class="song-list">
       {#each groups as group (group.directory)}
@@ -254,76 +273,92 @@
             <span
               class="group-chevron"
               class:collapsed={collapsedGroups.has(group.directory)}
-              >&#9662;</span
+              aria-hidden="true">▾</span
             >
-            <span class="group-label">{group.label}</span>
-            <span class="group-count">{group.items.length}</span>
+            <span class="overline group-label">{group.label}</span>
+            <span class="mono group-count">{group.items.length}</span>
           </button>
         {/if}
         {#if !collapsedGroups.has(group.directory)}
-          {#each group.items as item (isSongFailure(item) ? `__failed__${item.name}` : item.name)}
-            {#if isSongFailure(item)}
-              <button
-                class="song-row song-row-failed"
-                onclick={() => navigate(item.name)}
-              >
-                <div class="song-main">
-                  <span class="song-name">{item.name}</span>
-                  <div class="song-badges">
-                    <span class="badge failed">ERROR</span>
-                  </div>
-                </div>
-                <div class="song-error" title={item.error}>
-                  {item.error}
-                </div>
-              </button>
-            {:else}
-              <div
-                class="song-row"
-                onclick={() => navigate(item.name)}
-                onkeydown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    navigate(item.name);
-                  }
-                }}
-                tabindex="0"
-                role="link"
-              >
-                <div class="song-main">
-                  <span class="song-name">{item.name}</span>
-                  <div class="song-badges">
-                    {#if item.has_midi}
-                      <span class="badge midi">MIDI</span>
-                    {/if}
-                    {#if item.lighting_files.length > 0}
-                      <span class="badge lighting">LIGHT</span>
-                    {/if}
-                    {#if item.midi_dmx_files.length > 0}
-                      <span class="badge midi-dmx">MIDI DMX</span>
-                    {/if}
-                  </div>
-                </div>
-                <div class="song-waveform">
-                  <Waveform peaks={waveforms[item.name] ?? []} height={24} />
-                </div>
-                <div class="song-meta">
-                  <span>{item.duration_display}</span>
-                  <span
-                    >{$t("songs.trackCount", {
-                      values: { count: item.track_count },
-                    })}</span
-                  >
-                </div>
+          <div class="card group-card">
+            {#each group.items as item, idx (isSongFailure(item) ? `__failed__${item.name}` : item.name)}
+              {#if isSongFailure(item)}
                 <button
-                  class="song-delete"
-                  title={$t("songs.removeFromRegistry")}
-                  aria-label={$t("songs.removeFromRegistry")}
-                  onclick={(e) => handleDelete(e, item.name)}>&#10005;</button
+                  class="song-row song-row--failed"
+                  class:song-row--first={idx === 0}
+                  onclick={() => navigate(item.name)}
                 >
-              </div>
-            {/if}
-          {/each}
+                  <div class="song-row__main">
+                    <span class="song-row__name">{item.name}</span>
+                    <div class="song-row__badges">
+                      <span class="badge badge--trigger">ERROR</span>
+                    </div>
+                  </div>
+                  <div class="song-row__error" title={item.error}>
+                    {item.error}
+                  </div>
+                </button>
+              {:else}
+                <div
+                  class="song-row"
+                  class:song-row--first={idx === 0}
+                  onclick={() => navigate(item.name)}
+                  onkeydown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      navigate(item.name);
+                    }
+                  }}
+                  tabindex="0"
+                  role="link"
+                >
+                  <div class="song-row__main">
+                    <span class="song-row__name">{item.name}</span>
+                    <div class="song-row__badges">
+                      {#if item.has_midi}
+                        <span class="badge badge--midi">MIDI</span>
+                      {/if}
+                      {#if item.lighting_files.length > 0}
+                        <span class="badge badge--light">LIGHT</span>
+                      {/if}
+                      {#if item.midi_dmx_files.length > 0}
+                        <span class="badge badge--dmx">MIDI DMX</span>
+                      {/if}
+                    </div>
+                  </div>
+                  <div class="song-row__waveform">
+                    <Waveform peaks={waveforms[item.name] ?? []} height={24} />
+                  </div>
+                  <div class="mono song-row__meta">
+                    <span>{item.duration_display}</span>
+                    <span class="song-row__tracks"
+                      >{$t("songs.trackCount", {
+                        values: { count: item.track_count },
+                      })}</span
+                    >
+                  </div>
+                  <button
+                    class="song-row__delete"
+                    title={$t("songs.removeFromRegistry")}
+                    aria-label={$t("songs.removeFromRegistry")}
+                    onclick={(e) => handleDelete(e, item.name)}>×</button
+                  >
+                  <span class="song-row__chevron" aria-hidden="true">
+                    <svg
+                      width="14"
+                      height="14"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.7"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"><path d="M9 6l6 6-6 6" /></svg
+                    >
+                  </span>
+                </div>
+              {/if}
+            {/each}
+          </div>
         {/if}
       {/each}
     </div>
@@ -331,16 +366,6 @@
 {/if}
 
 <style>
-  .header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 16px;
-  }
-  .header h2 {
-    font-size: 18px;
-    font-weight: 600;
-  }
   .header-actions {
     display: flex;
     gap: 8px;
@@ -348,213 +373,218 @@
   .status {
     text-align: center;
     padding: 48px 16px;
-    color: var(--text-muted);
+    color: var(--nc-fg-2);
     font-size: 15px;
   }
   .status.error {
-    color: var(--red);
+    color: var(--nc-error);
+  }
+
+  .search-card {
+    margin-bottom: 16px;
+    padding: 14px 16px;
   }
   .search-bar {
     display: flex;
     align-items: center;
-    gap: 8px;
-    margin-bottom: 12px;
+    gap: 10px;
+  }
+  .search-icon {
+    display: inline-flex;
+    color: var(--nc-fg-3);
   }
   .search-input {
     flex: 1;
-    padding: 6px 10px;
+    padding: 8px 10px;
     font-size: 14px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--bg);
-    color: var(--text);
-    outline: none;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--nc-fg-1);
+  }
+  .search-input::-webkit-search-cancel-button {
+    display: none;
   }
   .search-input:focus {
-    border-color: var(--accent);
+    outline: none;
+    border-color: transparent;
+    box-shadow: none;
   }
   .search-clear {
     background: none;
     border: none;
-    color: var(--text-muted);
+    color: var(--nc-fg-3);
     cursor: pointer;
-    font-size: 15px;
-    padding: 4px;
+    font-size: 18px;
+    padding: 0 4px;
     line-height: 1;
   }
   .search-clear:hover {
-    color: var(--text);
+    color: var(--nc-fg-1);
   }
   .search-count {
-    font-size: 13px;
-    color: var(--text-muted);
+    color: var(--nc-fg-3);
     white-space: nowrap;
   }
+
   .song-list {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 12px;
+  }
+  .group-card {
+    padding: 0;
+    overflow: hidden;
   }
   .group-header {
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 6px 10px;
-    margin-top: 8px;
+    gap: 8px;
+    padding: 8px 4px 0;
+    margin-top: 6px;
     background: none;
     border: none;
     cursor: pointer;
     font: inherit;
-    color: var(--text-muted);
-  }
-  .group-header:first-child {
-    margin-top: 0;
+    color: var(--nc-fg-3);
   }
   .group-header:hover {
-    color: var(--text);
+    color: var(--nc-fg-1);
   }
   .group-chevron {
     font-size: 11px;
-    transition: transform 0.15s;
+    transition: transform 0.15s var(--nc-ease);
     flex-shrink: 0;
   }
   .group-chevron.collapsed {
     transform: rotate(-90deg);
   }
   .group-label {
-    font-size: 13px;
-    font-weight: 600;
-    letter-spacing: 0.3px;
-    text-transform: uppercase;
+    color: var(--nc-fg-3);
   }
   .group-count {
-    font-size: 12px;
-    color: var(--text-dim);
+    color: var(--nc-fg-4);
+    font-size: 11px;
   }
-  .song-delete {
-    opacity: 0;
-    color: var(--text-dim);
-    cursor: pointer;
-    font-size: 13px;
-    padding: 2px 4px;
-    border-radius: 3px;
-    border: none;
-    background: none;
-    font: inherit;
-    transition: opacity 0.15s;
-  }
-  .song-delete:focus-visible {
-    opacity: 1;
-  }
-  .song-row:hover .song-delete {
-    opacity: 1;
-  }
-  .song-delete:hover {
-    background: rgba(239, 68, 68, 0.15);
-    color: var(--red);
-  }
+
   .song-row {
     display: grid;
-    grid-template-columns: 1fr minmax(80px, 160px) auto auto;
+    grid-template-columns: 1fr minmax(120px, 220px) auto auto auto;
     align-items: center;
-    gap: 12px;
-    padding: 8px 14px;
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
+    gap: 16px;
+    padding: 0 16px;
+    height: 56px;
+    border-top: 1px solid var(--card-border);
     cursor: pointer;
-    text-align: left;
-    width: 100%;
-    font-family: var(--sans);
-    transition:
-      background 0.15s,
-      border-color 0.15s;
+    background: transparent;
+    color: var(--nc-fg-1);
+    transition: background var(--nc-dur-fast) var(--nc-ease);
+  }
+  .song-row.song-row--first {
+    border-top: none;
   }
   .song-row:hover {
-    background: var(--bg-card-hover);
-    border-color: var(--text-dim);
+    background: var(--nc-bg-2);
   }
-  .song-main {
+  .song-row__main {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 10px;
     min-width: 0;
   }
-  .song-name {
-    font-size: 15px;
+  .song-row__name {
+    font-family: var(--nc-font-sans);
+    font-size: 14px;
     font-weight: 500;
-    color: var(--text);
+    color: var(--nc-fg-1);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .song-badges {
+  .song-row__badges {
     display: flex;
     gap: 4px;
     flex-shrink: 0;
   }
-  .badge {
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.5px;
-    padding: 2px 5px;
-    border-radius: 3px;
-    line-height: 1;
+  .song-row__waveform {
+    min-width: 0;
+    color: var(--nc-cyan-400);
   }
-  .badge.midi {
-    background: var(--blue);
-    color: #fff;
-  }
-  .badge.lighting {
-    background: var(--yellow);
-    color: #000;
-  }
-  .badge.midi-dmx {
-    background: var(--green-dim);
-    color: var(--green);
-  }
-  .badge.failed {
-    background: rgba(239, 68, 68, 0.15);
-    color: var(--red);
-  }
-  .song-row-failed {
-    border-color: rgba(239, 68, 68, 0.3);
-  }
-  .song-row-failed:hover {
-    border-color: rgba(239, 68, 68, 0.5);
-  }
-  .song-row-failed .song-name {
-    color: var(--text-muted);
-  }
-  .song-error {
+  .song-row__meta {
+    display: flex;
+    gap: 14px;
+    color: var(--nc-fg-3);
+    white-space: nowrap;
+    flex-shrink: 0;
     font-size: 12px;
-    color: var(--red);
+  }
+  .song-row__tracks {
+    color: var(--nc-fg-4);
+  }
+  .song-row__delete {
+    opacity: 0;
+    color: var(--nc-fg-3);
+    cursor: pointer;
+    font-size: 18px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    border: none;
+    background: none;
+    font: inherit;
+    line-height: 1;
+    transition:
+      opacity 0.15s,
+      background 0.15s,
+      color 0.15s;
+  }
+  .song-row__delete:focus-visible {
+    opacity: 1;
+  }
+  .song-row:hover .song-row__delete {
+    opacity: 1;
+  }
+  .song-row__delete:hover {
+    background: rgba(232, 75, 75, 0.15);
+    color: var(--nc-error);
+  }
+  .song-row__chevron {
+    display: none;
+    color: var(--nc-fg-3);
+  }
+  .song-row--failed {
+    background: rgba(232, 75, 75, 0.04);
+  }
+  .song-row--failed .song-row__name {
+    color: var(--nc-fg-2);
+  }
+  .song-row__error {
+    grid-column: 2 / -1;
+    font-family: var(--nc-font-mono);
+    font-size: 12px;
+    color: var(--nc-error);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    grid-column: 2 / -1;
   }
-  .song-waveform {
-    min-width: 0;
-  }
-  .song-meta {
-    display: flex;
-    gap: 10px;
-    font-size: 13px;
-    color: var(--text-muted);
-    white-space: nowrap;
-    flex-shrink: 0;
-  }
-  @media (max-width: 768px) {
+
+  @media (max-width: 720px) {
     .header-actions {
-      flex-direction: column;
-      gap: 4px;
+      width: 100%;
+    }
+    .header-actions .btn {
+      flex: 1;
     }
     .song-row {
       grid-template-columns: 1fr auto auto;
+      padding: 0 12px;
     }
-    .song-waveform {
+    .song-row__waveform,
+    .song-row__meta,
+    .song-row__delete {
       display: none;
+    }
+    .song-row__chevron {
+      display: inline-flex;
     }
   }
 </style>

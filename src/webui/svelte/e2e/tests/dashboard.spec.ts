@@ -62,7 +62,7 @@ test.describe("Dashboard", () => {
   });
 
   test("highlights current song in playlist", async ({ page }) => {
-    const currentSong = page.locator(".playlist-songs li.current");
+    const currentSong = page.locator(".playlist-card__row--active");
     await expect(currentSong).toBeVisible();
     await expect(currentSong).toContainText("Test Song Alpha");
   });
