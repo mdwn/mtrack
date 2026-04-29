@@ -260,7 +260,12 @@
   <div class="panel list-panel">
     <div class="panel-header">
       <h3>{$t("playlists.title")}</h3>
-      <button class="btn btn-sm" onclick={() => (showNewInput = !showNewInput)}>
+      <button
+        class="btn btn-sm"
+        disabled={$playbackStore.locked}
+        title={$playbackStore.locked ? $t("common.locked") : null}
+        onclick={() => (showNewInput = !showNewInput)}
+      >
         {showNewInput ? $t("common.cancel") : $t("playlists.new")}
       </button>
     </div>
@@ -274,8 +279,11 @@
           bind:value={newName}
           onkeydown={(e) => e.key === "Enter" && handleCreate()}
         />
-        <button class="btn btn-primary btn-sm" onclick={handleCreate}
-          >{$t("common.create")}</button
+        <button
+          class="btn btn-primary btn-sm"
+          disabled={$playbackStore.locked}
+          title={$playbackStore.locked ? $t("common.locked") : null}
+          onclick={handleCreate}>{$t("common.create")}</button
         >
       </div>
     {/if}
@@ -311,8 +319,11 @@
               {:else}
                 <button
                   class="btn-icon"
-                  title={$t("playlists.activate")}
+                  title={$playbackStore.locked
+                    ? $t("common.locked")
+                    : $t("playlists.activate")}
                   aria-label={$t("playlists.activate")}
+                  disabled={$playbackStore.locked}
                   onclick={() => handleActivate(pl.name)}
                 >
                   &#9654;
@@ -321,6 +332,7 @@
               {#if confirmDelete === pl.name}
                 <button
                   class="btn-icon danger"
+                  disabled={$playbackStore.locked}
                   onclick={() => handleDelete(pl.name)}
                 >
                   {$t("common.confirm")}
@@ -331,8 +343,11 @@
               {:else}
                 <button
                   class="btn-icon"
-                  title={$t("common.delete")}
+                  title={$playbackStore.locked
+                    ? $t("common.locked")
+                    : $t("common.delete")}
                   aria-label={$t("common.delete")}
+                  disabled={$playbackStore.locked}
                   onclick={() => (confirmDelete = pl.name)}
                 >
                   &#10005;
@@ -362,13 +377,20 @@
     {:else if detail}
       <div class="panel-header">
         <h3>{selected}</h3>
-        <button
-          class="btn btn-primary btn-sm"
-          onclick={handleSave}
-          disabled={!dirty || saving}
-        >
-          {saving ? $t("common.saving") : $t("common.save")}
-        </button>
+        <div class="panel-header__actions">
+          {#if dirty && !saving}
+            <span class="dirty-flag">{$t("common.unsaved")}</span>
+          {/if}
+          <button
+            class="btn btn-sm"
+            class:btn-primary={dirty && !$playbackStore.locked}
+            onclick={handleSave}
+            disabled={!dirty || saving || $playbackStore.locked}
+            title={$playbackStore.locked ? $t("common.locked") : null}
+          >
+            {saving ? $t("common.saving") : $t("common.save")}
+          </button>
+        </div>
       </div>
 
       <div class="song-columns">
@@ -412,8 +434,11 @@
                   <span class="song-name">{song}</span>
                   <button
                     class="btn-icon"
-                    title={$t("common.remove")}
+                    title={$playbackStore.locked
+                      ? $t("common.locked")
+                      : $t("common.remove")}
                     aria-label={$t("common.remove")}
+                    disabled={$playbackStore.locked}
                     onclick={() => removeSong(i)}
                   >
                     &#10005;
@@ -438,8 +463,11 @@
                 <span class="song-name">{song}</span>
                 <button
                   class="btn-icon"
-                  title={$t("common.add")}
+                  title={$playbackStore.locked
+                    ? $t("common.locked")
+                    : $t("common.add")}
                   aria-label={$t("common.add")}
+                  disabled={$playbackStore.locked}
                   onclick={() => addSong(song)}>+</button
                 >
               </li>
@@ -481,6 +509,19 @@
   }
   .panel-header .btn-sm {
     flex-shrink: 0;
+  }
+  .panel-header__actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .dirty-flag {
+    font-family: var(--nc-font-mono);
+    font-size: 12px;
+    color: var(--nc-cyan-600);
+  }
+  :global(.nc--dark) .dirty-flag {
+    color: var(--nc-cyan-300);
   }
   .panel > :global(*:not(.panel-header)) {
     padding-left: 20px;

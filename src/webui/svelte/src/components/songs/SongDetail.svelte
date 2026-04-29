@@ -573,6 +573,16 @@
 
   let configDirty = $derived(editedYaml !== rawYaml);
   let anyDirty = $derived(configDirty || lightingDirty || sectionsDirty);
+
+  $effect(() => {
+    if (anyDirty) {
+      const handler = (e: BeforeUnloadEvent) => {
+        e.preventDefault();
+      };
+      window.addEventListener("beforeunload", handler);
+      return () => window.removeEventListener("beforeunload", handler);
+    }
+  });
   let midiFile = $derived(
     parsedConfig
       ? ((parsedConfig.midi_playback as { file?: string })?.file ??
@@ -804,9 +814,11 @@
           <span class="unsaved">{$t("common.unsaved")}</span>
         {/if}
         <button
-          class="btn btn-primary btn-sm"
+          class="btn btn-sm"
+          class:btn-primary={anyDirty && !$playbackStore.locked}
           onclick={save}
-          disabled={saving || !anyDirty}
+          disabled={saving || !anyDirty || $playbackStore.locked}
+          title={$playbackStore.locked ? $t("common.locked") : null}
         >
           {saving ? $t("common.saving") : $t("common.save")}
         </button>

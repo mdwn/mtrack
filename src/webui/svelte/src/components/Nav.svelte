@@ -14,8 +14,11 @@
      * -->
 <script lang="ts">
   import { wsConnected, playbackStore } from "../lib/ws/stores";
+  import { healthStore } from "../lib/ws/status";
   import { setLocked } from "../lib/api/config";
+  import { showConfirm } from "../lib/dialog.svelte";
   import { t } from "svelte-i18n";
+  import { get } from "svelte/store";
   import NavDrawer from "./NavDrawer.svelte";
   import BrandMark from "./BrandMark.svelte";
 
@@ -28,9 +31,18 @@
   let toggling = $state(false);
 
   async function toggleLock() {
+    // Unlocking during a session is the dangerous direction — confirm
+    // before letting it through. Locking is always immediate.
+    const next = !$playbackStore.locked;
+    if (!next) {
+      const ok = await showConfirm(get(t)("nav.live.unlockPrompt"), {
+        danger: true,
+      });
+      if (!ok) return;
+    }
     toggling = true;
     try {
-      await setLocked(!$playbackStore.locked);
+      await setLocked(next);
     } catch (e) {
       console.error("Failed to toggle lock:", e);
     } finally {
@@ -54,6 +66,15 @@
   function closeDrawer() {
     drawerOpen = false;
   }
+
+  let health = $derived($wsConnected ? $healthStore : ("unknown" as const));
+  let healthLabelKey = $derived.by(() => {
+    if (!$wsConnected) return "nav.connection.disconnected";
+    if (health === "ok") return "nav.health.ok";
+    if (health === "warn") return "nav.health.warn";
+    if (health === "error") return "nav.health.error";
+    return "nav.health.unknown";
+  });
 </script>
 
 <nav class="topnav">
@@ -166,24 +187,19 @@
         >
       {/if}
     </button>
-    <span
+    <a
       class="topnav__conn"
       class:topnav__conn--off={!$wsConnected}
-      title={$wsConnected
-        ? $t("nav.connection.connected")
-        : $t("nav.connection.disconnected")}
-      role="status"
-      aria-label={$wsConnected
-        ? $t("nav.connection.serverConnected")
-        : $t("nav.connection.serverDisconnected")}
+      class:topnav__conn--warn={$wsConnected && health === "warn"}
+      class:topnav__conn--error={$wsConnected && health === "error"}
+      class:topnav__conn--unknown={$wsConnected && health === "unknown"}
+      href="#/status"
+      title={$t(healthLabelKey)}
+      aria-label={$t(healthLabelKey)}
     >
       <span class="topnav__conn-dot" aria-hidden="true"></span>
-      <span class="sr-only"
-        >{$wsConnected
-          ? $t("nav.connection.connected")
-          : $t("nav.connection.disconnected")}</span
-      >
-    </span>
+      <span class="sr-only" role="status">{$t(healthLabelKey)}</span>
+    </a>
   </div>
 </nav>
 
@@ -196,6 +212,13 @@
   onClose={closeDrawer}
   onToggleLock={toggleLock}
 />
+
+{#if $playbackStore.locked}
+  <div class="live-stripe" role="status" aria-live="polite">
+    <span class="live-stripe__dot" aria-hidden="true"></span>
+    <span>{$t("nav.live.locked")}</span>
+  </div>
+{/if}
 
 {#if !$wsConnected}
   <div class="disconnect-banner" role="alert">
@@ -372,7 +395,12 @@
     cursor: not-allowed;
   }
   .topnav__conn {
-    cursor: default;
+    cursor: pointer;
+    text-decoration: none;
+    color: inherit;
+  }
+  .topnav__conn:hover {
+    background: var(--nc-bg-3);
   }
   .topnav__conn-dot {
     width: 8px;
@@ -380,6 +408,21 @@
     border-radius: 999px;
     background: var(--nc-success);
     box-shadow: 0 0 8px rgba(77, 192, 138, 0.6);
+    transition:
+      background var(--nc-dur-fast) var(--nc-ease),
+      box-shadow var(--nc-dur-fast) var(--nc-ease);
+  }
+  .topnav__conn--warn .topnav__conn-dot {
+    background: var(--nc-warn);
+    box-shadow: 0 0 8px rgba(242, 181, 68, 0.6);
+  }
+  .topnav__conn--error .topnav__conn-dot {
+    background: var(--nc-error);
+    box-shadow: 0 0 8px rgba(232, 75, 75, 0.6);
+  }
+  .topnav__conn--unknown .topnav__conn-dot {
+    background: var(--nc-fg-4);
+    box-shadow: none;
   }
   .topnav__conn--off .topnav__conn-dot {
     background: var(--nc-error);
@@ -393,6 +436,43 @@
     }
     50% {
       opacity: 0.4;
+    }
+  }
+
+  .live-stripe {
+    background: rgba(242, 181, 68, 0.18);
+    color: #8a5a13;
+    text-align: center;
+    padding: 4px 12px;
+    font-family: var(--nc-font-display);
+    font-weight: 700;
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    border-bottom: 1px solid rgba(242, 181, 68, 0.55);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+  }
+  :global(.nc--dark) .live-stripe {
+    color: var(--nc-warn);
+  }
+  .live-stripe__dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: var(--nc-warn);
+    box-shadow: 0 0 6px var(--nc-warn);
+    animation: ncPulseLive 1.6s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+  @keyframes ncPulseLive {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.45;
     }
   }
 

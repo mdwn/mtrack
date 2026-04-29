@@ -63,7 +63,7 @@ test.describe("Lock Mode", () => {
     );
   });
 
-  test("locked state prevents config save", async ({ page }) => {
+  test("locked state disables config Save button", async ({ page }) => {
     const wsId = `lock-config-${++lockTestCounter}-${Date.now()}`;
     await page.goto(`/?wsId=${wsId}#/config`);
     await expect(
@@ -86,31 +86,50 @@ test.describe("Lock Mode", () => {
       locked: true,
     });
 
-    // Navigate into a profile
+    // Navigate into a profile and dirty the form.
     await page.locator(".profile-row", { hasText: "test-host" }).click();
     await expect(page.getByRole("button", { name: "Back" })).toBeVisible();
+    await page.locator("#profile-hostname").fill("locked-hostname");
 
-    // Modify hostname
-    const hostnameInput = page.locator("#profile-hostname");
-    await hostnameInput.fill("locked-hostname");
-
-    // Try to save
-    await page.getByRole("button", { name: "Save" }).click();
-
-    // Should show lock error message
-    await expect(page.locator(".save-msg")).toContainText(/locked/i);
+    // The Save button must surface "disabled" while the player is locked,
+    // so a click can't even reach the API.
+    await expect(page.getByRole("button", { name: "Save" })).toBeDisabled();
   });
 
-  test("locked state prevents playlist save", async ({ page }) => {
+  test("locked state disables playlist Save button", async ({ page }) => {
     const wsId = `lock-playlist-${++lockTestCounter}-${Date.now()}`;
     await page.goto(`/?wsId=${wsId}#/playlists`);
 
-    // Wait for WebSocket connection to be established
     await expect(page.locator(".topnav__conn")).not.toHaveClass(
       /topnav__conn--off/,
     );
 
-    // Lock the player via WebSocket
+    // Send unlocked first so we can dirty the playlist, then lock it.
+    await sendWsMessage(page, wsId, {
+      type: "playback",
+      is_playing: false,
+      elapsed_ms: 0,
+      song_name: "Test Song Alpha",
+      song_duration_ms: 180000,
+      playlist_name: "setlist",
+      playlist_position: 0,
+      playlist_songs: ["Test Song Alpha", "Test Song Beta"],
+      tracks: [],
+      available_playlists: ["all_songs", "setlist"],
+      persisted_playlist_name: "setlist",
+      locked: false,
+    });
+    await expect(page.locator(".topnav__lock--locked")).not.toBeVisible();
+
+    await page.locator(".playlist-item", { hasText: "setlist" }).click();
+    await expect(page.locator(".song-columns")).toBeVisible();
+    const addBtn = page
+      .locator(".song-list.available li")
+      .first()
+      .locator(".btn-icon");
+    await addBtn.click();
+
+    // Now lock — the Save button should immediately become disabled.
     await sendWsMessage(page, wsId, {
       type: "playback",
       is_playing: false,
@@ -125,25 +144,37 @@ test.describe("Lock Mode", () => {
       persisted_playlist_name: "setlist",
       locked: true,
     });
-
-    // Wait for lock state to be reflected in the UI
     await expect(page.locator(".topnav__lock--locked")).toBeVisible();
 
-    // Select and modify a playlist
-    await page.locator(".playlist-item", { hasText: "setlist" }).click();
-    await expect(page.locator(".song-columns")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Save" })).toBeDisabled();
+  });
 
-    // Add a song from the available list to make the playlist dirty
-    const addBtn = page
-      .locator(".song-list.available li")
-      .first()
-      .locator(".btn-icon");
-    await addBtn.click();
+  test("LIVE-locked stripe surfaces when locked", async ({ page }) => {
+    const wsId = `lock-stripe-${++lockTestCounter}-${Date.now()}`;
+    await page.goto(`/?wsId=${wsId}#/`);
+    await sendWsMessage(page, wsId, {
+      type: "playback",
+      is_playing: false,
+      elapsed_ms: 0,
+      song_name: "Test Song Alpha",
+      song_duration_ms: 180000,
+      playlist_name: "setlist",
+      playlist_position: 0,
+      playlist_songs: ["Test Song Alpha", "Test Song Beta"],
+      tracks: [],
+      available_playlists: ["all_songs", "setlist"],
+      persisted_playlist_name: "setlist",
+      locked: true,
+    });
+    await expect(page.locator(".live-stripe")).toBeVisible();
+    await expect(page.locator(".live-stripe")).toContainText(/locked/i);
+  });
 
-    // Try to save
-    await page.getByRole("button", { name: "Save" }).click();
-
-    // Should show lock error
-    await expect(page.locator(".error-banner")).toContainText(/locked/i);
+  test("connection dot links to status page", async ({ page }) => {
+    await page.goto("/#/");
+    await expect(page.locator(".topnav__conn")).toHaveAttribute(
+      "href",
+      "#/status",
+    );
   });
 });
