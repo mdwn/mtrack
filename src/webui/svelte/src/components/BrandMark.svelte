@@ -23,7 +23,11 @@
   let { size = "md" }: Props = $props();
 </script>
 
-<span class="brand-mark" class:brand-mark--sm={size === "sm"} aria-hidden="true">
+<span
+  class="brand-mark"
+  class:brand-mark--sm={size === "sm"}
+  aria-hidden="true"
+>
   <span class="brand-mark__cell brand-mark__cell--pink"></span>
   <span class="brand-mark__cell brand-mark__cell--cyan"></span>
   <span class="brand-mark__cell"></span>

@@ -78,9 +78,7 @@
         $playbackStore.playlist_songs.length - 1,
   );
 
-  let displayName = $derived(
-    $playbackStore.song_name || $t("playback.noSong"),
-  );
+  let displayName = $derived($playbackStore.song_name || $t("playback.noSong"));
 
   let elapsed = $derived(formatMs($playbackStore.elapsed_ms));
   let total = $derived(formatMs($playbackStore.song_duration_ms));

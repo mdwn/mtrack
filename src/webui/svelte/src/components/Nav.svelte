@@ -71,8 +71,7 @@
       stroke="currentColor"
       stroke-width="1.7"
       stroke-linecap="round"
-      stroke-linejoin="round"
-      ><path d="M4 7h16M4 12h16M4 17h16" /></svg
+      stroke-linejoin="round"><path d="M4 7h16M4 12h16M4 17h16" /></svg
     >
   </button>
   <a class="topnav__brand" href="#/">

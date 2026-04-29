@@ -91,7 +91,11 @@
       <BrandMark />
       <span>mtrack</span>
     </span>
-    <button class="drawer__close" onclick={onClose} aria-label={$t("common.close")}>
+    <button
+      class="drawer__close"
+      onclick={onClose}
+      aria-label={$t("common.close")}
+    >
       <svg
         width="16"
         height="16"
@@ -100,8 +104,7 @@
         stroke="currentColor"
         stroke-width="1.7"
         stroke-linecap="round"
-        stroke-linejoin="round"
-        ><path d="M6 6l12 12M18 6L6 18" /></svg
+        stroke-linejoin="round"><path d="M6 6l12 12M18 6L6 18" /></svg
       >
     </button>
   </div>
@@ -123,8 +126,7 @@
             stroke="currentColor"
             stroke-width="1.7"
             stroke-linecap="round"
-            stroke-linejoin="round"
-            ><path d="M9 6l6 6-6 6" /></svg
+            stroke-linejoin="round"><path d="M9 6l6 6-6 6" /></svg
           >
         {/if}
       </a>

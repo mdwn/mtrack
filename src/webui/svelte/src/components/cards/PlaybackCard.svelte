@@ -222,7 +222,10 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<section class="card card--hero playback-card" aria-label={$t("playback.title")}>
+<section
+  class="card card--hero playback-card"
+  aria-label={$t("playback.title")}
+>
   <div class="playback-card__corner" aria-hidden="true">
     <span class="pixeq__cell pixeq__cell--cyan"></span>
     <span class="pixeq__cell"></span>

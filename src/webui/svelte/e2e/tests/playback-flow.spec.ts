@@ -53,7 +53,9 @@ test.describe("Playback State Transitions", () => {
   });
 
   test("initial state shows stopped", async ({ page }) => {
-    await expect(page.locator(".playback-card__state")).toContainText(/stopped/i);
+    await expect(page.locator(".playback-card__state")).toContainText(
+      /stopped/i,
+    );
     await expect(page.getByRole("button", { name: "Play" })).toBeVisible();
   });
 
@@ -82,7 +84,9 @@ test.describe("Playback State Transitions", () => {
     });
 
     // Status should change to playing
-    await expect(page.locator(".playback-card__state")).toContainText(/playing/i);
+    await expect(page.locator(".playback-card__state")).toContainText(
+      /playing/i,
+    );
     // Play button should become Pause; the dedicated Stop button becomes enabled.
     await expect(page.getByRole("button", { name: "Pause" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Stop" })).toBeEnabled();
@@ -181,7 +185,9 @@ test.describe("Playback State Transitions", () => {
       locked: false,
     });
 
-    await expect(page.locator(".playback-card__state")).toContainText(/stopped/i);
+    await expect(page.locator(".playback-card__state")).toContainText(
+      /stopped/i,
+    );
     await expect(page.getByRole("button", { name: "Play" })).toBeVisible();
   });
 

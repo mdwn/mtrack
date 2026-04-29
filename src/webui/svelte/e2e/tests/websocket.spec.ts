@@ -31,7 +31,9 @@ test.describe("WebSocket Integration", () => {
     await expect(page.locator(".playback-card__title")).toContainText(
       "Test Song Alpha",
     );
-    await expect(page.locator(".playback-card__state")).toContainText(/stopped/i);
+    await expect(page.locator(".playback-card__state")).toContainText(
+      /stopped/i,
+    );
   });
 
   test("waveform data loads from WS message", async ({ page }) => {

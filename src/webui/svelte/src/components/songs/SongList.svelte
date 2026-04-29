@@ -352,8 +352,7 @@
                       stroke="currentColor"
                       stroke-width="1.7"
                       stroke-linecap="round"
-                      stroke-linejoin="round"
-                      ><path d="M9 6l6 6-6 6" /></svg
+                      stroke-linejoin="round"><path d="M9 6l6 6-6 6" /></svg
                     >
                   </span>
                 </div>

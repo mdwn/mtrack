@@ -379,7 +379,9 @@
     {/if}
   </header>
   <div class="stage-card__viewport">
-    <div class="stage-card__caption" aria-hidden="true">{$t("stage.label")}</div>
+    <div class="stage-card__caption" aria-hidden="true">
+      {$t("stage.label")}
+    </div>
     <canvas
       bind:this={canvasEl}
       onmousedown={onMouseDown}
