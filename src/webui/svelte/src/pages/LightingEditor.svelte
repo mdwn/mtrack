@@ -675,25 +675,32 @@
 
 <style>
   .lighting-editor {
-    display: flex;
-    gap: 16px;
-    height: calc(100vh - 120px);
+    display: grid;
+    grid-template-columns: 300px 1fr;
+    gap: 24px;
+    align-items: start;
+    height: calc(100vh - 140px);
   }
   .panel {
-    border-radius: var(--radius-lg);
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: var(--nc-radius-md);
+    box-shadow: var(--nc-shadow-xs);
+    padding: 20px;
   }
   .list-panel {
-    width: 280px;
     flex-shrink: 0;
+    overflow-y: auto;
+    height: 100%;
   }
   .detail-panel {
-    flex: 1;
     display: flex;
     flex-direction: column;
     min-width: 0;
+    height: 100%;
   }
   .muted {
-    color: var(--text-muted);
+    color: var(--nc-fg-2);
     font-size: 14px;
   }
   .center {
@@ -712,6 +719,8 @@
   }
   .song-list li.selected {
     background: rgba(94, 202, 234, 0.12);
+    box-shadow: inset 3px 0 0 var(--nc-cyan-400);
+    border-radius: 8px;
   }
   .song-item {
     width: 100%;
@@ -773,30 +782,38 @@
     flex-wrap: wrap;
   }
   .detail-title {
-    font-size: 16px;
-    font-weight: 600;
+    font-family: var(--nc-font-display);
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--nc-fg-1);
   }
   .tab-btns {
     display: flex;
     gap: 0;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
     overflow: hidden;
   }
   .tab-btn {
-    background: var(--bg-input);
+    background: var(--card-bg);
     border: none;
-    color: var(--text-muted);
+    color: var(--nc-fg-2);
+    font-family: var(--nc-font-display);
+    font-weight: 600;
     font-size: 13px;
-    padding: 4px 12px;
+    padding: 6px 14px;
     cursor: pointer;
+    transition:
+      background var(--nc-dur-fast) var(--nc-ease),
+      color var(--nc-dur-fast) var(--nc-ease);
   }
   .tab-btn.active {
-    background: var(--accent);
-    color: white;
+    background: var(--nc-cyan-400);
+    color: var(--nc-ink);
   }
   .tab-btn:not(.active):hover {
-    background: rgba(255, 255, 255, 0.06);
+    background: var(--nc-bg-2);
+    color: var(--nc-fg-1);
   }
   .file-info {
     font-size: 13px;

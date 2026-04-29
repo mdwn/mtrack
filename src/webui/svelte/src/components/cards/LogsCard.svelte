@@ -45,7 +45,6 @@
   }
 
   $effect(() => {
-    // Re-run whenever filteredLogs changes
     void filteredLogs;
     if (autoScroll && container) {
       tick().then(() => {
@@ -55,14 +54,17 @@
   });
 </script>
 
-<div class="card card-full">
-  <div class="card-header">
-    <span class="card-title">{$t("logs.title")}</span>
-    <div class="log-level-filters">
+<section class="card logs-card">
+  <header class="logs-card__head">
+    <div>
+      <div class="overline">{$t("logs.title")}</div>
+      <div class="logs-card__title">Streaming events</div>
+    </div>
+    <div class="logs-card__filters">
       {#each ALL_LEVELS as level (level)}
         <button
-          class="log-level-pill level-{level}"
-          class:active={enabledLevels.has(level)}
+          class="logs-card__pill logs-card__pill--{level}"
+          class:logs-card__pill--active={enabledLevels.has(level)}
           onclick={() => toggleLevel(level)}
           aria-pressed={enabledLevels.has(level)}
         >
@@ -70,123 +72,159 @@
         </button>
       {/each}
     </div>
-  </div>
+  </header>
   <div
-    class="log-container"
+    class="logs-card__feed"
     bind:this={container}
     onscroll={handleScroll}
     role="log"
     aria-label={$t("logs.title")}
   >
     {#each filteredLogs as line, i (i)}
-      <div class="log-line level-{line.level}">
-        <span class="log-level">{line.level}</span>
-        <span class="log-target">{line.target}</span>:
-        <span class="log-message">{line.message}</span>
+      <div class="logs-card__line logs-card__line--{line.level}">
+        <span class="logs-card__lvl">{line.level}</span>
+        <span class="logs-card__target">{line.target}</span>
+        <span class="logs-card__msg">{line.message}</span>
       </div>
     {/each}
   </div>
-</div>
+</section>
 
 <style>
-  .log-level-filters {
+  .logs-card {
+    padding: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  .logs-card__head {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    padding: 16px 20px;
+    gap: 12px;
+    border-bottom: 1px solid var(--card-border);
+    flex-wrap: wrap;
+  }
+  .logs-card__title {
+    font-family: var(--nc-font-display);
+    font-weight: 700;
+    font-size: 16px;
+    margin-top: 4px;
+    color: var(--nc-fg-1);
+  }
+  .logs-card__filters {
     display: flex;
     gap: 4px;
   }
-  .log-level-pill {
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.3px;
-    padding: 2px 6px;
-    border-radius: 4px;
-    border: 1px solid var(--border);
-    background: var(--bg-input);
-    color: var(--text-dim);
+  .logs-card__pill {
+    font-family: var(--nc-font-sans);
+    font-weight: 700;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    padding: 5px 9px;
+    border-radius: 999px;
+    border: 1px solid var(--card-border);
+    background: var(--nc-bg-2);
+    color: var(--nc-fg-3);
     cursor: pointer;
     transition:
-      background 0.15s,
-      color 0.15s,
-      border-color 0.15s;
+      background var(--nc-dur-fast) var(--nc-ease),
+      color var(--nc-dur-fast) var(--nc-ease),
+      border-color var(--nc-dur-fast) var(--nc-ease);
   }
-  .log-level-pill:hover {
-    border-color: var(--text-dim);
+  .logs-card__pill:hover {
+    border-color: var(--nc-fg-3);
+    color: var(--nc-fg-2);
   }
-  .log-level-pill.active.level-ERROR {
-    background: var(--red-subtle);
-    color: var(--red);
-    border-color: var(--red);
+  .logs-card__pill--active.logs-card__pill--ERROR {
+    background: rgba(232, 75, 75, 0.15);
+    color: var(--nc-pink-600);
+    border-color: rgba(232, 75, 75, 0.45);
   }
-  .log-level-pill.active.level-WARN {
-    background: var(--yellow-subtle);
-    color: var(--yellow);
-    border-color: var(--yellow);
+  :global(.nc--dark) .logs-card__pill--active.logs-card__pill--ERROR {
+    color: var(--nc-pink-300);
   }
-  .log-level-pill.active.level-INFO {
-    background: var(--blue-subtle);
-    color: var(--blue);
-    border-color: var(--blue);
+  .logs-card__pill--active.logs-card__pill--WARN {
+    background: rgba(242, 181, 68, 0.18);
+    color: #b47a1a;
+    border-color: rgba(242, 181, 68, 0.45);
   }
-  .log-level-pill.active.level-DEBUG {
-    background: rgba(255, 255, 255, 0.06);
-    color: var(--text-muted);
-    border-color: var(--text-muted);
+  :global(.nc--dark) .logs-card__pill--active.logs-card__pill--WARN {
+    color: var(--nc-warn);
   }
-  .log-level-pill.active.level-TRACE {
-    background: rgba(255, 255, 255, 0.04);
-    color: var(--text-dim);
-    border-color: var(--text-dim);
+  .logs-card__pill--active.logs-card__pill--INFO {
+    background: rgba(94, 202, 234, 0.18);
+    color: var(--nc-cyan-600);
+    border-color: rgba(94, 202, 234, 0.45);
   }
-  .log-container {
-    font-family: var(--mono);
+  :global(.nc--dark) .logs-card__pill--active.logs-card__pill--INFO {
+    color: var(--nc-cyan-300);
+  }
+  .logs-card__pill--active.logs-card__pill--DEBUG {
+    background: var(--nc-bg-3);
+    color: var(--nc-fg-2);
+    border-color: var(--nc-fg-4);
+  }
+  .logs-card__pill--active.logs-card__pill--TRACE {
+    background: var(--nc-bg-3);
+    color: var(--nc-fg-3);
+    border-color: var(--nc-fg-4);
+    opacity: 0.85;
+  }
+
+  .logs-card__feed {
+    font-family: var(--nc-font-mono);
     font-size: 12px;
-    line-height: 1.6;
-    max-height: 300px;
+    line-height: 1.55;
+    flex: 1;
     overflow-y: auto;
-    background: var(--bg-input);
-    border-radius: var(--radius);
-    padding: 8px 12px;
+    max-height: 320px;
+    padding: 12px 20px;
+    background: var(--inset-bg);
   }
-  .log-line {
-    white-space: pre-wrap;
-    word-break: break-all;
-    padding-left: 8px;
-    border-left: 3px solid transparent;
+  .logs-card__line {
+    display: grid;
+    grid-template-columns: 56px max-content 1fr;
+    gap: 10px;
+    padding: 1px 0;
+    word-break: break-word;
   }
-  .log-line.level-ERROR {
-    background: rgba(239, 68, 68, 0.1);
-    border-left: 3px solid var(--red);
+  .logs-card__lvl {
+    font-weight: 700;
   }
-  .log-line.level-ERROR .log-level {
-    color: var(--red);
-    font-weight: bold;
+  .logs-card__line--ERROR .logs-card__lvl {
+    color: var(--nc-pink-600);
   }
-  .log-line.level-WARN {
-    background: rgba(234, 179, 8, 0.08);
-    border-left: 3px solid var(--yellow);
+  :global(.nc--dark) .logs-card__line--ERROR .logs-card__lvl {
+    color: var(--nc-pink-300);
   }
-  .log-line.level-WARN .log-level {
-    color: var(--yellow);
+  .logs-card__line--WARN .logs-card__lvl {
+    color: #b47a1a;
   }
-  .log-line.level-INFO {
-    border-left: 3px solid var(--blue);
+  :global(.nc--dark) .logs-card__line--WARN .logs-card__lvl {
+    color: var(--nc-warn);
   }
-  .log-line.level-INFO .log-level {
-    color: var(--blue);
+  .logs-card__line--INFO .logs-card__lvl {
+    color: var(--nc-cyan-600);
   }
-  .log-line.level-DEBUG .log-level {
-    color: var(--text-dim);
+  :global(.nc--dark) .logs-card__line--INFO .logs-card__lvl {
+    color: var(--nc-cyan-300);
   }
-  .log-line.level-TRACE .log-level {
-    color: var(--text-dim);
-    opacity: 0.6;
+  .logs-card__line--DEBUG .logs-card__lvl {
+    color: var(--nc-fg-3);
   }
-  .log-line.level-TRACE {
-    opacity: 0.7;
+  .logs-card__line--TRACE .logs-card__lvl {
+    color: var(--nc-fg-4);
   }
-  .log-target {
-    color: var(--text-dim);
+  .logs-card__line--TRACE {
+    opacity: 0.75;
   }
-  .log-message {
-    color: var(--text-muted);
+  .logs-card__target {
+    color: var(--nc-fg-4);
+  }
+  .logs-card__msg {
+    color: var(--nc-fg-2);
   }
 </style>

@@ -79,7 +79,8 @@ test.describe("Navigation", () => {
 
   test("WebSocket status indicator shows connected", async () => {
     await expect(nav.statusIndicator).toBeVisible();
-    await expect(nav.statusIndicator).toHaveClass(/connected/);
+    // The "off" modifier is absent when the WebSocket is connected.
+    await expect(nav.statusIndicator).not.toHaveClass(/topnav__conn--off/);
   });
 
   test("lock toggle button is visible", async () => {

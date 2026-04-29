@@ -22,6 +22,7 @@
   import { playbackStore } from "../lib/ws/stores";
   import { effectsStore } from "../lib/ws/stores";
   import { metadataStore } from "../lib/ws/stores";
+  import { t } from "svelte-i18n";
 
   let hasPlaylist = $derived($playbackStore.playlist_songs.length > 0);
   let hasTracks = $derived($playbackStore.tracks.length > 0);
@@ -29,94 +30,69 @@
   let hasFixtures = $derived(Object.keys($metadataStore).length > 0);
 </script>
 
-<div class="dashboard-grid">
-  <PlaybackCard />
-  {#if !hasPlaylist}
-    <div class="empty-state card">
-      <svg
-        class="empty-icon"
-        width="40"
-        height="40"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.5"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-        aria-hidden="true"
-        ><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle
-          cx="18"
-          cy="16"
-          r="3"
-        /></svg
-      >
-      <p class="empty-text">No playlist loaded</p>
-      <div class="empty-actions">
-        <a href="#/playlists" class="btn btn-primary">Go to Playlists</a>
-        <a href="#/songs" class="btn">Browse Songs</a>
-      </div>
+<PlaybackCard />
+
+{#if !hasPlaylist}
+  <div class="empty-state card">
+    <svg
+      class="empty-icon"
+      width="48"
+      height="48"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.5"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      aria-hidden="true"
+      ><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle
+        cx="18"
+        cy="16"
+        r="3"
+      /></svg
+    >
+    <p class="empty-text">{$t("playlists.noPlaylists")}</p>
+    <div class="empty-actions">
+      <a href="#/playlists" class="btn btn-primary">{$t("nav.playlists")}</a>
+      <a href="#/songs" class="btn">{$t("nav.songs")}</a>
     </div>
-  {/if}
-  <div class="card-pair">
-    <PlaylistCard />
-    {#if hasTracks}
-      <div class="card-pair-follower">
-        <TracksCard />
-      </div>
-    {/if}
   </div>
-  {#if hasFixtures}
-    <StageView />
-  {/if}
-  {#if hasEffects}
-    <div class="card-pair-bottom">
-      <EffectsCard />
-      <LogsCard />
-    </div>
-  {:else}
-    <LogsCard />
+{/if}
+
+<div class="dashboard-row">
+  <PlaylistCard />
+  {#if hasTracks}
+    <TracksCard />
   {/if}
 </div>
 
+<div class="dashboard-row">
+  {#if hasFixtures}
+    <StageView />
+  {/if}
+  <LogsCard />
+</div>
+
+{#if hasEffects}
+  <EffectsCard />
+{/if}
+
 <style>
-  .dashboard-grid {
+  .dashboard-row {
     display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 16px;
+    grid-template-columns: 1.2fr 1fr;
+    gap: 24px;
+    margin-top: 24px;
   }
-  .card-pair {
-    grid-column: 1 / -1;
-    display: flex;
-    gap: 16px;
-    min-height: 200px;
-    max-height: 400px;
-  }
-  .card-pair > :global(:first-child) {
-    flex: 1;
+  .dashboard-row > :global(*) {
     min-width: 0;
-    overflow-y: auto;
   }
-  .card-pair-follower {
-    flex: 1;
-    min-width: 0;
-    overflow-y: auto;
-  }
-  .card-pair-bottom {
-    grid-column: 1 / -1;
-    display: flex;
-    gap: 16px;
-  }
-  .card-pair-bottom > :global(:first-child) {
-    min-width: 280px;
-    max-width: 400px;
-    flex: 1;
-  }
-  .card-pair-bottom > :global(:last-child) {
-    flex: 1;
-    min-width: 0;
+  /* If a row only has one child, let it span the full width. */
+  .dashboard-row:has(> :global(*:only-child)) {
+    grid-template-columns: 1fr;
   }
   .empty-state {
-    grid-column: 1 / -1;
+    margin-top: 24px;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -125,32 +101,23 @@
     text-align: center;
   }
   .empty-icon {
-    color: var(--text-dim);
-    opacity: 0.5;
+    color: var(--nc-fg-4);
+    opacity: 0.6;
   }
   .empty-text {
-    font-size: var(--text-base);
-    color: var(--text-dim);
+    font-family: var(--nc-font-display);
+    font-weight: 700;
+    font-size: 18px;
+    color: var(--nc-fg-2);
   }
   .empty-actions {
     display: flex;
     gap: 8px;
   }
-  @media (max-width: 768px) {
-    .dashboard-grid {
+  @media (max-width: 900px) {
+    .dashboard-row {
       grid-template-columns: 1fr;
-    }
-    .card-pair {
-      flex-direction: column;
-    }
-    .card-pair-follower {
-      min-height: 200px;
-    }
-    .card-pair-bottom {
-      flex-direction: column;
-    }
-    .card-pair-bottom > :global(:first-child) {
-      width: 100%;
+      gap: 16px;
     }
   }
 </style>

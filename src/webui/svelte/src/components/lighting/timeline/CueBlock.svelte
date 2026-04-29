@@ -374,9 +374,9 @@
     position: absolute;
     top: 3px;
     bottom: 3px;
-    border-radius: 4px;
-    background: rgba(255, 255, 255, 0.08);
-    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 6px;
+    background: rgba(94, 202, 234, 0.18);
+    border: 1px solid rgba(94, 202, 234, 0.4);
     cursor: grab;
     overflow: hidden;
     display: flex;
@@ -384,12 +384,12 @@
     z-index: 1;
   }
   .cue-block:hover {
-    background: rgba(255, 255, 255, 0.13);
-    border-color: rgba(255, 255, 255, 0.25);
+    background: rgba(94, 202, 234, 0.28);
+    border-color: rgba(94, 202, 234, 0.55);
   }
   .cue-block.selected {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 1px var(--accent);
+    border-color: var(--nc-cyan-500);
+    box-shadow: 0 0 0 1px var(--nc-cyan-500);
     z-index: 2;
   }
   .cue-block.from-sequence {

@@ -26,7 +26,9 @@ test.describe("Song Detail - Tracks Tab", () => {
   });
 
   test("shows track rows from song config", async ({ page }) => {
-    const rows = page.locator(".track-row");
+    // The song-detail Tracks tab uses TrackEditor's .track-row markup,
+    // distinct from the Dashboard's .tracks-card__row.
+    const rows = page.locator(".track-editor .track-row");
     await expect(rows.first()).toBeVisible();
   });
 

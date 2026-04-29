@@ -14,6 +14,7 @@
      * -->
 <script lang="ts">
   import Nav from "./components/Nav.svelte";
+  import MiniPlayer from "./components/MiniPlayer.svelte";
   import Dashboard from "./pages/Dashboard.svelte";
   import ConfigEditor from "./pages/ConfigEditor.svelte";
   import SongBrowser from "./pages/SongBrowser.svelte";
@@ -65,7 +66,7 @@
     const playing = $playbackStore.is_playing;
 
     if (playing && song) {
-      document.title = `\u25B6 ${song} - ${base}`;
+      document.title = `▶ ${song} - ${base}`;
     } else {
       document.title = pageTitle ? `${pageTitle} - ${base}` : base;
     }
@@ -90,17 +91,18 @@
   {/if}
 </main>
 
+<MiniPlayer />
 <ConfirmDialog />
 
 <style>
   .app-main {
-    max-width: 1600px;
+    max-width: 1280px;
     margin: 0 auto;
-    padding: 24px 20px;
+    padding: 32px 24px 80px;
   }
-  @media (max-width: 600px) {
+  @media (max-width: 720px) {
     .app-main {
-      padding: 12px 10px;
+      padding: 18px 14px 110px;
     }
   }
 </style>

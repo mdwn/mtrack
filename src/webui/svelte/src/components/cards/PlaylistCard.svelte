@@ -35,86 +35,171 @@
 
   let playlists = $derived($playbackStore.available_playlists);
   let currentPlaylist = $derived($playbackStore.playlist_name);
+  let songCount = $derived($playbackStore.playlist_songs.length);
 </script>
 
-<div class="card">
-  <div class="card-header">
-    <span class="card-title">{$t("playlist.title")}</span>
+<section class="card playlist-card">
+  <header class="playlist-card__head">
+    <div>
+      <div class="overline">{$t("playlist.title")}</div>
+      <div class="playlist-card__title">
+        {currentPlaylist || $t("common.default")}
+        <span class="mono playlist-card__count"
+          >· {$t("playlists.songs", { values: { count: songCount } })}</span
+        >
+      </div>
+    </div>
     {#if playlists.length > 0}
       <select
-        class="playlist-select"
+        class="playlist-card__select"
         value={currentPlaylist}
         onchange={(e) => switchPlaylist(e.currentTarget.value)}
+        aria-label={$t("playlist.title")}
       >
         {#each playlists as name (name)}
           <option value={name}>{name}</option>
         {/each}
       </select>
     {/if}
-  </div>
-  <ul class="playlist-songs">
+  </header>
+  <ol class="playlist-card__list">
     {#each $playbackStore.playlist_songs as song, i (`${i}:${song}`)}
-      <li class:current={i === $playbackStore.playlist_position}>
-        <button class="playlist-song-btn" onclick={() => jumpToSong(song)}
-          >{song}</button
+      <li>
+        <button
+          class="playlist-card__row"
+          class:playlist-card__row--active={i ===
+            $playbackStore.playlist_position}
+          onclick={() => jumpToSong(song)}
         >
+          <span class="mono playlist-card__num"
+            >{String(i + 1).padStart(2, "0")}</span
+          >
+          <span class="playlist-card__name">{song}</span>
+          {#if i === $playbackStore.playlist_position && $playbackStore.is_playing}
+            <span
+              class="playlist-card__playing-dot"
+              aria-label={$t("playback.playing")}
+            ></span>
+          {/if}
+        </button>
       </li>
     {/each}
-  </ul>
-</div>
+  </ol>
+</section>
 
 <style>
-  .playlist-select {
+  .playlist-card {
+    padding: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  .playlist-card__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 20px;
+    gap: 12px;
+    border-bottom: 1px solid var(--card-border);
+  }
+  .playlist-card__title {
+    font-family: var(--nc-font-display);
+    font-weight: 700;
+    font-size: 16px;
+    margin-top: 4px;
+    color: var(--nc-fg-1);
+  }
+  .playlist-card__count {
+    color: var(--nc-fg-3);
+    font-weight: 400;
     font-size: 13px;
-    padding: 2px 6px;
-    border-radius: 4px;
-    border: 1px solid var(--border);
-    background: var(--bg-input);
-    color: var(--text);
+  }
+  .playlist-card__select {
+    width: 160px;
+    padding: 6px 10px;
+    font-size: 13px;
+    border-radius: 8px;
+    border: 1px solid var(--card-border);
+    background: var(--card-bg);
+    color: var(--nc-fg-1);
     cursor: pointer;
   }
-  .playlist-songs {
+  .playlist-card__list {
     list-style: none;
-    max-height: 200px;
+    margin: 0;
+    padding: 0;
     overflow-y: auto;
+    max-height: 360px;
+    flex: 1;
   }
-  .playlist-songs li {
-    border-radius: 4px;
-    transition:
-      background 0.15s,
-      color 0.15s;
+  .playlist-card__list li {
+    border-bottom: 1px solid var(--card-border);
   }
-  .playlist-song-btn {
-    background: none;
-    border: none;
-    font: inherit;
-    color: var(--text-muted);
-    text-align: left;
-    display: block;
+  .playlist-card__list li:last-child {
+    border-bottom: none;
+  }
+  .playlist-card__row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
     width: 100%;
-    padding: 4px 8px;
-    font-size: var(--text-sm);
+    padding: 0 20px;
+    height: 48px;
+    border: none;
+    background: transparent;
+    color: var(--nc-fg-1);
+    text-align: left;
     cursor: pointer;
-    box-sizing: border-box;
-    border-radius: 4px;
+    font-family: var(--nc-font-sans);
+    transition: background var(--nc-dur-fast) var(--nc-ease);
   }
-  .playlist-songs li:hover {
-    background: rgba(255, 255, 255, 0.05);
+  .playlist-card__row:hover {
+    background: var(--nc-bg-2);
   }
-  .playlist-songs li:hover .playlist-song-btn {
-    color: var(--text);
+  .playlist-card__row--active {
+    background: rgba(94, 202, 234, 0.12);
+    box-shadow: inset 3px 0 0 var(--nc-cyan-400);
   }
-  .playlist-songs li.current {
-    background: var(--accent-subtle);
-    color: var(--text);
+  .playlist-card__row--active:hover {
+    background: rgba(94, 202, 234, 0.18);
+  }
+  .playlist-card__num {
+    color: var(--nc-fg-3);
+    min-width: 26px;
+    font-size: 12px;
+  }
+  .playlist-card__row--active .playlist-card__num {
+    color: var(--nc-cyan-600);
+  }
+  :global(.nc--dark) .playlist-card__row--active .playlist-card__num {
+    color: var(--nc-cyan-300);
+  }
+  .playlist-card__name {
+    flex: 1;
     font-weight: 500;
-    border-left: 3px solid var(--accent);
-    padding-left: 0;
+    font-size: 14px;
+    line-height: 1.2;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
-  .playlist-songs li.current .playlist-song-btn {
-    padding-left: 5px;
+  .playlist-card__playing-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: var(--nc-pink-400);
+    box-shadow: 0 0 8px rgba(239, 96, 163, 0.7);
+    flex: 0 0 auto;
+    animation: ncPulsePink 1.6s cubic-bezier(0.4, 0, 0.6, 1) infinite;
   }
-  .playlist-songs li.current:hover {
-    background: var(--accent-subtle-hover);
+  @keyframes ncPulsePink {
+    0%,
+    100% {
+      box-shadow: 0 0 0 0 rgba(239, 96, 163, 0.6);
+    }
+    50% {
+      box-shadow: 0 0 0 6px rgba(239, 96, 163, 0);
+    }
   }
 </style>

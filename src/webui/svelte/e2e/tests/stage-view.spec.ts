@@ -18,7 +18,7 @@ test.describe("Stage View", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/#/");
     // Wait for WS to deliver metadata with fixtures
-    await expect(page.locator(".playback-song")).toContainText(
+    await expect(page.locator(".playback-card__title")).toContainText(
       "Test Song Alpha",
     );
   });
@@ -29,6 +29,6 @@ test.describe("Stage View", () => {
 
   test("stage viewport contains canvas", async ({ page }) => {
     // Just verify the stage viewport container exists
-    await expect(page.locator(".stage-viewport")).toBeVisible();
+    await expect(page.locator(".stage-card__viewport")).toBeVisible();
   });
 });

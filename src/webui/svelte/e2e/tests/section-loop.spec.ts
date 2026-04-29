@@ -70,29 +70,29 @@ test.describe("Section Loop Controls", () => {
     });
 
     await page.goto(`/?wsId=${wsId}#/`);
-    await expect(page.locator(".playback-song")).toContainText(
+    await expect(page.locator(".playback-card__title")).toContainText(
       "Test Song Alpha",
     );
   });
 
-  test("clicking section button sends LoopSection gRPC call", async ({
+  test("clicking section chip sends LoopSection gRPC call", async ({
     page,
   }) => {
     // Put into playing state with sections.
     await sendWsMessage(page, wsId, playbackWithSections(wsId));
-    const sectionsBtn = page.getByRole("button", { name: "Sections" });
-    await expect(sectionsBtn).toBeVisible();
 
-    // Open dropdown and click verse section button.
-    await sectionsBtn.click();
+    // Section chips render inline — no toggle button to open first.
+    const verseChip = page.locator(".section-chip", { hasText: "verse" });
+    await expect(verseChip).toBeVisible();
+
     const requestPromise = page.waitForRequest((req) =>
       req.url().includes("LoopSection"),
     );
-    await page.locator(".section-menu-item", { hasText: "verse" }).click();
+    await verseChip.click();
     await requestPromise;
   });
 
-  test("clicking Stop Loop sends StopSectionLoop gRPC call", async ({
+  test("clicking the active section chip sends StopSectionLoop gRPC call", async ({
     page,
   }) => {
     // Put into playing state with an active section loop.
@@ -103,21 +103,18 @@ test.describe("Section Loop Controls", () => {
         active_section: { name: "verse", start_ms: 0, end_ms: 8000 },
       }),
     );
-    const loopBtn = page.locator(".btn-loop-active");
-    await expect(loopBtn).toBeVisible();
-
-    // Open dropdown and click Stop Loop.
-    await loopBtn.click();
-    await expect(page.getByRole("button", { name: "Stop Loop" })).toBeVisible();
+    const activeChip = page.locator(".section-chip.badge--active");
+    await expect(activeChip).toBeVisible();
+    await expect(activeChip).toContainText("verse");
 
     const requestPromise = page.waitForRequest((req) =>
       req.url().includes("StopSectionLoop"),
     );
-    await page.getByRole("button", { name: "Stop Loop" }).click();
+    await activeChip.click();
     await requestPromise;
   });
 
-  test("sections button reverts after stopping a loop", async ({ page }) => {
+  test("active chip clears after section loop stops", async ({ page }) => {
     // Start with active loop.
     await sendWsMessage(
       page,
@@ -126,7 +123,7 @@ test.describe("Section Loop Controls", () => {
         active_section: { name: "verse", start_ms: 0, end_ms: 8000 },
       }),
     );
-    await expect(page.locator(".btn-loop-active")).toBeVisible();
+    await expect(page.locator(".section-chip.badge--active")).toBeVisible();
 
     // Simulate stop — server clears active section.
     await sendWsMessage(
@@ -134,13 +131,12 @@ test.describe("Section Loop Controls", () => {
       wsId,
       playbackWithSections(wsId, { active_section: null }),
     );
-    await expect(page.locator(".btn-loop-active")).not.toBeVisible();
-    await expect(page.getByRole("button", { name: "Sections" })).toBeVisible({
-      timeout: 10000,
-    });
+    await expect(page.locator(".section-chip.badge--active")).not.toBeVisible();
+    // Both regular section chips should still be present.
+    await expect(page.locator(".section-chip")).toHaveCount(2);
   });
 
-  test("active section shows name", async ({ page }) => {
+  test("active section chip shows section name", async ({ page }) => {
     await sendWsMessage(
       page,
       wsId,
@@ -148,11 +144,11 @@ test.describe("Section Loop Controls", () => {
         active_section: { name: "chorus", start_ms: 8000, end_ms: 16000 },
       }),
     );
-    const loopBtn = page.locator(".btn-loop-active");
-    await expect(loopBtn).toContainText("chorus");
+    const activeChip = page.locator(".section-chip.badge--active");
+    await expect(activeChip).toContainText("chorus");
   });
 
-  test("sections button hidden when song has no sections", async ({ page }) => {
+  test("section chips hidden when song has no sections", async ({ page }) => {
     await sendWsMessage(page, wsId, {
       type: "playback",
       is_playing: true,
@@ -170,8 +166,6 @@ test.describe("Section Loop Controls", () => {
       active_section: null,
     });
 
-    await expect(
-      page.getByRole("button", { name: "Sections" }),
-    ).not.toBeVisible();
+    await expect(page.locator(".section-chip")).toHaveCount(0);
   });
 });

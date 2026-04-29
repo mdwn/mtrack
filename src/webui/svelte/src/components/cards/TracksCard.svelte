@@ -18,9 +18,8 @@
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
 
-  const WAVEFORM_HEIGHT = 32;
+  const WAVEFORM_HEIGHT = 28;
 
-  // Map of track name -> canvas element, managed via bind:this
   let canvasRefs: Record<string, HTMLCanvasElement> = $state({});
 
   function formatChannels(track: TrackInfo): string {
@@ -28,17 +27,19 @@
     return "ch " + track.output_channels.join(", ");
   }
 
-  // Draw waveforms whenever reactive deps change
+  function isUnmapped(track: TrackInfo): boolean {
+    return track.output_channels.length === 0;
+  }
+
   $effect(() => {
-    // Read all reactive deps here
     const currentTracks = $playbackStore.tracks;
     const currentWaveform = $waveformStore;
     const currentSongName = $playbackStore.song_name;
     const currentElapsed = $playbackStore.elapsed_ms;
     const currentDuration = $playbackStore.song_duration_ms;
     const refs = canvasRefs;
+    const isDark = document.documentElement.classList.contains("nc--dark");
 
-    // Use rAF for a single paint
     const id = requestAnimationFrame(() => {
       for (const track of currentTracks) {
         const canvas = refs[track.name];
@@ -51,7 +52,6 @@
         if (w === 0) continue;
         const h = WAVEFORM_HEIGHT;
 
-        // Set canvas resolution to match display size
         if (canvas.width !== w || canvas.height !== h) {
           canvas.width = w;
           canvas.height = h;
@@ -59,18 +59,15 @@
 
         ctx.clearRect(0, 0, w, h);
 
-        // Find peaks for this track
         const waveformTrack =
           currentWaveform.song_name === currentSongName
             ? currentWaveform.tracks.find((t) => t.name === track.name)
             : undefined;
 
         if (waveformTrack && waveformTrack.peaks.length > 0) {
-          // Draw waveform bars
           const peaks = waveformTrack.peaks;
           const barWidth = w / peaks.length;
-
-          ctx.fillStyle = "rgba(94, 202, 234, 0.35)";
+          ctx.fillStyle = "rgba(94, 202, 234, 0.85)";
           for (let i = 0; i < peaks.length; i++) {
             const barHeight = peaks[i] * h;
             const x = i * barWidth;
@@ -78,19 +75,19 @@
             ctx.fillRect(x, y, Math.max(barWidth - 0.5, 1), barHeight);
           }
         } else {
-          // No waveform data yet — draw a flat line
-          ctx.strokeStyle = "rgba(94, 202, 234, 0.2)";
+          ctx.strokeStyle = "rgba(94, 202, 234, 0.25)";
           ctx.beginPath();
           ctx.moveTo(0, h / 2);
           ctx.lineTo(w, h / 2);
           ctx.stroke();
         }
 
-        // Draw playhead
         if (currentDuration > 0) {
           const progress = currentElapsed / currentDuration;
           const x = Math.round(progress * w);
-          ctx.strokeStyle = "rgba(228, 228, 231, 0.7)";
+          ctx.strokeStyle = isDark
+            ? "rgba(244, 241, 240, 0.7)"
+            : "rgba(35, 31, 32, 0.7)";
           ctx.lineWidth = 1;
           ctx.beginPath();
           ctx.moveTo(x, 0);
@@ -104,28 +101,36 @@
   });
 </script>
 
-<div class="card tracks-card">
-  <div class="card-header">
-    <span class="card-title">{$t("tracks.title")}</span>
-    <span class="track-count"
-      >{$t("tracks.count", {
-        values: { count: $playbackStore.tracks.length },
-      })}</span
-    >
-  </div>
+<section class="card tracks-card">
+  <header class="tracks-card__head">
+    <div>
+      <div class="overline">{$t("tracks.title")}</div>
+      <div class="tracks-card__title">
+        {$t("tracks.count", {
+          values: { count: $playbackStore.tracks.length },
+        })}
+      </div>
+    </div>
+  </header>
+
   {#if $playbackStore.tracks.length === 0}
-    <div class="empty">{$t("tracks.noTracks")}</div>
+    <div class="tracks-card__empty">{$t("tracks.noTracks")}</div>
   {:else}
-    <div class="tracks-list">
+    <div class="tracks-card__list">
       {#each $playbackStore.tracks as track, i (`${i}:${track.name}`)}
-        <div class="track-row">
-          <div class="track-info">
-            <span class="track-name">{track.name}</span>
-            <span class="track-channels">{formatChannels(track)}</span>
+        <div class="tracks-card__row">
+          <div class="tracks-card__info">
+            <div class="tracks-card__name">{track.name}</div>
+            <div
+              class="mono tracks-card__channels"
+              class:tracks-card__channels--unmapped={isUnmapped(track)}
+            >
+              {formatChannels(track)}
+            </div>
           </div>
           <!-- svelte-ignore a11y_no_interactive_element_to_noninteractive_role -->
           <canvas
-            class="track-waveform"
+            class="tracks-card__waveform"
             bind:this={canvasRefs[track.name]}
             height={WAVEFORM_HEIGHT}
             role="img"
@@ -135,60 +140,76 @@
       {/each}
     </div>
   {/if}
-</div>
+</section>
 
 <style>
   .tracks-card {
-    display: flex;
-    flex-direction: column;
+    padding: 0;
     overflow: hidden;
-  }
-  .track-count {
-    font-size: 12px;
-    color: var(--text-dim);
-  }
-  .empty {
-    font-size: 13px;
-    color: var(--text-dim);
-    padding: 8px 0;
-  }
-  .tracks-list {
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    flex: 1;
     min-height: 0;
-    overflow-y: auto;
   }
-  .track-row {
+  .tracks-card__head {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--card-border);
+  }
+  .tracks-card__title {
+    font-family: var(--nc-font-display);
+    font-weight: 700;
+    font-size: 16px;
+    margin-top: 4px;
+    color: var(--nc-fg-1);
+  }
+  .tracks-card__empty {
+    padding: 24px;
+    font-size: 13px;
+    color: var(--nc-fg-3);
+    text-align: center;
+  }
+  .tracks-card__list {
+    flex: 1;
+    overflow-y: auto;
+    max-height: 360px;
+  }
+  .tracks-card__row {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 4px 8px;
-    border-radius: 4px;
-    background: rgba(255, 255, 255, 0.02);
+    gap: 12px;
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--card-border);
   }
-  .track-info {
-    flex: 0 0 140px;
+  .tracks-card__row:last-child {
+    border-bottom: none;
+  }
+  .tracks-card__info {
+    flex: 0 0 132px;
     min-width: 0;
-    display: flex;
-    flex-direction: column;
   }
-  .track-name {
-    font-family: var(--mono);
-    font-size: 12px;
-    color: var(--text);
+  .tracks-card__name {
+    font-family: var(--nc-font-sans);
+    font-weight: 500;
+    font-size: 13px;
+    line-height: 1.1;
+    color: var(--nc-fg-1);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .track-channels {
+  .tracks-card__channels {
+    color: var(--nc-fg-3);
     font-size: 11px;
-    color: var(--text-dim);
+    margin-top: 4px;
   }
-  .track-waveform {
+  .tracks-card__channels--unmapped {
+    color: var(--nc-pink-500);
+  }
+  :global(.nc--dark) .tracks-card__channels--unmapped {
+    color: var(--nc-pink-300);
+  }
+  .tracks-card__waveform {
     flex: 1;
-    height: 32px;
+    height: 28px;
     min-width: 0;
   }
 </style>

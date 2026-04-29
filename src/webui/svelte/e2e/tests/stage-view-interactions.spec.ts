@@ -32,17 +32,17 @@ test.describe("Stage View Interactions", () => {
   test.beforeEach(async ({ page }) => {
     wsId = `stage-${++testCounter}-${Date.now()}`;
     await page.goto(`/?wsId=${wsId}#/`);
-    await expect(page.locator(".playback-song")).toContainText(
+    await expect(page.locator(".playback-card__title")).toContainText(
       "Test Song Alpha",
     );
   });
 
   test("stage viewport contains a canvas element", async ({ page }) => {
-    await expect(page.locator(".stage-viewport canvas")).toBeVisible();
+    await expect(page.locator(".stage-card__viewport canvas")).toBeVisible();
   });
 
   test("canvas has non-zero dimensions", async ({ page }) => {
-    const canvas = page.locator(".stage-viewport canvas");
+    const canvas = page.locator(".stage-card__viewport canvas");
     await expect(canvas).toBeVisible();
     const box = await canvas.boundingBox();
     expect(box).not.toBeNull();
@@ -51,13 +51,13 @@ test.describe("Stage View Interactions", () => {
   });
 
   test("stage card title is visible", async ({ page }) => {
-    await expect(page.locator(".stage-card .card-title")).toContainText(
+    await expect(page.locator(".stage-card .stage-card__title")).toContainText(
       "Stage",
     );
   });
 
   test("fixture state update triggers canvas re-render", async ({ page }) => {
-    const canvas = page.locator(".stage-viewport canvas");
+    const canvas = page.locator(".stage-card__viewport canvas");
     await expect(canvas).toBeVisible();
 
     // Send updated fixture state with new colors.
@@ -89,7 +89,7 @@ test.describe("Stage View Interactions", () => {
   test("metadata update with new fixtures keeps canvas visible", async ({
     page,
   }) => {
-    const canvas = page.locator(".stage-viewport canvas");
+    const canvas = page.locator(".stage-card__viewport canvas");
     await expect(canvas).toBeVisible();
 
     // Send metadata with additional fixtures.

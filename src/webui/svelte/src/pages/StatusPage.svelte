@@ -125,12 +125,14 @@
 </script>
 
 <div class="status-page">
-  <div class="status-header">
-    <h2>{$t("status.title")}</h2>
+  <div class="page__head">
+    <div>
+      <h1 class="page__title">{$t("status.title")}</h1>
+      <p class="page__subtitle">
+        {$t("status.lastUpdated", { values: { seconds: secondsAgo } })}
+      </p>
+    </div>
     <div class="refresh-group">
-      <span class="last-updated"
-        >{$t("status.lastUpdated", { values: { seconds: secondsAgo } })}</span
-      >
       <button class="btn" onclick={fetchStatus} disabled={loading}>
         {loading ? $t("common.refreshing") : $t("common.refresh")}
       </button>
@@ -240,37 +242,22 @@
 
 <style>
   .status-page {
-    max-width: 1000px;
-  }
-  .status-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 16px;
-  }
-  .status-header h2 {
-    margin: 0;
-    font-size: 18px;
-    font-weight: 600;
+    max-width: 1100px;
   }
   .refresh-group {
     display: flex;
     align-items: center;
     gap: 10px;
   }
-  .last-updated {
-    font-size: 12px;
-    color: var(--text-dim);
-  }
   .cards {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 16px;
+    gap: 24px;
   }
   .cards .card:last-child {
     grid-column: 1 / -1;
   }
-  @media (max-width: 768px) {
+  @media (max-width: 900px) {
     .cards {
       grid-template-columns: 1fr;
     }
@@ -279,104 +266,120 @@
     }
   }
   .card {
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
-    padding: 16px 20px;
+    padding: 20px 24px;
   }
   .card h3 {
-    margin: 0 0 12px;
-    font-size: 15px;
-    font-weight: 600;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
+    margin: 0 0 16px;
+    font-family: var(--nc-font-display);
+    font-weight: 700;
+    font-size: 18px;
+    color: var(--nc-fg-1);
   }
   .info-grid {
     display: grid;
-    grid-template-columns: auto 1fr;
-    gap: 6px 16px;
+    grid-template-columns: max-content 1fr;
+    gap: 8px 20px;
     font-size: 14px;
   }
   .info-label {
-    color: var(--text-muted);
+    font-family: var(--nc-font-sans);
+    font-weight: 700;
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--nc-fg-3);
+    align-self: center;
   }
   .info-value {
-    color: var(--text);
+    color: var(--nc-fg-1);
   }
   .info-value.mono {
-    font-family: var(--mono, monospace);
+    font-family: var(--nc-font-mono);
+    font-size: 13px;
   }
   .profile-info {
-    margin-bottom: 12px;
+    margin-bottom: 16px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--card-border);
   }
   .init-banner {
-    padding: 8px 12px;
-    margin-bottom: 12px;
-    border-radius: var(--radius);
-    background: rgba(234, 179, 8, 0.12);
-    color: var(--yellow);
-    font-size: 14px;
+    padding: 10px 14px;
+    margin-bottom: 16px;
+    border-radius: var(--nc-radius-sm);
+    background: rgba(242, 181, 68, 0.14);
+    color: #b47a1a;
+    border: 1px solid rgba(242, 181, 68, 0.4);
+    font-size: 13px;
+  }
+  :global(.nc--dark) .init-banner {
+    color: var(--nc-warn);
   }
   .subsystem-list {
     display: flex;
     flex-direction: column;
-    gap: 8px;
   }
   .subsystem-row {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 12px;
+    padding: 10px 0;
+    font-family: var(--nc-font-sans);
     font-size: 14px;
+    border-bottom: 1px solid var(--card-border);
+  }
+  .subsystem-row:last-child {
+    border-bottom: none;
   }
   .status-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
+    width: 10px;
+    height: 10px;
+    border-radius: 999px;
     flex-shrink: 0;
-    position: relative;
+    box-shadow: 0 0 6px currentColor;
   }
   .subsystem-label {
-    font-weight: 500;
-    color: var(--text);
-    min-width: 60px;
+    font-family: var(--nc-font-display);
+    font-weight: 700;
+    color: var(--nc-fg-1);
+    min-width: 80px;
   }
   .subsystem-status {
-    color: var(--text-muted);
+    font-family: var(--nc-font-mono);
+    font-size: 13px;
+    color: var(--nc-fg-2);
+    text-transform: capitalize;
   }
   .subsystem-name {
-    color: var(--text-dim);
+    color: var(--nc-fg-3);
     font-size: 13px;
     margin-left: auto;
     text-align: right;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    max-width: 300px;
+    max-width: 360px;
+    font-family: var(--nc-font-mono);
   }
   .card-header-row {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: 12px;
+    margin-bottom: 16px;
   }
   .card-header-row h3 {
     margin: 0;
-    font-size: 15px;
-    font-weight: 600;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
   }
   .empty-note {
     font-size: 14px;
-    color: var(--text-dim);
+    color: var(--nc-fg-3);
+    font-style: italic;
   }
   .controller-error {
-    font-size: 13px;
-    color: var(--red);
-    padding-left: 18px;
+    font-family: var(--nc-font-mono);
+    font-size: 12px;
+    color: var(--nc-error);
+    padding-left: 22px;
+    margin-bottom: 8px;
     margin-top: -4px;
-    margin-bottom: 4px;
   }
 </style>

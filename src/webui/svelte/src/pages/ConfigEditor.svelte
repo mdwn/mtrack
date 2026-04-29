@@ -936,9 +936,13 @@
     align-items: center;
   }
   .list-header h2 {
-    font-size: 18px;
-    font-weight: 600;
-    color: var(--text);
+    font-family: var(--nc-font-display);
+    font-weight: 700;
+    font-size: 32px;
+    line-height: 1.05;
+    letter-spacing: -0.02em;
+    color: var(--nc-fg-1);
+    margin: 0;
   }
   .profile-list {
     display: flex;
@@ -963,22 +967,24 @@
     display: flex;
     align-items: center;
     gap: 12px;
-    padding: 12px 16px;
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
+    padding: 14px 20px;
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: var(--nc-radius-md);
+    box-shadow: var(--nc-shadow-xs);
     position: sticky;
-    top: 48px;
+    top: 56px;
     z-index: 10;
   }
   .detail-title {
-    font-size: var(--text-lg);
-    font-weight: 600;
-    color: var(--text);
+    font-family: var(--nc-font-display);
+    font-weight: 700;
+    font-size: 18px;
+    color: var(--nc-fg-1);
     flex: 1;
   }
   .dirty-indicator {
-    color: var(--yellow);
+    color: var(--nc-warn);
     margin-left: 4px;
   }
   .toolbar-actions {
@@ -1033,65 +1039,93 @@
   .profile-file-row {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 10px 14px;
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
+    gap: 12px;
+    padding: 14px 18px;
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: var(--nc-radius-md);
+    box-shadow: var(--nc-shadow-xs);
     cursor: pointer;
     text-align: left;
     width: 100%;
-    color: var(--text);
-    font: inherit;
+    color: var(--nc-fg-1);
+    font-family: var(--nc-font-sans);
     transition:
-      background 0.15s,
-      border-color 0.15s;
+      background var(--nc-dur-fast) var(--nc-ease),
+      border-color var(--nc-dur-fast) var(--nc-ease),
+      box-shadow var(--nc-dur-fast) var(--nc-ease);
   }
   .profile-file-row:hover {
-    background: var(--bg-card-hover);
-    border-color: var(--text-dim);
+    background: var(--nc-bg-2);
+    border-color: var(--nc-fg-3);
   }
   .pf-name {
-    font-size: 15px;
-    font-weight: 600;
+    font-family: var(--nc-font-display);
+    font-size: 16px;
+    font-weight: 700;
     flex-shrink: 0;
   }
   .pf-hostname {
-    font-size: 13px;
-    color: var(--text-dim);
+    font-family: var(--nc-font-mono);
+    font-size: 12px;
+    color: var(--nc-fg-3);
     flex-shrink: 0;
   }
   .pf-badges {
     display: flex;
     gap: 4px;
     margin-left: auto;
+    flex-wrap: wrap;
   }
   .pf-badge {
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.5px;
-    padding: 2px 5px;
-    border-radius: 3px;
+    font-family: var(--nc-font-sans);
+    font-weight: 700;
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 5px 8px;
+    border-radius: 5px;
+    border: 1px solid var(--card-border);
   }
   .pf-audio {
-    background: var(--accent);
-    color: #fff;
+    background: rgba(94, 202, 234, 0.15);
+    color: var(--nc-cyan-600);
+    border-color: rgba(94, 202, 234, 0.4);
+  }
+  :global(.nc--dark) .pf-audio {
+    color: var(--nc-cyan-300);
   }
   .pf-midi {
-    background: var(--green-dim);
-    color: var(--green);
+    background: rgba(94, 202, 234, 0.15);
+    color: var(--nc-cyan-600);
+    border-color: rgba(94, 202, 234, 0.4);
+  }
+  :global(.nc--dark) .pf-midi {
+    color: var(--nc-cyan-300);
   }
   .pf-dmx {
-    background: var(--yellow-dim);
-    color: var(--yellow);
+    background: rgba(77, 192, 138, 0.15);
+    color: #2a8e5e;
+    border-color: rgba(77, 192, 138, 0.4);
+  }
+  :global(.nc--dark) .pf-dmx {
+    color: #6bd9a4;
   }
   .pf-trigger {
-    background: rgba(168, 85, 247, 0.15);
-    color: #a855f7;
+    background: rgba(232, 75, 75, 0.12);
+    color: #b82f2f;
+    border-color: rgba(232, 75, 75, 0.4);
+  }
+  :global(.nc--dark) .pf-trigger {
+    color: #f08585;
   }
   .pf-ctrl {
-    background: var(--red-dim);
-    color: var(--red);
+    background: rgba(239, 96, 163, 0.15);
+    color: var(--nc-pink-600);
+    border-color: rgba(239, 96, 163, 0.4);
+  }
+  :global(.nc--dark) .pf-ctrl {
+    color: var(--nc-pink-300);
   }
   .browser-overlay {
     position: fixed;

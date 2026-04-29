@@ -357,7 +357,7 @@
     min-height: 0;
     display: flex;
     flex-direction: column;
-    background: #111;
+    background: var(--inset-bg);
   }
   .seq-scroll {
     flex: 1;

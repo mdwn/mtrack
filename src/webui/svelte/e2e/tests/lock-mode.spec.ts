@@ -30,7 +30,7 @@ async function sendWsMessage(
 test.describe("Lock Mode", () => {
   test("lock toggle is visible on dashboard", async ({ page }) => {
     await page.goto("/#/");
-    const lockToggle = page.locator(".lock-toggle");
+    const lockToggle = page.locator(".topnav__lock");
     await expect(lockToggle).toBeVisible();
   });
 
@@ -50,15 +50,17 @@ test.describe("Lock Mode", () => {
       }
     });
 
-    const lockToggle = page.locator(".lock-toggle");
+    const lockToggle = page.locator(".topnav__lock");
     await lockToggle.click();
     expect(lockCalled).toBe(true);
   });
 
   test("unlocked state does not have locked class", async ({ page }) => {
     await page.goto("/#/");
-    await expect(page.locator(".lock-toggle")).toBeVisible();
-    await expect(page.locator(".lock-toggle")).not.toHaveClass(/locked/);
+    await expect(page.locator(".topnav__lock")).toBeVisible();
+    await expect(page.locator(".topnav__lock")).not.toHaveClass(
+      /topnav__lock--locked/,
+    );
   });
 
   test("locked state prevents config save", async ({ page }) => {
@@ -104,7 +106,9 @@ test.describe("Lock Mode", () => {
     await page.goto(`/?wsId=${wsId}#/playlists`);
 
     // Wait for WebSocket connection to be established
-    await expect(page.locator(".status-indicator.connected")).toBeVisible();
+    await expect(page.locator(".topnav__conn")).not.toHaveClass(
+      /topnav__conn--off/,
+    );
 
     // Lock the player via WebSocket
     await sendWsMessage(page, wsId, {
@@ -123,7 +127,7 @@ test.describe("Lock Mode", () => {
     });
 
     // Wait for lock state to be reflected in the UI
-    await expect(page.locator(".lock-toggle.locked")).toBeVisible();
+    await expect(page.locator(".topnav__lock--locked")).toBeVisible();
 
     // Select and modify a playlist
     await page.locator(".playlist-item", { hasText: "setlist" }).click();
