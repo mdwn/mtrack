@@ -12,16 +12,15 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-// Documentation screenshot generator.
+// Documentation screenshot generator (mock-server backed).
 //
-// Re-runs against the mock server to capture every PNG referenced from
-// docs/src/**.md. Run via `npm run screenshots`. Safe to re-run; output
-// is deterministic for a given build.
+// Captures shots that need a controlled WebSocket state — the lock chip,
+// a fake "now playing" song name, a fixed elapsed time. Mock-server
+// fixtures are deterministic, so these shots stay byte-stable across
+// machines. Run via `npm run screenshots:mock`.
 //
-// To add a new screenshot: drop another `test()` below that calls
-// `page.screenshot({ path: ... })` after navigating into the desired
-// state. Use `pushWs` to stuff specific WebSocket state into the store
-// (for example, marking the player as "playing" or "locked").
+// Data-rich shots (song browser, song detail, hardware profiles, etc.)
+// live in capture-live.spec.ts and target a real running mtrack instance.
 
 import { test, expect, type Page } from "@playwright/test";
 import path from "node:path";
@@ -167,36 +166,6 @@ test("nav-locked", async ({ page }) => {
   await topnavOnly(page, "nav-locked.png");
 });
 
-test("song-browser", async ({ page }) => {
-  await page.goto("/#/songs");
-  await expect(page.locator(".song-row").first()).toBeVisible();
-  await page.waitForTimeout(150);
-  await page.screenshot({ path: path.join(DOCS_IMAGES, "song-browser.png") });
-});
-
-test("song-detail", async ({ page }) => {
-  await page.goto("/#/songs/Test%20Song%20Alpha");
-  await expect(page.locator(".song-title")).toBeVisible();
-  await page.waitForTimeout(200);
-  await page.screenshot({ path: path.join(DOCS_IMAGES, "song-detail.png") });
-});
-
-test("song-sections", async ({ page }) => {
-  await page.goto("/#/songs/Test%20Song%20Alpha/sections");
-  await expect(page.locator(".tab.active")).toContainText("Sections");
-  await page.waitForTimeout(250);
-  await page.screenshot({ path: path.join(DOCS_IMAGES, "song-sections.png") });
-});
-
-test("timeline-editor", async ({ page }) => {
-  await page.goto("/#/songs/Test%20Song%20Alpha/lighting");
-  await expect(page.locator(".tab.active")).toContainText("Lighting");
-  await page.waitForTimeout(400);
-  await page.screenshot({
-    path: path.join(DOCS_IMAGES, "timeline-editor.png"),
-  });
-});
-
 test("timeline-playing", async ({ page }) => {
   const wsId = freshWsId("timeline-playing");
   await page.goto(`/?wsId=${wsId}#/songs/Test%20Song%20Alpha/lighting`);
@@ -213,34 +182,6 @@ test("timeline-playing", async ({ page }) => {
   });
 });
 
-test("playlist-editor", async ({ page }) => {
-  await page.goto("/#/playlists/setlist");
-  await expect(page.locator(".song-columns")).toBeVisible();
-  await page.waitForTimeout(200);
-  await page.screenshot({
-    path: path.join(DOCS_IMAGES, "playlist-editor.png"),
-  });
-});
-
-test("config-editor", async ({ page }) => {
-  await page.goto("/#/config");
-  await expect(
-    page.getByRole("heading", { name: "Hardware Profiles" }),
-  ).toBeVisible();
-  await page.waitForTimeout(200);
-  await page.screenshot({ path: path.join(DOCS_IMAGES, "config-editor.png") });
-});
-
-test("config-editor-profile", async ({ page }) => {
-  await page.goto("/#/config");
-  await page.locator(".profile-row", { hasText: "test-host" }).click();
-  await expect(page.getByRole("button", { name: "Back" })).toBeVisible();
-  await page.waitForTimeout(250);
-  await page.screenshot({
-    path: path.join(DOCS_IMAGES, "config-editor-profile.png"),
-  });
-});
-
 test("status-page", async ({ page }) => {
   await page.goto("/#/status");
   await expect(page.locator(".status-page")).toBeVisible();
@@ -248,19 +189,4 @@ test("status-page", async ({ page }) => {
   await expect(page.locator(".subsystem-row").first()).toBeVisible();
   await page.waitForTimeout(200);
   await page.screenshot({ path: path.join(DOCS_IMAGES, "status-page.png") });
-});
-
-test("bulk-import-result", async ({ page }) => {
-  // The bulk-import flow needs the file browser endpoints, which the
-  // mock server doesn't expose. Capture the import landing page instead
-  // (showing the Import-from-Filesystem button + dialog scaffold) so
-  // the doc has a current visual hook even without a real import. If
-  // the mock ever gains those endpoints, expand this into the full
-  // run-the-import flow.
-  await page.goto("/#/songs");
-  await page.getByRole("button", { name: /import from filesystem/i }).click();
-  await page.waitForTimeout(250);
-  await page.screenshot({
-    path: path.join(DOCS_IMAGES, "bulk-import-result.png"),
-  });
 });

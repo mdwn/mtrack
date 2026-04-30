@@ -12,50 +12,37 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-// Separate Playwright config for the documentation screenshot generator.
-// Reuses the same mock-server + dev-server stack as the e2e suite but
-// targets the `e2e/screenshots/` directory and runs serially so the
-// captured PNGs are deterministic.
+// Playwright config for the live-data screenshot generator. Targets a real
+// running mtrack instance (default http://localhost:8080) so the captured
+// PNGs reflect realistic content — multiple songs, real playlists, and the
+// hardware profiles installed on the operator's machine. State-controlled
+// shots (lock chip, fake "now playing", etc.) live in the mock-server config
+// instead.
+//
+// Override the target with MTRACK_URL=http://host:port npm run screenshots:live.
 
 import { defineConfig, devices } from "@playwright/test";
 
+const MTRACK_URL = process.env.MTRACK_URL ?? "http://localhost:8080";
+
 export default defineConfig({
   testDir: "./e2e/screenshots",
-  testMatch: /capture\.spec\.ts/,
+  testMatch: /capture-live\.spec\.ts/,
   fullyParallel: false,
   workers: 1,
   reporter: "list",
   timeout: 60000,
   use: {
-    baseURL: "http://127.0.0.1:5180",
+    baseURL: MTRACK_URL,
     ...devices["Desktop Chrome"],
   },
   projects: [
     {
-      name: "screenshots",
+      name: "screenshots-live",
       use: {
         ...devices["Desktop Chrome"],
-        baseURL: "http://127.0.0.1:5180",
+        baseURL: MTRACK_URL,
       },
-    },
-  ],
-  webServer: [
-    {
-      command: "npx tsx e2e/mock-server/index.ts",
-      port: 3111,
-      reuseExistingServer: true,
-      timeout: 120000,
-      stdout: "pipe",
-      stderr: "pipe",
-    },
-    {
-      command:
-        "VITE_PROXY_TARGET=http://127.0.0.1:3111 npx vite --host 127.0.0.1 --port 5180 --strictPort",
-      port: 5180,
-      reuseExistingServer: true,
-      timeout: 120000,
-      stdout: "pipe",
-      stderr: "pipe",
     },
   ],
 });
