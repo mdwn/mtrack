@@ -124,6 +124,10 @@
   "status.running": "Running",
   "status.error": "Error",
   "status.noControllers": "No controllers configured",
+  "status.configure": "Configure",
+  "status.fix": "Fix",
+  "status.configureSubsystem": "Configure {name}",
+  "status.fixSubsystem": "Fix {name}",
 
   "config.loadingConfig": "Loading configuration...",
   "config.hardwareProfiles": "Hardware Profiles",
@@ -420,6 +424,8 @@
   "songs.removeFromRegistry": "Remove from registry",
   "songs.confirmDelete": "Remove \"{name}\" from the song registry?\n\nThis only deletes song.yaml — audio and other files are kept.",
   "songs.trackCount": "{count} track{count, plural, one {} other {s}}",
+  "songs.currentPlaying": "Playing",
+  "songs.currentLoaded": "Loaded",
 
   "songs.create.placeholder": "Song name or path (e.g. Artist/Song)",
   "songs.create.alreadyExists": "Song already exists",

@@ -201,6 +201,26 @@
       <span class="sr-only" role="status">{$t(healthLabelKey)}</span>
     </a>
   </div>
+  {#if $playbackStore.is_playing && $playbackStore.song_duration_ms > 0}
+    <div
+      class="topnav__progress"
+      role="progressbar"
+      aria-valuenow={Math.round(
+        ($playbackStore.elapsed_ms / $playbackStore.song_duration_ms) * 100,
+      )}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-label={$t("playback.songProgress")}
+    >
+      <div
+        class="topnav__progress-fill"
+        style:width="{Math.min(
+          100,
+          ($playbackStore.elapsed_ms / $playbackStore.song_duration_ms) * 100,
+        )}%"
+      ></div>
+    </div>
+  {/if}
 </nav>
 
 <NavDrawer
@@ -238,6 +258,21 @@
     top: 0;
     z-index: var(--z-nav);
     gap: 4px;
+  }
+  .topnav__progress {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: -1px;
+    height: 2px;
+    background: transparent;
+    pointer-events: none;
+  }
+  .topnav__progress-fill {
+    height: 100%;
+    background: var(--nc-pink-400);
+    box-shadow: 0 0 6px rgba(239, 96, 163, 0.5);
+    transition: width 0.2s linear;
   }
   .topnav__hamburger {
     display: none;
