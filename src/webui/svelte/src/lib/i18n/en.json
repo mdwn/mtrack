@@ -20,6 +20,9 @@
   "nav.health.unknown": "Subsystem health unknown \u2014 click for details",
   "nav.live.locked": "LIVE \u2014 locked",
   "nav.live.unlockPrompt": "Unlock during a live session?",
+  "nav.theme.system": "Theme: matches system \u2014 click for light",
+  "nav.theme.light": "Theme: light \u2014 click for dark",
+  "nav.theme.dark": "Theme: dark \u2014 click to follow system",
 
   "common.save": "Save",
   "common.saving": "Saving...",

@@ -17,6 +17,7 @@
   import { healthStore } from "../lib/ws/status";
   import { setLocked } from "../lib/api/config";
   import { showConfirm } from "../lib/dialog.svelte";
+  import { themeChoice, cycleTheme } from "../lib/theme";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
   import NavDrawer from "./NavDrawer.svelte";
@@ -145,6 +146,58 @@
         <span class="topnav__transport-song">{$playbackStore.song_name}</span>
       </div>
     {/if}
+    <button
+      class="topnav__theme"
+      onclick={cycleTheme}
+      title={$t(`nav.theme.${$themeChoice}`)}
+      aria-label={$t(`nav.theme.${$themeChoice}`)}
+    >
+      {#if $themeChoice === "light"}
+        <!-- Sun -->
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.7"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          ><circle cx="12" cy="12" r="4" /><path
+            d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"
+          /></svg
+        >
+      {:else if $themeChoice === "dark"}
+        <!-- Moon -->
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.7"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          ><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" /></svg
+        >
+      {:else}
+        <!-- Half (system) -->
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.7"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          ><circle cx="12" cy="12" r="9" /><path
+            d="M12 3v18"
+            stroke-linecap="round"
+          /><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" /></svg
+        >
+      {/if}
+    </button>
     <button
       class="topnav__lock"
       class:topnav__lock--locked={$playbackStore.locked}
@@ -394,6 +447,7 @@
     text-overflow: ellipsis;
     min-width: 0;
   }
+  .topnav__theme,
   .topnav__lock,
   .topnav__conn {
     width: 32px;
@@ -411,10 +465,12 @@
       color var(--nc-dur-fast) var(--nc-ease),
       border-color var(--nc-dur-fast) var(--nc-ease);
   }
-  .topnav__lock {
+  .topnav__lock,
+  .topnav__theme {
     padding: 0;
   }
-  .topnav__lock:hover {
+  .topnav__lock:hover,
+  .topnav__theme:hover {
     background: var(--nc-bg-3);
     color: var(--nc-fg-1);
   }

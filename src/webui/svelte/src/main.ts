@@ -13,6 +13,10 @@
 //
 
 import { waitLocale } from "./lib/i18n";
+// Importing the theme module subscribes the document to the user's
+// stored / system theme preference and applies `.nc--dark` to <html>
+// before the app mounts, so we never flash light-on-dark.
+import "./lib/theme";
 import "./app.css";
 import App from "./App.svelte";
 import { mount } from "svelte";
