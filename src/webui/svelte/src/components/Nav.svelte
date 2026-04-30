@@ -228,9 +228,7 @@
   {links}
   {currentHash}
   locked={$playbackStore.locked}
-  {toggling}
   onClose={closeDrawer}
-  onToggleLock={toggleLock}
 />
 
 {#if $playbackStore.locked}
@@ -303,7 +301,7 @@
     font-size: 18px;
     line-height: 1;
     letter-spacing: -0.02em;
-    color: var(--nc-cyan-500);
+    color: var(--nc-cyan-600);
     text-decoration: none;
     margin-right: 24px;
     border: none;

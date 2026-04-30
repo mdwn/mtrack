@@ -611,16 +611,9 @@
       : [],
   );
 
-  function toggleExcludeChannel(channel: number) {
+  function setExcludeChannels(next: number[]) {
     if (!parsedConfig) return;
-    const current = [...excludeMidiChannels];
-    const idx = current.indexOf(channel);
-    if (idx >= 0) {
-      current.splice(idx, 1);
-    } else {
-      current.push(channel);
-      current.sort((a, b) => a - b);
-    }
+    const sorted = [...new Set(next)].sort((a, b) => a - b);
 
     // Ensure we use midi_playback format (upgrade from legacy midi_file if needed).
     const mp = (parsedConfig.midi_playback as Record<string, unknown>) ?? {};
@@ -628,11 +621,11 @@
       (mp.file as string | undefined) ??
       (parsedConfig.midi_file as string | undefined);
     const updated: Record<string, unknown> = { ...parsedConfig };
-    if (current.length > 0) {
+    if (sorted.length > 0) {
       updated.midi_playback = {
         ...mp,
         ...(file ? { file } : {}),
-        exclude_midi_channels: current,
+        exclude_midi_channels: sorted,
       };
     } else {
       // No excluded channels — remove the field from midi_playback.
@@ -655,6 +648,36 @@
     }
     parsedConfig = updated;
     editedYaml = buildYaml();
+  }
+
+  function toggleExcludeChannel(channel: number) {
+    if (!parsedConfig) return;
+    const current = [...excludeMidiChannels];
+    const idx = current.indexOf(channel);
+    if (idx >= 0) current.splice(idx, 1);
+    else current.push(channel);
+    setExcludeChannels(current);
+  }
+
+  /** Exclude every channel — silences all MIDI playback. */
+  function excludeAllChannels() {
+    setExcludeChannels(Array.from({ length: 16 }, (_, i) => i + 1));
+  }
+
+  /** Reset to no exclusions — every channel plays. */
+  function excludeNoChannels() {
+    setExcludeChannels([]);
+  }
+
+  /**
+   * Exclude every channel except 10 (the General MIDI drum channel) —
+   * the common preset for live shows where mtrack runs the drums and
+   * everything else is played live.
+   */
+  function excludeAllButDrums() {
+    setExcludeChannels(
+      Array.from({ length: 16 }, (_, i) => i + 1).filter((c) => c !== 10),
+    );
   }
 
   function tabHasIndicator(key: TabKey): boolean {
@@ -926,6 +949,29 @@
                   <p class="muted hint-text">
                     {$t("songs.detail.excludeChannelsHint")}
                   </p>
+                  <div class="channel-presets">
+                    <button
+                      type="button"
+                      class="channel-preset"
+                      onclick={excludeNoChannels}
+                      disabled={excludeMidiChannels.length === 0}
+                      >{$t("songs.detail.excludeNone")}</button
+                    >
+                    <button
+                      type="button"
+                      class="channel-preset"
+                      onclick={excludeAllChannels}
+                      disabled={excludeMidiChannels.length === 16}
+                      >{$t("songs.detail.excludeAll")}</button
+                    >
+                    <button
+                      type="button"
+                      class="channel-preset"
+                      onclick={excludeAllButDrums}
+                      title={$t("songs.detail.excludeAllButDrumsHint")}
+                      >{$t("songs.detail.excludeAllButDrums")}</button
+                    >
+                  </div>
                   <div class="channel-grid">
                     {#each Array.from({ length: 16 }, (_, i) => i + 1) as ch (ch)}
                       <label
@@ -1111,7 +1157,7 @@
     line-height: 0.7;
   }
   .back-link:hover {
-    color: var(--nc-cyan-500);
+    color: var(--nc-cyan-700);
   }
   .title-row {
     display: flex;
@@ -1256,6 +1302,23 @@
   .tab-bar::-webkit-scrollbar {
     display: none;
   }
+  /* Phone-only fade on the right edge so the user knows there's more to scroll. */
+  @media (max-width: 720px) {
+    .tab-bar {
+      mask-image: linear-gradient(
+        to right,
+        black 0,
+        black calc(100% - 28px),
+        transparent 100%
+      );
+      -webkit-mask-image: linear-gradient(
+        to right,
+        black 0,
+        black calc(100% - 28px),
+        transparent 100%
+      );
+    }
+  }
   .tab {
     position: relative;
     padding: 12px 18px 14px;
@@ -1363,6 +1426,35 @@
   .hint-text {
     font-size: 13px;
     margin-bottom: 12px;
+  }
+  .channel-presets {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 12px;
+  }
+  .channel-preset {
+    font-family: var(--nc-font-display);
+    font-weight: 600;
+    font-size: 12px;
+    padding: 6px 12px;
+    border-radius: 999px;
+    border: 1px solid var(--nc-border-1);
+    background: var(--nc-bg-2);
+    color: var(--nc-fg-2);
+    cursor: pointer;
+    transition:
+      background var(--nc-dur-fast) var(--nc-ease),
+      color var(--nc-dur-fast) var(--nc-ease),
+      border-color var(--nc-dur-fast) var(--nc-ease);
+  }
+  .channel-preset:hover:not(:disabled) {
+    background: var(--nc-bg-3);
+    color: var(--nc-fg-1);
+  }
+  .channel-preset:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
   }
   .channel-grid {
     display: grid;

@@ -15,11 +15,33 @@
 <script lang="ts">
   import { Code, ConnectError } from "@connectrpc/connect";
   import { playbackStore } from "../lib/ws/stores";
+  import { setLocked } from "../lib/api/config";
   import { playerClient } from "../lib/grpc/client";
   import { formatMs } from "../lib/util/format";
+  import { showConfirm } from "../lib/dialog.svelte";
   import { t } from "svelte-i18n";
+  import { get } from "svelte/store";
 
   let busy = $state(false);
+  let toggling = $state(false);
+
+  async function toggleLock() {
+    const next = !$playbackStore.locked;
+    if (!next) {
+      const ok = await showConfirm(get(t)("nav.live.unlockPrompt"), {
+        danger: true,
+      });
+      if (!ok) return;
+    }
+    toggling = true;
+    try {
+      await setLocked(next);
+    } catch (e) {
+      console.error("toggle lock failed:", e);
+    } finally {
+      toggling = false;
+    }
+  }
 
   async function togglePlay() {
     busy = true;
@@ -85,6 +107,48 @@
 </script>
 
 <div class="miniplayer" role="region" aria-label={$t("playback.title")}>
+  <button
+    class="miniplayer__lock"
+    class:miniplayer__lock--locked={$playbackStore.locked}
+    onclick={toggleLock}
+    disabled={toggling}
+    aria-label={$playbackStore.locked
+      ? $t("nav.lock.lockedHint")
+      : $t("nav.lock.unlockedHint")}
+    title={$playbackStore.locked
+      ? $t("nav.lock.lockedHint")
+      : $t("nav.lock.unlockedHint")}
+  >
+    {#if $playbackStore.locked}
+      <svg
+        width="14"
+        height="14"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        ><rect x="5" y="11" width="14" height="10" rx="2" /><path
+          d="M8 11V8a4 4 0 0 1 8 0v3"
+        /></svg
+      >
+    {:else}
+      <svg
+        width="14"
+        height="14"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        ><rect x="5" y="11" width="14" height="10" rx="2" /><path
+          d="M8 11V8a4 4 0 0 1 7.8-1"
+        /></svg
+      >
+    {/if}
+  </button>
   <span
     class="miniplayer__state"
     class:miniplayer__state--stopped={!$playbackStore.is_playing}
@@ -185,6 +249,36 @@
     box-shadow:
       3px 3px 0 var(--nc-cyan-700),
       0 18px 40px rgba(0, 0, 0, 0.5);
+  }
+  .miniplayer__lock {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    border: 1px solid var(--card-border);
+    background: var(--card-bg);
+    color: var(--nc-fg-2);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    flex: 0 0 auto;
+    transition:
+      background var(--nc-dur-fast) var(--nc-ease),
+      color var(--nc-dur-fast) var(--nc-ease),
+      border-color var(--nc-dur-fast) var(--nc-ease);
+  }
+  .miniplayer__lock:hover:not(:disabled) {
+    background: var(--nc-bg-2);
+    color: var(--nc-fg-1);
+  }
+  .miniplayer__lock:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+  .miniplayer__lock--locked {
+    color: var(--nc-warn);
+    border-color: rgba(242, 181, 68, 0.55);
+    background: rgba(242, 181, 68, 0.14);
   }
   .miniplayer__state {
     width: 28px;

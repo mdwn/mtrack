@@ -37,6 +37,8 @@
   import { parseLightFile } from "../lib/lighting/parser";
   import { serializeLightFile } from "../lib/lighting/serializer";
   import TimelineEditor from "../components/lighting/timeline/TimelineEditor.svelte";
+  import LightingSummary from "../components/lighting/LightingSummary.svelte";
+  import { isPhone } from "../lib/util/media";
   import FileUpload from "../components/songs/FileUpload.svelte";
   import FileBrowser from "../components/songs/FileBrowser.svelte";
   import { t } from "svelte-i18n";
@@ -559,14 +561,18 @@
       {/if}
 
       {#if tab === "timeline"}
-        <TimelineEditor
-          lightFile={mergedLightFile}
-          groups={venueGroups}
-          {sequenceNames}
-          {songDurationMs}
-          {waveformTracks}
-          onchange={onTimelineChange}
-        />
+        {#if $isPhone}
+          <LightingSummary lightFile={mergedLightFile} />
+        {:else}
+          <TimelineEditor
+            lightFile={mergedLightFile}
+            groups={venueGroups}
+            {sequenceNames}
+            {songDurationMs}
+            {waveformTracks}
+            onchange={onTimelineChange}
+          />
+        {/if}
       {:else if tab === "raw"}
         <div class="raw-editor">
           {#if lightFiles.length > 1}
