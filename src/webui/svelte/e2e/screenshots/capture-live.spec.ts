@@ -172,16 +172,68 @@ test("config-editor-profile", async ({ page }) => {
 });
 
 test("bulk-import-result", async ({ page }) => {
-  // The file browser only exists on a real server. Open the dialog so
-  // the doc shows the actual import entry point with live folder content.
+  // Captures the result page shown after a "Import All Subdirectories"
+  // run — created/skipped/failed groups. Navigates into the first
+  // parent-of-songs directory we can find (a directory whose children
+  // are themselves directories), then triggers bulk import. Songs that
+  // already have a song.yaml get marked skipped, so re-running this
+  // shot against a populated mtrack is non-destructive.
+  //
+  // Override the parent path with MTRACK_IMPORT_PATH if the auto-pick
+  // doesn't produce a representative result.
+  const importPath = process.env.MTRACK_IMPORT_PATH ?? (await pickImportParent(page));
+
   await page.goto("/#/songs");
   await page.getByRole("button", { name: /import from filesystem/i }).click();
-  // Wait for the file browser to populate at least one entry.
   await expect(page.locator(".entry-list .entry").first()).toBeVisible({
     timeout: 5000,
   });
+
+  // Type the path and hit Enter to navigate.
+  const pathInput = page.locator(".path-input");
+  await pathInput.fill(importPath);
+  await pathInput.press("Enter");
+  await expect(page.locator(".entry-list .entry.dir").first()).toBeVisible({
+    timeout: 5000,
+  });
+
+  // Trigger bulk import and wait for the result step.
+  await page.getByRole("button", { name: /import all subdirectories/i }).click();
+  await expect(page.locator(".bulk-result")).toBeVisible({ timeout: 30000 });
+  // Let the result list render fully.
   await page.waitForTimeout(400);
   await page.screenshot({
     path: path.join(DOCS_IMAGES, "bulk-import-result.png"),
   });
 });
+
+interface BrowseEntry {
+  name: string;
+  path: string;
+  type: string;
+}
+
+interface BrowseResponse {
+  entries: BrowseEntry[];
+  path: string;
+}
+
+// Find the first directory (under /) whose children are themselves
+// directories — that's typically a parent-of-songs (artist/album/song
+// layout). Falls back to "/" if nothing better is found.
+async function pickImportParent(page: Page): Promise<string> {
+  const root = await fetchJson<BrowseResponse>(page, "/api/browse?path=/");
+  for (const entry of root.entries) {
+    if (entry.type !== "directory") continue;
+    const child = await fetchJson<BrowseResponse>(
+      page,
+      `/api/browse?path=${encodeURIComponent(entry.path)}`,
+    );
+    const subdirCount = child.entries.filter((e) => e.type === "directory")
+      .length;
+    if (subdirCount >= 3) {
+      return entry.path;
+    }
+  }
+  return "/";
+}
