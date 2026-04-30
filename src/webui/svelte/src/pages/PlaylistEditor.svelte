@@ -25,6 +25,7 @@
   } from "../lib/api/config";
   import { playbackStore } from "../lib/ws/stores";
   import { showConfirm } from "../lib/dialog.svelte";
+  import { registerDirtyGuard } from "../lib/dirtyGuard";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
 
@@ -243,6 +244,10 @@
     if (match && match.name !== "all_songs") {
       selectPlaylist(match.name);
     }
+  });
+
+  $effect(() => {
+    return registerDirtyGuard(() => dirty, get(t)("playlists.discardUnsaved"));
   });
 
   $effect(() => {

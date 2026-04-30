@@ -42,6 +42,7 @@
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
   import { showConfirm, showPrompt } from "../lib/dialog.svelte";
+  import { registerDirtyGuard } from "../lib/dirtyGuard";
   import { playbackStore } from "../lib/ws/stores";
 
   // --- Types ---
@@ -68,6 +69,13 @@
   let saving = $state(false);
   let dirty = $state(false);
   let tab = $state<"timeline" | "raw">("timeline");
+
+  $effect(() => {
+    return registerDirtyGuard(
+      () => dirty,
+      get(t)("lightingEditor.discardUnsaved"),
+    );
+  });
 
   $effect(() => {
     if (dirty) {

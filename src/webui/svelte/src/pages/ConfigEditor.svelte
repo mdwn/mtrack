@@ -37,6 +37,7 @@
   } from "../lib/api/config";
   import { fetchSongs } from "../lib/api/songs";
   import { showConfirm, showPrompt } from "../lib/dialog.svelte";
+  import { registerDirtyGuard } from "../lib/dirtyGuard";
   import { playbackStore } from "../lib/ws/stores";
   import ProfileCard from "../components/config/ProfileCard.svelte";
   import ProfileEditor from "../components/config/ProfileEditor.svelte";
@@ -124,6 +125,13 @@
   let samplesSnapshot = $state("");
   let maxSampleVoices = $state<number | undefined>(undefined);
   let maxSampleVoicesSnapshot = $state<number | undefined>(undefined);
+
+  $effect(() => {
+    return registerDirtyGuard(
+      () => dirty || samplesDirty,
+      get(t)("config.discardUnsaved"),
+    );
+  });
 
   $effect(() => {
     if (dirty || samplesDirty) {

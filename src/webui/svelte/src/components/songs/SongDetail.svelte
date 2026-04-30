@@ -30,6 +30,7 @@
     type WaveformTrack,
   } from "../../lib/api/songs";
   import { showConfirm } from "../../lib/dialog.svelte";
+  import { registerDirtyGuard } from "../../lib/dirtyGuard";
   import { playbackStore } from "../../lib/ws/stores";
   import FileBrowser from "./FileBrowser.svelte";
   import FileUpload from "./FileUpload.svelte";
@@ -575,6 +576,15 @@
   let anyDirty = $derived(configDirty || lightingDirty || sectionsDirty);
 
   $effect(() => {
+    // Block in-app hash navigation while edits are pending.
+    return registerDirtyGuard(
+      () => anyDirty,
+      get(t)("songs.detail.discardUnsaved"),
+    );
+  });
+
+  $effect(() => {
+    // Backstop for tab close / refresh.
     if (anyDirty) {
       const handler = (e: BeforeUnloadEvent) => {
         e.preventDefault();
