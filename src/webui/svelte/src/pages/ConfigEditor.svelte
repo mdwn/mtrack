@@ -37,6 +37,7 @@
   } from "../lib/api/config";
   import { fetchSongs } from "../lib/api/songs";
   import { showConfirm, showPrompt } from "../lib/dialog.svelte";
+  import { registerDirtyGuard } from "../lib/dirtyGuard";
   import { playbackStore } from "../lib/ws/stores";
   import ProfileCard from "../components/config/ProfileCard.svelte";
   import ProfileEditor from "../components/config/ProfileEditor.svelte";
@@ -124,6 +125,23 @@
   let samplesSnapshot = $state("");
   let maxSampleVoices = $state<number | undefined>(undefined);
   let maxSampleVoicesSnapshot = $state<number | undefined>(undefined);
+
+  $effect(() => {
+    return registerDirtyGuard(
+      () => dirty || samplesDirty,
+      get(t)("config.discardUnsaved"),
+    );
+  });
+
+  $effect(() => {
+    if (dirty || samplesDirty) {
+      const handler = (e: BeforeUnloadEvent) => {
+        e.preventDefault();
+      };
+      window.addEventListener("beforeunload", handler);
+      return () => window.removeEventListener("beforeunload", handler);
+    }
+  });
 
   function parseProfiles() {
     try {
@@ -610,13 +628,20 @@
             <button
               class="btn btn-danger"
               onclick={removeFileProfile}
-              disabled={saving}>{$t("common.delete")}</button
+              disabled={saving || $playbackStore.locked}
+              title={$playbackStore.locked ? $t("common.locked") : null}
+              >{$t("common.delete")}</button
             >
           {/if}
+          {#if dirty && !saving}
+            <span class="dirty-flag">{$t("common.unsaved")}</span>
+          {/if}
           <button
-            class="btn btn-primary"
+            class="btn"
+            class:btn-primary={dirty && !$playbackStore.locked}
             onclick={saveFileProfile}
-            disabled={saving || !dirty}
+            disabled={saving || !dirty || $playbackStore.locked}
+            title={$playbackStore.locked ? $t("common.locked") : null}
           >
             {saving ? $t("common.saving") : $t("common.save")}
           </button>
@@ -647,7 +672,11 @@
       <div class="list-header">
         <h2>{$t("config.hardwareProfiles")}</h2>
         <div class="toolbar-actions">
-          <button class="btn btn-primary" onclick={addNewFileProfile}
+          <button
+            class="btn btn-primary"
+            onclick={addNewFileProfile}
+            disabled={$playbackStore.locked}
+            title={$playbackStore.locked ? $t("common.locked") : null}
             >{$t("config.addProfile")}</button
           >
         </div>
@@ -703,10 +732,17 @@
               {:else if samplesSaveMsg}
                 <span class="save-msg save-error">{samplesSaveMsg}</span>
               {/if}
+              {#if samplesDirty && !samplesSaving}
+                <span class="dirty-flag">{$t("common.unsaved")}</span>
+              {/if}
               <button
-                class="btn btn-primary"
+                class="btn"
+                class:btn-primary={samplesDirty && !$playbackStore.locked}
                 onclick={saveSamples}
-                disabled={samplesSaving || !samplesDirty}
+                disabled={samplesSaving ||
+                  !samplesDirty ||
+                  $playbackStore.locked}
+                title={$playbackStore.locked ? $t("common.locked") : null}
               >
                 {samplesSaving ? $t("common.saving") : $t("config.saveSamples")}
               </button>
@@ -773,13 +809,20 @@
           <button
             class="btn btn-danger"
             onclick={removeProfile}
-            disabled={saving}>{$t("common.delete")}</button
+            disabled={saving || $playbackStore.locked}
+            title={$playbackStore.locked ? $t("common.locked") : null}
+            >{$t("common.delete")}</button
           >
         {/if}
+        {#if dirty && !saving}
+          <span class="dirty-flag">{$t("common.unsaved")}</span>
+        {/if}
         <button
-          class="btn btn-primary"
+          class="btn"
+          class:btn-primary={dirty && !$playbackStore.locked}
           onclick={saveProfile}
-          disabled={saving || !dirty}
+          disabled={saving || !dirty || $playbackStore.locked}
+          title={$playbackStore.locked ? $t("common.locked") : null}
         >
           {saving ? $t("common.saving") : $t("common.save")}
         </button>
@@ -813,7 +856,11 @@
   <div class="list-view">
     <div class="list-header">
       <h2>{$t("config.hardwareProfiles")}</h2>
-      <button class="btn btn-primary" onclick={addNewProfile}
+      <button
+        class="btn btn-primary"
+        onclick={addNewProfile}
+        disabled={$playbackStore.locked}
+        title={$playbackStore.locked ? $t("common.locked") : null}
         >{$t("config.addProfile")}</button
       >
     </div>
@@ -986,6 +1033,14 @@
   .dirty-indicator {
     color: var(--nc-warn);
     margin-left: 4px;
+  }
+  .dirty-flag {
+    font-family: var(--nc-font-mono);
+    font-size: 12px;
+    color: var(--nc-cyan-600);
+  }
+  :global(.nc--dark) .dirty-flag {
+    color: var(--nc-cyan-300);
   }
   .toolbar-actions {
     display: flex;

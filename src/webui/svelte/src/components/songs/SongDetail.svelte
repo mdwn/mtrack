@@ -30,6 +30,7 @@
     type WaveformTrack,
   } from "../../lib/api/songs";
   import { showConfirm } from "../../lib/dialog.svelte";
+  import { registerDirtyGuard } from "../../lib/dirtyGuard";
   import { playbackStore } from "../../lib/ws/stores";
   import FileBrowser from "./FileBrowser.svelte";
   import FileUpload from "./FileUpload.svelte";
@@ -573,6 +574,25 @@
 
   let configDirty = $derived(editedYaml !== rawYaml);
   let anyDirty = $derived(configDirty || lightingDirty || sectionsDirty);
+
+  $effect(() => {
+    // Block in-app hash navigation while edits are pending.
+    return registerDirtyGuard(
+      () => anyDirty,
+      get(t)("songs.detail.discardUnsaved"),
+    );
+  });
+
+  $effect(() => {
+    // Backstop for tab close / refresh.
+    if (anyDirty) {
+      const handler = (e: BeforeUnloadEvent) => {
+        e.preventDefault();
+      };
+      window.addEventListener("beforeunload", handler);
+      return () => window.removeEventListener("beforeunload", handler);
+    }
+  });
   let midiFile = $derived(
     parsedConfig
       ? ((parsedConfig.midi_playback as { file?: string })?.file ??
@@ -804,9 +824,11 @@
           <span class="unsaved">{$t("common.unsaved")}</span>
         {/if}
         <button
-          class="btn btn-primary btn-sm"
+          class="btn btn-sm"
+          class:btn-primary={anyDirty && !$playbackStore.locked}
           onclick={save}
-          disabled={saving || !anyDirty}
+          disabled={saving || !anyDirty || $playbackStore.locked}
+          title={$playbackStore.locked ? $t("common.locked") : null}
         >
           {saving ? $t("common.saving") : $t("common.save")}
         </button>

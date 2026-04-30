@@ -26,6 +26,7 @@
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
   import { showConfirm, showAlert } from "../../lib/dialog.svelte";
+  import { playbackStore } from "../../lib/ws/stores";
   import CreateSongDialog from "./CreateSongDialog.svelte";
   import ImportSongs from "./ImportSongs.svelte";
   import Waveform from "./Waveform.svelte";
@@ -339,8 +340,11 @@
                   </div>
                   <button
                     class="song-row__delete"
-                    title={$t("songs.removeFromRegistry")}
+                    title={$playbackStore.locked
+                      ? $t("common.locked")
+                      : $t("songs.removeFromRegistry")}
                     aria-label={$t("songs.removeFromRegistry")}
+                    disabled={$playbackStore.locked}
                     onclick={(e) => handleDelete(e, item.name)}>×</button
                   >
                   <span class="song-row__chevron" aria-hidden="true">

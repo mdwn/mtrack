@@ -42,6 +42,8 @@
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
   import { showConfirm, showPrompt } from "../lib/dialog.svelte";
+  import { registerDirtyGuard } from "../lib/dirtyGuard";
+  import { playbackStore } from "../lib/ws/stores";
 
   // --- Types ---
 
@@ -67,6 +69,23 @@
   let saving = $state(false);
   let dirty = $state(false);
   let tab = $state<"timeline" | "raw">("timeline");
+
+  $effect(() => {
+    return registerDirtyGuard(
+      () => dirty,
+      get(t)("lightingEditor.discardUnsaved"),
+    );
+  });
+
+  $effect(() => {
+    if (dirty) {
+      const handler = (e: BeforeUnloadEvent) => {
+        e.preventDefault();
+      };
+      window.addEventListener("beforeunload", handler);
+      return () => window.removeEventListener("beforeunload", handler);
+    }
+  });
 
   // Lighting files and song data
   let selectedSong = $state<SongSummary | null>(null);
@@ -260,6 +279,10 @@
   // --- Save ---
 
   async function handleSave() {
+    if (get(playbackStore).locked) {
+      error = get(t)("common.locked");
+      return;
+    }
     try {
       saving = true;
       error = "";
@@ -518,9 +541,11 @@
             <span class="dirty-badge">{$t("common.unsaved")}</span>
           {/if}
           <button
-            class="btn btn-primary btn-sm"
+            class="btn btn-sm"
+            class:btn-primary={dirty && !$playbackStore.locked}
             onclick={handleSave}
-            disabled={saving}
+            disabled={saving || !dirty || $playbackStore.locked}
+            title={$playbackStore.locked ? $t("common.locked") : null}
           >
             {saving ? $t("common.saving") : $t("common.save")}
           </button>
