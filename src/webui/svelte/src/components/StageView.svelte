@@ -157,15 +157,23 @@
     const h = canvasEl.clientHeight;
     ctx.clearRect(0, 0, w, h);
 
+    // Theme-aware stage chrome.
+    const isDark = document.documentElement.classList.contains("nc--dark");
+    const stageFill = isDark ? "#1a1a1a" : "#efeeee"; // gray-100
+    const stageStroke = isDark ? "#3a3a3e" : "#c9c7c8"; // gray-300
+    const stageCaption = isDark ? "#333" : "#9a9a9a"; // gray-400
+    const fixtureStroke = isDark ? "#555" : "#9a9a9a"; // gray-400
+    const fixtureLabel = isDark ? "#888" : "#4a4849"; // gray-600
+
     // Stage outline
-    ctx.fillStyle = "#1a1a1a";
+    ctx.fillStyle = stageFill;
     ctx.fillRect(
       PADDING - 20,
       PADDING - 20,
       w - 2 * PADDING + 40,
       h - 2 * PADDING + 40,
     );
-    ctx.strokeStyle = "#3a3a3e";
+    ctx.strokeStyle = stageStroke;
     ctx.lineWidth = 1;
     ctx.strokeRect(
       PADDING - 20,
@@ -174,7 +182,7 @@
       h - 2 * PADDING + 40,
     );
 
-    ctx.fillStyle = "#333";
+    ctx.fillStyle = stageCaption;
     ctx.font = "12px monospace";
     ctx.textAlign = "center";
     ctx.fillText(get(t)("stage.label"), w / 2, PADDING - 6);
@@ -230,7 +238,7 @@
 
       // Fixture body
       ctx.fillStyle = `rgb(${finalR},${finalG},${finalB})`;
-      ctx.strokeStyle = "#555";
+      ctx.strokeStyle = fixtureStroke;
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.arc(pos.x, pos.y, FIXTURE_RADIUS, 0, Math.PI * 2);
@@ -238,7 +246,7 @@
       ctx.stroke();
 
       // Label
-      ctx.fillStyle = "#888";
+      ctx.fillStyle = fixtureLabel;
       ctx.font = "11px monospace";
       ctx.textAlign = "center";
       ctx.fillText(name, pos.x, pos.y + FIXTURE_RADIUS + 14);

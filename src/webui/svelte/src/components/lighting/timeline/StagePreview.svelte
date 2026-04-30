@@ -139,15 +139,24 @@
     const h = canvasEl.clientHeight;
     ctx.clearRect(0, 0, w, h);
 
+    // Theme-aware stage chrome. The stage stays darker than the page
+    // even in light mode so colored fixture glows still pop, but it's
+    // no longer a hardcoded near-black slab on a paper background.
+    const isDark = document.documentElement.classList.contains("nc--dark");
+    const stageFill = isDark ? "#1a1a1a" : "#efeeee"; // gray-100
+    const stageStroke = isDark ? "#3a3a3e" : "#c9c7c8"; // gray-300
+    const fixtureStroke = isDark ? "#555" : "#9a9a9a"; // gray-400
+    const labelFill = isDark ? "#888" : "#4a4849"; // gray-600
+
     // Stage outline
-    ctx.fillStyle = "#1a1a1a";
+    ctx.fillStyle = stageFill;
     ctx.fillRect(
       PADDING - 10,
       PADDING - 10,
       w - 2 * PADDING + 20,
       h - 2 * PADDING + 20,
     );
-    ctx.strokeStyle = "#3a3a3e";
+    ctx.strokeStyle = stageStroke;
     ctx.lineWidth = 1;
     ctx.strokeRect(
       PADDING - 10,
@@ -207,7 +216,7 @@
 
       // Fixture body
       ctx.fillStyle = `rgb(${finalR},${finalG},${finalB})`;
-      ctx.strokeStyle = "#555";
+      ctx.strokeStyle = fixtureStroke;
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.arc(pos.x, pos.y, FIXTURE_RADIUS, 0, Math.PI * 2);
@@ -215,7 +224,7 @@
       ctx.stroke();
 
       // Label
-      ctx.fillStyle = "#666";
+      ctx.fillStyle = labelFill;
       ctx.font = "9px monospace";
       ctx.textAlign = "center";
       ctx.fillText(name, pos.x, pos.y + FIXTURE_RADIUS + 10);
