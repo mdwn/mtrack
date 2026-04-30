@@ -27,24 +27,27 @@
     links: NavLink[];
     currentHash: string;
     locked: boolean;
-    toggling: boolean;
     onClose: () => void;
-    onToggleLock: () => void;
   }
 
-  let {
-    open,
-    links,
-    currentHash,
-    locked,
-    toggling,
-    onClose,
-    onToggleLock,
-  }: Props = $props();
+  let { open, links, currentHash, locked, onClose }: Props = $props();
 
   function isActive(hash: string): boolean {
     if (hash === "#/") return currentHash === "#/" || currentHash === "";
     return currentHash.startsWith(hash);
+  }
+
+  let drawerEl: HTMLElement | null = $state(null);
+  // The element that had focus before the drawer opened — restored on close.
+  let priorFocus: HTMLElement | null = null;
+
+  function focusables(): HTMLElement[] {
+    if (!drawerEl) return [];
+    return Array.from(
+      drawerEl.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ),
+    ).filter((el) => el.offsetParent !== null);
   }
 
   function onKeyDown(e: KeyboardEvent) {
@@ -52,17 +55,36 @@
     if (e.key === "Escape") {
       e.preventDefault();
       onClose();
+      return;
+    }
+    if (e.key === "Tab") {
+      // Cycle Tab/Shift-Tab focus within the drawer.
+      const items = focusables();
+      if (items.length === 0) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      const active = document.activeElement as HTMLElement | null;
+      if (e.shiftKey && active === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && active === last) {
+        e.preventDefault();
+        first.focus();
+      }
     }
   }
 
-  // Trap focus within the drawer when open. Best-effort: focus first item.
-  let drawerEl: HTMLElement | null = $state(null);
   $effect(() => {
     if (open && drawerEl) {
-      const firstLink = drawerEl.querySelector<HTMLElement>(
-        "a.drawer__item, button.drawer__item",
-      );
-      firstLink?.focus();
+      // Capture and move focus to the first item.
+      priorFocus = document.activeElement as HTMLElement | null;
+      const first = focusables()[0];
+      first?.focus();
+    } else if (!open && priorFocus) {
+      // Restore focus to whatever opened the drawer (typically the
+      // hamburger button).
+      priorFocus.focus();
+      priorFocus = null;
     }
   });
 </script>
@@ -79,11 +101,19 @@
   role="presentation"
   aria-hidden="true"
 ></div>
+<!--
+  Only advertise role="dialog" while the drawer is actually open. When
+  closed, the <aside> stays mounted so the slide-out animation can play,
+  but if it kept role="dialog" then global `[role="dialog"]` selectors
+  (used by tests, a11y trees, etc.) would also match the hidden drawer.
+-->
 <aside
   bind:this={drawerEl}
   class="drawer"
   class:drawer--open={open}
-  aria-hidden={!open}
+  aria-hidden={open ? null : "true"}
+  aria-modal={open ? "true" : null}
+  role={open ? "dialog" : null}
   aria-label={$t("nav.menu")}
 >
   <div class="drawer__head">
@@ -133,45 +163,6 @@
     {/each}
   </nav>
   <div class="drawer__foot">
-    <button
-      class="drawer__lock"
-      class:drawer__lock--locked={locked}
-      onclick={onToggleLock}
-      disabled={toggling}
-      aria-label={locked
-        ? $t("nav.lock.lockedHint")
-        : $t("nav.lock.unlockedHint")}
-    >
-      {#if locked}
-        <svg
-          width="14"
-          height="14"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          ><rect x="5" y="11" width="14" height="10" rx="2" /><path
-            d="M8 11V8a4 4 0 0 1 8 0v3"
-          /></svg
-        >
-      {:else}
-        <svg
-          width="14"
-          height="14"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          ><rect x="5" y="11" width="14" height="10" rx="2" /><path
-            d="M8 11V8a4 4 0 0 1 7.8-1"
-          /></svg
-        >
-      {/if}
-    </button>
     <span class="drawer__foot-label">
       {locked ? $t("nav.lock.locked") : $t("nav.lock.unlocked")}
     </span>
@@ -237,7 +228,7 @@
     font-weight: 800;
     font-size: 18px;
     line-height: 1;
-    color: var(--nc-cyan-500);
+    color: var(--nc-cyan-600);
     letter-spacing: -0.02em;
   }
   :global(.nc--dark) .drawer__brand {
@@ -305,31 +296,6 @@
     font-weight: 500;
     font-size: 13px;
     color: var(--nc-fg-2);
-  }
-  .drawer__lock {
-    width: 36px;
-    height: 36px;
-    border-radius: 8px;
-    border: 1px solid var(--nc-border-1);
-    background: var(--nc-bg-2);
-    color: var(--nc-fg-2);
-    cursor: pointer;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-  }
-  .drawer__lock:hover {
-    background: var(--nc-bg-3);
-    color: var(--nc-fg-1);
-  }
-  .drawer__lock--locked {
-    color: var(--nc-warn);
-    border-color: rgba(242, 181, 68, 0.45);
-    background: rgba(242, 181, 68, 0.12);
-  }
-  .drawer__lock:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
   }
   .drawer__foot-label {
     flex: 1;

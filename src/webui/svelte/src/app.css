@@ -622,13 +622,13 @@ input[type="radio"] {
   font-size: 13px;
 }
 .mono--cyan {
-  color: var(--nc-cyan-500);
+  color: var(--nc-cyan-600);
 }
 .nc--dark .mono--cyan {
   color: var(--nc-cyan-300);
 }
 .mono--pink {
-  color: var(--nc-pink-500);
+  color: var(--nc-pink-600);
 }
 .nc--dark .mono--pink {
   color: var(--nc-pink-300);

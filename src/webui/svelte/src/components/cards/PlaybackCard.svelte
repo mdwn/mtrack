@@ -451,7 +451,7 @@
     color: var(--nc-fg-3);
   }
   .playback-card__state--playing {
-    color: var(--nc-pink-500);
+    color: var(--nc-pink-600);
   }
   :global(.nc--dark) .playback-card__state--playing {
     color: var(--nc-pink-300);

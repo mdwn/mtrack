@@ -202,7 +202,7 @@
     margin-top: 4px;
   }
   .tracks-card__channels--unmapped {
-    color: var(--nc-pink-500);
+    color: var(--nc-pink-600);
   }
   :global(.nc--dark) .tracks-card__channels--unmapped {
     color: var(--nc-pink-300);

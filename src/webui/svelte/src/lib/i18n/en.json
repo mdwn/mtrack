@@ -437,6 +437,10 @@
 
   "songs.detail.excludeChannels": "Exclude MIDI Channels",
   "songs.detail.excludeChannelsHint": "Check channels to exclude from MIDI file playback. Commonly used to skip channel 10 (drums) or channels used for lighting data.",
+  "songs.detail.excludeNone": "None",
+  "songs.detail.excludeAll": "All",
+  "songs.detail.excludeAllButDrums": "Drums only",
+  "songs.detail.excludeAllButDrumsHint": "Exclude every channel except 10 (the drum channel) — keeps drums, silences everything else.",
   "songs.detail.midiEvent": "Song Select Event",
   "songs.detail.midiEventHint": "MIDI event sent when this song is selected. Commonly used to send a program change to switch patches on external gear.",
   "songs.detail.noMidiEvent": "No MIDI event configured.",
@@ -556,6 +560,12 @@
   "songLighting.confirmRemove": "Remove \"{name}\" from this song and delete the file?",
   "songLighting.parseError": "parse error",
   "songLighting.removeFile": "Remove light file",
+
+  "lightingSummary.desktopOnly": "Edit on a laptop. The timeline needs more room than a phone screen has — here's a quick read of what's configured.",
+  "lightingSummary.shows": "Shows",
+  "lightingSummary.sequences": "Sequences",
+  "lightingSummary.effects": "Effect types in this song",
+  "lightingSummary.empty": "No lighting cues configured for this song.",
 
   "fileBrowser.emptyDir": "Empty directory",
   "fileBrowser.selected": "{count} selected",
