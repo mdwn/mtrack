@@ -181,7 +181,8 @@ test("bulk-import-result", async ({ page }) => {
   //
   // Override the parent path with MTRACK_IMPORT_PATH if the auto-pick
   // doesn't produce a representative result.
-  const importPath = process.env.MTRACK_IMPORT_PATH ?? (await pickImportParent(page));
+  const importPath =
+    process.env.MTRACK_IMPORT_PATH ?? (await pickImportParent(page));
 
   await page.goto("/#/songs");
   await page.getByRole("button", { name: /import from filesystem/i }).click();
@@ -198,7 +199,9 @@ test("bulk-import-result", async ({ page }) => {
   });
 
   // Trigger bulk import and wait for the result step.
-  await page.getByRole("button", { name: /import all subdirectories/i }).click();
+  await page
+    .getByRole("button", { name: /import all subdirectories/i })
+    .click();
   await expect(page.locator(".bulk-result")).toBeVisible({ timeout: 30000 });
   // Let the result list render fully.
   await page.waitForTimeout(400);
@@ -229,8 +232,9 @@ async function pickImportParent(page: Page): Promise<string> {
       page,
       `/api/browse?path=${encodeURIComponent(entry.path)}`,
     );
-    const subdirCount = child.entries.filter((e) => e.type === "directory")
-      .length;
+    const subdirCount = child.entries.filter(
+      (e) => e.type === "directory",
+    ).length;
     if (subdirCount >= 3) {
       return entry.path;
     }
