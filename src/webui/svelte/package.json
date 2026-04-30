@@ -12,7 +12,8 @@
     "format:check": "prettier --check .",
     "test:e2e": "playwright test --project=e2e",
     "test:mock": "playwright test --project=mock",
-    "test:pw": "playwright test --project=mock"
+    "test:pw": "playwright test --project=mock",
+    "screenshots": "playwright test --config=playwright.screenshots.config.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-04-30
+
 ### Added
 
 - **MIDI controller configuration in web UI**: The controllers section now supports full
@@ -39,6 +41,99 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   transformers that remap note/CC numbers before output.
 
 ### Improved
+
+- **Web UI: Nonchord brand redesign**: A second, brand-led redesign pass on top of the design
+  system overhaul, restyling the entire UI to the Nonchord visual language (warm-paper light
+  theme, Nunito display + Inter body + JetBrains Mono technical, pink and cyan identity
+  accents) while keeping the existing information architecture and gRPC/WebSocket plumbing.
+
+  **Visual treatment**:
+  - New design tokens (`--nc-*`) for color, type scale, spacing, shadows, and motion. Legacy
+    tokens are remapped semantically so existing components inherit the new palette without
+    churn.
+  - Nunito display font for titles, Inter for body, JetBrains Mono for technical readouts
+    (loaded from Google Fonts with `preconnect`).
+  - Hero PlaybackCard with hard-shadow "pop" treatment, pixel-eq corner accent, 48px circular
+    play button (pink while playing, cyan when stopped), and 8px scrub with section regions.
+  - PlaylistCard, TracksCard, LogsCard, EffectsCard, StageView all rebuilt with overline +
+    Nunito title heads, `--card-border` separators, and the Nonchord badge taxonomy.
+  - Songs browser with magnifier-prefixed search, group cards with overline labels, song rows
+    with MIDI/LIGHT/DMX badges, hover-reveal delete, and a phone collapse to name + badges +
+    chevron.
+  - Songs detail with cyan back-link + chevron, Nunito 32 title, dirty-dot tab bar, MIDI
+    channel grid in cyan-tinted 8-up, ink-on-inset YAML editor.
+  - Playlists, Config, Status, and Lighting editor pages restyled to match the same panel-card
+    chrome, cyan-inset selection states, and Nunito heading hierarchy.
+  - Lighting timeline cue blocks tinted cyan with a cyan-500 selection ring; lane labels and
+    toolbar promoted to the design tokens; tempo, ruler, and stage simulator canvases now
+    branch on theme so they read clearly on both light and dark backgrounds.
+
+- **Live-show telemetry & live-mode safety**: A series of UX-Findings improvements turning
+  the redesign's chrome into something that actually behaves like a live tool.
+  - **Lock now disables editing.** Save / delete / destructive buttons across PlaylistEditor,
+    ConfigEditor, SongList, SongDetail, and LightingEditor become `disabled` while the
+    player is locked (with a tooltip explaining why). A thin amber **LIVE — locked** stripe
+    surfaces under the topnav, and unlocking from the topnav requires a confirm dialog
+    ("Unlock during a live session?"). Locking is still one click.
+  - **Real dirty tracking with an in-app navigation guard.** Save buttons render as ghost +
+    disabled when clean, primary + enabled when dirty, with an "Unsaved" pill next to Save.
+    A new `lib/dirtyGuard.ts` lets editors register their dirty state with the router; the
+    hashchange listener prompts to discard unsaved changes when the user navigates to a
+    different page-level scope. Tab nav within the same editor (e.g. Songs detail tab
+    switches) intentionally does not prompt — same scope, same component, edits persist.
+    `beforeunload` handlers stay as a backstop for tab close / refresh.
+  - **Connection dot reflects subsystem health.** New `lib/ws/status.ts` polls `/api/status`
+    every 5s while the WebSocket is up and exposes a derived health store (ok / warn / error
+    / unknown). The topnav `.topnav__conn` becomes a link to `#/status` whose color reflects
+    worst-case health: green when all required subsystems are connected, amber on
+    initializing or controllers-in-error, red when audio (always required) or any configured
+    MIDI / DMX subsystem is not connected.
+  - **Topnav playhead progress bar.** A 2px pink fill at the bottom edge of the topnav
+    reflects elapsed/total while playing, so users can tell where in the song they are
+    without looking at the dashboard.
+  - **ERROR / WARN log row tinting.** ERROR rows in the dashboard logs panel get a pink-
+    tinted row background and a bold left edge stripe; WARN rows get the same treatment in
+    amber. Impossible to miss while scanning during a show.
+  - **Status page deep-links.** Each subsystem row that isn't currently connected gets a
+    cyan **Configure →** or **Fix →** pill that deep-links to the active profile's section
+    in the config editor (audio / midi / lighting / trigger; DMX routed to the lighting
+    section).
+  - **Currently-playing indicator on the Songs browser.** The row whose name matches the
+    active song gets a pink left-edge stripe and a Playing or Loaded pill — mirrors the
+    playlist-row treatment on the dashboard.
+
+- **Web UI: a11y and phone polish**:
+  - **NavDrawer is a real modal.** Tab / Shift-Tab cycle focus within the open drawer,
+    `aria-modal` is set, and focus is restored to whatever opened the drawer (typically the
+    hamburger button) on close. The role and aria-modal are only set while the drawer is
+    actually open so global `[role="dialog"]` queries don't match the hidden drawer.
+  - **Cyan / pink contrast on text.** Promote `color: var(--nc-cyan-500)` → cyan-600 (and
+    pink-500 → pink-600) wherever those colors appear as text on the warm-paper background.
+    Brand wordmark, drawer brand, `.mono--cyan` / `.mono--pink` utilities, unmapped-track
+    label, back-link hover. Dark-mode overrides (cyan-300 / pink-300) unchanged.
+  - **Phone tab scroll affordance.** Right-edge gradient mask on the song-detail tab bar at
+    ≤720px so users can see there's more to scroll.
+  - **Lock toggle on the mini-player.** Move the lock toggle from the drawer footer to the
+    mini-player on phone — the mini-player is the live-show object and is already pinned
+    to the bottom.
+  - **MIDI exclude-channels presets.** Add **None / All / Drums only** preset chips above
+    the 16-channel exclude grid in song detail. "Drums only" matches the most common
+    live-show preset (mtrack runs the drum channel, everything else is played live).
+  - **Phone read-only lighting summary.** New `LightingSummary` component shows tempo,
+    show + cue counts, sequence + cue counts, and the distinct effect types used in the
+    song. Both Songs detail's Lighting tab and the standalone `LightingEditor` page render
+    this on phone-sized viewports instead of the unusable timeline editor.
+
+- **User-facing light/dark theme toggle**: The redesign already supported `.nc--dark` on
+  `<html>` but had no UI to flip it. The topnav now has a sun / moon / half-disc button that
+  cycles **system → light → dark → system**, with the choice persisted to
+  `localStorage["mtrack-theme"]`. A tiny inline IIFE in `index.html` applies the chosen
+  theme before first paint to avoid a flash of the wrong palette.
+
+- **Phone-only chrome**: 280px slide-in NavDrawer (with backdrop, focus trap, Esc to close)
+  replaces the dropdown hamburger menu, and a sticky bottom MiniPlayer (transport + lock
+  toggle + song title that jumps to the dashboard) is always visible on phone-sized
+  viewports.
 
 - **Web UI design system and accessibility overhaul**: Comprehensive design review and
   redesign pass across all pages, establishing a stronger design language and improving

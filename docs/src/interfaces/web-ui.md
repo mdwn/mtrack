@@ -10,18 +10,55 @@ Use `--web-port` and `--web-address` to customize:
 $ mtrack start /path/to/project --web-port 9090 --web-address 127.0.0.1
 ```
 
+The UI is fully responsive — desktop layout above 720px, phone layout (slide-in drawer + sticky
+mini-player) below — and supports both light and dark themes. Click the sun / moon button in
+the top nav to cycle through **system → light → dark → system**; the choice is persisted to
+`localStorage`.
+
 ## Lock Mode
 
 mtrack starts in **locked mode** by default. When locked, all state-altering operations (song
-edits, playlist changes, configuration updates, file uploads) are blocked. Playback controls
-(play, stop, next, previous, playlist switching) always work regardless of lock state.
+edits, playlist changes, configuration updates, file uploads) are blocked. Save and delete
+buttons across every editor become visibly disabled, with a tooltip explaining why. Playback
+controls (play, stop, next, previous, playlist switching) always work regardless of lock state.
 
-Toggle the lock from the lock icon in the navigation bar. This is a safety mechanism for live
-performance — lock the player during a show to prevent accidental changes.
+Toggle the lock from the lock icon in the top nav (or, on phone, from the mini-player). When
+locked, a thin amber **LIVE — locked** stripe surfaces under the top nav as a constant
+reminder. Unlocking from the topnav requires a confirmation dialog ("Unlock during a live
+session?") so you can't fat-finger your way out of safe mode mid-show; locking is still one
+click.
 
 ![Nav bar locked](../images/nav-locked.png)
 
 ![Nav bar unlocked](../images/nav-unlocked.png)
+
+## Connection & Health Indicator
+
+The dot at the right edge of the top nav reflects the worst-case state of all required
+subsystems, polled every 5 seconds:
+
+- **Green** — All required subsystems are connected.
+- **Amber** — Something is initializing, or a controller is in error.
+- **Red** — A required subsystem is not connected. Audio is always required; MIDI / DMX are
+  required when the active profile has them configured.
+- **Pulsing red** — The WebSocket connection itself is down. The lighting editor also shows a
+  yellow warning banner in this state.
+
+Click the dot to jump to the [Status page](#status-page) for details and one-click "Configure →"
+or "Fix →" actions on subsystems that need attention.
+
+A 2px pink fill at the bottom edge of the top nav reflects elapsed/total playback position
+while a song is playing, so you can tell where you are in the song without leaving the page
+you're working on.
+
+## Unsaved-Changes Guard
+
+When you have unsaved edits in the Songs detail, Config, Playlists, or Lighting editors, the
+**Save** button shifts to a primary (cyan) treatment with an "Unsaved" pill next to it.
+Clicking a top-nav link or the back-link with unsaved changes triggers a "Discard unsaved
+changes?" confirmation; cancel restores the URL and your edits stay intact. Tab navigation
+within the same editor (e.g. switching between Songs detail tabs) keeps the same component
+mounted and does not prompt — your edits across tabs persist.
 
 ## Dashboard
 
@@ -43,12 +80,16 @@ The dashboard is the landing page, providing an at-a-glance view of the player s
   fixtures to rearrange the layout — positions persist in localStorage across page reloads.
 - **Active effects** — Lists currently running lighting effects by name.
 - **Log panel** — Streaming application logs with level filter pills
-  (TRACE/DEBUG/INFO/WARN/ERROR), defaulting to INFO+.
+  (TRACE/DEBUG/INFO/WARN/ERROR), defaulting to INFO+. ERROR rows get a pink-tinted
+  background and a left-edge stripe; WARN rows get the same treatment in amber, so they're
+  hard to miss while scanning during a show.
 
 ## Song Browser
 
 The song browser lists all songs in the repository, grouped by directory. Each song shows its
-duration, track count, and badges for MIDI, lighting DSL, and MIDI DMX files.
+duration, track count, and badges for MIDI, lighting DSL, and MIDI DMX files. The currently
+loaded song is marked with a pink left-edge stripe and a **Playing** or **Loaded** badge so
+you can spot it at a glance while scrolling a long song list.
 
 ![Song browser](../images/song-browser.png)
 
@@ -92,8 +133,10 @@ Edit track names, assign audio files, and upload new audio files via drag-and-dr
 picker. When uploading a file that already exists, you'll be prompted to confirm the replacement.
 The MIDI playback file is also configured here — pick from existing files, browse the server
 filesystem, or upload a new `.mid` file. When a MIDI file is configured, a 16-channel toggle
-grid lets you exclude specific channels from playback (commonly used to skip drums on channel
-10 or lighting data channels).
+grid lets you exclude specific channels from playback. Three preset chips above the grid —
+**None / All / Drums only** — cover the common cases; "Drums only" excludes every channel
+except 10 (the General MIDI drum channel) for the live-show pattern of mtrack running drums
+while the band plays everything else.
 
 Supported audio formats: WAV, FLAC, MP3, OGG, AAC, M4A, AIFF.
 
@@ -322,18 +365,32 @@ The status page shows build information and hardware subsystem status in a two-c
 layout:
 
 - **Audio, MIDI, DMX, Trigger** — Each shows "connected", "initializing", "not connected",
-  or "not configured" with the device name when connected.
+  or "not configured" with the device name when connected. Subsystems that aren't currently
+  connected get a **Configure →** or **Fix →** pill that deep-links to the relevant section
+  in the config editor for the active profile.
+- **Controllers** — Per-controller status (running / error) with a Restart button.
 - **Profile** — The matched hostname and active profile name.
 
-The page auto-refreshes every 5 seconds with an "Updated Xs ago" indicator.
+The page auto-refreshes every 5 seconds with an "Updated Xs ago" indicator. The top nav
+health dot reflects the worst-case state of all required subsystems on this page (see
+[Connection & Health Indicator](#connection--health-indicator)).
 
 ![Status page](../images/status-page.png)
 
-## Connection Indicator
+## Phone Layout
 
-The navigation bar includes a connection status dot (green = connected, red = disconnected)
-and will auto-reconnect if the WebSocket connection drops. The lighting editor shows a
-yellow warning banner when disconnected.
+Below 720px viewport width, the UI swaps in phone-friendly chrome:
+
+- The top nav's tabs collapse behind a **hamburger drawer** (slide-in from the left, 280px
+  wide). Tab and Shift-Tab cycle focus inside the drawer; Esc and a backdrop click close it.
+- A sticky bottom **mini-player** with prev / play / next, a song title that taps through to
+  the Dashboard, and a lock toggle stays visible across all pages.
+- The Songs detail tab bar scrolls horizontally with a fade on the right edge; the MIDI
+  channel grid reflows from 16-up to 8-up; and the Lighting tab swaps the timeline editor
+  (which needs at least ~1000px to be usable) for a read-only summary listing tempo, show
+  and sequence cue counts, and the distinct effect types in the song.
+- Editing the Lighting timeline is desktop-only by design. Use a laptop or tablet in
+  landscape for cue authoring.
 
 ## Directory Structure Requirements
 
