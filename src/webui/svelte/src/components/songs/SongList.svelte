@@ -300,9 +300,11 @@
                   </div>
                 </button>
               {:else}
+                {@const isCurrent = $playbackStore.song_name === item.name}
                 <div
                   class="song-row"
                   class:song-row--first={idx === 0}
+                  class:song-row--current={isCurrent}
                   onclick={() => navigate(item.name)}
                   onkeydown={(e) => {
                     if (e.key === "Enter" || e.key === " ") {
@@ -316,6 +318,16 @@
                   <div class="song-row__main">
                     <span class="song-row__name">{item.name}</span>
                     <div class="song-row__badges">
+                      {#if isCurrent}
+                        <span class="badge badge--current">
+                          {#if $playbackStore.is_playing}
+                            <span aria-hidden="true">▶</span>
+                            {$t("songs.currentPlaying")}
+                          {:else}
+                            {$t("songs.currentLoaded")}
+                          {/if}
+                        </span>
+                      {/if}
                       {#if item.has_midi}
                         <span class="badge badge--midi">MIDI</span>
                       {/if}
@@ -554,6 +566,21 @@
   .song-row__chevron {
     display: none;
     color: var(--nc-fg-3);
+  }
+  .song-row--current {
+    background: rgba(239, 96, 163, 0.06);
+    box-shadow: inset 3px 0 0 var(--nc-pink-400);
+  }
+  .song-row--current:hover {
+    background: rgba(239, 96, 163, 0.12);
+  }
+  .badge--current {
+    background: rgba(239, 96, 163, 0.18);
+    color: var(--nc-pink-600);
+    border-color: rgba(239, 96, 163, 0.45);
+  }
+  :global(.nc--dark) .badge--current {
+    color: var(--nc-pink-300);
   }
   .song-row--failed {
     background: rgba(232, 75, 75, 0.04);

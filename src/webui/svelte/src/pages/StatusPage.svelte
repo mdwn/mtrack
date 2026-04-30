@@ -116,12 +116,22 @@
   const subsystems: {
     key: keyof StatusResponse["hardware"];
     labelKey: string;
+    /** Section slug within the profile editor URL. */
+    section: string;
   }[] = [
-    { key: "audio", labelKey: "status.audio" },
-    { key: "midi", labelKey: "status.midi" },
-    { key: "dmx", labelKey: "status.dmx" },
-    { key: "trigger", labelKey: "status.trigger" },
+    { key: "audio", labelKey: "status.audio", section: "audio" },
+    { key: "midi", labelKey: "status.midi", section: "midi" },
+    // DMX configuration lives inside the profile's Lighting section.
+    { key: "dmx", labelKey: "status.dmx", section: "lighting" },
+    { key: "trigger", labelKey: "status.trigger", section: "trigger" },
   ];
+
+  /** Build a deep-link to the profile editor for a given section. */
+  function configureLink(section: string): string {
+    const profile = data?.hardware.profile;
+    if (!profile) return "#/config";
+    return `#/config/${encodeURIComponent(profile)}/${section}`;
+  }
 </script>
 
 <div class="status-page">
@@ -167,6 +177,7 @@
         <div class="subsystem-list">
           {#each subsystems as sub (sub.key)}
             {@const s = data.hardware[sub.key] as SubsystemStatus}
+            {@const needsConfig = s.status !== "connected"}
             <div class="subsystem-row">
               <div
                 class="status-dot"
@@ -178,6 +189,22 @@
               <span class="subsystem-status">{statusLabel(s)}</span>
               {#if s.name}
                 <span class="subsystem-name">{s.name}</span>
+              {/if}
+              {#if needsConfig}
+                <a
+                  class="subsystem-link"
+                  href={configureLink(sub.section)}
+                  aria-label={s.name
+                    ? $t("status.fixSubsystem", {
+                        values: { name: $t(sub.labelKey) },
+                      })
+                    : $t("status.configureSubsystem", {
+                        values: { name: $t(sub.labelKey) },
+                      })}
+                >
+                  {s.name ? $t("status.fix") : $t("status.configure")}
+                  <span aria-hidden="true">→</span>
+                </a>
               {/if}
             </div>
           {/each}
@@ -359,6 +386,35 @@
     white-space: nowrap;
     max-width: 360px;
     font-family: var(--nc-font-mono);
+  }
+  .subsystem-link {
+    margin-left: auto;
+    font-family: var(--nc-font-display);
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--nc-cyan-600);
+    text-decoration: none;
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid rgba(94, 202, 234, 0.45);
+    background: rgba(94, 202, 234, 0.1);
+    white-space: nowrap;
+    transition:
+      background var(--nc-dur-fast) var(--nc-ease),
+      color var(--nc-dur-fast) var(--nc-ease);
+  }
+  :global(.nc--dark) .subsystem-link {
+    color: var(--nc-cyan-300);
+  }
+  .subsystem-link:hover {
+    background: rgba(94, 202, 234, 0.2);
+    color: var(--nc-cyan-700);
+  }
+  /* Push the name back to its mid position when a fix link is also shown. */
+  .subsystem-row:has(.subsystem-link) .subsystem-name {
+    margin-left: 0;
+    text-align: left;
+    flex: 1;
   }
   .card-header-row {
     display: flex;

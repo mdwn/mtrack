@@ -188,17 +188,28 @@
     display: grid;
     grid-template-columns: 56px max-content 1fr;
     gap: 10px;
-    padding: 1px 0;
+    padding: 2px 8px;
+    margin: 0 -8px;
+    border-left: 3px solid transparent;
     word-break: break-word;
   }
   .logs-card__lvl {
     font-weight: 700;
+  }
+  .logs-card__line--ERROR {
+    background: rgba(232, 75, 75, 0.1);
+    border-left-color: var(--nc-error);
+    font-weight: 600;
   }
   .logs-card__line--ERROR .logs-card__lvl {
     color: var(--nc-pink-600);
   }
   :global(.nc--dark) .logs-card__line--ERROR .logs-card__lvl {
     color: var(--nc-pink-300);
+  }
+  .logs-card__line--WARN {
+    background: rgba(242, 181, 68, 0.1);
+    border-left-color: var(--nc-warn);
   }
   .logs-card__line--WARN .logs-card__lvl {
     color: #b47a1a;
