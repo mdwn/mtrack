@@ -25,6 +25,23 @@
       href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
+    <script>
+      // Apply the user's theme before first paint to avoid a flash of
+      // the wrong palette when "dark" is the chosen / system preference.
+      (function () {
+        try {
+          var stored = localStorage.getItem("mtrack-theme");
+          var dark =
+            stored === "dark" ||
+            (stored !== "light" &&
+              window.matchMedia &&
+              window.matchMedia("(prefers-color-scheme: dark)").matches);
+          if (dark) document.documentElement.classList.add("nc--dark");
+        } catch (e) {
+          // localStorage unavailable (private mode etc.) — fall through to default.
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="app"></div>
