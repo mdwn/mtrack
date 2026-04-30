@@ -390,10 +390,10 @@
   .show-lane {
     display: flex;
     height: 52px;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px solid var(--card-border);
   }
   .show-lane.sequence {
-    background: rgba(239, 96, 163, 0.03);
+    background: rgba(239, 96, 163, 0.04);
   }
   .lane-label {
     width: 100px;
@@ -402,15 +402,16 @@
     flex-direction: column;
     align-items: flex-start;
     justify-content: center;
-    padding: 0 8px;
+    padding: 0 10px;
     gap: 2px;
-    border-right: 1px solid var(--border);
-    background: var(--bg-card);
+    border-right: 1px solid var(--card-border);
+    background: var(--card-bg);
   }
   .lane-name {
+    font-family: var(--nc-font-display);
+    font-weight: 700;
     font-size: 13px;
-    font-weight: 500;
-    color: var(--text);
+    color: var(--nc-fg-1);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -419,10 +420,10 @@
   .lane-delete {
     background: none;
     border: none;
-    color: var(--text-dim);
+    color: var(--nc-fg-3);
     cursor: pointer;
     font-size: 13px;
-    padding: 1px 3px;
+    padding: 1px 4px;
     border-radius: 3px;
     opacity: 0;
     transition: opacity 0.15s;
@@ -431,8 +432,8 @@
     opacity: 1;
   }
   .lane-delete:hover {
-    background: rgba(239, 68, 68, 0.15);
-    color: var(--red);
+    background: rgba(232, 75, 75, 0.15);
+    color: var(--nc-error);
   }
   .lane-content {
     flex: 1;

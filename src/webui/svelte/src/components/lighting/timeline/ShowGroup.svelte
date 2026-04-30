@@ -166,28 +166,29 @@
 <style>
   .show-group {
     display: flex;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px solid var(--card-border);
   }
   .group-label {
     width: 100px;
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
-    border-right: 1px solid var(--border);
-    background: var(--bg-card);
+    border-right: 1px solid var(--card-border);
+    background: var(--card-bg);
   }
   .group-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 2px 8px;
-    border-bottom: 1px solid var(--border);
+    padding: 2px 10px;
+    border-bottom: 1px solid var(--card-border);
     min-height: 22px;
   }
   .group-name {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--text);
+    font-family: var(--nc-font-display);
+    font-weight: 700;
+    font-size: 13px;
+    color: var(--nc-fg-1);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -202,21 +203,25 @@
     display: flex;
     align-items: center;
     min-width: 0;
-    padding: 0 8px;
-    border-bottom: 1px solid var(--border);
+    padding: 0 10px;
+    border-bottom: 1px solid var(--card-border);
     box-sizing: content-box;
   }
   .sublane-type-label {
-    font-size: 11px;
-    color: var(--text-dim);
+    font-family: var(--nc-font-sans);
+    font-weight: 700;
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--nc-fg-3);
   }
   .group-delete {
     background: none;
     border: none;
-    color: var(--text-dim);
+    color: var(--nc-fg-3);
     cursor: pointer;
     font-size: 11px;
-    padding: 1px 3px;
+    padding: 1px 4px;
     border-radius: 3px;
     opacity: 0;
     transition: opacity 0.15s;
@@ -226,8 +231,8 @@
     opacity: 1;
   }
   .group-delete:hover {
-    background: rgba(239, 68, 68, 0.15);
-    color: var(--red);
+    background: rgba(232, 75, 75, 0.15);
+    color: var(--nc-error);
   }
   .lane-header-spacer {
     height: 22px;

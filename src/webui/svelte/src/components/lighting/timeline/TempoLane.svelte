@@ -130,20 +130,23 @@
   .tempo-lane {
     display: flex;
     height: 24px;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px solid var(--card-border);
   }
   .tempo-label {
     width: 100px;
     flex-shrink: 0;
     display: flex;
     align-items: center;
-    padding: 0 8px;
-    font-size: 12px;
-    color: var(--text-dim);
+    padding: 0 10px;
+    font-family: var(--nc-font-sans);
+    font-weight: 700;
+    font-size: 11px;
+    line-height: 1.2;
+    letter-spacing: 0.14em;
     text-transform: uppercase;
-    letter-spacing: 0.5px;
-    border-right: 1px solid var(--border);
-    background: var(--bg-card);
+    color: var(--nc-fg-3);
+    border-right: 1px solid var(--card-border);
+    background: var(--card-bg);
   }
   .tempo-content {
     flex: 1;
