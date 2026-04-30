@@ -188,10 +188,10 @@
     display: flex;
     align-items: center;
     gap: 12px;
-    padding: 6px 12px;
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
+    padding: 8px 14px;
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: var(--nc-radius-md);
     flex-shrink: 0;
   }
   .toolbar-group {

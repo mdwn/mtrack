@@ -15,6 +15,7 @@
 <script lang="ts">
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
+  import { effectiveTheme } from "../../../lib/theme";
   import type { TempoSection } from "../../../lib/lighting/types";
   import {
     msToPixel,
@@ -72,6 +73,28 @@
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
 
+    // Theme-aware ink for the ruler. The hardcoded `#555` / `#888`
+    // were nearly invisible on the light paper background.
+    const isDark = document.documentElement.classList.contains("nc--dark");
+    const tickStrong = isDark ? "#888" : "#4a4849"; // nc-gray-600
+    const tickFaint = isDark ? "#555" : "#9a9a9a"; // nc-gray-400
+    const tickLabel = isDark ? "#aaa" : "#353334"; // nc-gray-700
+    const measureStrong = isDark
+      ? "rgba(94, 202, 234, 0.9)"
+      : "rgba(22, 106, 130, 0.95)"; // cyan-700 on light
+    const measureWeak = isDark
+      ? "rgba(94, 202, 234, 0.5)"
+      : "rgba(31, 143, 175, 0.5)"; // cyan-600 on light
+    const measureFaint = isDark
+      ? "rgba(94, 202, 234, 0.2)"
+      : "rgba(31, 143, 175, 0.25)";
+    const offsetStroke = isDark
+      ? "rgba(249, 115, 22, 0.75)"
+      : "rgba(180, 83, 9, 0.85)"; // amber-700 on light
+    const offsetLabel = isDark
+      ? "rgba(249, 115, 22, 0.95)"
+      : "rgba(146, 64, 14, 1)"; // amber-800 on light
+
     // Visible time range
     const viewStartMs = scrollLeft / pixelsPerMs;
     const viewEndMs = (scrollLeft + viewportWidth) / pixelsPerMs;
@@ -80,14 +103,13 @@
     const tickIntervalMs = chooseTickInterval(pixelsPerMs);
     const firstTick = Math.floor(viewStartMs / tickIntervalMs) * tickIntervalMs;
 
-    ctx.fillStyle = "#555";
     ctx.font = "13px monospace";
     ctx.textAlign = "center";
 
     for (let t = firstTick; t <= viewEndMs; t += tickIntervalMs) {
       const x = msToPixel(t, pixelsPerMs) - scrollLeft;
       // Major tick
-      ctx.strokeStyle = "#444";
+      ctx.strokeStyle = tickStrong;
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(x, h - 12);
@@ -99,7 +121,7 @@
       const subInterval = tickIntervalMs / subCount;
       for (let s = 1; s < subCount; s++) {
         const sx = msToPixel(t + s * subInterval, pixelsPerMs) - scrollLeft;
-        ctx.strokeStyle = "#333";
+        ctx.strokeStyle = tickFaint;
         ctx.beginPath();
         ctx.moveTo(sx, h - 6);
         ctx.lineTo(sx, h);
@@ -107,7 +129,7 @@
       }
 
       // Label
-      ctx.fillStyle = "#888";
+      ctx.fillStyle = tickLabel;
       ctx.fillText(formatMs(t), x, h - 16);
     }
 
@@ -126,7 +148,7 @@
       for (const line of gridLines) {
         const x = msToPixel(line.ms, pixelsPerMs) - scrollLeft;
         if (line.type === "measure") {
-          ctx.strokeStyle = "rgba(94, 202, 234, 0.5)";
+          ctx.strokeStyle = measureWeak;
           ctx.lineWidth = 1;
           ctx.beginPath();
           ctx.moveTo(x, 0);
@@ -134,13 +156,13 @@
           ctx.stroke();
 
           if (line.label) {
-            ctx.fillStyle = "rgba(94, 202, 234, 0.9)";
+            ctx.fillStyle = measureStrong;
             ctx.font = "12px monospace";
             ctx.textAlign = "center";
             ctx.fillText(line.label, x, 10);
           }
         } else {
-          ctx.strokeStyle = "rgba(94, 202, 234, 0.2)";
+          ctx.strokeStyle = measureFaint;
           ctx.lineWidth = 0.5;
           ctx.beginPath();
           ctx.moveTo(x, 4);
@@ -154,7 +176,7 @@
         if (off.ms < viewStartMs || off.ms > viewEndMs) continue;
         const x = msToPixel(off.ms, pixelsPerMs) - scrollLeft;
         // Vertical line
-        ctx.strokeStyle = "rgba(249, 115, 22, 0.7)";
+        ctx.strokeStyle = offsetStroke;
         ctx.lineWidth = 1.5;
         ctx.setLineDash([3, 2]);
         ctx.beginPath();
@@ -167,7 +189,7 @@
           off.type === "reset"
             ? get(t)("timeline.reset")
             : `offset ${off.measures}`;
-        ctx.fillStyle = "rgba(249, 115, 22, 0.9)";
+        ctx.fillStyle = offsetLabel;
         ctx.font = "11px monospace";
         ctx.textAlign = "left";
         ctx.fillText(label, x + 3, 10);
@@ -306,6 +328,7 @@
     void offsets;
     void playheadMs;
     void playCursorMs;
+    void $effectiveTheme;
     draw();
   });
 </script>

@@ -20,6 +20,7 @@
     msToPixel,
     type OffsetMarker,
   } from "../../../lib/lighting/timeline-state";
+  import { effectiveTheme } from "../../../lib/theme";
 
   interface Props {
     tempo: TempoSection;
@@ -65,6 +66,16 @@
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
 
+    // Light-mode text on a light-cyan tint needs a darker hue to keep
+    // contrast above WCAG-AA. Dark mode keeps the brighter cyan.
+    const isDark = document.documentElement.classList.contains("nc--dark");
+    const labelColor = isDark
+      ? "rgba(94, 202, 234, 0.95)"
+      : "rgba(22, 106, 130, 0.95)"; // cyan-700
+    const borderColor = isDark
+      ? "rgba(94, 202, 234, 0.3)"
+      : "rgba(31, 143, 175, 0.4)"; // cyan-600
+
     const segments = buildTempoSegments(tempo);
     const colors = ["rgba(94, 202, 234, 0.12)", "rgba(139, 92, 246, 0.12)"];
 
@@ -86,7 +97,7 @@
 
       // Segment border
       if (x1 >= 0 && x1 <= w) {
-        ctx.strokeStyle = "rgba(94, 202, 234, 0.3)";
+        ctx.strokeStyle = borderColor;
         ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.moveTo(x1, 0);
@@ -99,7 +110,7 @@
       if (labelX < x2 - 20 && labelX < w) {
         const ts = seg.beatsPerMeasure + "/" + seg.beatValue;
         const label = `${seg.bpm} BPM, ${ts}`;
-        ctx.fillStyle = "rgba(94, 202, 234, 0.8)";
+        ctx.fillStyle = labelColor;
         ctx.font = "12px monospace";
         ctx.textAlign = "left";
         ctx.textBaseline = "middle";
@@ -115,6 +126,7 @@
     void totalDurationMs;
     void tempo;
     void offsets;
+    void $effectiveTheme;
     draw();
   });
 </script>
@@ -130,20 +142,23 @@
   .tempo-lane {
     display: flex;
     height: 24px;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px solid var(--card-border);
   }
   .tempo-label {
     width: 100px;
     flex-shrink: 0;
     display: flex;
     align-items: center;
-    padding: 0 8px;
-    font-size: 12px;
-    color: var(--text-dim);
+    padding: 0 10px;
+    font-family: var(--nc-font-sans);
+    font-weight: 700;
+    font-size: 11px;
+    line-height: 1.2;
+    letter-spacing: 0.14em;
     text-transform: uppercase;
-    letter-spacing: 0.5px;
-    border-right: 1px solid var(--border);
-    background: var(--bg-card);
+    color: var(--nc-fg-3);
+    border-right: 1px solid var(--card-border);
+    background: var(--card-bg);
   }
   .tempo-content {
     flex: 1;
