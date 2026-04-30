@@ -21,7 +21,9 @@ a phone, or any device with a browser — so you never have to babysit a compute
   and OLA integration for DMX output.
 - **Web UI** — Full browser-based interface for playback control, song management, lighting
   show editing, playlist management, and hardware configuration. Includes a DAW-style timeline
-  editor with integrated playback preview.
+  editor with integrated playback preview. Fully responsive (desktop / phone), supports light
+  and dark themes, and surfaces live-show essentials — health dot, playhead progress, and a
+  LIVE-locked indicator — across every page.
 - **Zero-config startup** — Point mtrack at a directory of songs and it works. No config file
   required.
 - **Lock mode** — Safety mechanism for live shows. Lock the player to prevent accidental
