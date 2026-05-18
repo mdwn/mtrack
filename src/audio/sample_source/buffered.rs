@@ -12,17 +12,18 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 // Buffered ChannelMappedSampleSource used for song playback. Prefetches audio
-// on a shared Rayon thread pool into a ring buffer so the real‑time audio
-// callback does no decoding/resampling work and never allocates.
+// on a shared Rayon thread pool into a lock‑free SPSC ring (rtrb) so the
+// real‑time audio callback does no decoding/resampling work, never allocates,
+// and never acquires a mutex on the buffer read path.
 //
 
-use std::cmp;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Condvar, Mutex,
 };
 
 use rayon::ThreadPoolBuilder;
+use rtrb::{Consumer, Producer, RingBuffer};
 
 use crate::audio::sample_source::error::SampleSourceError;
 use crate::audio::sample_source::traits::ChannelMappedSampleSource;
@@ -54,49 +55,81 @@ impl BufferFillPool {
     }
 }
 
-struct BufferState {
-    /// Interleaved frames: [frame0_ch0, frame0_ch1, ..., frameN_chC].
-    data: Vec<f32>,
-    /// Next frame index to read.
-    read_index: usize,
-    /// Next frame index to write.
-    write_index: usize,
-    /// Number of valid frames currently buffered.
-    len_frames: usize,
-    /// True when the inner source has been fully consumed (EOF or error).
-    finished: bool,
-    /// True while a refill job is running for this buffer.
-    refill_in_progress: bool,
-}
-
-struct BufferInner {
-    state: Mutex<BufferState>,
+/// Single‑shot signal used at construction to block the caller until either
+/// enough samples are buffered for warmup or the source finishes before
+/// reaching that threshold. Never touched on the realtime read path.
+struct WarmupSignal {
+    state: Mutex<bool>,
     condvar: Condvar,
 }
 
+impl WarmupSignal {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(false),
+            condvar: Condvar::new(),
+        }
+    }
+
+    fn signal(&self) {
+        let mut done = self.state.lock().unwrap();
+        if !*done {
+            *done = true;
+            self.condvar.notify_all();
+        }
+    }
+
+    fn wait(&self) {
+        let mut done = self.state.lock().unwrap();
+        while !*done {
+            done = self.condvar.wait(done).unwrap();
+        }
+    }
+}
+
 /// Buffered wrapper for any ChannelMappedSampleSource used for song playback.
-/// The audio callback only reads from the ring buffer; all heavy work runs on
-/// the BufferFillPool workers.
+/// The audio callback only reads from a lock‑free SPSC ring buffer; all heavy
+/// work runs on the BufferFillPool workers.
 pub struct BufferedSampleSource {
+    /// Decoder mutex. Only contended by the fill task (at most one in flight
+    /// per source, enforced by `refill_in_progress`).
     inner: Arc<Mutex<Box<dyn ChannelMappedSampleSource + Send + Sync>>>,
-    buffer: Arc<BufferInner>,
+    /// Consumer end of the lock‑free ring. Owned by this struct; the audio
+    /// callback reads from it via `read_frames`/`next_frame`.
+    consumer: Consumer<f32>,
+    /// Producer end of the ring, parked here when no fill task is running.
+    /// A fill task `take()`s it on entry and puts it back on exit. The slot
+    /// is only locked by non‑realtime threads.
+    producer_slot: Arc<Mutex<Option<Producer<f32>>>>,
     pool: Arc<BufferFillPool>,
     channels: u16,
-    capacity_frames: usize,
-    refill_threshold_frames: usize,
-    warmup_min_frames: usize,
+    refill_threshold_samples: usize,
+    warmup_min_samples: usize,
     channel_mappings: Vec<Vec<String>>,
+    refill_in_progress: Arc<AtomicBool>,
     finished_flag: Arc<AtomicBool>,
-    /// Pre-allocated frame buffer reused by `next_sample` to avoid per-call allocation.
+    /// Pre‑allocated frame buffer reused by `next_sample` to avoid per-call
+    /// allocation.
     frame_buffer: Vec<f32>,
 }
+
+// SAFETY: rtrb's `Consumer<f32>` is `Send` but not `Sync` because the ring
+// is a single‑consumer structure (its read index is non‑atomic by design).
+// `BufferedSampleSource` only touches `self.consumer` through `&mut self`
+// methods, never through `&self`, so concurrent access to the consumer is
+// impossible: the borrow checker forbids it at the call site, and the mixer
+// further wraps the source in a per‑source `Mutex<ActiveSource>` that
+// serializes access across threads. All other fields are independently
+// `Sync` (Arc<Mutex<_>>, atomics, plain data).
+unsafe impl Sync for BufferedSampleSource {}
 
 impl BufferedSampleSource {
     /// Creates a new buffered wrapper around an existing ChannelMappedSampleSource.
     ///
     /// - `device_buffer_frames`: current audio device buffer size in frames.
-    /// - Buffer capacity is 4x `device_buffer_frames`.
-    /// - Warmup waits for at least `device_buffer_frames` frames before returning.
+    /// - Ring capacity is `device_buffer_frames * 4` frames.
+    /// - Warmup blocks until at least `device_buffer_frames` frames are ready
+    ///   (or the source ends before that).
     pub fn new(
         inner: Box<dyn ChannelMappedSampleSource + Send + Sync>,
         pool: Arc<BufferFillPool>,
@@ -107,178 +140,170 @@ impl BufferedSampleSource {
         let warmup_min_frames = device_buffer_frames.max(1);
         let refill_threshold_frames = capacity_frames / 2;
 
+        let capacity_samples = capacity_frames * channels;
+        let warmup_min_samples = warmup_min_frames * channels;
+        let refill_threshold_samples = refill_threshold_frames * channels;
+
         let channel_mappings = inner.channel_mappings().to_vec();
 
-        let buffer_state = BufferState {
-            data: vec![0.0; capacity_frames * channels],
-            read_index: 0,
-            write_index: 0,
-            len_frames: 0,
-            finished: false,
-            refill_in_progress: false,
-        };
-
-        let buffer = Arc::new(BufferInner {
-            state: Mutex::new(buffer_state),
-            condvar: Condvar::new(),
-        });
+        let (producer, consumer) = RingBuffer::<f32>::new(capacity_samples);
+        let producer_slot = Arc::new(Mutex::new(Some(producer)));
 
         let inner = Arc::new(Mutex::new(inner));
+        // Start in the "refill in progress" state so the initial fill task is
+        // the sole producer; cleared once it exits.
+        let refill_in_progress = Arc::new(AtomicBool::new(true));
         let finished_flag = Arc::new(AtomicBool::new(false));
 
-        let this = Self {
-            inner: inner.clone(),
-            buffer: buffer.clone(),
-            pool: pool.clone(),
-            channels: channels as u16,
-            capacity_frames,
-            refill_threshold_frames,
-            warmup_min_frames,
-            channel_mappings,
-            finished_flag: finished_flag.clone(),
-            frame_buffer: vec![0.0f32; channels],
-        };
+        let warmup = Arc::new(WarmupSignal::new());
 
-        // Kick off initial warmup fill.
         Self::spawn_fill_task(
-            pool,
-            inner,
-            buffer.clone(),
-            finished_flag,
+            pool.clone(),
+            inner.clone(),
+            producer_slot.clone(),
+            refill_in_progress.clone(),
+            finished_flag.clone(),
             channels,
-            capacity_frames,
-            capacity_frames,
-            warmup_min_frames,
+            warmup_min_samples,
+            Some(warmup.clone()),
         );
 
-        // Block until at least one device buffer worth of frames is ready or the
-        // source finishes/errs. This runs on a non‑realtime thread (song setup).
-        {
-            let mut state = buffer.state.lock().unwrap();
-            while !state.finished && state.len_frames < warmup_min_frames {
-                state = buffer.condvar.wait(state).unwrap();
-            }
-        }
+        // Block until warmup completes (sufficient samples or source done).
+        // Runs on a non‑realtime thread (song setup).
+        warmup.wait();
 
-        this
+        Self {
+            inner,
+            consumer,
+            producer_slot,
+            pool,
+            channels: channels as u16,
+            refill_threshold_samples,
+            warmup_min_samples,
+            channel_mappings,
+            refill_in_progress,
+            finished_flag,
+            frame_buffer: vec![0.0f32; channels],
+        }
     }
 
+    /// If the ring has fallen below the refill threshold and no fill task is
+    /// already running, spawn one. Uses atomics only — no buffer mutex.
     fn spawn_refill_if_needed(&self) {
-        let mut should_spawn = false;
+        if self.finished_flag.load(Ordering::Relaxed) {
+            return;
+        }
+        if self.consumer.slots() > self.refill_threshold_samples {
+            return;
+        }
+        if self
+            .refill_in_progress
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+            .is_err()
         {
-            let mut state = self.buffer.state.lock().unwrap();
-            if !state.finished
-                && !state.refill_in_progress
-                && state.len_frames <= self.refill_threshold_frames
-            {
-                state.refill_in_progress = true;
-                should_spawn = true;
-            }
+            // A fill task is already in flight.
+            return;
         }
-
-        if should_spawn {
-            Self::spawn_fill_task(
-                self.pool.clone(),
-                self.inner.clone(),
-                self.buffer.clone(),
-                self.finished_flag.clone(),
-                self.channels as usize,
-                self.capacity_frames,
-                self.capacity_frames,
-                self.warmup_min_frames,
-            );
-        }
+        Self::spawn_fill_task(
+            self.pool.clone(),
+            self.inner.clone(),
+            self.producer_slot.clone(),
+            self.refill_in_progress.clone(),
+            self.finished_flag.clone(),
+            self.channels as usize,
+            self.warmup_min_samples,
+            None,
+        );
     }
 
     #[allow(clippy::too_many_arguments)]
     fn spawn_fill_task(
         pool: Arc<BufferFillPool>,
         inner: Arc<Mutex<Box<dyn ChannelMappedSampleSource + Send + Sync>>>,
-        buffer: Arc<BufferInner>,
+        producer_slot: Arc<Mutex<Option<Producer<f32>>>>,
+        refill_in_progress: Arc<AtomicBool>,
         finished_flag: Arc<AtomicBool>,
         channels: usize,
-        capacity_frames: usize,
-        max_batch_frames: usize,
-        warmup_min_frames: usize,
+        warmup_min_samples: usize,
+        warmup_signal: Option<Arc<WarmupSignal>>,
     ) {
         pool.spawn(move || {
+            let mut producer = match producer_slot.lock().unwrap().take() {
+                Some(p) => p,
+                None => {
+                    // The debounce on `refill_in_progress` should make this
+                    // unreachable. Bail safely if we ever hit it.
+                    refill_in_progress.store(false, Ordering::Release);
+                    if let Some(sig) = warmup_signal {
+                        sig.signal();
+                    }
+                    return;
+                }
+            };
+
             let mut local_frame = vec![0.0f32; channels];
+            let mut samples_written: usize = 0;
+            let mut warmup_signalled = warmup_signal.is_none();
 
             loop {
-                // Early exit if buffer is full or finished.
-                {
-                    let state = buffer.state.lock().unwrap();
-                    if state.finished || state.len_frames >= capacity_frames {
-                        break;
-                    }
-                }
-
-                // How many frames should we try to fill in this batch?
-                let frames_to_fill = {
-                    let state = buffer.state.lock().unwrap();
-                    let available = capacity_frames.saturating_sub(state.len_frames);
-                    if available == 0 {
-                        0
-                    } else {
-                        cmp::min(max_batch_frames, available)
-                    }
-                };
-
-                if frames_to_fill == 0 {
+                // Need at least one frame's worth of free slots to write.
+                if producer.slots() < channels {
                     break;
                 }
 
-                for _ in 0..frames_to_fill {
-                    // Pull next frame from inner source (no locks held on buffer).
-                    let done = {
-                        let mut inner_guard = inner.lock().unwrap();
-                        match inner_guard.next_frame(&mut local_frame[..]) {
-                            Ok(Some(_count)) => false,
-                            Ok(None) => true,
-                            Err(_) => true,
-                        }
-                    };
+                // Decode one frame outside the producer's critical path.
+                let done = {
+                    let mut g = inner.lock().unwrap();
+                    !matches!(g.next_frame(&mut local_frame[..]), Ok(Some(_)))
+                };
 
-                    // Write frame into ring buffer.
-                    {
-                        let mut state = buffer.state.lock().unwrap();
+                if done {
+                    finished_flag.store(true, Ordering::Release);
+                    break;
+                }
 
-                        if done {
-                            state.finished = true;
-                            finished_flag.store(true, Ordering::Relaxed);
-                            buffer.condvar.notify_all();
-                            break;
-                        }
-
-                        if state.len_frames >= capacity_frames {
-                            break;
-                        }
-
-                        let base = state.write_index * channels;
-                        state.data[base..(base + channels)]
-                            .copy_from_slice(&local_frame[..channels]);
-                        state.write_index = (state.write_index + 1) % capacity_frames;
-                        state.len_frames += 1;
-
-                        if state.len_frames >= warmup_min_frames {
-                            buffer.condvar.notify_all();
-                        }
+                // Push one frame into the ring. `push` is the simple safe
+                // single‑item API; for typical channel counts (1–8) the
+                // per‑push atomic overhead is negligible relative to decode
+                // work.
+                let mut pushed_full_frame = true;
+                for &sample in &local_frame[..channels] {
+                    if producer.push(sample).is_err() {
+                        // Ring filled mid‑frame; should not happen because we
+                        // checked slots() >= channels above, but be defensive.
+                        pushed_full_frame = false;
+                        break;
                     }
+                }
+                if !pushed_full_frame {
+                    break;
+                }
+                samples_written += channels;
+
+                if !warmup_signalled && samples_written >= warmup_min_samples {
+                    if let Some(sig) = warmup_signal.as_ref() {
+                        sig.signal();
+                    }
+                    warmup_signalled = true;
                 }
             }
 
-            // Clear refill_in_progress flag and notify any waiters.
-            let mut state = buffer.state.lock().unwrap();
-            state.refill_in_progress = false;
-            buffer.condvar.notify_all();
+            *producer_slot.lock().unwrap() = Some(producer);
+            refill_in_progress.store(false, Ordering::Release);
+
+            // If the source ended before we hit the warmup threshold, unblock
+            // the constructor anyway.
+            if !warmup_signalled {
+                if let Some(sig) = warmup_signal {
+                    sig.signal();
+                }
+            }
         });
     }
 }
 
 impl ChannelMappedSampleSource for BufferedSampleSource {
     fn next_sample(&mut self) -> Result<Option<f32>, SampleSourceError> {
-        // Take the pre-allocated buffer out to satisfy the borrow checker
-        // (next_frame borrows &mut self, so we can't also borrow self.frame_buffer).
         let mut frame = std::mem::take(&mut self.frame_buffer);
         let result = self.next_frame(&mut frame);
         self.frame_buffer = frame;
@@ -296,35 +321,14 @@ impl ChannelMappedSampleSource for BufferedSampleSource {
             )));
         }
 
-        let mut maybe_spawn_refill = false;
-
-        {
-            let mut state = self.buffer.state.lock().unwrap();
-
-            if state.len_frames == 0 {
-                if state.finished {
-                    return Ok(None);
-                }
-                // Buffer underrun but source not exhausted — output silence.
-                // Never acquire self.inner here; the fill task needs it.
-                output[..channels].fill(0.0);
-                maybe_spawn_refill = true;
-                // Fall through to drop state lock, then spawn refill below.
-            } else {
-                let base = state.read_index * channels;
-                output[..channels].copy_from_slice(&state.data[base..(base + channels)]);
-
-                state.read_index = (state.read_index + 1) % self.capacity_frames;
-                state.len_frames -= 1;
-
-                if !state.finished && state.len_frames <= self.refill_threshold_frames {
-                    maybe_spawn_refill = true;
-                }
+        let frames = self.read_frames(&mut output[..channels], 1)?;
+        if frames == 0 {
+            if self.finished_flag.load(Ordering::Relaxed) {
+                return Ok(None);
             }
-        }
-
-        if maybe_spawn_refill {
-            self.spawn_refill_if_needed();
+            // Transient underrun: emit silence, matching the previous
+            // mutex‑guarded implementation's semantics.
+            output[..channels].fill(0.0);
         }
 
         Ok(Some(channels))
@@ -342,48 +346,28 @@ impl ChannelMappedSampleSource for BufferedSampleSource {
             output.len(),
             max_frames * channels,
         );
-        let mut frames_read = 0;
-        let mut maybe_spawn_refill = false;
 
-        {
-            let mut state = self.buffer.state.lock().unwrap();
+        let samples_wanted = max_frames * channels;
+        let available = self.consumer.slots();
+        // Round down to a whole‑frame boundary; the ring is sample‑typed.
+        let to_read = (available.min(samples_wanted) / channels) * channels;
 
-            let available = state.len_frames.min(max_frames);
-            if available > 0 {
-                let read_start = state.read_index;
-                let read_end = read_start + available;
-
-                if read_end <= self.capacity_frames {
-                    // Contiguous region — single copy
-                    let src_start = read_start * channels;
-                    let src_end = read_end * channels;
-                    output[..available * channels].copy_from_slice(&state.data[src_start..src_end]);
-                } else {
-                    // Wrap-around — two copies
-                    let first_part = self.capacity_frames - read_start;
-                    let first_samples = first_part * channels;
-                    let src_start = read_start * channels;
-                    output[..first_samples]
-                        .copy_from_slice(&state.data[src_start..src_start + first_samples]);
-
-                    let second_samples = (available - first_part) * channels;
-                    output[first_samples..first_samples + second_samples]
-                        .copy_from_slice(&state.data[..second_samples]);
+        let frames_read = if to_read > 0 {
+            match self.consumer.read_chunk(to_read) {
+                Ok(chunk) => {
+                    let (first, second) = chunk.as_slices();
+                    output[..first.len()].copy_from_slice(first);
+                    output[first.len()..first.len() + second.len()].copy_from_slice(second);
+                    chunk.commit_all();
+                    to_read / channels
                 }
-
-                state.read_index = (read_start + available) % self.capacity_frames;
-                state.len_frames -= available;
-                frames_read = available;
+                Err(_) => 0,
             }
+        } else {
+            0
+        };
 
-            if !state.finished && state.len_frames <= self.refill_threshold_frames {
-                maybe_spawn_refill = true;
-            }
-        }
-
-        if maybe_spawn_refill {
-            self.spawn_refill_if_needed();
-        }
+        self.spawn_refill_if_needed();
 
         Ok(frames_read)
     }
@@ -397,6 +381,9 @@ impl ChannelMappedSampleSource for BufferedSampleSource {
     }
 
     fn is_exhausted(&self) -> Option<bool> {
+        // Decoder has produced all samples it ever will. The mixer only
+        // consults this on short reads, at which point an empty ring plus a
+        // set finished_flag means truly end‑of‑source.
         Some(self.finished_flag.load(Ordering::Relaxed))
     }
 }
