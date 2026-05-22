@@ -63,6 +63,16 @@ impl LightingSystem {
         }
     }
 
+    /// Returns an iterator over the (name, venue) pairs known to the system.
+    pub fn venues_iter(&self) -> impl Iterator<Item = (&String, &Venue)> {
+        self.venues.iter()
+    }
+
+    /// Returns an iterator over the (name, fixture type) pairs known to the system.
+    pub fn fixture_types_iter(&self) -> impl Iterator<Item = (&String, &FixtureType)> {
+        self.fixture_types.iter()
+    }
+
     /// Loads the lighting configuration.
     pub fn load(&mut self, config: &Lighting, base_path: &Path) -> Result<(), Box<dyn Error>> {
         info!(

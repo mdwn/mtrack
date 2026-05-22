@@ -102,6 +102,11 @@ impl ConfigStore {
         self.inner.read().await.clone()
     }
 
+    /// Returns the path to the on-disk config file.
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
     /// Returns the serialized YAML and checksum without cloning the config.
     pub async fn read_yaml(&self) -> Result<(String, String), ConfigError> {
         let guard = self.inner.read().await;

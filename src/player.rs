@@ -475,8 +475,7 @@ impl Player {
         }
     }
 
-    /// Gets the DMX engine currently in use by the player (for testing).
-    #[cfg(test)]
+    /// Gets the DMX engine currently in use by the player, if any.
     pub fn dmx_engine(&self) -> Option<Arc<dmx::engine::Engine>> {
         self.hardware.read().dmx_engine.clone()
     }
@@ -515,6 +514,24 @@ impl Player {
     /// during async init, the sampler will be started using this sender.
     pub fn set_state_tx(&self, tx: tokio::sync::watch::Sender<Arc<crate::state::StateSnapshot>>) {
         *self.state_tx.lock() = Some(Arc::new(tx));
+    }
+
+    /// Returns a fresh state-watch receiver, if a state sender has been wired.
+    /// Each call produces an independent receiver via `watch::Sender::subscribe`.
+    pub fn state_rx(
+        &self,
+    ) -> Option<tokio::sync::watch::Receiver<Arc<crate::state::StateSnapshot>>> {
+        self.state_tx.lock().as_ref().map(|tx| tx.subscribe())
+    }
+
+    /// Returns the state-watch sender, if one has been wired. Lets callers
+    /// push state snapshots into the player from outside the normal sampler
+    /// path — primarily useful for tests, but also for headless integrations
+    /// that want to drive the state stream without a DMX engine running.
+    pub fn state_tx(
+        &self,
+    ) -> Option<Arc<tokio::sync::watch::Sender<Arc<crate::state::StateSnapshot>>>> {
+        self.state_tx.lock().clone()
     }
 
     /// Sets the config store on the player. Called once after startup.
