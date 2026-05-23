@@ -288,6 +288,20 @@ impl McpServer {
         Ok(ok_json(self.status_snapshot().await?))
     }
 
+    #[tool(description = "Return runtime identity for the connected mtrack \
+        instance: resolved hostname, active hardware profile name, and the \
+        live state (`connected`/`not_connected`/...) and device name of each \
+        subsystem (audio, MIDI, DMX, trigger). Use this to confirm which host \
+        a configuration's `profiles` list selected and what hardware is \
+        actually wired up.")]
+    async fn host_info(&self) -> Result<CallToolResult, McpError> {
+        let snapshot = self.player.hardware_status();
+        let json = serde_json::to_value(&snapshot).map_err(|e| {
+            McpError::internal_error(format!("failed to serialize hardware status: {e}"), None)
+        })?;
+        Ok(ok_json(json))
+    }
+
     #[tool(description = "List all songs loaded in the song repository. Returns name, \
         duration, and track count for each song.")]
     async fn list_songs(&self) -> Result<CallToolResult, McpError> {
@@ -746,8 +760,12 @@ impl McpServer {
         })))
     }
 
-    #[tool(description = "List the logical groups available in the current venue. \
-        Use these names as cue targets when composing a lighting show.")]
+    #[tool(description = "List every group name valid as a cue target. Returns \
+        both venue-defined groups (explicit member lists from `venue \"...\" { … }` \
+        blocks) and logical groups (tag/constraint-based, declared under \
+        `dmx.lighting.groups` in the player config), each tagged with its \
+        `source`. Logical groups include their constraints and, when a venue \
+        is loaded, the fixtures they currently resolve to.")]
     async fn list_groups(&self) -> Result<CallToolResult, McpError> {
         let dmx = match self.player.dmx_engine() {
             Some(d) => d,
@@ -757,23 +775,66 @@ impl McpServer {
             Some(s) => s,
             None => return Ok(ok_json(json!({ "groups": [] }))),
         };
-        let guard = system.lock();
-        let venue = match guard.get_current_venue() {
-            Some(v) => v,
-            None => return Ok(ok_json(json!({ "groups": [] }))),
-        };
-        let groups: Vec<Value> = venue
-            .groups()
-            .iter()
-            .map(|(name, group)| {
-                json!({
-                    "name": name,
-                    "fixtures": group.fixtures(),
+
+        // First pass: snapshot venue groups + logical group definitions while
+        // holding the guard immutably. `resolve_logical_group_graceful` takes
+        // `&mut self`, so we drop and re-acquire for the resolution pass to
+        // avoid borrow-checker contortions.
+        let snapshot: GroupSnapshot = {
+            let guard = system.lock();
+            let venue = guard.current_venue().map(str::to_owned);
+            let venue_groups = guard
+                .get_current_venue()
+                .map(|v| {
+                    v.groups()
+                        .iter()
+                        .map(|(name, group)| {
+                            json!({
+                                "name": name,
+                                "source": "venue",
+                                "fixtures": group.fixtures(),
+                            })
+                        })
+                        .collect::<Vec<_>>()
                 })
-            })
-            .collect();
+                .unwrap_or_default();
+            let logical_defs = guard
+                .logical_groups_iter()
+                .map(|(name, group)| {
+                    let constraints = group
+                        .constraints()
+                        .iter()
+                        .map(|c| format!("{c:?}"))
+                        .collect();
+                    (name.clone(), constraints)
+                })
+                .collect();
+            GroupSnapshot {
+                venue,
+                venue_groups,
+                logical_defs,
+            }
+        };
+
+        // Second pass: resolve each logical group against the current venue
+        // so callers see what fixtures the group would actually target right
+        // now. Resolution mutates the cache, hence the mutable lock.
+        let mut groups = snapshot.venue_groups;
+        {
+            let mut guard = system.lock();
+            for (name, constraints) in snapshot.logical_defs {
+                let fixtures = guard.resolve_logical_group_graceful(&name);
+                groups.push(json!({
+                    "name": name,
+                    "source": "logical",
+                    "constraints": constraints,
+                    "fixtures": fixtures,
+                }));
+            }
+        }
+
         Ok(ok_json(json!({
-            "venue": guard.current_venue(),
+            "venue": snapshot.venue,
             "groups": groups,
         })))
     }
@@ -1571,6 +1632,15 @@ pub(crate) fn validate_lighting_filename(name: &str) -> Result<(), McpError> {
         ));
     }
     Ok(())
+}
+
+/// Snapshot taken under an immutable lock of the lighting system so the
+/// `list_groups` tool can release the lock before re-acquiring it mutably
+/// for logical-group resolution.
+struct GroupSnapshot {
+    venue: Option<String>,
+    venue_groups: Vec<Value>,
+    logical_defs: Vec<(String, Vec<String>)>,
 }
 
 /// Identifies one of the two lighting subdirectories configured under

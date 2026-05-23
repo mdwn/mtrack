@@ -1686,6 +1686,135 @@ async fn mcp_playback_controls_drive_audio() -> Result<(), Box<dyn Error>> {
 }
 
 // ---------------------------------------------------------------------------
+// Test 3i: host_info exposes hostname + profile + subsystem statuses
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_host_info_returns_runtime_identity() -> Result<(), Box<dyn Error>> {
+    let player = build_assets_player().await?;
+
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player,
+    );
+    assert!(controller.statuses().iter().all(|s| s.status == "running"));
+
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+
+    let info = tool_json(
+        &call_tool(&client, &url, &session, 1300, "host_info", json!({})).await,
+    );
+
+    // We can't assert the exact hostname (varies per machine), but the field
+    // must be present and the subsystem objects must have the documented
+    // shape so MCP clients can rely on them.
+    assert!(info["init_done"].is_boolean(), "host_info missing init_done: {info}");
+    assert!(info.get("hostname").is_some(), "host_info missing hostname: {info}");
+    for subsystem in ["audio", "midi", "dmx", "trigger"] {
+        let s = &info[subsystem];
+        assert!(
+            s["status"].is_string(),
+            "host_info.{subsystem}.status missing: {info}"
+        );
+    }
+    // The assets-based test player wires a mock audio device. Its Display
+    // impl appends "(Mock)" to the configured name — assert that flows
+    // through here.
+    assert!(
+        info["audio"]["name"]
+            .as_str()
+            .unwrap_or("")
+            .contains("mock-device"),
+        "expected mock-device in audio.name: {info}"
+    );
+
+    controller.shutdown();
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Test 3j: list_groups returns both venue and logical groups
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_list_groups_surfaces_logical_groups() -> Result<(), Box<dyn Error>> {
+    let fixture = setup_standalone_fixture()?;
+    // The standalone fixture already declares a logical group named
+    // `all_lights` (see write_config). Build a minimal venue with one
+    // explicit group too, so we can assert both flavors come back.
+    std::fs::create_dir_all(fixture.root.join("lighting/venues"))?;
+    std::fs::create_dir_all(fixture.root.join("lighting/fixture_types"))?;
+    copy_dir_recursive(
+        Path::new("examples/lighting/fixture_types"),
+        &fixture.root.join("lighting/fixture_types"),
+    )?;
+    std::fs::write(
+        fixture.root.join("lighting/venues/main_stage.light"),
+        "venue \"main_stage\" {\n  fixture \"Par1\" RGBW_Par @ 1:1 tags [\"wash\"]\n  fixture \"Par2\" RGBW_Par @ 1:7 tags [\"wash\"]\n  group \"my_venue_group\" = Par1, Par2\n}\n",
+    )?;
+
+    let player = build_standalone_player(&fixture).await?;
+
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player,
+    );
+    assert!(controller.statuses().iter().all(|s| s.status == "running"));
+
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+
+    let resp = tool_json(
+        &call_tool(&client, &url, &session, 1400, "list_groups", json!({})).await,
+    );
+    let groups = resp["groups"].as_array().expect("groups array");
+
+    let by_name: std::collections::HashMap<&str, &Value> = groups
+        .iter()
+        .filter_map(|g| g["name"].as_str().map(|n| (n, g)))
+        .collect();
+    assert!(
+        by_name.contains_key("my_venue_group"),
+        "venue group missing from list_groups: {resp}",
+    );
+    assert_eq!(
+        by_name["my_venue_group"]["source"].as_str(),
+        Some("venue")
+    );
+    assert!(
+        by_name.contains_key("all_lights"),
+        "logical group missing from list_groups: {resp}",
+    );
+    assert_eq!(
+        by_name["all_lights"]["source"].as_str(),
+        Some("logical")
+    );
+    assert!(
+        by_name["all_lights"]["constraints"]
+            .as_array()
+            .map(|a| !a.is_empty())
+            .unwrap_or(false),
+        "logical group missing constraints: {resp}",
+    );
+
+    controller.shutdown();
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Test 3h: idle sessions get evicted past TTL
 // ---------------------------------------------------------------------------
 
