@@ -1764,6 +1764,75 @@ async fn mcp_patch_playlist_triggers_reload() -> Result<(), Box<dyn Error>> {
 }
 
 // ---------------------------------------------------------------------------
+// Test 3l: song_details returns the structured metadata + computed BPM
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_song_details_returns_structured_metadata() -> Result<(), Box<dyn Error>> {
+    let player = build_assets_player().await?;
+
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player,
+    );
+    assert!(controller.statuses().iter().all(|s| s.status == "running"));
+
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+
+    let details = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            1600,
+            "song_details",
+            json!({"name": "Song 1"}),
+        )
+        .await,
+    );
+
+    assert_eq!(details["name"].as_str(), Some("Song 1"));
+    assert!(details["duration"].is_string());
+    assert!(details["duration_seconds"].is_number());
+    let tracks = details["tracks"].as_array().expect("tracks array");
+    assert!(!tracks.is_empty(), "song should have at least one track");
+    for track in tracks {
+        assert!(track["name"].is_string());
+        assert!(track["file"].is_string());
+        assert!(track["file_channel"].is_number());
+    }
+    // The asset songs have no click analysis cached, so beat_grid is None
+    // and bpm is null. The fields must still exist in the response shape.
+    assert!(details.get("beat_grid").is_some());
+    assert!(details.get("bpm").is_some());
+
+    // Unknown name should be rejected.
+    let missing = call_tool(
+        &client,
+        &url,
+        &session,
+        1601,
+        "song_details",
+        json!({"name": "definitely not a real song"}),
+    )
+    .await;
+    assert!(
+        missing.get("error").is_some(),
+        "song_details for unknown song should error: {missing}"
+    );
+
+    controller.shutdown();
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Test 3i: host_info exposes hostname + profile + subsystem statuses
 // ---------------------------------------------------------------------------
 

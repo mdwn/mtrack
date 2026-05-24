@@ -613,6 +613,98 @@ impl McpServer {
         })))
     }
 
+    #[tool(description = "Return detailed metadata for a loaded song: track \
+        names with source file + channel, sections, lighting show references, \
+        MIDI playback presence, loop flag, and (when the song's click track \
+        has been analyzed) the full beat grid plus a derived BPM. Use this \
+        when `list_songs` doesn't carry enough info — for instance, to learn \
+        a song's tempo or to inspect its lighting wiring.")]
+    async fn song_details(
+        &self,
+        Parameters(args): Parameters<SongNameArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let song = self
+            .player
+            .songs()
+            .get(&args.name)
+            .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+
+        let tracks: Vec<Value> = song
+            .tracks()
+            .iter()
+            .map(|t| {
+                json!({
+                    "name": t.name(),
+                    "file": t.file().display().to_string(),
+                    "file_channel": t.file_channel(),
+                })
+            })
+            .collect();
+
+        let sections: Vec<Value> = song
+            .sections()
+            .iter()
+            .map(|s| {
+                json!({
+                    "name": s.name,
+                    "start_measure": s.start_measure,
+                    "end_measure": s.end_measure,
+                })
+            })
+            .collect();
+
+        let beat_grid = song.beat_grid().map(|g| {
+            json!({
+                "beat_count": g.beats.len(),
+                "measure_count": g.measure_starts.len(),
+                "beats": g.beats,
+                "measure_starts": g.measure_starts,
+            })
+        });
+        let bpm = song
+            .beat_grid()
+            .and_then(|g| compute_bpm_from_beats(&g.beats));
+
+        let light_shows: Vec<Value> = song
+            .light_shows()
+            .iter()
+            .map(|ls| {
+                json!({
+                    "universe": ls.universe_name(),
+                    "file": ls.dmx_file_path().display().to_string(),
+                })
+            })
+            .collect();
+        let dsl_lighting_shows: Vec<Value> = song
+            .dsl_lighting_shows()
+            .iter()
+            .map(|s| {
+                let show_names: Vec<&String> = s.shows().keys().collect();
+                json!({
+                    "file": s.file_path().display().to_string(),
+                    "shows": show_names,
+                })
+            })
+            .collect();
+
+        Ok(ok_json(json!({
+            "name": song.name(),
+            "base_path": song.base_path().display().to_string(),
+            "config_path": song.config_path().map(|p| p.display().to_string()),
+            "duration": format_duration(song.duration()),
+            "duration_seconds": song.duration().as_secs_f64(),
+            "num_channels": song.num_channels(),
+            "loop_playback": song.loop_playback(),
+            "has_midi_playback": song.midi_playback().is_some(),
+            "tracks": tracks,
+            "sections": sections,
+            "beat_grid": beat_grid,
+            "bpm": bpm,
+            "light_shows": light_shows,
+            "dsl_lighting_shows": dsl_lighting_shows,
+        })))
+    }
+
     #[tool(description = "Write a song's `song.yaml`. Validates the YAML against \
         `config::Song` before writing. If the song doesn't exist yet, creates a \
         new song directory under the songs root.")]
@@ -1254,6 +1346,27 @@ pub(crate) fn ok_json(value: Value) -> CallToolResult {
     CallToolResult::success(vec![Content::text(text)])
 }
 
+/// Derives BPM from a click-track beat grid using the median inter-beat
+/// interval. Median is robust to tempo changes and bad first/last beats;
+/// when a song has a single uniform tempo it matches the mean.
+pub(crate) fn compute_bpm_from_beats(beats: &[f64]) -> Option<f64> {
+    if beats.len() < 2 {
+        return None;
+    }
+    let mut intervals: Vec<f64> =
+        beats.windows(2).map(|w| w[1] - w[0]).filter(|d| *d > 0.0).collect();
+    if intervals.is_empty() {
+        return None;
+    }
+    intervals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let median = intervals[intervals.len() / 2];
+    if median > 0.0 {
+        Some(60.0 / median)
+    } else {
+        None
+    }
+}
+
 /// Formats a [`std::time::Duration`] as `M:SS.mmm`.
 pub(crate) fn format_duration(d: std::time::Duration) -> String {
     let total = d.as_secs_f64();
@@ -1776,4 +1889,41 @@ pub(crate) async fn atomic_write_string(
     .await
     .map_err(|e| McpError::internal_error(format!("join error: {e}"), None))?
     .map_err(|e| McpError::internal_error(format!("write failed: {e}"), None))
+}
+
+#[cfg(test)]
+mod bpm_tests {
+    use super::compute_bpm_from_beats;
+
+    #[test]
+    fn empty_or_singleton_yields_none() {
+        assert!(compute_bpm_from_beats(&[]).is_none());
+        assert!(compute_bpm_from_beats(&[1.0]).is_none());
+    }
+
+    #[test]
+    fn uniform_120bpm() {
+        // 120 BPM = 0.5s per beat
+        let beats: Vec<f64> = (0..16).map(|i| i as f64 * 0.5).collect();
+        let bpm = compute_bpm_from_beats(&beats).unwrap();
+        assert!((bpm - 120.0).abs() < 1e-9, "expected 120, got {bpm}");
+    }
+
+    #[test]
+    fn median_rejects_outliers() {
+        // One badly mistimed beat shouldn't move BPM much.
+        let mut beats: Vec<f64> = (0..20).map(|i| i as f64 * 0.5).collect();
+        beats.push(beats.last().unwrap() + 5.0); // huge gap at the end
+        let bpm = compute_bpm_from_beats(&beats).unwrap();
+        assert!((bpm - 120.0).abs() < 1.0, "median should resist outlier; got {bpm}");
+    }
+
+    #[test]
+    fn duplicate_beats_dropped() {
+        // Two beats at identical time would produce a 0-interval; filter
+        // those out rather than dividing by zero.
+        let beats = vec![0.0, 0.0, 0.5, 1.0, 1.5];
+        let bpm = compute_bpm_from_beats(&beats).unwrap();
+        assert!(bpm.is_finite() && bpm > 0.0);
+    }
 }
