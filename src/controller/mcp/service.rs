@@ -685,6 +685,9 @@ impl McpServer {
             })?;
         }
         atomic_write_string(&path, &args.yaml).await?;
+        // Rebuild the player's playlist set so `list_playlists` /
+        // `switch_playlist` see the new file without requiring a restart.
+        self.reload_songs_from_config().await?;
         Ok(ok_json(json!({
             "path": path.display().to_string(),
             "bytes": args.yaml.len(),
@@ -1047,6 +1050,7 @@ impl McpServer {
         let updated = apply_patch(&original, &args.patch)?;
         let _: crate::config::Playlist = serde_yaml_from_str(&updated)?;
         atomic_write_string(&path, &updated).await?;
+        self.reload_songs_from_config().await?;
         Ok(patch_response(&path, &original, &updated))
     }
 

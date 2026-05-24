@@ -490,17 +490,14 @@ async fn build_standalone_player(
     let songs_path = player_config.songs(&fixture.config_path);
     let songs = songs::get_all_songs(&songs_path)?;
     let playlist_path = fixture.root.join("playlist.yaml");
-    let pl = playlist::Playlist::new(
-        "playlist",
-        &config::Playlist::deserialize(&playlist_path)?,
+    // Mirror `cli::local::start`: use `load_playlists` so a single broken
+    // playlist file is logged and skipped instead of hard-erroring. The
+    // production path expects this resilience so we test against it.
+    let playlists = crate::player::load_playlists(
+        None,
+        Some(&playlist_path),
         songs.clone(),
     )?;
-    let mut playlists = HashMap::new();
-    playlists.insert(
-        "all_songs".to_string(),
-        playlist::from_songs(songs.clone())?,
-    );
-    playlists.insert("playlist".to_string(), pl);
     let player = Player::new(
         playlists,
         "playlist".to_string(),
@@ -1680,6 +1677,87 @@ async fn mcp_playback_controls_drive_audio() -> Result<(), Box<dyn Error>> {
     let _ = call_tool(&client, &url, &session, 205, "previous", json!({})).await;
     let after_prev = player.get_playlist().current().map(|s| s.name().to_string());
     assert_eq!(initial_song, after_prev, "previous didn't restore cursor");
+
+    controller.shutdown();
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Test 3k: patch_playlist triggers a playlist reload
+// ---------------------------------------------------------------------------
+
+/// Reproduces the live bug we hit: a playlist whose songs list contains a
+/// case-mismatched reference fails to load at startup, leaving only
+/// `all_songs`. Patching the file to fix the reference should auto-reload
+/// playlists so the player picks it up without a restart.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_patch_playlist_triggers_reload() -> Result<(), Box<dyn Error>> {
+    let fixture = setup_standalone_fixture()?;
+    // Overwrite the playlist file with a song name that doesn't exist in
+    // the registry — `Player::load_playlists` will skip it during startup
+    // and only `all_songs` will be visible.
+    std::fs::write(
+        fixture.root.join("playlist.yaml"),
+        "kind: playlist\nsongs:\n- nonexistent SONG name\n",
+    )?;
+    let player = build_standalone_player(&fixture).await?;
+
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player,
+    );
+    assert!(controller.statuses().iter().all(|s| s.status == "running"));
+
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+
+    // Baseline: only `all_songs` is loaded because the playlist file
+    // referenced a missing song at startup.
+    let initial = tool_json(
+        &call_tool(&client, &url, &session, 1500, "list_playlists", json!({})).await,
+    );
+    let initial_names: Vec<&str> = initial["playlists"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
+    assert_eq!(
+        initial_names,
+        vec!["all_songs"],
+        "expected only all_songs at startup; got {initial_names:?}"
+    );
+
+    // Fix the playlist via MCP. After the patch, the player should
+    // auto-reload and `playlist` should appear.
+    let _ = call_tool(
+        &client,
+        &url,
+        &session,
+        1501,
+        "patch_playlist",
+        json!({
+            "old_string": "nonexistent SONG name",
+            "new_string": "DSL Light Show Song",
+        }),
+    )
+    .await;
+
+    let after = tool_json(
+        &call_tool(&client, &url, &session, 1502, "list_playlists", json!({})).await,
+    );
+    let after_names: Vec<String> = after["playlists"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    assert!(
+        after_names.iter().any(|n| n == "playlist"),
+        "auto-reload didn't surface the fixed playlist; got {after_names:?}"
+    );
 
     controller.shutdown();
     Ok(())
