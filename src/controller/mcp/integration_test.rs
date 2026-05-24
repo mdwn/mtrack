@@ -1808,10 +1808,18 @@ async fn mcp_song_details_returns_structured_metadata() -> Result<(), Box<dyn Er
         assert!(track["file"].is_string());
         assert!(track["file_channel"].is_number());
     }
-    // The asset songs have no click analysis cached, so beat_grid is None
-    // and bpm is null. The fields must still exist in the response shape.
+    // The asset songs have no click analysis cached, so beat_grid is None,
+    // bpm is null, and tempo_segments is an empty array. The fields must
+    // still exist in the response shape.
     assert!(details.get("beat_grid").is_some());
     assert!(details.get("bpm").is_some());
+    assert_eq!(
+        details["tempo_segments"]
+            .as_array()
+            .map(Vec::len),
+        Some(0),
+        "tempo_segments should be empty for songs with no beat grid: {details}"
+    );
 
     // Unknown name should be rejected.
     let missing = call_tool(

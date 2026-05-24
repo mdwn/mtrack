@@ -616,9 +616,12 @@ impl McpServer {
     #[tool(description = "Return detailed metadata for a loaded song: track \
         names with source file + channel, sections, lighting show references, \
         MIDI playback presence, loop flag, and (when the song's click track \
-        has been analyzed) the full beat grid plus a derived BPM. Use this \
-        when `list_songs` doesn't carry enough info — for instance, to learn \
-        a song's tempo or to inspect its lighting wiring.")]
+        has been analyzed) the full beat grid, the dominant BPM, and a \
+        `tempo_segments` list that breaks the song into runs of roughly \
+        constant tempo (each with `start_seconds`, `end_seconds`, \
+        `beat_count`, `bpm`). The segments are useful for songs with \
+        half-time bridges or shifting feels, where the single `bpm` field \
+        only reports the dominant tempo.")]
     async fn song_details(
         &self,
         Parameters(args): Parameters<SongNameArgs>,
@@ -664,6 +667,10 @@ impl McpServer {
         let bpm = song
             .beat_grid()
             .and_then(|g| compute_bpm_from_beats(&g.beats));
+        let tempo_segments = song
+            .beat_grid()
+            .map(|g| compute_tempo_segments(&g.beats))
+            .unwrap_or_default();
 
         let light_shows: Vec<Value> = song
             .light_shows()
@@ -700,6 +707,7 @@ impl McpServer {
             "sections": sections,
             "beat_grid": beat_grid,
             "bpm": bpm,
+            "tempo_segments": tempo_segments,
             "light_shows": light_shows,
             "dsl_lighting_shows": dsl_lighting_shows,
         })))
@@ -1367,6 +1375,124 @@ pub(crate) fn compute_bpm_from_beats(beats: &[f64]) -> Option<f64> {
     }
 }
 
+/// Width (in intervals) of the median window used to smooth out individual
+/// jittery beats when detecting tempo changes. 5 = consider 2 before / 2
+/// after the focal interval.
+const TEMPO_SMOOTHING_WINDOW: usize = 5;
+/// Minimum length, in intervals, for a tempo segment to survive the noise
+/// filter. 8 intervals ≈ 2 measures of 4/4 — short enough to catch real
+/// musical sections, long enough to drop click-track flickers.
+const TEMPO_MIN_SEGMENT_INTERVALS: usize = 8;
+
+/// Splits a beat grid into contiguous tempo segments. Within each segment
+/// the BPM is roughly constant (rounded to integer); between segments the
+/// BPM changes by at least 1. Short noise segments are folded into their
+/// larger neighbours and equal-BPM adjacents are re-merged afterwards so
+/// the output is a stable, low-cardinality summary of the song's
+/// arrangement (e.g. an 8-minute song with a half-time bridge yields
+/// three segments rather than a sea of single-beat fluctuations).
+pub(crate) fn compute_tempo_segments(beats: &[f64]) -> Vec<Value> {
+    if beats.len() < TEMPO_SMOOTHING_WINDOW + 2 {
+        return Vec::new();
+    }
+    let intervals: Vec<f64> = beats.windows(2).map(|w| w[1] - w[0]).collect();
+    if intervals.is_empty() {
+        return Vec::new();
+    }
+
+    let half = TEMPO_SMOOTHING_WINDOW / 2;
+    let smoothed: Vec<f64> = (0..intervals.len())
+        .map(|i| {
+            let start = i.saturating_sub(half);
+            let end = (i + half + 1).min(intervals.len());
+            let mut window: Vec<f64> = intervals[start..end]
+                .iter()
+                .copied()
+                .filter(|d| *d > 0.0)
+                .collect();
+            if window.is_empty() {
+                return f64::NAN;
+            }
+            window.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let median = window[window.len() / 2];
+            (60.0 / median).round()
+        })
+        .collect();
+
+    // Run-length encode the smoothed BPM trace.
+    let mut segs: Vec<(usize, usize, f64)> = Vec::new(); // (start_interval, end_interval_inclusive, bpm)
+    let mut run_start = 0usize;
+    let mut current = smoothed[0];
+    for (i, &bpm) in smoothed.iter().enumerate().skip(1) {
+        if (bpm - current).abs() >= 0.5 {
+            segs.push((run_start, i - 1, current));
+            run_start = i;
+            current = bpm;
+        }
+    }
+    segs.push((run_start, smoothed.len() - 1, current));
+
+    // Noise filter: repeatedly fold the shortest sub-threshold segment into
+    // its larger neighbour, then re-merge any adjacent equal-BPM runs that
+    // result. Terminates when no sub-threshold segment remains (or there's
+    // only one segment left).
+    loop {
+        let short = segs
+            .iter()
+            .enumerate()
+            .filter(|(_, (s, e, _))| e - s + 1 < TEMPO_MIN_SEGMENT_INTERVALS)
+            .min_by_key(|(_, (s, e, _))| e - s + 1)
+            .map(|(idx, _)| idx);
+        let Some(idx) = short else { break };
+        if segs.len() == 1 {
+            break;
+        }
+        let left_len = if idx > 0 {
+            segs[idx - 1].1 - segs[idx - 1].0 + 1
+        } else {
+            0
+        };
+        let right_len = if idx + 1 < segs.len() {
+            segs[idx + 1].1 - segs[idx + 1].0 + 1
+        } else {
+            0
+        };
+        let merge_left = idx > 0 && (idx + 1 >= segs.len() || left_len >= right_len);
+        if merge_left {
+            segs[idx - 1].1 = segs[idx].1;
+            segs.remove(idx);
+        } else {
+            segs[idx + 1].0 = segs[idx].0;
+            segs.remove(idx);
+        }
+        // Re-merge any newly-adjacent equal-BPM runs.
+        let mut i = 0;
+        while i + 1 < segs.len() {
+            if (segs[i].2 - segs[i + 1].2).abs() < 0.5 {
+                segs[i].1 = segs[i + 1].1;
+                segs.remove(i + 1);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    segs.into_iter()
+        .map(|(s, e, bpm)| {
+            // Interval s lies between beats s and s+1; interval e lies
+            // between beats e and e+1. So the segment spans beats s..=e+1.
+            let start_beat = s;
+            let end_beat = e + 1;
+            json!({
+                "start_seconds": beats[start_beat],
+                "end_seconds": beats[end_beat],
+                "beat_count": end_beat - start_beat + 1,
+                "bpm": bpm,
+            })
+        })
+        .collect()
+}
+
 /// Formats a [`std::time::Duration`] as `M:SS.mmm`.
 pub(crate) fn format_duration(d: std::time::Duration) -> String {
     let total = d.as_secs_f64();
@@ -1893,7 +2019,7 @@ pub(crate) async fn atomic_write_string(
 
 #[cfg(test)]
 mod bpm_tests {
-    use super::compute_bpm_from_beats;
+    use super::{compute_bpm_from_beats, compute_tempo_segments};
 
     #[test]
     fn empty_or_singleton_yields_none() {
@@ -1925,5 +2051,93 @@ mod bpm_tests {
         let beats = vec![0.0, 0.0, 0.5, 1.0, 1.5];
         let bpm = compute_bpm_from_beats(&beats).unwrap();
         assert!(bpm.is_finite() && bpm > 0.0);
+    }
+
+    /// Append `count` beats at `bpm` starting at `start` to `beats`. Returns
+    /// the time at which the last appended beat lands (so callers can chain).
+    fn extend_at(beats: &mut Vec<f64>, start: f64, bpm: f64, count: usize) -> f64 {
+        let interval = 60.0 / bpm;
+        let mut t = start;
+        for _ in 0..count {
+            beats.push(t);
+            t += interval;
+        }
+        // Return where the next beat would land; chains naturally feed this
+        // as `start` to keep the tempo continuous up to the boundary.
+        t
+    }
+
+    fn bpms(segments: &[serde_json::Value]) -> Vec<f64> {
+        segments
+            .iter()
+            .map(|s| s["bpm"].as_f64().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn segments_uniform_song_yields_one_segment() {
+        let mut beats = Vec::new();
+        extend_at(&mut beats, 0.0, 120.0, 64);
+        let segments = compute_tempo_segments(&beats);
+        assert_eq!(bpms(&segments), vec![120.0]);
+    }
+
+    #[test]
+    fn segments_detect_half_time_bridge() {
+        // A song with: 100 beats at 120, then 100 at 60 (half-time), then 100 at 120.
+        // This is the canonical "Sigurd's Song" shape we want to surface
+        // cleanly instead of hiding behind a single median BPM.
+        let mut beats = Vec::new();
+        let t1 = extend_at(&mut beats, 0.0, 120.0, 100);
+        let t2 = extend_at(&mut beats, t1, 60.0, 100);
+        let _ = extend_at(&mut beats, t2, 120.0, 100);
+
+        let segments = compute_tempo_segments(&beats);
+        let detected = bpms(&segments);
+        assert_eq!(
+            detected,
+            vec![120.0, 60.0, 120.0],
+            "expected three distinct segments, got {detected:?}",
+        );
+    }
+
+    #[test]
+    fn segments_smooth_over_isolated_outliers() {
+        // 60 beats at 120 BPM with a single jittered beat in the middle
+        // should still produce a single segment.
+        let mut beats: Vec<f64> = (0..60).map(|i| i as f64 * 0.5).collect();
+        beats[30] += 0.05; // a small smear, well within median tolerance
+        beats[31] -= 0.05;
+        let segments = compute_tempo_segments(&beats);
+        assert_eq!(
+            segments.len(),
+            1,
+            "single outlier should not split a segment; got {segments:?}",
+        );
+    }
+
+    #[test]
+    fn segments_drop_short_intermediate_runs() {
+        // 40 beats at 120, 3 beats at random tempo, 40 beats at 120.
+        // The short run is under TEMPO_MIN_SEGMENT_INTERVALS so it should
+        // be folded back into the surrounding 120 BPM segment.
+        let mut beats = Vec::new();
+        let t1 = extend_at(&mut beats, 0.0, 120.0, 40);
+        let t2 = extend_at(&mut beats, t1, 80.0, 3);
+        let _ = extend_at(&mut beats, t2, 120.0, 40);
+        let segments = compute_tempo_segments(&beats);
+        assert_eq!(
+            bpms(&segments),
+            vec![120.0],
+            "tiny intermediate run should have been merged; got {segments:?}",
+        );
+    }
+
+    #[test]
+    fn segments_handle_too_few_beats() {
+        // Anything below the smoothing window simply returns no segments
+        // rather than panicking or emitting noise.
+        assert!(compute_tempo_segments(&[]).is_empty());
+        assert!(compute_tempo_segments(&[0.0, 0.5]).is_empty());
     }
 }
