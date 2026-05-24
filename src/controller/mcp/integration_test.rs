@@ -1683,6 +1683,158 @@ async fn mcp_playback_controls_drive_audio() -> Result<(), Box<dyn Error>> {
 }
 
 // ---------------------------------------------------------------------------
+// Test 3m: lighting tools resolve root-level files (Esaweg-style layout)
+// ---------------------------------------------------------------------------
+
+/// Songs in this repo sometimes reference their lighting at the song root
+/// (`lighting: - file: show.light`) rather than under a `lighting/`
+/// subdirectory. The first cut of `read_song_lighting` / `patch_song_lighting`
+/// hard-coded the `lighting/` prefix and choked on this layout. Verify both
+/// tools now resolve the path the same way mtrack itself did at load time.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_lighting_tools_handle_root_level_layout() -> Result<(), Box<dyn Error>> {
+    let fixture = setup_standalone_fixture()?;
+
+    // Add a venue + minimal logical group setup so the song's lighting
+    // parses cleanly at load.
+    std::fs::create_dir_all(fixture.root.join("lighting/venues"))?;
+    std::fs::create_dir_all(fixture.root.join("lighting/fixture_types"))?;
+    copy_dir_recursive(
+        Path::new("examples/lighting/fixture_types"),
+        &fixture.root.join("lighting/fixture_types"),
+    )?;
+    std::fs::write(
+        fixture.root.join("lighting/venues/main_stage.light"),
+        "venue \"main_stage\" {\n  fixture \"Par1\" RGBW_Par @ 1:1 tags [\"wash\"]\n}\n",
+    )?;
+
+    // Build a brand-new song directory whose song.yaml points at a
+    // root-level lighting file (no `lighting/` subdir) — mirroring Esaweg.
+    let song_dir = fixture.root.join("songs/flat-lighting-song");
+    std::fs::create_dir_all(&song_dir)?;
+    // Reuse the existing audio file so Song::new can load the track.
+    let track_src = fixture
+        .root
+        .join("songs/dsl-light-show-song/song.mp3");
+    let initial_show = "show \"Flat\" {\n  @00:00.000\n  all_lights: static color: \"blue\", duration: 5s\n}\n";
+    std::fs::write(song_dir.join("show.light"), initial_show)?;
+    std::fs::write(
+        song_dir.join("song.yaml"),
+        format!(
+            "kind: song\nname: Flat Lighting Song\nlighting:\n  - file: show.light\ntracks:\n  - name: main\n    file: \"{}\"\n    file_channel: 1\n",
+            track_src.display()
+        ),
+    )?;
+
+    let player = build_standalone_player(&fixture).await?;
+
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player,
+    );
+    assert!(controller.statuses().iter().all(|s| s.status == "running"));
+
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+
+    // read_song_lighting must follow the actual path mtrack loaded.
+    let read = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            1700,
+            "read_song_lighting",
+            json!({"song": "Flat Lighting Song", "file": "show.light"}),
+        )
+        .await,
+    );
+    assert_eq!(read["source"].as_str(), Some(initial_show));
+    let resolved = read["path"].as_str().unwrap_or_default();
+    assert!(
+        resolved.ends_with("songs/flat-lighting-song/show.light"),
+        "expected root-level path, got: {resolved}",
+    );
+
+    // patch_song_lighting on a root-level file: change the color.
+    let _ = call_tool(
+        &client,
+        &url,
+        &session,
+        1701,
+        "patch_song_lighting",
+        json!({
+            "song": "Flat Lighting Song",
+            "file": "show.light",
+            "old_string": "color: \"blue\"",
+            "new_string": "color: \"red\"",
+        }),
+    )
+    .await;
+    let on_disk = std::fs::read_to_string(song_dir.join("show.light"))?;
+    assert!(
+        on_disk.contains("color: \"red\""),
+        "patch should have landed in the root-level file: {on_disk}",
+    );
+    // The conventional `lighting/` directory must NOT have been created
+    // behind the song's back.
+    assert!(
+        !song_dir.join("lighting").exists(),
+        "patch must not create a lighting/ dir when one wasn't there",
+    );
+
+    // write_song_lighting on the existing root-level file: should rewrite in
+    // place, NOT create a duplicate under `lighting/`.
+    let replacement = "show \"Flat\" {\n  @00:00.000\n  all_lights: static color: \"magenta\", duration: 5s\n}\n";
+    let _ = call_tool(
+        &client,
+        &url,
+        &session,
+        1702,
+        "write_song_lighting",
+        json!({
+            "song": "Flat Lighting Song",
+            "file": "show.light",
+            "source": replacement,
+        }),
+    )
+    .await;
+    assert_eq!(
+        std::fs::read_to_string(song_dir.join("show.light"))?,
+        replacement,
+    );
+    assert!(
+        !song_dir.join("lighting").exists(),
+        "write must not create a lighting/ dir when one wasn't there",
+    );
+
+    // read_song_lighting for a file that doesn't exist anywhere should
+    // produce a helpful error mentioning the song name.
+    let missing = call_tool(
+        &client,
+        &url,
+        &session,
+        1703,
+        "read_song_lighting",
+        json!({"song": "Flat Lighting Song", "file": "bogus.light"}),
+    )
+    .await;
+    assert!(
+        missing.get("error").is_some(),
+        "missing lighting file should error: {missing}"
+    );
+
+    controller.shutdown();
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Test 3k: patch_playlist triggers a playlist reload
 // ---------------------------------------------------------------------------
 

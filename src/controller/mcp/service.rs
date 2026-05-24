@@ -990,8 +990,10 @@ impl McpServer {
         Ok(ok_json(json!({ "fixture_types": types })))
     }
 
-    #[tool(description = "Read a lighting `.light` file from a song's lighting \
-        directory. The file must be located under `<song>/lighting/`.")]
+    #[tool(description = "Read a lighting `.light` file referenced by a song. \
+        The file lookup matches the basename against the song's loaded \
+        lighting shows, so files at the song root or any subdirectory the \
+        `lighting:` block points at are all resolvable.")]
     async fn read_song_lighting(
         &self,
         Parameters(args): Parameters<SongLightingArgs>,
@@ -1002,7 +1004,16 @@ impl McpServer {
             .get(&args.song)
             .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
         validate_lighting_filename(&args.file)?;
-        let path = song.base_path().join("lighting").join(&args.file);
+        let path = find_song_lighting_path(&song, &args.file).ok_or_else(|| {
+            McpError::invalid_params(
+                format!(
+                    "song `{}` has no lighting file named `{}` — check the song's \
+                     `lighting:` block for the exact filename it references",
+                    args.song, args.file
+                ),
+                None,
+            )
+        })?;
         let body = tokio::fs::read_to_string(&path).await.map_err(|e| {
             McpError::internal_error(format!("failed to read {}: {e}", path.display()), None)
         })?;
@@ -1106,9 +1117,14 @@ impl McpServer {
         })))
     }
 
-    #[tool(description = "Validate and write a lighting `.light` file into a \
-        song's `lighting/` directory. The DSL is parsed first; on failure, the \
-        file is not written.")]
+    #[tool(description = "Validate and write a lighting `.light` file for a \
+        song. If the song's `lighting:` block already references this \
+        basename, the existing path is reused (so root-level layouts and \
+        non-standard subdirectories are preserved). Otherwise the file is \
+        created under `<song>/lighting/`. The DSL is parsed first; on \
+        failure the file is not written. The player's song registry is \
+        reloaded after a successful write so the new content takes effect \
+        immediately.")]
     async fn write_song_lighting(
         &self,
         Parameters(args): Parameters<WriteSongLightingArgs>,
@@ -1121,15 +1137,25 @@ impl McpServer {
             .songs()
             .get(&args.song)
             .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-        let lighting_dir = song.base_path().join("lighting");
-        tokio::fs::create_dir_all(&lighting_dir).await.map_err(|e| {
-            McpError::internal_error(
-                format!("failed to create {}: {e}", lighting_dir.display()),
-                None,
-            )
-        })?;
-        let path = lighting_dir.join(&args.file);
+
+        let path = match find_song_lighting_path(&song, &args.file) {
+            Some(existing) => existing,
+            None => {
+                // First time we're writing this basename for this song: drop
+                // it into the conventional `lighting/` subdirectory and
+                // create that directory if it doesn't exist yet.
+                let lighting_dir = song.base_path().join("lighting");
+                tokio::fs::create_dir_all(&lighting_dir).await.map_err(|e| {
+                    McpError::internal_error(
+                        format!("failed to create {}: {e}", lighting_dir.display()),
+                        None,
+                    )
+                })?;
+                lighting_dir.join(&args.file)
+            }
+        };
         atomic_write_string(&path, &args.source).await?;
+        self.reload_songs_from_config().await?;
         Ok(ok_json(json!({
             "path": path.display().to_string(),
             "bytes": args.source.len(),
@@ -1179,9 +1205,12 @@ impl McpServer {
         Ok(patch_response(&path, &original, &updated))
     }
 
-    #[tool(description = "Patch a `.light` file in a song's `lighting/` \
-        directory with a string replacement. The result is parsed with the \
-        lighting parser before being written.")]
+    #[tool(description = "Patch a `.light` file referenced by a song with a \
+        string replacement. The file lookup matches basename against the \
+        song's loaded lighting shows, so files at the song root or any \
+        configured subdirectory are resolvable. The result is parsed with \
+        the lighting parser before being written; the player reloads its \
+        song registry after a successful patch.")]
     async fn patch_song_lighting(
         &self,
         Parameters(args): Parameters<PatchSongLightingArgs>,
@@ -1192,12 +1221,22 @@ impl McpServer {
             .songs()
             .get(&args.song)
             .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-        let path = song.base_path().join("lighting").join(&args.file);
+        let path = find_song_lighting_path(&song, &args.file).ok_or_else(|| {
+            McpError::invalid_params(
+                format!(
+                    "song `{}` has no lighting file named `{}` — check the song's \
+                     `lighting:` block for the exact filename it references",
+                    args.song, args.file
+                ),
+                None,
+            )
+        })?;
         let original = read_text(&path).await?;
         let updated = apply_patch(&original, &args.patch)?;
         crate::lighting::parser::parse_light_shows(&updated)
             .map_err(|e| McpError::invalid_params(format!("patched .light is invalid: {e}"), None))?;
         atomic_write_string(&path, &updated).await?;
+        self.reload_songs_from_config().await?;
         Ok(patch_response(&path, &original, &updated))
     }
 
@@ -1888,6 +1927,46 @@ pub(crate) fn serde_yaml_from_str<T: for<'de> serde::Deserialize<'de>>(
 /// Wraps a [`SafePathError`] as an `invalid_params` MCP error.
 pub(crate) fn safepath_err(err: crate::webui::safe_path::SafePathError) -> McpError {
     McpError::invalid_params(err.to_string(), None)
+}
+
+/// Resolves a lighting filename to its on-disk path, searching three
+/// locations in priority order:
+///
+/// 1. Files already loaded by mtrack via the song's `lighting:` block —
+///    matched on basename so root-level and subdirectory layouts both work.
+/// 2. The conventional `<song>/lighting/<file>` subdirectory location.
+/// 3. The song's root directory `<song>/<file>`.
+///
+/// Returns the first location that exists, or `None` if the file lives
+/// nowhere. Used by read/patch (which expect an existing file) and by
+/// write (to preserve an existing layout instead of overwriting it with a
+/// new file in a different place).
+pub(crate) fn find_song_lighting_path(
+    song: &crate::songs::Song,
+    file: &str,
+) -> Option<std::path::PathBuf> {
+    // (1) Files mtrack already loaded — these are guaranteed to exist and
+    // are the right place to write back to.
+    if let Some(loaded) = song
+        .dsl_lighting_shows()
+        .iter()
+        .find(|s| s.file_path().file_name().and_then(|n| n.to_str()) == Some(file))
+        .map(|s| s.file_path().to_path_buf())
+    {
+        return Some(loaded);
+    }
+    // (2) The conventional `lighting/` subdirectory (existing draft files
+    // an author has written but not yet referenced from song.yaml).
+    let lighting_dir = song.base_path().join("lighting").join(file);
+    if lighting_dir.exists() {
+        return Some(lighting_dir);
+    }
+    // (3) Root-level (Esaweg-style flat layout).
+    let root_level = song.base_path().join(file);
+    if root_level.exists() {
+        return Some(root_level);
+    }
+    None
 }
 
 /// Validates that `name` is a single path segment ending in `.light`.
