@@ -1820,13 +1820,37 @@ async fn mcp_song_details_returns_structured_metadata() -> Result<(), Box<dyn Er
         Some(0),
         "tempo_segments should be empty for songs with no beat grid: {details}"
     );
+    // song_details must NOT carry the raw per-beat array — that's reserved
+    // for song_beat_grid so the response stays small even on long songs.
+    if let Some(bg) = details["beat_grid"].as_object() {
+        assert!(
+            !bg.contains_key("beats"),
+            "song_details.beat_grid must not include the raw beats array: {details}"
+        );
+    }
 
-    // Unknown name should be rejected.
+    // song_beat_grid returns the raw arrays (null when no analysis cached).
+    let grid = tool_json(
+        &call_tool(
+            &client,
+            &url,
+            &session,
+            1601,
+            "song_beat_grid",
+            json!({"name": "Song 1"}),
+        )
+        .await,
+    );
+    assert_eq!(grid["name"].as_str(), Some("Song 1"));
+    assert!(grid.get("beats").is_some());
+    assert!(grid.get("measure_starts").is_some());
+
+    // Unknown name should be rejected for both tools.
     let missing = call_tool(
         &client,
         &url,
         &session,
-        1601,
+        1602,
         "song_details",
         json!({"name": "definitely not a real song"}),
     )
@@ -1834,6 +1858,19 @@ async fn mcp_song_details_returns_structured_metadata() -> Result<(), Box<dyn Er
     assert!(
         missing.get("error").is_some(),
         "song_details for unknown song should error: {missing}"
+    );
+    let missing_grid = call_tool(
+        &client,
+        &url,
+        &session,
+        1603,
+        "song_beat_grid",
+        json!({"name": "definitely not a real song"}),
+    )
+    .await;
+    assert!(
+        missing_grid.get("error").is_some(),
+        "song_beat_grid for unknown song should error: {missing_grid}"
     );
 
     controller.shutdown();

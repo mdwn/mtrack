@@ -616,12 +616,11 @@ impl McpServer {
     #[tool(description = "Return detailed metadata for a loaded song: track \
         names with source file + channel, sections, lighting show references, \
         MIDI playback presence, loop flag, and (when the song's click track \
-        has been analyzed) the full beat grid, the dominant BPM, and a \
-        `tempo_segments` list that breaks the song into runs of roughly \
-        constant tempo (each with `start_seconds`, `end_seconds`, \
-        `beat_count`, `bpm`). The segments are useful for songs with \
-        half-time bridges or shifting feels, where the single `bpm` field \
-        only reports the dominant tempo.")]
+        has been analyzed) the beat-grid summary (counts + measure starts), \
+        dominant BPM, and a `tempo_segments` list that breaks the song into \
+        runs of roughly constant tempo (each with `start_seconds`, \
+        `end_seconds`, `beat_count`, `bpm`). The raw per-beat times are NOT \
+        included here — call `song_beat_grid` for those.")]
     async fn song_details(
         &self,
         Parameters(args): Parameters<SongNameArgs>,
@@ -656,11 +655,13 @@ impl McpServer {
             })
             .collect();
 
+        // Summary-only beat grid: counts + measure starts (small, useful for
+        // bar-boundary work) but without the per-beat times that dominate
+        // response size for long songs. Call `song_beat_grid` for those.
         let beat_grid = song.beat_grid().map(|g| {
             json!({
                 "beat_count": g.beats.len(),
                 "measure_count": g.measure_starts.len(),
-                "beats": g.beats,
                 "measure_starts": g.measure_starts,
             })
         });
@@ -710,6 +711,30 @@ impl McpServer {
             "tempo_segments": tempo_segments,
             "light_shows": light_shows,
             "dsl_lighting_shows": dsl_lighting_shows,
+        })))
+    }
+
+    #[tool(description = "Return the raw beat-grid arrays for a song: every \
+        detected beat time in seconds, plus the indices of measure starts. \
+        Use this only when you need per-beat detail (custom beat-grid \
+        analysis, building a bar ruler UI, debugging click detection); the \
+        response can be tens of kilobytes for long songs. For dominant BPM \
+        or tempo arrangement, prefer `song_details`. Returns `null` for \
+        `beats`/`measure_starts` if the song has no cached beat grid.")]
+    async fn song_beat_grid(
+        &self,
+        Parameters(args): Parameters<SongNameArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let song = self
+            .player
+            .songs()
+            .get(&args.name)
+            .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+        let grid = song.beat_grid();
+        Ok(ok_json(json!({
+            "name": song.name(),
+            "beats": grid.map(|g| g.beats.clone()),
+            "measure_starts": grid.map(|g| g.measure_starts.clone()),
         })))
     }
 
