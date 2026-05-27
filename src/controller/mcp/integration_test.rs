@@ -1418,6 +1418,80 @@ async fn mcp_profile_crud_round_trip() -> Result<(), Box<dyn Error>> {
 }
 
 // ---------------------------------------------------------------------------
+// Test 3n: update_* body schema declares object/array/null
+// ---------------------------------------------------------------------------
+
+/// `serde_json::Value` has no native schemars schema, which historically meant
+/// the generated `inputSchema.properties.body` was untyped. MCP clients
+/// (Claude Code in particular) interpret untyped schemas as "string" and wire-
+/// encode the user's JSON as a quoted string, which the server then rejects
+/// as the wrong shape. The `update_body_schema` helper restores explicit
+/// types — this test pins that contract so a future refactor can't quietly
+/// regress it.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_update_body_schema_is_typed() -> Result<(), Box<dyn Error>> {
+    let player = build_assets_player().await?;
+
+    let port = pick_free_port();
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(config::McpController::new(port))],
+        player,
+    );
+    assert!(controller.statuses().iter().all(|s| s.status == "running"));
+
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+
+    let (_, list_resp) = mcp_post(
+        &client,
+        &url,
+        Some(&session),
+        &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
+    )
+    .await;
+    let tools = list_resp["result"]["tools"]
+        .as_array()
+        .expect("tools array");
+
+    let check_body_type = |tool_name: &str| {
+        let tool = tools
+            .iter()
+            .find(|t| t["name"].as_str() == Some(tool_name))
+            .unwrap_or_else(|| panic!("tool `{tool_name}` not listed"));
+        let body_type = &tool["inputSchema"]["properties"]["body"]["type"];
+        let types: Vec<&str> = body_type
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
+        for expected in ["object", "array", "null"] {
+            assert!(
+                types.contains(&expected),
+                "{tool_name}.body.type missing `{expected}`; got {body_type:?}",
+            );
+        }
+    };
+
+    for tool in [
+        "update_audio",
+        "update_midi",
+        "update_dmx",
+        "update_controllers",
+        "add_profile",
+        "update_profile",
+    ] {
+        check_body_type(tool);
+    }
+
+    controller.shutdown();
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Test 3b: read_song reads flat-layout songs (assets/songs/<name>.yaml)
 // ---------------------------------------------------------------------------
 

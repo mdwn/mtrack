@@ -115,12 +115,30 @@ pub struct LoopSectionArgs {
     pub section_name: String,
 }
 
+/// Schema helper for `body: serde_json::Value` fields in update-tool args.
+///
+/// Without an explicit schema, schemars emits `true` (any value) for
+/// `serde_json::Value`, which MCP clients (notably Claude Code) interpret as
+/// "string" and JSON-stringify the user's input before sending. That causes
+/// the server to receive `Value::String("{\"device\": ...}")` instead of
+/// `Value::Object(...)` and reject the payload as the wrong type.
+///
+/// All current `body` fields take object (`audio`, `midi`, `dmx`, `profile`),
+/// array (`controllers`), or null (clear an optional subsection) — declare
+/// exactly those so the wire encoding is correct.
+fn update_body_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": ["object", "array", "null"],
+    })
+}
+
 /// Common shape for any subsection-update tool. The `body` is the JSON form of
 /// the subsection (e.g. an `Audio` block, an array of controllers, a profile).
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct UpdateConfigArgs {
     /// JSON payload for the subsection being updated. Use `null` to clear an
     /// optional subsection (e.g. `audio: null`).
+    #[schemars(schema_with = "update_body_schema")]
     pub body: serde_json::Value,
     /// Checksum returned by the most recent `get_config` call. The update is
     /// rejected if the on-disk config has changed since.
@@ -132,6 +150,7 @@ pub struct ProfileIndexArgs {
     /// Index of the profile in the `profiles` list.
     pub index: u32,
     /// JSON payload for the profile.
+    #[schemars(schema_with = "update_body_schema")]
     pub body: serde_json::Value,
     /// Expected checksum from the last `get_config` call.
     pub expected_checksum: String,
