@@ -494,11 +494,7 @@ async fn build_standalone_player(
     // Mirror `cli::local::start`: use `load_playlists` so a single broken
     // playlist file is logged and skipped instead of hard-erroring. The
     // production path expects this resilience so we test against it.
-    let playlists = crate::player::load_playlists(
-        None,
-        Some(&playlist_path),
-        songs.clone(),
-    )?;
+    let playlists = crate::player::load_playlists(None, Some(&playlist_path), songs.clone())?;
     let player = Player::new(
         playlists,
         "playlist".to_string(),
@@ -594,17 +590,20 @@ async fn mcp_config_store_round_trip() -> Result<(), Box<dyn Error>> {
     );
 
     // --- read_playlist returns what we wrote.
-    let pl =
-        tool_json(&call_tool(&client, &url, &session, 13, "read_playlist", json!({})).await);
+    let pl = tool_json(&call_tool(&client, &url, &session, 13, "read_playlist", json!({})).await);
     assert!(
-        pl["yaml"].as_str().unwrap_or("").contains("DSL Light Show Song"),
+        pl["yaml"]
+            .as_str()
+            .unwrap_or("")
+            .contains("DSL Light Show Song"),
         "read_playlist did not return our playlist: {pl}"
     );
 
     // --- write_playlist roundtrips an unrelated edit (a comment) so the
     //     song list stays single-entry. Later patch tests rely on the song
     //     name being unique within the file.
-    let new_playlist_yaml = "# round-tripped via MCP\nkind: playlist\nsongs:\n- DSL Light Show Song\n";
+    let new_playlist_yaml =
+        "# round-tripped via MCP\nkind: playlist\nsongs:\n- DSL Light Show Song\n";
     let _ = call_tool(
         &client,
         &url,
@@ -670,9 +669,8 @@ async fn mcp_config_store_round_trip() -> Result<(), Box<dyn Error>> {
     // The player's in-memory song registry should now include the new song.
     // (Pre-reload behavior was: list_songs still returns the stale set until
     // mtrack restarts.)
-    let post_write = tool_json(
-        &call_tool(&client, &url, &session, 1000, "list_songs", json!({})).await,
-    );
+    let post_write =
+        tool_json(&call_tool(&client, &url, &session, 1000, "list_songs", json!({})).await);
     let names: Vec<String> = post_write["songs"]
         .as_array()
         .map(|arr| {
@@ -731,8 +729,7 @@ async fn mcp_config_store_round_trip() -> Result<(), Box<dyn Error>> {
     )
     .await;
     assert!(
-        bad_resp.get("error").is_some()
-            || bad_resp["result"]["isError"].as_bool() == Some(true),
+        bad_resp.get("error").is_some() || bad_resp["result"]["isError"].as_bool() == Some(true),
         "bad DSL should be rejected; got {bad_resp}"
     );
     let rejected_path = fixture
@@ -746,12 +743,15 @@ async fn mcp_config_store_round_trip() -> Result<(), Box<dyn Error>> {
 
     // --- Venues: list (empty) → write → list (has one) → read → bad-write
     let venues_dir = fixture.root.join("lighting/venues");
-    let initial_venues = tool_json(
-        &call_tool(&client, &url, &session, 19, "list_venue_files", json!({})).await,
-    );
+    let initial_venues =
+        tool_json(&call_tool(&client, &url, &session, 19, "list_venue_files", json!({})).await);
     assert_eq!(
         initial_venues["dir"].as_str().unwrap_or(""),
-        venues_dir.canonicalize().unwrap_or(venues_dir.clone()).display().to_string(),
+        venues_dir
+            .canonicalize()
+            .unwrap_or(venues_dir.clone())
+            .display()
+            .to_string(),
         "venues dir resolved unexpectedly: {initial_venues}",
     );
     let venue_dsl = "venue \"test_stage\" {\n  fixture \"Wash1\" RGBW_Par @ 1:1 tags [\"wash\"]\n  group \"front_wash\" = Wash1\n}\n";
@@ -764,9 +764,8 @@ async fn mcp_config_store_round_trip() -> Result<(), Box<dyn Error>> {
         json!({"file": "test_stage.light", "source": venue_dsl}),
     )
     .await;
-    let listed = tool_json(
-        &call_tool(&client, &url, &session, 21, "list_venue_files", json!({})).await,
-    );
+    let listed =
+        tool_json(&call_tool(&client, &url, &session, 21, "list_venue_files", json!({})).await);
     let listed_files: Vec<String> = listed["files"]
         .as_array()
         .map(|arr| {
@@ -801,8 +800,7 @@ async fn mcp_config_store_round_trip() -> Result<(), Box<dyn Error>> {
     )
     .await;
     assert!(
-        bad_venue.get("error").is_some()
-            || bad_venue["result"]["isError"].as_bool() == Some(true),
+        bad_venue.get("error").is_some() || bad_venue["result"]["isError"].as_bool() == Some(true),
         "bad venue should be rejected: {bad_venue}",
     );
     assert!(
@@ -947,8 +945,7 @@ async fn mcp_config_store_round_trip() -> Result<(), Box<dyn Error>> {
     )
     .await;
     assert!(
-        not_found.get("error").is_some()
-            || not_found["result"]["isError"].as_bool() == Some(true),
+        not_found.get("error").is_some() || not_found["result"]["isError"].as_bool() == Some(true),
         "missing old_string should be rejected: {not_found}"
     );
 
@@ -989,8 +986,7 @@ async fn mcp_config_store_round_trip() -> Result<(), Box<dyn Error>> {
     )
     .await;
     assert!(
-        ambiguous.get("error").is_some()
-            || ambiguous["result"]["isError"].as_bool() == Some(true),
+        ambiguous.get("error").is_some() || ambiguous["result"]["isError"].as_bool() == Some(true),
         "non-unique patch should be rejected without replace_all: {ambiguous}",
     );
 
@@ -1038,8 +1034,7 @@ async fn mcp_config_store_round_trip() -> Result<(), Box<dyn Error>> {
     )
     .await;
     assert!(
-        bad_patch.get("error").is_some()
-            || bad_patch["result"]["isError"].as_bool() == Some(true),
+        bad_patch.get("error").is_some() || bad_patch["result"]["isError"].as_bool() == Some(true),
         "patch yielding invalid DSL should be rejected: {bad_patch}",
     );
     let after_bad = std::fs::read_to_string(
@@ -1066,7 +1061,8 @@ async fn mcp_config_store_round_trip() -> Result<(), Box<dyn Error>> {
         }),
     )
     .await;
-    let venue_after = std::fs::read_to_string(fixture.root.join("lighting/venues/test_stage.light"))?;
+    let venue_after =
+        std::fs::read_to_string(fixture.root.join("lighting/venues/test_stage.light"))?;
     assert!(venue_after.contains("tags [\"wash\", \"front\"]"));
 
     let _ = call_tool(
@@ -1165,18 +1161,14 @@ async fn mcp_cues_and_effects_against_live_timeline() -> Result<(), Box<dyn Erro
     let session = initialize_session(&client, &url).await;
 
     // Before play(), the cue list is empty (no song timeline yet).
-    let pre = tool_json(
-        &call_tool(&client, &url, &session, 800, "get_cues", json!({})).await,
-    );
+    let pre = tool_json(&call_tool(&client, &url, &session, 800, "get_cues", json!({})).await);
     assert_eq!(
         pre["cues"].as_array().map(|a| a.len()).unwrap_or(0),
         0,
         "expected no cues before playback: {pre}"
     );
 
-    let play_resp = tool_json(
-        &call_tool(&client, &url, &session, 801, "play", json!({})).await,
-    );
+    let play_resp = tool_json(&call_tool(&client, &url, &session, 801, "play", json!({})).await);
     assert!(
         play_resp["now_playing"].is_object(),
         "play did not start the song: {play_resp}"
@@ -1187,9 +1179,8 @@ async fn mcp_cues_and_effects_against_live_timeline() -> Result<(), Box<dyn Erro
     let cues = {
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
         loop {
-            let body = tool_json(
-                &call_tool(&client, &url, &session, 802, "get_cues", json!({})).await,
-            );
+            let body =
+                tool_json(&call_tool(&client, &url, &session, 802, "get_cues", json!({})).await);
             let count = body["cues"].as_array().map(|a| a.len()).unwrap_or(0);
             if count > 0 {
                 break body;
@@ -1210,7 +1201,10 @@ async fn mcp_cues_and_effects_against_live_timeline() -> Result<(), Box<dyn Erro
     );
     for entry in arr {
         assert!(entry["index"].is_number(), "cue missing index: {entry}");
-        assert!(entry["time"].is_string(), "cue missing time string: {entry}");
+        assert!(
+            entry["time"].is_string(),
+            "cue missing time string: {entry}"
+        );
     }
 
     // get_active_effects returns a human-readable summary. We don't pin its
@@ -1272,9 +1266,8 @@ async fn mcp_profile_crud_round_trip() -> Result<(), Box<dyn Error>> {
         let url = url.clone();
         let session = session.clone();
         async move {
-            let cfg = tool_json(
-                &call_tool(&client, &url, &session, id, "get_config", json!({})).await,
-            );
+            let cfg =
+                tool_json(&call_tool(&client, &url, &session, id, "get_config", json!({})).await);
             cfg["checksum"]
                 .as_str()
                 .expect("checksum string")
@@ -1317,12 +1310,14 @@ async fn mcp_profile_crud_round_trip() -> Result<(), Box<dyn Error>> {
     // Find the index of the profile we just added. `add_profile` appends to
     // the `profiles:` list, so it's the last entry — the count of
     // `kind: hardware_profile` lines minus one.
-    let cfg_after_add = tool_json(
-        &call_tool(&client, &url, &session, 702, "get_config", json!({})).await,
-    );
+    let cfg_after_add =
+        tool_json(&call_tool(&client, &url, &session, 702, "get_config", json!({})).await);
     let yaml = cfg_after_add["yaml"].as_str().expect("yaml");
     let profile_count = yaml.matches("kind: hardware_profile").count();
-    assert!(profile_count >= 1, "expected at least one profile in: {yaml}");
+    assert!(
+        profile_count >= 1,
+        "expected at least one profile in: {yaml}"
+    );
     let added_index = profile_count - 1;
 
     // Update the profile (rename the hostname).
@@ -1702,9 +1697,7 @@ async fn mcp_playback_controls_drive_audio() -> Result<(), Box<dyn Error>> {
     let session = initialize_session(&client, &url).await;
 
     // play
-    let play_resp = tool_json(
-        &call_tool(&client, &url, &session, 200, "play", json!({})).await,
-    );
+    let play_resp = tool_json(&call_tool(&client, &url, &session, 200, "play", json!({})).await);
     assert!(
         play_resp["now_playing"].is_object(),
         "play didn't return a song: {play_resp}"
@@ -1712,37 +1705,41 @@ async fn mcp_playback_controls_drive_audio() -> Result<(), Box<dyn Error>> {
     crate::testutil::eventually(|| device.is_playing(), "song never started playing");
 
     // status reports playing=true
-    let status = tool_json(
-        &call_tool(&client, &url, &session, 201, "status", json!({})).await,
+    let status = tool_json(&call_tool(&client, &url, &session, 201, "status", json!({})).await);
+    assert_eq!(
+        status["playing"], true,
+        "status didn't see playback: {status}"
     );
-    assert_eq!(status["playing"], true, "status didn't see playback: {status}");
     assert!(status["current_song"].is_object());
 
     // stop
-    let stop_resp = tool_json(
-        &call_tool(&client, &url, &session, 202, "stop", json!({})).await,
-    );
+    let stop_resp = tool_json(&call_tool(&client, &url, &session, 202, "stop", json!({})).await);
     assert!(
         stop_resp["stopped"].is_object(),
         "stop didn't return the stopped song: {stop_resp}"
     );
     crate::testutil::eventually(|| !device.is_playing(), "song never stopped playing");
 
-    let status = tool_json(
-        &call_tool(&client, &url, &session, 203, "status", json!({})).await,
-    );
+    let status = tool_json(&call_tool(&client, &url, &session, 203, "status", json!({})).await);
     assert_eq!(status["playing"], false);
 
     // next + previous move the playlist cursor without starting playback.
-    let initial_song = player.get_playlist().current().map(|s| s.name().to_string());
-    let next_resp = tool_json(
-        &call_tool(&client, &url, &session, 204, "next", json!({})).await,
-    );
-    let after_next = player.get_playlist().current().map(|s| s.name().to_string());
+    let initial_song = player
+        .get_playlist()
+        .current()
+        .map(|s| s.name().to_string());
+    let next_resp = tool_json(&call_tool(&client, &url, &session, 204, "next", json!({})).await);
+    let after_next = player
+        .get_playlist()
+        .current()
+        .map(|s| s.name().to_string());
     assert_ne!(initial_song, after_next, "next didn't advance: {next_resp}");
 
     let _ = call_tool(&client, &url, &session, 205, "previous", json!({})).await;
-    let after_prev = player.get_playlist().current().map(|s| s.name().to_string());
+    let after_prev = player
+        .get_playlist()
+        .current()
+        .map(|s| s.name().to_string());
     assert_eq!(initial_song, after_prev, "previous didn't restore cursor");
 
     controller.shutdown();
@@ -1780,10 +1777,9 @@ async fn mcp_lighting_tools_handle_root_level_layout() -> Result<(), Box<dyn Err
     let song_dir = fixture.root.join("songs/flat-lighting-song");
     std::fs::create_dir_all(&song_dir)?;
     // Reuse the existing audio file so Song::new can load the track.
-    let track_src = fixture
-        .root
-        .join("songs/dsl-light-show-song/song.mp3");
-    let initial_show = "show \"Flat\" {\n  @00:00.000\n  all_lights: static color: \"blue\", duration: 5s\n}\n";
+    let track_src = fixture.root.join("songs/dsl-light-show-song/song.mp3");
+    let initial_show =
+        "show \"Flat\" {\n  @00:00.000\n  all_lights: static color: \"blue\", duration: 5s\n}\n";
     std::fs::write(song_dir.join("show.light"), initial_show)?;
     std::fs::write(
         song_dir.join("song.yaml"),
@@ -1858,7 +1854,8 @@ async fn mcp_lighting_tools_handle_root_level_layout() -> Result<(), Box<dyn Err
 
     // write_song_lighting on the existing root-level file: should rewrite in
     // place, NOT create a duplicate under `lighting/`.
-    let replacement = "show \"Flat\" {\n  @00:00.000\n  all_lights: static color: \"magenta\", duration: 5s\n}\n";
+    let replacement =
+        "show \"Flat\" {\n  @00:00.000\n  all_lights: static color: \"magenta\", duration: 5s\n}\n";
     let _ = call_tool(
         &client,
         &url,
@@ -1938,9 +1935,8 @@ async fn mcp_patch_playlist_triggers_reload() -> Result<(), Box<dyn Error>> {
 
     // Baseline: only `all_songs` is loaded because the playlist file
     // referenced a missing song at startup.
-    let initial = tool_json(
-        &call_tool(&client, &url, &session, 1500, "list_playlists", json!({})).await,
-    );
+    let initial =
+        tool_json(&call_tool(&client, &url, &session, 1500, "list_playlists", json!({})).await);
     let initial_names: Vec<&str> = initial["playlists"]
         .as_array()
         .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
@@ -1966,12 +1962,15 @@ async fn mcp_patch_playlist_triggers_reload() -> Result<(), Box<dyn Error>> {
     )
     .await;
 
-    let after = tool_json(
-        &call_tool(&client, &url, &session, 1502, "list_playlists", json!({})).await,
-    );
+    let after =
+        tool_json(&call_tool(&client, &url, &session, 1502, "list_playlists", json!({})).await);
     let after_names: Vec<String> = after["playlists"]
         .as_array()
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
     assert!(
         after_names.iter().any(|n| n == "playlist"),
@@ -2033,9 +2032,7 @@ async fn mcp_song_details_returns_structured_metadata() -> Result<(), Box<dyn Er
     assert!(details.get("beat_grid").is_some());
     assert!(details.get("bpm").is_some());
     assert_eq!(
-        details["tempo_segments"]
-            .as_array()
-            .map(Vec::len),
+        details["tempo_segments"].as_array().map(Vec::len),
         Some(0),
         "tempo_segments should be empty for songs with no beat grid: {details}"
     );
@@ -2119,15 +2116,19 @@ async fn mcp_host_info_returns_runtime_identity() -> Result<(), Box<dyn Error>> 
     wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
-    let info = tool_json(
-        &call_tool(&client, &url, &session, 1300, "host_info", json!({})).await,
-    );
+    let info = tool_json(&call_tool(&client, &url, &session, 1300, "host_info", json!({})).await);
 
     // We can't assert the exact hostname (varies per machine), but the field
     // must be present and the subsystem objects must have the documented
     // shape so MCP clients can rely on them.
-    assert!(info["init_done"].is_boolean(), "host_info missing init_done: {info}");
-    assert!(info.get("hostname").is_some(), "host_info missing hostname: {info}");
+    assert!(
+        info["init_done"].is_boolean(),
+        "host_info missing init_done: {info}"
+    );
+    assert!(
+        info.get("hostname").is_some(),
+        "host_info missing hostname: {info}"
+    );
     for subsystem in ["audio", "midi", "dmx", "trigger"] {
         let s = &info[subsystem];
         assert!(
@@ -2188,9 +2189,7 @@ async fn mcp_list_groups_surfaces_logical_groups() -> Result<(), Box<dyn Error>>
     wait_until_listening(&client, &url).await;
     let session = initialize_session(&client, &url).await;
 
-    let resp = tool_json(
-        &call_tool(&client, &url, &session, 1400, "list_groups", json!({})).await,
-    );
+    let resp = tool_json(&call_tool(&client, &url, &session, 1400, "list_groups", json!({})).await);
     let groups = resp["groups"].as_array().expect("groups array");
 
     let by_name: std::collections::HashMap<&str, &Value> = groups
@@ -2201,18 +2200,12 @@ async fn mcp_list_groups_surfaces_logical_groups() -> Result<(), Box<dyn Error>>
         by_name.contains_key("my_venue_group"),
         "venue group missing from list_groups: {resp}",
     );
-    assert_eq!(
-        by_name["my_venue_group"]["source"].as_str(),
-        Some("venue")
-    );
+    assert_eq!(by_name["my_venue_group"]["source"].as_str(), Some("venue"));
     assert!(
         by_name.contains_key("all_lights"),
         "logical group missing from list_groups: {resp}",
     );
-    assert_eq!(
-        by_name["all_lights"]["source"].as_str(),
-        Some("logical")
-    );
+    assert_eq!(by_name["all_lights"]["source"].as_str(), Some("logical"));
     assert!(
         by_name["all_lights"]["constraints"]
             .as_array()
@@ -2253,9 +2246,7 @@ async fn mcp_idle_sessions_are_evicted() -> Result<(), Box<dyn Error>> {
     let session = initialize_session(&client, &url).await;
 
     // Confirm the session works initially.
-    let status = tool_json(
-        &call_tool(&client, &url, &session, 1200, "status", json!({})).await,
-    );
+    let status = tool_json(&call_tool(&client, &url, &session, 1200, "status", json!({})).await);
     assert_eq!(status["playlist_name"], "playlist");
 
     // Now go quiet for longer than (TTL + sweep_interval). The sweep
@@ -2314,10 +2305,7 @@ async fn mcp_subscriber_keepalive_survives_ttl() -> Result<(), Box<dyn Error>> {
     // 2-second idle TTL with the sweeper clamped to MIN_SWEEP_INTERVAL = 5s,
     // so eviction worst-case fires at TTL + 5s = 7s of true silence.
     let cfg = config::McpController::with_idle_timeout(port, Some(2));
-    let controller = Controller::new(
-        vec![config::Controller::Mcp(cfg)],
-        player.clone(),
-    );
+    let controller = Controller::new(vec![config::Controller::Mcp(cfg)], player.clone());
     assert!(controller.statuses().iter().all(|s| s.status == "running"));
 
     let url = format!("http://127.0.0.1:{port}/mcp");
@@ -2519,9 +2507,7 @@ async fn mcp_session_delete_cleans_up_subscriptions() -> Result<(), Box<dyn Erro
         // If the server returned 200, the body should at least surface an
         // error — not a normal tools/list payload.
         assert!(
-            body.contains("error")
-                || body.is_empty()
-                || !body.contains("\"tools\""),
+            body.contains("error") || body.is_empty() || !body.contains("\"tools\""),
             "closed session should not return a tools/list payload: {body}"
         );
     }
@@ -2530,9 +2516,8 @@ async fn mcp_session_delete_cleans_up_subscriptions() -> Result<(), Box<dyn Erro
     // surviving subscription task tries to notify a dead peer. It should
     // self-terminate without panicking; the controller should keep running.
     let new_session = initialize_session(&client, &url).await;
-    let cfg = tool_json(
-        &call_tool(&client, &url, &new_session, 1102, "get_config", json!({})).await,
-    );
+    let cfg =
+        tool_json(&call_tool(&client, &url, &new_session, 1102, "get_config", json!({})).await);
     let checksum = cfg["checksum"].as_str().expect("checksum").to_string();
     let _ = call_tool(
         &client,
@@ -2548,9 +2533,8 @@ async fn mcp_session_delete_cleans_up_subscriptions() -> Result<(), Box<dyn Erro
     .await;
 
     // The new session should still work normally afterward.
-    let status = tool_json(
-        &call_tool(&client, &url, &new_session, 1104, "status", json!({})).await,
-    );
+    let status =
+        tool_json(&call_tool(&client, &url, &new_session, 1104, "status", json!({})).await);
     assert_eq!(status["playlist_name"], "playlist");
 
     controller.shutdown();
@@ -2591,14 +2575,12 @@ async fn mcp_handles_many_simultaneous_sessions() -> Result<(), Box<dyn Error>> 
             let session = initialize_session(&client, &url).await;
             // Drive a few tools to make sure each session sees the same world
             // and gets unique session ids.
-            let status = tool_json(
-                &call_tool(&client, &url, &session, 900 + i, "status", json!({})).await,
-            );
+            let status =
+                tool_json(&call_tool(&client, &url, &session, 900 + i, "status", json!({})).await);
             assert_eq!(status["playlist_name"], "playlist");
 
             let songs = tool_json(
-                &call_tool(&client, &url, &session, 1000 + i, "list_songs", json!({}))
-                    .await,
+                &call_tool(&client, &url, &session, 1000 + i, "list_songs", json!({})).await,
             );
             let count = songs["count"].as_u64().unwrap_or(0);
             assert!(count > 0, "session {i} saw no songs: {songs}");
@@ -2615,7 +2597,11 @@ async fn mcp_handles_many_simultaneous_sessions() -> Result<(), Box<dyn Error>> 
     // Session ids must be unique — the session manager is what guarantees
     // per-client state separation.
     let unique: std::collections::HashSet<&String> = sessions.iter().collect();
-    assert_eq!(unique.len(), sessions.len(), "session ids should all be unique");
+    assert_eq!(
+        unique.len(),
+        sessions.len(),
+        "session ids should all be unique"
+    );
 
     controller.shutdown();
     Ok(())
@@ -2789,8 +2775,7 @@ async fn mcp_status_subscription_notifies_on_state_change() -> Result<(), Box<dy
             &session_clone,
             Duration::from_secs(5),
             |v| {
-                v.get("method").and_then(|m| m.as_str())
-                    == Some("notifications/resources/updated")
+                v.get("method").and_then(|m| m.as_str()) == Some("notifications/resources/updated")
                     && v["params"]["uri"].as_str() == Some("mtrack://status")
             },
         )
@@ -2838,7 +2823,6 @@ async fn mcp_status_subscription_notifies_on_state_change() -> Result<(), Box<dy
     Ok(())
 }
 
-
 /// Subscribes to `mtrack://config` and verifies that a config mutation
 /// triggers a `notifications/resources/updated` event on the SSE channel.
 #[tokio::test(flavor = "multi_thread")]
@@ -2881,9 +2865,8 @@ async fn mcp_resource_subscription_notifies_on_config_change() -> Result<(), Box
     );
 
     // Get a checksum so we can trigger a valid mutation.
-    let cfg_resp = tool_json(
-        &call_tool(&client, &url, &session, 101, "get_config", json!({})).await,
-    );
+    let cfg_resp =
+        tool_json(&call_tool(&client, &url, &session, 101, "get_config", json!({})).await);
     let checksum = cfg_resp["checksum"]
         .as_str()
         .expect("checksum string")
@@ -2901,8 +2884,7 @@ async fn mcp_resource_subscription_notifies_on_config_change() -> Result<(), Box
             &session_clone,
             Duration::from_secs(5),
             |v| {
-                v.get("method").and_then(|m| m.as_str())
-                    == Some("notifications/resources/updated")
+                v.get("method").and_then(|m| m.as_str()) == Some("notifications/resources/updated")
                     && v["params"]["uri"].as_str() == Some("mtrack://config")
             },
         )

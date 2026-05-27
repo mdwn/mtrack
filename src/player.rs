@@ -455,9 +455,7 @@ impl Player {
             broadcast_tx: Arc::new(parking_lot::Mutex::new(None)),
             init_done_tx: Arc::new(init_done_tx),
             state_tx: Arc::new(parking_lot::Mutex::new(None)),
-            transport_tx: Arc::new(
-                tokio::sync::watch::channel(TransportSnapshot::default()).0,
-            ),
+            transport_tx: Arc::new(tokio::sync::watch::channel(TransportSnapshot::default()).0),
             locked: Arc::new(AtomicBool::new(true)),
             controller: Arc::new(parking_lot::Mutex::new(None)),
             loop_break: Arc::new(AtomicBool::new(false)),

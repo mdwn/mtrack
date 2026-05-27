@@ -76,7 +76,11 @@ impl super::Driver for Driver {
         tokio::spawn(async move {
             {
                 let _enter = span!(Level::INFO, "MCP Server").entered();
-                let auth = if bearer_token.is_some() { " (bearer-token auth)" } else { "" };
+                let auth = if bearer_token.is_some() {
+                    " (bearer-token auth)"
+                } else {
+                    ""
+                };
                 match idle_timeout {
                     Some(ttl) => info!(
                         "Starting MCP server on {addr}{auth}; idle session TTL {}s",
@@ -292,11 +296,17 @@ mod sweep_interval_tests {
 
     #[test]
     fn long_ttl_clamped_to_one_minute() {
-        assert_eq!(sweep_interval(Duration::from_secs(3600)), Duration::from_secs(60));
+        assert_eq!(
+            sweep_interval(Duration::from_secs(3600)),
+            Duration::from_secs(60)
+        );
     }
 
     #[test]
     fn mid_ttl_picks_quarter() {
-        assert_eq!(sweep_interval(Duration::from_secs(120)), Duration::from_secs(30));
+        assert_eq!(
+            sweep_interval(Duration::from_secs(120)),
+            Duration::from_secs(30)
+        );
     }
 }

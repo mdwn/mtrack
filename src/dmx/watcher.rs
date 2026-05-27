@@ -79,16 +79,15 @@ pub fn start_watching(
         // notify in certain backend configurations, etc.). Pre-seed with the
         // current mtimes so the first event we process compares against a
         // real baseline rather than treating every watched file as "new".
-        let mut last_mtimes: std::collections::HashMap<PathBuf, std::time::SystemTime> =
-            paths
-                .iter()
-                .filter_map(|p| {
-                    std::fs::metadata(p)
-                        .and_then(|m| m.modified())
-                        .ok()
-                        .map(|t| (p.clone(), t))
-                })
-                .collect();
+        let mut last_mtimes: std::collections::HashMap<PathBuf, std::time::SystemTime> = paths
+            .iter()
+            .filter_map(|p| {
+                std::fs::metadata(p)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .map(|t| (p.clone(), t))
+            })
+            .collect();
 
         for events in rx {
             match events {
@@ -117,10 +116,8 @@ pub fn start_watching(
                     let any_changed = paths.iter().any(|p| {
                         match std::fs::metadata(p).and_then(|m| m.modified()) {
                             Ok(mt) => {
-                                let changed = last_mtimes
-                                    .get(p)
-                                    .map(|prev| mt > *prev)
-                                    .unwrap_or(true);
+                                let changed =
+                                    last_mtimes.get(p).map(|prev| mt > *prev).unwrap_or(true);
                                 if changed {
                                     last_mtimes.insert(p.clone(), mt);
                                 }

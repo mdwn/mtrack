@@ -317,8 +317,7 @@ mod test {
 
         // Use port 0 to let the OS pick an available port.
         let mcp_config = config::McpController::new(0);
-        let controller =
-            super::Controller::new(vec![config::Controller::Mcp(mcp_config)], player);
+        let controller = super::Controller::new(vec![config::Controller::Mcp(mcp_config)], player);
         assert!(controller.statuses().iter().all(|s| s.status == "running"));
         controller.shutdown();
 

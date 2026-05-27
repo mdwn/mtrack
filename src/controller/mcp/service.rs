@@ -322,8 +322,10 @@ impl McpServer {
         Ok(ok_json(json))
     }
 
-    #[tool(description = "List all songs loaded in the song repository. Returns name, \
-        duration, and track count for each song.")]
+    #[tool(
+        description = "List all songs loaded in the song repository. Returns name, \
+        duration, and track count for each song."
+    )]
     async fn list_songs(&self) -> Result<CallToolResult, McpError> {
         let songs = self.player.songs();
         let entries: Vec<Value> = songs
@@ -343,8 +345,10 @@ impl McpServer {
         Ok(ok_json(json!({ "playlists": names })))
     }
 
-    #[tool(description = "Return the cue list (time + index) for the lighting timeline \
-        of the song currently loaded by the player.")]
+    #[tool(
+        description = "Return the cue list (time + index) for the lighting timeline \
+        of the song currently loaded by the player."
+    )]
     async fn get_cues(&self) -> Result<CallToolResult, McpError> {
         let cues: Vec<Value> = self
             .player
@@ -360,8 +364,10 @@ impl McpServer {
         Ok(ok_json(json!({ "cues": cues })))
     }
 
-    #[tool(description = "Return a human-readable summary of all lighting effects \
-        currently active on the player.")]
+    #[tool(
+        description = "Return a human-readable summary of all lighting effects \
+        currently active on the player."
+    )]
     async fn get_active_effects(&self) -> Result<CallToolResult, McpError> {
         let summary = self
             .player
@@ -380,8 +386,10 @@ impl McpServer {
         })))
     }
 
-    #[tool(description = "Start playback of the current song from a specific time \
-        (e.g. `1:23.456` or `45.5s`).")]
+    #[tool(
+        description = "Start playback of the current song from a specific time \
+        (e.g. `1:23.456` or `45.5s`)."
+    )]
     async fn play_from(
         &self,
         Parameters(args): Parameters<PlayFromArgs>,
@@ -394,8 +402,10 @@ impl McpServer {
         })))
     }
 
-    #[tool(description = "Play a named song from a specific time. Switches the current \
-        playlist position to that song.")]
+    #[tool(
+        description = "Play a named song from a specific time. Switches the current \
+        playlist position to that song."
+    )]
     async fn play_song_from(
         &self,
         Parameters(args): Parameters<PlaySongFromArgs>,
@@ -423,8 +433,10 @@ impl McpServer {
         })))
     }
 
-    #[tool(description = "Advance the active playlist to the next song. Returns the \
-        new current song.")]
+    #[tool(
+        description = "Advance the active playlist to the next song. Returns the \
+        new current song."
+    )]
     async fn next(&self) -> Result<CallToolResult, McpError> {
         let song = self.player.next().await;
         Ok(ok_json(json!({
@@ -432,8 +444,10 @@ impl McpServer {
         })))
     }
 
-    #[tool(description = "Move the active playlist to the previous song. Returns the \
-        new current song.")]
+    #[tool(
+        description = "Move the active playlist to the previous song. Returns the \
+        new current song."
+    )]
     async fn previous(&self) -> Result<CallToolResult, McpError> {
         let song = self.player.prev().await;
         Ok(ok_json(json!({
@@ -471,15 +485,19 @@ impl McpServer {
         Ok(ok_json(json!({ "looping": args.section_name })))
     }
 
-    #[tool(description = "Deactivate section looping. The current iteration finishes \
-        and playback continues past the section.")]
+    #[tool(
+        description = "Deactivate section looping. The current iteration finishes \
+        and playback continues past the section."
+    )]
     async fn stop_section_loop(&self) -> Result<CallToolResult, McpError> {
         self.player.stop_section_loop();
         Ok(ok_json(json!({ "ok": true })))
     }
 
-    #[tool(description = "Acknowledge the current section in reactive looping mode, \
-        arming the loop so it engages at the section end.")]
+    #[tool(
+        description = "Acknowledge the current section in reactive looping mode, \
+        arming the loop so it engages at the section end."
+    )]
     async fn section_ack(&self) -> Result<CallToolResult, McpError> {
         self.player.section_ack().await.map_err(internal_err)?;
         Ok(ok_json(json!({ "ok": true })))
@@ -498,9 +516,11 @@ impl McpServer {
         })))
     }
 
-    #[tool(description = "Update the `audio` subsection of the configuration. The \
+    #[tool(
+        description = "Update the `audio` subsection of the configuration. The \
         `body` field accepts the same JSON structure as the `audio:` YAML block, \
-        or `null` to remove it.")]
+        or `null` to remove it."
+    )]
     async fn update_audio(
         &self,
         Parameters(args): Parameters<UpdateConfigArgs>,
@@ -514,8 +534,10 @@ impl McpServer {
         Ok(snapshot_response(&snapshot))
     }
 
-    #[tool(description = "Update the `midi` subsection of the configuration. Pass \
-        `null` to remove it.")]
+    #[tool(
+        description = "Update the `midi` subsection of the configuration. Pass \
+        `null` to remove it."
+    )]
     async fn update_midi(
         &self,
         Parameters(args): Parameters<UpdateConfigArgs>,
@@ -529,8 +551,10 @@ impl McpServer {
         Ok(snapshot_response(&snapshot))
     }
 
-    #[tool(description = "Update the `dmx` subsection of the configuration. Pass \
-        `null` to remove it.")]
+    #[tool(
+        description = "Update the `dmx` subsection of the configuration. Pass \
+        `null` to remove it."
+    )]
     async fn update_dmx(
         &self,
         Parameters(args): Parameters<UpdateConfigArgs>,
@@ -544,9 +568,11 @@ impl McpServer {
         Ok(snapshot_response(&snapshot))
     }
 
-    #[tool(description = "Replace the entire `controllers` list. Pass an array of \
+    #[tool(
+        description = "Replace the entire `controllers` list. Pass an array of \
         controller definitions, each tagged with a `kind` discriminator \
-        (`grpc`, `mcp`, `osc`, `midi`).")]
+        (`grpc`, `mcp`, `osc`, `midi`)."
+    )]
     async fn update_controllers(
         &self,
         Parameters(args): Parameters<UpdateConfigArgs>,
@@ -758,9 +784,11 @@ impl McpServer {
         })))
     }
 
-    #[tool(description = "Write a song's `song.yaml`. Validates the YAML against \
+    #[tool(
+        description = "Write a song's `song.yaml`. Validates the YAML against \
         `config::Song` before writing. If the song doesn't exist yet, creates a \
-        new song directory under the songs root.")]
+        new song directory under the songs root."
+    )]
     async fn write_song(
         &self,
         Parameters(args): Parameters<WriteSongArgs>,
@@ -770,11 +798,10 @@ impl McpServer {
 
         let songs_root = self.songs_root_verified().await?;
         let song_dir = match self.player.songs().get(&args.name) {
-            Ok(existing) => crate::webui::safe_path::SafePath::resolve(
-                existing.base_path(),
-                &songs_root,
-            )
-            .map_err(safepath_err)?,
+            Ok(existing) => {
+                crate::webui::safe_path::SafePath::resolve(existing.base_path(), &songs_root)
+                    .map_err(safepath_err)?
+            }
             Err(_) => {
                 crate::webui::safe_path::SafePath::validate_name(&args.name)
                     .map_err(safepath_err)?;
@@ -814,10 +841,12 @@ impl McpServer {
         })))
     }
 
-    #[tool(description = "Write a playlist YAML file. Validates the YAML against \
+    #[tool(
+        description = "Write a playlist YAML file. Validates the YAML against \
         `config::Playlist` before writing. With no `name`, writes the top-level \
         playlist file. With a `name`, writes `<playlists_dir>/<name>.yaml` and \
-        creates the file if missing.")]
+        creates the file if missing."
+    )]
     async fn write_playlist(
         &self,
         Parameters(args): Parameters<WritePlaylistArgs>,
@@ -826,7 +855,10 @@ impl McpServer {
         let path = self.resolve_playlist_path(args.name.as_deref()).await?;
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await.map_err(|e| {
-                McpError::internal_error(format!("failed to create {}: {e}", parent.display()), None)
+                McpError::internal_error(
+                    format!("failed to create {}: {e}", parent.display()),
+                    None,
+                )
             })?;
         }
         atomic_write_string(&path, &args.yaml).await?;
@@ -841,8 +873,10 @@ impl McpServer {
 
     // ---- Lighting ----
 
-    #[tool(description = "Return a concise reference for the mtrack lighting DSL. \
-        ALWAYS read this before generating `.light` files.")]
+    #[tool(
+        description = "Return a concise reference for the mtrack lighting DSL. \
+        ALWAYS read this before generating `.light` files."
+    )]
     async fn lighting_dsl_reference(&self) -> Result<CallToolResult, McpError> {
         Ok(CallToolResult::success(vec![Content::text(
             include_str!("dsl_reference.md").to_string(),
@@ -1093,7 +1127,9 @@ impl McpServer {
     #[tool(description = "List the fixture-type `.light` files in the \
         configured fixture types directory.")]
     async fn list_fixture_type_files(&self) -> Result<CallToolResult, McpError> {
-        let dir = self.resolve_lighting_dir(LightingDirKind::FixtureTypes).await?;
+        let dir = self
+            .resolve_lighting_dir(LightingDirKind::FixtureTypes)
+            .await?;
         let entries = list_light_files(&dir).await?;
         Ok(ok_json(json!({
             "dir": dir.display().to_string(),
@@ -1165,12 +1201,14 @@ impl McpServer {
                 // it into the conventional `lighting/` subdirectory and
                 // create that directory if it doesn't exist yet.
                 let lighting_dir = song.base_path().join("lighting");
-                tokio::fs::create_dir_all(&lighting_dir).await.map_err(|e| {
-                    McpError::internal_error(
-                        format!("failed to create {}: {e}", lighting_dir.display()),
-                        None,
-                    )
-                })?;
+                tokio::fs::create_dir_all(&lighting_dir)
+                    .await
+                    .map_err(|e| {
+                        McpError::internal_error(
+                            format!("failed to create {}: {e}", lighting_dir.display()),
+                            None,
+                        )
+                    })?;
                 lighting_dir.join(&args.file)
             }
         };
@@ -1253,15 +1291,18 @@ impl McpServer {
         })?;
         let original = read_text(&path).await?;
         let updated = apply_patch(&original, &args.patch)?;
-        crate::lighting::parser::parse_light_shows(&updated)
-            .map_err(|e| McpError::invalid_params(format!("patched .light is invalid: {e}"), None))?;
+        crate::lighting::parser::parse_light_shows(&updated).map_err(|e| {
+            McpError::invalid_params(format!("patched .light is invalid: {e}"), None)
+        })?;
         atomic_write_string(&path, &updated).await?;
         self.reload_songs_from_config().await?;
         Ok(patch_response(&path, &original, &updated))
     }
 
-    #[tool(description = "Patch a venue `.light` file with a string replacement. \
-        The result is parsed with the venue parser before being written.")]
+    #[tool(
+        description = "Patch a venue `.light` file with a string replacement. \
+        The result is parsed with the venue parser before being written."
+    )]
     async fn patch_venue(
         &self,
         Parameters(args): Parameters<PatchLightingFileArgs>,
@@ -1271,8 +1312,9 @@ impl McpServer {
             .await?;
         let original = read_text(&path).await?;
         let updated = apply_patch(&original, &args.patch)?;
-        crate::lighting::parser::parse_venues(&updated)
-            .map_err(|e| McpError::invalid_params(format!("patched venue is invalid: {e}"), None))?;
+        crate::lighting::parser::parse_venues(&updated).map_err(|e| {
+            McpError::invalid_params(format!("patched venue is invalid: {e}"), None)
+        })?;
         atomic_write_string(&path, &updated).await?;
         Ok(patch_response(&path, &original, &updated))
     }
@@ -1445,8 +1487,11 @@ pub(crate) fn compute_bpm_from_beats(beats: &[f64]) -> Option<f64> {
     if beats.len() < 2 {
         return None;
     }
-    let mut intervals: Vec<f64> =
-        beats.windows(2).map(|w| w[1] - w[0]).filter(|d| *d > 0.0).collect();
+    let mut intervals: Vec<f64> = beats
+        .windows(2)
+        .map(|w| w[1] - w[0])
+        .filter(|d| *d > 0.0)
+        .collect();
     if intervals.is_empty() {
         return None;
     }
@@ -1672,13 +1717,9 @@ async fn send_resource_updated(
     let params = ResourceUpdatedNotificationParam {
         uri: uri.to_string(),
     };
-    let mut notif = ServerNotification::ResourceUpdatedNotification(
-        ResourceUpdatedNotification::new(params),
-    );
-    notif
-        .get_meta_mut()
-        .0
-        .insert(meta_key.to_string(), payload);
+    let mut notif =
+        ServerNotification::ResourceUpdatedNotification(ResourceUpdatedNotification::new(params));
+    notif.get_meta_mut().0.insert(meta_key.to_string(), payload);
     peer.send_notification(notif).await
 }
 
@@ -1714,10 +1755,7 @@ impl McpServer {
     /// Each notification carries the full status snapshot under
     /// `_meta["mtrack.status"]`, letting passive listeners skip the
     /// follow-up `resources/read` round trip.
-    fn spawn_status_subscription(
-        &self,
-        peer: Peer<RoleServer>,
-    ) -> Result<AbortHandle, McpError> {
+    fn spawn_status_subscription(&self, peer: Peer<RoleServer>) -> Result<AbortHandle, McpError> {
         let mut rx = self.player.transport_rx();
         let server = self.clone();
         let handle = tokio::spawn(async move {
@@ -1726,14 +1764,9 @@ impl McpServer {
             rx.mark_unchanged();
             while rx.changed().await.is_ok() {
                 let payload = server.status_snapshot().await.unwrap_or(Value::Null);
-                if send_resource_updated(
-                    &peer,
-                    RESOURCE_STATUS_URI,
-                    "mtrack.status",
-                    payload,
-                )
-                .await
-                .is_err()
+                if send_resource_updated(&peer, RESOURCE_STATUS_URI, "mtrack.status", payload)
+                    .await
+                    .is_err()
                 {
                     break;
                 }
@@ -1752,10 +1785,7 @@ impl McpServer {
     /// value they have already fetched. The full YAML is intentionally
     /// *not* embedded — config payloads are larger and the spec-clean
     /// path is for the client to re-read on demand.
-    fn spawn_config_subscription(
-        &self,
-        peer: Peer<RoleServer>,
-    ) -> Result<AbortHandle, McpError> {
+    fn spawn_config_subscription(&self, peer: Peer<RoleServer>) -> Result<AbortHandle, McpError> {
         let store = self.config_store()?;
         let mut rx = store.subscribe();
         let handle = tokio::spawn(async move {
@@ -1793,9 +1823,7 @@ impl McpServer {
     }
 
     /// Returns the player's [`ConfigStore`] or an MCP error when none is wired.
-    pub(crate) fn config_store(
-        &self,
-    ) -> Result<Arc<crate::config::store::ConfigStore>, McpError> {
+    pub(crate) fn config_store(&self) -> Result<Arc<crate::config::store::ConfigStore>, McpError> {
         self.player.config_store().ok_or_else(|| {
             McpError::internal_error(
                 "config store is not enabled (mtrack was not started with a mutable config)",
@@ -1835,10 +1863,7 @@ impl McpServer {
         let config_path = store.path().to_path_buf();
         let cfg = store.read_config().await;
         let lighting = cfg.lighting_from_profiles().ok_or_else(|| {
-            McpError::invalid_params(
-                "no lighting configuration in the active profile",
-                None,
-            )
+            McpError::invalid_params("no lighting configuration in the active profile", None)
         })?;
         let dirs = lighting.directories().ok_or_else(|| {
             McpError::invalid_params(
@@ -1852,7 +1877,10 @@ impl McpServer {
         }
         .ok_or_else(|| {
             McpError::invalid_params(
-                format!("no `{}` directory configured under `lighting.directories`", kind.field_name()),
+                format!(
+                    "no `{}` directory configured under `lighting.directories`",
+                    kind.field_name()
+                ),
                 None,
             )
         })?;
@@ -1948,10 +1976,7 @@ impl McpServer {
             }
             None => {
                 let rel = cfg.playlist().ok_or_else(|| {
-                    McpError::invalid_params(
-                        "no top-level playlist file configured",
-                        None,
-                    )
+                    McpError::invalid_params("no top-level playlist file configured", None)
                 })?;
                 if rel.is_absolute() {
                     Ok(rel)
@@ -2086,10 +2111,7 @@ impl LightingDirKind {
 /// `Edit` tool: `old_string` must be present; if it occurs more than once and
 /// `replace_all` is false, the patch is rejected so the caller can disambiguate
 /// by adding context. Returns the new file contents.
-pub(crate) fn apply_patch(
-    content: &str,
-    patch: &PatchFields,
-) -> Result<String, McpError> {
+pub(crate) fn apply_patch(content: &str, patch: &PatchFields) -> Result<String, McpError> {
     if patch.old_string.is_empty() {
         return Err(McpError::invalid_params(
             "old_string must not be empty",
@@ -2128,11 +2150,7 @@ pub(crate) fn apply_patch(
 /// Standard response shape for a successful patch tool call. Echoes path,
 /// before/after byte counts, and the new contents so callers can verify the
 /// edit without an extra round-trip.
-pub(crate) fn patch_response(
-    path: &std::path::Path,
-    before: &str,
-    after: &str,
-) -> CallToolResult {
+pub(crate) fn patch_response(path: &std::path::Path, before: &str, after: &str) -> CallToolResult {
     ok_json(json!({
         "path": path.display().to_string(),
         "bytes_before": before.len(),
@@ -2220,7 +2238,10 @@ mod bpm_tests {
         let mut beats: Vec<f64> = (0..20).map(|i| i as f64 * 0.5).collect();
         beats.push(beats.last().unwrap() + 5.0); // huge gap at the end
         let bpm = compute_bpm_from_beats(&beats).unwrap();
-        assert!((bpm - 120.0).abs() < 1.0, "median should resist outlier; got {bpm}");
+        assert!(
+            (bpm - 120.0).abs() < 1.0,
+            "median should resist outlier; got {bpm}"
+        );
     }
 
     #[test]
