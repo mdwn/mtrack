@@ -39,7 +39,14 @@ a phone, or any device with a browser — so you never have to babysit a compute
 
 ## Quick Start
 
-Install via cargo:
+Download a pre-built binary from the [latest release](https://github.com/mdwn/mtrack/releases/latest)
+for your platform (Linux x86_64/aarch64, macOS Intel/Apple Silicon), extract it, and put
+`mtrack` somewhere on your `PATH`. On Linux you'll need `libasound2` and `libudev1`
+installed (present by default on most desktop distros; `sudo apt install libasound2 libudev1`
+on a minimal server).
+
+Alternatively, install from source via cargo — this requires a Rust toolchain and a
+handful of system libraries; see [Building](#building) below:
 
 ```
 $ cargo install mtrack --locked
