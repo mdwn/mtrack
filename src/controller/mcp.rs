@@ -21,6 +21,7 @@
 
 use std::{collections::HashMap, error::Error, io, net::SocketAddr, sync::Arc, time::Duration};
 
+use http_body_util::BodyExt;
 use parking_lot::Mutex;
 use rmcp::transport::streamable_http_server::{
     session::{local::LocalSessionManager, SessionManager},
@@ -158,28 +159,50 @@ type ActivityMap = Arc<Mutex<HashMap<Arc<str>, std::time::Instant>>>;
 /// Bumps the activity timestamp for whichever session id appears on the
 /// request or on the response. The response side matters for `initialize`,
 /// which is the only path that mints a fresh session id.
+///
+/// The response body is also wrapped so each emitted frame refreshes the
+/// session's activity. Without that wrapper, a passive SSE subscriber that
+/// only listens (no further inbound POSTs) would look idle to the sweeper
+/// and get evicted while server-pushed notifications were still flowing
+/// over its GET stream.
 async fn track_session_activity(
     axum::extract::State(activity): axum::extract::State<ActivityMap>,
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     let now = std::time::Instant::now();
-    if let Some(id) = req
+    let req_session = req
         .headers()
         .get("mcp-session-id")
         .and_then(|v| v.to_str().ok())
-    {
-        activity.lock().insert(Arc::<str>::from(id), now);
+        .map(Arc::<str>::from);
+    if let Some(ref id) = req_session {
+        activity.lock().insert(id.clone(), now);
     }
     let response = next.run(req).await;
-    if let Some(id) = response
+    let resp_session = response
         .headers()
         .get("mcp-session-id")
         .and_then(|v| v.to_str().ok())
-    {
-        activity.lock().insert(Arc::<str>::from(id), now);
+        .map(Arc::<str>::from);
+    if let Some(ref id) = resp_session {
+        activity.lock().insert(id.clone(), now);
     }
-    response
+
+    // Resolve which session this response belongs to. Requests carry the id
+    // on the request; `initialize` mints it on the response.
+    let Some(session_id) = resp_session.or(req_session) else {
+        return response;
+    };
+    let (parts, body) = response.into_parts();
+    let activity_for_frames = activity.clone();
+    let mapped = body.map_frame(move |frame| {
+        activity_for_frames
+            .lock()
+            .insert(session_id.clone(), std::time::Instant::now());
+        frame
+    });
+    axum::response::Response::from_parts(parts, axum::body::Body::new(mapped))
 }
 
 /// Closes sessions whose last activity is older than `ttl`. Holds the mutex

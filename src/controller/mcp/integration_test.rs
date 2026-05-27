@@ -35,6 +35,7 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use reqwest::Client;
 use serde_json::{json, Value};
+use tokio_util::sync::CancellationToken;
 
 use crate::{config, controller::Controller, player::Player, playlist, songs};
 
@@ -2294,6 +2295,151 @@ async fn mcp_idle_sessions_are_evicted() -> Result<(), Box<dyn Error>> {
         "expected the evicted session id to be rejected or replaced; status {status_code}, new session {new_session:?}, body: {body}",
     );
 
+    controller.shutdown();
+    Ok(())
+}
+
+/// A subscriber that's actively receiving server-pushed notifications
+/// must not be evicted while the SSE GET stream is being written to.
+/// The `track_session_activity` middleware wraps every response body so
+/// each emitted frame refreshes the session's last-activity timestamp —
+/// without that, a long-idle passive subscriber would look idle to the
+/// sweeper even though notifications were still flowing.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_subscriber_keepalive_survives_ttl() -> Result<(), Box<dyn Error>> {
+    let fixture = setup_standalone_fixture()?;
+    let player = build_standalone_player(&fixture).await?;
+
+    let port = pick_free_port();
+    // 2-second idle TTL with the sweeper clamped to MIN_SWEEP_INTERVAL = 5s,
+    // so eviction worst-case fires at TTL + 5s = 7s of true silence.
+    let cfg = config::McpController::with_idle_timeout(port, Some(2));
+    let controller = Controller::new(
+        vec![config::Controller::Mcp(cfg)],
+        player.clone(),
+    );
+    assert!(controller.statuses().iter().all(|s| s.status == "running"));
+
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .expect("client");
+    wait_until_listening(&client, &url).await;
+    let session = initialize_session(&client, &url).await;
+
+    let (_, sub_resp) = mcp_post(
+        &client,
+        &url,
+        Some(&session),
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 800,
+            "method": "resources/subscribe",
+            "params": {"uri": "mtrack://status"}
+        }),
+    )
+    .await;
+    assert!(
+        sub_resp.get("error").is_none() && sub_resp["result"].is_object(),
+        "subscribe was rejected: {sub_resp}"
+    );
+
+    // Hold the SSE GET stream open in a background task and actively drain
+    // the body. Reading frames is what drives the wrapped response body's
+    // `map_frame` callback, which is what bumps activity.
+    let session_for_listener = session.clone();
+    let url_for_listener = url.clone();
+    let client_for_listener = client.clone();
+    let listener_cancel = CancellationToken::new();
+    let listener_cancel_for_task = listener_cancel.clone();
+    let listener = tokio::spawn(async move {
+        let resp = client_for_listener
+            .get(&url_for_listener)
+            .header("accept", "text/event-stream")
+            .header("mcp-session-id", session_for_listener)
+            .send()
+            .await
+            .expect("open GET /mcp");
+        let mut stream = resp.bytes_stream();
+        loop {
+            tokio::select! {
+                _ = listener_cancel_for_task.cancelled() => break,
+                next = stream.next() => {
+                    if next.is_none() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    // Drive notifications from outside the HTTP surface — direct player
+    // calls don't go through middleware, so they don't bump activity on
+    // their own. Only the resulting SSE frames flowing back to the
+    // listener can keep the session alive.
+    let trigger_player = player.clone();
+    let trigger_cancel = CancellationToken::new();
+    let trigger_cancel_for_task = trigger_cancel.clone();
+    let driver = tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_millis(500));
+        let names = ["all_songs", "playlist"];
+        let mut i = 0usize;
+        loop {
+            tokio::select! {
+                _ = trigger_cancel_for_task.cancelled() => break,
+                _ = tick.tick() => {
+                    let _ = trigger_player
+                        .switch_to_playlist(names[i % 2])
+                        .await;
+                    i += 1;
+                }
+            }
+        }
+    });
+
+    // Sit well past (TTL + sweep_interval). If the keepalive works, the
+    // SSE frames flowing to the listener keep refreshing activity. If it
+    // doesn't, the next sweep evicts the session.
+    tokio::time::sleep(Duration::from_secs(10)).await;
+
+    trigger_cancel.cancel();
+    let _ = driver.await;
+
+    // The original session id must still be valid: a fresh tool call
+    // must succeed without the server minting a replacement session id.
+    let resp = client
+        .post(&url)
+        .header("content-type", "application/json")
+        .header("accept", "application/json, text/event-stream")
+        .header("mcp-session-id", &session)
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 801,
+            "method": "tools/call",
+            "params": {"name": "status", "arguments": {}}
+        }))
+        .send()
+        .await?;
+    let new_session = resp
+        .headers()
+        .get("mcp-session-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let status_code = resp.status();
+    let body = resp.text().await?;
+    assert!(
+        status_code.is_success() && !body.contains("\"error\""),
+        "subscriber session was evicted despite active notification traffic; status {status_code}, body: {body}"
+    );
+    assert!(
+        matches!(new_session, Some(ref id) if id.as_str() == session.as_str())
+            || new_session.is_none(),
+        "session id changed unexpectedly: original {session}, new {new_session:?}"
+    );
+
+    listener_cancel.cancel();
+    let _ = listener.await;
     controller.shutdown();
     Ok(())
 }

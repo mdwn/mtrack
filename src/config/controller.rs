@@ -202,7 +202,7 @@ fn default_mcp_bind_address() -> String {
 
 /// The configuration for the mtrack MCP (Model Context Protocol) server.
 ///
-pub const DEFAULT_MCP_IDLE_TIMEOUT_SECS: u64 = 1800;
+pub const DEFAULT_MCP_IDLE_TIMEOUT_SECS: u64 = 14400;
 
 fn default_mcp_idle_timeout_secs() -> Option<u64> {
     Some(DEFAULT_MCP_IDLE_TIMEOUT_SECS)
@@ -225,13 +225,13 @@ pub struct McpController {
     /// return HTTP 401. Recommended whenever `bind_address` is not localhost.
     #[serde(default)]
     bearer_token: Option<String>,
-    /// Idle timeout in seconds. A session that receives no requests for this
-    /// long is closed and its server-side resources released. Defaults to
-    /// 1800 (30 minutes). Set to `null` to disable eviction.
+    /// Idle timeout in seconds. A session whose inbound *and* outbound traffic
+    /// is quiet for this long is closed and its server-side resources released.
+    /// Defaults to 14400 (4 hours). Set to `null` to disable eviction.
     ///
-    /// Long-lived SSE listeners count as activity only at GET time, so
-    /// long-idle subscribed clients should send a periodic JSON-RPC `ping`
-    /// (or any other request) to keep the session alive past this window.
+    /// Server-pushed SSE notifications count as activity (see the response-body
+    /// wrapper in `controller/mcp.rs`), so a passive subscriber that's actively
+    /// receiving pushes stays alive without needing to send keepalive pings.
     #[serde(default = "default_mcp_idle_timeout_secs")]
     idle_session_timeout_secs: Option<u64>,
 }
