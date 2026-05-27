@@ -48,3 +48,72 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_NOTES: ${{ steps.extract-release-notes.outputs.release_notes }}
         run: gh release create --notes "$RELEASE_NOTES" --title "${{ github.ref_name }}" "${{ github.ref_name }}"
+
+  # Builds release binaries for each supported platform and uploads them to the
+  # GitHub release. Linux binaries are built on the oldest supported Ubuntu LTS
+  # so the resulting glibc-linked binary runs on newer distros as well.
+  build-binaries:
+    name: Build binary (${{ matrix.target }})
+    needs: release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            platform: linux
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04-arm
+            platform: linux
+          - target: x86_64-apple-darwin
+            os: macos-13
+            platform: macos
+          - target: aarch64-apple-darwin
+            os: macos-14
+            platform: macos
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev pkg-config libssl-dev protobuf-compiler
+      - name: Install macOS system dependencies
+        if: matrix.platform == 'macos'
+        run: brew install pkg-config protobuf
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "release-${{ matrix.target }}"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/cache@v5
+        with:
+          path: src/webui/svelte/node_modules
+          key: node-modules-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: node-modules-${{ runner.os }}-
+      - name: Build frontend
+        run: make build-ui
+      - name: Build binary
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Package binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          STAGE="mtrack-${VERSION}-${{ matrix.target }}"
+          mkdir "$STAGE"
+          cp "target/${{ matrix.target }}/release/mtrack" "$STAGE/"
+          cp README.md LICENSE CHANGELOG.md "$STAGE/"
+          tar czf "${STAGE}.tar.gz" "$STAGE"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${STAGE}.tar.gz" > "${STAGE}.tar.gz.sha256"
+          else
+            shasum -a 256 "${STAGE}.tar.gz" > "${STAGE}.tar.gz.sha256"
+          fi
+      - name: Upload to release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${GITHUB_REF_NAME}" mtrack-*.tar.gz mtrack-*.tar.gz.sha256 --clobber
