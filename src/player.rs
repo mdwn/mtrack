@@ -118,6 +118,48 @@ type StateTx = Arc<
     parking_lot::Mutex<Option<Arc<tokio::sync::watch::Sender<Arc<crate::state::StateSnapshot>>>>>,
 >;
 
+/// Lightweight, change-detect-friendly view of the player's transport state.
+///
+/// This is broadcast on the `transport_tx` watch channel and used by
+/// subscribers (e.g. the MCP `mtrack://status` notification) to detect
+/// meaningful state transitions. Fields that change continuously during
+/// playback — most notably `elapsed` — are deliberately excluded, so a
+/// passive subscriber is only woken when the user-visible transport state
+/// actually transitions.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TransportSnapshot {
+    pub playlist_name: String,
+    pub current_song: Option<String>,
+    pub playing: bool,
+    pub section_loop: Option<String>,
+    pub reactive_loop_state: ReactiveLoopStateKind,
+    pub locked: bool,
+}
+
+/// Variants of [`ReactiveLoopState`] without the inner `SectionBounds` payload.
+/// We only care about transitions between variants, not the bounds themselves.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ReactiveLoopStateKind {
+    #[default]
+    Idle,
+    SectionOffered,
+    LoopArmed,
+    Looping,
+    BreakRequested,
+}
+
+impl From<&ReactiveLoopState> for ReactiveLoopStateKind {
+    fn from(state: &ReactiveLoopState) -> Self {
+        match state {
+            ReactiveLoopState::Idle => Self::Idle,
+            ReactiveLoopState::SectionOffered(_) => Self::SectionOffered,
+            ReactiveLoopState::LoopArmed(_) => Self::LoopArmed,
+            ReactiveLoopState::Looping(_) => Self::Looping,
+            ReactiveLoopState::BreakRequested(_) => Self::BreakRequested,
+        }
+    }
+}
+
 struct PlayHandles {
     join: JoinHandle<()>,
     cancel: CancelHandle,
@@ -203,6 +245,11 @@ pub struct Player {
     /// State sampler watch sender. Shared so async init can start the sampler
     /// when the DMX engine becomes available, and restart it on reload.
     state_tx: StateTx,
+    /// Transport-state watch channel. A low-rate poller refreshes this and
+    /// uses `send_if_modified` so receivers (e.g. MCP `mtrack://status`
+    /// subscribers) only wake on meaningful transitions, never on the
+    /// per-tick fixture sampler.
+    transport_tx: Arc<tokio::sync::watch::Sender<TransportSnapshot>>,
     /// When true, state-altering operations (config changes, song edits, etc.)
     /// are rejected. Playback controls always work. Locked by default on startup.
     locked: Arc<AtomicBool>,
@@ -322,6 +369,23 @@ impl Player {
             init_player.init_hardware_async(config, bp).await;
         });
 
+        // Spawn the low-rate transport-state poller. Holds a `Weak` so it
+        // self-terminates when the player is dropped. The poll cadence
+        // (200ms / 5Hz) caps subscribers' notification rate while staying
+        // responsive enough for UI use.
+        let weak = Arc::downgrade(&player);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_millis(200));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                match weak.upgrade() {
+                    Some(p) => p.refresh_transport_state().await,
+                    None => break,
+                }
+            }
+        });
+
         Ok(player)
     }
 
@@ -391,6 +455,9 @@ impl Player {
             broadcast_tx: Arc::new(parking_lot::Mutex::new(None)),
             init_done_tx: Arc::new(init_done_tx),
             state_tx: Arc::new(parking_lot::Mutex::new(None)),
+            transport_tx: Arc::new(
+                tokio::sync::watch::channel(TransportSnapshot::default()).0,
+            ),
             locked: Arc::new(AtomicBool::new(true)),
             controller: Arc::new(parking_lot::Mutex::new(None)),
             loop_break: Arc::new(AtomicBool::new(false)),
@@ -532,6 +599,50 @@ impl Player {
         &self,
     ) -> Option<Arc<tokio::sync::watch::Sender<Arc<crate::state::StateSnapshot>>>> {
         self.state_tx.lock().clone()
+    }
+
+    /// Returns a fresh receiver for the transport-state watch channel.
+    /// The channel only emits a "changed" wake-up when the underlying
+    /// [`TransportSnapshot`] transitions to a new value.
+    pub fn transport_rx(&self) -> tokio::sync::watch::Receiver<TransportSnapshot> {
+        self.transport_tx.subscribe()
+    }
+
+    /// Computes the current transport snapshot from live player state.
+    ///
+    /// `is_playing()` briefly acquires the play-join lock, so this should
+    /// not be called from contexts that hold that lock.
+    pub async fn compute_transport_snapshot(&self) -> TransportSnapshot {
+        let playlist = self.get_playlist();
+        let playlist_name = playlist.name().to_string();
+        let current_song = playlist.current().map(|s| s.name().to_string());
+        let playing = self.is_playing().await;
+        let section_loop = self.active_section.read().as_ref().map(|b| b.name.clone());
+        let reactive_loop_state = ReactiveLoopStateKind::from(&*self.reactive_loop_state.read());
+        let locked = self.is_locked();
+        TransportSnapshot {
+            playlist_name,
+            current_song,
+            playing,
+            section_loop,
+            reactive_loop_state,
+            locked,
+        }
+    }
+
+    /// Recomputes the transport snapshot and broadcasts it iff it differs
+    /// from the last published value. Safe to call repeatedly — only real
+    /// transitions wake subscribers.
+    pub async fn refresh_transport_state(&self) {
+        let next = self.compute_transport_snapshot().await;
+        self.transport_tx.send_if_modified(|cur| {
+            if *cur != next {
+                *cur = next.clone();
+                true
+            } else {
+                false
+            }
+        });
     }
 
     /// Sets the config store on the player. Called once after startup.
@@ -1168,6 +1279,39 @@ mod test {
         player.switch_to_playlist("playlist").await.unwrap();
         assert_eq!(player.get_playlist().name(), "playlist");
 
+        Ok(())
+    }
+
+    /// `refresh_transport_state` must broadcast only when the snapshot
+    /// actually changes — repeated refreshes against unchanged state
+    /// must not wake subscribers. This is what keeps `mtrack://status`
+    /// subscribers quiet during steady-state playback.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_transport_channel_coalesces_no_op_refreshes() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        // Prime the channel so it reflects the real (post-init) snapshot,
+        // not the default value the watch was constructed with.
+        player.refresh_transport_state().await;
+        let mut rx = player.transport_rx();
+        rx.mark_unchanged();
+
+        // Refresh repeatedly against unchanged state. None should wake the receiver.
+        for _ in 0..10 {
+            player.refresh_transport_state().await;
+        }
+        let result = tokio::time::timeout(Duration::from_millis(50), rx.changed()).await;
+        assert!(
+            result.is_err(),
+            "transport channel emitted on no-op refresh: {:?}",
+            rx.borrow().clone()
+        );
+
+        // A real transport transition must wake the receiver.
+        player.switch_to_playlist("all_songs").await.unwrap();
+        player.refresh_transport_state().await;
+        let result = tokio::time::timeout(Duration::from_secs(2), rx.changed()).await;
+        assert!(result.is_ok(), "transport channel did not emit on switch");
+        assert_eq!(rx.borrow().playlist_name, "all_songs");
         Ok(())
     }
 

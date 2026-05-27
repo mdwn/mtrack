@@ -41,9 +41,10 @@ use parking_lot::Mutex;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{
-        CallToolResult, Content, Implementation, ListResourcesResult, PaginatedRequestParams,
-        ProtocolVersion, RawResource, ReadResourceRequestParams, ReadResourceResult, Resource,
-        ResourceContents, ResourceUpdatedNotificationParam, ServerCapabilities, ServerInfo,
+        CallToolResult, Content, GetMeta, Implementation, ListResourcesResult,
+        PaginatedRequestParams, ProtocolVersion, RawResource, ReadResourceRequestParams,
+        ReadResourceResult, Resource, ResourceContents, ResourceUpdatedNotification,
+        ResourceUpdatedNotificationParam, ServerCapabilities, ServerInfo, ServerNotification,
         SubscribeRequestParams, UnsubscribeRequestParams,
     },
     service::RequestContext,
@@ -1654,6 +1655,33 @@ pub(crate) fn internal_err<E: std::fmt::Display>(e: E) -> McpError {
     McpError::internal_error(e.to_string(), None)
 }
 
+/// Sends a `notifications/resources/updated` to a peer with a JSON payload
+/// attached under `_meta[meta_key]`.
+///
+/// rmcp's convenience helper `peer.notify_resource_updated` ships the
+/// notification with an empty `extensions` map, dropping our payload. Going
+/// through `send_notification` with a hand-built `ResourceUpdatedNotification`
+/// lets us insert a `Meta` into the extensions, which the `Notification`
+/// `Serialize` impl emits as `_meta` alongside `params`.
+async fn send_resource_updated(
+    peer: &Peer<RoleServer>,
+    uri: &str,
+    meta_key: &str,
+    payload: Value,
+) -> Result<(), rmcp::ServiceError> {
+    let params = ResourceUpdatedNotificationParam {
+        uri: uri.to_string(),
+    };
+    let mut notif = ServerNotification::ResourceUpdatedNotification(
+        ResourceUpdatedNotification::new(params),
+    );
+    notif
+        .get_meta_mut()
+        .0
+        .insert(meta_key.to_string(), payload);
+    peer.send_notification(notif).await
+}
+
 impl McpServer {
     /// Builds the JSON snapshot returned by `tools/call status` and by
     /// reading the `mtrack://status` resource. Kept in one place so the two
@@ -1676,27 +1704,37 @@ impl McpServer {
         }))
     }
 
-    /// Watches the player's state-snapshot channel and pushes a
-    /// `notifications/resources/updated` to the subscribed peer on each change.
+    /// Watches the player's transport-snapshot channel and pushes a
+    /// `notifications/resources/updated` to the subscribed peer on each
+    /// real transport transition. The channel uses `send_if_modified` to
+    /// suppress no-op refreshes, so passive subscribers only wake when
+    /// user-visible state (playlist, current song, playing, loop state,
+    /// locked) actually changes — never on per-tick effect samples.
+    ///
+    /// Each notification carries the full status snapshot under
+    /// `_meta["mtrack.status"]`, letting passive listeners skip the
+    /// follow-up `resources/read` round trip.
     fn spawn_status_subscription(
         &self,
         peer: Peer<RoleServer>,
     ) -> Result<AbortHandle, McpError> {
-        let mut rx = self.player.state_rx().ok_or_else(|| {
-            McpError::internal_error(
-                "player state watch is not enabled; cannot subscribe to mtrack://status",
-                None,
-            )
-        })?;
+        let mut rx = self.player.transport_rx();
+        let server = self.clone();
         let handle = tokio::spawn(async move {
             // Mark the initial value as seen so we only emit on actual changes
             // after subscribe returns.
             rx.mark_unchanged();
             while rx.changed().await.is_ok() {
-                let params = ResourceUpdatedNotificationParam {
-                    uri: RESOURCE_STATUS_URI.to_string(),
-                };
-                if peer.notify_resource_updated(params).await.is_err() {
+                let payload = server.status_snapshot().await.unwrap_or(Value::Null);
+                if send_resource_updated(
+                    &peer,
+                    RESOURCE_STATUS_URI,
+                    "mtrack.status",
+                    payload,
+                )
+                .await
+                .is_err()
+                {
                     break;
                 }
             }
@@ -1708,6 +1746,12 @@ impl McpServer {
     /// resource. The receiver lags rather than blocks the producer; we treat
     /// lag the same as a fresh change since the next `read_resource` call
     /// will get the current state regardless.
+    ///
+    /// Each notification carries the current config checksum under
+    /// `_meta["mtrack.config"]` so subscribers can deduplicate against a
+    /// value they have already fetched. The full YAML is intentionally
+    /// *not* embedded — config payloads are larger and the spec-clean
+    /// path is for the client to re-read on demand.
     fn spawn_config_subscription(
         &self,
         peer: Peer<RoleServer>,
@@ -1722,10 +1766,22 @@ impl McpServer {
             loop {
                 match rx.recv().await {
                     Ok(()) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        let params = ResourceUpdatedNotificationParam {
-                            uri: RESOURCE_CONFIG_URI.to_string(),
-                        };
-                        if peer.notify_resource_updated(params).await.is_err() {
+                        let checksum = store
+                            .read_yaml()
+                            .await
+                            .ok()
+                            .map(|(_, checksum)| checksum)
+                            .unwrap_or_default();
+                        let payload = json!({ "checksum": checksum });
+                        if send_resource_updated(
+                            &peer,
+                            RESOURCE_CONFIG_URI,
+                            "mtrack.config",
+                            payload,
+                        )
+                        .await
+                        .is_err()
+                        {
                             break;
                         }
                     }

@@ -510,14 +510,6 @@ async fn build_standalone_player(
     ));
     player.set_config_store(store);
 
-    // Wire a state-watch channel so subscription tools that depend on the
-    // player state stream (mtrack://status) can be tested without a DMX
-    // engine being present to drive the sampler.
-    let (state_tx, _state_rx) = tokio::sync::watch::channel(Arc::new(
-        crate::state::StateSnapshot::default(),
-    ));
-    player.set_state_tx(state_tx);
-
     player.await_hardware_ready().await;
     Ok(player)
 }
@@ -2608,14 +2600,11 @@ async fn mcp_bearer_token_enforces_auth() -> Result<(), Box<dyn Error>> {
 async fn mcp_status_subscription_notifies_on_state_change() -> Result<(), Box<dyn Error>> {
     let fixture = setup_standalone_fixture()?;
     let player = build_standalone_player(&fixture).await?;
-    let state_tx = player
-        .state_tx()
-        .expect("test fixture wires state_tx");
 
     let port = pick_free_port();
     let controller = Controller::new(
         vec![config::Controller::Mcp(config::McpController::new(port))],
-        player,
+        player.clone(),
     );
     assert!(controller.statuses().iter().all(|s| s.status == "running"));
 
@@ -2666,14 +2655,13 @@ async fn mcp_status_subscription_notifies_on_state_change() -> Result<(), Box<dy
     // has somewhere to push the notification.
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    // Push a synthetic state snapshot. The exact contents don't matter — the
-    // `watch::Sender::send` call is what flips the receiver's "changed" flag
-    // that the subscription task is awaiting.
-    state_tx.send_modify(|snap| {
-        let mut next = crate::state::StateSnapshot::default();
-        next.active_effects.push("synthetic-effect-from-test".to_string());
-        *snap = Arc::new(next);
-    });
+    // Trigger an actual transport-state transition: switch to the
+    // built-in `all_songs` playlist. The 5Hz transport poller picks the
+    // change up within ~200ms and broadcasts on the watch channel.
+    player
+        .switch_to_playlist("all_songs")
+        .await
+        .expect("switch_to_playlist");
 
     let event = listener.await.expect("listener task");
     assert_eq!(
@@ -2681,10 +2669,29 @@ async fn mcp_status_subscription_notifies_on_state_change() -> Result<(), Box<dy
         Some("mtrack://status"),
         "unexpected event: {event}"
     );
+    // The notification must carry an `_meta` payload with the new status
+    // under the `mtrack.status` namespace, so passive subscribers can
+    // observe the new state without a follow-up `resources/read`.
+    let meta = &event["params"]["_meta"]["mtrack.status"];
+    assert!(
+        meta.is_object(),
+        "expected _meta.mtrack.status object, got: {event}"
+    );
+    assert_eq!(
+        meta["playlist_name"].as_str(),
+        Some("all_songs"),
+        "_meta payload did not reflect the new playlist: {event}"
+    );
+    assert_eq!(
+        meta["playing"].as_bool(),
+        Some(false),
+        "_meta payload missing or wrong `playing` field: {event}"
+    );
 
     controller.shutdown();
     Ok(())
 }
+
 
 /// Subscribes to `mtrack://config` and verifies that a config mutation
 /// triggers a `notifications/resources/updated` event on the SSE channel.
@@ -2778,6 +2785,17 @@ async fn mcp_resource_subscription_notifies_on_config_change() -> Result<(), Box
         event["params"]["uri"].as_str(),
         Some("mtrack://config"),
         "unexpected event: {event}"
+    );
+    // The notification must carry the new checksum under
+    // `_meta["mtrack.config"]`, so subscribers can deduplicate against
+    // their current value without a follow-up `resources/read`.
+    let meta = &event["params"]["_meta"]["mtrack.config"];
+    let new_checksum = meta["checksum"]
+        .as_str()
+        .unwrap_or_else(|| panic!("missing _meta.mtrack.config.checksum: {event}"));
+    assert_ne!(
+        new_checksum, checksum,
+        "_meta checksum should reflect the post-mutation state"
     );
 
     // resources/read returns the same content as `get_config` for this URI.
