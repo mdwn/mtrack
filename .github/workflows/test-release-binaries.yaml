@@ -1,0 +1,97 @@
+# Copyright (C) 2026 Michael Wilson <mike@mdwn.dev>
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free Software
+# Foundation, version 3.
+#
+# This program is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along with
+# this program. If not, see <https://www.gnu.org/licenses/>.
+#
+# Temporary workflow to validate the release binary build matrix without
+# cutting a real tag. Mirrors the `build-binaries` job in publish.yaml but
+# uploads to actions artifacts instead of a GitHub release. Triggers on
+# changes to this file (so it doesn't run on unrelated PRs) and via manual
+# dispatch. Delete this file once the matrix has been verified end-to-end.
+name: test-release-binaries
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/test-release-binaries.yaml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-binaries:
+    name: Build binary (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            platform: linux
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04-arm
+            platform: linux
+          - target: x86_64-apple-darwin
+            os: macos-13
+            platform: macos
+          - target: aarch64-apple-darwin
+            os: macos-14
+            platform: macos
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev pkg-config libssl-dev protobuf-compiler
+      - name: Install macOS system dependencies
+        if: matrix.platform == 'macos'
+        run: brew install pkg-config protobuf
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "release-${{ matrix.target }}"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/cache@v5
+        with:
+          path: src/webui/svelte/node_modules
+          key: node-modules-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: node-modules-${{ runner.os }}-
+      - name: Build frontend
+        run: make build-ui
+      - name: Build binary
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Package binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="test-${GITHUB_SHA::7}"
+          STAGE="mtrack-${VERSION}-${{ matrix.target }}"
+          mkdir "$STAGE"
+          cp "target/${{ matrix.target }}/release/mtrack" "$STAGE/"
+          cp README.md LICENSE CHANGELOG.md "$STAGE/"
+          tar czf "${STAGE}.tar.gz" "$STAGE"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${STAGE}.tar.gz" > "${STAGE}.tar.gz.sha256"
+          else
+            shasum -a 256 "${STAGE}.tar.gz" > "${STAGE}.tar.gz.sha256"
+          fi
+      - name: Upload as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mtrack-${{ matrix.target }}
+          path: |
+            mtrack-*.tar.gz
+            mtrack-*.tar.gz.sha256
+          retention-days: 7
