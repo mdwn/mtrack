@@ -211,7 +211,8 @@ async fn sweep_idle_sessions(
     for id in &stale {
         map.remove(id);
     }
-    info!(count = stale.len(), "Evicted idle MCP sessions");
+    let ids: Vec<&str> = stale.iter().map(|id| id.as_ref()).collect();
+    info!(count = stale.len(), sessions = ?ids, "Evicted idle MCP sessions");
 }
 
 /// Picks a sweep interval such that idle sessions are evicted within roughly
