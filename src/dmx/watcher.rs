@@ -73,6 +73,23 @@ pub fn start_watching(
     let current_song_time = current_song_time.clone();
 
     std::thread::spawn(move || {
+        // Track the last-known mtime per watched file so we can distinguish
+        // "the file actually changed" from "something fired a spurious event"
+        // (read-only access updating atime, the watcher's own read triggering
+        // notify in certain backend configurations, etc.). Pre-seed with the
+        // current mtimes so the first event we process compares against a
+        // real baseline rather than treating every watched file as "new".
+        let mut last_mtimes: std::collections::HashMap<PathBuf, std::time::SystemTime> =
+            paths
+                .iter()
+                .filter_map(|p| {
+                    std::fs::metadata(p)
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .map(|t| (p.clone(), t))
+                })
+                .collect();
+
         for events in rx {
             match events {
                 Ok(events) => {
@@ -88,6 +105,37 @@ pub fn start_watching(
                         paths.contains(&event_path)
                     });
                     if !relevant {
+                        continue;
+                    }
+
+                    // Second guard: mtime-based change detection. Reads
+                    // (which trigger IN_ACCESS / IN_OPEN / IN_CLOSE_NOWRITE
+                    // on some inotify backend configurations) do NOT change
+                    // mtime, so a "did mtime advance?" check breaks the
+                    // self-sustaining read → event → reload → read loop
+                    // without affecting genuine write-driven reloads.
+                    let any_changed = paths.iter().any(|p| {
+                        match std::fs::metadata(p).and_then(|m| m.modified()) {
+                            Ok(mt) => {
+                                let changed = last_mtimes
+                                    .get(p)
+                                    .map(|prev| mt > *prev)
+                                    .unwrap_or(true);
+                                if changed {
+                                    last_mtimes.insert(p.clone(), mt);
+                                }
+                                changed
+                            }
+                            // Metadata failed — be conservative and reload,
+                            // so a transient stat error doesn't silently
+                            // skip a real change.
+                            Err(_) => true,
+                        }
+                    });
+                    if !any_changed {
+                        // Spurious event — nothing on disk actually changed.
+                        // Common cause: read-only access events triggering
+                        // notify in this backend configuration.
                         continue;
                     }
 
