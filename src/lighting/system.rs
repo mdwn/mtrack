@@ -63,6 +63,24 @@ impl LightingSystem {
         }
     }
 
+    /// Returns an iterator over the (name, venue) pairs known to the system.
+    pub fn venues_iter(&self) -> impl Iterator<Item = (&String, &Venue)> {
+        self.venues.iter()
+    }
+
+    /// Returns an iterator over the (name, fixture type) pairs known to the system.
+    pub fn fixture_types_iter(&self) -> impl Iterator<Item = (&String, &FixtureType)> {
+        self.fixture_types.iter()
+    }
+
+    /// Returns an iterator over the (name, logical group) pairs known to the
+    /// system. These are the tag/constraint-based groups defined under
+    /// `dmx.lighting.groups` in the player config — distinct from the
+    /// explicit-member-list groups defined inside `venue "..." { … }` blocks.
+    pub fn logical_groups_iter(&self) -> impl Iterator<Item = (&String, &LogicalGroup)> {
+        self.logical_groups.iter()
+    }
+
     /// Loads the lighting configuration.
     pub fn load(&mut self, config: &Lighting, base_path: &Path) -> Result<(), Box<dyn Error>> {
         info!(

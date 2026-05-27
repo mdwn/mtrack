@@ -107,6 +107,11 @@ pub struct Song {
     name: String,
     /// The base path of the song (directory containing the song config).
     base_path: PathBuf,
+    /// Path to the YAML file this song was loaded from, when known. Set by
+    /// [`get_all_songs`] for both directory-layout (`<dir>/song.yaml`) and
+    /// flat-layout (`<dir>/<name>.yaml`) songs so tools that need to read or
+    /// rewrite the exact source file can do so without guessing.
+    config_path: Option<PathBuf>,
     /// The MIDI event to play when the song is selected in a playlist.
     midi_event: Option<LiveEvent<'static>>,
     /// The MIDI playback configuration.
@@ -231,6 +236,7 @@ impl Song {
         Ok(Song {
             name: config.name().to_string(),
             base_path: start_path.to_path_buf(),
+            config_path: None,
             midi_event: config.midi_event()?,
             midi_playback,
             light_shows,
@@ -326,6 +332,7 @@ impl Song {
         let song = Self {
             name,
             base_path: song_directory.clone(),
+            config_path: Some(song_directory.join("song.yaml")),
             midi_playback,
             light_shows,
             dsl_lighting_shows,
@@ -395,6 +402,13 @@ impl Song {
     /// Gets the base path of the song (directory containing the song config).
     pub fn base_path(&self) -> &Path {
         &self.base_path
+    }
+
+    /// Path to the YAML file this song was loaded from, when known. Returns
+    /// `None` for songs constructed through test helpers or without going
+    /// through [`get_all_songs`].
+    pub fn config_path(&self) -> Option<&Path> {
+        self.config_path.as_deref()
     }
 
     /// Gets the per-song samples configuration.
@@ -672,6 +686,7 @@ impl Default for Song {
         Self {
             name: Default::default(),
             base_path: PathBuf::new(),
+            config_path: None,
             midi_event: Default::default(),
             midi_playback: Default::default(),
             light_shows: Vec::new(),
@@ -1208,7 +1223,22 @@ pub fn get_all_songs(path: &Path) -> Result<Arc<Songs>, Box<dyn Error>> {
                         Some(parent) => match parent.canonicalize() {
                             Ok(canonical_parent) => {
                                 match Song::new(&canonical_parent, &song_config) {
-                                    Ok(song) => {
+                                    Ok(mut song) => {
+                                        // Record the exact source yaml so MCP
+                                        // read/patch tools can target it
+                                        // regardless of layout. The path
+                                        // comes from the directory walk
+                                        // above; canonicalize for symlink
+                                        // safety. On the rare canonicalize
+                                        // race (permission flip / symlink
+                                        // rotation) fall back to the
+                                        // un-canonicalized path so flat-
+                                        // layout writes don't silently
+                                        // retarget to `<base>/song.yaml`.
+                                        song.config_path = Some(
+                                            path.canonicalize()
+                                                .unwrap_or_else(|_| path.to_path_buf()),
+                                        );
                                         songs.insert(song.name().to_string(), Arc::new(song));
                                     }
                                     Err(e) => {

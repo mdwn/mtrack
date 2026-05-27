@@ -107,3 +107,8 @@ controllers:
     port: 43235
     broadcast_addresses:
       - 127.0.0.1:43236
+  # MCP (Model Context Protocol) server — talk to mtrack from Claude Desktop,
+  # Claude Code, or any MCP-compatible client over HTTP at /mcp.
+  - kind: mcp
+    port: 43237
+    bind_address: 127.0.0.1

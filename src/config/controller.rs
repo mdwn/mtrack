@@ -20,6 +20,8 @@ use super::midi::{self, ToMidiEvent};
 
 pub const DEFAULT_GRPC_PORT: u16 = 43234;
 pub const DEFAULT_OSC_PORT: u16 = 43235;
+pub const DEFAULT_MCP_PORT: u16 = 43237;
+pub const DEFAULT_MCP_BIND_ADDRESS: &str = "127.0.0.1";
 
 fn default_osc_play() -> String {
     "/mtrack/play".to_string()
@@ -69,6 +71,7 @@ fn default_osc_playlist_current_song_elapsed() -> String {
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Controller {
     Grpc(GrpcController),
+    Mcp(McpController),
     Midi(MidiController),
     Multi(HashMap<String, Controller>),
     Osc(Box<OscController>),
@@ -190,6 +193,110 @@ impl GrpcController {
     /// Gets the port to listen on.
     pub fn port(&self) -> u16 {
         self.port.unwrap_or(DEFAULT_GRPC_PORT)
+    }
+}
+
+fn default_mcp_bind_address() -> String {
+    DEFAULT_MCP_BIND_ADDRESS.to_string()
+}
+
+/// The configuration for the mtrack MCP (Model Context Protocol) server.
+///
+pub const DEFAULT_MCP_IDLE_TIMEOUT_SECS: u64 = 14400;
+
+fn default_mcp_idle_timeout_secs() -> Option<u64> {
+    Some(DEFAULT_MCP_IDLE_TIMEOUT_SECS)
+}
+
+/// Exposes mtrack to MCP-compatible clients (such as Claude Desktop or Claude
+/// Code) over a streamable HTTP transport. The server is bound to localhost
+/// by default — set `bind_address: "0.0.0.0"` to expose it on the network.
+/// When binding beyond localhost you should also set `bearer_token` so the
+/// MCP surface is not exposed unauthenticated.
+#[derive(Clone, Deserialize, Serialize)]
+pub struct McpController {
+    /// The port to listen on. Defaults to `DEFAULT_MCP_PORT`.
+    port: Option<u16>,
+    /// The bind address. Defaults to localhost-only.
+    #[serde(default = "default_mcp_bind_address")]
+    bind_address: String,
+    /// Optional bearer token. When set, every request must carry an
+    /// `Authorization: Bearer <token>` header; mismatched or missing tokens
+    /// return HTTP 401. Recommended whenever `bind_address` is not localhost.
+    #[serde(default)]
+    bearer_token: Option<String>,
+    /// Idle timeout in seconds. A session whose inbound *and* outbound traffic
+    /// is quiet for this long is closed and its server-side resources released.
+    /// Defaults to 14400 (4 hours). Set to `null` to disable eviction.
+    ///
+    /// Server-pushed SSE notifications count as activity (see the response-body
+    /// wrapper in `controller/mcp.rs`), so a passive subscriber that's actively
+    /// receiving pushes stays alive without needing to send keepalive pings.
+    #[serde(default = "default_mcp_idle_timeout_secs")]
+    idle_session_timeout_secs: Option<u64>,
+}
+
+impl Default for McpController {
+    fn default() -> Self {
+        Self {
+            port: None,
+            bind_address: default_mcp_bind_address(),
+            bearer_token: None,
+            idle_session_timeout_secs: default_mcp_idle_timeout_secs(),
+        }
+    }
+}
+
+impl McpController {
+    #[cfg(test)]
+    pub fn new(port: u16) -> McpController {
+        McpController {
+            port: Some(port),
+            bind_address: default_mcp_bind_address(),
+            bearer_token: None,
+            idle_session_timeout_secs: default_mcp_idle_timeout_secs(),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn with_bearer_token(port: u16, token: &str) -> McpController {
+        McpController {
+            port: Some(port),
+            bind_address: default_mcp_bind_address(),
+            bearer_token: Some(token.to_string()),
+            idle_session_timeout_secs: default_mcp_idle_timeout_secs(),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn with_idle_timeout(port: u16, idle_secs: Option<u64>) -> McpController {
+        McpController {
+            port: Some(port),
+            bind_address: default_mcp_bind_address(),
+            bearer_token: None,
+            idle_session_timeout_secs: idle_secs,
+        }
+    }
+
+    /// Gets the port to listen on.
+    pub fn port(&self) -> u16 {
+        self.port.unwrap_or(DEFAULT_MCP_PORT)
+    }
+
+    /// Gets the bind address.
+    pub fn bind_address(&self) -> &str {
+        &self.bind_address
+    }
+
+    /// Returns the configured bearer token, if any.
+    pub fn bearer_token(&self) -> Option<&str> {
+        self.bearer_token.as_deref()
+    }
+
+    /// Idle session timeout, if eviction is enabled.
+    pub fn idle_session_timeout(&self) -> Option<std::time::Duration> {
+        self.idle_session_timeout_secs
+            .map(std::time::Duration::from_secs)
     }
 }
 
@@ -567,6 +674,72 @@ mod test {
         match controller {
             Controller::Grpc(grpc) => assert_eq!(grpc.port(), 1234),
             _ => panic!("expected Grpc variant"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn mcp_default_port() {
+        let mcp = McpController::default();
+        assert_eq!(mcp.port(), DEFAULT_MCP_PORT);
+        assert_eq!(mcp.bind_address(), DEFAULT_MCP_BIND_ADDRESS);
+    }
+
+    #[test]
+    fn mcp_serde_default() -> Result<(), Box<dyn Error>> {
+        let mcp: McpController = Config::builder()
+            .add_source(File::from_str("{}", FileFormat::Yaml))
+            .build()?
+            .try_deserialize()?;
+        assert_eq!(mcp.port(), DEFAULT_MCP_PORT);
+        assert_eq!(mcp.bind_address(), DEFAULT_MCP_BIND_ADDRESS);
+        Ok(())
+    }
+
+    #[test]
+    fn mcp_serde_custom() -> Result<(), Box<dyn Error>> {
+        let mcp: McpController = Config::builder()
+            .add_source(File::from_str(
+                r#"
+                port: 9000
+                bind_address: "0.0.0.0"
+                bearer_token: "shhh"
+                "#,
+                FileFormat::Yaml,
+            ))
+            .build()?
+            .try_deserialize()?;
+        assert_eq!(mcp.port(), 9000);
+        assert_eq!(mcp.bind_address(), "0.0.0.0");
+        assert_eq!(mcp.bearer_token(), Some("shhh"));
+        Ok(())
+    }
+
+    #[test]
+    fn mcp_serde_no_token() -> Result<(), Box<dyn Error>> {
+        let mcp: McpController = Config::builder()
+            .add_source(File::from_str("{}", FileFormat::Yaml))
+            .build()?
+            .try_deserialize()?;
+        assert!(mcp.bearer_token().is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn controller_enum_mcp_serde() -> Result<(), Box<dyn Error>> {
+        let controller: Controller = Config::builder()
+            .add_source(File::from_str(
+                r#"
+                kind: mcp
+                port: 7777
+                "#,
+                FileFormat::Yaml,
+            ))
+            .build()?
+            .try_deserialize()?;
+        match controller {
+            Controller::Mcp(mcp) => assert_eq!(mcp.port(), 7777),
+            _ => panic!("expected Mcp variant"),
         }
         Ok(())
     }

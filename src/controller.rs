@@ -19,6 +19,7 @@ use std::sync::Arc;
 use tokio::task::JoinHandle;
 
 pub(crate) mod grpc;
+mod mcp;
 mod midi;
 mod osc;
 
@@ -58,6 +59,10 @@ impl Controller {
                 config::Controller::Grpc(c) => {
                     ("grpc".to_string(), Some(format!("port {}", c.port())))
                 }
+                config::Controller::Mcp(c) => (
+                    "mcp".to_string(),
+                    Some(format!("{}:{}", c.bind_address(), c.port())),
+                ),
                 config::Controller::Osc(c) => {
                     ("osc".to_string(), Some(format!("port {}", c.port())))
                 }
@@ -67,6 +72,9 @@ impl Controller {
             let result: Result<Arc<dyn Driver>, Box<dyn Error>> = match config {
                 config::Controller::Grpc(config) => {
                     grpc::Driver::new(config, player).map(|d| d as Arc<dyn Driver>)
+                }
+                config::Controller::Mcp(config) => {
+                    mcp::Driver::new(config, player).map(|d| d as Arc<dyn Driver>)
                 }
                 config::Controller::Osc(config) => {
                     osc::Driver::new(config, player).map(|d| d as Arc<dyn Driver>)
@@ -272,6 +280,44 @@ mod test {
         let grpc_config = config::GrpcController::new(0);
         let controller =
             super::Controller::new(vec![config::Controller::Grpc(grpc_config)], player);
+        assert!(controller.statuses().iter().all(|s| s.status == "running"));
+        controller.shutdown();
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_controller_new_with_mcp() -> Result<(), Box<dyn Error>> {
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
+        let playlist = Playlist::new(
+            "playlist",
+            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
+            songs.clone(),
+        )?;
+        let mut playlists = HashMap::new();
+        playlists.insert(
+            "all_songs".to_string(),
+            playlist::from_songs(songs.clone())?,
+        );
+        playlists.insert("playlist".to_string(), playlist);
+        let player = Player::new(
+            playlists,
+            "playlist".to_string(),
+            &config::Player::new(
+                vec![],
+                Some(config::Audio::new("mock-device")),
+                None,
+                None,
+                HashMap::new(),
+                "assets/songs",
+            ),
+            None,
+        )?;
+        player.await_hardware_ready().await;
+
+        // Use port 0 to let the OS pick an available port.
+        let mcp_config = config::McpController::new(0);
+        let controller = super::Controller::new(vec![config::Controller::Mcp(mcp_config)], player);
         assert!(controller.statuses().iter().all(|s| s.status == "running"));
         controller.shutdown();
 
