@@ -113,8 +113,15 @@ pub fn start_watching(
                     // mtime, so a "did mtime advance?" check breaks the
                     // self-sustaining read → event → reload → read loop
                     // without affecting genuine write-driven reloads.
-                    let any_changed = paths.iter().any(|p| {
-                        match std::fs::metadata(p).and_then(|m| m.modified()) {
+                    //
+                    // Use `fold` rather than `any` so EVERY changed file's
+                    // mtime entry is refreshed in this pass. With `any`
+                    // short-circuiting on the first hit, a multi-file save
+                    // would update only the first file's baseline and
+                    // trigger a spurious second reload when the next event
+                    // arrives for one of the stale entries.
+                    let any_changed = paths.iter().fold(false, |acc, p| {
+                        let changed = match std::fs::metadata(p).and_then(|m| m.modified()) {
                             Ok(mt) => {
                                 let changed =
                                     last_mtimes.get(p).map(|prev| mt > *prev).unwrap_or(true);
@@ -127,7 +134,8 @@ pub fn start_watching(
                             // so a transient stat error doesn't silently
                             // skip a real change.
                             Err(_) => true,
-                        }
+                        };
+                        acc || changed
                     });
                     if !any_changed {
                         // Spurious event — nothing on disk actually changed.

@@ -19,7 +19,14 @@
 //! separate from the webui's listener so the surfaces can be enabled,
 //! disabled, and bound independently.
 
-use std::{collections::HashMap, error::Error, io, net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    error::Error,
+    io,
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
+    time::Duration,
+};
 
 use http_body_util::BodyExt;
 use parking_lot::Mutex;
@@ -56,7 +63,16 @@ impl Driver {
         config: config::McpController,
         player: Arc<Player>,
     ) -> Result<Arc<Self>, Box<dyn Error>> {
-        let addr: SocketAddr = format!("{}:{}", config.bind_address(), config.port()).parse()?;
+        // Parse `bind_address` as an `IpAddr` directly rather than building a
+        // `host:port` string. `SocketAddr`'s `FromStr` requires IPv6 literals
+        // to be bracketed (`[::1]:port`), so the textual form would reject
+        // `bind_address: "::1"` even though it is a perfectly valid IPv6
+        // literal.
+        let ip: IpAddr = config
+            .bind_address()
+            .parse()
+            .map_err(|e| format!("invalid bind_address `{}`: {e}", config.bind_address()))?;
+        let addr = SocketAddr::new(ip, config.port());
         Ok(Arc::new(Driver {
             player,
             addr,
@@ -91,6 +107,13 @@ impl super::Driver for Driver {
             }
 
             let cancel = CancellationToken::new();
+            // `CancellationToken` does not cancel on Drop — that's what
+            // `DropGuard` is for. Without this, aborting `monitor_events`
+            // (e.g. via `Controller::shutdown` or a controller reload) would
+            // drop the token silently, leaving the sweeper task and the
+            // axum graceful-shutdown future running with their captured
+            // Arcs forever.
+            let _cancel_guard = cancel.clone().drop_guard();
             let cancel_for_service = cancel.child_token();
             let cancel_for_sweeper = cancel.child_token();
 
@@ -258,12 +281,21 @@ async fn require_bearer_token(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Result<axum::response::Response, axum::http::StatusCode> {
-    let provided = req
+    // RFC 7235 §2.1: authentication scheme names are case-insensitive
+    // ("bearer xyz" is just as valid as "Bearer xyz"). The token itself is
+    // case-sensitive and compared in constant time.
+    let header = req
         .headers()
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.strip_prefix("Bearer "))
         .ok_or(axum::http::StatusCode::UNAUTHORIZED)?;
+    let (scheme, provided) = header
+        .split_once(char::is_whitespace)
+        .ok_or(axum::http::StatusCode::UNAUTHORIZED)?;
+    let provided = provided.trim_start();
+    if !scheme.eq_ignore_ascii_case("Bearer") {
+        return Err(axum::http::StatusCode::UNAUTHORIZED);
+    }
 
     if !constant_time_eq(provided.as_bytes(), expected.as_bytes()) {
         return Err(axum::http::StatusCode::UNAUTHORIZED);

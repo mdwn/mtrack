@@ -2717,6 +2717,21 @@ async fn mcp_bearer_token_enforces_auth() -> Result<(), Box<dyn Error>> {
         ok.status(),
     );
 
+    // RFC 7235 §2.1: scheme name is case-insensitive. `bearer` must work.
+    let lowercase = client
+        .post(&url)
+        .header("content-type", "application/json")
+        .header("accept", "application/json, text/event-stream")
+        .header("authorization", format!("bearer {token}"))
+        .json(&init_body)
+        .send()
+        .await?;
+    assert!(
+        lowercase.status().is_success(),
+        "lowercase `bearer` scheme should succeed per RFC 7235, got {}",
+        lowercase.status(),
+    );
+
     controller.shutdown();
     Ok(())
 }

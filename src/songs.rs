@@ -1229,8 +1229,16 @@ pub fn get_all_songs(path: &Path) -> Result<Arc<Songs>, Box<dyn Error>> {
                                         // regardless of layout. The path
                                         // comes from the directory walk
                                         // above; canonicalize for symlink
-                                        // safety.
-                                        song.config_path = path.canonicalize().ok();
+                                        // safety. On the rare canonicalize
+                                        // race (permission flip / symlink
+                                        // rotation) fall back to the
+                                        // un-canonicalized path so flat-
+                                        // layout writes don't silently
+                                        // retarget to `<base>/song.yaml`.
+                                        song.config_path = Some(
+                                            path.canonicalize()
+                                                .unwrap_or_else(|_| path.to_path_buf()),
+                                        );
                                         songs.insert(song.name().to_string(), Arc::new(song));
                                     }
                                     Err(e) => {

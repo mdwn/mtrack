@@ -797,23 +797,34 @@ impl McpServer {
         let _: crate::config::Song = serde_yaml_from_str(&args.yaml)?;
 
         let songs_root = self.songs_root_verified().await?;
-        let song_dir = match self.player.songs().get(&args.name) {
+        let yaml_path = match self.player.songs().get(&args.name) {
             Ok(existing) => {
-                crate::webui::safe_path::SafePath::resolve(existing.base_path(), &songs_root)
+                // Use the recorded `config_path` so flat-layout songs
+                // (`<root>/<name>.yaml`) and directory-layout songs
+                // (`<root>/<name>/song.yaml`) both round-trip through their
+                // original file rather than writing to `<base>/song.yaml`,
+                // which is shared across all flat-layout songs.
+                let path = existing
+                    .config_path()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| existing.base_path().join("song.yaml"));
+                crate::webui::safe_path::SafePath::resolve(&path, &songs_root)
                     .map_err(safepath_err)?
+                    .as_path()
+                    .to_path_buf()
             }
             Err(_) => {
                 crate::webui::safe_path::SafePath::validate_name(&args.name)
                     .map_err(safepath_err)?;
-                crate::webui::safe_path::SafePath::create_dir(
+                let song_dir = crate::webui::safe_path::SafePath::create_dir(
                     &songs_root.as_safe_path(),
                     &args.name,
                     &songs_root,
                 )
-                .map_err(safepath_err)?
+                .map_err(safepath_err)?;
+                song_dir.join_filename("song.yaml")
             }
         };
-        let yaml_path = song_dir.join_filename("song.yaml");
         atomic_write_string(&yaml_path, &args.yaml).await?;
         // Rescan the songs directory so list_songs / read_song see the new or
         // updated song without requiring an mtrack restart.
@@ -1200,6 +1211,33 @@ impl McpServer {
                 // First time we're writing this basename for this song: drop
                 // it into the conventional `lighting/` subdirectory and
                 // create that directory if it doesn't exist yet.
+                //
+                // For flat-layout songs (`<root>/<name>.yaml`) the song's
+                // `base_path` is the shared songs root — joining `lighting/`
+                // there would silently put every flat-layout song's lighting
+                // into the same directory, colliding on basename. Reject
+                // with a clear error and ask the user to migrate to
+                // directory layout (or pre-create the lighting file at the
+                // location they want, which `find_song_lighting_path` will
+                // then pick up).
+                if !is_directory_layout(&song) {
+                    return Err(McpError::invalid_params(
+                        format!(
+                            "song `{}` is in flat layout (`{}`); creating a new \
+                             lighting file would land in a directory shared with \
+                             other songs. Move the song to its own subdirectory \
+                             (`<dir>/song.yaml`), or create `{}` at a location \
+                             of your choosing first so the write tool can pick \
+                             it up.",
+                            song.name(),
+                            song.config_path()
+                                .map(|p| p.display().to_string())
+                                .unwrap_or_else(|| "<unknown path>".to_string()),
+                            args.file,
+                        ),
+                        None,
+                    ));
+                }
                 let lighting_dir = song.base_path().join("lighting");
                 tokio::fs::create_dir_all(&lighting_dir)
                     .await
@@ -1548,6 +1586,28 @@ pub(crate) fn compute_tempo_segments(beats: &[f64]) -> Vec<Value> {
         })
         .collect();
 
+    // Forward-fill NaN smoothing windows (caused by pathological beat input
+    // — e.g. duplicate or out-of-order timestamps that leave no positive
+    // intervals in a window). Without this, NaN survives the RLE pass and
+    // serializes as `"bpm": null` since `serde_json::Number::from_f64(NaN)`
+    // returns `None`. If the trace is entirely NaN, bail out with an empty
+    // result.
+    let Some(seed) = smoothed.iter().copied().find(|v| v.is_finite()) else {
+        return Vec::new();
+    };
+    let mut prev = seed;
+    let smoothed: Vec<f64> = smoothed
+        .into_iter()
+        .map(|v| {
+            if v.is_finite() {
+                prev = v;
+                v
+            } else {
+                prev
+            }
+        })
+        .collect();
+
     // Run-length encode the smoothed BPM trace.
     let mut segs: Vec<(usize, usize, f64)> = Vec::new(); // (start_interval, end_interval_inclusive, bpm)
     let mut run_start = 0usize;
@@ -1723,26 +1783,34 @@ async fn send_resource_updated(
     peer.send_notification(notif).await
 }
 
+/// Builds the player-status JSON snapshot used by both `tools/call status`
+/// and the `mtrack://status` resource. Free function so background tasks
+/// can compute it without capturing an `McpServer` (which would form a
+/// reference cycle through `subscriptions` → `SubscriptionHandle` →
+/// `AbortHandle` and silently defeat abort-on-Drop).
+async fn build_status_snapshot(player: &Player) -> Result<Value, McpError> {
+    let playlist = player.get_playlist();
+    let current = playlist.current();
+    let playing = player.is_playing().await;
+    let elapsed = player
+        .elapsed()
+        .await
+        .map_err(internal_err)?
+        .unwrap_or_default();
+    Ok(json!({
+        "playlist_name": playlist.name(),
+        "current_song": current.as_ref().map(|s| song_summary(s)),
+        "playing": playing,
+        "elapsed": format_duration(elapsed),
+    }))
+}
+
 impl McpServer {
     /// Builds the JSON snapshot returned by `tools/call status` and by
-    /// reading the `mtrack://status` resource. Kept in one place so the two
-    /// surfaces never drift.
+    /// reading the `mtrack://status` resource. Thin wrapper around
+    /// [`build_status_snapshot`] so the two surfaces never drift.
     pub(crate) async fn status_snapshot(&self) -> Result<Value, McpError> {
-        let playlist = self.player.get_playlist();
-        let current = playlist.current();
-        let playing = self.player.is_playing().await;
-        let elapsed = self
-            .player
-            .elapsed()
-            .await
-            .map_err(internal_err)?
-            .unwrap_or_default();
-        Ok(json!({
-            "playlist_name": playlist.name(),
-            "current_song": current.as_ref().map(|s| song_summary(s)),
-            "playing": playing,
-            "elapsed": format_duration(elapsed),
-        }))
+        build_status_snapshot(&self.player).await
     }
 
     /// Watches the player's transport-snapshot channel and pushes a
@@ -1755,15 +1823,20 @@ impl McpServer {
     /// Each notification carries the full status snapshot under
     /// `_meta["mtrack.status"]`, letting passive listeners skip the
     /// follow-up `resources/read` round trip.
+    ///
+    /// The spawned task only captures `Arc<Player>` (not the whole
+    /// `McpServer`) so the `subscriptions` map can drop cleanly and
+    /// abort the task on session teardown — see [`build_status_snapshot`]
+    /// for the cycle this avoids.
     fn spawn_status_subscription(&self, peer: Peer<RoleServer>) -> Result<AbortHandle, McpError> {
         let mut rx = self.player.transport_rx();
-        let server = self.clone();
+        let player = self.player.clone();
         let handle = tokio::spawn(async move {
             // Mark the initial value as seen so we only emit on actual changes
             // after subscribe returns.
             rx.mark_unchanged();
             while rx.changed().await.is_ok() {
-                let payload = server.status_snapshot().await.unwrap_or(Value::Null);
+                let payload = build_status_snapshot(&player).await.unwrap_or(Value::Null);
                 if send_resource_updated(&peer, RESOURCE_STATUS_URI, "mtrack.status", payload)
                     .await
                     .is_err()
@@ -2067,6 +2140,18 @@ pub(crate) fn find_song_lighting_path(
         return Some(root_level);
     }
     None
+}
+
+/// Returns true if the song was loaded from `<dir>/song.yaml` (the
+/// directory-layout convention) rather than `<dir>/<name>.yaml` (flat
+/// layout). Used by the lighting writer to decide whether
+/// `song.base_path()` names a per-song directory it can safely create
+/// children under.
+fn is_directory_layout(song: &crate::songs::Song) -> bool {
+    song.config_path()
+        .and_then(|p| p.file_name())
+        .map(|n| n == "song.yaml")
+        .unwrap_or(false)
 }
 
 /// Validates that `name` is a single path segment ending in `.light`.
