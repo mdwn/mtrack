@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-05-29
+
+### Added
+
+- **MCP (Model Context Protocol) server**: A new `kind: mcp` controller exposes mtrack to
+  MCP-compatible clients such as Claude Desktop and Claude Code over a Streamable HTTP
+  transport mounted at `/mcp` (default port 43237, localhost-only). It offers ~45 tools
+  spanning playback control (play, stop, next/previous, play-from, section looping),
+  configuration editing, and song / playlist / lighting authoring — every write is
+  parse-validated before it touches disk, and patch-style string-replacement edits are
+  supported alongside full-file writes. Two live resources, `mtrack://status` and
+  `mtrack://config`, can be subscribed to for push updates. An optional `bearer_token`
+  enforces `Authorization: Bearer` (constant-time comparison) for non-localhost binds, and
+  idle sessions are evicted after a configurable timeout (`idle_session_timeout_secs`,
+  default 4 hours). See the new
+  [MCP Control](https://github.com/mdwn/mtrack/blob/main/docs/src/interfaces/mcp.md)
+  documentation.
+- **Pre-built release binaries**: Tagged releases now build and attach binaries for x86_64 and
+  aarch64 Linux and Intel/Apple Silicon macOS, packaged as tarballs with SHA-256 checksums.
+- **`cargo binstall` support**: `cargo binstall mtrack` fetches the pre-built release binaries
+  instead of compiling from source.
+
+### Changed
+
+- **Audio decoding migrated to Symphonia 0.6**: Adopts Symphonia's reorganized decode/seek API
+  and strengthens decode coverage with cross-format sample-value tests (lossless formats must
+  decode bit-exactly) so the migration is trustworthy across WAV, FLAC, MP3, Ogg Vorbis, and AAC.
+- **Lock-free audio read path**: `BufferedSampleSource` now uses an `rtrb` single-producer/
+  single-consumer ring instead of a mutex+Condvar, so the realtime cpal callback holds no buffer
+  lock and is no longer exposed to priority inversion.
+- **Dependency updates**: Routine refresh of the Rust and web-UI dependency trees, including
+  rubato 1→3, Tokio, rustls, vite 6→8 (Rolldown bundler), TypeScript 5→6, and
+  `@sveltejs/vite-plugin-svelte` 5→7. Resolves all outstanding `cargo audit` and `npm audit`
+  advisories.
+
+### Fixed
+
+- **Sample-accurate, glitch-free section loops**: One-measure section loops now restart exactly
+  on the measure boundary with a single clean downbeat, eliminating the audible jitter and stutter
+  at the loop point. Loop-back sources are prebuilt off-thread and speculatively prewarmed so the
+  boundary is hit precisely the instant a loop is armed.
+- **Sample-accurate seeking for lossy and block codecs**: Seeking now lands sample-accurately
+  across WAV, FLAC, MP3, Ogg Vorbis, and AAC by pre-rolling a margin before the target to warm the
+  decoder and anchoring the discard to the first decoded packet's timestamp. Previously MP3/AAC
+  showed a few ms of warmup corruption and Vorbis a persistent ~6 ms position offset after a seek.
+
 ## [0.12.0] - 2026-04-30
 
 ### Added

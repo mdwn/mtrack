@@ -116,6 +116,7 @@ dmx:
 # - grpc
 # - midi
 # - osc
+# - mcp
 controllers:
 # The gRPC server configuration.
 - kind: grpc
@@ -230,6 +231,27 @@ controllers:
     # Whether to save the bank name to flash (true) or keep it temporary (false).
     # Temporary names reset on power cycle. Default: false.
     # save: false
+
+# The MCP (Model Context Protocol) server configuration. Exposes mtrack to
+# MCP-compatible clients (Claude Desktop, Claude Code, ...) over HTTP at /mcp.
+# See the MCP Control interface documentation for details.
+- kind: mcp
+
+  # The port the MCP server should be hosted on. Defaults to 43237.
+  port: 43237
+
+  # The bind address. Defaults to 127.0.0.1 (localhost-only). Set to 0.0.0.0
+  # to expose the server on the network.
+  bind_address: 127.0.0.1
+
+  # Optional bearer token. When set, every request must carry an
+  # `Authorization: Bearer <token>` header. Recommended whenever bind_address
+  # is not localhost.
+  # bearer_token: "your-secret-token"
+
+  # Idle session timeout in seconds. Defaults to 14400 (4 hours). Set to null
+  # to disable idle eviction.
+  # idle_session_timeout_secs: 14400
 
 # Mappings of track names to output channels.
 track_mappings:

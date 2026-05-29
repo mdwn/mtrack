@@ -17,6 +17,7 @@
 - [Terminal UI (TUI)](interfaces/tui.md)
 - [gRPC Control](interfaces/grpc.md)
 - [OSC Control](interfaces/osc.md)
+- [MCP Control](interfaces/mcp.md)
 
 # Configuration Reference
 
