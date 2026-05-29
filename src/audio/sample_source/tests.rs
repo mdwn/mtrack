@@ -2927,6 +2927,19 @@ mod sample_source_tests {
     // Buffered source: wrap-around ring buffer coverage
     // -----------------------------------------------------------------
 
+    /// Polls until the buffered source's background fill task has finished
+    /// (or a generous timeout elapses), so a test whose source fits entirely
+    /// in the ring can then drain deterministically without racing the fill.
+    fn wait_until_exhausted(buffered: &impl ChannelMappedSampleSource) {
+        for _ in 0..1000 {
+            if buffered.is_exhausted() == Some(true) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        panic!("buffered fill task did not finish within timeout");
+    }
+
     #[test]
     fn test_buffered_source_ring_buffer_wraparound() {
         // Verify that data survives a ring buffer wrap by reading all samples
@@ -2943,9 +2956,21 @@ mod sample_source_tests {
         let pool = Arc::new(BufferFillPool::new(1).unwrap());
         let mut buffered = BufferedSampleSource::new(inner, pool, 8);
 
+        // Warmup only blocks until `device_buffer_frames` samples are buffered,
+        // so the background fill task may still be pushing the rest. The whole
+        // source (20 samples) fits in the ring (capacity 32), so once it reports
+        // exhausted every sample is buffered and draining yields exactly them.
+        // Without this wait the consumer can outrun the fill task and read the
+        // transient-underrun silence `next_sample()` emits before `finished_flag`
+        // is set, inflating the count (flaky under a loaded test run).
+        wait_until_exhausted(&buffered);
+
         let mut read = Vec::new();
         while let Some(s) = buffered.next_sample().unwrap() {
             read.push(s);
+            if read.len() > num_samples {
+                break; // safety net; a finished source must terminate at num_samples
+            }
         }
         assert_eq!(read.len(), num_samples);
         for (i, &s) in read.iter().enumerate() {
@@ -2974,6 +2999,12 @@ mod sample_source_tests {
 
         let pool = Arc::new(BufferFillPool::new(1).unwrap());
         let mut buffered = BufferedSampleSource::new(inner, pool, 40);
+
+        // Wait for the fill task so the whole source (60 samples) is buffered
+        // (it fits in the ring, capacity 160). Otherwise the consumer can
+        // outrun the fill task and `read_frames` returns a transient 0, ending
+        // the drain early and under-reading (flaky under a loaded test run).
+        wait_until_exhausted(&buffered);
 
         let mut all_output = Vec::new();
         let mut buf = vec![0.0f32; 10]; // Read up to 5 frames at a time

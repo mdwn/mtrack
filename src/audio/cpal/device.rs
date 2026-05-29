@@ -17,14 +17,14 @@ use std::{
     fmt,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc,
+        mpsc, Arc,
     },
     thread,
     time::Duration,
 };
 
 use cpal::traits::{DeviceTrait, HostTrait};
-use tracing::{debug, error, info, span, Level};
+use tracing::{debug, error, info, span, warn, Level};
 
 use crate::audio::format::{SampleFormat, TargetFormat};
 use crate::audio::mixer::ActiveSource as MixerActiveSource;
@@ -405,6 +405,29 @@ impl Device {
 /// Every call site in `play_from` follows the same pattern: allocate a source ID,
 /// create an `is_finished` flag, build the struct, and hand back the flag for
 /// monitoring. This helper captures that boilerplate.
+/// Finds the section the playhead currently sits inside, if any, resolved to
+/// absolute time bounds via the song's beat grid.
+///
+/// This is the loop-back candidate: whichever section the performer is hearing
+/// could be armed at any moment, and arming loops back to its `start_time`. The
+/// audio monitor uses this to prewarm the loop-back sources speculatively, so
+/// they are ready the instant the loop is armed — even on the last beat of the
+/// section — rather than incurring a file-open/seek/warmup stall at the first
+/// boundary.
+fn current_playhead_section(
+    song: &Song,
+    elapsed: Duration,
+) -> Option<crate::player::SectionBounds> {
+    song.sections().iter().find_map(|s| {
+        let (start_time, end_time) = song.resolve_section(&s.name)?;
+        (elapsed >= start_time && elapsed < end_time).then(|| crate::player::SectionBounds {
+            name: s.name.clone(),
+            start_time,
+            end_time,
+        })
+    })
+}
+
 fn build_active_source(
     source: Box<dyn crate::audio::sample_source::ChannelMappedSampleSource + Send + Sync>,
     track_mappings: &HashMap<String, Vec<u16>>,
@@ -415,6 +438,9 @@ fn build_active_source(
     let cached_source_channel_count = source.source_channel_count();
     let is_finished = Arc::new(AtomicBool::new(false));
     let flag = is_finished.clone();
+    // Pre-allocate the cancel slot so the section-loop monitor can schedule a
+    // sample-accurate cut on an already-playing source via
+    // `AudioMixer::set_cancel_at_sample`. The mixer treats 0 as "no cancel".
     let active = MixerActiveSource {
         id,
         source,
@@ -424,7 +450,7 @@ fn build_active_source(
         cancel_handle: cancel_handle.clone(),
         is_finished,
         start_at_sample: None,
-        cancel_at_sample: None,
+        cancel_at_sample: Some(Arc::new(std::sync::atomic::AtomicU64::new(0))),
         gain_envelope,
     };
     (active, flag)
@@ -552,17 +578,91 @@ impl AudioDevice for Device {
                 .map_err(|e| crate::audio::AudioError::Playback(e.to_string()))?;
         }
 
+        // Startup skew between the clock epoch and the moment the original
+        // source actually goes live in the mixer. `clock.start()` is called by
+        // the player *before* this function builds and warms its sources, so the
+        // free-running mixer counter has already advanced by the time the audio
+        // is added. The clock's elapsed reading here is exactly that skew: the
+        // original source plays this many samples behind what the clock reports,
+        // for the whole song.
+        //
+        // Section-loop boundaries are computed from the clock
+        // (`loop_boundary_sample`), and the original source is the *outgoing*
+        // side of the first loop handoff while every loop source is pinned to
+        // the sample counter. So without correction the first handoff lands
+        // `skew` samples early (the section is cut short) while later
+        // counter-pinned `N -> N` handoffs are seamless. Adding the skew to
+        // every computed boundary realigns it to the audio content rather than
+        // the clock epoch; loop sources started at the corrected boundaries
+        // inherit the same alignment, so all handoffs — first included — stay
+        // seamless. (The resampler group delay is symmetric between the outgoing
+        // and incoming sources and cancels, so it needs no correction.)
+        let audio_clock_skew_samples = (clock.elapsed().as_secs_f64()
+            * self.output_manager.mixer.sample_rate() as f64)
+            .round() as u64;
+        debug!(
+            audio_clock_skew_samples,
+            skew_us = clock.elapsed().as_micros() as u64,
+            "Audio section loop: original sources live; loop boundaries corrected for startup skew"
+        );
+
         // Monitor loop: polls for source completion, cancellation, and section boundaries.
         let crossfade_samples = crate::audio::crossfade::default_crossfade_samples(
             self.output_manager.mixer.sample_rate(),
         );
-        let crossfade_duration = crate::audio::crossfade::DEFAULT_CROSSFADE_DURATION;
+        let mixer_sample_rate = self.output_manager.mixer.sample_rate();
+
+        // Look-ahead for the section-loop trigger. Must exceed the 10ms poll
+        // sleep below so the trigger is always detected *before* the ideal
+        // loop boundary; we then schedule the actual crossfade at the exact
+        // sample via `start_at_sample`/`cancel_at_sample`, eliminating
+        // polling jitter from the audible loop point. The cost is a small
+        // race window for break-after-trigger, which we accept.
+        let loop_trigger_lookahead = Duration::from_millis(30);
 
         let mut section_trigger = crate::section_loop::SectionLoopTrigger::new();
+
+        type PrebuiltSources = Vec<Box<dyn crate::audio::sample_source::ChannelMappedSampleSource>>;
+
+        // Sources pre-built for the next loop iteration, keyed by section name
+        // so a section change invalidates them. Ready to swap in with zero I/O.
+        let mut pending_sources: Option<(String, PrebuiltSources)> = None;
+
+        // In-flight background build (section name + result channel). The build
+        // runs on a detached worker thread rather than inline because
+        // `create_channel_mapped_sources_from` blocks on BufferedSampleSource
+        // warmup (file open/seek/decode). Doing that on the monitor thread
+        // could delay the *first* loop boundary — the loop can be armed close
+        // to the section end and the first build hits a cold file cache — which
+        // showed up as a one-off stutter on the first iteration.
+        let mut build_rx: Option<(String, mpsc::Receiver<Result<PrebuiltSources, String>>)> = None;
+
+        // Deferred `loop_time_consumed` bumps. Each entry is the sample at
+        // which the audio actually loops (so the reported elapsed only jumps
+        // when the listener crosses the boundary, not when the monitor
+        // detected it).
+        let mut pending_consumption: Vec<(u64, Duration)> = Vec::new();
+
+        // DIAGNOSTIC: per-swap counter to compare the first loop against later ones.
+        let mut loop_iteration: u64 = 0;
 
         'monitor: loop {
             if cancel_handle.is_cancelled() || loop_break.load(Ordering::Relaxed) {
                 break;
+            }
+
+            // Apply any deferred loop_time_consumed bumps whose sample has
+            // been reached by the audio callback.
+            if !pending_consumption.is_empty() {
+                let now_sample = self.output_manager.mixer.current_sample();
+                pending_consumption.retain(|&(apply_at, amount)| {
+                    if now_sample >= apply_at {
+                        *loop_time_consumed.lock() += amount;
+                        false
+                    } else {
+                        true
+                    }
+                });
             }
 
             // Check if all sources have finished (EOF).
@@ -573,76 +673,212 @@ impl AudioDevice for Device {
                 break;
             }
 
-            // Check for section loop boundary.
-            if let Some(section) = active_section.read().as_ref() {
-                if !section_loop_break.load(Ordering::Relaxed) {
-                    let elapsed = clock.elapsed();
+            let armed = active_section.read().clone();
+            let break_requested = section_loop_break.load(Ordering::Relaxed);
 
-                    if section_trigger
-                        .check(section, elapsed, crossfade_duration)
-                        .is_some()
+            // Which section we want warm loop-back sources for. Once armed, the
+            // active section is authoritative. Before arming, speculatively
+            // target whichever section the playhead is currently inside — it is
+            // the loop-back candidate, so the sources are warm the instant the
+            // performer arms, even on the section's final beat. (During looping
+            // the raw clock runs past the section end, so we rely on `armed`
+            // rather than the playhead lookup.)
+            let prewarm_target = if break_requested {
+                None
+            } else if armed.is_some() {
+                armed.clone()
+            } else {
+                current_playhead_section(&song, clock.elapsed())
+            };
+
+            // Collect the result of a finished background build. Take the
+            // channel out and only restore it if the build is still running.
+            let wanted = |name: &str| prewarm_target.as_ref().is_some_and(|t| t.name == name);
+            if let Some((name, rx)) = build_rx.take() {
+                match rx.try_recv() {
+                    Ok(Ok(srcs)) => {
+                        // Keep only if we still want this section's sources.
+                        if wanted(&name) {
+                            pending_sources = Some((name, srcs));
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        error!(
+                            err = %e,
+                            section = name,
+                            "Failed to pre-build section loop sources; will retry"
+                        );
+                    }
+                    // Still building — put the channel back.
+                    Err(mpsc::TryRecvError::Empty) => build_rx = Some((name, rx)),
+                    // Worker vanished without sending (e.g. spawn failed);
+                    // leave build_rx cleared so we retry next iteration.
+                    Err(mpsc::TryRecvError::Disconnected) => {}
+                }
+            }
+
+            // Drop warmed sources / abandon an in-flight build if the target
+            // section changed (playhead moved on, loop armed elsewhere, section
+            // cleared, or a break was requested) — otherwise we'd swap stale
+            // audio in on the next trigger.
+            if pending_sources
+                .as_ref()
+                .is_some_and(|(name, _)| !wanted(name))
+            {
+                pending_sources = None;
+            }
+            if build_rx.as_ref().is_some_and(|(name, _)| !wanted(name)) {
+                // Dropping the receiver detaches the worker; its eventual send
+                // is a harmless no-op.
+                build_rx = None;
+            }
+
+            // Kick off a background build for the target if we have neither
+            // warmed sources nor a build already in flight. The worker thread
+            // absorbs the warmup/I/O block so trigger detection here is never
+            // delayed.
+            if let Some(target) = &prewarm_target {
+                if pending_sources.is_none() && build_rx.is_none() {
+                    let (tx, rx) = mpsc::channel();
+                    let song = song.clone();
+                    let ctx = playback_context.clone();
+                    let mappings = mappings.clone();
+                    let start_time = target.start_time;
+                    let _ = thread::Builder::new()
+                        .name("mtrack-section-prebuild".into())
+                        .spawn(move || {
+                            let result = song
+                                .create_channel_mapped_sources_from(&ctx, start_time, &mappings)
+                                .map_err(|e| e.to_string());
+                            // Receiver may be gone if the target changed.
+                            let _ = tx.send(result);
+                        });
+                    build_rx = Some((target.name.clone(), rx));
+                }
+            }
+
+            // Only loop when the section is actually armed.
+            if let Some(section) = armed {
+                if !break_requested {
+                    let elapsed = clock.elapsed();
+                    if let Some(trigger_time) =
+                        section_trigger.check(&section, elapsed, loop_trigger_lookahead)
                     {
-                        info!(
+                        let pending = match pending_sources.take() {
+                            Some((_, srcs)) => srcs,
+                            None => {
+                                warn!(
+                                    section = section.name,
+                                    "Audio section loop: trigger fired with no pre-built \
+                                     sources; skipping this boundary"
+                                );
+                                thread::sleep(Duration::from_millis(10));
+                                continue 'monitor;
+                            }
+                        };
+
+                        // Map the ideal trigger time to an exact mixer sample.
+                        // We use the live sample counter plus the remaining
+                        // delta so the result is robust to any small skew
+                        // between the playback clock and the mixer counter.
+                        let now_sample = self.output_manager.mixer.current_sample();
+                        // Correct for the startup skew so the boundary tracks the
+                        // audio content, not the clock epoch (see where
+                        // `audio_clock_skew_samples` is captured). The shift is a
+                        // constant, so inter-boundary spacing is unchanged.
+                        let loop_sample = crate::section_loop::loop_boundary_sample(
+                            now_sample,
+                            elapsed,
+                            trigger_time,
+                            mixer_sample_rate,
+                        )
+                        .saturating_add(audio_clock_skew_samples);
+                        // At a section-loop boundary the loop-point content
+                        // coincides on both sources: the section's `end_time` on
+                        // the outgoing source is the same musical moment as its
+                        // `start_time` on the incoming one — for a one-measure
+                        // loop, literally the same downbeat. With the boundary
+                        // aligned (seek-residual trim + startup-skew correction),
+                        // the two copies land on the same sample, so we overlap
+                        // them and let them reinforce into a single click rather
+                        // than cutting one.
+                        //
+                        // The crossfade straddles the boundary on the outgoing
+                        // side: the outgoing source plays THROUGH loop_sample at
+                        // full gain and fades out over the following window, while
+                        // the incoming source begins exactly at loop_sample and
+                        // fades in. This matters because the outgoing source's
+                        // resampler is in steady state, so its copy of the downbeat
+                        // is clean and carries the attack; the incoming source's
+                        // resampler is freshly created, so its first samples carry
+                        // a sinc pre-ring — the fade-in attenuates that pre-ring
+                        // while the clean outgoing transient dominates the attack.
+                        let fade_end_sample = loop_sample.saturating_add(crossfade_samples);
+
+                        loop_iteration += 1;
+                        debug!(
                             section = section.name,
-                            "Audio section loop: crossfading back to section start"
+                            loop_iteration,
+                            loop_sample,
+                            fade_end_sample,
+                            "Audio section loop: scheduling crossfade"
                         );
 
-                        // Fade out current sources.
+                        // Schedule fade-out + cut on currently-playing sources.
+                        // The envelope holds at 1.0 until loop_sample, then ramps
+                        // to 0 by fade_end_sample; cancel_at_sample removes them
+                        // once the fade completes.
                         let current_ids: Vec<u64> = {
                             let sources = self.output_manager.mixer.get_active_sources();
                             let guard = sources.read();
                             guard.iter().map(|s| s.lock().id).collect()
                         };
                         if !current_ids.is_empty() {
-                            let fade_out =
-                                Arc::new(crate::audio::crossfade::GainEnvelope::fade_out(
+                            let fade_out = Arc::new(
+                                crate::audio::crossfade::GainEnvelope::fade_out(
                                     crossfade_samples,
                                     crate::audio::crossfade::CrossfadeCurve::Linear,
-                                ));
+                                )
+                                .with_start_sample(loop_sample),
+                            );
                             self.output_manager
                                 .mixer
                                 .set_gain_envelope(&current_ids, fade_out);
+                            self.output_manager
+                                .mixer
+                                .set_cancel_at_sample(&current_ids, fade_end_sample);
                         }
 
-                        // Create new sources at section start with fade-in.
-                        let section_start = section.start_time;
-                        match song.create_channel_mapped_sources_from(
-                            &playback_context,
-                            section_start,
-                            mappings,
-                        ) {
-                            Ok(new_sources) => {
-                                // Replace finish flags with new source flags.
-                                source_finish_flags.clear();
-                                let fade_in_envelope =
-                                    Some(Arc::new(crate::audio::crossfade::GainEnvelope::fade_in(
-                                        crossfade_samples,
-                                        crate::audio::crossfade::CrossfadeCurve::Linear,
-                                    )));
-                                for source in new_sources {
-                                    let (active_source, flag) = build_active_source(
-                                        source,
-                                        mappings,
-                                        &cancel_handle,
-                                        fade_in_envelope.clone(),
-                                    );
-                                    source_finish_flags.push(flag);
-                                    if let Err(e) = self.output_manager.add_source(active_source) {
-                                        error!(err = %e, "Failed to add section loop source");
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                error!(err = %e, "Failed to create section loop sources");
-                                break 'monitor;
+                        // Add the pre-built sources. Their own start_at_sample
+                        // delays playback until loop_sample; the fade-in envelope
+                        // ramps from there so the incoming source's resampler
+                        // pre-ring is attenuated while the clean outgoing transient
+                        // carries the downbeat attack.
+                        source_finish_flags.clear();
+                        for source in pending {
+                            // Each source gets its own envelope instance — a shared
+                            // GainEnvelope.position would advance once per source
+                            // per batch and the fade would complete N× too fast.
+                            let fade_in =
+                                Some(Arc::new(crate::audio::crossfade::GainEnvelope::fade_in(
+                                    crossfade_samples,
+                                    crate::audio::crossfade::CrossfadeCurve::Linear,
+                                )));
+                            let (mut active_source, flag) =
+                                build_active_source(source, mappings, &cancel_handle, fade_in);
+                            active_source.start_at_sample = Some(loop_sample);
+                            source_finish_flags.push(flag);
+                            if let Err(e) = self.output_manager.add_source(active_source) {
+                                error!(err = %e, "Failed to add section loop source");
                             }
                         }
 
-                        // Accumulate consumed time so elapsed() reports correct song position.
+                        // Defer the consumed-time bump until the audio thread
+                        // actually crosses the boundary, so the user-visible
+                        // elapsed doesn't briefly jump backwards.
                         let section_duration = section.end_time.saturating_sub(section.start_time);
-                        *loop_time_consumed.lock() += section_duration;
+                        pending_consumption.push((loop_sample, section_duration));
 
-                        // Continue monitoring the new sources.
                         continue 'monitor;
                     }
                 }
@@ -769,6 +1005,72 @@ impl AudioDevice for Device {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    mod current_playhead_section_tests {
+        use super::*;
+
+        // Two 4-beat measures at 120 BPM: beats every 0.5s.
+        // verse = measures 1..2 → [0.0, 2.0); chorus = measures 2..3 → [2.0, 3.5).
+        fn song_with_sections() -> Song {
+            Song::new_for_test_with_sections(
+                "test",
+                &["click"],
+                crate::audio::click_analysis::BeatGrid {
+                    beats: vec![0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5],
+                    measure_starts: vec![0, 4],
+                },
+                vec![
+                    crate::config::Section {
+                        name: "verse".to_string(),
+                        start_measure: 1,
+                        end_measure: 2,
+                    },
+                    crate::config::Section {
+                        name: "chorus".to_string(),
+                        start_measure: 2,
+                        end_measure: 3,
+                    },
+                ],
+            )
+        }
+
+        #[test]
+        fn finds_section_containing_playhead() {
+            let song = song_with_sections();
+            assert_eq!(
+                current_playhead_section(&song, Duration::from_millis(500)).map(|s| s.name),
+                Some("verse".to_string())
+            );
+            assert_eq!(
+                current_playhead_section(&song, Duration::from_millis(2500)).map(|s| s.name),
+                Some("chorus".to_string())
+            );
+        }
+
+        #[test]
+        fn boundary_is_half_open() {
+            let song = song_with_sections();
+            // Exactly at the verse/chorus boundary belongs to chorus: a
+            // section owns [start, end), so the measure boundary is the start
+            // of the next section, not the tail of the previous one.
+            let at_boundary = current_playhead_section(&song, Duration::from_secs(2)).unwrap();
+            assert_eq!(at_boundary.name, "chorus");
+            assert_eq!(at_boundary.start_time, Duration::from_secs(2));
+        }
+
+        #[test]
+        fn none_when_past_all_sections() {
+            let song = song_with_sections();
+            assert!(current_playhead_section(&song, Duration::from_secs(10)).is_none());
+        }
+
+        #[test]
+        fn none_without_beat_grid() {
+            // A plain test song has no beat grid, so nothing resolves.
+            let song = Song::new_for_test("test", &["click"]);
+            assert!(current_playhead_section(&song, Duration::from_secs(1)).is_none());
+        }
+    }
 
     mod target_to_cpal_sample_format_tests {
         use super::*;

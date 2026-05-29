@@ -43,6 +43,14 @@ pub struct AudioSampleSource {
     buffer_size: usize,
     // Leftover samples from the last decoded packet that didn't fit in the buffer
     leftover_samples: Vec<f32>,
+    // Interleaved samples to discard from the front of the decoded stream before
+    // emitting any audio. Set after an accurate seek: the format reader lands on
+    // a codec packet boundary at or before the requested timestamp (a whole
+    // block for FLAC), so we must trim `(required_ts - actual_ts)` frames to land
+    // exactly on the requested time. Without this, a seeked source starts up to
+    // one block early — e.g. a section-loop source would replay from before its
+    // start point, shifting the looped downbeat late.
+    skip_samples: usize,
     // WAV / PCM metadata for scaling & reporting
     bits_per_sample: u16,
     channels: u16,
@@ -209,6 +217,7 @@ impl AudioSampleSource {
             buffer_position: 0,
             buffer_size,
             leftover_samples: initial_leftover,
+            skip_samples: 0,
             bits_per_sample,
             channels,
             sample_rate,
@@ -229,7 +238,16 @@ impl AudioSampleSource {
                 time: Time::from(start),
                 track_id: Some(track_id),
             };
-            source.format_reader.seek(SeekMode::Accurate, seek_to)?;
+            // Accurate seeking only guarantees the reader lands at a packet
+            // boundary at or before the target (a whole block for block-based
+            // codecs like FLAC). It reports both the requested timestamp and
+            // where it actually landed; we must discard the difference so the
+            // first emitted sample is exactly at `start`. The timestamps are in
+            // the track's timebase (frames), so scale by the channel count to
+            // get interleaved samples.
+            let seeked = source.format_reader.seek(SeekMode::Accurate, seek_to)?;
+            let residual_frames = seeked.required_ts.saturating_sub(seeked.actual_ts);
+            source.skip_samples = residual_frames as usize * channels as usize;
         }
 
         Ok(source)
@@ -369,7 +387,7 @@ impl AudioSampleSource {
         // those as "no progress" would cause us to bail out early and never see
         // the real audio data.
         loop {
-            let (samples, _decoded_channels) = match Self::read_and_decode_next_packet_for_track(
+            let (mut samples, _decoded_channels) = match Self::read_and_decode_next_packet_for_track(
                 self.format_reader.as_mut(),
                 self.decoder.as_mut(),
                 self.track_id,
@@ -384,6 +402,18 @@ impl AudioSampleSource {
                     return Err(e);
                 }
             };
+
+            // Discard the accurate-seek residual (samples decoded between the
+            // packet boundary the reader landed on and the requested time).
+            if self.skip_samples > 0 {
+                let drop = self.skip_samples.min(samples.len());
+                samples.drain(..drop);
+                self.skip_samples -= drop;
+                // Whole packet consumed by the skip — read the next one.
+                if samples.is_empty() {
+                    continue;
+                }
+            }
 
             // Add samples to the buffer
             if !samples.is_empty() {
@@ -642,6 +672,44 @@ mod tests {
             count > 10000,
             "seeking to 0.5s should still produce many samples, got {}",
             count
+        );
+    }
+
+    #[test]
+    fn accurate_seek_trims_block_residual_flac() {
+        // Regression for the section-loop "shifted region" bug: block-based
+        // codecs (FLAC here, also MP3/AAC/Ogg) only seek to a packet boundary at
+        // or before the target, and the `required_ts - actual_ts` residual must
+        // be trimmed so the first emitted sample is exactly at the requested
+        // time. The whole suite otherwise seeks WAV, which is sample-addressable
+        // and never exercises this.
+        //
+        // The fixture is mono 44.1k with an impulse at sample 20000 — mid-block
+        // for FLAC's 4096-sample blocks (boundary at 16384, so ~3616 samples of
+        // residual). Seeking to the impulse's time must return it essentially
+        // immediately; without the trim it would appear ~3616 samples late.
+        let path = std::path::Path::new("assets/seek-marker-44.1k.flac");
+        let marker_sample = 20000.0;
+        let start = std::time::Duration::from_secs_f64(marker_sample / 44100.0);
+        let mut source = AudioSampleSource::from_file(path, Some(start), 1024).unwrap();
+
+        let mut first_loud = None;
+        for i in 0..1024 {
+            match source.next_sample() {
+                Ok(Some(s)) => {
+                    if s.abs() > 0.3 {
+                        first_loud = Some(i);
+                        break;
+                    }
+                }
+                _ => break,
+            }
+        }
+        let idx = first_loud.expect("impulse not found near the seek target");
+        assert!(
+            idx <= 8,
+            "seek landed {idx} samples before the target; the FLAC block residual \
+             was not trimmed (expected the impulse at ~0)"
         );
     }
 
