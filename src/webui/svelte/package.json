@@ -20,7 +20,7 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.57.0",
-    "@sveltejs/vite-plugin-svelte": "^5",
+    "@sveltejs/vite-plugin-svelte": "^7",
     "@types/express": "^5.0.6",
     "@types/ws": "^8.18.1",
     "eslint": "^10.0.2",
@@ -34,7 +34,7 @@
     "tsx": "^4.21.0",
     "typescript": "^5",
     "typescript-eslint": "^8.56.1",
-    "vite": "^6",
+    "vite": "^8",
     "ws": "^8.19.0"
   },
   "dependencies": {
