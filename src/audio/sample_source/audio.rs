@@ -43,14 +43,17 @@ pub struct AudioSampleSource {
     buffer_size: usize,
     // Leftover samples from the last decoded packet that didn't fit in the buffer
     leftover_samples: Vec<f32>,
-    // Interleaved samples to discard from the front of the decoded stream before
-    // emitting any audio. Set after an accurate seek: the format reader lands on
-    // a codec packet boundary at or before the requested timestamp (a whole
-    // block for FLAC), so we must trim `(required_ts - actual_ts)` frames to land
-    // exactly on the requested time. Without this, a seeked source starts up to
-    // one block early — e.g. a section-loop source would replay from before its
-    // start point, shifting the looped downbeat late.
+    // Interleaved samples to discard from the front of the decoded stream so the
+    // first emitted sample lands exactly on a requested seek target. Computed
+    // lazily from the first decoded packet's timestamp (see `refill_buffer` and
+    // `pending_seek_target_ts`), because the seek lands at a codec packet
+    // boundary at or before the target and the per-packet `ts()` is the only
+    // reliable anchor across codecs.
     skip_samples: usize,
+    // Set to the requested seek target (in frames) after an accurate seek, until
+    // the first decoded packet lets us turn it into `skip_samples`. `None` when
+    // no seek is pending.
+    pending_seek_target_ts: Option<u64>,
     // WAV / PCM metadata for scaling & reporting
     bits_per_sample: u16,
     channels: u16,
@@ -218,6 +221,7 @@ impl AudioSampleSource {
             buffer_size,
             leftover_samples: initial_leftover,
             skip_samples: 0,
+            pending_seek_target_ts: None,
             bits_per_sample,
             channels,
             sample_rate,
@@ -233,21 +237,39 @@ impl AudioSampleSource {
             // be returned ahead of the seek target.
             source.leftover_samples.clear();
 
-            use symphonia::core::units::Time;
-            let seek_to = SeekTo::Time {
-                time: Time::from(start),
-                track_id: Some(track_id),
+            // Target frame from the requested time (track timebase == frames).
+            let target_ts = (start.as_secs_f64() * sample_rate as f64).round() as u64;
+
+            // Seek a margin *before* the target so the codec decoder has
+            // preceding frames to rebuild its state. Lossy codecs (MP3 bit
+            // reservoir, MP3/AAC/Vorbis MDCT overlap-add) otherwise emit a
+            // corrupted region right after a seek — a few ms for MP3/AAC, and a
+            // ~6ms apparent position shift for Vorbis from its overlap lapping.
+            // Decoding through the pre-roll and discarding it warms the decoder
+            // so the first emitted sample is clean and exactly at the target.
+            // For lossless codecs (FLAC/WAV) this just decodes a little extra
+            // and discards it — no correctness effect.
+            const SEEK_PREROLL_FRAMES: u64 = 4096;
+            let preroll_ts = target_ts.saturating_sub(SEEK_PREROLL_FRAMES);
+
+            let seek_to = SeekTo::TimeStamp {
+                ts: preroll_ts,
+                track_id,
             };
-            // Accurate seeking only guarantees the reader lands at a packet
-            // boundary at or before the target (a whole block for block-based
-            // codecs like FLAC). It reports both the requested timestamp and
-            // where it actually landed; we must discard the difference so the
-            // first emitted sample is exactly at `start`. The timestamps are in
-            // the track's timebase (frames), so scale by the channel count to
-            // get interleaved samples.
-            let seeked = source.format_reader.seek(SeekMode::Accurate, seek_to)?;
-            let residual_frames = seeked.required_ts.saturating_sub(seeked.actual_ts);
-            source.skip_samples = residual_frames as usize * channels as usize;
+            source.format_reader.seek(SeekMode::Accurate, seek_to)?;
+
+            // Defer computing how much to discard until the first packet is
+            // actually decoded: anchor the skip to that packet's `ts()` rather
+            // than to the seek's reported `actual_ts`. The seek lands at a packet
+            // boundary at or before the target, but `actual_ts` is not a reliable
+            // anchor for every codec — Vorbis precedes its first output packet
+            // with an empty overlap-lapping packet, so `actual_ts` points before
+            // where decoded samples actually begin. `packet.ts()` of the first
+            // packet that yields output is exact for all codecs. The decode
+            // helper already skips the empty lapping packet, so the first
+            // returned packet's ts is the true position of its first sample;
+            // discard `target - that_ts` frames to land exactly on `start`.
+            source.pending_seek_target_ts = Some(target_ts);
         }
 
         Ok(source)
@@ -284,11 +306,16 @@ impl AudioSampleSource {
     /// Reads and decodes the next packet for the given track. Handles ResetRequired by
     /// resetting the decoder and retrying. Returns `Ok(Some((samples, channels)))` when
     /// a packet was decoded, `Ok(None)` on EOF, or `Err` on other errors.
+    /// Reads and decodes the next packet for the track that yields output.
+    /// Returns the decoded interleaved samples, the channel count, and the
+    /// packet's timestamp (`ts`, in frames) — the content position of the first
+    /// returned sample. Empty packets (e.g. a Vorbis overlap-lapping packet) are
+    /// skipped, so the returned `ts` always corresponds to real output.
     fn read_and_decode_next_packet_for_track(
         format_reader: &mut dyn FormatReader,
         decoder: &mut dyn symphonia::core::codecs::Decoder,
         track_id: u32,
-    ) -> Result<Option<(Vec<f32>, usize)>, SampleSourceError> {
+    ) -> Result<Option<(Vec<f32>, usize, u64)>, SampleSourceError> {
         loop {
             let packet = match Self::read_next_packet(format_reader) {
                 Ok(Some(packet)) => packet,
@@ -302,6 +329,7 @@ impl AudioSampleSource {
             if packet.track_id() != track_id {
                 continue;
             }
+            let packet_ts = packet.ts();
             let decoded = match decoder.decode(&packet) {
                 Ok(decoded) => decoded,
                 Err(SymphoniaError::ResetRequired) => {
@@ -315,7 +343,7 @@ impl AudioSampleSource {
             };
             let (samples, channels) = Self::decode_buffer_to_f32(decoded)?;
             if channels > 0 && !samples.is_empty() {
-                return Ok(Some((samples, channels)));
+                return Ok(Some((samples, channels, packet_ts)));
             }
         }
     }
@@ -387,24 +415,34 @@ impl AudioSampleSource {
         // those as "no progress" would cause us to bail out early and never see
         // the real audio data.
         loop {
-            let (mut samples, _decoded_channels) = match Self::read_and_decode_next_packet_for_track(
-                self.format_reader.as_mut(),
-                self.decoder.as_mut(),
-                self.track_id,
-            ) {
-                Ok(Some((samples, ch))) => (samples, ch),
-                Ok(None) => break,
-                Err(e) => {
-                    // For very small files, some errors might indicate EOF
-                    if samples_read == 0 && self.sample_buffer.is_empty() {
-                        break;
+            let (mut samples, _decoded_channels, packet_ts) =
+                match Self::read_and_decode_next_packet_for_track(
+                    self.format_reader.as_mut(),
+                    self.decoder.as_mut(),
+                    self.track_id,
+                ) {
+                    Ok(Some((samples, ch, ts))) => (samples, ch, ts),
+                    Ok(None) => break,
+                    Err(e) => {
+                        // For very small files, some errors might indicate EOF
+                        if samples_read == 0 && self.sample_buffer.is_empty() {
+                            break;
+                        }
+                        return Err(e);
                     }
-                    return Err(e);
-                }
-            };
+                };
 
-            // Discard the accurate-seek residual (samples decoded between the
-            // packet boundary the reader landed on and the requested time).
+            // First packet after a seek: anchor the skip to this packet's actual
+            // timestamp (the true content position of its first sample) rather
+            // than the seek's reported landing point, so the first emitted sample
+            // is exactly at the requested target across all codecs.
+            if let Some(target_ts) = self.pending_seek_target_ts.take() {
+                let skip_frames = target_ts.saturating_sub(packet_ts);
+                self.skip_samples = skip_frames as usize * self.channels as usize;
+            }
+
+            // Discard the residual between the packet's first sample and the
+            // requested seek target.
             if self.skip_samples > 0 {
                 let drop = self.skip_samples.min(samples.len());
                 samples.drain(..drop);
@@ -467,7 +505,7 @@ impl AudioSampleSource {
         track_id: u32,
     ) -> Result<(u16, Vec<f32>), SampleSourceError> {
         match Self::read_and_decode_next_packet_for_track(format_reader, decoder, track_id)? {
-            Some((samples, channels)) => Ok((channels as u16, samples)),
+            Some((samples, channels, _ts)) => Ok((channels as u16, samples)),
             None => Err(SampleSourceError::SampleConversionFailed(
                 "Channels not specified".to_string(),
             )),
@@ -711,6 +749,58 @@ mod tests {
             "seek landed {idx} samples before the target; the FLAC block residual \
              was not trimmed (expected the impulse at ~0)"
         );
+    }
+
+    #[test]
+    fn accurate_seek_is_sample_aligned_lossy() {
+        // Regression: block/frame-based codecs (MP3 frames + bit reservoir,
+        // Vorbis MDCT overlap-add) need seek pre-roll to warm the decoder and a
+        // packet.ts() anchor (not SeekedTo.actual_ts) to land sample-accurately.
+        // Vorbis in particular precedes its first output packet with an empty
+        // lapping packet, so actual_ts points before the decoded output begins.
+        //
+        // For each lossy tone fixture, compare seeking to sample T against
+        // decoding linearly to T. The same decoder runs both ways, so general
+        // lossy compression error cancels and the streams must match closely;
+        // without the fix the post-seek head diverges (warmup) or is offset.
+        let read_n = |src: &mut AudioSampleSource, n: usize| -> Vec<f32> {
+            let mut v = Vec::with_capacity(n);
+            while v.len() < n {
+                match src.next_sample() {
+                    Ok(Some(s)) => v.push(s),
+                    _ => break,
+                }
+            }
+            v
+        };
+        let t = 20000usize;
+        let k = 2000usize;
+        for name in ["seek-tone-44.1k.mp3", "seek-tone-44.1k.ogg"] {
+            let path = std::path::Path::new("assets").join(name);
+            let mut lin = AudioSampleSource::from_file(&path, None, 1024).unwrap();
+            let rate = lin.sample_rate();
+            let linear = read_n(&mut lin, t + k);
+            assert!(linear.len() >= t + k, "{name}: fixture too short");
+            let reference = &linear[t..t + k];
+
+            let mut sk = AudioSampleSource::from_file(
+                &path,
+                Some(std::time::Duration::from_secs_f64(t as f64 / rate as f64)),
+                1024,
+            )
+            .unwrap();
+            let seeked = read_n(&mut sk, k);
+            assert_eq!(seeked.len(), k, "{name}: short read after seek");
+
+            let max_diff = (0..k)
+                .map(|i| (seeked[i] - reference[i]).abs())
+                .fold(0.0f32, f32::max);
+            assert!(
+                max_diff < 0.02,
+                "{name}: seek not sample-aligned (max_diff={max_diff:.4}); \
+                 pre-roll / packet-ts anchoring regressed"
+            );
+        }
     }
 
     #[test]
