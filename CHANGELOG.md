@@ -21,9 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `mtrack://config`, can be subscribed to for push updates. An optional `bearer_token`
   enforces `Authorization: Bearer` (constant-time comparison) for non-localhost binds, and
   idle sessions are evicted after a configurable timeout (`idle_session_timeout_secs`,
-  default 4 hours). See the new
-  [MCP Control](https://github.com/mdwn/mtrack/blob/main/docs/src/interfaces/mcp.md)
-  documentation.
+  default 4 hours). See the new MCP Control documentation.
 - **Pre-built release binaries**: Tagged releases now build and attach binaries for x86_64 and
   aarch64 Linux and Intel/Apple Silicon macOS, packaged as tarballs with SHA-256 checksums.
 - **`cargo binstall` support**: `cargo binstall mtrack` fetches the pre-built release binaries
