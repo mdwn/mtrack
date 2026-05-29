@@ -20,6 +20,11 @@ include = [
     "!src/webui/svelte/.svelte-kit/**",
 ]
 
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ version }-{ target }.tar.gz"
+pkg-fmt = "tgz"
+bin-dir = "{ name }-{ version }-{ target }/{ bin }{ binary-ext }"
+
 [dependencies]
 clap = { version = "4.5.60", features = ["cargo", "derive"] }
 config = "0.15.19"
