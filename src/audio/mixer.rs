@@ -167,6 +167,24 @@ impl AudioMixer {
         });
     }
 
+    /// Schedules cancellation of the given sources at a precise global sample.
+    ///
+    /// Sources must have been added with `cancel_at_sample = Some(_)` (the
+    /// usual case via `build_active_source`). The atomic store is lock-free so
+    /// the audio callback can observe the new cutoff on its next batch.
+    /// Silently skips sources without a pre-allocated cancel slot.
+    pub fn set_cancel_at_sample(&self, source_ids: &[u64], sample: u64) {
+        let sources = self.active_sources.read();
+        for source_arc in sources.iter() {
+            let source = source_arc.lock();
+            if source_ids.contains(&source.id) {
+                if let Some(ref cancel_at) = source.cancel_at_sample {
+                    cancel_at.store(sample, Ordering::Relaxed);
+                }
+            }
+        }
+    }
+
     /// Sets a gain envelope on all active sources matching the given IDs.
     /// Each source gets its own envelope instance so they don't share the
     /// atomic position counter (which would cause the fade to advance
@@ -180,13 +198,16 @@ impl AudioMixer {
         for source_arc in sources.iter() {
             let mut source = source_arc.lock();
             if source_ids.contains(&source.id) {
-                let own = Arc::new(crate::audio::crossfade::GainEnvelope::new(
+                let mut own = crate::audio::crossfade::GainEnvelope::new(
                     envelope.start_gain(),
                     envelope.end_gain(),
                     envelope.duration_samples(),
                     envelope.curve(),
-                ));
-                source.gain_envelope = Some(own);
+                );
+                if let Some(s) = envelope.start_at_sample() {
+                    own = own.with_start_sample(s);
+                }
+                source.gain_envelope = Some(Arc::new(own));
             }
         }
     }
@@ -439,17 +460,33 @@ impl AudioMixer {
 
                 match active_source.source.read_frames(batch_buf, frames_needed) {
                     Ok(frames_got) => {
-                        // Compute gain from envelope (if present). Advance once
-                        // per batch for efficiency — gain is constant across the
-                        // buffer chunk, which is fine for typical buffer sizes
-                        // (256–1024 frames) relative to crossfade durations (~4410).
-                        let gain = active_source
-                            .gain_envelope
-                            .as_ref()
-                            .map(|env| env.advance(frames_got as u64))
-                            .unwrap_or(1.0);
+                        // Gain handling. The default crossfade (~240 samples at
+                        // 5ms / 48k) is much shorter than a typical device
+                        // buffer (1024 frames), so a single once-per-batch gain
+                        // collapses the fade into a step — and at a loop boundary
+                        // it leaves a silence gap between the cut-out source and
+                        // the not-yet-ramped incoming source. Apply the envelope
+                        // gain per-frame while a fade is actually in progress;
+                        // keep the cheap constant path for the common cases (no
+                        // envelope, or an already-finished one that sits at its
+                        // end gain).
+                        let envelope = active_source.gain_envelope.clone();
+                        let fade_active = envelope.as_ref().is_some_and(|env| !env.is_finished());
+                        let constant_gain = envelope.as_ref().map_or(1.0, |env| env.end_gain());
 
                         for frame_idx in 0..frames_got {
+                            let gain = if fade_active {
+                                // `advance_at` consumes one frame: for a
+                                // sample-anchored envelope it maps the frame's
+                                // global sample to a position; for a render-driven
+                                // one it simply steps the position. Either way the
+                                // ramp tracks the actual audio sample-for-sample.
+                                let env = envelope.as_ref().expect("fade_active implies Some");
+                                let global = current_sample + (start_frame + frame_idx) as u64;
+                                env.advance_at(global, 1)
+                            } else {
+                                constant_gain
+                            };
                             let src_offset = frame_idx * source_channel_count;
                             let dst_base = (start_frame + frame_idx) * channels;
                             for (source_channel, &sample) in batch_buf
@@ -964,6 +1001,187 @@ mod tests {
 
         // Source should have been marked finished and cleaned up.
         assert_eq!(mixer.active_sources.read().len(), 0);
+    }
+
+    #[test]
+    fn section_loop_swap_lands_on_exact_sample() {
+        // Models a section-loop crossfade scheduled by the audio monitor:
+        // the outgoing source fades out and is cut at the loop boundary, while
+        // the pre-built incoming source is delayed to start at fade_start and
+        // ramps in. We verify the incoming audio appears at the exact sample,
+        // proving the loop point is sample-accurate (not jitter-bound).
+        let mixer = AudioMixer::new(1, 48_000);
+
+        let crossfade_samples = 10u64;
+        let loop_sample = 100u64;
+        let fade_start = loop_sample - crossfade_samples; // 90
+
+        // Outgoing source: constant 1.0 for plenty of frames.
+        let old_samples = vec![1.0f32; 300];
+        let old_source = create_test_source(old_samples, 1, vec![vec!["t".to_string()]]);
+        let mut tm = HashMap::new();
+        tm.insert("t".to_string(), vec![1]);
+
+        let old = ActiveSource {
+            id: 1,
+            source: old_source,
+            track_mappings: tm.clone(),
+            channel_mappings: Vec::new(),
+            cached_source_channel_count: 1,
+            is_finished: Arc::new(AtomicBool::new(false)),
+            cancel_handle: CancelHandle::new(),
+            start_at_sample: None,
+            // Pre-allocated cancel slot, set below to the loop boundary.
+            cancel_at_sample: Some(Arc::new(AtomicU64::new(0))),
+            gain_envelope: None,
+        };
+        mixer.add_source(old);
+
+        // Incoming source: silence except a distinctive 0.5 impulse at source
+        // index 50 — our stand-in for "beat 2", well past the fade-in window.
+        let mut new_samples = vec![0.0f32; 200];
+        new_samples[50] = 0.5;
+        let new_source = create_test_source(new_samples, 1, vec![vec!["t".to_string()]]);
+        let new = ActiveSource {
+            id: 2,
+            source: new_source,
+            track_mappings: tm,
+            channel_mappings: Vec::new(),
+            cached_source_channel_count: 1,
+            is_finished: Arc::new(AtomicBool::new(false)),
+            cancel_handle: CancelHandle::new(),
+            // Delayed start: first sample plays at the fade_start boundary.
+            start_at_sample: Some(fade_start),
+            cancel_at_sample: Some(Arc::new(AtomicU64::new(0))),
+            gain_envelope: Some(Arc::new(crate::audio::crossfade::GainEnvelope::fade_in(
+                crossfade_samples,
+                crate::audio::crossfade::CrossfadeCurve::Linear,
+            ))),
+        };
+        mixer.add_source(new);
+
+        // Schedule the outgoing fade-out (anchored at fade_start) and the cut
+        // at the loop boundary, exactly as the audio monitor does.
+        mixer.set_gain_envelope(
+            &[1],
+            Arc::new(
+                crate::audio::crossfade::GainEnvelope::fade_out(
+                    crossfade_samples,
+                    crate::audio::crossfade::CrossfadeCurve::Linear,
+                )
+                .with_start_sample(fade_start),
+            ),
+        );
+        mixer.set_cancel_at_sample(&[1], loop_sample);
+
+        // Mix 256 frames in small, deliberately mis-aligned buffers so we
+        // exercise the cross-buffer scheduling math.
+        let mut collected = vec![0.0f32; 256];
+        let buf = 16usize;
+        for chunk in collected.chunks_mut(buf) {
+            mixer.process_into_output(chunk, chunk.len());
+        }
+
+        // Before the fade, only the outgoing source is audible at full gain.
+        assert_eq!(
+            collected[50], 1.0,
+            "old source should be full gain pre-fade"
+        );
+        assert_eq!(collected[89], 1.0, "old source full gain up to fade_start");
+
+        // The incoming impulse must land at fade_start + 50 = 140, at full
+        // gain (past the 10-sample fade-in), and nowhere else.
+        assert_eq!(
+            collected[139], 0.0,
+            "no audio one sample before the impulse"
+        );
+        assert_eq!(
+            collected[140], 0.5,
+            "incoming impulse must land on sample 140"
+        );
+        assert_eq!(collected[141], 0.0, "no audio one sample after the impulse");
+
+        // After the boundary the outgoing source is gone; only the (silent
+        // here) incoming source remains.
+        assert_eq!(collected[150], 0.0, "old source must be cut by loop_sample");
+    }
+
+    #[test]
+    fn section_loop_crossfade_has_no_gap_with_production_buffer() {
+        // Reproduces the first-repeat stutter: with the real-world 1024-frame
+        // device buffer and the 5ms (240-sample @ 48k) crossfade, the boundary
+        // crossfade falls *inside* a single callback buffer. Gain is computed
+        // once per batch, so the outgoing source is cut at loop_sample while the
+        // incoming source is still at fade-in position 0 (gain 0) for the rest
+        // of that buffer -> a silence gap.
+        let mixer = AudioMixer::new(1, 48_000);
+
+        let crossfade_samples = 240u64; // 5ms @ 48k, matches DEFAULT_CROSSFADE
+        let loop_sample = 500u64; // mid-buffer, with >= crossfade_samples before it
+        let fade_start = loop_sample - crossfade_samples; // 260
+
+        let mut tm = HashMap::new();
+        tm.insert("t".to_string(), vec![1]);
+
+        // Both sources are constant 1.0. A correct linear crossfade of two unity
+        // sources is 1.0 at every sample, so any sample reading 0.0 is a gap.
+        let old = ActiveSource {
+            id: 1,
+            source: create_test_source(vec![1.0f32; 1024], 1, vec![vec!["t".to_string()]]),
+            track_mappings: tm.clone(),
+            channel_mappings: Vec::new(),
+            cached_source_channel_count: 1,
+            is_finished: Arc::new(AtomicBool::new(false)),
+            cancel_handle: CancelHandle::new(),
+            start_at_sample: None,
+            cancel_at_sample: Some(Arc::new(AtomicU64::new(0))),
+            gain_envelope: None,
+        };
+        mixer.add_source(old);
+
+        let new = ActiveSource {
+            id: 2,
+            source: create_test_source(vec![1.0f32; 1024], 1, vec![vec!["t".to_string()]]),
+            track_mappings: tm,
+            channel_mappings: Vec::new(),
+            cached_source_channel_count: 1,
+            is_finished: Arc::new(AtomicBool::new(false)),
+            cancel_handle: CancelHandle::new(),
+            start_at_sample: Some(fade_start),
+            cancel_at_sample: Some(Arc::new(AtomicU64::new(0))),
+            gain_envelope: Some(Arc::new(crate::audio::crossfade::GainEnvelope::fade_in(
+                crossfade_samples,
+                crate::audio::crossfade::CrossfadeCurve::Linear,
+            ))),
+        };
+        mixer.add_source(new);
+
+        mixer.set_gain_envelope(
+            &[1],
+            Arc::new(
+                crate::audio::crossfade::GainEnvelope::fade_out(
+                    crossfade_samples,
+                    crate::audio::crossfade::CrossfadeCurve::Linear,
+                )
+                .with_start_sample(fade_start),
+            ),
+        );
+        mixer.set_cancel_at_sample(&[1], loop_sample);
+
+        // One production-sized callback buffer that spans the whole crossfade.
+        let mut out = vec![0.0f32; 1024];
+        mixer.process_into_output(&mut out, 1024);
+
+        let min_after_boundary = out[(loop_sample as usize)..]
+            .iter()
+            .cloned()
+            .fold(f32::INFINITY, f32::min);
+        assert!(
+            min_after_boundary > 0.5,
+            "silence gap after loop boundary: min gain {min_after_boundary} \
+             (out[700] = {})",
+            out[700]
+        );
     }
 
     #[test]

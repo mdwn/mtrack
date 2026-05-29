@@ -91,6 +91,32 @@ impl Default for SectionLoopTrigger {
     }
 }
 
+/// Maps an ideal loop-boundary time to the exact mixer sample at which the
+/// crossfade should complete.
+///
+/// `now_sample` is the mixer's current global sample and `elapsed` the
+/// playback-clock reading taken alongside it; `trigger_time` is the ideal
+/// boundary (>= `elapsed` whenever the trigger fires early). The audio engine
+/// uses the returned sample to schedule a sample-accurate handoff, so the
+/// audible loop point is independent of polling jitter.
+///
+/// Because consecutive `trigger_time`s are grid-locked
+/// (`prev + section_duration`, see [`SectionLoopTrigger::check`]) and the
+/// audio clock is itself derived from the mixer sample counter, the returned
+/// samples are spaced exactly `section_duration * sample_rate` apart. That is
+/// the invariant behind "one measure loops in exactly one measure" — beat-to-
+/// beat spacing across iterations stays constant.
+pub fn loop_boundary_sample(
+    now_sample: u64,
+    elapsed: Duration,
+    trigger_time: Duration,
+    sample_rate: u32,
+) -> u64 {
+    let remaining = trigger_time.saturating_sub(elapsed);
+    let samples_until = (remaining.as_secs_f64() * sample_rate as f64).round() as u64;
+    now_sample.saturating_add(samples_until)
+}
+
 /// Result of polling a [`SectionLoopMonitor`].
 ///
 /// Each variant tells the caller what happened so it can run the
@@ -234,6 +260,54 @@ mod tests {
         // Peek at internal state via one more check that should NOT fire.
         let too_early = expected_next - margin - Duration::from_secs(1);
         assert_eq!(trigger.check(&section, too_early, margin), None);
+    }
+
+    /// The core timing guarantee: for a 4/4 song at 120 BPM, a one-measure
+    /// section (2.0s) loops with its boundary landing on the same sample
+    /// spacing every iteration, regardless of when the polling monitor
+    /// actually detects the trigger. This is the unit-level equivalent of
+    /// measuring "beat 2 → beat 2" across loop iterations.
+    #[test]
+    fn loop_boundaries_are_evenly_spaced_despite_jitter() {
+        let sample_rate = 48_000u32;
+        let section_duration = Duration::from_secs(2); // one measure @ 120 BPM
+        let section_samples = (section_duration.as_secs_f64() * sample_rate as f64) as u64;
+        let clock_start_sample = 12_345u64; // arbitrary, non-zero epoch
+
+        // Models the audio-backed clock: elapsed maps to a sample offset from
+        // the epoch. The mixer counter and the clock are the same source, so
+        // now_sample and elapsed are always consistent.
+        let sample_at = |elapsed: Duration| -> u64 {
+            clock_start_sample + (elapsed.as_secs_f64() * sample_rate as f64).round() as u64
+        };
+
+        let mut next_trigger = section_duration; // first boundary at 2.0s
+        let mut prev_boundary: Option<u64> = None;
+
+        for iteration in 0..100u64 {
+            // The monitor fires early, anywhere within the look-ahead window.
+            // Every jitter value must resolve to the *same* boundary sample.
+            let expected_boundary = sample_at(next_trigger);
+            for jitter_ms in [0u64, 1, 7, 23, 30] {
+                let elapsed = next_trigger.saturating_sub(Duration::from_millis(jitter_ms));
+                let now_sample = sample_at(elapsed);
+                let boundary = loop_boundary_sample(now_sample, elapsed, next_trigger, sample_rate);
+                assert_eq!(
+                    boundary, expected_boundary,
+                    "iteration {iteration}: {jitter_ms}ms detection jitter moved the boundary"
+                );
+            }
+
+            if let Some(prev) = prev_boundary {
+                assert_eq!(
+                    expected_boundary - prev,
+                    section_samples,
+                    "iteration {iteration}: loop boundary spacing drifted"
+                );
+            }
+            prev_boundary = Some(expected_boundary);
+            next_trigger += section_duration;
+        }
     }
 
     #[test]

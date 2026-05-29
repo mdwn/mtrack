@@ -24,20 +24,21 @@ use std::time::Duration;
 
 /// Default crossfade duration used for loop boundaries and song transitions.
 ///
-/// At 5ms this is rhythmically invisible — less than 1% of a beat at 60 BPM
-/// (1000ms). The value was reduced from 100ms to eliminate cumulative timing
-/// drift in section loops (each iteration was drifting by one crossfade
-/// duration under the old trigger scheduling).
+/// At 10ms this is rhythmically invisible — 1% of a beat at 60 BPM (1000ms) —
+/// while being long enough to soften the loop-point hand-off and fully mask the
+/// incoming source's fresh-resampler pre-ring. The value was reduced from 100ms
+/// to eliminate cumulative timing drift in section loops (each iteration was
+/// drifting by one crossfade duration under the old trigger scheduling).
 ///
 /// Constraint: must remain ≤ 10ms to stay imperceptible at the slowest
-/// typical tempos. Validated by the `crossfade_duration_is_rhythmically_negligible`
-/// test. If click artifacts appear, check sample rate, buffer size, and
-/// audio format before increasing this value.
+/// typical tempos, and below the section-loop trigger look-ahead (30ms in the
+/// cpal monitor) so the crossfade is always scheduled before the boundary.
+/// Validated by the `crossfade_duration_is_rhythmically_negligible` test.
 ///
 /// Trigger scheduling is handled by [`crate::section_loop::SectionLoopTrigger`],
 /// which uses this margin to fire transitions slightly early so the crossfade
 /// completes exactly at the ideal boundary.
-pub const DEFAULT_CROSSFADE_DURATION: Duration = Duration::from_millis(5);
+pub const DEFAULT_CROSSFADE_DURATION: Duration = Duration::from_millis(10);
 
 /// Returns the default crossfade duration in samples for the given sample rate.
 pub fn default_crossfade_samples(sample_rate: u32) -> u64 {
@@ -83,6 +84,12 @@ pub struct GainEnvelope {
     curve: CrossfadeCurve,
     duration_samples: u64,
     position: AtomicU64,
+    /// Optional global sample at which the envelope should begin ramping.
+    /// Before this sample, [`advance_at`] returns `start_gain` and leaves
+    /// `position` at 0. Used to schedule fade-outs on already-playing sources
+    /// so the audible transition lands on a precise sample. `None` means the
+    /// envelope advances from the moment it is first sampled.
+    start_at_sample: Option<u64>,
 }
 
 impl GainEnvelope {
@@ -94,6 +101,7 @@ impl GainEnvelope {
             curve,
             duration_samples,
             position: AtomicU64::new(0),
+            start_at_sample: None,
         }
     }
 
@@ -105,6 +113,7 @@ impl GainEnvelope {
             curve,
             duration_samples,
             position: AtomicU64::new(0),
+            start_at_sample: None,
         }
     }
 
@@ -121,7 +130,22 @@ impl GainEnvelope {
             curve,
             duration_samples,
             position: AtomicU64::new(0),
+            start_at_sample: None,
         }
+    }
+
+    /// Schedules the envelope to hold at `start_gain` until the mixer reaches
+    /// the given global sample, then begin ramping. Used to align fade-outs
+    /// on already-playing sources with the ideal loop-boundary sample.
+    pub fn with_start_sample(mut self, sample: u64) -> Self {
+        self.start_at_sample = Some(sample);
+        self
+    }
+
+    /// Returns the global sample at which this envelope is scheduled to begin,
+    /// or `None` if it ramps from the first sample.
+    pub fn start_at_sample(&self) -> Option<u64> {
+        self.start_at_sample
     }
 
     /// Returns the current gain value and advances the position by `frame_count` samples.
@@ -130,6 +154,33 @@ impl GainEnvelope {
     /// represents the gain for the block of frames being processed.
     pub fn advance(&self, frame_count: u64) -> f32 {
         let pos = self.position.fetch_add(frame_count, Ordering::Relaxed);
+        self.gain_at(pos)
+    }
+
+    /// Returns the gain for a block of `frame_count` samples beginning at the
+    /// mixer's `current_sample`, and updates internal position accordingly.
+    ///
+    /// When [`start_at_sample`] is unset, this is equivalent to [`advance`].
+    /// When set, the envelope holds at `start_gain` until `current_sample`
+    /// reaches the scheduled start; from that point the position tracks
+    /// `current_sample - start_at_sample` so the fade is sample-aligned even
+    /// across buffer boundaries.
+    pub fn advance_at(&self, current_sample: u64, frame_count: u64) -> f32 {
+        let start = match self.start_at_sample {
+            None => return self.advance(frame_count),
+            Some(s) => s,
+        };
+
+        if current_sample.saturating_add(frame_count) <= start {
+            // Entire batch is before the scheduled start: hold at start_gain.
+            return self.start_gain;
+        }
+
+        let pos = current_sample.saturating_sub(start);
+        // Store the position the envelope will be at *after* this batch, so
+        // is_finished() reports correctly once duration_samples is consumed.
+        self.position
+            .store(pos.saturating_add(frame_count), Ordering::Relaxed);
         self.gain_at(pos)
     }
 
@@ -367,6 +418,75 @@ mod tests {
 
         let g = env.gain_at(1000);
         assert!((g - 0.8).abs() < 0.01);
+    }
+
+    #[test]
+    fn advance_at_without_start_matches_advance() {
+        let env = GainEnvelope::fade_out(1000, CrossfadeCurve::Linear);
+
+        // current_sample is ignored when start_at_sample is None.
+        let g0 = env.advance_at(999_999, 0);
+        assert!((g0 - 1.0).abs() < 0.01);
+
+        env.advance_at(999_999, 500);
+        let g1 = env.advance_at(999_999, 0);
+        assert!((g1 - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn advance_at_holds_before_start_sample() {
+        let env = GainEnvelope::fade_out(1000, CrossfadeCurve::Linear).with_start_sample(10_000);
+
+        // Batch entirely before scheduled start: holds at start_gain (1.0)
+        // and does not advance position.
+        let g = env.advance_at(5_000, 256);
+        assert!((g - 1.0).abs() < f32::EPSILON);
+        assert_eq!(env.position(), 0);
+        assert!(!env.is_finished());
+
+        // Batch that ends exactly at start_at_sample is still "before".
+        let g = env.advance_at(9_744, 256);
+        assert!((g - 1.0).abs() < f32::EPSILON);
+        assert_eq!(env.position(), 0);
+    }
+
+    #[test]
+    fn advance_at_ramps_from_start_sample() {
+        let env = GainEnvelope::fade_out(1000, CrossfadeCurve::Linear).with_start_sample(10_000);
+
+        // First batch crossing the start: gain at position 0 = start_gain.
+        // Position should reflect end of batch.
+        let g = env.advance_at(10_000, 100);
+        assert!((g - 1.0).abs() < 0.01);
+        assert_eq!(env.position(), 100);
+
+        // Half way through the fade: position 500, gain ≈ 0.5.
+        let g = env.advance_at(10_500, 0);
+        assert!((g - 0.5).abs() < 0.01);
+
+        // End of fade: position 1000, gain ≈ 0.
+        let g = env.advance_at(11_000, 0);
+        assert!((g - 0.0).abs() < 0.01);
+
+        // Once we cross the duration, is_finished reports true.
+        env.advance_at(11_000, 0);
+        assert!(env.is_finished());
+    }
+
+    #[test]
+    fn advance_at_late_start_jumps_to_correct_position() {
+        // If the mixer arrives well past start_at_sample (e.g. envelope was
+        // attached after the scheduled moment), gain should reflect the
+        // elapsed offset, not start over from 0.
+        let env = GainEnvelope::fade_out(1000, CrossfadeCurve::Linear).with_start_sample(10_000);
+
+        // We're already 700 samples past the scheduled start.
+        let g = env.advance_at(10_700, 0);
+        assert!(
+            (g - 0.3).abs() < 0.01,
+            "Expected ~0.3 gain at 70% through fade, got {}",
+            g
+        );
     }
 
     #[test]

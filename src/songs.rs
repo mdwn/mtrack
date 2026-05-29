@@ -726,6 +726,21 @@ impl Song {
             ..Default::default()
         }
     }
+
+    /// Test helper: a song with a beat grid and named sections, for exercising
+    /// section resolution and playhead-section lookup.
+    #[cfg(test)]
+    pub fn new_for_test_with_sections(
+        name: &str,
+        track_names: &[&str],
+        beat_grid: crate::audio::click_analysis::BeatGrid,
+        sections: Vec<config::Section>,
+    ) -> Song {
+        let mut song = Self::new_for_test(name, track_names);
+        song.beat_grid = Some(beat_grid);
+        song.sections = sections;
+        song
+    }
 }
 
 /// Midi playback configuration for the song.
