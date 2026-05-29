@@ -23,15 +23,21 @@ export default defineConfig({
     chunkSizeWarningLimit: 600,
     rollupOptions: {
       output: {
-        manualChunks: {
-          vendor: [
+        // Vite 8 bundles with Rolldown, whose manualChunks only accepts a
+        // function (the Rollup object form is no longer supported). Group the
+        // vendor libraries into a single cacheable chunk.
+        manualChunks(id) {
+          const vendorPkgs = [
             "svelte",
             "@connectrpc/connect",
             "@connectrpc/connect-web",
             "@bufbuild/protobuf",
             "yaml",
             "svelte-i18n",
-          ],
+          ];
+          if (vendorPkgs.some((pkg) => id.includes(`/node_modules/${pkg}/`))) {
+            return "vendor";
+          }
         },
       },
     },
