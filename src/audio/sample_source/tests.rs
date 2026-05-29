@@ -3381,32 +3381,26 @@ mod sample_source_tests {
     // decode_buffer_to_f32: direct tests for all AudioBufferRef variants
     // -----------------------------------------------------------------
 
-    use symphonia::core::audio::Channels;
+    use symphonia::core::audio::sample::{u24, Sample};
     use symphonia::core::audio::{
-        AsAudioBufferRef, AudioBuffer as SymphAudioBuffer, Signal, SignalSpec,
+        AsGenericAudioBufferRef, AudioBuffer as SymphAudioBuffer, AudioMut, AudioSpec, Channels,
     };
 
-    fn mono_spec() -> SignalSpec {
-        SignalSpec::new(44100, Channels::FRONT_LEFT)
-    }
-
-    fn stereo_spec() -> SignalSpec {
-        SignalSpec::new(44100, Channels::FRONT_LEFT | Channels::FRONT_RIGHT)
+    /// Builds a mono `AudioBuffer<T>` filled with the given per-frame values,
+    /// using the symphonia 0.6 construction API.
+    fn mono_buf<T: Sample>(vals: &[T]) -> SymphAudioBuffer<T> {
+        let mut buf =
+            SymphAudioBuffer::<T>::new(AudioSpec::new(44100, Channels::Discrete(1)), vals.len());
+        buf.render_silence(Some(vals.len()));
+        buf.plane_mut(0).unwrap().copy_from_slice(vals);
+        buf
     }
 
     #[test]
     fn test_decode_buffer_f64() {
-        let mut buf = SymphAudioBuffer::<f64>::new(3, mono_spec());
-        buf.render(None, |planes, _| {
-            planes.planes()[0][0] = 0.25;
-            planes.planes()[0][1] = -0.5;
-            planes.planes()[0][2] = 1.0;
-            Ok(())
-        })
-        .unwrap();
-
+        let buf = mono_buf::<f64>(&[0.25, -0.5, 1.0]);
         let (samples, channels) =
-            AudioSampleSource::decode_buffer_to_f32(buf.as_audio_buffer_ref()).unwrap();
+            AudioSampleSource::decode_buffer_to_f32(buf.as_generic_audio_buffer_ref()).unwrap();
         assert_eq!(channels, 1);
         assert_eq!(samples.len(), 3);
         assert!((samples[0] - 0.25).abs() < 1e-6);
@@ -3416,17 +3410,9 @@ mod sample_source_tests {
 
     #[test]
     fn test_decode_buffer_s8() {
-        let mut buf = SymphAudioBuffer::<i8>::new(3, mono_spec());
-        buf.render(None, |planes, _| {
-            planes.planes()[0][0] = 0;
-            planes.planes()[0][1] = i8::MAX;
-            planes.planes()[0][2] = i8::MIN;
-            Ok(())
-        })
-        .unwrap();
-
+        let buf = mono_buf::<i8>(&[0, i8::MAX, i8::MIN]);
         let (samples, channels) =
-            AudioSampleSource::decode_buffer_to_f32(buf.as_audio_buffer_ref()).unwrap();
+            AudioSampleSource::decode_buffer_to_f32(buf.as_generic_audio_buffer_ref()).unwrap();
         assert_eq!(channels, 1);
         assert_eq!(samples.len(), 3);
         assert!((samples[0] - AudioSampleSource::scale_s8(0)).abs() < 1e-6);
@@ -3436,17 +3422,9 @@ mod sample_source_tests {
 
     #[test]
     fn test_decode_buffer_u8() {
-        let mut buf = SymphAudioBuffer::<u8>::new(3, mono_spec());
-        buf.render(None, |planes, _| {
-            planes.planes()[0][0] = 0;
-            planes.planes()[0][1] = 128;
-            planes.planes()[0][2] = 255;
-            Ok(())
-        })
-        .unwrap();
-
+        let buf = mono_buf::<u8>(&[0, 128, 255]);
         let (samples, channels) =
-            AudioSampleSource::decode_buffer_to_f32(buf.as_audio_buffer_ref()).unwrap();
+            AudioSampleSource::decode_buffer_to_f32(buf.as_generic_audio_buffer_ref()).unwrap();
         assert_eq!(channels, 1);
         assert_eq!(samples.len(), 3);
         assert!((samples[0] - AudioSampleSource::scale_u8(0)).abs() < 1e-6);
@@ -3456,17 +3434,9 @@ mod sample_source_tests {
 
     #[test]
     fn test_decode_buffer_u16() {
-        let mut buf = SymphAudioBuffer::<u16>::new(3, mono_spec());
-        buf.render(None, |planes, _| {
-            planes.planes()[0][0] = 0;
-            planes.planes()[0][1] = u16::MAX / 2;
-            planes.planes()[0][2] = u16::MAX;
-            Ok(())
-        })
-        .unwrap();
-
+        let buf = mono_buf::<u16>(&[0, u16::MAX / 2, u16::MAX]);
         let (samples, channels) =
-            AudioSampleSource::decode_buffer_to_f32(buf.as_audio_buffer_ref()).unwrap();
+            AudioSampleSource::decode_buffer_to_f32(buf.as_generic_audio_buffer_ref()).unwrap();
         assert_eq!(channels, 1);
         assert_eq!(samples.len(), 3);
         assert!((samples[0] - AudioSampleSource::scale_u16(0)).abs() < 1e-6);
@@ -3476,19 +3446,9 @@ mod sample_source_tests {
 
     #[test]
     fn test_decode_buffer_u24() {
-        use symphonia::core::sample::u24;
-
-        let mut buf = SymphAudioBuffer::<u24>::new(3, mono_spec());
-        buf.render(None, |planes, _| {
-            planes.planes()[0][0] = u24(0);
-            planes.planes()[0][1] = u24((1u32 << 24) / 2);
-            planes.planes()[0][2] = u24((1u32 << 24) - 1);
-            Ok(())
-        })
-        .unwrap();
-
+        let buf = mono_buf::<u24>(&[u24(0), u24((1u32 << 24) / 2), u24((1u32 << 24) - 1)]);
         let (samples, channels) =
-            AudioSampleSource::decode_buffer_to_f32(buf.as_audio_buffer_ref()).unwrap();
+            AudioSampleSource::decode_buffer_to_f32(buf.as_generic_audio_buffer_ref()).unwrap();
         assert_eq!(channels, 1);
         assert_eq!(samples.len(), 3);
         assert!((samples[0] - AudioSampleSource::scale_u24(0)).abs() < 1e-6);
@@ -3498,17 +3458,9 @@ mod sample_source_tests {
 
     #[test]
     fn test_decode_buffer_u32() {
-        let mut buf = SymphAudioBuffer::<u32>::new(3, mono_spec());
-        buf.render(None, |planes, _| {
-            planes.planes()[0][0] = 0;
-            planes.planes()[0][1] = u32::MAX / 2;
-            planes.planes()[0][2] = u32::MAX;
-            Ok(())
-        })
-        .unwrap();
-
+        let buf = mono_buf::<u32>(&[0, u32::MAX / 2, u32::MAX]);
         let (samples, channels) =
-            AudioSampleSource::decode_buffer_to_f32(buf.as_audio_buffer_ref()).unwrap();
+            AudioSampleSource::decode_buffer_to_f32(buf.as_generic_audio_buffer_ref()).unwrap();
         assert_eq!(channels, 1);
         assert_eq!(samples.len(), 3);
         assert!((samples[0] - AudioSampleSource::scale_u32(0)).abs() < 1e-6);
@@ -3518,22 +3470,16 @@ mod sample_source_tests {
 
     #[test]
     fn test_decode_buffer_stereo_interleaving() {
-        // Verify interleaving works correctly with multi-channel audio
-        let mut buf = SymphAudioBuffer::<f32>::new(2, stereo_spec());
-        buf.render(None, |planes, _| {
-            planes.planes()[0][0] = 0.1; // L frame 0
-            planes.planes()[0][1] = 0.3; // L frame 1
-            planes.planes()[1][0] = 0.2; // R frame 0
-            planes.planes()[1][1] = 0.4; // R frame 1
-            Ok(())
-        })
-        .unwrap();
-
+        // Verify interleaving works correctly with multi-channel audio.
+        let mut buf = SymphAudioBuffer::<f32>::new(AudioSpec::new(44100, Channels::Discrete(2)), 2);
+        buf.render_silence(Some(2));
+        buf.plane_mut(0).unwrap().copy_from_slice(&[0.1, 0.3]); // L frames 0,1
+        buf.plane_mut(1).unwrap().copy_from_slice(&[0.2, 0.4]); // R frames 0,1
         let (samples, channels) =
-            AudioSampleSource::decode_buffer_to_f32(buf.as_audio_buffer_ref()).unwrap();
+            AudioSampleSource::decode_buffer_to_f32(buf.as_generic_audio_buffer_ref()).unwrap();
         assert_eq!(channels, 2);
         assert_eq!(samples.len(), 4);
-        // Should be interleaved: L0, R0, L1, R1
+        // Interleaved: L0, R0, L1, R1
         assert!((samples[0] - 0.1).abs() < 1e-6);
         assert!((samples[1] - 0.2).abs() < 1e-6);
         assert!((samples[2] - 0.3).abs() < 1e-6);

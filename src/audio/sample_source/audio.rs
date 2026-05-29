@@ -14,15 +14,20 @@
 use std::fs::File;
 use std::path::Path;
 
-use symphonia::core::audio::{AudioBuffer, AudioBufferRef, Signal};
-use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
+use symphonia::core::audio::sample::Sample;
+use symphonia::core::audio::{Audio, AudioBuffer, GenericAudioBufferRef};
+use symphonia::core::codecs::audio::well_known::{
+    CODEC_ID_PCM_F32BE, CODEC_ID_PCM_F32LE, CODEC_ID_PCM_F64BE, CODEC_ID_PCM_F64LE,
+};
+use symphonia::core::codecs::audio::{AudioDecoder, AudioDecoderOptions};
 use symphonia::core::errors::Error as SymphoniaError;
+use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::Hint;
-use symphonia::default::get_codecs;
-use symphonia::default::get_probe;
+use symphonia::core::packet::Packet;
+use symphonia::core::units::Timestamp;
+use symphonia::default::{get_codecs, get_probe};
 
 use super::error::SampleSourceError;
 use super::traits::SampleSource;
@@ -34,7 +39,7 @@ use super::traits::SampleSourceTestExt;
 /// This uses symphonia to decode various audio formats - no transcoding logic
 pub struct AudioSampleSource {
     format_reader: Box<dyn FormatReader>,
-    decoder: Box<dyn symphonia::core::codecs::Decoder>,
+    decoder: Box<dyn AudioDecoder>,
     track_id: u32,
     is_finished: bool,
     // Buffered reading to reduce I/O operations
@@ -135,37 +140,69 @@ impl AudioSampleSource {
         let fmt_opts: FormatOptions = Default::default();
         let probe = get_probe();
         let file_path = path.as_ref().to_string_lossy().to_string();
-        let probed = probe
-            .format(&hint, mss, &fmt_opts, &meta_opts)
-            .map_err(|e| {
-                SampleSourceError::SampleConversionFailed(format!("'{}': {}", file_path, e))
-            })?;
-
-        let mut format_reader = probed.format;
-
-        // Find the first audio track (need to do this before moving format_reader)
-        let track = format_reader
-            .tracks()
-            .iter()
-            .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
-            .ok_or_else(|| {
-                SampleSourceError::SampleConversionFailed("No audio track found".to_string())
-            })?;
-
-        let track_id = track.id;
-        let params = &track.codec_params;
-
-        // Get the sample rate and bits per sample
-        let sample_rate = params.sample_rate.ok_or_else(|| {
-            SampleSourceError::SampleConversionFailed("Sample rate not specified".to_string())
+        let mut format_reader = probe.probe(&hint, mss, fmt_opts, meta_opts).map_err(|e| {
+            SampleSourceError::SampleConversionFailed(format!("'{}': {}", file_path, e))
         })?;
-        let bits_per_sample = params.bits_per_sample.unwrap_or(16) as u16; // Default to 16-bit if not specified
+
+        // Find the first audio track and build its decoder. We extract the scalar
+        // metadata we need inside this block so the immutable borrow of
+        // `format_reader` (via `tracks()`) is released before we use it mutably
+        // for channel detection / seeking below. `make_audio_decoder` returns an
+        // owned decoder, so it carries no borrow out of the block.
+        let decoder_opts = AudioDecoderOptions::default();
+        let (
+            mut decoder,
+            track_id,
+            num_frames,
+            sample_rate,
+            bits_per_sample,
+            channels_meta,
+            codec_id,
+        ) = {
+            let track = format_reader
+                .tracks()
+                .iter()
+                .find(|t| t.codec_params.as_ref().is_some_and(|p| p.audio().is_some()))
+                .ok_or_else(|| {
+                    SampleSourceError::SampleConversionFailed("No audio track found".to_string())
+                })?;
+            let audio = track
+                .codec_params
+                .as_ref()
+                .and_then(|p| p.audio())
+                .expect("track filtered to audio above");
+            let sample_rate = audio.sample_rate.ok_or_else(|| {
+                SampleSourceError::SampleConversionFailed("Sample rate not specified".to_string())
+            })?;
+            // Default to 16-bit if not specified.
+            let bits_per_sample = audio.bits_per_sample.unwrap_or(16) as u16;
+            let channels_meta = audio
+                .channels
+                .as_ref()
+                .map(|c| c.count() as u16)
+                .unwrap_or(0);
+            let codec_id = audio.codec;
+            let decoder = get_codecs()
+                .make_audio_decoder(audio, &decoder_opts)
+                .map_err(|e| {
+                    SampleSourceError::SampleConversionFailed(format!("'{}': {}", file_path, e))
+                })?;
+            (
+                decoder,
+                track.id,
+                track.num_frames,
+                sample_rate,
+                bits_per_sample,
+                channels_meta,
+                codec_id,
+            )
+        };
 
         // Determine sample format from codec
-        let sample_format = if params.codec == symphonia::core::codecs::CODEC_TYPE_PCM_F32LE
-            || params.codec == symphonia::core::codecs::CODEC_TYPE_PCM_F32BE
-            || params.codec == symphonia::core::codecs::CODEC_TYPE_PCM_F64LE
-            || params.codec == symphonia::core::codecs::CODEC_TYPE_PCM_F64BE
+        let sample_format = if codec_id == CODEC_ID_PCM_F32LE
+            || codec_id == CODEC_ID_PCM_F32BE
+            || codec_id == CODEC_ID_PCM_F64LE
+            || codec_id == CODEC_ID_PCM_F64BE
         {
             crate::audio::SampleFormat::Float
         } else {
@@ -173,18 +210,12 @@ impl AudioSampleSource {
         };
 
         // Calculate duration
-        let duration = if let Some(n_frames) = params.n_frames {
+        let duration = if let Some(n_frames) = num_frames {
             std::time::Duration::from_secs_f64(n_frames as f64 / sample_rate as f64)
         } else {
             // If duration is unknown, we'll set it to zero and update it as we read
             std::time::Duration::ZERO
         };
-
-        // Create the decoder
-        let decoder_opts: DecoderOptions = Default::default();
-        let mut decoder = get_codecs().make(params, &decoder_opts).map_err(|e| {
-            SampleSourceError::SampleConversionFailed(format!("'{}': {}", file_path, e))
-        })?;
 
         // Determine channels. Prefer container/codec metadata, but if it's
         // missing we proactively decode the first audio packet to derive the
@@ -193,7 +224,7 @@ impl AudioSampleSource {
         // Here, a value of 0 means "unspecified" and is only used inside this
         // constructor; if it remains 0 after probing, we return an error and
         // never construct an AudioSampleSource with channel_count == 0.
-        let channels = params.channels.map(|c| c.count() as u16).unwrap_or(0);
+        let channels = channels_meta;
 
         // In tests we sometimes want to exercise the channel‑detection path
         // even for formats where the container/codec already reports the
@@ -252,8 +283,8 @@ impl AudioSampleSource {
             const SEEK_PREROLL_FRAMES: u64 = 4096;
             let preroll_ts = target_ts.saturating_sub(SEEK_PREROLL_FRAMES);
 
-            let seek_to = SeekTo::TimeStamp {
-                ts: preroll_ts,
+            let seek_to = SeekTo::Timestamp {
+                ts: Timestamp::new(preroll_ts as i64),
                 track_id,
             };
             source.format_reader.seek(SeekMode::Accurate, seek_to)?;
@@ -284,9 +315,10 @@ impl AudioSampleSource {
     /// Note: ResetRequired errors are propagated to callers so they can reset the decoder.
     fn read_next_packet(
         format_reader: &mut dyn FormatReader,
-    ) -> Result<Option<symphonia::core::formats::Packet>, SampleSourceError> {
+    ) -> Result<Option<Packet>, SampleSourceError> {
         match format_reader.next_packet() {
-            Ok(packet) => Ok(Some(packet)),
+            // 0.6: next_packet() returns Ok(None) at end of stream.
+            Ok(packet) => Ok(packet),
             Err(SymphoniaError::ResetRequired) => {
                 // ResetRequired is propagated to callers so they can reset the decoder
                 Err(SampleSourceError::AudioError(SymphoniaError::ResetRequired))
@@ -313,7 +345,7 @@ impl AudioSampleSource {
     /// skipped, so the returned `ts` always corresponds to real output.
     fn read_and_decode_next_packet_for_track(
         format_reader: &mut dyn FormatReader,
-        decoder: &mut dyn symphonia::core::codecs::Decoder,
+        decoder: &mut dyn AudioDecoder,
         track_id: u32,
     ) -> Result<Option<(Vec<f32>, usize, u64)>, SampleSourceError> {
         loop {
@@ -326,10 +358,11 @@ impl AudioSampleSource {
                 }
                 Err(e) => return Err(e),
             };
-            if packet.track_id() != track_id {
+            if packet.track_id != track_id {
                 continue;
             }
-            let packet_ts = packet.ts();
+            // `pts` is the presentation timestamp in frames (Timestamp wraps i64).
+            let packet_ts = packet.pts.get().max(0) as u64;
             let decoded = match decoder.decode(&packet) {
                 Ok(decoded) => decoded,
                 Err(SymphoniaError::ResetRequired) => {
@@ -501,7 +534,7 @@ impl AudioSampleSource {
     /// as the initial contents of the sample buffer.
     fn detect_channels_and_prime_buffer(
         format_reader: &mut dyn FormatReader,
-        decoder: &mut dyn symphonia::core::codecs::Decoder,
+        decoder: &mut dyn AudioDecoder,
         track_id: u32,
     ) -> Result<(u16, Vec<f32>), SampleSourceError> {
         match Self::read_and_decode_next_packet_for_track(format_reader, decoder, track_id)? {
@@ -512,41 +545,43 @@ impl AudioSampleSource {
         }
     }
 
-    /// Converts a decoded AudioBufferRef to a Vec<f32> of interleaved samples
-    /// and returns the channel count as observed in the decoded buffer.
+    /// Converts a decoded buffer to a Vec<f32> of interleaved samples and returns
+    /// the channel count as observed in the decoded buffer.
     #[cfg_attr(test, allow(dead_code))]
     pub(crate) fn decode_buffer_to_f32(
-        decoded: AudioBufferRef,
+        decoded: GenericAudioBufferRef,
     ) -> Result<(Vec<f32>, usize), SampleSourceError> {
         match decoded {
-            AudioBufferRef::F32(buf) => Ok(Self::interleave_planar_samples(&buf, |sample| sample)),
-            AudioBufferRef::F64(buf) => Ok(Self::interleave_planar_samples(&buf, |sample| {
-                sample as f32
-            })),
-            AudioBufferRef::S8(buf) => Ok(Self::interleave_planar_samples(&buf, |sample| {
-                Self::scale_s8(sample)
-            })),
-            AudioBufferRef::S16(buf) => Ok(Self::interleave_planar_samples(&buf, |sample| {
-                Self::scale_s16(sample)
-            })),
-            AudioBufferRef::S24(buf) => Ok(Self::interleave_planar_samples(&buf, |sample| {
+            GenericAudioBufferRef::F32(buf) => {
+                Ok(Self::interleave_planar_samples(buf, |sample| sample))
+            }
+            GenericAudioBufferRef::F64(buf) => {
+                Ok(Self::interleave_planar_samples(buf, |sample| sample as f32))
+            }
+            GenericAudioBufferRef::S8(buf) => {
+                Ok(Self::interleave_planar_samples(buf, Self::scale_s8))
+            }
+            GenericAudioBufferRef::S16(buf) => {
+                Ok(Self::interleave_planar_samples(buf, Self::scale_s16))
+            }
+            GenericAudioBufferRef::S24(buf) => Ok(Self::interleave_planar_samples(buf, |sample| {
                 Self::scale_s24(sample.inner())
             })),
-            AudioBufferRef::S32(buf) => Ok(Self::interleave_planar_samples(&buf, |sample| {
-                Self::scale_s32(sample)
-            })),
-            AudioBufferRef::U8(buf) => Ok(Self::interleave_planar_samples(&buf, |sample| {
-                Self::scale_u8(sample)
-            })),
-            AudioBufferRef::U16(buf) => Ok(Self::interleave_planar_samples(&buf, |sample| {
-                Self::scale_u16(sample)
-            })),
-            AudioBufferRef::U24(buf) => Ok(Self::interleave_planar_samples(&buf, |sample| {
+            GenericAudioBufferRef::S32(buf) => {
+                Ok(Self::interleave_planar_samples(buf, Self::scale_s32))
+            }
+            GenericAudioBufferRef::U8(buf) => {
+                Ok(Self::interleave_planar_samples(buf, Self::scale_u8))
+            }
+            GenericAudioBufferRef::U16(buf) => {
+                Ok(Self::interleave_planar_samples(buf, Self::scale_u16))
+            }
+            GenericAudioBufferRef::U24(buf) => Ok(Self::interleave_planar_samples(buf, |sample| {
                 Self::scale_u24(sample.inner())
             })),
-            AudioBufferRef::U32(buf) => Ok(Self::interleave_planar_samples(&buf, |sample| {
-                Self::scale_u32(sample)
-            })),
+            GenericAudioBufferRef::U32(buf) => {
+                Ok(Self::interleave_planar_samples(buf, Self::scale_u32))
+            }
         }
     }
 
@@ -554,16 +589,18 @@ impl AudioSampleSource {
     /// The closure receives a single sample value and returns the f32 sample value.
     fn interleave_planar_samples<T, F>(buf: &AudioBuffer<T>, convert: F) -> (Vec<f32>, usize)
     where
-        T: symphonia::core::sample::Sample,
+        T: Sample,
         F: Fn(T) -> f32,
     {
         let frames = buf.frames();
-        let channels = buf.spec().channels.count();
-        let planes = buf.planes();
+        let channels = buf.spec().channels().count();
+        // Collect the per-channel planes once; `plane(ch)` returns the whole
+        // channel slice (planar layout).
+        let planes: Vec<&[T]> = (0..channels).filter_map(|ch| buf.plane(ch)).collect();
         let mut samples = Vec::with_capacity(frames * channels);
         for frame_idx in 0..frames {
-            for ch_idx in 0..channels {
-                samples.push(convert(planes.planes()[ch_idx][frame_idx]));
+            for plane in &planes {
+                samples.push(convert(plane[frame_idx]));
             }
         }
         (samples, channels)
@@ -799,6 +836,76 @@ mod tests {
                 max_diff < 0.02,
                 "{name}: seek not sample-aligned (max_diff={max_diff:.4}); \
                  pre-roll / packet-ts anchoring regressed"
+            );
+        }
+    }
+
+    #[test]
+    fn decode_produces_correct_sample_values() {
+        // Value-level coverage for the symphonia sample-format conversion path
+        // (decode buffer -> interleaved f32) — the riskiest part of a symphonia
+        // version migration, otherwise only smoke-tested. A 440Hz sine at
+        // amplitude 0.5 is encoded across sample formats: lossless decodes must
+        // match the analytic signal sample-for-sample; lossy decodes must
+        // reproduce the right amplitude (phase isn't checked for lossy, since the
+        // encoder delay shifts it).
+        let rate = 44100.0;
+        let freq = 440.0;
+        let amp = 0.5;
+        let expected = |n: usize| amp * (2.0 * std::f64::consts::PI * freq * n as f64 / rate).sin();
+
+        let read_n = |src: &mut AudioSampleSource, n: usize| -> Vec<f32> {
+            let mut v = Vec::with_capacity(n);
+            while v.len() < n {
+                match src.next_sample() {
+                    Ok(Some(s)) => v.push(s),
+                    _ => break,
+                }
+            }
+            v
+        };
+
+        // Lossless: per-sample match. The tolerance covers quantization and the
+        // normalization convention while still catching any gross conversion bug
+        // (wrong sample-format arm, scale, or sign — all far larger than 0.01).
+        for name in ["sine440-16bit.wav", "sine440-24bit.wav", "sine440.flac"] {
+            let path = std::path::Path::new("assets").join(name);
+            let mut src = AudioSampleSource::from_file(&path, None, 1024).unwrap();
+            let got = read_n(&mut src, 4000);
+            assert!(
+                got.len() >= 2000,
+                "{name}: too few samples decoded ({})",
+                got.len()
+            );
+            let max_err = (0..got.len())
+                .map(|n| (got[n] as f64 - expected(n)).abs())
+                .fold(0.0f64, f64::max);
+            assert!(
+                max_err < 0.01,
+                "{name}: decoded samples diverge from the 440Hz sine \
+                 (max_err={max_err:.5}) — sample-format conversion is wrong"
+            );
+        }
+
+        // Lossy: amplitude/energy check (peak ~amp, RMS ~amp/√2), phase-agnostic.
+        for name in ["sine440.mp3", "sine440.ogg", "sine440.aac"] {
+            let path = std::path::Path::new("assets").join(name);
+            let mut src = AudioSampleSource::from_file(&path, None, 1024).unwrap();
+            let got = read_n(&mut src, 8000);
+            // Use the steady middle to avoid encoder priming / edge ramps.
+            let mid = &got[got.len() / 4..got.len() * 3 / 4];
+            assert!(mid.len() > 500, "{name}: too few samples decoded");
+            let peak = mid.iter().fold(0.0f32, |m, &s| m.max(s.abs())) as f64;
+            let rms =
+                (mid.iter().map(|&s| (s as f64).powi(2)).sum::<f64>() / mid.len() as f64).sqrt();
+            assert!(
+                (peak - amp).abs() < 0.08,
+                "{name}: peak {peak:.3} not ~{amp} — lossy decode amplitude wrong"
+            );
+            assert!(
+                (rms - amp / 2.0_f64.sqrt()).abs() < 0.05,
+                "{name}: rms {rms:.3} not ~{:.3}",
+                amp / 2.0_f64.sqrt()
             );
         }
     }
