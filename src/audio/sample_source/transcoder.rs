@@ -36,7 +36,7 @@ impl<'a> ChannelBufRef<'a> {
     }
 }
 
-impl<'a> Adapter<'a, f32> for ChannelBufRef<'a> {
+unsafe impl<'a> Adapter<'a, f32> for ChannelBufRef<'a> {
     unsafe fn read_sample_unchecked(&self, channel: usize, frame: usize) -> f32 {
         *self.buf.get_unchecked(channel).get_unchecked(frame)
     }
@@ -60,7 +60,7 @@ impl<'a> ChannelBufMut<'a> {
     }
 }
 
-impl<'a> Adapter<'a, f32> for ChannelBufMut<'a> {
+unsafe impl<'a> Adapter<'a, f32> for ChannelBufMut<'a> {
     unsafe fn read_sample_unchecked(&self, channel: usize, frame: usize) -> f32 {
         *self.buf.get_unchecked(channel).get_unchecked(frame)
     }
@@ -72,7 +72,7 @@ impl<'a> Adapter<'a, f32> for ChannelBufMut<'a> {
     }
 }
 
-impl<'a> AdapterMut<'a, f32> for ChannelBufMut<'a> {
+unsafe impl<'a> AdapterMut<'a, f32> for ChannelBufMut<'a> {
     unsafe fn write_sample_unchecked(&mut self, channel: usize, frame: usize, value: &f32) -> bool {
         *self.buf.get_unchecked_mut(channel).get_unchecked_mut(frame) = *value;
         false
