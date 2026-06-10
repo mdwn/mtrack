@@ -33,6 +33,35 @@ fn default_active_playlist() -> String {
     "playlist".to_string()
 }
 
+/// Lists the profile YAML files in a profiles directory in load order
+/// (sorted by file name). Shared by config load and by gain persistence so
+/// both sides agree on which file owns the active profile.
+pub(crate) fn list_profile_files(dir: &Path) -> Result<Vec<PathBuf>, ConfigError> {
+    // codeql[rust/path-injection] profiles_dir comes from the local config file on disk.
+    let entries = std::fs::read_dir(dir).map_err(|source| ConfigError::Io {
+        path: dir.to_path_buf(),
+        source,
+    })?;
+
+    let mut yaml_paths: Vec<PathBuf> = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|source| ConfigError::Io {
+            path: dir.to_path_buf(),
+            source,
+        })?;
+        let path = entry.path();
+        if path.is_file() {
+            if let Some(ext) = path.extension() {
+                if ext == "yaml" || ext == "yml" {
+                    yaml_paths.push(path);
+                }
+            }
+        }
+    }
+    yaml_paths.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+    Ok(yaml_paths)
+}
+
 /// The configuration for the multitrack player.
 #[derive(Deserialize, Serialize, Clone)]
 pub struct Player {
@@ -236,28 +265,7 @@ impl Player {
             None => return Ok(()),
         };
 
-        // codeql[rust/path-injection] profiles_dir comes from the local config file on disk.
-        let entries = std::fs::read_dir(&dir_path).map_err(|source| ConfigError::Io {
-            path: dir_path.clone(),
-            source,
-        })?;
-
-        let mut yaml_paths: Vec<PathBuf> = Vec::new();
-        for entry in entries {
-            let entry = entry.map_err(|source| ConfigError::Io {
-                path: dir_path.clone(),
-                source,
-            })?;
-            let path = entry.path();
-            if path.is_file() {
-                if let Some(ext) = path.extension() {
-                    if ext == "yaml" || ext == "yml" {
-                        yaml_paths.push(path);
-                    }
-                }
-            }
-        }
-        yaml_paths.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+        let yaml_paths = list_profile_files(&dir_path)?;
 
         let mut dir_profiles: Vec<Profile> = Vec::new();
         for path in &yaml_paths {

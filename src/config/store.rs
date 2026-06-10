@@ -332,7 +332,10 @@ impl ConfigStore {
     /// Sets the per-track gains on the active profile (first profile whose
     /// hostname matches or that has no hostname constraint) and persists them.
     /// Called internally when gains change at runtime, not from the config
-    /// editor UI, so no checksum is required.
+    /// editor UI, so no checksum is required (same model as
+    /// `set_active_playlist`): the mutation runs under the store's write
+    /// lock, and a config-editor save racing it gets a StaleChecksum
+    /// rejection plus a `config_changed` broadcast to re-pull.
     ///
     /// When profiles are loaded from `profiles_dir`, the owning profile file
     /// is rewritten (inline profiles in the main config are ignored at load
@@ -387,28 +390,11 @@ fn persist_gains_to_profile_file(
     hostname: &str,
     gains: &indexmap::IndexMap<String, f32>,
 ) -> Result<(), ConfigError> {
-    let entries = std::fs::read_dir(dir).map_err(|source| ConfigError::Io {
-        path: dir.to_path_buf(),
-        source,
-    })?;
+    let yaml_paths = super::player::list_profile_files(dir)?;
 
-    let mut yaml_paths: Vec<PathBuf> = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|source| ConfigError::Io {
-            path: dir.to_path_buf(),
-            source,
-        })?;
-        let path = entry.path();
-        if path.is_file() {
-            if let Some(ext) = path.extension() {
-                if ext == "yaml" || ext == "yml" {
-                    yaml_paths.push(path);
-                }
-            }
-        }
-    }
-    yaml_paths.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
-
+    // A parse failure aborts (matching load behavior) rather than skipping:
+    // skipping an unparseable file could write the gains into the wrong
+    // profile when the broken file is the active profile's.
     for path in &yaml_paths {
         let mut profile = config::Config::builder()
             .add_source(config::File::from(path.as_path()))

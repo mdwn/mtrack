@@ -33,7 +33,7 @@ use tokio::{
     task::JoinHandle,
 };
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, span, warn, Level, Span};
+use tracing::{debug, error, info, span, warn, Level, Span};
 
 use crate::samples::SampleEngine;
 use crate::songs::Songs;
@@ -700,8 +700,8 @@ impl Player {
         let applied = track_gains.set_db(track, gain_db)?;
 
         // Debounced persistence: replace any pending save with a fresh timer.
-        if let Some(store) = self.config_store() {
-            if let Some(hostname) = hostname {
+        match (self.config_store(), hostname) {
+            (Some(store), Some(hostname)) => {
                 let gains = track_gains.snapshot_db_map();
                 let mut pending = self.gain_persist_task.lock();
                 if let Some(task) = pending.take() {
@@ -713,6 +713,13 @@ impl Player {
                         error!(err = %e, "Failed to persist track gains");
                     }
                 }));
+            }
+            _ => {
+                debug!(
+                    track,
+                    gain_db = applied,
+                    "track gain applied but not persisted (no config store or hostname)"
+                );
             }
         }
 

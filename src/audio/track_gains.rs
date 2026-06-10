@@ -18,7 +18,7 @@
 //! `f32` bit patterns in atomics so the callback can read them lock-free.
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use indexmap::IndexMap;
 use tracing::warn;
@@ -68,10 +68,25 @@ pub struct TrackGains {
     slots: HashMap<String, usize>,
     /// Slot index -> track name, in config order (stable for reporting).
     names: Vec<String>,
-    /// Gain in dB, stored as f32 bits.
-    db_bits: Vec<AtomicU32>,
-    /// Linear multiplier, stored as f32 bits. Hot-path reads.
-    linear_bits: Vec<AtomicU32>,
+    /// dB (high 32 bits) and linear multiplier (low 32 bits) packed into a
+    /// single atomic per slot, so concurrent setters can never leave the two
+    /// representations desynced. The mixer hot path reads only the low half.
+    gain_bits: Vec<AtomicU64>,
+}
+
+/// Packs a (dB, linear) gain pair into a single u64.
+fn pack_gain(db: f32, linear: f32) -> u64 {
+    ((db.to_bits() as u64) << 32) | linear.to_bits() as u64
+}
+
+/// The dB half of a packed gain.
+fn unpack_db(bits: u64) -> f32 {
+    f32::from_bits((bits >> 32) as u32)
+}
+
+/// The linear half of a packed gain.
+fn unpack_linear(bits: u64) -> f32 {
+    f32::from_bits(bits as u32)
 }
 
 impl TrackGains {
@@ -96,8 +111,7 @@ impl TrackGains {
         names.extend(mapping_names.into_iter().cloned());
 
         let mut slots = HashMap::with_capacity(names.len());
-        let mut db_bits = Vec::with_capacity(names.len());
-        let mut linear_bits = Vec::with_capacity(names.len());
+        let mut gain_bits = Vec::with_capacity(names.len());
         for (slot, name) in names.iter().enumerate() {
             let configured = track_gains.and_then(|gains| gains.get(name)).copied();
             let db = match configured {
@@ -116,15 +130,13 @@ impl TrackGains {
                 None => 0.0,
             };
             slots.insert(name.clone(), slot);
-            db_bits.push(AtomicU32::new(db.to_bits()));
-            linear_bits.push(AtomicU32::new(db_to_linear(db).to_bits()));
+            gain_bits.push(AtomicU64::new(pack_gain(db, db_to_linear(db))));
         }
 
         Self {
             slots,
             names,
-            db_bits,
-            linear_bits,
+            gain_bits,
         }
     }
 
@@ -149,20 +161,19 @@ impl TrackGains {
             .slot(track)
             .ok_or_else(|| UnknownTrackError(track.to_string()))?;
         let clamped = clamp_db(db);
-        self.db_bits[slot].store(clamped.to_bits(), Ordering::Relaxed);
-        self.linear_bits[slot].store(db_to_linear(clamped).to_bits(), Ordering::Relaxed);
+        self.gain_bits[slot].store(pack_gain(clamped, db_to_linear(clamped)), Ordering::Relaxed);
         Ok(clamped)
     }
 
     /// Gets the gain of a track in dB.
     pub fn get_db(&self, track: &str) -> Option<f32> {
         self.slot(track)
-            .map(|slot| f32::from_bits(self.db_bits[slot].load(Ordering::Relaxed)))
+            .map(|slot| unpack_db(self.gain_bits[slot].load(Ordering::Relaxed)))
     }
 
     /// Gets the linear multiplier for a slot. Hot path: single relaxed load.
     pub fn linear(&self, slot: usize) -> f32 {
-        f32::from_bits(self.linear_bits[slot].load(Ordering::Relaxed))
+        unpack_linear(self.gain_bits[slot].load(Ordering::Relaxed))
     }
 
     /// Snapshots all gains as (name, dB) pairs in slot order.
@@ -173,7 +184,7 @@ impl TrackGains {
             .map(|(slot, name)| {
                 (
                     name.clone(),
-                    f32::from_bits(self.db_bits[slot].load(Ordering::Relaxed)),
+                    unpack_db(self.gain_bits[slot].load(Ordering::Relaxed)),
                 )
             })
             .collect()
