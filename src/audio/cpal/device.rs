@@ -451,6 +451,7 @@ fn build_active_source(
         is_finished,
         start_at_sample: None,
         cancel_at_sample: Some(Arc::new(std::sync::atomic::AtomicU64::new(0))),
+        gain: Default::default(),
         gain_envelope,
     };
     (active, flag)

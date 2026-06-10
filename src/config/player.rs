@@ -33,6 +33,35 @@ fn default_active_playlist() -> String {
     "playlist".to_string()
 }
 
+/// Lists the profile YAML files in a profiles directory in load order
+/// (sorted by file name). Shared by config load and by gain persistence so
+/// both sides agree on which file owns the active profile.
+pub(crate) fn list_profile_files(dir: &Path) -> Result<Vec<PathBuf>, ConfigError> {
+    // codeql[rust/path-injection] profiles_dir comes from the local config file on disk.
+    let entries = std::fs::read_dir(dir).map_err(|source| ConfigError::Io {
+        path: dir.to_path_buf(),
+        source,
+    })?;
+
+    let mut yaml_paths: Vec<PathBuf> = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|source| ConfigError::Io {
+            path: dir.to_path_buf(),
+            source,
+        })?;
+        let path = entry.path();
+        if path.is_file() {
+            if let Some(ext) = path.extension() {
+                if ext == "yaml" || ext == "yml" {
+                    yaml_paths.push(path);
+                }
+            }
+        }
+    }
+    yaml_paths.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+    Ok(yaml_paths)
+}
+
 /// The configuration for the multitrack player.
 #[derive(Deserialize, Serialize, Clone)]
 pub struct Player {
@@ -231,40 +260,12 @@ impl Player {
     /// Directory profiles replace inline profiles entirely. If the directory is
     /// empty, inline profiles are kept as a fallback.
     fn load_profiles_dir(&mut self, config_path: &Path) -> Result<(), ConfigError> {
-        let profiles_dir_str = match &self.profiles_dir {
-            Some(dir) => dir.clone(),
+        let dir_path = match self.resolved_profiles_dir(config_path) {
+            Some(dir) => dir,
             None => return Ok(()),
         };
 
-        let dir_path = if Path::new(&profiles_dir_str).is_absolute() {
-            PathBuf::from(&profiles_dir_str)
-        } else {
-            let config_dir = config_path.parent().unwrap_or(Path::new("."));
-            config_dir.join(&profiles_dir_str)
-        };
-
-        // codeql[rust/path-injection] profiles_dir comes from the local config file on disk.
-        let entries = std::fs::read_dir(&dir_path).map_err(|source| ConfigError::Io {
-            path: dir_path.clone(),
-            source,
-        })?;
-
-        let mut yaml_paths: Vec<PathBuf> = Vec::new();
-        for entry in entries {
-            let entry = entry.map_err(|source| ConfigError::Io {
-                path: dir_path.clone(),
-                source,
-            })?;
-            let path = entry.path();
-            if path.is_file() {
-                if let Some(ext) = path.extension() {
-                    if ext == "yaml" || ext == "yml" {
-                        yaml_paths.push(path);
-                    }
-                }
-            }
-        }
-        yaml_paths.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+        let yaml_paths = list_profile_files(&dir_path)?;
 
         let mut dir_profiles: Vec<Profile> = Vec::new();
         for path in &yaml_paths {
@@ -437,6 +438,30 @@ impl Player {
                 .collect(),
             None => vec![],
         }
+    }
+
+    /// Resolves the configured profiles directory against the config file
+    /// location, if `profiles_dir` is set.
+    pub fn resolved_profiles_dir(&self, config_path: &Path) -> Option<PathBuf> {
+        let dir = self.profiles_dir.as_ref()?;
+        Some(if Path::new(dir).is_absolute() {
+            PathBuf::from(dir)
+        } else {
+            let config_dir = config_path.parent().unwrap_or(Path::new("."));
+            config_dir.join(dir)
+        })
+    }
+
+    /// Returns a mutable reference to the active profile for the given
+    /// hostname: the first profile whose hostname matches or that has no
+    /// hostname constraint (same selection rule as `profiles`).
+    pub fn active_profile_mut(&mut self, hostname: &str) -> Option<&mut Profile> {
+        self.profiles.as_mut().and_then(|profiles| {
+            profiles.iter_mut().find(|p| match p.hostname() {
+                Some(h) => h == hostname,
+                None => true,
+            })
+        })
     }
 
     /// Returns all profiles without hostname filtering (for verify command).

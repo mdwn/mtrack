@@ -271,6 +271,38 @@ message SectionAckRequest {}
 // SectionAckResponse is returned after acknowledging a section.
 message SectionAckResponse {}
 
+// TrackGain is the gain of a single output track.
+message TrackGain {
+    // The output track name (a track_mappings key).
+    string track = 1;
+    // The gain in dB, in [-60, +12]. -60 and below mutes the track.
+    double gain_db = 2;
+}
+
+// SetTrackGainRequest sets the gain of a single output track.
+message SetTrackGainRequest {
+    // The output track name (a track_mappings key).
+    string track = 1;
+    // The gain in dB. Values outside [-60, +12] are clamped; -60 and below
+    // mutes the track.
+    double gain_db = 2;
+}
+
+// SetTrackGainResponse is returned after setting a track gain.
+message SetTrackGainResponse {
+    // The applied gain in dB after clamping.
+    double applied_gain_db = 1;
+}
+
+// GetTrackGainsRequest requests the gains of all output tracks.
+message GetTrackGainsRequest {}
+
+// GetTrackGainsResponse contains the gains of all output tracks.
+message GetTrackGainsResponse {
+    // The gains of all output tracks.
+    repeated TrackGain gains = 1;
+}
+
 // PlayerService is a service for controlling the mtrack player.
 service PlayerService {
     // Play will play the current song in the playlist if no other songs
@@ -342,4 +374,10 @@ service PlayerService {
     // SectionAck acknowledges the current section in reactive looping mode,
     // arming the loop so it engages at the section end.
     rpc SectionAck(SectionAckRequest) returns (SectionAckResponse);
+
+    // SetTrackGain sets the gain of a single output track in dB.
+    rpc SetTrackGain(SetTrackGainRequest) returns (SetTrackGainResponse);
+
+    // GetTrackGains returns the gains of all output tracks in dB.
+    rpc GetTrackGains(GetTrackGainsRequest) returns (GetTrackGainsResponse);
 }

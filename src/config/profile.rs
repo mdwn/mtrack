@@ -32,6 +32,9 @@ pub struct AudioConfig {
     #[serde(flatten)]
     audio: Audio,
     track_mappings: IndexMap<String, Vec<u16>>,
+    /// Per-output-track gain in dB. Tracks without an entry play at unity.
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    track_gains: IndexMap<String, f32>,
 }
 
 impl AudioConfig {
@@ -40,7 +43,18 @@ impl AudioConfig {
         AudioConfig {
             audio,
             track_mappings,
+            track_gains: IndexMap::new(),
         }
+    }
+
+    /// Returns the per-track gains in dB.
+    pub fn track_gains(&self) -> &IndexMap<String, f32> {
+        &self.track_gains
+    }
+
+    /// Replaces the per-track gains.
+    pub fn set_track_gains(&mut self, track_gains: IndexMap<String, f32>) {
+        self.track_gains = track_gains;
     }
 
     /// Returns the audio configuration.
@@ -67,6 +81,25 @@ impl AudioConfig {
                         name
                     ));
                 }
+            }
+        }
+        for (name, &db) in &self.track_gains {
+            if !db.is_finite() {
+                errors.push(format!(
+                    "track_gains '{}': gain must be a finite number",
+                    name
+                ));
+            } else if !(crate::audio::track_gains::MIN_GAIN_DB
+                ..=crate::audio::track_gains::MAX_GAIN_DB)
+                .contains(&db)
+            {
+                errors.push(format!(
+                    "track_gains '{}': gain {} dB out of range [{}, {}]",
+                    name,
+                    db,
+                    crate::audio::track_gains::MIN_GAIN_DB,
+                    crate::audio::track_gains::MAX_GAIN_DB
+                ));
             }
         }
     }
@@ -146,6 +179,11 @@ impl Profile {
     /// Returns the audio configuration, if present.
     pub fn audio_config(&self) -> Option<&AudioConfig> {
         self.audio.as_ref()
+    }
+
+    /// Returns a mutable reference to the audio configuration, if present.
+    pub fn audio_config_mut(&mut self) -> Option<&mut AudioConfig> {
+        self.audio.as_mut()
     }
 
     /// Returns the MIDI configuration.
@@ -252,6 +290,96 @@ mod tests {
     use config::{Config, File, FileFormat};
 
     use super::*;
+
+    #[test]
+    fn test_track_gains_round_trip() {
+        let yaml = r#"
+            audio:
+              device: mock-device
+              track_mappings:
+                click: [1]
+                keys: [2, 3]
+              track_gains:
+                click: -6.0
+                keys: 2.5
+        "#;
+        let profile: Profile = Config::builder()
+            .add_source(File::from_str(yaml, FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+
+        let audio_config = profile.audio_config().unwrap();
+        assert_eq!(audio_config.track_gains()["click"], -6.0);
+        assert_eq!(audio_config.track_gains()["keys"], 2.5);
+
+        // Round-trips through serialization.
+        let serialized = crate::util::to_yaml_string(&profile).unwrap();
+        assert!(serialized.contains("track_gains"));
+        let reparsed: Profile = Config::builder()
+            .add_source(File::from_str(&serialized, FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+        assert_eq!(
+            reparsed.audio_config().unwrap().track_gains()["click"],
+            -6.0
+        );
+    }
+
+    #[test]
+    fn test_track_gains_absent_and_omitted() {
+        let yaml = r#"
+            audio:
+              device: mock-device
+              track_mappings:
+                click: [1]
+        "#;
+        let profile: Profile = Config::builder()
+            .add_source(File::from_str(yaml, FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+
+        assert!(profile.audio_config().unwrap().track_gains().is_empty());
+        // Empty map is omitted on serialize to keep configs clean.
+        let serialized = crate::util::to_yaml_string(&profile).unwrap();
+        assert!(!serialized.contains("track_gains"));
+    }
+
+    #[test]
+    fn test_track_gains_validation() {
+        let mut track_mappings = IndexMap::new();
+        track_mappings.insert("click".to_string(), vec![1u16]);
+        let audio = Audio::new("mock-device");
+        let mut audio_config = AudioConfig::new(audio, track_mappings);
+
+        audio_config.set_track_gains(IndexMap::from([("click".to_string(), -120.0f32)]));
+        let mut errors = Vec::new();
+        audio_config.validate(&mut errors);
+        assert!(
+            errors.iter().any(|e| e.contains("track_gains 'click'")),
+            "expected out-of-range error, got {:?}",
+            errors
+        );
+
+        audio_config.set_track_gains(IndexMap::from([("click".to_string(), f32::NAN)]));
+        let mut errors = Vec::new();
+        audio_config.validate(&mut errors);
+        assert!(
+            errors.iter().any(|e| e.contains("finite")),
+            "expected non-finite error, got {:?}",
+            errors
+        );
+
+        audio_config.set_track_gains(IndexMap::from([("click".to_string(), -6.0f32)]));
+        let mut errors = Vec::new();
+        audio_config.validate(&mut errors);
+        assert!(errors.is_empty(), "expected no errors, got {:?}", errors);
+    }
 
     #[test]
     fn test_profile_deserialize() {

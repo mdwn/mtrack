@@ -28,6 +28,8 @@ export class DashboardPage {
   readonly playlistSongs: Locator;
   readonly trackRows: Locator;
   readonly trackCount: Locator;
+  readonly gainSliders: Locator;
+  readonly gainReadouts: Locator;
 
   constructor(private page: Page) {
     this.grid = page.locator(".playback-card");
@@ -49,6 +51,8 @@ export class DashboardPage {
     this.playlistSongs = page.locator(".playlist-card__list li");
     this.trackRows = page.locator(".tracks-card__row");
     this.trackCount = page.locator(".tracks-card__title");
+    this.gainSliders = page.locator(".gain-slider__input");
+    this.gainReadouts = page.locator(".gain-slider__db");
   }
 
   async goto() {

@@ -13,17 +13,16 @@
   "nav.connection.disconnected": "Disconnected",
   "nav.connection.serverConnected": "Server connected",
   "nav.connection.serverDisconnected": "Server disconnected",
-  "nav.connection.banner": "Connection lost \u2014 data may be stale",
-  "nav.health.ok": "All subsystems healthy \u2014 click for details",
-  "nav.health.warn": "Some subsystems degraded \u2014 click for details",
-  "nav.health.error": "A required subsystem is down \u2014 click for details",
-  "nav.health.unknown": "Subsystem health unknown \u2014 click for details",
-  "nav.live.locked": "LIVE \u2014 locked",
+  "nav.connection.banner": "Connection lost — data may be stale",
+  "nav.health.ok": "All subsystems healthy — click for details",
+  "nav.health.warn": "Some subsystems degraded — click for details",
+  "nav.health.error": "A required subsystem is down — click for details",
+  "nav.health.unknown": "Subsystem health unknown — click for details",
+  "nav.live.locked": "LIVE — locked",
   "nav.live.unlockPrompt": "Unlock during a live session?",
-  "nav.theme.system": "Theme: matches system \u2014 click for light",
-  "nav.theme.light": "Theme: light \u2014 click for dark",
-  "nav.theme.dark": "Theme: dark \u2014 click to follow system",
-
+  "nav.theme.system": "Theme: matches system — click for light",
+  "nav.theme.light": "Theme: light — click for dark",
+  "nav.theme.dark": "Theme: dark — click to follow system",
   "common.save": "Save",
   "common.saving": "Saving...",
   "common.saved": "Saved",
@@ -58,10 +57,8 @@
   "common.imported": "Imported",
   "common.uploading": "Uploading...",
   "common.rename": "Rename",
-
   "notFound.title": "Not Found",
   "notFound.message": "The page you're looking for doesn't exist.",
-
   "playback.title": "Playback",
   "playback.noSong": "No song",
   "playback.playing": "Playing",
@@ -85,23 +82,19 @@
   "playback.error.stopSectionLoop": "Failed to stop section loop",
   "playback.stopLoop": "Stop Loop",
   "playback.sections": "Sections",
-
   "playlist.title": "Playlist",
-
   "tracks.title": "Tracks",
   "tracks.count": "{count} tracks",
   "tracks.noTracks": "No tracks",
   "tracks.unmapped": "(unmapped)",
-
+  "tracks.gainFor": "Gain for {name}",
+  "tracks.gainReset": "Reset gain to 0 dB",
   "effects.title": "Active Effects",
   "effects.noEffects": "No active effects",
-
   "logs.title": "Logs",
-
   "stage.title": "Stage",
   "stage.label": "STAGE",
   "stage.reloaded": "Reloaded",
-
   "status.title": "Status",
   "status.failedToLoad": "Failed to load status: {error}",
   "status.buildInfo": "Build Info",
@@ -131,7 +124,6 @@
   "status.fix": "Fix",
   "status.configureSubsystem": "Configure {name}",
   "status.fixSubsystem": "Fix {name}",
-
   "config.loadingConfig": "Loading configuration...",
   "config.hardwareProfiles": "Hardware Profiles",
   "config.addProfile": "Add Profile",
@@ -151,7 +143,6 @@
   "config.samplesExternalBanner": "Samples loaded from {file}. Edit the file directly to make changes.",
   "config.profileFilenamePrompt": "Profile filename (without extension):",
   "config.defaultProfile": "Default Profile",
-
   "profile.hostname": "Hostname",
   "profile.hostnamePlaceholder": "Leave empty for default profile",
   "profile.hostnameHint": "Matches against system hostname. Empty = matches any host.",
@@ -163,7 +154,6 @@
   "profile.removeLightingDetail": "This will delete {count, plural, one {# universe} other {# universes}} and all lighting settings.",
   "profile.removeControllersDetail": "This will delete {count, plural, one {# controller} other {# controllers}}.",
   "profile.removeTriggerDetail": "This will delete {count, plural, one {# trigger input} other {# trigger inputs}}.",
-
   "profile.tabs.audio": "Audio",
   "profile.tabs.midi": "MIDI",
   "profile.tabs.lighting": "Lighting",
@@ -171,7 +161,6 @@
   "profile.tabs.controllers": "Controllers",
   "profile.tabs.notifications": "Notifications",
   "profile.tabs.statusEvents": "Status Events",
-
   "audio.device": "Device",
   "audio.devicePlaceholder": "Type or select a device",
   "audio.sampleRate": "Sample Rate",
@@ -187,7 +176,6 @@
   "audio.trackMappings": "Track Mappings",
   "audio.trackNamePlaceholder": "Track name",
   "audio.channelMappingError": "Channels must be comma-separated positive numbers (e.g., 1, 2)",
-
   "midi.device": "Device",
   "midi.devicePlaceholder": "Type or select a device",
   "midi.playbackDelay": "Playback Delay",
@@ -206,7 +194,6 @@
   "midi.convertToNotes": "Output Notes",
   "midi.inputController": "Input CC",
   "midi.convertToControllers": "Output CCs",
-
   "dmx.olaPort": "OLA Port",
   "dmx.dimSpeedModifier": "Dim Speed Modifier",
   "dmx.playbackDelay": "Playback Delay",
@@ -215,7 +202,6 @@
   "dmx.universes": "Universes",
   "dmx.universePlaceholder": "Universe #",
   "dmx.namePlaceholder": "Name",
-
   "trigger.audioInputDevice": "Audio Input Device",
   "trigger.audioInputPlaceholder": "Only needed for audio triggers",
   "trigger.sampleRate": "Sample Rate",
@@ -260,7 +246,6 @@
   "trigger.midiChannel": "Channel",
   "trigger.keyCC": "Key / CC#",
   "trigger.midiSample": "Sample",
-
   "trigger.cal.calibrateChannel": "Calibrate Channel {channel}",
   "trigger.cal.device": "Device",
   "trigger.cal.channel": "Channel",
@@ -281,7 +266,6 @@
   "trigger.cal.dynThreshold": "Dyn. threshold:",
   "trigger.cal.maxHitAmplitude": "Max hit amplitude:",
   "trigger.cal.noHits": "No hits detected. Try again with stronger hits or lower noise.",
-
   "controllers.port": "Port",
   "controllers.broadcastAddresses": "Broadcast Addresses",
   "controllers.broadcastPlaceholder": "192.168.1.255:43235",
@@ -304,7 +288,6 @@
   "controllers.addGrpc": "Add gRPC",
   "controllers.addOsc": "Add OSC",
   "controllers.addMidi": "Add MIDI",
-
   "notifications.hint": "Override the default notification audio with custom sound files. Paths are relative to the config directory.",
   "notifications.loopArmed": "Loop Armed",
   "notifications.breakRequested": "Break Requested",
@@ -317,7 +300,6 @@
   "notifications.browse": "Browse filesystem",
   "notifications.dropAudio": "Drop audio file here or click to upload",
   "notifications.uploaded": "Uploaded {name}",
-
   "lighting.fixtureTypes": "Fixture Types",
   "lighting.venues": "Venues",
   "lighting.profileSettings": "Profile Settings",
@@ -381,7 +363,6 @@
   "lighting.maxCount": "Max Count",
   "lighting.fallbackTo": "Fallback To",
   "lighting.allowEmptyLabel": "Allow Empty",
-
   "samples.noSamples": "No samples configured.",
   "samples.addSampleHint": "Add a sample to define audio files for trigger playback.",
   "samples.addSample": "Add Sample",
@@ -415,7 +396,6 @@
   "samples.layerFilePlaceholder": "path/to/layer-file.wav",
   "samples.confirmRemove": "Remove sample \"{name}\"?",
   "samples.uploadedFile": "Uploaded {name}",
-
   "songs.title": "Songs",
   "songs.newSong": "New Song",
   "songs.importFromFilesystem": "Import from Filesystem",
@@ -429,15 +409,12 @@
   "songs.trackCount": "{count} track{count, plural, one {} other {s}}",
   "songs.currentPlaying": "Playing",
   "songs.currentLoaded": "Loaded",
-
   "songs.create.placeholder": "Song name or path (e.g. Artist/Song)",
   "songs.create.alreadyExists": "Song already exists",
   "songs.create.failed": "Failed to create song",
-
   "songs.detail.allSongs": "All Songs",
   "songs.detail.tabs.samples": "Samples",
   "songs.detail.noSamples": "No per-song sample overrides. Samples configured here override the global samples config for this song only.",
-
   "songs.detail.excludeChannels": "Exclude MIDI Channels",
   "songs.detail.excludeChannelsHint": "Check channels to exclude from MIDI file playback. Commonly used to skip channel 10 (drums) or channels used for lighting data.",
   "songs.detail.excludeNone": "None",
@@ -477,7 +454,6 @@
   "songs.detail.uploadedFiles": "Uploaded {count} file{count, plural, one {} other {s}}",
   "songs.detail.confirmReplace": "The following file{count, plural, one {} other {s}} will be replaced:\n{names}\n\nContinue?",
   "songs.detail.confirmMidiReplace": "\"{name}\" already exists and will be replaced.\n\nContinue?",
-
   "songs.tracks.noTracks": "No tracks configured",
   "songs.tracks.name": "Name",
   "songs.tracks.file": "File",
@@ -487,7 +463,6 @@
   "songs.tracks.removeTrack": "Remove track",
   "songs.tracks.addTrack": "+ Add Track",
   "songs.tracks.browseFilesystemBtn": "Browse Filesystem...",
-
   "songs.import.title": "Import Song from Directory",
   "songs.import.hint": "Navigate to a directory containing your song files. Audio, MIDI, and lighting files will be detected automatically. Stereo and multichannel audio files will be split into per-channel tracks.",
   "songs.import.noAudio": "No audio files in this directory",
@@ -506,7 +481,6 @@
   "songs.import.midiFileCount": "{count} MIDI",
   "songs.import.lightingFileCount": "{count} lighting",
   "songs.import.songExists": "song.yaml already exists in this directory",
-
   "playlists.title": "Playlists",
   "playlists.new": "New",
   "playlists.namePlaceholder": "Playlist name",
@@ -520,7 +494,6 @@
   "playlists.noSongsInPlaylist": "No songs in this playlist. Add songs from the right.",
   "playlists.availableSongs": "Available Songs",
   "playlists.searchSongs": "Search songs...",
-
   "lightingEditor.songs": "Songs",
   "lightingEditor.noSongs": "No songs found.",
   "lightingEditor.selectSong": "Select a song to edit its lighting.",
@@ -540,7 +513,6 @@
   "lightingEditor.importFromFs": "Import from Filesystem",
   "lightingEditor.browseServer": "Browse Server Filesystem...",
   "lightingEditor.discardSwitch": "You have unsaved changes. Discard and switch songs?",
-
   "songLighting.notConnected": "Not connected to server — playback controls unavailable",
   "songLighting.dslLabel": "DSL",
   "songLighting.midiDmxLabel": "MIDI DMX",
@@ -563,26 +535,22 @@
   "songLighting.confirmRemove": "Remove \"{name}\" from this song and delete the file?",
   "songLighting.parseError": "parse error",
   "songLighting.removeFile": "Remove light file",
-
   "lightingSummary.desktopOnly": "Edit on a laptop. The timeline needs more room than a phone screen has — here's a quick read of what's configured.",
   "lightingSummary.shows": "Shows",
   "lightingSummary.sequences": "Sequences",
   "lightingSummary.effects": "Effect types in this song",
   "lightingSummary.empty": "No lighting cues configured for this song.",
-
   "fileBrowser.emptyDir": "Empty directory",
   "fileBrowser.selected": "{count} selected",
   "fileBrowser.fileCount": "{count} file{count, plural, one {} other {s}}",
   "fileBrowser.selectAll": "Select All",
   "fileBrowser.deselectAll": "Deselect All",
   "fileBrowser.select": "Select ({count})",
-
   "timeline.noShows": "No shows. Click \"+ Show\" to get started.",
   "timeline.selectCue": "Select a cue to edit, or double-click a lane to create one.",
   "timeline.editOffset": "Edit Offset",
   "timeline.measures": "measures",
   "timeline.addOffsetMeasures": "Add Offset (measures)",
-
   "timeline.toolbar.goToStart": "Go to start",
   "timeline.toolbar.stopReset": "Stop (reset to start)",
   "timeline.toolbar.pause": "Pause",
@@ -597,11 +565,9 @@
   "timeline.toolbar.measure": "Measure",
   "timeline.toolbar.addShow": "+ Show",
   "timeline.toolbar.addSequence": "+ Sequence",
-
   "timeline.cueBlock.empty": "empty",
   "timeline.cueBlock.cmdCount": "{count} cmd",
   "timeline.cueBlock.seqCount": "{count} seq",
-
   "timeline.properties.effects": "Effects",
   "timeline.properties.commands": "Commands",
   "timeline.properties.sequences": "Sequences",
@@ -611,7 +577,6 @@
   "timeline.properties.noCommands": "No commands.",
   "timeline.properties.addSequence": "+ Sequence",
   "timeline.properties.noSequences": "No sequence references.",
-
   "timeline.showGroup.deleteShow": "Delete show",
   "timeline.showGroup.foreground": "FG",
   "timeline.showGroup.midground": "MG",
@@ -619,18 +584,15 @@
   "timeline.showGroup.cmds": "Cmds",
   "timeline.showGroup.seqs": "Seqs",
   "timeline.showLane.deleteLane": "Delete {type}",
-
   "timeline.tempo": "Tempo",
   "timeline.waveform": "Waveform",
   "timeline.noFixtures": "No fixtures configured",
   "timeline.reset": "reset",
-
   "timeline.sequenceEditor.title": "Sequence: \"{name}\"",
   "timeline.sequenceEditor.cueCount": "{count} cues",
   "timeline.sequenceEditor.hint": "Double-click to add cues. Drag to reposition.",
   "timeline.sequenceEditor.deleteSequence": "Delete Sequence",
   "timeline.sequenceEditor.selectCue": "Select a cue to edit, or double-click the lane to create one.",
-
   "cue.comment": "Comment",
   "cue.commentPlaceholder": "Cue description...",
   "cue.addComment": "+ Comment",
@@ -645,14 +607,12 @@
   "cue.addCue": "+ Cue",
   "cue.moveUp": "Move up",
   "cue.moveDown": "Move down",
-
   "timestamp.time": "Time",
   "timestamp.measure": "Measure",
   "timestamp.minutes": "Minutes",
   "timestamp.seconds": "Seconds",
   "timestamp.milliseconds": "Milliseconds",
   "timestamp.beat": "Beat",
-
   "effect.group": "group",
   "effect.collapse": "Collapse",
   "effect.expand": "Expand",
@@ -683,24 +643,20 @@
   "effect.hold": "Hold",
   "effect.down": "Down",
   "effect.removeEffect": "Remove effect",
-
   "effect.command.command": "Command",
   "effect.command.layer": "Layer",
   "effect.command.time": "Time",
   "effect.command.intensity": "Intensity",
   "effect.command.speed": "Speed",
   "effect.command.removeCommand": "Remove command",
-
   "effect.color.removeColor": "Remove color",
   "effect.color.addColor": "+ Color",
-
   "sequenceRef.sequence": "Sequence",
   "sequenceRef.select": "-- select --",
   "sequenceRef.namePlaceholder": "sequence name",
   "sequenceRef.loop": "Loop",
   "sequenceRef.stop": "Stop",
   "sequenceRef.remove": "Remove",
-
   "tempo.title": "Tempo",
   "tempo.bpm": "BPM",
   "tempo.timeSignature": "Time Signature",
@@ -711,7 +667,6 @@
   "tempo.at": "At",
   "tempo.timeSig": "Time Sig",
   "tempo.transition": "Transition",
-
   "midiEvent.type": "Type",
   "midiEvent.channel": "Channel",
   "midiEvent.key": "Key",
@@ -727,7 +682,6 @@
   "midiEvent.programChange": "Program Change",
   "midiEvent.channelAftertouch": "Channel Aftertouch",
   "midiEvent.pitchBend": "Pitch Bend",
-
   "statusEvents.title": "Status Events",
   "statusEvents.hint": "MIDI events emitted when the player state changes. Used to drive external indicators like LEDs on a MIDI controller.",
   "statusEvents.description": "Configure MIDI events that are sent when the player transitions between off, idling, and playing states.",
@@ -738,30 +692,24 @@
   "statusEvents.idlingEvents": "Idling Events",
   "statusEvents.playingEvents": "Playing Events",
   "statusEvents.noEvents": "No events configured.",
-
   "tooltips.statusEvents.offEvents": "MIDI events sent to clear the status indicator. Typically turns off LEDs or resets controller state.",
   "tooltips.statusEvents.idlingEvents": "MIDI events sent when the player is idle and waiting for input. Can drive a steady LED or status display.",
   "tooltips.statusEvents.playingEvents": "MIDI events sent when the player is actively playing a song. Can drive a different LED color or blinking state.",
-
   "tooltips.profile.hostname": "System hostname this profile applies to. When mtrack starts, it matches the machine's hostname to select the correct profile. Leave empty for a default profile that matches any host.",
-
   "tooltips.audio.bufferSize": "Number of audio frames per hardware callback. Lower values reduce latency but increase CPU load. Leave empty to use the device default.",
   "tooltips.audio.streamBufferSize": "Size of the internal stream buffer between the decoder and audio callback. Enter a number of frames, 'min' for minimum size, or leave empty for the default.",
   "tooltips.audio.bufferThreads": "Number of threads used to decode and buffer audio tracks in parallel. Default is 2.",
   "tooltips.audio.resampler": "Algorithm used when the source sample rate differs from the device. Sinc is higher quality; FFT may be faster for some configurations.",
   "tooltips.audio.playbackDelay": "Delay before audio playback starts, e.g. '500ms'. Used to synchronize audio with other subsystems like DMX or MIDI.",
   "tooltips.audio.trackMappings": "Maps named audio tracks to specific output channels on your audio device. The track name must match a track in your song, and channels are 1-indexed device output channels. Use 'mtrack:looping' to route the section loop confirmation tone. Reload hardware after changing mappings.",
-
   "tooltips.midi.playbackDelay": "Delay before MIDI playback starts, e.g. '500ms'. Used to synchronize MIDI output with audio and lighting.",
   "tooltips.midi.beatClock": "Sends MIDI Beat Clock messages to the output device during playback. External gear can sync its tempo to this clock.",
   "tooltips.midi.midiToDmx": "Maps MIDI channels from the song's MIDI file to DMX universes. Notes and CCs on the mapped channel are converted to DMX values. Transformers can remap note/CC numbers before output.",
-
   "tooltips.dmx.olaPort": "Port number for the Open Lighting Architecture (OLA) server. OLA must be running to send DMX data. Default is 9010.",
   "tooltips.dmx.dimSpeedModifier": "Multiplier that scales the speed of all dimming transitions. Values above 1.0 speed up fades; below 1.0 slows them down.",
   "tooltips.dmx.playbackDelay": "Delay before DMX playback starts, e.g. '200ms'. Used to synchronize lighting with audio.",
   "tooltips.dmx.nullClient": "Run the DMX engine without connecting to OLA. Useful for testing lighting shows without hardware.",
   "tooltips.dmx.universes": "DMX universes to output to. Each universe maps to an OLA universe number and an optional descriptive name.",
-
   "tooltips.trigger.audioInputDevice": "Audio input device used for trigger detection (e.g. a drum trigger interface). Only needed if you have audio-type trigger inputs.",
   "tooltips.trigger.bufferSize": "Audio input buffer size in frames. Smaller buffers detect triggers faster but use more CPU.",
   "tooltips.trigger.crosstalkWindow": "Time window in milliseconds during which only the loudest trigger fires. Prevents one physical hit from triggering multiple channels.",
@@ -777,15 +725,12 @@
   "tooltips.trigger.dynThresholdMs": "Decay time for dynamic threshold tracking. After a hit, the threshold temporarily rises then decays over this period, preventing false retrigs from signal ringing.",
   "tooltips.trigger.noiseFloorSens": "Sensitivity multiplier for noise floor tracking. Higher values make the detector more aggressive at rejecting background noise.",
   "tooltips.trigger.fixedVelocity": "MIDI velocity value (0-127) used for every trigger hit when velocity curve is set to Fixed.",
-
   "tooltips.config.maxSampleVoices": "Maximum number of sample voices that can play simultaneously across all samples. Oldest voices are stopped when the limit is reached. Default is 32.",
-
   "tooltips.notifications.loopArmed": "Audio file played when a section loop is armed (player acknowledges the section). Overrides the built-in notification tone.",
   "tooltips.notifications.breakRequested": "Audio file played when a break out of the section loop is requested. Overrides the built-in notification tone.",
   "tooltips.notifications.loopExited": "Audio file played when the player exits a section loop and resumes normal playback.",
   "tooltips.notifications.sectionEntering": "Default audio file played when entering any section. Individual sections can be overridden below.",
   "tooltips.notifications.sections": "Override the section entering sound for specific named sections. The section name must match a section defined in the song.",
-
   "tooltips.controllers.grpcPort": "TCP port for the gRPC control server. The web UI and other clients connect to this port. Default is 43234.",
   "tooltips.controllers.oscPort": "UDP port to listen for incoming OSC messages. Default is 43235.",
   "tooltips.controllers.broadcastAddresses": "IP addresses to broadcast OSC status updates to (e.g. '192.168.1.255:43235'). Enables external apps like TouchOSC to receive state updates.",
@@ -793,10 +738,9 @@
   "tooltips.controllers.morningstarModel": "The Morningstar controller model. Determines the device ID byte in the SysEx message.",
   "tooltips.controllers.morningstarSave": "When enabled, the bank name is saved to flash. When disabled, the name is temporary and resets on power cycle.",
   "tooltips.controllers.morningstarCustomModelId": "The SysEx device ID byte for a custom/unlisted Morningstar model (0-127).",
-  "tooltips.controllers.addGrpc": "Add gRPC controller \u2014 remote control via network API",
-  "tooltips.controllers.addOsc": "Add OSC controller \u2014 Open Sound Control for hardware controllers",
-  "tooltips.controllers.addMidi": "Add MIDI controller \u2014 control via MIDI hardware",
-
+  "tooltips.controllers.addGrpc": "Add gRPC controller — remote control via network API",
+  "tooltips.controllers.addOsc": "Add OSC controller — Open Sound Control for hardware controllers",
+  "tooltips.controllers.addMidi": "Add MIDI controller — control via MIDI hardware",
   "tooltips.samples.outputChannels": "Device output channels for this sample, as comma-separated numbers (e.g. '1, 2'). If both output channels and output track are empty, uses the default stereo output.",
   "tooltips.samples.outputTrack": "Name of a track mapping (defined in Audio settings) to route this sample's output. Overrides output channels if set.",
   "tooltips.samples.releaseBehavior": "What happens when a release event fires for this sample. 'Play to Completion' ignores the release; 'Stop' cuts immediately; 'Fade' fades out over the fade time.",
@@ -806,7 +750,6 @@
   "tooltips.samples.velocityMode": "How trigger velocity affects playback. 'Ignore' plays at full volume; 'Scale' adjusts volume by velocity; 'Layers' selects different audio files by velocity range.",
   "tooltips.samples.defaultVelocity": "Velocity value (0-127) used when the trigger source does not provide velocity information.",
   "tooltips.samples.scaleByVelocity": "When enabled with layers, the selected layer's volume is also scaled by velocity. Otherwise each layer plays at full volume.",
-
   "tooltips.lighting.currentVenue": "The venue whose fixture layout is used for this profile. Logical groups resolve fixtures from this venue's definitions.",
   "tooltips.lighting.inlineFixtures": "Quick fixture definitions without a full venue file. Format: 'FixtureType @ universe:start_channel'. These override venue fixtures with the same name.",
   "tooltips.lighting.logicalGroups": "Named groups that resolve to venue fixtures using tag-based constraints. Lighting shows reference groups by name, so the same show works across venues.",

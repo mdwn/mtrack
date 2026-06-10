@@ -246,6 +246,7 @@ mod test {
             is_finished: Arc::new(AtomicBool::new(false)),
             start_at_sample: None,
             cancel_at_sample: None,
+            gain: Default::default(),
             gain_envelope: None,
         }
     }

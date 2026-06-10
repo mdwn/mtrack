@@ -23,12 +23,13 @@ use crate::{
     proto::player::v1::{
         player_service_server::{PlayerService, PlayerServiceServer},
         AddProfileRequest, Cue, GetActiveEffectsRequest, GetActiveEffectsResponse,
-        GetConfigRequest, GetConfigResponse, GetCuesRequest, GetCuesResponse, LoopSectionRequest,
-        LoopSectionResponse, NextRequest, NextResponse, PlayFromRequest, PlayRequest, PlayResponse,
-        PlaySongFromRequest, PreviousRequest, PreviousResponse, RemoveProfileRequest,
-        SectionAckRequest, SectionAckResponse, StatusRequest, StatusResponse, StopRequest,
+        GetConfigRequest, GetConfigResponse, GetCuesRequest, GetCuesResponse, GetTrackGainsRequest,
+        GetTrackGainsResponse, LoopSectionRequest, LoopSectionResponse, NextRequest, NextResponse,
+        PlayFromRequest, PlayRequest, PlayResponse, PlaySongFromRequest, PreviousRequest,
+        PreviousResponse, RemoveProfileRequest, SectionAckRequest, SectionAckResponse,
+        SetTrackGainRequest, SetTrackGainResponse, StatusRequest, StatusResponse, StopRequest,
         StopResponse, StopSamplesRequest, StopSamplesResponse, StopSectionLoopRequest,
-        StopSectionLoopResponse, SwitchToPlaylistRequest, SwitchToPlaylistResponse,
+        StopSectionLoopResponse, SwitchToPlaylistRequest, SwitchToPlaylistResponse, TrackGain,
         UpdateAudioRequest, UpdateConfigResponse, UpdateControllersRequest, UpdateDmxRequest,
         UpdateMidiRequest, UpdateProfileRequest, FILE_DESCRIPTOR_SET,
     },
@@ -511,6 +512,45 @@ impl PlayerService for PlayerServer {
             .map_err(|e| Status::failed_precondition(e.to_string()))?;
         Ok(Response::new(SectionAckResponse {}))
     }
+
+    async fn set_track_gain(
+        &self,
+        request: Request<SetTrackGainRequest>,
+    ) -> Result<Response<SetTrackGainResponse>, Status> {
+        let req = request.into_inner();
+        let applied = self
+            .player
+            .set_track_gain(&req.track, req.gain_db as f32)
+            .map_err(|e| match e {
+                crate::player::TrackGainError::NoAudioProfile => {
+                    Status::failed_precondition(e.to_string())
+                }
+                crate::player::TrackGainError::NonFinite(_)
+                | crate::player::TrackGainError::UnknownTrack(_) => {
+                    Status::invalid_argument(e.to_string())
+                }
+            })?;
+        Ok(Response::new(SetTrackGainResponse {
+            applied_gain_db: applied as f64,
+        }))
+    }
+
+    async fn get_track_gains(
+        &self,
+        _: Request<GetTrackGainsRequest>,
+    ) -> Result<Response<GetTrackGainsResponse>, Status> {
+        let gains = self
+            .player
+            .get_track_gains()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(track, gain_db)| TrackGain {
+                track,
+                gain_db: gain_db as f64,
+            })
+            .collect();
+        Ok(Response::new(GetTrackGainsResponse { gains }))
+    }
 }
 
 #[cfg(test)]
@@ -723,6 +763,19 @@ mod test {
         ),
         Box<dyn Error>,
     > {
+        setup_grpc_with_mappings(HashMap::new()).await
+    }
+
+    async fn setup_grpc_with_mappings(
+        track_mappings: HashMap<String, Vec<u16>>,
+    ) -> Result<
+        (
+            Arc<Player>,
+            PlayerServiceClient<Channel>,
+            Arc<crate::audio::mock::Device>,
+        ),
+        Box<dyn Error>,
+    > {
         let songs = songs::get_all_songs(Path::new("assets/songs"))?;
         let pl = Playlist::new(
             "playlist",
@@ -743,7 +796,7 @@ mod test {
                 Some(config::Audio::new("mock-device")),
                 Some(config::Midi::new("mock-midi-device", None)),
                 None,
-                HashMap::new(),
+                track_mappings,
                 "assets/songs",
             ),
             None,
@@ -774,6 +827,79 @@ mod test {
             client.expect("gRPC client connection failed"),
             device,
         ))
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_grpc_track_gains() -> Result<(), Box<dyn Error>> {
+        use crate::proto::player::v1::{GetTrackGainsRequest, SetTrackGainRequest};
+
+        let mappings = HashMap::from([
+            ("click".to_string(), vec![1]),
+            ("keys".to_string(), vec![2]),
+        ]);
+        let (_player, mut client, _device) = setup_grpc_with_mappings(mappings).await?;
+
+        // All tracks start at unity.
+        let gains = client
+            .get_track_gains(GetTrackGainsRequest {})
+            .await?
+            .into_inner()
+            .gains;
+        assert_eq!(gains.len(), 2);
+        assert!(gains.iter().all(|g| g.gain_db == 0.0));
+
+        // Set returns the applied value.
+        let resp = client
+            .set_track_gain(SetTrackGainRequest {
+                track: "click".to_string(),
+                gain_db: -6.0,
+            })
+            .await?
+            .into_inner();
+        assert_eq!(resp.applied_gain_db, -6.0);
+
+        // Out-of-range values are clamped.
+        let resp = client
+            .set_track_gain(SetTrackGainRequest {
+                track: "keys".to_string(),
+                gain_db: 20.0,
+            })
+            .await?
+            .into_inner();
+        assert_eq!(resp.applied_gain_db, 12.0);
+
+        // Get reflects the changes.
+        let gains = client
+            .get_track_gains(GetTrackGainsRequest {})
+            .await?
+            .into_inner()
+            .gains;
+        let by_name: HashMap<String, f64> =
+            gains.into_iter().map(|g| (g.track, g.gain_db)).collect();
+        assert_eq!(by_name["click"], -6.0);
+        assert_eq!(by_name["keys"], 12.0);
+
+        // Unknown track is an invalid argument.
+        let status = client
+            .set_track_gain(SetTrackGainRequest {
+                track: "nope".to_string(),
+                gain_db: 0.0,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+
+        // Non-finite gain is an invalid argument.
+        let status = client
+            .set_track_gain(SetTrackGainRequest {
+                track: "click".to_string(),
+                gain_db: f64::NAN,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+
+        Ok(())
     }
 
     #[tokio::test(flavor = "multi_thread")]

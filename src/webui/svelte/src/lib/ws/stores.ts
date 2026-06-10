@@ -20,6 +20,8 @@ import { connect, on, onConnectionStatus } from "./connection";
 export interface TrackInfo {
   name: string;
   output_channels: number[];
+  /** Output track gain in dB; absent on older backends (treat as 0). */
+  gain_db?: number;
 }
 
 export interface BeatGrid {

@@ -337,6 +337,7 @@ impl SampleEngine {
             cancel_handle: source_cancel_handle,
             start_at_sample: Some(start_at_sample),
             cancel_at_sample: Some(source_cancel_at_sample),
+            gain: Default::default(),
             gain_envelope: None,
         };
 
