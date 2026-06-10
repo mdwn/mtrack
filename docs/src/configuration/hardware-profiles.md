@@ -23,6 +23,10 @@ profiles:
         backing-track-l: [3]
         backing-track-r: [4]
         keys: [5, 6]
+      # Optional per-track gain in dB. Tracks without an entry play at unity.
+      track_gains:
+        click: -6.0
+        keys: 2.5
     midi:
       device: "Behringer WING"
       playback_delay: 500ms
@@ -73,6 +77,13 @@ profiles:
   - If absent from a profile → skipped for that host (player proceeds without it)
 - A profile can define any combination of subsystems, enabling dedicated roles such as
   lighting-only nodes, MIDI-only controllers, or full audio + MIDI + DMX setups.
+
+**Per-track gain (`track_gains`):** an optional map of output-track names (the keys of
+`track_mappings`) to gain in dB, from -60 to +12 (values at or below -60 mute the track;
+tracks without an entry play at unity). Gains are adjustable live from the web UI Tracks
+card, gRPC (`SetTrackGain` / `GetTrackGains`), and OSC (`/mtrack/track/*/gain`). Runtime
+changes are written back to the owning profile after a short debounce, so they survive
+restarts.
 
 Profiles with a `hostname` constraint only apply on hosts whose hostname matches. Profiles
 without a hostname constraint match any host. Set the `MTRACK_HOSTNAME` environment variable

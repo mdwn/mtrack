@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-06-10
+
+### Added
+
+- **Runtime-adjustable per-output-track gain**: Each output track (a `track_mappings` key) can
+  now carry a gain in dB via an optional `track_gains` map in the profile audio section
+  (-60 to +12 dB; values at or below -60 mute). Gains are adjustable live from the web UI
+  (per-track slider in the Tracks card), gRPC (`SetTrackGain` / `GetTrackGains`), and OSC
+  (`/mtrack/track/*/gain`, with per-track feedback in the broadcast loop for motorized
+  faders). Gain state is lock-free and changes ramp across one audio batch to avoid zipper
+  noise, with a constant-gain fast path that keeps the mixer inner loop at a single
+  load + FMA per mapping edge (criterion benchmark added in `benches/mixer.rs`). Runtime
+  adjustments persist to the active profile after a short debounce — in both inline-profile
+  and `profiles_dir` layouts — so they survive restarts.
+
+### Changed
+
+- **Configs are validated at load**: the player config and profile files now run semantic
+  validation when loaded, so errors like a missing audio device, channel `0` in
+  `track_mappings`, or out-of-range `track_gains` fail fast at startup with readable
+  messages instead of surfacing as endless device-retry loops or cryptic playback errors.
+
+### Fixed
+
+- **First-profile setup in the web UI**: creating the first hardware profile through the
+  config editor was nearly impossible. Switching to another section (e.g. track mappings)
+  before the first save silently turned the new profile into an update of a nonexistent
+  backend profile ("Invalid profile index 0 (have 0 profiles)"); saving without track
+  mappings failed with a raw "missing field `track_mappings`" parse error; and saving
+  without a device produced an equally cryptic "missing field `device`". New profiles now
+  stay new across section switches and back-navigation, `track_mappings` is optional while
+  a profile is being set up (playing a song with no mappings gives a descriptive error
+  instead), a missing device reports "audio device must not be empty", file-based profile
+  saves (`profiles_dir` layouts) are validated server-side before being written, and the
+  web UI now surfaces the backend's full validation error list on save failures.
+
 ## [0.13.0] - 2026-05-29
 
 ### Added
