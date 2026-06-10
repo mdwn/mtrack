@@ -188,6 +188,9 @@ impl Player {
             .try_deserialize::<Player>()?;
         player.load_profiles_dir(path)?;
         player.normalize();
+        player
+            .validate()
+            .map_err(|errors| ConfigError::Validation(errors.join("; ")))?;
         Ok(player)
     }
 
@@ -739,6 +742,25 @@ mod tests {
         let mut temp = tempfile::NamedTempFile::with_suffix(".yaml").unwrap();
         temp.write_all(yaml.as_bytes()).unwrap();
         Player::deserialize(temp.path()).expect("Failed to deserialize")
+    }
+
+    #[test]
+    fn test_deserialize_rejects_invalid_profile() {
+        // A profile missing its audio device must fail at load with a
+        // readable validation error, not spin in device-retry at startup.
+        let mut temp = tempfile::NamedTempFile::with_suffix(".yaml").unwrap();
+        temp.write_all(
+            b"songs: songs\nprofiles:\n  - audio:\n      track_mappings:\n        click: [1]\n",
+        )
+        .unwrap();
+        let err = match Player::deserialize(temp.path()) {
+            Ok(_) => panic!("expected validation error for missing device"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().contains("audio device must not be empty"),
+            "expected device validation error, got: {err}"
+        );
     }
 
     #[test]

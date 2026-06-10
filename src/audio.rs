@@ -168,6 +168,11 @@ pub fn get_device(config: Option<config::Audio>) -> Result<Arc<dyn Device>, Audi
     };
 
     let device = config.device();
+    if device.trim().is_empty() {
+        return Err(AudioError::DeviceNotFound(
+            "audio device name is empty; set 'device' in the audio config".to_string(),
+        ));
+    }
     if device.starts_with("mock") {
         return Ok(Arc::new(mock::Device::get(device)));
     };

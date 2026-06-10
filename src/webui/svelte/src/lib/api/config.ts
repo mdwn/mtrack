@@ -12,7 +12,16 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-import { get, post, put, del, uploadFile, putText, postText } from "./rest";
+import {
+  get,
+  post,
+  put,
+  del,
+  uploadFile,
+  putText,
+  postText,
+  apiError,
+} from "./rest";
 
 // Calibration types
 export interface NoiseFloorResult {
@@ -96,10 +105,7 @@ export async function addProfile(
     "/config/profiles",
     JSON.stringify({ expected_checksum: checksum, profile }),
   );
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.error || `Failed to add profile: ${res.status}`);
-  }
+  if (!res.ok) throw await apiError(res, "Failed to add profile");
   return res.json();
 }
 
@@ -112,10 +118,7 @@ export async function updateProfile(
     `/config/profiles/${index}`,
     JSON.stringify({ expected_checksum: checksum, profile }),
   );
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.error || `Failed to update profile: ${res.status}`);
-  }
+  if (!res.ok) throw await apiError(res, "Failed to update profile");
   return res.json();
 }
 
@@ -126,10 +129,7 @@ export async function deleteProfile(
   const res = await del(
     `/config/profiles/${index}?expected_checksum=${encodeURIComponent(checksum)}`,
   );
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.error || `Failed to delete profile: ${res.status}`);
-  }
+  if (!res.ok) throw await apiError(res, "Failed to delete profile");
   return res.json();
 }
 
@@ -155,10 +155,7 @@ export async function fetchProfileFile(
   filename: string,
 ): Promise<{ profile: object; yaml: string }> {
   const res = await get(`/profiles/${encodeURIComponent(filename)}`);
-  if (!res.ok) {
-    const d = await res.json().catch(() => ({}));
-    throw new Error(d.error || `Failed to fetch profile: ${res.status}`);
-  }
+  if (!res.ok) throw await apiError(res, "Failed to fetch profile");
   return res.json();
 }
 
@@ -170,18 +167,12 @@ export async function saveProfileFile(
     `/profiles/${encodeURIComponent(filename)}`,
     JSON.stringify(profile),
   );
-  if (!res.ok) {
-    const d = await res.json().catch(() => ({}));
-    throw new Error(d.error || `Failed to save profile: ${res.status}`);
-  }
+  if (!res.ok) throw await apiError(res, "Failed to save profile");
 }
 
 export async function deleteProfileFile(filename: string): Promise<void> {
   const res = await del(`/profiles/${encodeURIComponent(filename)}`);
-  if (!res.ok) {
-    const d = await res.json().catch(() => ({}));
-    throw new Error(d.error || `Failed to delete profile: ${res.status}`);
-  }
+  if (!res.ok) throw await apiError(res, "Failed to delete profile");
 }
 
 // Samples API
@@ -199,10 +190,7 @@ export async function updateSamples(
     body.max_sample_voices = maxSampleVoices;
   }
   const res = await put("/config/samples", JSON.stringify(body));
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.error || `Failed to update samples: ${res.status}`);
-  }
+  if (!res.ok) throw await apiError(res, "Failed to update samples");
   return res.json();
 }
 
@@ -219,10 +207,7 @@ export async function uploadSampleFile(
     `/samples/upload/${encodeURIComponent(file.name)}`,
     file,
   );
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.error || `Failed to upload sample: ${res.status}`);
-  }
+  if (!res.ok) throw await apiError(res, "Failed to upload sample");
   return res.json();
 }
 
@@ -236,27 +221,18 @@ export async function startCalibration(
   const body: Record<string, unknown> = { device, channel };
   if (duration !== undefined) body.duration = duration;
   const res = await post("/calibrate/start", JSON.stringify(body));
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || `Calibration start failed: ${res.status}`);
-  }
+  if (!res.ok) throw await apiError(res, "Calibration start failed");
   return res.json();
 }
 
 export async function startCapture(): Promise<void> {
   const res = await post("/calibrate/capture");
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || `Capture start failed: ${res.status}`);
-  }
+  if (!res.ok) throw await apiError(res, "Capture start failed");
 }
 
 export async function stopCapture(): Promise<ChannelCalibration> {
   const res = await post("/calibrate/stop");
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || `Capture stop failed: ${res.status}`);
-  }
+  if (!res.ok) throw await apiError(res, "Capture stop failed");
   return res.json();
 }
 
@@ -293,12 +269,7 @@ export async function fetchFixtureTypes(
 ): Promise<Record<string, FixtureTypeData>> {
   const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
   const res = await get(`/lighting/fixture-types${params}`);
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(
-      data.error || `Failed to fetch fixture types: ${res.status}`,
-    );
-  }
+  if (!res.ok) throw await apiError(res, "Failed to fetch fixture types");
   const data = await res.json();
   return data.fixture_types;
 }
@@ -311,12 +282,7 @@ export async function fetchFixtureType(
   const res = await get(
     `/lighting/fixture-types/${encodeURIComponent(name)}${params}`,
   );
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(
-      data.error || `Failed to fetch fixture type: ${res.status}`,
-    );
-  }
+  if (!res.ok) throw await apiError(res, "Failed to fetch fixture type");
   return res.json();
 }
 
@@ -335,10 +301,7 @@ export async function saveFixtureType(
     `/lighting/fixture-types/${encodeURIComponent(name)}${params}`,
     JSON.stringify(data),
   );
-  if (!res.ok) {
-    const d = await res.json().catch(() => ({}));
-    throw new Error(d.error || `Failed to save fixture type: ${res.status}`);
-  }
+  if (!res.ok) throw await apiError(res, "Failed to save fixture type");
 }
 
 export async function deleteFixtureType(
@@ -349,12 +312,7 @@ export async function deleteFixtureType(
   const res = await del(
     `/lighting/fixture-types/${encodeURIComponent(name)}${params}`,
   );
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(
-      data.error || `Failed to delete fixture type: ${res.status}`,
-    );
-  }
+  if (!res.ok) throw await apiError(res, "Failed to delete fixture type");
 }
 
 export async function fetchVenues(
@@ -362,10 +320,7 @@ export async function fetchVenues(
 ): Promise<Record<string, VenueData>> {
   const params = dir ? `?dir=${encodeURIComponent(dir)}` : "";
   const res = await get(`/lighting/venues${params}`);
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || `Failed to fetch venues: ${res.status}`);
-  }
+  if (!res.ok) throw await apiError(res, "Failed to fetch venues");
   const data = await res.json();
   return data.venues;
 }
@@ -378,10 +333,7 @@ export async function fetchVenue(
   const res = await get(
     `/lighting/venues/${encodeURIComponent(name)}${params}`,
   );
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || `Failed to fetch venue: ${res.status}`);
-  }
+  if (!res.ok) throw await apiError(res, "Failed to fetch venue");
   return res.json();
 }
 
@@ -404,10 +356,7 @@ export async function saveVenue(
     `/lighting/venues/${encodeURIComponent(name)}${params}`,
     JSON.stringify(data),
   );
-  if (!res.ok) {
-    const d = await res.json().catch(() => ({}));
-    throw new Error(d.error || `Failed to save venue: ${res.status}`);
-  }
+  if (!res.ok) throw await apiError(res, "Failed to save venue");
 }
 
 export async function deleteVenue(name: string, dir?: string): Promise<void> {
@@ -415,10 +364,7 @@ export async function deleteVenue(name: string, dir?: string): Promise<void> {
   const res = await del(
     `/lighting/venues/${encodeURIComponent(name)}${params}`,
   );
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || `Failed to delete venue: ${res.status}`);
-  }
+  if (!res.ok) throw await apiError(res, "Failed to delete venue");
 }
 
 // ---- Playlist CRUD ----
@@ -455,26 +401,17 @@ export async function savePlaylist(
     `/playlists/${encodeURIComponent(name)}`,
     JSON.stringify({ songs }),
   );
-  if (!res.ok) {
-    const d = await res.json().catch(() => ({}));
-    throw new Error(d.error || `Failed to save playlist: ${res.status}`);
-  }
+  if (!res.ok) throw await apiError(res, "Failed to save playlist");
 }
 
 export async function deletePlaylist(name: string): Promise<void> {
   const res = await del(`/playlists/${encodeURIComponent(name)}`);
-  if (!res.ok) {
-    const d = await res.json().catch(() => ({}));
-    throw new Error(d.error || `Failed to delete playlist: ${res.status}`);
-  }
+  if (!res.ok) throw await apiError(res, "Failed to delete playlist");
 }
 
 export async function activatePlaylist(name: string): Promise<void> {
   const res = await post(`/playlists/${encodeURIComponent(name)}/activate`);
-  if (!res.ok) {
-    const d = await res.json().catch(() => ({}));
-    throw new Error(d.error || `Failed to activate playlist: ${res.status}`);
-  }
+  if (!res.ok) throw await apiError(res, "Failed to activate playlist");
 }
 
 // ---- Lighting Show Files ----
@@ -504,19 +441,12 @@ export async function saveLightingFile(
   content: string,
 ): Promise<void> {
   const res = await putText(`/lighting/${encodeURIComponent(name)}`, content);
-  if (!res.ok) {
-    const d = await res.json().catch(() => ({}));
-    const errors = d.errors ? d.errors.join("; ") : d.error;
-    throw new Error(errors || `Failed to save lighting file: ${res.status}`);
-  }
+  if (!res.ok) throw await apiError(res, "Failed to save lighting file");
 }
 
 export async function deleteLightingFile(name: string): Promise<void> {
   const res = await del(`/lighting/${encodeURIComponent(name)}`);
-  if (!res.ok) {
-    const d = await res.json().catch(() => ({}));
-    throw new Error(d.error || `Failed to delete lighting file: ${res.status}`);
-  }
+  if (!res.ok) throw await apiError(res, "Failed to delete lighting file");
 }
 
 export async function validateLighting(

@@ -85,11 +85,16 @@ fn validate_channel_count(
     song_name: &str,
     device_name: &str,
 ) -> Result<(), Box<dyn Error>> {
-    let num_channels = *mappings
-        .iter()
-        .flat_map(|entry| entry.1)
-        .max()
-        .ok_or("no max channel found")?;
+    let num_channels = match mappings.iter().flat_map(|entry| entry.1).max() {
+        Some(max) => *max,
+        None => {
+            return Err(format!(
+                "no track mappings configured for audio device {} — map at least one track to an output channel before playing",
+                device_name
+            )
+            .into())
+        }
+    };
 
     if max_channels < num_channels {
         return Err(format!(
@@ -1190,10 +1195,14 @@ mod test {
         }
 
         #[test]
-        fn fails_on_empty_mappings() {
+        fn fails_on_empty_mappings_with_descriptive_error() {
             let mappings: HashMap<String, Vec<u16>> = HashMap::new();
             let result = validate_channel_count(&mappings, 8, "song", "device");
-            assert!(result.is_err());
+            let err = result.unwrap_err().to_string();
+            assert!(
+                err.contains("no track mappings configured"),
+                "error should explain that mappings are missing, got: {err}"
+            );
         }
 
         #[test]

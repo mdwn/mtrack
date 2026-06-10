@@ -219,6 +219,30 @@
     }
   }
 
+  // --- Draft (unsaved new profile) lifecycle ---
+
+  // Marks the current selection as a brand-new unsaved draft and syncs the
+  // URL. The selection-sync effect runs once before currentHash catches up
+  // with the hashchange event, so suppress that stale cycle — otherwise it
+  // clears the fresh selection and its isNew flag.
+  function startDraft(urlName: string) {
+    isNew = true;
+    dirty = false;
+    saveMsg = "";
+    saveOk = false;
+    suppressAutoSelect = true;
+    updateConfigUrl(urlName);
+  }
+
+  // Drops an unsaved draft from the inline profiles list so it can't be
+  // re-selected and saved via the update path (the backend never had it).
+  // File-mode drafts live only in scratch state, so there's nothing to drop.
+  function discardDraft() {
+    if (isNew && selectedIndex !== null && !profilesDir) {
+      profiles.splice(selectedIndex, 1);
+    }
+  }
+
   // --- File-based profile operations ---
 
   async function selectFileProfile(filename: string, section?: string) {
@@ -246,11 +270,7 @@
     profiles = [empty];
     selectedIndex = 0;
     selectedFilename = name;
-    isNew = true;
-
-    dirty = false;
-    saveMsg = "";
-    saveOk = false;
+    startDraft(name.replace(/\.\w+$/, ""));
   }
 
   async function saveFileProfile() {
@@ -330,16 +350,13 @@
     const empty: any = {};
     profiles.push(empty);
     selectedIndex = profiles.length - 1;
-    isNew = true;
-
-    dirty = false;
-    saveMsg = "";
-    saveOk = false;
+    startDraft(`Profile #${selectedIndex}`);
   }
 
   async function goBack() {
     if (dirty && !(await showConfirm(get(t)("config.discardUnsaved")))) return;
     suppressAutoSelect = true;
+    discardDraft();
     selectedIndex = null;
     isNew = false;
     dirty = false;
@@ -556,6 +573,8 @@
     if (!routeProfile) {
       // URL is #/config with no profile — clear selection to show list view.
       if (selectedIndex !== null || selectedFilename !== null) {
+        // e.g. browser Back during creation.
+        discardDraft();
         selectedIndex = null;
         selectedFilename = null;
         isNew = false;
@@ -574,12 +593,14 @@
         selectFileProfile(match.filename, routeSection);
       }
     } else {
-      // Inline: match by hostname or index
+      // Inline: match by hostname or index. Skip re-selecting the current
+      // profile — selectProfile resets isNew/dirty, which would turn an
+      // unsaved new profile into a bogus update of a nonexistent index.
       const idx = profiles.findIndex(
         (p: any) =>
           (p.hostname || `Profile #${profiles.indexOf(p)}`) === routeProfile,
       );
-      if (idx >= 0) {
+      if (idx >= 0 && idx !== selectedIndex) {
         selectProfile(idx, routeSection);
       }
     }
