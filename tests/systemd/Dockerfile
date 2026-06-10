@@ -46,6 +46,8 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock build.rs ./
 COPY .git/ .git/
 COPY src/ src/
+# Required to parse the manifest: Cargo.toml declares the mixer bench.
+COPY benches/ benches/
 
 # Build the Svelte frontend (embedded into the Rust binary).
 RUN cd src/webui/svelte && npm ci && buf generate && npm run build
