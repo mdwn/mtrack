@@ -102,6 +102,7 @@
     class="gain-slider__db mono"
     class:gain-slider__db--muted={muted}
     title={$t("tracks.gainReset")}
+    aria-label={$t("tracks.gainReset")}
     onclick={reset}
   >
     {formatDb(shown)}

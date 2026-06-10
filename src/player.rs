@@ -283,6 +283,19 @@ pub struct Player {
     gain_persist_task: Arc<parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
+/// Errors from setting an output track gain. Variants are matched by the
+/// gRPC layer to choose status codes, so controllers never classify errors
+/// by message text.
+#[derive(Debug, thiserror::Error)]
+pub enum TrackGainError {
+    #[error("gain must be a finite number, got {0}")]
+    NonFinite(f32),
+    #[error("no audio profile active")]
+    NoAudioProfile,
+    #[error(transparent)]
+    UnknownTrack(#[from] crate::audio::track_gains::UnknownTrackError),
+}
+
 /// Bounds of an active section loop.
 ///
 /// Used together with `section_loop_break: Arc<AtomicBool>` to form a
@@ -687,16 +700,16 @@ impl Player {
     ///
     /// The new gains are persisted to the active profile after a short
     /// debounce so rapid fader moves produce a single disk write.
-    pub fn set_track_gain(&self, track: &str, gain_db: f32) -> Result<f32, Box<dyn Error>> {
+    pub fn set_track_gain(&self, track: &str, gain_db: f32) -> Result<f32, TrackGainError> {
         if !gain_db.is_finite() {
-            return Err(format!("gain must be a finite number, got {}", gain_db).into());
+            return Err(TrackGainError::NonFinite(gain_db));
         }
 
         let (track_gains, hostname) = {
             let hw = self.hardware.read();
             (hw.track_gains.clone(), hw.hostname.clone())
         };
-        let track_gains = track_gains.ok_or("no audio profile active")?;
+        let track_gains = track_gains.ok_or(TrackGainError::NoAudioProfile)?;
         let applied = track_gains.set_db(track, gain_db)?;
 
         // Debounced persistence: replace any pending save with a fresh timer.

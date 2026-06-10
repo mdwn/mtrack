@@ -803,23 +803,11 @@ mod tests {
         let samples = vec![0.5, 0.8]; // 2 frames of 1 channel
         let source = create_test_source(samples, 1, vec![vec!["test".to_string()]]);
 
-        let active_source = ActiveSource {
-            id: 1,
-            source,
-            track_mappings: {
-                let mut map = HashMap::new();
-                map.insert("test".to_string(), vec![1]); // Map to channel 1 only
-                map
-            },
-            channel_mappings: Vec::new(), // Will be precomputed in add_source
-            cached_source_channel_count: 1,
-            is_finished: Arc::new(AtomicBool::new(false)),
-            cancel_handle: CancelHandle::new(),
-            start_at_sample: None,
-            cancel_at_sample: None,
-            gain: Default::default(),
-            gain_envelope: None,
-        };
+        let active_source = make_active_source(1, source, {
+            let mut map = HashMap::new();
+            map.insert("test".to_string(), vec![1]); // Map to channel 1 only
+            map
+        });
 
         mixer.add_source(active_source);
 
@@ -851,43 +839,19 @@ mod tests {
             vec![vec!["ch0".to_string()], vec!["ch1".to_string()]],
         );
 
-        let active_source1 = ActiveSource {
-            id: 1,
-            source: source1,
-            track_mappings: {
-                let mut map = HashMap::new();
-                map.insert("ch0".to_string(), vec![1]);
-                map.insert("ch1".to_string(), vec![2]);
-                map
-            },
-            channel_mappings: Vec::new(), // Will be precomputed in add_source
-            cached_source_channel_count: 2,
-            is_finished: Arc::new(AtomicBool::new(false)),
-            cancel_handle: CancelHandle::new(),
-            start_at_sample: None,
-            cancel_at_sample: None,
-            gain: Default::default(),
-            gain_envelope: None,
-        };
+        let active_source1 = make_active_source(1, source1, {
+            let mut map = HashMap::new();
+            map.insert("ch0".to_string(), vec![1]);
+            map.insert("ch1".to_string(), vec![2]);
+            map
+        });
 
-        let active_source2 = ActiveSource {
-            id: 2,
-            source: source2,
-            track_mappings: {
-                let mut map = HashMap::new();
-                map.insert("ch0".to_string(), vec![1]);
-                map.insert("ch1".to_string(), vec![2]);
-                map
-            },
-            channel_mappings: Vec::new(), // Will be precomputed in add_source
-            cached_source_channel_count: 2,
-            is_finished: Arc::new(AtomicBool::new(false)),
-            cancel_handle: CancelHandle::new(),
-            start_at_sample: None,
-            cancel_at_sample: None,
-            gain: Default::default(),
-            gain_envelope: None,
-        };
+        let active_source2 = make_active_source(2, source2, {
+            let mut map = HashMap::new();
+            map.insert("ch0".to_string(), vec![1]);
+            map.insert("ch1".to_string(), vec![2]);
+            map
+        });
 
         mixer.add_source(active_source1);
         mixer.add_source(active_source2);
@@ -917,24 +881,12 @@ mod tests {
             mappings[1] = vec!["ch1".to_string()];
             mappings
         });
-        let active_source = ActiveSource {
-            id: 1,
-            source,
-            track_mappings: {
-                let mut map = HashMap::new();
-                map.insert("ch0".to_string(), vec![1]); // Map to channel 1
-                map.insert("ch1".to_string(), vec![2]); // Map to channel 2
-                map
-            },
-            channel_mappings: Vec::new(), // Will be precomputed in add_source
-            cached_source_channel_count: 32,
-            is_finished: Arc::new(AtomicBool::new(false)),
-            cancel_handle: CancelHandle::new(),
-            start_at_sample: None,
-            cancel_at_sample: None,
-            gain: Default::default(),
-            gain_envelope: None,
-        };
+        let active_source = make_active_source(1, source, {
+            let mut map = HashMap::new();
+            map.insert("ch0".to_string(), vec![1]); // Map to channel 1
+            map.insert("ch1".to_string(), vec![2]); // Map to channel 2
+            map
+        });
 
         mixer.add_source(active_source);
 
@@ -968,23 +920,13 @@ mod tests {
 
         // start_at_sample=400, cancel_at_sample=200 — cancel comes before start
         let cancel_at = Arc::new(AtomicU64::new(200));
-        let active_source = ActiveSource {
-            id: 1,
-            source,
-            track_mappings: {
-                let mut map = HashMap::new();
-                map.insert("test".to_string(), vec![1]);
-                map
-            },
-            channel_mappings: Vec::new(),
-            cached_source_channel_count: 1,
-            is_finished: Arc::new(AtomicBool::new(false)),
-            cancel_handle: CancelHandle::new(),
-            start_at_sample: Some(400),
-            cancel_at_sample: Some(cancel_at),
-            gain: Default::default(),
-            gain_envelope: None,
-        };
+        let mut active_source = make_active_source(1, source, {
+            let mut map = HashMap::new();
+            map.insert("test".to_string(), vec![1]);
+            map
+        });
+        active_source.start_at_sample = Some(400);
+        active_source.cancel_at_sample = Some(cancel_at);
 
         mixer.add_source(active_source);
 
@@ -1020,23 +962,11 @@ mod tests {
         let samples = vec![0.5, 0.8, 0.3, 0.6]; // 4 frames of 1 channel
         let source = create_test_source(samples, 1, vec![vec!["test".to_string()]]);
 
-        let active_source = ActiveSource {
-            id: 1,
-            source,
-            track_mappings: {
-                let mut map = HashMap::new();
-                map.insert("test".to_string(), vec![1]);
-                map
-            },
-            channel_mappings: Vec::new(),
-            cached_source_channel_count: 1,
-            is_finished: Arc::new(AtomicBool::new(false)),
-            cancel_handle: CancelHandle::new(),
-            start_at_sample: None,
-            cancel_at_sample: None,
-            gain: Default::default(),
-            gain_envelope: None,
-        };
+        let active_source = make_active_source(1, source, {
+            let mut map = HashMap::new();
+            map.insert("test".to_string(), vec![1]);
+            map
+        });
 
         mixer.add_source(active_source);
 
@@ -1062,23 +992,12 @@ mod tests {
         let samples = vec![0.1, 0.2, 0.3, 0.4];
         let source = create_test_source(samples, 1, vec![vec!["test".to_string()]]);
 
-        let active_source = ActiveSource {
-            id: 1,
-            source,
-            track_mappings: {
-                let mut map = HashMap::new();
-                map.insert("test".to_string(), vec![1]);
-                map
-            },
-            channel_mappings: Vec::new(),
-            cached_source_channel_count: 1,
-            is_finished: Arc::new(AtomicBool::new(false)),
-            cancel_handle: CancelHandle::new(),
-            start_at_sample: Some(2), // Start at sample 2
-            cancel_at_sample: None,
-            gain: Default::default(),
-            gain_envelope: None,
-        };
+        let mut active_source = make_active_source(1, source, {
+            let mut map = HashMap::new();
+            map.insert("test".to_string(), vec![1]);
+            map
+        });
+        active_source.start_at_sample = Some(2); // Start at sample 2
 
         mixer.add_source(active_source);
 
@@ -1106,23 +1025,12 @@ mod tests {
         let source = create_test_source(samples, 1, vec![vec!["test".to_string()]]);
 
         let cancel_at = Arc::new(AtomicU64::new(3)); // Cancel at sample 3
-        let active_source = ActiveSource {
-            id: 1,
-            source,
-            track_mappings: {
-                let mut map = HashMap::new();
-                map.insert("test".to_string(), vec![1]);
-                map
-            },
-            channel_mappings: Vec::new(),
-            cached_source_channel_count: 1,
-            is_finished: Arc::new(AtomicBool::new(false)),
-            cancel_handle: CancelHandle::new(),
-            start_at_sample: None,
-            cancel_at_sample: Some(cancel_at),
-            gain: Default::default(),
-            gain_envelope: None,
-        };
+        let mut active_source = make_active_source(1, source, {
+            let mut map = HashMap::new();
+            map.insert("test".to_string(), vec![1]);
+            map
+        });
+        active_source.cancel_at_sample = Some(cancel_at);
 
         mixer.add_source(active_source);
 
@@ -1147,23 +1055,11 @@ mod tests {
         let samples = vec![0.7, 0.9]; // Only 2 frames of 1 channel
         let source = create_test_source(samples, 1, vec![vec!["test".to_string()]]);
 
-        let active_source = ActiveSource {
-            id: 1,
-            source,
-            track_mappings: {
-                let mut map = HashMap::new();
-                map.insert("test".to_string(), vec![1]);
-                map
-            },
-            channel_mappings: Vec::new(),
-            cached_source_channel_count: 1,
-            is_finished: Arc::new(AtomicBool::new(false)),
-            cancel_handle: CancelHandle::new(),
-            start_at_sample: None,
-            cancel_at_sample: None,
-            gain: Default::default(),
-            gain_envelope: None,
-        };
+        let active_source = make_active_source(1, source, {
+            let mut map = HashMap::new();
+            map.insert("test".to_string(), vec![1]);
+            map
+        });
 
         mixer.add_source(active_source);
 
@@ -1203,20 +1099,9 @@ mod tests {
         let mut tm = HashMap::new();
         tm.insert("t".to_string(), vec![1]);
 
-        let old = ActiveSource {
-            id: 1,
-            source: old_source,
-            track_mappings: tm.clone(),
-            channel_mappings: Vec::new(),
-            cached_source_channel_count: 1,
-            is_finished: Arc::new(AtomicBool::new(false)),
-            cancel_handle: CancelHandle::new(),
-            start_at_sample: None,
-            // Pre-allocated cancel slot, set below to the loop boundary.
-            cancel_at_sample: Some(Arc::new(AtomicU64::new(0))),
-            gain: Default::default(),
-            gain_envelope: None,
-        };
+        let mut old = make_active_source(1, old_source, tm.clone());
+        // Pre-allocated cancel slot, set below to the loop boundary.
+        old.cancel_at_sample = Some(Arc::new(AtomicU64::new(0)));
         mixer.add_source(old);
 
         // Incoming source: silence except a distinctive 0.5 impulse at source
@@ -1224,23 +1109,14 @@ mod tests {
         let mut new_samples = vec![0.0f32; 200];
         new_samples[50] = 0.5;
         let new_source = create_test_source(new_samples, 1, vec![vec!["t".to_string()]]);
-        let new = ActiveSource {
-            id: 2,
-            source: new_source,
-            track_mappings: tm,
-            channel_mappings: Vec::new(),
-            cached_source_channel_count: 1,
-            is_finished: Arc::new(AtomicBool::new(false)),
-            cancel_handle: CancelHandle::new(),
-            // Delayed start: first sample plays at the fade_start boundary.
-            start_at_sample: Some(fade_start),
-            cancel_at_sample: Some(Arc::new(AtomicU64::new(0))),
-            gain: Default::default(),
-            gain_envelope: Some(Arc::new(crate::audio::crossfade::GainEnvelope::fade_in(
-                crossfade_samples,
-                crate::audio::crossfade::CrossfadeCurve::Linear,
-            ))),
-        };
+        let mut new = make_active_source(2, new_source, tm);
+        // Delayed start: first sample plays at the fade_start boundary.
+        new.start_at_sample = Some(fade_start);
+        new.cancel_at_sample = Some(Arc::new(AtomicU64::new(0)));
+        new.gain_envelope = Some(Arc::new(crate::audio::crossfade::GainEnvelope::fade_in(
+            crossfade_samples,
+            crate::audio::crossfade::CrossfadeCurve::Linear,
+        )));
         mixer.add_source(new);
 
         // Schedule the outgoing fade-out (anchored at fade_start) and the cut
@@ -1308,37 +1184,25 @@ mod tests {
 
         // Both sources are constant 1.0. A correct linear crossfade of two unity
         // sources is 1.0 at every sample, so any sample reading 0.0 is a gap.
-        let old = ActiveSource {
-            id: 1,
-            source: create_test_source(vec![1.0f32; 1024], 1, vec![vec!["t".to_string()]]),
-            track_mappings: tm.clone(),
-            channel_mappings: Vec::new(),
-            cached_source_channel_count: 1,
-            is_finished: Arc::new(AtomicBool::new(false)),
-            cancel_handle: CancelHandle::new(),
-            start_at_sample: None,
-            cancel_at_sample: Some(Arc::new(AtomicU64::new(0))),
-            gain: Default::default(),
-            gain_envelope: None,
-        };
+        let mut old = make_active_source(
+            1,
+            create_test_source(vec![1.0f32; 1024], 1, vec![vec!["t".to_string()]]),
+            tm.clone(),
+        );
+        old.cancel_at_sample = Some(Arc::new(AtomicU64::new(0)));
         mixer.add_source(old);
 
-        let new = ActiveSource {
-            id: 2,
-            source: create_test_source(vec![1.0f32; 1024], 1, vec![vec!["t".to_string()]]),
-            track_mappings: tm,
-            channel_mappings: Vec::new(),
-            cached_source_channel_count: 1,
-            is_finished: Arc::new(AtomicBool::new(false)),
-            cancel_handle: CancelHandle::new(),
-            start_at_sample: Some(fade_start),
-            cancel_at_sample: Some(Arc::new(AtomicU64::new(0))),
-            gain: Default::default(),
-            gain_envelope: Some(Arc::new(crate::audio::crossfade::GainEnvelope::fade_in(
-                crossfade_samples,
-                crate::audio::crossfade::CrossfadeCurve::Linear,
-            ))),
-        };
+        let mut new = make_active_source(
+            2,
+            create_test_source(vec![1.0f32; 1024], 1, vec![vec!["t".to_string()]]),
+            tm,
+        );
+        new.start_at_sample = Some(fade_start);
+        new.cancel_at_sample = Some(Arc::new(AtomicU64::new(0)));
+        new.gain_envelope = Some(Arc::new(crate::audio::crossfade::GainEnvelope::fade_in(
+            crossfade_samples,
+            crate::audio::crossfade::CrossfadeCurve::Linear,
+        )));
         mixer.add_source(new);
 
         mixer.set_gain_envelope(
@@ -1385,43 +1249,19 @@ mod tests {
             vec![vec!["ch0".to_string()], vec!["ch1".to_string()]],
         );
 
-        let active_source1 = ActiveSource {
-            id: 1,
-            source: source1,
-            track_mappings: {
-                let mut map = HashMap::new();
-                map.insert("ch0".to_string(), vec![1]);
-                map.insert("ch1".to_string(), vec![2]);
-                map
-            },
-            channel_mappings: Vec::new(),
-            cached_source_channel_count: 2,
-            is_finished: Arc::new(AtomicBool::new(false)),
-            cancel_handle: CancelHandle::new(),
-            start_at_sample: None,
-            cancel_at_sample: None,
-            gain: Default::default(),
-            gain_envelope: None,
-        };
+        let active_source1 = make_active_source(1, source1, {
+            let mut map = HashMap::new();
+            map.insert("ch0".to_string(), vec![1]);
+            map.insert("ch1".to_string(), vec![2]);
+            map
+        });
 
-        let active_source2 = ActiveSource {
-            id: 2,
-            source: source2,
-            track_mappings: {
-                let mut map = HashMap::new();
-                map.insert("ch0".to_string(), vec![1]);
-                map.insert("ch1".to_string(), vec![2]);
-                map
-            },
-            channel_mappings: Vec::new(),
-            cached_source_channel_count: 2,
-            is_finished: Arc::new(AtomicBool::new(false)),
-            cancel_handle: CancelHandle::new(),
-            start_at_sample: None,
-            cancel_at_sample: None,
-            gain: Default::default(),
-            gain_envelope: None,
-        };
+        let active_source2 = make_active_source(2, source2, {
+            let mut map = HashMap::new();
+            map.insert("ch0".to_string(), vec![1]);
+            map.insert("ch1".to_string(), vec![2]);
+            map
+        });
 
         mixer.add_source(active_source1);
         mixer.add_source(active_source2);
@@ -1442,23 +1282,13 @@ mod tests {
         let source = create_test_source(samples, 1, vec![vec!["test".to_string()]]);
 
         let cancel_at = Arc::new(AtomicU64::new(6)); // Cancel at sample 6
-        let active_source = ActiveSource {
-            id: 1,
-            source,
-            track_mappings: {
-                let mut map = HashMap::new();
-                map.insert("test".to_string(), vec![1]);
-                map
-            },
-            channel_mappings: Vec::new(),
-            cached_source_channel_count: 1,
-            is_finished: Arc::new(AtomicBool::new(false)),
-            cancel_handle: CancelHandle::new(),
-            start_at_sample: Some(2), // Start at sample 2
-            cancel_at_sample: Some(cancel_at),
-            gain: Default::default(),
-            gain_envelope: None,
-        };
+        let mut active_source = make_active_source(1, source, {
+            let mut map = HashMap::new();
+            map.insert("test".to_string(), vec![1]);
+            map
+        });
+        active_source.start_at_sample = Some(2); // Start at sample 2
+        active_source.cancel_at_sample = Some(cancel_at);
 
         mixer.add_source(active_source);
 
@@ -1556,23 +1386,12 @@ mod tests {
             Box::new(UnderrunSimSource::new(inner, 1));
 
         let is_finished = Arc::new(AtomicBool::new(false));
-        let active_source = ActiveSource {
-            id: 1,
-            source,
-            track_mappings: {
-                let mut map = HashMap::new();
-                map.insert("test".to_string(), vec![1]);
-                map
-            },
-            channel_mappings: Vec::new(),
-            cached_source_channel_count: 1,
-            is_finished: is_finished.clone(),
-            cancel_handle: CancelHandle::new(),
-            start_at_sample: None,
-            cancel_at_sample: None,
-            gain: Default::default(),
-            gain_envelope: None,
-        };
+        let mut active_source = make_active_source(1, source, {
+            let mut map = HashMap::new();
+            map.insert("test".to_string(), vec![1]);
+            map
+        });
+        active_source.is_finished = is_finished.clone();
 
         mixer.add_source(active_source);
 
@@ -1617,23 +1436,11 @@ mod tests {
         let source: Box<dyn ChannelMappedSampleSource + Send + Sync> =
             Box::new(UnderrunSimSource::new(inner, 0));
 
-        let active_source = ActiveSource {
-            id: 1,
-            source,
-            track_mappings: {
-                let mut map = HashMap::new();
-                map.insert("test".to_string(), vec![1]);
-                map
-            },
-            channel_mappings: Vec::new(),
-            cached_source_channel_count: 1,
-            is_finished: Arc::new(AtomicBool::new(false)),
-            cancel_handle: CancelHandle::new(),
-            start_at_sample: None,
-            cancel_at_sample: None,
-            gain: Default::default(),
-            gain_envelope: None,
-        };
+        let active_source = make_active_source(1, source, {
+            let mut map = HashMap::new();
+            map.insert("test".to_string(), vec![1]);
+            map
+        });
 
         mixer.add_source(active_source);
 

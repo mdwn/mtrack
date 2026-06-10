@@ -30,6 +30,7 @@ use mtrack::audio::mixer::{ActiveSource, AudioMixer};
 use mtrack::audio::sample_source::{
     ChannelMappedSampleSource, ChannelMappedSource, MemorySampleSource,
 };
+use mtrack::audio::track_gains::TrackGains;
 use mtrack::playsync::CancelHandle;
 
 /// Frames per simulated device callback.
@@ -76,13 +77,62 @@ fn build_source(spec: &SourceSpec, frames: usize) -> ActiveSource {
     }
 }
 
-fn build_mixer(specs: &[SourceSpec], output_channels: u16) -> AudioMixer {
+/// How track gains are exercised by a benchmark scenario.
+#[derive(Clone, Copy)]
+enum GainMode {
+    /// No TrackGains installed: every edge uses the unity slot.
+    None,
+    /// TrackGains installed with non-unity constant values: measures the
+    /// per-batch cached_gain refresh + fast-path inner loop.
+    Constant,
+    /// Gain targets changed after sources are added so every batch ramps:
+    /// measures the per-frame ramp path.
+    Ramping,
+}
+
+impl GainMode {
+    fn suffix(self) -> &'static str {
+        match self {
+            GainMode::None => "",
+            GainMode::Constant => "_gains",
+            GainMode::Ramping => "_ramp",
+        }
+    }
+}
+
+fn build_mixer(specs: &[SourceSpec], output_channels: u16, mode: GainMode) -> AudioMixer {
     let mixer = AudioMixer::new(output_channels, SAMPLE_RATE);
+
+    let track_mappings: HashMap<String, Vec<u16>> = specs
+        .iter()
+        .flat_map(|spec| spec.mappings.iter().cloned())
+        .collect();
+    let gains = match mode {
+        GainMode::None => None,
+        GainMode::Constant | GainMode::Ramping => {
+            let tg = Arc::new(TrackGains::from_config(&track_mappings, None));
+            for name in track_mappings.keys() {
+                tg.set_db(name, -6.0).unwrap();
+            }
+            mixer.set_track_gains(tg.clone());
+            Some(tg)
+        }
+    };
+
     for (id, spec) in specs.iter().enumerate() {
         let mut source = build_source(spec, BUF_FRAMES);
         source.id = id as u64;
         mixer.add_source(source);
     }
+
+    // Sources were added with their gain state initialized at -6 dB; moving
+    // the targets afterwards forces every measured batch to ramp.
+    if let (GainMode::Ramping, Some(tg)) = (mode, gains) {
+        for name in track_mappings.keys() {
+            tg.set_db(name, 3.0).unwrap();
+        }
+    }
+
     mixer
 }
 
@@ -120,20 +170,22 @@ fn specs_32_mono_32ch() -> Vec<SourceSpec> {
 fn bench_scenario(c: &mut Criterion, name: &str, specs: Vec<SourceSpec>, output_channels: u16) {
     let mut group = c.benchmark_group("mixer");
     group.throughput(Throughput::Elements(BUF_FRAMES as u64));
-    group.bench_function(name, |b| {
-        b.iter_batched(
-            || {
-                let mixer = build_mixer(&specs, output_channels);
-                let output = vec![0.0f32; BUF_FRAMES * output_channels as usize];
-                (mixer, output)
-            },
-            |(mixer, mut output)| {
-                mixer.process_into_output(&mut output, BUF_FRAMES);
-                output
-            },
-            BatchSize::SmallInput,
-        );
-    });
+    for mode in [GainMode::None, GainMode::Constant, GainMode::Ramping] {
+        group.bench_function(format!("{name}{}", mode.suffix()), |b| {
+            b.iter_batched(
+                || {
+                    let mixer = build_mixer(&specs, output_channels, mode);
+                    let output = vec![0.0f32; BUF_FRAMES * output_channels as usize];
+                    (mixer, output)
+                },
+                |(mixer, mut output)| {
+                    mixer.process_into_output(&mut output, BUF_FRAMES);
+                    output
+                },
+                BatchSize::SmallInput,
+            );
+        });
+    }
     group.finish();
 }
 
