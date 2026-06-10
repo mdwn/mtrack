@@ -31,6 +31,10 @@ use super::trigger::TriggerConfig;
 pub struct AudioConfig {
     #[serde(flatten)]
     audio: Audio,
+    /// Output channel routing per track. May be empty for a profile that is
+    /// still being set up; playback requires at least one mapping and fails
+    /// with a descriptive error otherwise.
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
     track_mappings: IndexMap<String, Vec<u16>>,
     /// Per-output-track gain in dB. Tracks without an entry play at unity.
     #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
@@ -348,6 +352,59 @@ mod tests {
         // Empty map is omitted on serialize to keep configs clean.
         let serialized = crate::util::to_yaml_string(&profile).unwrap();
         assert!(!serialized.contains("track_gains"));
+    }
+
+    #[test]
+    fn test_track_mappings_absent_and_omitted() {
+        // A profile mid-setup may have an audio device but no mappings yet;
+        // this must parse rather than fail with "missing field track_mappings".
+        let yaml = r#"
+            audio:
+              device: mock-device
+        "#;
+        let profile: Profile = Config::builder()
+            .add_source(File::from_str(yaml, FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+
+        let audio_config = profile.audio_config().unwrap();
+        assert!(audio_config.track_mappings().is_empty());
+
+        let mut errors = Vec::new();
+        audio_config.validate(&mut errors);
+        assert!(
+            errors.is_empty(),
+            "empty mappings should validate: {errors:?}"
+        );
+
+        // Empty map is omitted on serialize to keep configs clean.
+        let serialized = crate::util::to_yaml_string(&profile).unwrap();
+        assert!(!serialized.contains("track_mappings"));
+    }
+
+    #[test]
+    fn test_missing_device_parses_and_fails_validation() {
+        // A missing device must surface as a readable validation error,
+        // not a serde "missing field" parse failure.
+        let yaml = r#"
+            audio:
+              track_mappings:
+                click: [1]
+        "#;
+        let profile: Profile = Config::builder()
+            .add_source(File::from_str(yaml, FileFormat::Yaml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+
+        let errors = profile.validate().unwrap_err();
+        assert!(
+            errors.iter().any(|e| e.contains("audio device")),
+            "expected audio device error, got {errors:?}"
+        );
     }
 
     #[test]

@@ -50,7 +50,9 @@ pub enum StreamBufferSize {
 /// A YAML representation of the audio configuration.
 #[derive(Deserialize, Serialize, Clone)]
 pub struct Audio {
-    /// The audio device.
+    /// The audio device. Defaults to empty rather than failing
+    /// deserialization so validate() can report a readable error.
+    #[serde(default)]
     device: String,
 
     /// Controls how long to wait before playback of an audio file starts.

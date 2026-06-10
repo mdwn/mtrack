@@ -64,6 +64,22 @@ export async function del(path: string): Promise<Response> {
   return request("DELETE", path);
 }
 
+// Builds an Error from a failed response, preferring the body's single
+// `error` string, then a joined `errors` validation list, then the fallback
+// message with the HTTP status appended.
+export async function apiError(
+  res: Response,
+  fallback: string,
+): Promise<Error> {
+  const body: { error?: string; errors?: string[] } = await res
+    .json()
+    .catch(() => ({}));
+  const msg =
+    body.error ||
+    (Array.isArray(body.errors) ? body.errors.join("; ") : undefined);
+  return new Error(msg || `${fallback}: ${res.status}`);
+}
+
 export async function putYaml(path: string, body: string): Promise<Response> {
   return fetch(`${BASE}${path}`, {
     method: "PUT",

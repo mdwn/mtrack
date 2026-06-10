@@ -183,6 +183,10 @@ pub(super) async fn put_profile(
             .into_response()
     })?;
 
+    if let Err(errors) = profile.validate() {
+        return Err((StatusCode::BAD_REQUEST, Json(json!({"errors": errors}))).into_response());
+    }
+
     let yaml = crate::util::to_yaml_string(&profile).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
