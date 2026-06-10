@@ -231,16 +231,9 @@ impl Player {
     /// Directory profiles replace inline profiles entirely. If the directory is
     /// empty, inline profiles are kept as a fallback.
     fn load_profiles_dir(&mut self, config_path: &Path) -> Result<(), ConfigError> {
-        let profiles_dir_str = match &self.profiles_dir {
-            Some(dir) => dir.clone(),
+        let dir_path = match self.resolved_profiles_dir(config_path) {
+            Some(dir) => dir,
             None => return Ok(()),
-        };
-
-        let dir_path = if Path::new(&profiles_dir_str).is_absolute() {
-            PathBuf::from(&profiles_dir_str)
-        } else {
-            let config_dir = config_path.parent().unwrap_or(Path::new("."));
-            config_dir.join(&profiles_dir_str)
         };
 
         // codeql[rust/path-injection] profiles_dir comes from the local config file on disk.
@@ -437,6 +430,30 @@ impl Player {
                 .collect(),
             None => vec![],
         }
+    }
+
+    /// Resolves the configured profiles directory against the config file
+    /// location, if `profiles_dir` is set.
+    pub fn resolved_profiles_dir(&self, config_path: &Path) -> Option<PathBuf> {
+        let dir = self.profiles_dir.as_ref()?;
+        Some(if Path::new(dir).is_absolute() {
+            PathBuf::from(dir)
+        } else {
+            let config_dir = config_path.parent().unwrap_or(Path::new("."));
+            config_dir.join(dir)
+        })
+    }
+
+    /// Returns a mutable reference to the active profile for the given
+    /// hostname: the first profile whose hostname matches or that has no
+    /// hostname constraint (same selection rule as `profiles`).
+    pub fn active_profile_mut(&mut self, hostname: &str) -> Option<&mut Profile> {
+        self.profiles.as_mut().and_then(|profiles| {
+            profiles.iter_mut().find(|p| match p.hostname() {
+                Some(h) => h == hostname,
+                None => true,
+            })
+        })
     }
 
     /// Returns all profiles without hostname filtering (for verify command).

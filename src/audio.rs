@@ -31,6 +31,7 @@ pub mod mixer;
 pub mod mock;
 pub mod sample_source;
 pub mod tempo_guess;
+pub mod track_gains;
 
 // Re-export the format types for backward compatibility
 pub use context::PlaybackContext;

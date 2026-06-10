@@ -53,6 +53,9 @@ fn default_osc_stop_section_loop() -> String {
 fn default_osc_loop_section() -> String {
     "/mtrack/loop_section".to_string()
 }
+fn default_osc_track_gain() -> String {
+    "/mtrack/track/*/gain".to_string()
+}
 fn default_osc_status() -> String {
     "/mtrack/status".to_string()
 }
@@ -339,6 +342,11 @@ pub struct OscController {
     /// The OSC address to loop a specific section by name (takes a string arg).
     #[serde(default = "default_osc_loop_section")]
     loop_section: String,
+    /// The OSC address pattern to set an output track's gain in dB (takes a
+    /// float arg). The `*` segment is the track name; the same pattern (with
+    /// the name substituted) is used for gain feedback broadcasts.
+    #[serde(default = "default_osc_track_gain")]
+    track_gain: String,
     /// The OSC address to broadcast to display the current player status.
     #[serde(default = "default_osc_status")]
     status: String,
@@ -372,6 +380,7 @@ impl Default for OscController {
             section_ack: default_osc_section_ack(),
             stop_section_loop: default_osc_stop_section_loop(),
             loop_section: default_osc_loop_section(),
+            track_gain: default_osc_track_gain(),
             status: default_osc_status(),
             playlist_current: default_osc_playlist_current(),
             playlist_current_song: default_osc_playlist_current_song(),
@@ -444,6 +453,11 @@ impl OscController {
     /// Gets the loop section OSC address.
     pub fn loop_section(&self) -> &str {
         &self.loop_section
+    }
+
+    /// Gets the OSC address pattern for setting an output track's gain.
+    pub fn track_gain(&self) -> &str {
+        &self.track_gain
     }
 
     /// Gets the player status.

@@ -145,9 +145,22 @@ impl Player {
                     None => ClockSource::Wall,
                 };
 
+                // Build the shared track gains from the profile config and
+                // install them into the device mixer so the audio callback
+                // can read them lock-free. Rebuilt on every (re)load from
+                // the persisted config, so gains survive restarts.
+                let track_gains = Arc::new(crate::audio::track_gains::TrackGains::from_config(
+                    &mappings,
+                    profile.audio_config().map(|ac| ac.track_gains()),
+                ));
+                if let Some(mixer) = device.mixer() {
+                    mixer.set_track_gains(track_gains.clone());
+                }
+
                 let mut hw = self.hardware.write();
                 hw.device = Some(device.clone());
                 hw.mappings = Some(Arc::new(mappings.clone()));
+                hw.track_gains = Some(track_gains);
                 hw.clock_source = clock_source;
                 (Some(device), Some(mappings), Some(resolved_audio))
             }
@@ -335,6 +348,7 @@ impl Player {
         *self.hardware.write() = HardwareState {
             device: None,
             mappings: None,
+            track_gains: None,
             midi_device: None,
             dmx_engine: None,
             sample_engine: None,

@@ -15,6 +15,8 @@
 <script lang="ts">
   import { playbackStore, waveformStore } from "../../lib/ws/stores";
   import type { TrackInfo } from "../../lib/ws/stores";
+  import GainSlider from "../GainSlider.svelte";
+  import { sendTrackGain, sendTrackGainThrottled } from "../../lib/gain";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
 
@@ -119,23 +121,31 @@
     <div class="tracks-card__list">
       {#each $playbackStore.tracks as track, i (`${i}:${track.name}`)}
         <div class="tracks-card__row">
-          <div class="tracks-card__info">
-            <div class="tracks-card__name">{track.name}</div>
-            <div
-              class="mono tracks-card__channels"
-              class:tracks-card__channels--unmapped={isUnmapped(track)}
-            >
-              {formatChannels(track)}
+          <div class="tracks-card__main">
+            <div class="tracks-card__info">
+              <div class="tracks-card__name">{track.name}</div>
+              <div
+                class="mono tracks-card__channels"
+                class:tracks-card__channels--unmapped={isUnmapped(track)}
+              >
+                {formatChannels(track)}
+              </div>
             </div>
+            <!-- svelte-ignore a11y_no_interactive_element_to_noninteractive_role -->
+            <canvas
+              class="tracks-card__waveform"
+              bind:this={canvasRefs[track.name]}
+              height={WAVEFORM_HEIGHT}
+              role="img"
+              aria-label="Waveform for {track.name}"
+            ></canvas>
           </div>
-          <!-- svelte-ignore a11y_no_interactive_element_to_noninteractive_role -->
-          <canvas
-            class="tracks-card__waveform"
-            bind:this={canvasRefs[track.name]}
-            height={WAVEFORM_HEIGHT}
-            role="img"
-            aria-label="Waveform for {track.name}"
-          ></canvas>
+          <GainSlider
+            value={track.gain_db ?? 0}
+            label={$t("tracks.gainFor", { values: { name: track.name } })}
+            oninput={(db) => sendTrackGainThrottled(track.name, db)}
+            oncommit={(db) => sendTrackGain(track.name, db)}
+          />
         </div>
       {/each}
     </div>
@@ -174,13 +184,18 @@
   }
   .tracks-card__row {
     display: flex;
-    align-items: center;
-    gap: 12px;
+    flex-direction: column;
+    gap: 4px;
     padding: 12px 20px;
     border-bottom: 1px solid var(--card-border);
   }
   .tracks-card__row:last-child {
     border-bottom: none;
+  }
+  .tracks-card__main {
+    display: flex;
+    align-items: center;
+    gap: 12px;
   }
   .tracks-card__info {
     flex: 0 0 132px;

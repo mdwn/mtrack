@@ -191,9 +191,9 @@ export const PLAYBACK_STATE = {
   playlist_position: 0,
   playlist_songs: ["Test Song Alpha", "Test Song Beta"],
   tracks: [
-    { name: "kick", output_channels: [0, 1] },
-    { name: "snare", output_channels: [2, 3] },
-    { name: "bass", output_channels: [4, 5] },
+    { name: "kick", output_channels: [0, 1], gain_db: 0 },
+    { name: "snare", output_channels: [2, 3], gain_db: -6 },
+    { name: "bass", output_channels: [4, 5], gain_db: -60 },
   ],
   available_playlists: ["all_songs", "setlist"],
   persisted_playlist_name: "setlist",

@@ -58,6 +58,7 @@ enum OscAction {
     SectionAck,
     StopSectionLoop,
     LoopSection,
+    SetTrackGain,
     Unrecognized,
 }
 
@@ -94,6 +95,11 @@ pub(super) struct OscEvents {
     stop_section_loop: Matcher,
     /// The OSC address to loop a specific section by name.
     loop_section: Matcher,
+    /// The OSC address pattern to set an output track's gain in dB.
+    track_gain: Matcher,
+    /// The raw track gain pattern; the `*` segment carries the track name and
+    /// is substituted for gain feedback broadcasts.
+    track_gain_pattern: String,
     /// The OSC address to use to broadcast the player status.
     status: String,
     /// The OSC address to use to broadcast the current playlist.
@@ -132,6 +138,8 @@ impl Driver {
                 section_ack: Matcher::new(config.section_ack())?,
                 stop_section_loop: Matcher::new(config.stop_section_loop())?,
                 loop_section: Matcher::new(config.loop_section())?,
+                track_gain: Matcher::new(config.track_gain())?,
+                track_gain_pattern: config.track_gain().to_string(),
                 status: config.status().to_string(),
                 playlist_current: config.playlist_current().to_string(),
                 playlist_current_song: config.playlist_current_song().to_string(),
@@ -305,13 +313,27 @@ impl Driver {
         );
         let playlist_songs: Vec<String> = playlist.songs().to_vec();
 
-        let packets = build_broadcast_packets(
+        let mut packets = build_broadcast_packets(
             osc_events,
             song.name(),
             status_string,
             &duration_string,
             &playlist_songs,
         );
+
+        // Per-track gain feedback (motorized faders / TouchOSC). Tracks whose
+        // names can't form a valid OSC address segment are skipped.
+        if let Some(gains) = player.get_track_gains() {
+            for (name, gain_db) in gains {
+                if !osc_addressable(&name) {
+                    continue;
+                }
+                packets.push(OscPacket::Message(OscMessage {
+                    addr: osc_events.track_gain_pattern.replacen('*', &name, 1),
+                    args: vec![OscType::Float(gain_db)],
+                }));
+            }
+        }
 
         for packet in packets {
             tx_sender.send(packet).await?;
@@ -401,6 +423,30 @@ impl Driver {
                     error!("Failed to loop section '{}': {}", section_name, e);
                 }
             }
+            OscAction::SetTrackGain => {
+                let track = extract_track_name(&osc_events.track_gain_pattern, &msg.addr);
+                // Accept any numeric OSC type as dB for controller compatibility.
+                let gain_db = msg.args.first().and_then(|arg| match arg {
+                    OscType::Float(f) => Some(*f),
+                    OscType::Double(d) => Some(*d as f32),
+                    OscType::Int(i) => Some(*i as f32),
+                    _ => None,
+                });
+                match (track, gain_db) {
+                    (Some(track), Some(gain_db)) => {
+                        if let Err(e) = player.set_track_gain(&track, gain_db) {
+                            error!("Failed to set gain for track '{}': {}", track, e);
+                        }
+                    }
+                    (None, _) => error!(
+                        addr = msg.addr,
+                        "track_gain OSC message: could not extract track name"
+                    ),
+                    (_, None) => {
+                        error!("track_gain OSC message missing numeric gain argument")
+                    }
+                }
+            }
             OscAction::Unrecognized => return Ok(false),
         }
         Ok(true)
@@ -430,9 +476,47 @@ fn classify_message(osc_events: &OscEvents, addr: &str) -> Result<OscAction, Box
         Ok(OscAction::StopSectionLoop)
     } else if osc_events.loop_section.match_address(&address) {
         Ok(OscAction::LoopSection)
+    } else if osc_events.track_gain.match_address(&address) {
+        Ok(OscAction::SetTrackGain)
     } else {
         Ok(OscAction::Unrecognized)
     }
+}
+
+/// Extracts the track name from an OSC address by structurally diffing it
+/// against the configured pattern: the single wildcard segment in the
+/// pattern carries the track name. Returns None if the shapes don't line up
+/// or the pattern has no (or more than one) wildcard segment.
+///
+/// Note: track names containing `/`, spaces, or OSC pattern metacharacters
+/// cannot be addressed this way.
+fn extract_track_name(pattern: &str, addr: &str) -> Option<String> {
+    let pattern_segments: Vec<&str> = pattern.split('/').collect();
+    let addr_segments: Vec<&str> = addr.split('/').collect();
+    if pattern_segments.len() != addr_segments.len() {
+        return None;
+    }
+
+    let mut name = None;
+    for (pattern_segment, addr_segment) in pattern_segments.iter().zip(addr_segments.iter()) {
+        if pattern_segment.contains(['*', '?', '[', '{']) {
+            if name.is_some() {
+                return None;
+            }
+            name = Some(addr_segment.to_string());
+        } else if pattern_segment != addr_segment {
+            return None;
+        }
+    }
+    name
+}
+
+/// Whether a track name can appear as a single OSC address segment.
+fn osc_addressable(name: &str) -> bool {
+    !name.is_empty()
+        && !name.chars().any(|c| {
+            c.is_whitespace() || matches!(c, '/' | '#' | '*' | ',' | '?' | '[' | ']' | '{' | '}')
+        })
 }
 
 /// Formats a playlist's song list with 1-based numbering.
@@ -951,6 +1035,8 @@ mod test {
             section_ack: Matcher::new(config.section_ack()).unwrap(),
             stop_section_loop: Matcher::new(config.stop_section_loop()).unwrap(),
             loop_section: Matcher::new(config.loop_section()).unwrap(),
+            track_gain: Matcher::new(config.track_gain()).unwrap(),
+            track_gain_pattern: config.track_gain().to_string(),
             status: config.status().to_string(),
             playlist_current: config.playlist_current().to_string(),
             playlist_current_song: config.playlist_current_song().to_string(),
@@ -1038,6 +1124,105 @@ mod test {
             let events = make_default_osc_events();
             // OSC addresses must start with /
             assert!(classify_message(&events, "no_leading_slash").is_err());
+        }
+
+        #[test]
+        fn recognizes_track_gain() {
+            let events = make_default_osc_events();
+            assert_eq!(
+                classify_message(&events, "/mtrack/track/click/gain").unwrap(),
+                OscAction::SetTrackGain
+            );
+            // Missing track segment doesn't match.
+            assert_eq!(
+                classify_message(&events, "/mtrack/track/gain").unwrap(),
+                OscAction::Unrecognized
+            );
+        }
+    }
+
+    mod track_gain_tests {
+        use super::*;
+        use crate::controller::osc::{extract_track_name, osc_addressable};
+
+        #[test]
+        fn extract_track_name_basics() {
+            let pattern = "/mtrack/track/*/gain";
+            assert_eq!(
+                extract_track_name(pattern, "/mtrack/track/click/gain").as_deref(),
+                Some("click")
+            );
+            assert_eq!(extract_track_name(pattern, "/mtrack/track/gain"), None);
+            assert_eq!(extract_track_name(pattern, "/other/track/click/gain"), None);
+            // Custom pattern with the wildcard at the end.
+            assert_eq!(
+                extract_track_name("/gain/*", "/gain/keys").as_deref(),
+                Some("keys")
+            );
+        }
+
+        #[test]
+        fn osc_addressable_names() {
+            assert!(osc_addressable("click"));
+            assert!(osc_addressable("backing-track-l"));
+            assert!(!osc_addressable("lead vocal"));
+            assert!(!osc_addressable("a/b"));
+            assert!(!osc_addressable("what?"));
+            assert!(!osc_addressable(""));
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn handle_message_sets_gain() -> Result<(), Box<dyn Error>> {
+            let songs = songs::get_all_songs(Path::new("assets/songs"))?;
+            let pl = Playlist::new(
+                "playlist",
+                &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
+                songs.clone(),
+            )?;
+            let mut playlists = HashMap::new();
+            playlists.insert(
+                "all_songs".to_string(),
+                playlist::from_songs(songs.clone())?,
+            );
+            playlists.insert("playlist".to_string(), pl);
+            let player = Player::new(
+                playlists,
+                "playlist".to_string(),
+                &config::Player::new(
+                    vec![],
+                    Some(config::Audio::new("mock-device")),
+                    None,
+                    None,
+                    HashMap::from([("click".to_string(), vec![1])]),
+                    "assets/songs",
+                ),
+                None,
+            )?;
+            player.await_hardware_ready().await;
+
+            let events = Arc::new(make_default_osc_events());
+            let msg = OscMessage {
+                addr: "/mtrack/track/click/gain".to_string(),
+                args: vec![OscType::Float(-6.0)],
+            };
+            let recognized = Driver::handle_message(&player, &events, &msg).await?;
+            assert!(recognized);
+
+            let gains: HashMap<String, f32> =
+                player.get_track_gains().unwrap().into_iter().collect();
+            assert_eq!(gains["click"], -6.0);
+
+            // Integer args are accepted too.
+            let msg = OscMessage {
+                addr: "/mtrack/track/click/gain".to_string(),
+                args: vec![OscType::Int(3)],
+            };
+            Driver::handle_message(&player, &events, &msg).await?;
+            let gains: HashMap<String, f32> =
+                player.get_track_gains().unwrap().into_iter().collect();
+            assert_eq!(gains["click"], 3.0);
+
+            Ok(())
         }
     }
 

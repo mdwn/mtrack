@@ -13,6 +13,7 @@
 //
 // Core audio mixing logic that can be used by both CPAL and test implementations
 use crate::audio::sample_source::ChannelMappedSampleSource;
+use crate::audio::track_gains::TrackGains;
 use parking_lot::{Mutex, RwLock};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -43,6 +44,9 @@ pub struct AudioMixer {
     sample_rate: u32,
     /// Global sample counter for scheduling (increments each frame processed)
     sample_counter: Arc<AtomicU64>,
+    /// Shared per-output-track gains. Read once per callback (no per-sample
+    /// atomics); `None` until installed at hardware init (e.g. mock devices).
+    track_gains: Arc<RwLock<Option<Arc<TrackGains>>>>,
     /// Performance monitoring (test only)
     #[cfg(test)]
     frame_count: Arc<AtomicUsize>,
@@ -50,6 +54,40 @@ pub struct AudioMixer {
     total_frame_time: Arc<AtomicUsize>, // in microseconds
     #[cfg(test)]
     max_frame_time: Arc<AtomicUsize>, // in microseconds
+}
+
+/// One precomputed (track label -> output channel) mapping edge for a source
+/// channel. Gain is applied per edge: a source channel mapped through two
+/// labels gets one edge per (label, output channel) pair, each scaled by its
+/// own track gain.
+#[derive(Clone, Copy, Debug)]
+pub struct OutputMapping {
+    /// 0-indexed output channel.
+    pub output_index: usize,
+    /// Index into the source's local gain table (`SourceGain`). Entry 0 is a
+    /// synthetic unity slot used for edges with no track gain.
+    pub gain_idx: u32,
+    /// Combined (envelope constant x track) gain folded in once per batch by
+    /// the mixer's constant fast path; not meaningful while a fade or gain
+    /// ramp is active.
+    pub cached_gain: f32,
+}
+
+/// Per-source track gain state, owned by the audio callback.
+///
+/// `slot_ids`, `cur`, and `inc` are parallel arrays indexed by
+/// `OutputMapping::gain_idx`. Entry 0 is a synthetic unity slot
+/// (`cur[0] == 1.0`, `inc[0] == 0.0`, `slot_ids[0]` unused). `cur` ramps
+/// linearly toward the target read from `TrackGains` once per callback batch,
+/// avoiding both per-sample atomic loads and zipper noise.
+#[derive(Default)]
+pub struct SourceGain {
+    /// Local gain table index -> global `TrackGains` slot.
+    pub slot_ids: Vec<usize>,
+    /// Current linear gain per table entry.
+    pub cur: Vec<f32>,
+    /// Per-frame linear gain increment for the current batch.
+    pub inc: Vec<f32>,
 }
 
 /// Represents an active audio source in the mixer
@@ -60,9 +98,11 @@ pub struct ActiveSource {
     pub source: Box<dyn ChannelMappedSampleSource + Send + Sync>,
     /// Track mappings for this source (needed for precomputation)
     pub track_mappings: HashMap<String, Vec<u16>>,
-    /// Precomputed channel mappings: source_channel_index -> Vec<output_channel_index>
+    /// Precomputed channel mappings: source_channel_index -> mapping edges.
     /// This eliminates HashMap lookups during mixing for better performance
-    pub channel_mappings: Vec<Vec<usize>>,
+    pub channel_mappings: Vec<Vec<OutputMapping>>,
+    /// Per-track gain state for this source (filled by `add_source`).
+    pub gain: SourceGain,
     /// Cached source channel count (avoids repeated trait calls)
     pub cached_source_channel_count: u16,
     /// Whether this source has finished playing
@@ -90,6 +130,7 @@ impl AudioMixer {
             num_channels,
             sample_rate,
             sample_counter: Arc::new(AtomicU64::new(0)),
+            track_gains: Arc::new(RwLock::new(None)),
             #[cfg(test)]
             frame_count: Arc::new(AtomicUsize::new(0)),
             #[cfg(test)]
@@ -109,35 +150,72 @@ impl AudioMixer {
         self.sample_counter.clone()
     }
 
-    /// Precomputes channel mappings for optimal performance during mixing
+    /// Installs the shared per-output-track gains. Applies to sources added
+    /// afterwards; sources already playing pick up gain changes (not new
+    /// slot tables) on their next callback.
+    pub fn set_track_gains(&self, track_gains: Arc<TrackGains>) {
+        *self.track_gains.write() = Some(track_gains);
+    }
+
+    /// Precomputes channel mappings for optimal performance during mixing.
+    ///
+    /// Also builds the source's local gain table: one entry per distinct
+    /// track gain slot referenced by this source's labels, with entry 0 as
+    /// the synthetic unity slot. The current gain is initialized from the
+    /// target so sources start at the set gain with no ramp (this is how
+    /// gains set while stopped apply to the next song).
     fn precompute_channel_mappings(
         source: &dyn ChannelMappedSampleSource,
         track_mappings: &HashMap<String, Vec<u16>>,
-    ) -> Vec<Vec<usize>> {
+        track_gains: Option<&TrackGains>,
+    ) -> (Vec<Vec<OutputMapping>>, SourceGain) {
         let source_channel_count = source.source_channel_count() as usize;
         let mut channel_mappings = Vec::with_capacity(source_channel_count);
+        let mut gain = SourceGain {
+            slot_ids: vec![usize::MAX],
+            cur: vec![1.0],
+            inc: vec![0.0],
+        };
+        // Dedup: global TrackGains slot -> local gain table index.
+        let mut local_by_slot: HashMap<usize, u32> = HashMap::new();
 
         for source_channel in 0..source_channel_count {
-            let mut output_channels = Vec::new();
+            let mut output_mappings = Vec::new();
 
             // Get the labels for this source channel
             if let Some(labels) = source.channel_mappings().get(source_channel) {
                 // For each label, find the corresponding output channels
                 for label in labels {
                     if let Some(track_channels) = track_mappings.get(label) {
+                        let gain_idx = match track_gains.and_then(|tg| tg.slot(label)) {
+                            Some(slot) => *local_by_slot.entry(slot).or_insert_with(|| {
+                                let idx = gain.slot_ids.len() as u32;
+                                let target =
+                                    track_gains.expect("slot implies track_gains").linear(slot);
+                                gain.slot_ids.push(slot);
+                                gain.cur.push(target);
+                                gain.inc.push(0.0);
+                                idx
+                            }),
+                            None => 0,
+                        };
                         // Convert 1-indexed track channels to 0-indexed output indices
                         for &track_channel in track_channels {
                             let output_index = (track_channel - 1) as usize;
-                            output_channels.push(output_index);
+                            output_mappings.push(OutputMapping {
+                                output_index,
+                                gain_idx,
+                                cached_gain: gain.cur[gain_idx as usize],
+                            });
                         }
                     }
                 }
             }
 
-            channel_mappings.push(output_channels);
+            channel_mappings.push(output_mappings);
         }
 
-        channel_mappings
+        (channel_mappings, gain)
     }
 
     /// Adds a new audio source to the mixer
@@ -147,9 +225,14 @@ impl AudioMixer {
             source.cached_source_channel_count = source.source.source_channel_count();
         }
         // Precompute channel mappings for optimal performance
-        let channel_mappings =
-            Self::precompute_channel_mappings(source.source.as_ref(), &source.track_mappings);
+        let track_gains = self.track_gains.read().clone();
+        let (channel_mappings, gain) = Self::precompute_channel_mappings(
+            source.source.as_ref(),
+            &source.track_mappings,
+            track_gains.as_deref(),
+        );
         source.channel_mappings = channel_mappings;
+        source.gain = gain;
 
         let mut sources = self.active_sources.write();
         sources.push(Arc::new(Mutex::new(source)));
@@ -249,6 +332,15 @@ impl AudioMixer {
                 source_frame_buffer.resize(source_channel_count, 0.0);
             }
 
+            // Test path: apply track gain targets directly (no ramping) so
+            // frame-level assertions stay simple.
+            if let Some(tg) = self.track_gains.read().as_deref() {
+                for i in 1..active_source.gain.slot_ids.len() {
+                    let target = tg.linear(active_source.gain.slot_ids[i]);
+                    active_source.gain.cur[i] = target;
+                }
+            }
+
             match active_source
                 .source
                 .next_frame(&mut source_frame_buffer[..source_channel_count])
@@ -260,14 +352,15 @@ impl AudioMixer {
                         .enumerate()
                     {
                         // Use precomputed channel mappings for optimal performance
-                        if let Some(output_channels) =
+                        if let Some(output_mappings) =
                             active_source.channel_mappings.get(source_channel)
                         {
                             // Map this sample to all precomputed output channels
-                            for &output_index in output_channels {
-                                if output_index < frame.len() {
+                            for m in output_mappings {
+                                if m.output_index < frame.len() {
                                     // Mix: add new sample to existing
-                                    frame[output_index] += sample;
+                                    frame[m.output_index] +=
+                                        sample * active_source.gain.cur[m.gain_idx as usize];
                                 }
                             }
                         }
@@ -358,6 +451,10 @@ impl AudioMixer {
 
         let mut finished_source_ids: Vec<u64> = Vec::new();
 
+        // Snapshot the shared track gains once per callback. Individual gain
+        // targets are read once per source below — never per sample.
+        let track_gains = self.track_gains.read().clone();
+
         // Process each active source across all frames
         for active_source_arc in sources_to_process.iter() {
             let mut active_source = active_source_arc.lock();
@@ -445,6 +542,23 @@ impl AudioMixer {
             let source_channel_count = active_source.cached_source_channel_count as usize;
             let frames_needed = end_frame - start_frame;
 
+            // Refresh per-track gain ramps for this batch: one relaxed load
+            // per referenced track, then a linear ramp across the batch
+            // toward the target (~10-20ms at typical buffer sizes), which
+            // avoids zipper noise without per-frame atomics.
+            if let Some(ref tg) = track_gains {
+                for i in 1..active_source.gain.slot_ids.len() {
+                    let target = tg.linear(active_source.gain.slot_ids[i]);
+                    let cur = active_source.gain.cur[i];
+                    if (target - cur).abs() < 1e-6 {
+                        active_source.gain.cur[i] = target;
+                        active_source.gain.inc[i] = 0.0;
+                    } else {
+                        active_source.gain.inc[i] = (target - cur) / frames_needed as f32;
+                    }
+                }
+            }
+
             // Safety invariant: BATCH_READ_SCRATCH is reused across source iterations
             // without clearing. This is safe because we only read back
             // `frames_got * source_channel_count` samples from the buffer, and
@@ -474,36 +588,93 @@ impl AudioMixer {
                         let fade_active = envelope.as_ref().is_some_and(|env| !env.is_finished());
                         let constant_gain = envelope.as_ref().map_or(1.0, |env| env.end_gain());
 
-                        for frame_idx in 0..frames_got {
-                            let gain = if fade_active {
-                                // `advance_at` consumes one frame: for a
-                                // sample-anchored envelope it maps the frame's
-                                // global sample to a position; for a render-driven
-                                // one it simply steps the position. Either way the
-                                // ramp tracks the actual audio sample-for-sample.
-                                let env = envelope.as_ref().expect("fade_active implies Some");
-                                let global = current_sample + (start_frame + frame_idx) as u64;
-                                env.advance_at(global, 1)
-                            } else {
-                                constant_gain
-                            };
-                            let src_offset = frame_idx * source_channel_count;
-                            let dst_base = (start_frame + frame_idx) * channels;
-                            for (source_channel, &sample) in batch_buf
-                                [src_offset..src_offset + source_channel_count]
-                                .iter()
-                                .enumerate()
-                            {
-                                if let Some(output_channels) =
-                                    active_source.channel_mappings.get(source_channel)
+                        // Track gain ramping is rare (only the batches right
+                        // after a gain change); everything else takes the
+                        // constant fast path below.
+                        let track_ramp_active =
+                            active_source.gain.inc.iter().any(|&inc| inc != 0.0);
+
+                        if !fade_active && !track_ramp_active {
+                            // Fast path: all gains constant across this batch.
+                            // Fold envelope constant and track gain into each
+                            // mapping edge once, leaving the inner loop a
+                            // single load + FMA per edge.
+                            let src = &mut *active_source;
+                            for mappings in src.channel_mappings.iter_mut() {
+                                for m in mappings.iter_mut() {
+                                    m.cached_gain =
+                                        constant_gain * src.gain.cur[m.gain_idx as usize];
+                                }
+                            }
+                            for frame_idx in 0..frames_got {
+                                let src_offset = frame_idx * source_channel_count;
+                                let dst_base = (start_frame + frame_idx) * channels;
+                                for (source_channel, &sample) in batch_buf
+                                    [src_offset..src_offset + source_channel_count]
+                                    .iter()
+                                    .enumerate()
                                 {
-                                    for &output_index in output_channels {
-                                        if output_index < channels {
-                                            output[dst_base + output_index] += sample * gain;
+                                    if let Some(output_mappings) =
+                                        src.channel_mappings.get(source_channel)
+                                    {
+                                        for m in output_mappings {
+                                            if m.output_index < channels {
+                                                output[dst_base + m.output_index] +=
+                                                    sample * m.cached_gain;
+                                            }
                                         }
                                     }
                                 }
                             }
+                        } else {
+                            for frame_idx in 0..frames_got {
+                                let gain = if fade_active {
+                                    // `advance_at` consumes one frame: for a
+                                    // sample-anchored envelope it maps the frame's
+                                    // global sample to a position; for a render-driven
+                                    // one it simply steps the position. Either way the
+                                    // ramp tracks the actual audio sample-for-sample.
+                                    let env = envelope.as_ref().expect("fade_active implies Some");
+                                    let global = current_sample + (start_frame + frame_idx) as u64;
+                                    env.advance_at(global, 1)
+                                } else {
+                                    constant_gain
+                                };
+                                let src_offset = frame_idx * source_channel_count;
+                                let dst_base = (start_frame + frame_idx) * channels;
+                                let frame_f = frame_idx as f32;
+                                for (source_channel, &sample) in batch_buf
+                                    [src_offset..src_offset + source_channel_count]
+                                    .iter()
+                                    .enumerate()
+                                {
+                                    if let Some(output_mappings) =
+                                        active_source.channel_mappings.get(source_channel)
+                                    {
+                                        for m in output_mappings {
+                                            if m.output_index < channels {
+                                                // Per-edge track gain: current ramp
+                                                // value for this frame. Pure FMA
+                                                // shape — no branches or atomics.
+                                                let idx = m.gain_idx as usize;
+                                                let track_gain = active_source.gain.cur[idx]
+                                                    + active_source.gain.inc[idx] * frame_f;
+                                                output[dst_base + m.output_index] +=
+                                                    sample * gain * track_gain;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Advance gain ramps by the frames actually mixed; a
+                        // full batch lands on the target (snapped exactly on
+                        // the next callback by the |delta| < 1e-6 fast path).
+                        for i in 1..active_source.gain.cur.len() {
+                            let advanced =
+                                active_source.gain.cur[i] + active_source.gain.inc[i] * frames_got as f32;
+                            active_source.gain.cur[i] = advanced;
                         }
 
                         // Auto-finish sources whose fade-out envelope has completed.
@@ -619,6 +790,7 @@ mod tests {
             cancel_handle: CancelHandle::new(),
             start_at_sample: None,
             cancel_at_sample: None,
+            gain: Default::default(),
             gain_envelope: None,
         }
     }
@@ -645,6 +817,7 @@ mod tests {
             cancel_handle: CancelHandle::new(),
             start_at_sample: None,
             cancel_at_sample: None,
+            gain: Default::default(),
             gain_envelope: None,
         };
 
@@ -693,6 +866,7 @@ mod tests {
             cancel_handle: CancelHandle::new(),
             start_at_sample: None,
             cancel_at_sample: None,
+            gain: Default::default(),
             gain_envelope: None,
         };
 
@@ -711,6 +885,7 @@ mod tests {
             cancel_handle: CancelHandle::new(),
             start_at_sample: None,
             cancel_at_sample: None,
+            gain: Default::default(),
             gain_envelope: None,
         };
 
@@ -757,6 +932,7 @@ mod tests {
             cancel_handle: CancelHandle::new(),
             start_at_sample: None,
             cancel_at_sample: None,
+            gain: Default::default(),
             gain_envelope: None,
         };
 
@@ -806,6 +982,7 @@ mod tests {
             cancel_handle: CancelHandle::new(),
             start_at_sample: Some(400),
             cancel_at_sample: Some(cancel_at),
+            gain: Default::default(),
             gain_envelope: None,
         };
 
@@ -857,6 +1034,7 @@ mod tests {
             cancel_handle: CancelHandle::new(),
             start_at_sample: None,
             cancel_at_sample: None,
+            gain: Default::default(),
             gain_envelope: None,
         };
 
@@ -898,6 +1076,7 @@ mod tests {
             cancel_handle: CancelHandle::new(),
             start_at_sample: Some(2), // Start at sample 2
             cancel_at_sample: None,
+            gain: Default::default(),
             gain_envelope: None,
         };
 
@@ -941,6 +1120,7 @@ mod tests {
             cancel_handle: CancelHandle::new(),
             start_at_sample: None,
             cancel_at_sample: Some(cancel_at),
+            gain: Default::default(),
             gain_envelope: None,
         };
 
@@ -981,6 +1161,7 @@ mod tests {
             cancel_handle: CancelHandle::new(),
             start_at_sample: None,
             cancel_at_sample: None,
+            gain: Default::default(),
             gain_envelope: None,
         };
 
@@ -1033,6 +1214,7 @@ mod tests {
             start_at_sample: None,
             // Pre-allocated cancel slot, set below to the loop boundary.
             cancel_at_sample: Some(Arc::new(AtomicU64::new(0))),
+            gain: Default::default(),
             gain_envelope: None,
         };
         mixer.add_source(old);
@@ -1053,6 +1235,7 @@ mod tests {
             // Delayed start: first sample plays at the fade_start boundary.
             start_at_sample: Some(fade_start),
             cancel_at_sample: Some(Arc::new(AtomicU64::new(0))),
+            gain: Default::default(),
             gain_envelope: Some(Arc::new(crate::audio::crossfade::GainEnvelope::fade_in(
                 crossfade_samples,
                 crate::audio::crossfade::CrossfadeCurve::Linear,
@@ -1135,6 +1318,7 @@ mod tests {
             cancel_handle: CancelHandle::new(),
             start_at_sample: None,
             cancel_at_sample: Some(Arc::new(AtomicU64::new(0))),
+            gain: Default::default(),
             gain_envelope: None,
         };
         mixer.add_source(old);
@@ -1149,6 +1333,7 @@ mod tests {
             cancel_handle: CancelHandle::new(),
             start_at_sample: Some(fade_start),
             cancel_at_sample: Some(Arc::new(AtomicU64::new(0))),
+            gain: Default::default(),
             gain_envelope: Some(Arc::new(crate::audio::crossfade::GainEnvelope::fade_in(
                 crossfade_samples,
                 crate::audio::crossfade::CrossfadeCurve::Linear,
@@ -1215,6 +1400,7 @@ mod tests {
             cancel_handle: CancelHandle::new(),
             start_at_sample: None,
             cancel_at_sample: None,
+            gain: Default::default(),
             gain_envelope: None,
         };
 
@@ -1233,6 +1419,7 @@ mod tests {
             cancel_handle: CancelHandle::new(),
             start_at_sample: None,
             cancel_at_sample: None,
+            gain: Default::default(),
             gain_envelope: None,
         };
 
@@ -1269,6 +1456,7 @@ mod tests {
             cancel_handle: CancelHandle::new(),
             start_at_sample: Some(2), // Start at sample 2
             cancel_at_sample: Some(cancel_at),
+            gain: Default::default(),
             gain_envelope: None,
         };
 
@@ -1382,6 +1570,7 @@ mod tests {
             cancel_handle: CancelHandle::new(),
             start_at_sample: None,
             cancel_at_sample: None,
+            gain: Default::default(),
             gain_envelope: None,
         };
 
@@ -1442,6 +1631,7 @@ mod tests {
             cancel_handle: CancelHandle::new(),
             start_at_sample: None,
             cancel_at_sample: None,
+            gain: Default::default(),
             gain_envelope: None,
         };
 
@@ -1466,16 +1656,21 @@ mod tests {
     mod precompute_channel_mappings_tests {
         use super::*;
 
+        /// Extracts just the output indices for a source channel.
+        fn out_indices(mappings: &[Vec<OutputMapping>], ch: usize) -> Vec<usize> {
+            mappings[ch].iter().map(|m| m.output_index).collect()
+        }
+
         #[test]
         fn single_channel_single_output() {
             let source = create_test_source(vec![0.0], 1, vec![vec!["vocals".to_string()]]);
             let mut track_mappings = HashMap::new();
             track_mappings.insert("vocals".to_string(), vec![1]);
 
-            let mappings =
-                AudioMixer::precompute_channel_mappings(source.as_ref(), &track_mappings);
+            let (mappings, _) =
+                AudioMixer::precompute_channel_mappings(source.as_ref(), &track_mappings, None);
             assert_eq!(mappings.len(), 1);
-            assert_eq!(mappings[0], vec![0]); // channel 1 → index 0
+            assert_eq!(out_indices(&mappings, 0), vec![0]); // channel 1 → index 0
         }
 
         #[test]
@@ -1485,10 +1680,10 @@ mod tests {
             // Map "mono" to output channels 1 and 2
             track_mappings.insert("mono".to_string(), vec![1, 2]);
 
-            let mappings =
-                AudioMixer::precompute_channel_mappings(source.as_ref(), &track_mappings);
+            let (mappings, _) =
+                AudioMixer::precompute_channel_mappings(source.as_ref(), &track_mappings, None);
             assert_eq!(mappings.len(), 1);
-            assert_eq!(mappings[0], vec![0, 1]); // channels 1,2 → indices 0,1
+            assert_eq!(out_indices(&mappings, 0), vec![0, 1]); // channels 1,2 → indices 0,1
         }
 
         #[test]
@@ -1496,8 +1691,8 @@ mod tests {
             let source = create_test_source(vec![0.0], 1, vec![vec!["not_in_config".to_string()]]);
             let track_mappings = HashMap::new(); // empty — no labels match
 
-            let mappings =
-                AudioMixer::precompute_channel_mappings(source.as_ref(), &track_mappings);
+            let (mappings, _) =
+                AudioMixer::precompute_channel_mappings(source.as_ref(), &track_mappings, None);
             assert_eq!(mappings.len(), 1);
             assert!(mappings[0].is_empty());
         }
@@ -1513,11 +1708,11 @@ mod tests {
             track_mappings.insert("left".to_string(), vec![1]);
             track_mappings.insert("right".to_string(), vec![2]);
 
-            let mappings =
-                AudioMixer::precompute_channel_mappings(source.as_ref(), &track_mappings);
+            let (mappings, _) =
+                AudioMixer::precompute_channel_mappings(source.as_ref(), &track_mappings, None);
             assert_eq!(mappings.len(), 2);
-            assert_eq!(mappings[0], vec![0]); // left → index 0
-            assert_eq!(mappings[1], vec![1]); // right → index 1
+            assert_eq!(out_indices(&mappings, 0), vec![0]); // left → index 0
+            assert_eq!(out_indices(&mappings, 1), vec![1]); // right → index 1
         }
 
         #[test]
@@ -1532,10 +1727,10 @@ mod tests {
             track_mappings.insert("main".to_string(), vec![1]);
             track_mappings.insert("monitor".to_string(), vec![3]);
 
-            let mappings =
-                AudioMixer::precompute_channel_mappings(source.as_ref(), &track_mappings);
+            let (mappings, _) =
+                AudioMixer::precompute_channel_mappings(source.as_ref(), &track_mappings, None);
             assert_eq!(mappings.len(), 1);
-            assert_eq!(mappings[0], vec![0, 2]); // ch1→0, ch3→2
+            assert_eq!(out_indices(&mappings, 0), vec![0, 2]); // ch1→0, ch3→2
         }
 
         #[test]
@@ -1545,10 +1740,180 @@ mod tests {
             let mut track_mappings = HashMap::new();
             track_mappings.insert("anything".to_string(), vec![1]);
 
-            let mappings =
-                AudioMixer::precompute_channel_mappings(source.as_ref(), &track_mappings);
+            let (mappings, _) =
+                AudioMixer::precompute_channel_mappings(source.as_ref(), &track_mappings, None);
             assert_eq!(mappings.len(), 1);
             assert!(mappings[0].is_empty());
+        }
+
+        #[test]
+        fn without_track_gains_all_edges_unity() {
+            let source = create_test_source(vec![0.0], 1, vec![vec!["vocals".to_string()]]);
+            let mut track_mappings = HashMap::new();
+            track_mappings.insert("vocals".to_string(), vec![1, 2]);
+
+            let (mappings, gain) =
+                AudioMixer::precompute_channel_mappings(source.as_ref(), &track_mappings, None);
+            assert!(mappings[0].iter().all(|m| m.gain_idx == 0));
+            assert_eq!(gain.cur, vec![1.0]);
+        }
+
+        #[test]
+        fn with_track_gains_edges_get_slots() {
+            use crate::audio::track_gains::TrackGains;
+
+            let source = create_test_source(
+                vec![0.0],
+                1,
+                vec![vec!["main".to_string(), "monitor".to_string()]],
+            );
+            let mut track_mappings = HashMap::new();
+            track_mappings.insert("main".to_string(), vec![1]);
+            track_mappings.insert("monitor".to_string(), vec![3]);
+
+            let tg = TrackGains::from_config(&track_mappings, None);
+            tg.set_db("monitor", -6.0).unwrap();
+
+            let (mappings, gain) = AudioMixer::precompute_channel_mappings(
+                source.as_ref(),
+                &track_mappings,
+                Some(&tg),
+            );
+            // Two edges with distinct, non-unity gain table entries.
+            assert_eq!(mappings[0].len(), 2);
+            assert_ne!(mappings[0][0].gain_idx, mappings[0][1].gain_idx);
+            assert!(mappings[0].iter().all(|m| m.gain_idx != 0));
+            // Current gain initialized from targets (monitor at -6 dB).
+            let monitor_idx = mappings[0][1].gain_idx as usize;
+            assert!((gain.cur[monitor_idx] - 0.5012).abs() < 0.001);
+        }
+    }
+
+    mod track_gain_tests {
+        use super::*;
+        use crate::audio::track_gains::{TrackGains, MIN_GAIN_DB};
+
+        fn t_mappings() -> HashMap<String, Vec<u16>> {
+            HashMap::from([("t".to_string(), vec![1])])
+        }
+
+        fn ones_source(frames: usize) -> Box<dyn ChannelMappedSampleSource> {
+            create_test_source(vec![1.0; frames], 1, vec![vec!["t".to_string()]])
+        }
+
+        fn install_gains(
+            mixer: &AudioMixer,
+            mappings: &HashMap<String, Vec<u16>>,
+        ) -> Arc<TrackGains> {
+            let tg = Arc::new(TrackGains::from_config(mappings, None));
+            mixer.set_track_gains(tg.clone());
+            tg
+        }
+
+        #[test]
+        fn gain_applied_from_source_start() {
+            // Gains set before a source is added apply immediately (no ramp).
+            let mixer = AudioMixer::new(1, 48000);
+            let tg = install_gains(&mixer, &t_mappings());
+            tg.set_db("t", -6.0).unwrap();
+
+            mixer.add_source(make_active_source(1, ones_source(8), t_mappings()));
+            let mut out = vec![0.0f32; 8];
+            mixer.process_into_output(&mut out, 8);
+            for s in out {
+                assert!((s - 0.5012).abs() < 0.001, "expected ~0.5012, got {s}");
+            }
+        }
+
+        #[test]
+        fn min_gain_mutes_exactly() {
+            let mixer = AudioMixer::new(1, 48000);
+            let tg = install_gains(&mixer, &t_mappings());
+            tg.set_db("t", MIN_GAIN_DB).unwrap();
+
+            mixer.add_source(make_active_source(1, ones_source(8), t_mappings()));
+            let mut out = vec![0.0f32; 8];
+            mixer.process_into_output(&mut out, 8);
+            assert!(
+                out.iter().all(|&s| s == 0.0),
+                "expected silence, got {out:?}"
+            );
+        }
+
+        #[test]
+        fn gain_change_ramps_across_batch() {
+            let mixer = AudioMixer::new(1, 48000);
+            let tg = install_gains(&mixer, &t_mappings());
+            mixer.add_source(make_active_source(1, ones_source(2048), t_mappings()));
+
+            // First batch at unity.
+            let mut out = vec![0.0f32; 512];
+            mixer.process_into_output(&mut out, 512);
+            assert!(out.iter().all(|&s| (s - 1.0).abs() < 1e-6));
+
+            // Change gain; the next batch must ramp smoothly, not step.
+            tg.set_db("t", -6.0).unwrap();
+            let mut out = vec![0.0f32; 512];
+            mixer.process_into_output(&mut out, 512);
+            assert!(
+                (out[0] - 1.0).abs() < 0.01,
+                "ramp starts at old gain, got {}",
+                out[0]
+            );
+            assert!(
+                (out[511] - 0.5012).abs() < 0.01,
+                "ramp ends near target, got {}",
+                out[511]
+            );
+            for w in out.windows(2) {
+                assert!(
+                    w[1] <= w[0] + 1e-6,
+                    "ramp must be monotonic: {} -> {}",
+                    w[0],
+                    w[1]
+                );
+            }
+
+            // Following batch sits at the target.
+            let mut out = vec![0.0f32; 512];
+            mixer.process_into_output(&mut out, 512);
+            assert!(out.iter().all(|&s| (s - 0.5012).abs() < 0.001));
+        }
+
+        #[test]
+        fn per_edge_gains_for_multi_label_channel() {
+            // One source channel feeding two tracks: muting one track must
+            // not affect the other edge.
+            let mixer = AudioMixer::new(2, 48000);
+            let mappings: HashMap<String, Vec<u16>> = HashMap::from([
+                ("main".to_string(), vec![1]),
+                ("monitor".to_string(), vec![2]),
+            ]);
+            let tg = install_gains(&mixer, &mappings);
+            tg.set_db("monitor", MIN_GAIN_DB).unwrap();
+
+            let source = create_test_source(
+                vec![1.0; 4],
+                1,
+                vec![vec!["main".to_string(), "monitor".to_string()]],
+            );
+            mixer.add_source(make_active_source(1, source, mappings));
+
+            let mut out = vec![0.0f32; 8];
+            mixer.process_into_output(&mut out, 4);
+            for frame in out.chunks(2) {
+                assert!((frame[0] - 1.0).abs() < 1e-6, "main stays at unity");
+                assert_eq!(frame[1], 0.0, "monitor is muted");
+            }
+        }
+
+        #[test]
+        fn no_track_gains_installed_is_unity() {
+            let mixer = AudioMixer::new(1, 48000);
+            mixer.add_source(make_active_source(1, ones_source(8), t_mappings()));
+            let mut out = vec![0.0f32; 8];
+            mixer.process_into_output(&mut out, 8);
+            assert!(out.iter().all(|&s| (s - 1.0).abs() < 1e-6));
         }
     }
 

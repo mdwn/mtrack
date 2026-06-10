@@ -100,6 +100,9 @@ pub trait SongChangeNotifier: Send + Sync {
 struct HardwareState {
     device: Option<Arc<dyn audio::Device>>,
     mappings: Option<Arc<HashMap<String, Vec<u16>>>>,
+    /// Shared per-output-track gains, built from the active profile's
+    /// track_mappings and track_gains. Also installed into the device mixer.
+    track_gains: Option<Arc<crate::audio::track_gains::TrackGains>>,
     midi_device: Option<Arc<dyn midi::Device>>,
     dmx_engine: Option<Arc<dmx::engine::Engine>>,
     sample_engine: Option<Arc<RwLock<SampleEngine>>>,
@@ -274,6 +277,10 @@ pub struct Player {
     reactive_loop_state: Arc<parking_lot::RwLock<ReactiveLoopState>>,
     /// Notification engine for section loop audio feedback.
     notification_engine: Arc<crate::notification::NotificationEngine>,
+    /// Pending debounced task persisting track gains to the config store.
+    /// Aborted and replaced on every gain change so rapid fader moves
+    /// produce a single disk write.
+    gain_persist_task: Arc<parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 /// Bounds of an active section loop.
@@ -412,9 +419,22 @@ impl Player {
             None => ClockSource::Wall,
         };
 
+        // Build track gains from the mapping keys (all at 0 dB) so gain
+        // controls work in test/mock-device setups too.
+        let track_gains = devices.mappings.as_ref().map(|m| {
+            let tg = Arc::new(crate::audio::track_gains::TrackGains::from_config(m, None));
+            if let Some(ref audio_device) = devices.audio {
+                if let Some(mixer) = audio_device.mixer() {
+                    mixer.set_track_gains(tg.clone());
+                }
+            }
+            tg
+        });
+
         let hw = HardwareState {
             device: devices.audio,
             mappings: devices.mappings,
+            track_gains,
             midi_device: devices.midi,
             dmx_engine: devices.dmx_engine,
             sample_engine: devices.sample_engine,
@@ -456,6 +476,7 @@ impl Player {
             init_done_tx: Arc::new(init_done_tx),
             state_tx: Arc::new(parking_lot::Mutex::new(None)),
             transport_tx: Arc::new(tokio::sync::watch::channel(TransportSnapshot::default()).0),
+            gain_persist_task: Arc::new(parking_lot::Mutex::new(None)),
             locked: Arc::new(AtomicBool::new(true)),
             controller: Arc::new(parking_lot::Mutex::new(None)),
             loop_break: Arc::new(AtomicBool::new(false)),
@@ -656,6 +677,56 @@ impl Player {
     /// Returns the track-to-output-channel mappings, if audio is configured.
     pub fn track_mappings(&self) -> Option<Arc<HashMap<String, Vec<u16>>>> {
         self.hardware.read().mappings.clone()
+    }
+
+    /// Sets the gain of an output track in dB, returning the (clamped)
+    /// applied value. Takes effect on the next audio callback for playing
+    /// sources and at source start otherwise, so gains can be preset while
+    /// stopped. Allowed while locked — this is a performance control, like
+    /// play/stop.
+    ///
+    /// The new gains are persisted to the active profile after a short
+    /// debounce so rapid fader moves produce a single disk write.
+    pub fn set_track_gain(&self, track: &str, gain_db: f32) -> Result<f32, Box<dyn Error>> {
+        if !gain_db.is_finite() {
+            return Err(format!("gain must be a finite number, got {}", gain_db).into());
+        }
+
+        let (track_gains, hostname) = {
+            let hw = self.hardware.read();
+            (hw.track_gains.clone(), hw.hostname.clone())
+        };
+        let track_gains = track_gains.ok_or("no audio profile active")?;
+        let applied = track_gains.set_db(track, gain_db)?;
+
+        // Debounced persistence: replace any pending save with a fresh timer.
+        if let Some(store) = self.config_store() {
+            if let Some(hostname) = hostname {
+                let gains = track_gains.snapshot_db_map();
+                let mut pending = self.gain_persist_task.lock();
+                if let Some(task) = pending.take() {
+                    task.abort();
+                }
+                *pending = Some(tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(750)).await;
+                    if let Err(e) = store.set_track_gains(&hostname, gains).await {
+                        error!(err = %e, "Failed to persist track gains");
+                    }
+                }));
+            }
+        }
+
+        Ok(applied)
+    }
+
+    /// Returns all output track gains as (name, dB) pairs, or None when no
+    /// audio profile is active.
+    pub fn get_track_gains(&self) -> Option<Vec<(String, f32)>> {
+        self.hardware
+            .read()
+            .track_gains
+            .as_ref()
+            .map(|tg| tg.snapshot_db())
     }
 
     /// Returns true if the player is in locked mode (state-altering operations blocked).
@@ -2606,6 +2677,62 @@ mod test {
         // Test songs don't have loop_playback set, so this should be false.
         assert!(!player.is_current_song_looping());
 
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_track_gain_set_and_get() -> Result<(), Box<dyn Error>> {
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
+        let playlist = Playlist::new(
+            "playlist",
+            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
+            songs.clone(),
+        )?;
+        let mappings: HashMap<String, Vec<u16>> = HashMap::from([
+            ("click".to_string(), vec![1]),
+            ("keys".to_string(), vec![2]),
+        ]);
+        let devices = PlayerDevices {
+            audio: None,
+            mappings: Some(Arc::new(mappings)),
+            midi: None,
+            dmx_engine: None,
+            sample_engine: None,
+            trigger_engine: None,
+        };
+        let player = Player::new_with_devices(
+            devices,
+            test_playlists(playlist, songs),
+            "playlist".to_string(),
+            None,
+        )?;
+
+        // All tracks start at unity.
+        let gains = player.get_track_gains().unwrap();
+        assert_eq!(gains.len(), 2);
+        assert!(gains.iter().all(|(_, db)| *db == 0.0));
+
+        // Set, clamp, and read back.
+        assert_eq!(player.set_track_gain("click", -6.0)?, -6.0);
+        assert_eq!(player.set_track_gain("keys", 20.0)?, 12.0);
+        let gains: HashMap<String, f32> = player.get_track_gains().unwrap().into_iter().collect();
+        assert_eq!(gains["click"], -6.0);
+        assert_eq!(gains["keys"], 12.0);
+
+        // Unknown track and non-finite gain are rejected.
+        assert!(player.set_track_gain("nope", 0.0).is_err());
+        assert!(player.set_track_gain("click", f32::NAN).is_err());
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_track_gain_without_audio_errors() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        // make_test_player has no track mappings → no gain state.
+        if player.get_track_gains().is_none() {
+            assert!(player.set_track_gain("click", 0.0).is_err());
+        }
         Ok(())
     }
 }

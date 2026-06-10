@@ -68,6 +68,10 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
         let (song_name, song_duration_ms, tracks, beat_grid, looping, available_sections) =
             if let Some(current_song) = playlist.current() {
                 let mappings = player.track_mappings();
+                let track_gains: std::collections::HashMap<String, f32> = player
+                    .get_track_gains()
+                    .map(|gains| gains.into_iter().collect())
+                    .unwrap_or_default();
                 let tracks: Vec<serde_json::Value> = current_song
                     .tracks()
                     .iter()
@@ -80,6 +84,7 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
                         json!({
                             "name": t.name(),
                             "output_channels": output_channels,
+                            "gain_db": track_gains.get(t.name()).copied().unwrap_or(0.0),
                         })
                     })
                     .collect();
@@ -953,6 +958,12 @@ mod test {
         assert_eq!(parsed["is_playing"], false);
         assert!(parsed["playlist_songs"].is_array());
         assert!(parsed["tracks"].is_array());
+        for track in parsed["tracks"].as_array().unwrap() {
+            assert!(
+                track["gain_db"].is_number(),
+                "track entries include gain_db: {track}"
+            );
+        }
 
         handle.abort();
     }

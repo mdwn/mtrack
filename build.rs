@@ -58,6 +58,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let build_time = jiff::Timestamp::now().strftime("%Y-%m-%dT%H:%M:%SZ");
     println!("cargo:rustc-env=MTRACK_BUILD_TIME={build_time}");
 
+    // Re-run when the proto definition changes.
+    println!("cargo:rerun-if-changed=src/proto/player/v1/player.proto");
+
     // Re-run when git HEAD changes.
     println!("cargo:rerun-if-changed=.git/HEAD");
     println!("cargo:rerun-if-changed=.git/refs");

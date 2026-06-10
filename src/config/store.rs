@@ -329,6 +329,42 @@ impl ConfigStore {
         .await
     }
 
+    /// Sets the per-track gains on the active profile (first profile whose
+    /// hostname matches or that has no hostname constraint) and persists them.
+    /// Called internally when gains change at runtime, not from the config
+    /// editor UI, so no checksum is required.
+    ///
+    /// When profiles are loaded from `profiles_dir`, the owning profile file
+    /// is rewritten (inline profiles in the main config are ignored at load
+    /// time in that layout). Rewriting a profile file drops YAML comments.
+    pub async fn set_track_gains(
+        &self,
+        hostname: &str,
+        gains: indexmap::IndexMap<String, f32>,
+    ) -> Result<(), ConfigError> {
+        let mut guard = self.inner.write().await;
+
+        // Update the in-memory active profile so subsequent reads are current.
+        let profile = guard.active_profile_mut(hostname).ok_or_else(|| {
+            ConfigError::Validation(format!("no profile matches hostname '{}'", hostname))
+        })?;
+        let audio = profile.audio_config_mut().ok_or_else(|| {
+            ConfigError::Validation("active profile has no audio config".to_string())
+        })?;
+        audio.set_track_gains(gains.clone());
+
+        if let Some(dir) = guard.resolved_profiles_dir(&self.path) {
+            persist_gains_to_profile_file(&dir, hostname, &gains)?;
+        } else {
+            let new_yaml = to_yaml_string(&*guard)
+                .map_err(|e| ConfigError::StoreSerialization(e.to_string()))?;
+            atomic_write(&self.path, &new_yaml).map_err(ConfigError::StoreIo)?;
+        }
+
+        let _ = self.change_tx.send(());
+        Ok(())
+    }
+
     /// Sets the active playlist name without requiring a checksum.
     /// This is called internally when switching playlists, not from the
     /// config editor UI, so optimistic concurrency isn't needed.
@@ -341,6 +377,72 @@ impl ConfigStore {
         let _ = self.change_tx.send(());
         Ok(())
     }
+}
+
+/// Persists track gains into the profile file inside `dir` that owns the
+/// active profile: files are visited in the same sorted order used at load
+/// time, and the first profile matching the hostname rule wins.
+fn persist_gains_to_profile_file(
+    dir: &std::path::Path,
+    hostname: &str,
+    gains: &indexmap::IndexMap<String, f32>,
+) -> Result<(), ConfigError> {
+    let entries = std::fs::read_dir(dir).map_err(|source| ConfigError::Io {
+        path: dir.to_path_buf(),
+        source,
+    })?;
+
+    let mut yaml_paths: Vec<PathBuf> = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|source| ConfigError::Io {
+            path: dir.to_path_buf(),
+            source,
+        })?;
+        let path = entry.path();
+        if path.is_file() {
+            if let Some(ext) = path.extension() {
+                if ext == "yaml" || ext == "yml" {
+                    yaml_paths.push(path);
+                }
+            }
+        }
+    }
+    yaml_paths.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+
+    for path in &yaml_paths {
+        let mut profile = config::Config::builder()
+            .add_source(config::File::from(path.as_path()))
+            .build()
+            .and_then(|c| c.try_deserialize::<Profile>())
+            .map_err(|source| ConfigError::ProfileParse {
+                path: path.clone(),
+                source,
+            })?;
+
+        let matches = match profile.hostname() {
+            Some(h) => h == hostname,
+            None => true,
+        };
+        if !matches {
+            continue;
+        }
+
+        let audio = profile.audio_config_mut().ok_or_else(|| {
+            ConfigError::Validation("active profile has no audio config".to_string())
+        })?;
+        audio.set_track_gains(gains.clone());
+
+        let yaml =
+            to_yaml_string(&profile).map_err(|e| ConfigError::StoreSerialization(e.to_string()))?;
+        atomic_write(path, &yaml).map_err(ConfigError::StoreIo)?;
+        return Ok(());
+    }
+
+    Err(ConfigError::Validation(format!(
+        "no profile file in {} matches hostname '{}'",
+        dir.display(),
+        hostname
+    )))
 }
 
 #[cfg(test)]
@@ -686,6 +788,98 @@ profiles:
             "expected round-trip-host in {:?}",
             hostnames
         );
+    }
+
+    #[tokio::test]
+    async fn set_track_gains_inline_profile_persists() {
+        let yaml = r#"
+songs: songs
+profiles:
+  - hostname: gain-host
+    audio:
+      device: mock-device
+      track_mappings:
+        click: [1]
+        keys: [2, 3]
+"#;
+        let player = make_player(yaml);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+        std::fs::write(&path, yaml).unwrap();
+
+        let store = ConfigStore::new(player, path.clone());
+        let gains = indexmap::IndexMap::from([("click".to_string(), -6.0f32)]);
+        store.set_track_gains("gain-host", gains).await.unwrap();
+
+        // In-memory config reflects the change.
+        let mut config = store.read_config().await;
+        let profile = config.active_profile_mut("gain-host").unwrap();
+        let audio = profile.audio_config().unwrap();
+        assert_eq!(audio.track_gains()["click"], -6.0);
+
+        // On-disk config reflects the change after an independent reload.
+        let mut reloaded = Player::deserialize(&path).unwrap();
+        let profile = reloaded.active_profile_mut("gain-host").unwrap();
+        assert_eq!(profile.audio_config().unwrap().track_gains()["click"], -6.0);
+    }
+
+    #[tokio::test]
+    async fn set_track_gains_profiles_dir_writes_profile_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let profiles_dir = dir.path().join("profiles");
+        std::fs::create_dir(&profiles_dir).unwrap();
+
+        let main_yaml = "songs: songs\nprofiles_dir: profiles\n";
+        let main_path = dir.path().join("config.yaml");
+        std::fs::write(&main_path, main_yaml).unwrap();
+
+        // Two profile files: the first doesn't match the hostname, the second does.
+        std::fs::write(
+            profiles_dir.join("01-other.yaml"),
+            "kind: hardware_profile\nhostname: other-host\naudio:\n  device: a\n  track_mappings:\n    cue: [1]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            profiles_dir.join("02-target.yaml"),
+            "kind: hardware_profile\nhostname: gain-host\naudio:\n  device: b\n  track_mappings:\n    click: [1]\n",
+        )
+        .unwrap();
+
+        let player = Player::deserialize(&main_path).unwrap();
+        let store = ConfigStore::new(player, main_path.clone());
+        let gains = indexmap::IndexMap::from([("click".to_string(), 3.0f32)]);
+        store.set_track_gains("gain-host", gains).await.unwrap();
+
+        // The owning profile file was updated; the other one untouched.
+        let target = std::fs::read_to_string(profiles_dir.join("02-target.yaml")).unwrap();
+        assert!(target.contains("track_gains"), "got: {target}");
+        assert!(target.contains("click: 3"), "got: {target}");
+        let other = std::fs::read_to_string(profiles_dir.join("01-other.yaml")).unwrap();
+        assert!(!other.contains("track_gains"));
+
+        // The main config file was not rewritten with inlined profiles.
+        let main_after = std::fs::read_to_string(&main_path).unwrap();
+        assert_eq!(main_after, main_yaml);
+
+        // A full reload through profiles_dir sees the gains.
+        let mut reloaded = Player::deserialize(&main_path).unwrap();
+        let profile = reloaded.active_profile_mut("gain-host").unwrap();
+        assert_eq!(profile.audio_config().unwrap().track_gains()["click"], 3.0);
+    }
+
+    #[tokio::test]
+    async fn set_track_gains_unknown_hostname_errors() {
+        // The profile is hostname-constrained, so a different hostname matches
+        // no profile and the call must fail.
+        let yaml = "songs: songs\nprofiles:\n  - hostname: only-host\n    audio:\n      device: a\n      track_mappings:\n        click: [1]\n";
+        let player = make_player(yaml);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+        std::fs::write(&path, yaml).unwrap();
+        let store = ConfigStore::new(player, path);
+
+        let gains = indexmap::IndexMap::from([("click".to_string(), -6.0f32)]);
+        assert!(store.set_track_gains("nope", gains).await.is_err());
     }
 
     #[test]
