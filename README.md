@@ -4,7 +4,10 @@
 [![codecov](https://codecov.io/gh/mdwn/mtrack/graph/badge.svg?token=XWEK2BIPZL)](https://codecov.io/gh/mdwn/mtrack)
 [![Crates.io Version](https://img.shields.io/crates/v/mtrack)](https://crates.io/crates/mtrack)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![Discord](https://img.shields.io/discord/1513634821434507466)](https://discord.gg/2T7WdRQf5b)
 [![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg)](code_of_conduct.md)
+
+
 
 `mtrack` is a multitrack audio, MIDI, and lighting player for live performances. It runs on
 small devices like the Raspberry Pi and is designed to be controlled remotely — from your feet,
@@ -109,6 +112,10 @@ $ make build
 ```
 
 Other useful targets: `make test`, `make lint`, `make fmt`, `make docs`, `make docs-serve`.
+
+## Get support!
+
+Need help with mtrack? Join us on [Discord](https://discord.gg/2T7WdRQf5b)!
 
 ## License
 
