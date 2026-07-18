@@ -65,66 +65,88 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
         let playlist_position = playlist.position();
         let playlist_songs: Vec<String> = playlist.songs().clone();
 
-        let (song_name, song_duration_ms, tracks, beat_grid, looping, available_sections) =
-            if let Some(current_song) = playlist.current() {
-                let mappings = player.track_mappings();
-                let track_gains: std::collections::HashMap<String, f32> = player
-                    .get_track_gains()
-                    .map(|gains| gains.into_iter().collect())
-                    .unwrap_or_default();
-                let track_mutes: std::collections::HashMap<String, bool> = player
-                    .get_track_mutes()
-                    .map(|mutes| mutes.into_iter().collect())
-                    .unwrap_or_default();
-                // Output tracks include virtual tracks (e.g. the metronome)
-                // so they show up in the gains mixer like any other track.
-                let tracks: Vec<serde_json::Value> = current_song
-                    .output_track_names()
-                    .iter()
-                    .map(|name| {
-                        let output_channels = mappings
-                            .as_ref()
-                            .and_then(|m| m.get(name))
-                            .cloned()
-                            .unwrap_or_default();
-                        json!({
-                            "name": name,
-                            "output_channels": output_channels,
-                            "gain_db": track_gains.get(name).copied().unwrap_or(0.0),
-                            "muted": track_mutes.get(name).copied().unwrap_or(false),
-                        })
-                    })
-                    .collect();
-                let beat_grid = current_song.beat_grid().map(|g| {
+        let (
+            song_name,
+            song_duration_ms,
+            tracks,
+            beat_grid,
+            looping,
+            available_sections,
+            pilot_hints,
+        ) = if let Some(current_song) = playlist.current() {
+            let mappings = player.track_mappings();
+            let track_gains: std::collections::HashMap<String, f32> = player
+                .get_track_gains()
+                .map(|gains| gains.into_iter().collect())
+                .unwrap_or_default();
+            let track_mutes: std::collections::HashMap<String, bool> = player
+                .get_track_mutes()
+                .map(|mutes| mutes.into_iter().collect())
+                .unwrap_or_default();
+            // Output tracks include virtual tracks (e.g. the metronome)
+            // so they show up in the gains mixer like any other track.
+            let tracks: Vec<serde_json::Value> = current_song
+                .output_track_names()
+                .iter()
+                .map(|name| {
+                    let output_channels = mappings
+                        .as_ref()
+                        .and_then(|m| m.get(name))
+                        .cloned()
+                        .unwrap_or_default();
                     json!({
-                        "beats": g.beats,
-                        "measure_starts": g.measure_starts,
+                        "name": name,
+                        "output_channels": output_channels,
+                        "gain_db": track_gains.get(name).copied().unwrap_or(0.0),
+                        "muted": track_mutes.get(name).copied().unwrap_or(false),
                     })
-                });
+                })
+                .collect();
+            let beat_grid = current_song.beat_grid().map(|g| {
+                json!({
+                    "beats": g.beats,
+                    "measure_starts": g.measure_starts,
+                })
+            });
 
-                let available_sections: Vec<serde_json::Value> = current_song
-                    .sections()
-                    .iter()
-                    .map(|s| {
-                        json!({
-                            "name": s.name,
-                            "start_measure": s.start_measure,
-                            "end_measure": s.end_measure,
-                        })
+            let available_sections: Vec<serde_json::Value> = current_song
+                .sections()
+                .iter()
+                .map(|s| {
+                    json!({
+                        "name": s.name,
+                        "start_measure": s.start_measure,
+                        "end_measure": s.end_measure,
                     })
-                    .collect();
+                })
+                .collect();
 
-                (
-                    current_song.name().to_string(),
-                    current_song.duration().as_millis() as u64,
-                    tracks,
-                    beat_grid,
-                    current_song.loop_playback(),
-                    available_sections,
-                )
-            } else {
-                (String::new(), 0, vec![], None, false, vec![])
-            };
+            let pilot_hints: Vec<serde_json::Value> = current_song
+                .pilot_hints()
+                .iter()
+                .map(|h| {
+                    json!({
+                        "label": h.label,
+                        "at_ms": (h.at_secs * 1000.0).max(0.0) as u64,
+                        "start_ms": (h.start_secs * 1000.0).max(0.0) as u64,
+                        "end_ms": (h.end_secs * 1000.0).max(0.0) as u64,
+                        "has_audio": h.file.is_some(),
+                    })
+                })
+                .collect();
+
+            (
+                current_song.name().to_string(),
+                current_song.duration().as_millis() as u64,
+                tracks,
+                beat_grid,
+                current_song.loop_playback(),
+                available_sections,
+                pilot_hints,
+            )
+        } else {
+            (String::new(), 0, vec![], None, false, vec![], vec![])
+        };
 
         let available_playlists = player.list_playlists();
         let persisted_playlist_name = player.persisted_playlist_name();
@@ -211,6 +233,7 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
             "looping": looping,
             "reactive_loop_state": reactive_loop_state,
             "pending_start_ms": player.pending_start().map(|d| d.as_millis() as u64),
+            "pilot_hints": pilot_hints,
             "tempo": tempo,
         });
 
