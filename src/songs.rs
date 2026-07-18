@@ -134,6 +134,8 @@ pub struct Song {
     samples_config: config::SamplesConfig,
     /// The explicit tempo map from the song config, when present.
     tempo_map: Option<crate::tempo::TempoMap>,
+    /// The metronome configuration, when present.
+    metronome: Option<config::MetronomeConfig>,
     /// The song's beat grid: generated from the explicit tempo map when one
     /// is configured, otherwise derived from click track analysis.
     beat_grid: Option<crate::audio::click_analysis::BeatGrid>,
@@ -238,6 +240,7 @@ impl Song {
             tracks,
             samples_config: config.samples_config(),
             tempo_map,
+            metronome: config.metronome().cloned(),
             beat_grid,
             loop_playback: config.loop_playback(),
             sections: config.sections().to_vec(),
@@ -496,6 +499,22 @@ impl Song {
         self.tempo_map.as_ref()
     }
 
+    /// Gets the metronome configuration, if configured.
+    pub fn metronome(&self) -> Option<&config::MetronomeConfig> {
+        self.metronome.as_ref()
+    }
+
+    /// Names of all output tracks this song produces: real audio tracks plus
+    /// virtual tracks (metronome). These are the names that can appear in
+    /// `track_mappings` and carry per-track gains.
+    pub fn output_track_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.tracks.iter().map(|t| t.name.clone()).collect();
+        if let Some(metronome) = &self.metronome {
+            names.push(metronome.track.clone());
+        }
+        names
+    }
+
     /// Returns whether this song should loop when it finishes playing.
     pub fn loop_playback(&self) -> bool {
         self.loop_playback
@@ -683,6 +702,36 @@ impl Song {
 
             sources.push(source);
         }
+
+        // Append the virtual metronome track when configured, mapped in the
+        // profile, and a beat grid is available. It synthesizes at the device
+        // sample rate, so no transcoding is needed beyond format conversion.
+        if let Some(metronome) = &self.metronome {
+            if track_mappings.contains_key(&metronome.track) {
+                if let Some(grid) = &self.beat_grid {
+                    let metronome_source = crate::audio::metronome::MetronomeSource::new(
+                        grid,
+                        metronome,
+                        &self.base_path,
+                        context.target_format.sample_rate,
+                        start_time,
+                        self.duration,
+                    )?;
+                    let source = create_channel_mapped_sample_source(
+                        Box::new(metronome_source),
+                        context.target_format.clone(),
+                        vec![vec![metronome.track.clone()]],
+                        context.resampler_type,
+                    )?;
+                    sources.push(source);
+                } else {
+                    warn!(
+                        song = self.name.as_str(),
+                        "Metronome configured but no beat grid available (add a tempo map or click track)"
+                    );
+                }
+            }
+        }
         Ok(sources)
     }
 
@@ -710,7 +759,7 @@ impl Song {
         Ok(player::v1::Song {
             name: self.name.to_string(),
             duration: Some(duration),
-            tracks: self.tracks.iter().map(|track| track.name.clone()).collect(),
+            tracks: self.output_track_names(),
             beat_grid,
             sections,
         })
@@ -754,6 +803,7 @@ impl Default for Song {
             tracks: Default::default(),
             samples_config: config::SamplesConfig::default(),
             tempo_map: None,
+            metronome: None,
             beat_grid: None,
             loop_playback: false,
             sections: Vec::new(),
@@ -2967,6 +3017,67 @@ sections:
             &mappings,
         )?;
         assert_eq!(sources.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn create_channel_mapped_sources_with_metronome() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("metronome_song");
+        fs::create_dir(&song_dir)?;
+        // 2 seconds of silence at 44.1k.
+        crate::testutil::write_wav(song_dir.join("track.wav"), vec![vec![0_i32; 88200]], 44100)?;
+        fs::write(
+            song_dir.join("song.yaml"),
+            r#"
+name: Metronome Song
+tracks:
+  - name: track
+    file: track.wav
+tempo:
+  bpm: 120
+metronome: {}
+"#,
+        )?;
+        let song_config = crate::config::Song::deserialize(song_dir.join("song.yaml").as_path())?;
+        let song = super::Song::new(&song_dir, &song_config)?;
+        assert_eq!(
+            song.output_track_names(),
+            vec!["track".to_string(), "metronome".to_string()]
+        );
+
+        let target = crate::audio::TargetFormat::new(44100, crate::audio::SampleFormat::Int, 16)?;
+        let context = crate::audio::PlaybackContext::new(target, 1024, None, Default::default());
+
+        // Without the metronome mapped, only the file source is produced.
+        let mut mappings = std::collections::HashMap::new();
+        mappings.insert("track".to_string(), vec![1_u16]);
+        let sources = song.create_channel_mapped_sources_from(
+            &context,
+            std::time::Duration::ZERO,
+            &mappings,
+        )?;
+        assert_eq!(sources.len(), 1);
+
+        // With the metronome mapped, the virtual source is appended.
+        mappings.insert("metronome".to_string(), vec![2_u16]);
+        let mut sources = song.create_channel_mapped_sources_from(
+            &context,
+            std::time::Duration::ZERO,
+            &mappings,
+        )?;
+        assert_eq!(sources.len(), 2);
+
+        let metronome_source = sources
+            .iter_mut()
+            .find(|s| s.channel_mappings() == [vec!["metronome".to_string()]])
+            .expect("metronome source present");
+        // The first click starts at t=0 — the opening frames carry energy.
+        let mut buf = vec![0.0f32; 512];
+        let frames = metronome_source.read_frames(&mut buf, 512)?;
+        assert_eq!(frames, 512);
+        let peak = buf.iter().fold(0.0f32, |max, s| max.max(s.abs()));
+        assert!(peak > 0.1, "metronome should click at t=0, peak was {peak}");
         Ok(())
     }
 

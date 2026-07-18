@@ -97,6 +97,16 @@ tempo:
       bpm: 96
       time_signature: 6/8
 
+# (Optional) A generated metronome click track, derived from the beat grid
+# (tempo map or click analysis). It appears as a virtual output track —
+# route it via track_mappings in the profile like any other track.
+metronome:
+  track: metronome          # output track name (default "metronome")
+  accent: [3, 2, 2]         # optional accent grouping within a measure
+  sounds:                   # optional; synthesized clicks by default
+    accent: { freq: 1600, volume: 1.0 }
+    normal: { file: clicks/lo.wav }
+
 # (Optional) Named sections defined by measure boundaries. Used for section
 # looping during playback. Measure numbers are 1-indexed; end_measure is exclusive.
 sections:
@@ -198,6 +208,32 @@ prefills it from the song's MIDI file or an analyzed click track.
 
 Songs with a DSL light show but no `tempo {}` block in the `.light` file automatically use
 the song's tempo map for measure-based cues and beat-based effect parameters.
+
+## Metronome
+
+The optional `metronome:` block generates a click track from the song's beat grid — no click
+audio file needed. It replaces external metronome tools: the clicks always stay locked to the
+song (including seeks and section loops), follow tempo changes and odd meters from the tempo
+map, and route anywhere.
+
+```yaml
+metronome:
+  track: metronome    # the output track name (default "metronome")
+  accent: [3, 2, 2]   # optional accent grouping (7/8: accents on beats 1, 4, 6)
+  sounds:
+    accent: { freq: 1600, volume: 1.0 }   # synthesized click, or:
+    normal: { file: clicks/lo.wav }       # a sample file (relative to the song dir)
+```
+
+- The metronome is a **virtual track**: add its track name to the profile's `track_mappings`
+  to route it (e.g. to your in-ear mix), and adjust its level in the track gains mixer.
+  Without a mapping it is silent and costs nothing.
+- One click per denominator note: a 7/8 song clicks seven eighths per measure. Accents fall
+  on beat 1, or on each group start when `accent` is set.
+- Sounds default to short synthesized sine clicks (accent 1600 Hz, normal 1200 Hz); each can
+  be overridden with a sample file.
+- The `metronome` track name must not collide with a real track. A beat grid (tempo map or
+  analyzed click track) is required.
 
 ## Sections
 

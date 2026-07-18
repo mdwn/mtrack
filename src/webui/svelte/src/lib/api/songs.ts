@@ -137,6 +137,22 @@ export interface TempoConfig {
   changes?: TempoChangeConfig[];
 }
 
+/** The song.yaml `metronome:` block — a generated, routable click track. */
+export interface ClickSoundConfig {
+  file?: string;
+  freq?: number;
+  volume?: number;
+}
+
+export interface MetronomeConfig {
+  track?: string;
+  accent?: number[];
+  sounds?: {
+    accent?: ClickSoundConfig;
+    normal?: ClickSoundConfig;
+  };
+}
+
 export interface GuessedTempo {
   start_seconds: number;
   bpm: number;

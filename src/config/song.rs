@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use tracing::info;
 
 use super::{
+    metronome::MetronomeConfig,
     midi::{self, ToMidiEvent},
     notification::SongNotificationConfig,
     samples::{SampleDefinition, SampleTrigger, SamplesConfig},
@@ -63,6 +64,10 @@ pub struct Song {
     /// the beat grid, taking precedence over click track analysis.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     tempo: Option<TempoConfig>,
+    /// The song's metronome: a generated click track, routable like any
+    /// other track. Requires a beat grid (tempo map or click analysis).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    metronome: Option<MetronomeConfig>,
     /// Per-song notification audio overrides.
     #[serde(default)]
     notification_audio: Option<SongNotificationConfig>,
@@ -107,6 +112,7 @@ impl Song {
             loop_playback: false,
             sections: Vec::new(),
             tempo: None,
+            metronome: None,
             notification_audio: None,
         }
     }
@@ -197,6 +203,22 @@ impl Song {
             }
         }
 
+        if let Some(metronome) = &self.metronome {
+            if let Err(err) = metronome.validate() {
+                errors.push(format!("metronome: {}", err));
+            }
+            if self
+                .tracks
+                .iter()
+                .any(|track| track.name() == metronome.track)
+            {
+                errors.push(format!(
+                    "metronome: track name \"{}\" collides with an audio track",
+                    metronome.track
+                ));
+            }
+        }
+
         if errors.is_empty() {
             Ok(())
         } else {
@@ -264,6 +286,11 @@ impl Song {
     /// Gets the song's tempo map configuration.
     pub fn tempo(&self) -> Option<&TempoConfig> {
         self.tempo.as_ref()
+    }
+
+    /// Gets the song's metronome configuration.
+    pub fn metronome(&self) -> Option<&MetronomeConfig> {
+        self.metronome.as_ref()
     }
 
     /// Gets the per-song notification audio overrides.
