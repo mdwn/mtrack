@@ -26,13 +26,13 @@ use crate::{
         GetConfigRequest, GetConfigResponse, GetCuesRequest, GetCuesResponse, GetTrackGainsRequest,
         GetTrackGainsResponse, LoopSectionRequest, LoopSectionResponse, NextRequest, NextResponse,
         PlayFromRequest, PlayRequest, PlayResponse, PlaySongFromRequest, PreviousRequest,
-        PreviousResponse, RemoveProfileRequest, SectionAckRequest, SectionAckResponse,
-        SetTrackGainRequest, SetTrackGainResponse, SetTrackMuteRequest, SetTrackMuteResponse,
-        StatusRequest, StatusResponse, StopRequest, StopResponse, StopSamplesRequest,
-        StopSamplesResponse, StopSectionLoopRequest, StopSectionLoopResponse,
-        SwitchToPlaylistRequest, SwitchToPlaylistResponse, TrackGain, UpdateAudioRequest,
-        UpdateConfigResponse, UpdateControllersRequest, UpdateDmxRequest, UpdateMidiRequest,
-        UpdateProfileRequest, FILE_DESCRIPTOR_SET,
+        PreviousResponse, RemoveProfileRequest, SectionAckRequest, SectionAckResponse, SeekRequest,
+        SeekResponse, SeekToSectionRequest, SetTrackGainRequest, SetTrackGainResponse,
+        SetTrackMuteRequest, SetTrackMuteResponse, StatusRequest, StatusResponse, StopRequest,
+        StopResponse, StopSamplesRequest, StopSamplesResponse, StopSectionLoopRequest,
+        StopSectionLoopResponse, SwitchToPlaylistRequest, SwitchToPlaylistResponse, TrackGain,
+        UpdateAudioRequest, UpdateConfigResponse, UpdateControllersRequest, UpdateDmxRequest,
+        UpdateMidiRequest, UpdateProfileRequest, FILE_DESCRIPTOR_SET,
     },
 };
 
@@ -192,6 +192,34 @@ impl PlayerService for PlayerServer {
             .unwrap_or(std::time::Duration::ZERO);
 
         Self::play_response(self.player.play_song_from(&req.song_name, start_time).await)
+    }
+
+    async fn seek(&self, request: Request<SeekRequest>) -> Result<Response<SeekResponse>, Status> {
+        let position = request
+            .into_inner()
+            .position
+            .map(std::time::Duration::try_from)
+            .transpose()
+            .map_err(|e| Status::invalid_argument(format!("Invalid duration: {}", e)))?
+            .unwrap_or(std::time::Duration::ZERO);
+
+        self.player
+            .seek_to(position)
+            .await
+            .map_err(|e| Status::failed_precondition(e.to_string()))?;
+        Ok(Response::new(SeekResponse {}))
+    }
+
+    async fn seek_to_section(
+        &self,
+        request: Request<SeekToSectionRequest>,
+    ) -> Result<Response<SeekResponse>, Status> {
+        let req = request.into_inner();
+        self.player
+            .seek_to_section(&req.section_name)
+            .await
+            .map_err(|e| Status::failed_precondition(e.to_string()))?;
+        Ok(Response::new(SeekResponse {}))
     }
 
     async fn previous(

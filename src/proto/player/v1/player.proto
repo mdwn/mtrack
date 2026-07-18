@@ -141,6 +141,21 @@ message PlaySongFromRequest {
     google.protobuf.Duration start_time = 2;
 }
 
+// SeekRequest is the message for seeking to a position within the current song.
+message SeekRequest {
+    // Position is the absolute position to seek to within the current song.
+    google.protobuf.Duration position = 1;
+}
+
+// SeekResponse is returned after a seek.
+message SeekResponse {}
+
+// SeekToSectionRequest is the message for seeking to the start of a named section.
+message SeekToSectionRequest {
+    // SectionName is the name of the section to seek to.
+    string section_name = 1;
+}
+
 // GetCuesRequest is the message for requesting the list of cues in the current song.
 message GetCuesRequest {}
 
@@ -331,6 +346,14 @@ service PlayerService {
 
     // PlaySongFrom will play a specific song starting from a specific time.
     rpc PlaySongFrom(PlaySongFromRequest) returns (PlayResponse);
+
+    // Seek jumps to a position within the current song. While playing,
+    // playback restarts at the position with all subsystems re-synchronized;
+    // while stopped, the position is stored and used by the next Play.
+    rpc Seek(SeekRequest) returns (SeekResponse);
+
+    // SeekToSection jumps to the start of the named section of the current song.
+    rpc SeekToSection(SeekToSectionRequest) returns (SeekResponse);
 
     // Previous will move the playlist to the previous song.
     rpc Previous(PreviousRequest) returns (PreviousResponse);

@@ -53,6 +53,12 @@ fn default_osc_stop_section_loop() -> String {
 fn default_osc_loop_section() -> String {
     "/mtrack/loop_section".to_string()
 }
+fn default_osc_seek() -> String {
+    "/mtrack/seek".to_string()
+}
+fn default_osc_seek_section() -> String {
+    "/mtrack/seek_section".to_string()
+}
 fn default_osc_track_gain() -> String {
     "/mtrack/track/*/gain".to_string()
 }
@@ -342,6 +348,14 @@ pub struct OscController {
     /// The OSC address to loop a specific section by name (takes a string arg).
     #[serde(default = "default_osc_loop_section")]
     loop_section: String,
+    /// The OSC address to seek within the current song (takes a numeric
+    /// seconds arg).
+    #[serde(default = "default_osc_seek")]
+    seek: String,
+    /// The OSC address to seek to the start of a named section (takes a
+    /// string arg).
+    #[serde(default = "default_osc_seek_section")]
+    seek_section: String,
     /// The OSC address pattern to set an output track's gain in dB (takes a
     /// float arg). The `*` segment is the track name; the same pattern (with
     /// the name substituted) is used for gain feedback broadcasts.
@@ -380,6 +394,8 @@ impl Default for OscController {
             section_ack: default_osc_section_ack(),
             stop_section_loop: default_osc_stop_section_loop(),
             loop_section: default_osc_loop_section(),
+            seek: default_osc_seek(),
+            seek_section: default_osc_seek_section(),
             track_gain: default_osc_track_gain(),
             status: default_osc_status(),
             playlist_current: default_osc_playlist_current(),
@@ -453,6 +469,16 @@ impl OscController {
     /// Gets the loop section OSC address.
     pub fn loop_section(&self) -> &str {
         &self.loop_section
+    }
+
+    /// Gets the seek OSC address.
+    pub fn seek(&self) -> &str {
+        &self.seek
+    }
+
+    /// Gets the seek-to-section OSC address.
+    pub fn seek_section(&self) -> &str {
+        &self.seek_section
     }
 
     /// Gets the OSC address pattern for setting an output track's gain.
