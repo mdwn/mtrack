@@ -156,7 +156,8 @@
     <div class="toolbar-controls">
       {#if !song.beat_grid}
         <span class="no-grid-warning"
-          >No beat grid — add a click track for measure-based sections</span
+          >No beat grid — add a tempo map or click track for measure-based
+          sections</span
         >
       {/if}
       <button class="btn btn-sm" onclick={zoomOut} title="Zoom out">−</button>

@@ -87,7 +87,11 @@ pub fn parse_time_signature(raw: &str) -> Result<TimeSignature, String> {
                 .parse::<u32>()
                 .map_err(|_| format!("invalid time signature denominator in {raw:?}"))?,
         ),
-        _ => return Err(format!("time signature {raw:?} must be numerator/denominator")),
+        _ => {
+            return Err(format!(
+                "time signature {raw:?} must be numerator/denominator"
+            ))
+        }
     };
     if numerator == 0 || numerator > 64 {
         return Err(format!("time signature numerator {numerator} out of range"));
@@ -213,9 +217,18 @@ mod tests {
 
     #[test]
     fn parse_time_signatures() {
-        assert_eq!(parse_time_signature("4/4").unwrap(), TimeSignature::new(4, 4));
-        assert_eq!(parse_time_signature("7/8").unwrap(), TimeSignature::new(7, 8));
-        assert_eq!(parse_time_signature(" 6 / 8 ").unwrap(), TimeSignature::new(6, 8));
+        assert_eq!(
+            parse_time_signature("4/4").unwrap(),
+            TimeSignature::new(4, 4)
+        );
+        assert_eq!(
+            parse_time_signature("7/8").unwrap(),
+            TimeSignature::new(7, 8)
+        );
+        assert_eq!(
+            parse_time_signature(" 6 / 8 ").unwrap(),
+            TimeSignature::new(6, 8)
+        );
         assert!(parse_time_signature("44").is_err());
         assert!(parse_time_signature("4/3").is_err());
         assert!(parse_time_signature("0/4").is_err());
@@ -264,7 +277,10 @@ changes:
             TempoTransition::Measures(2.0, TransitionCurve::Linear)
         );
         assert_eq!(map.changes[0].original_measure_beat, Some((33, 1.0)));
-        assert_eq!(map.changes[1].time_signature, Some(TimeSignature::new(6, 8)));
+        assert_eq!(
+            map.changes[1].time_signature,
+            Some(TimeSignature::new(6, 8))
+        );
         assert_eq!(map.changes[1].transition, TempoTransition::Snap);
     }
 

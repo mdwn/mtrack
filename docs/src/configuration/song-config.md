@@ -79,6 +79,24 @@ tracks:
 # boundaries. Press Play or Next to break out and advance the playlist.
 loop_playback: true
 
+# (Optional) The song's tempo map. When present, this is the canonical source
+# of the beat grid — it takes precedence over click track analysis. BPM is in
+# quarter notes per minute.
+tempo:
+  bpm: 118
+  time_signature: 4/4
+  # Seconds of lead-in before measure 1 beat 1 (optional).
+  start: 0.35
+  # Tempo and/or time signature changes at measure positions (optional).
+  changes:
+    - measure: 33
+      bpm: 126
+      # Ramp gradually over 2 measures; omit `transition` for an instant change.
+      transition: { measures: 2 }
+    - measure: 65
+      bpm: 96
+      time_signature: 6/8
+
 # (Optional) Named sections defined by measure boundaries. Used for section
 # looping during playback. Measure numbers are 1-indexed; end_measure is exclusive.
 sections:
@@ -144,14 +162,51 @@ Setting `loop_playback: true` causes the song to loop indefinitely when it reach
 During a looping song, pressing Play or Next breaks out of the loop, advances the playlist,
 and auto-plays the next song. Stop cancels everything as usual.
 
+## Tempo Map
+
+The optional `tempo:` block describes the song's tempo and meter explicitly. When present it
+is the canonical source of the song's beat grid, used for section resolution, the beat/measure
+display, and (in the future) metronome generation — taking precedence over click track
+analysis.
+
+```yaml
+tempo:
+  bpm: 152            # quarter notes per minute
+  time_signature: 7/8 # odd meters welcome; the grid gets one beat per eighth
+  start: 0.2          # optional lead-in seconds before measure 1 beat 1
+  changes:            # optional tempo/time-signature changes
+    - measure: 33
+      bpm: 126
+      transition: { measures: 2 }  # linear ramp; or { beats: 4 }; omit to snap
+    - measure: 65
+      time_signature: 6/8
+```
+
+- `bpm` — Initial tempo in quarter-note beats per minute (required)
+- `time_signature` — Initial meter as `numerator/denominator` (default `4/4`)
+- `start` — Offset in seconds of the first downbeat within the audio (default 0)
+- `changes` — List of changes in ascending measure order. Each entry names a `measure`
+  (1-indexed, with optional fractional `beat` in quarter-note units) and provides a new
+  `bpm` and/or `time_signature`. An optional `transition` ramps the tempo linearly over
+  `{ beats: N }` or `{ measures: N }`; without it the change is instant.
+
+The generated beat grid emits one beat per denominator note — a 7/8 song gets seven beats per
+measure, matching how a metronome would click it.
+
+A tempo map can be added in the web UI's Sections tab, including a one-click "detect" that
+prefills it from the song's MIDI file or an analyzed click track.
+
+Songs with a DSL light show but no `tempo {}` block in the `.light` file automatically use
+the song's tempo map for measure-based cues and beat-based effect parameters.
+
 ## Sections
 
 Sections define named regions of a song by measure boundaries. They enable section looping
 during playback — activating a section loop causes playback to repeat that section until
 stopped.
 
-Sections require a beat grid (from a click track) or a tempo map (from MIDI) so that measure
-boundaries can be resolved to audio positions.
+Sections require a beat grid — from an explicit `tempo:` block or from click track
+analysis — so that measure boundaries can be resolved to audio positions.
 
 ```yaml
 sections:
@@ -172,7 +227,8 @@ timeline editor that supports drag-to-create, resize, move, rename, and delete.
 
 ## Beat Grid and Song Analysis Cache
 
-When a song has a track named "click", mtrack analyzes it offline to detect beat positions and
+A song's beat grid comes from the explicit `tempo:` block when one is configured. Otherwise,
+when a song has a track named "click", mtrack analyzes it offline to detect beat positions and
 measure boundaries. The result is a `BeatGrid` with absolute beat times and accented-beat
 indices. Beat grid data is exposed via gRPC and displayed in the web UI (measure/beat position
 during playback, beat/measure counts in song detail).

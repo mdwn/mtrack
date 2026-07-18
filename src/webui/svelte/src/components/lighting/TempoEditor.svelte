@@ -25,6 +25,9 @@
     songName?: string;
     hasBeatGrid?: boolean;
     hasMidi?: boolean;
+    /** Restrict change positions to measure/beat (used by the song-level
+     *  tempo editor, whose config format has no absolute-time positions). */
+    measureOnly?: boolean;
   }
 
   let {
@@ -34,6 +37,7 @@
     songName,
     hasBeatGrid = false,
     hasMidi = false,
+    measureOnly = false,
   }: Props = $props();
 
   let guessSource = $state<"midi" | "beat_grid" | null>(null);
@@ -304,6 +308,7 @@
               <span class="field-label">{$t("tempo.at")}</span>
               <TimestampInput
                 value={change.timestamp}
+                {measureOnly}
                 onchange={(ts) => updateChange(i, { ...change, timestamp: ts })}
               />
             </label>

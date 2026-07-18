@@ -118,8 +118,7 @@ impl BeatGrid {
             let step = 4.0 / time_signature.denominator as f64;
             for k in 0..time_signature.numerator {
                 let beat_position = 1.0 + k as f64 * step;
-                let Some(time) =
-                    map.measure_to_time_with_offset(measure, beat_position, 0, 0.0)
+                let Some(time) = map.measure_to_time_with_offset(measure, beat_position, 0, 0.0)
                 else {
                     break 'measures;
                 };
@@ -886,12 +885,7 @@ mod tests {
         #[test]
         fn simple_four_four() {
             // 120 BPM 4/4 for 4 seconds = 8 beats, 2 measures.
-            let map = TempoMap::new(
-                Duration::ZERO,
-                120.0,
-                TimeSignature::new(4, 4),
-                Vec::new(),
-            );
+            let map = TempoMap::new(Duration::ZERO, 120.0, TimeSignature::new(4, 4), Vec::new());
             let grid = BeatGrid::from_tempo_map(&map, Duration::from_secs(4));
             assert_eq!(grid.beats.len(), 8);
             assert_eq!(grid.measure_starts, vec![0, 4]);
@@ -917,12 +911,7 @@ mod tests {
         fn seven_eight_emits_denominator_notes() {
             // 7/8 at quarter = 120 -> eighth = 0.25s. 7 beats per measure,
             // measures are 1.75s long.
-            let map = TempoMap::new(
-                Duration::ZERO,
-                120.0,
-                TimeSignature::new(7, 8),
-                Vec::new(),
-            );
+            let map = TempoMap::new(Duration::ZERO, 120.0, TimeSignature::new(7, 8), Vec::new());
             let grid = BeatGrid::from_tempo_map(&map, Duration::from_secs_f64(3.5));
             assert_eq!(grid.beats.len(), 14);
             assert_eq!(grid.measure_starts, vec![0, 7]);
@@ -976,11 +965,7 @@ mod tests {
             // Measure 2 has 6 beats spaced 0.25s starting at 2.0.
             assert_eq!(grid.beats.len(), 4 + 6);
             for k in 0..6 {
-                assert_close(
-                    grid.beats[4 + k],
-                    2.0 + k as f64 * 0.25,
-                    "6/8 eighth note",
-                );
+                assert_close(grid.beats[4 + k], 2.0 + k as f64 * 0.25, "6/8 eighth note");
             }
         }
 
@@ -1020,12 +1005,7 @@ mod tests {
 
         #[test]
         fn truncates_at_duration() {
-            let map = TempoMap::new(
-                Duration::ZERO,
-                120.0,
-                TimeSignature::new(4, 4),
-                Vec::new(),
-            );
+            let map = TempoMap::new(Duration::ZERO, 120.0, TimeSignature::new(4, 4), Vec::new());
             // 1.2s cuts off mid-measure: beats at 0.0, 0.5, 1.0.
             let grid = BeatGrid::from_tempo_map(&map, Duration::from_secs_f64(1.2));
             assert_eq!(grid.beats.len(), 3);
@@ -1034,12 +1014,7 @@ mod tests {
 
         #[test]
         fn zero_duration_is_empty() {
-            let map = TempoMap::new(
-                Duration::ZERO,
-                120.0,
-                TimeSignature::new(4, 4),
-                Vec::new(),
-            );
+            let map = TempoMap::new(Duration::ZERO, 120.0, TimeSignature::new(4, 4), Vec::new());
             let grid = BeatGrid::from_tempo_map(&map, Duration::ZERO);
             assert!(grid.beats.is_empty());
             assert!(grid.measure_starts.is_empty());

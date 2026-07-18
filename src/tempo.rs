@@ -322,10 +322,9 @@ impl TempoMap {
             // Resolve the change's absolute time, integrating through any
             // still-in-progress gradual transition from the previous change.
             let (absolute_time, advanced_secs) = match &change.position {
-                TempoChangePosition::Time(t) => (
-                    *t,
-                    t.saturating_sub(accumulated_time).as_secs_f64(),
-                ),
+                TempoChangePosition::Time(t) => {
+                    (*t, t.saturating_sub(accumulated_time).as_secs_f64())
+                }
                 TempoChangePosition::MeasureBeat(m, b) => {
                     let total_beats =
                         (*m - 1) as f64 * current_time_sig.beats_per_measure() + (*b - 1.0);
@@ -716,8 +715,8 @@ impl TempoMap {
                         // Matches bpm_at_time: the duration is computed with
                         // the time signature in effect at the change time
                         // (which includes this change's own signature).
-                        let ts = self
-                            .time_signature_at_time(change_time, offset_duration.as_secs_f64());
+                        let ts =
+                            self.time_signature_at_time(change_time, offset_duration.as_secs_f64());
                         let beats = measures * ts.beats_per_measure();
                         current_ramp = Some(SegmentRamp {
                             old_bpm: bpm_at_change,

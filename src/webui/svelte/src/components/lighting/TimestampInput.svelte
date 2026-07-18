@@ -19,9 +19,11 @@
   interface Props {
     value: Timestamp;
     onchange: (ts: Timestamp) => void;
+    /** Lock the input to measure/beat mode (hides the mode selector). */
+    measureOnly?: boolean;
   }
 
-  let { value, onchange }: Props = $props();
+  let { value, onchange, measureOnly = false }: Props = $props();
 
   let mode = $derived(value.type);
 
@@ -67,17 +69,19 @@
 </script>
 
 <div class="timestamp-input">
-  <select
-    class="mode-select"
-    value={mode}
-    onchange={(e) =>
-      switchMode(
-        (e.target as HTMLSelectElement).value as "absolute" | "measure_beat",
-      )}
-  >
-    <option value="absolute">{$t("timestamp.time")}</option>
-    <option value="measure_beat">{$t("timestamp.measure")}</option>
-  </select>
+  {#if !measureOnly}
+    <select
+      class="mode-select"
+      value={mode}
+      onchange={(e) =>
+        switchMode(
+          (e.target as HTMLSelectElement).value as "absolute" | "measure_beat",
+        )}
+    >
+      <option value="absolute">{$t("timestamp.time")}</option>
+      <option value="measure_beat">{$t("timestamp.measure")}</option>
+    </select>
+  {/if}
 
   {#if mode === "absolute"}
     <div class="abs-fields">

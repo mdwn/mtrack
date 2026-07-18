@@ -86,6 +86,7 @@ pub(super) async fn get_songs(State(state): State<WebUiState>) -> impl IntoRespo
                     "beats": g.beats,
                     "measure_starts": g.measure_starts,
                 })),
+                "has_tempo_map": song.tempo_map().is_some(),
                 "loop_playback": song.loop_playback(),
                 "sections": song.sections().iter().map(|s| json!({
                     "name": s.name,

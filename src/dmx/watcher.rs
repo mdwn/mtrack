@@ -40,6 +40,7 @@ pub struct WatcherHandle {
 /// 3. Swaps it into current_song_timeline
 /// 4. Reconstructs state at current_song_time
 /// 5. Sends a reload notification over WebSocket
+#[allow(clippy::too_many_arguments)]
 pub fn start_watching(
     file_paths: Vec<PathBuf>,
     effect_engine: Arc<Mutex<EffectEngine>>,
@@ -47,6 +48,7 @@ pub fn start_watching(
     current_song_time: Arc<AtomicU64>,
     lighting_system: Option<Arc<Mutex<LightingSystem>>>,
     lighting_config: Option<crate::config::Lighting>,
+    fallback_tempo_map: Option<crate::tempo::TempoMap>,
     broadcast_tx: broadcast::Sender<String>,
 ) -> Result<WatcherHandle, Box<dyn std::error::Error>> {
     // Canonicalize paths so they match what the OS reports in events.
@@ -153,6 +155,7 @@ pub fn start_watching(
                         &current_song_time,
                         lighting_system.as_ref(),
                         lighting_config.as_ref(),
+                        fallback_tempo_map.as_ref(),
                     ) {
                         Ok(()) => {
                             info!("Light show reloaded successfully");
@@ -186,6 +189,7 @@ pub fn start_watching(
 }
 
 /// Re-parses light show files, builds a new timeline, and swaps it in.
+#[allow(clippy::too_many_arguments)]
 fn reload_timeline(
     file_paths: &[PathBuf],
     effect_engine: &Arc<Mutex<EffectEngine>>,
@@ -193,6 +197,7 @@ fn reload_timeline(
     current_song_time: &Arc<AtomicU64>,
     lighting_system: Option<&Arc<Mutex<LightingSystem>>>,
     lighting_config: Option<&crate::config::Lighting>,
+    fallback_tempo_map: Option<&crate::tempo::TempoMap>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut all_shows = Vec::new();
 
@@ -253,8 +258,12 @@ fn reload_timeline(
         .map(|e| resolve_effect_groups(lighting_system, e))
         .collect();
 
-    // Extract tempo map before moving new_timeline into the lock.
-    let tempo_map = new_timeline.tempo_map().cloned();
+    // Extract tempo map before moving new_timeline into the lock. Shows
+    // without their own tempo block fall back to the song's tempo map.
+    let tempo_map = new_timeline
+        .tempo_map()
+        .cloned()
+        .or_else(|| fallback_tempo_map.cloned());
 
     // Swap the timeline first, so the main effects loop won't generate
     // updates from the old timeline while the engine has new state.
@@ -337,6 +346,7 @@ mod test {
             &song_time,
             None,
             None,
+            None,
         );
         assert!(result.is_ok());
         assert!(timeline.lock().is_some());
@@ -368,6 +378,7 @@ mod test {
             &song_time,
             None,
             None,
+            None,
         );
         assert!(result.is_ok());
         assert!(timeline.lock().is_some());
@@ -384,6 +395,7 @@ mod test {
             &effect_engine,
             &timeline,
             &song_time,
+            None,
             None,
             None,
         );
@@ -405,6 +417,7 @@ mod test {
             &effect_engine,
             &timeline,
             &song_time,
+            None,
             None,
             None,
         );
@@ -447,6 +460,7 @@ mod test {
             &song_time,
             None,
             Some(&lighting_config),
+            None,
         );
         assert!(result.is_ok());
     }
@@ -487,6 +501,7 @@ mod test {
             &song_time,
             None,
             Some(&lighting_config),
+            None,
         );
         assert!(result.is_err());
     }
@@ -522,6 +537,7 @@ mod test {
             &song_time,
             Some(&lighting_system),
             None,
+            None,
         );
         assert!(result.is_ok());
     }
@@ -543,6 +559,7 @@ mod test {
             &effect_engine,
             &timeline,
             &song_time,
+            None,
             None,
             None,
         );
@@ -578,6 +595,7 @@ mod test {
             &effect_engine,
             &timeline,
             &song_time,
+            None,
             None,
             None,
         );
@@ -620,6 +638,7 @@ show "test" {
             &effect_engine,
             &timeline,
             &song_time,
+            None,
             None,
             None,
         );
@@ -697,6 +716,7 @@ show "test" {
             &song_time,
             None,
             None,
+            None,
         );
         assert!(result.is_ok());
     }
@@ -724,6 +744,7 @@ show "test" {
             effect_engine,
             timeline.clone(),
             song_time,
+            None,
             None,
             None,
             tx,
@@ -796,6 +817,7 @@ show "test" {
             song_time,
             None,
             None,
+            None,
             tx,
         )
         .unwrap();
@@ -849,6 +871,7 @@ show "test" {
             effect_engine,
             timeline,
             song_time,
+            None,
             None,
             None,
             tx,
