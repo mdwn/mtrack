@@ -26,6 +26,7 @@ pub mod context;
 pub mod cpal;
 pub mod crossfade;
 pub mod format;
+pub mod metronome;
 pub mod midi_tempo;
 pub mod mixer;
 pub mod mock;
