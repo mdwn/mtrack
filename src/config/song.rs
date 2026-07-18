@@ -22,6 +22,7 @@ use super::{
     midi::{self, ToMidiEvent},
     notification::SongNotificationConfig,
     samples::{SampleDefinition, SampleTrigger, SamplesConfig},
+    tempo::TempoConfig,
     track::Track,
 };
 
@@ -58,6 +59,10 @@ pub struct Song {
     /// Used for section looping during playback.
     #[serde(default)]
     sections: Vec<Section>,
+    /// The song's tempo map. When present, this is the canonical source of
+    /// the beat grid, taking precedence over click track analysis.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tempo: Option<TempoConfig>,
     /// Per-song notification audio overrides.
     #[serde(default)]
     notification_audio: Option<SongNotificationConfig>,
@@ -101,6 +106,7 @@ impl Song {
             sample_triggers,
             loop_playback: false,
             sections: Vec::new(),
+            tempo: None,
             notification_audio: None,
         }
     }
@@ -185,6 +191,12 @@ impl Song {
             }
         }
 
+        if let Some(tempo) = &self.tempo {
+            if let Err(err) = tempo.validate() {
+                errors.push(format!("tempo: {}", err));
+            }
+        }
+
         if errors.is_empty() {
             Ok(())
         } else {
@@ -247,6 +259,11 @@ impl Song {
     /// Gets the named sections of this song.
     pub fn sections(&self) -> &[Section] {
         &self.sections
+    }
+
+    /// Gets the song's tempo map configuration.
+    pub fn tempo(&self) -> Option<&TempoConfig> {
+        self.tempo.as_ref()
     }
 
     /// Gets the per-song notification audio overrides.

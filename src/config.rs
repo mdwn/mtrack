@@ -29,6 +29,7 @@ pub mod samples;
 mod song;
 mod statusevents;
 pub mod store;
+mod tempo;
 mod track;
 mod trackmappings;
 pub mod trigger;
@@ -65,6 +66,7 @@ pub use self::samples::{
 pub use self::song::{LightShow, LightingShow, MidiPlayback, Section, Song};
 pub use self::statusevents::StatusEvents;
 pub use self::store::ConfigStore;
+pub use self::tempo::{parse_time_signature, TempoChangeConfig, TempoConfig, TransitionConfig};
 pub use self::track::Track;
 
 mod kind;
