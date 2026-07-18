@@ -150,6 +150,78 @@ impl TransitionCurve {
     }
 }
 
+/// State of an in-progress gradual tempo transition while walking a tempo map
+/// beat-by-beat. Tracks how far into the ramp the current position is so that
+/// beat→time conversion integrates through the curve instead of snapping.
+#[derive(Debug, Clone, Copy)]
+struct SegmentRamp {
+    old_bpm: f64,
+    new_bpm: f64,
+    total_secs: f64,
+    elapsed_secs: f64,
+    curve: TransitionCurve,
+}
+
+impl SegmentRamp {
+    /// Beats left between the current position and the end of the ramp.
+    fn beats_remaining(&self) -> f64 {
+        self.curve.beats_in_remaining_transition(
+            self.old_bpm,
+            self.new_bpm,
+            self.total_secs,
+            self.elapsed_secs,
+        )
+    }
+
+    /// Seconds needed to advance `beats` beats from the current position,
+    /// integrating through the remainder of the ramp and then continuing at
+    /// `settled_bpm` once the ramp completes.
+    fn secs_for_beats(&self, beats: f64, settled_bpm: f64) -> f64 {
+        let remaining = self.beats_remaining();
+        if beats <= remaining {
+            self.curve
+                .solve_duration_for_beats(
+                    self.old_bpm,
+                    self.new_bpm,
+                    self.total_secs,
+                    self.elapsed_secs,
+                    beats,
+                )
+                .unwrap_or_else(|| beats * 60.0 / ((self.old_bpm + self.new_bpm) / 2.0))
+        } else {
+            (self.total_secs - self.elapsed_secs) + (beats - remaining) * 60.0 / settled_bpm
+        }
+    }
+
+    /// BPM after advancing `secs` from the current position.
+    fn bpm_after_secs(&self, secs: f64) -> f64 {
+        let t = ((self.elapsed_secs + secs) / self.total_secs).clamp(0.0, 1.0);
+        self.curve.bpm_at(t, self.old_bpm, self.new_bpm)
+    }
+
+    /// The ramp state after advancing `secs`, or `None` once it has completed.
+    fn advanced_by(self, secs: f64) -> Option<SegmentRamp> {
+        let elapsed = self.elapsed_secs + secs;
+        if elapsed >= self.total_secs {
+            None
+        } else {
+            Some(SegmentRamp {
+                elapsed_secs: elapsed,
+                ..self
+            })
+        }
+    }
+}
+
+/// Seconds needed to advance `beats` beats given an optional in-progress ramp,
+/// settling at `bpm` when no ramp is active (or after it completes).
+fn segment_secs_for_beats(ramp: Option<&SegmentRamp>, bpm: f64, beats: f64) -> f64 {
+    match ramp {
+        Some(ramp) => ramp.secs_for_beats(beats, bpm),
+        None => beats * 60.0 / bpm,
+    }
+}
+
 /// Tempo transition type
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TempoTransition {
@@ -244,17 +316,26 @@ impl TempoMap {
             }
         });
 
+        let mut current_ramp: Option<SegmentRamp> = None;
+
         for change in sorted_changes {
-            let absolute_time = match &change.position {
-                TempoChangePosition::Time(t) => *t,
+            // Resolve the change's absolute time, integrating through any
+            // still-in-progress gradual transition from the previous change.
+            let (absolute_time, advanced_secs) = match &change.position {
+                TempoChangePosition::Time(t) => (
+                    *t,
+                    t.saturating_sub(accumulated_time).as_secs_f64(),
+                ),
                 TempoChangePosition::MeasureBeat(m, b) => {
-                    // Convert measure/beat to time using current tempo state
                     let total_beats =
                         (*m - 1) as f64 * current_time_sig.beats_per_measure() + (*b - 1.0);
                     let beats_from_last_change = total_beats - accumulated_beats;
-                    let time_from_beats =
-                        Duration::from_secs_f64(beats_from_last_change * 60.0 / current_bpm);
-                    accumulated_time + time_from_beats
+                    let secs = segment_secs_for_beats(
+                        current_ramp.as_ref(),
+                        current_bpm,
+                        beats_from_last_change,
+                    );
+                    (accumulated_time + Duration::from_secs_f64(secs), secs)
                 }
             };
 
@@ -274,12 +355,42 @@ impl TempoMap {
 
             resolved_changes.push(resolved_change);
 
-            // Update tempo state for next iteration
-            if let Some(new_bpm) = change.bpm {
-                current_bpm = new_bpm;
-            }
+            // Update tempo state for next iteration. The BPM actually in
+            // effect at this change may be a mid-ramp value.
+            let bpm_at_change = match current_ramp.as_ref() {
+                Some(ramp) => ramp.bpm_after_secs(advanced_secs),
+                None => current_bpm,
+            };
+            current_ramp = current_ramp.and_then(|ramp| ramp.advanced_by(advanced_secs));
             if let Some(new_ts) = change.time_signature {
                 current_time_sig = new_ts;
+            }
+            if let Some(new_bpm) = change.bpm {
+                match change.transition {
+                    TempoTransition::Snap => current_ramp = None,
+                    TempoTransition::Beats(beats, curve) => {
+                        current_ramp = Some(SegmentRamp {
+                            old_bpm: bpm_at_change,
+                            new_bpm,
+                            total_secs: beats * 60.0 / bpm_at_change,
+                            elapsed_secs: 0.0,
+                            curve,
+                        });
+                    }
+                    TempoTransition::Measures(measures, curve) => {
+                        // Matches bpm_at_time: the duration is computed with
+                        // the time signature in effect after this change.
+                        let beats = measures * current_time_sig.beats_per_measure();
+                        current_ramp = Some(SegmentRamp {
+                            old_bpm: bpm_at_change,
+                            new_bpm,
+                            total_secs: beats * 60.0 / bpm_at_change,
+                            elapsed_secs: 0.0,
+                            curve,
+                        });
+                    }
+                }
+                current_bpm = new_bpm;
             }
 
             // Update accumulated position
@@ -351,14 +462,7 @@ impl TempoMap {
         );
 
         // Walk through tempo changes, converting each to a beat position and accumulating time
-        self.integrate_through_segments(
-            target_beats,
-            &ts_changes,
-            offset_duration,
-            measure,
-            beat,
-            measure_offset,
-        )
+        self.integrate_through_segments(target_beats, &ts_changes, offset_duration)
     }
 
     /// Build a sorted list of time signature changes as (measure, beat, TimeSignature).
@@ -566,13 +670,11 @@ impl TempoMap {
         target_beats: f64,
         ts_changes: &[(u32, f64, TimeSignature)],
         offset_duration: Duration,
-        #[allow(unused_variables)] measure: u32,
-        #[allow(unused_variables)] beat: f64,
-        #[allow(unused_variables)] measure_offset: u32,
     ) -> Option<Duration> {
         let mut current_bpm = self.initial_bpm;
         let mut accumulated_time = self.start_offset;
         let mut accumulated_beats = 0.0;
+        let mut current_ramp: Option<SegmentRamp> = None;
 
         for change in &self.changes {
             let change_time = change.position.absolute_time()? + offset_duration;
@@ -580,50 +682,64 @@ impl TempoMap {
 
             if change_beats > target_beats {
                 // Target is before this change
-                let remaining_beats = target_beats - accumulated_beats;
-                let result_time = accumulated_time
-                    + Duration::from_secs_f64(remaining_beats * 60.0 / current_bpm);
-                #[cfg(test)]
-                eprintln!(
-                    "[tempo-debug] early-return target-before-change measure={} beat={} offset={} target_beats={} change_beats={} accumulated_beats={} remaining_beats={} bpm={:.6} start_offset_secs={:.6} accumulated_time_secs={:.6} result_time_secs={:.6}",
-                    measure, beat, measure_offset, target_beats, change_beats, accumulated_beats,
-                    remaining_beats, current_bpm, self.start_offset.as_secs_f64(),
-                    accumulated_time.as_secs_f64(), result_time.as_secs_f64()
-                );
-                return Some(result_time);
+                break;
             }
 
-            // Process up to this change
+            // Process up to this change, integrating through any gradual
+            // transition still in progress.
             let beats_to_change = change_beats - accumulated_beats;
-            accumulated_time += Duration::from_secs_f64(beats_to_change * 60.0 / current_bpm);
+            let advanced_secs =
+                segment_secs_for_beats(current_ramp.as_ref(), current_bpm, beats_to_change);
+            accumulated_time += Duration::from_secs_f64(advanced_secs);
             accumulated_beats = change_beats;
 
+            // The BPM actually in effect at this change may be a mid-ramp value.
+            let bpm_at_change = match current_ramp.as_ref() {
+                Some(ramp) => ramp.bpm_after_secs(advanced_secs),
+                None => current_bpm,
+            };
+            current_ramp = current_ramp.and_then(|ramp| ramp.advanced_by(advanced_secs));
+
             if let Some(new_bpm) = change.bpm {
+                match change.transition {
+                    TempoTransition::Snap => current_ramp = None,
+                    TempoTransition::Beats(beats, curve) => {
+                        current_ramp = Some(SegmentRamp {
+                            old_bpm: bpm_at_change,
+                            new_bpm,
+                            total_secs: beats * 60.0 / bpm_at_change,
+                            elapsed_secs: 0.0,
+                            curve,
+                        });
+                    }
+                    TempoTransition::Measures(measures, curve) => {
+                        // Matches bpm_at_time: the duration is computed with
+                        // the time signature in effect at the change time
+                        // (which includes this change's own signature).
+                        let ts = self
+                            .time_signature_at_time(change_time, offset_duration.as_secs_f64());
+                        let beats = measures * ts.beats_per_measure();
+                        current_ramp = Some(SegmentRamp {
+                            old_bpm: bpm_at_change,
+                            new_bpm,
+                            total_secs: beats * 60.0 / bpm_at_change,
+                            elapsed_secs: 0.0,
+                            curve,
+                        });
+                    }
+                }
                 current_bpm = new_bpm;
             }
         }
 
-        // Target is beyond all changes - use final tempo
+        // Advance the remaining beats past the last processed change.
         let remaining_beats = target_beats - accumulated_beats;
-        let result_time =
-            accumulated_time + Duration::from_secs_f64(remaining_beats * 60.0 / current_bpm);
-
-        #[cfg(test)]
-        eprintln!(
-            "[tempo-debug] measure_to_time_with_offset measure={} beat={} offset={} \
-                 target_beats={} change_beats={} remaining_beats={} start_offset_secs={:.6} \
-                 accumulated_time_secs={:.6} current_bpm={:.6} result_time_secs={:.6}",
-            measure,
-            beat,
-            measure_offset,
-            target_beats,
-            accumulated_beats,
-            remaining_beats,
-            self.start_offset.as_secs_f64(),
-            accumulated_time.as_secs_f64(),
-            current_bpm,
-            result_time.as_secs_f64()
-        );
+        let result_time = accumulated_time
+            + Duration::from_secs_f64(segment_secs_for_beats(
+                current_ramp.as_ref(),
+                current_bpm,
+                remaining_beats,
+            ));
 
         Some(result_time)
     }
