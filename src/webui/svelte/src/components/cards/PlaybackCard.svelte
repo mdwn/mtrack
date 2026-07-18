@@ -16,6 +16,7 @@
   import { Code, ConnectError } from "@connectrpc/connect";
   import { playbackStore } from "../../lib/ws/stores";
   import { playerClient } from "../../lib/grpc/client";
+  import BeatIndicator from "./BeatIndicator.svelte";
   import { formatMs } from "../../lib/util/format";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
@@ -330,6 +331,7 @@
           {#if currentBeatInfo}
             · beat {currentBeatInfo.beat} / measure {currentBeatInfo.measure}
           {/if}
+          <BeatIndicator />
         </div>
       </div>
       <div class="playback-card__transport">

@@ -44,6 +44,16 @@ export interface ActiveSection {
   end_ms: number;
 }
 
+export interface ReactiveLoopState {
+  state:
+    | "idle"
+    | "section_offered"
+    | "loop_armed"
+    | "looping"
+    | "break_requested";
+  section_name?: string;
+}
+
 export interface PlaybackState {
   is_playing: boolean;
   elapsed_ms: number;
@@ -62,8 +72,13 @@ export interface PlaybackState {
   active_section: ActiveSection | null;
   /** Start position for the next play, set by seeking while stopped. */
   pending_start_ms: number | null;
+  /** Reactive section-loop state machine. */
+  reactive_loop_state: ReactiveLoopState | null;
   /** Current tempo/meter from the song's tempo map, sampled at the playhead. */
   tempo: { bpm: number; time_signature: [number, number] } | null;
+  /** performance.now() when this frame was received; lets consumers
+   *  extrapolate elapsed_ms smoothly between the 5Hz frames. */
+  received_at: number;
 }
 
 export interface FixtureChannels {
@@ -112,7 +127,9 @@ export const playbackStore = writable<PlaybackState>({
   available_sections: [],
   active_section: null,
   pending_start_ms: null,
+  reactive_loop_state: null,
   tempo: null,
+  received_at: 0,
 });
 
 export const fixtureStore = writable<Record<string, FixtureChannels>>({});
@@ -156,7 +173,9 @@ on("playback", (msg) => {
     available_sections: m.available_sections ?? [],
     active_section: m.active_section ?? null,
     pending_start_ms: m.pending_start_ms ?? null,
+    reactive_loop_state: m.reactive_loop_state ?? null,
     tempo: m.tempo ?? null,
+    received_at: performance.now(),
   });
 });
 
