@@ -26,7 +26,6 @@ use std::path::Path;
 use std::time::Duration;
 
 use super::click_analysis::BeatGrid;
-use super::sample_source::create_sample_source_from_file;
 use super::sample_source::error::SampleSourceError;
 use super::sample_source::traits::SampleSource;
 use crate::config::metronome::{
@@ -129,46 +128,6 @@ fn synthesize_click(freq: f64, volume: f64, sample_rate: u32) -> Vec<f32> {
         .collect()
 }
 
-/// Loads a click sample file, downmixed to mono at the target sample rate.
-fn load_click_file(path: &Path, volume: f64, sample_rate: u32) -> Result<Vec<f32>, Box<dyn Error>> {
-    let mut source = create_sample_source_from_file(path, None, 4096)
-        .map_err(|e| format!("Failed to load click sound {}: {}", path.display(), e))?;
-    let source_rate = source.sample_rate();
-    let channels = source.channel_count().max(1) as usize;
-
-    let mut interleaved = Vec::new();
-    while let Some(sample) = source.next_sample()? {
-        interleaved.push(sample);
-    }
-
-    // Downmix to mono.
-    let mono: Vec<f32> = interleaved
-        .chunks(channels)
-        .map(|frame| frame.iter().sum::<f32>() / channels as f32)
-        .collect();
-
-    // Resample with linear interpolation (sufficient for short clicks, same
-    // approach as the triggered-sample loader).
-    let resampled = if source_rate != sample_rate {
-        let ratio = sample_rate as f64 / source_rate as f64;
-        let target_frames = (mono.len() as f64 * ratio).ceil() as usize;
-        (0..target_frames)
-            .map(|frame| {
-                let source_pos = frame as f64 / ratio;
-                let idx = source_pos.floor() as usize;
-                let frac = source_pos.fract() as f32;
-                let a = mono.get(idx).copied().unwrap_or(0.0);
-                let b = mono.get(idx + 1).copied().unwrap_or(a);
-                a + (b - a) * frac
-            })
-            .collect()
-    } else {
-        mono
-    };
-
-    Ok(resampled.into_iter().map(|s| s * volume as f32).collect())
-}
-
 /// Renders the waveform for one click sound role. Fields resolve per-field:
 /// the song's sound, then the player-wide default sound, then the built-in
 /// synthesized click.
@@ -202,7 +161,7 @@ fn render_click_sound(
             } else {
                 base_path.join(file)
             };
-            load_click_file(&path, volume, sample_rate)
+            super::monoclip::load_mono_clip(&path, volume, sample_rate)
         }
         None => Ok(synthesize_click(freq, volume, sample_rate)),
     }

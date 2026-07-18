@@ -44,6 +44,14 @@ export interface ActiveSection {
   end_ms: number;
 }
 
+export interface PilotHintInfo {
+  label: string;
+  at_ms: number;
+  start_ms: number;
+  end_ms: number;
+  has_audio: boolean;
+}
+
 export interface ReactiveLoopState {
   state:
     | "idle"
@@ -74,6 +82,8 @@ export interface PlaybackState {
   pending_start_ms: number | null;
   /** Reactive section-loop state machine. */
   reactive_loop_state: ReactiveLoopState | null;
+  /** Pilot hints resolved to song times. */
+  pilot_hints: PilotHintInfo[];
   /** Current tempo/meter from the song's tempo map, sampled at the playhead. */
   tempo: { bpm: number; time_signature: [number, number] } | null;
   /** performance.now() when this frame was received; lets consumers
@@ -128,6 +138,7 @@ export const playbackStore = writable<PlaybackState>({
   active_section: null,
   pending_start_ms: null,
   reactive_loop_state: null,
+  pilot_hints: [],
   tempo: null,
   received_at: 0,
 });
@@ -174,6 +185,7 @@ on("playback", (msg) => {
     active_section: m.active_section ?? null,
     pending_start_ms: m.pending_start_ms ?? null,
     reactive_loop_state: m.reactive_loop_state ?? null,
+    pilot_hints: m.pilot_hints ?? [],
     tempo: m.tempo ?? null,
     received_at: performance.now(),
   });

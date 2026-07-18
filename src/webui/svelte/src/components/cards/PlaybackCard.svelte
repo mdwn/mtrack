@@ -147,6 +147,30 @@
     seekToMs(base + (e.code === "ArrowLeft" ? -5000 : 5000));
   }
 
+  // A pilot hint is surfaced from shortly before its audio/anchor until it
+  // has passed; it renders highlighted while its audio window is live.
+  const HINT_LEAD_MS = 5000;
+  let currentHint = $derived.by(() => {
+    const hints = $playbackStore.pilot_hints;
+    if (hints.length === 0) return null;
+    const elapsed = $playbackStore.elapsed_ms;
+    let best = null;
+    for (const hint of hints) {
+      const visibleFrom = Math.min(hint.start_ms, hint.at_ms - HINT_LEAD_MS);
+      const visibleTo = Math.max(hint.end_ms, hint.at_ms);
+      if (elapsed >= visibleFrom && elapsed <= visibleTo) {
+        best = hint;
+      }
+    }
+    return best;
+  });
+  let hintLive = $derived(
+    currentHint != null &&
+      $playbackStore.elapsed_ms >= currentHint.start_ms &&
+      $playbackStore.elapsed_ms <=
+        Math.max(currentHint.end_ms, currentHint.at_ms),
+  );
+
   let pendingStartPct = $derived(
     !$playbackStore.is_playing &&
       $playbackStore.pending_start_ms != null &&
@@ -430,6 +454,16 @@
             title={region.name}
           ></div>
         {/each}
+        {#if $playbackStore.song_duration_ms > 0}
+          {#each $playbackStore.pilot_hints as hint (hint.label + hint.at_ms)}
+            <div
+              class="scrub__hint"
+              style:left="{(hint.at_ms / $playbackStore.song_duration_ms) *
+                100}%"
+              title={hint.label}
+            ></div>
+          {/each}
+        {/if}
         <div class="scrub__fill" style:width="{progressPct}%"></div>
         {#if pendingStartPct != null}
           <div
@@ -443,6 +477,16 @@
         >{formatMs($playbackStore.song_duration_ms)}</span
       >
     </div>
+
+    {#if currentHint && $playbackStore.is_playing}
+      <div
+        class="mono playback-card__hint"
+        class:playback-card__hint--live={hintLive}
+      >
+        <span aria-hidden="true">🎙</span>
+        {currentHint.label}
+      </div>
+    {/if}
 
     {#if $playbackStore.available_sections.length > 0}
       <div class="playback-card__sections">
@@ -695,6 +739,27 @@
     background: var(--nc-cyan-400);
     border-radius: 1px;
     z-index: 3;
+  }
+  .scrub__hint {
+    position: absolute;
+    top: -3px;
+    width: 2px;
+    height: 6px;
+    margin-left: -1px;
+    background: var(--nc-amber-400, #f2b544);
+    border-radius: 1px;
+    z-index: 3;
+    pointer-events: none;
+  }
+  .playback-card__hint {
+    margin-top: 10px;
+    font-size: 13px;
+    color: var(--nc-fg-3);
+    transition: color var(--nc-dur-fast) var(--nc-ease);
+  }
+  .playback-card__hint--live {
+    color: var(--nc-amber-400, #f2b544);
+    font-weight: 600;
   }
 
   .playback-card__sections {
