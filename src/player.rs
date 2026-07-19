@@ -2537,8 +2537,55 @@ mod test {
         assert_eq!(result.unwrap().name(), "Song 2");
         eventually(|| device.is_playing(), "Song never started playing");
 
-        // Switches to all_songs (session-only) for the duration of playback
+        // Song 2 is not in the active playlist, so this switches to
+        // all_songs (session-only) for the duration of playback.
         assert_eq!(player.get_playlist().name(), "all_songs");
+
+        player.stop().await;
+        eventually(|| !device.is_playing(), "Song never stopped");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn play_song_from_keeps_active_playlist() -> Result<(), Box<dyn Error>> {
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
+        let playlist = Playlist::new(
+            "playlist",
+            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
+            songs.clone(),
+        )?;
+        let player = Player::new(
+            test_playlists(playlist, songs.clone()),
+            "playlist".to_string(),
+            &config::Player::new(
+                vec![],
+                Some(config::Audio::new("mock-device")),
+                Some(config::Midi::new("mock-midi-device", None)),
+                None,
+                HashMap::new(),
+                "assets/songs",
+            ),
+            None,
+        )?;
+        player.await_hardware_ready().await;
+        let device = player.audio_device().expect("audio device").to_mock()?;
+
+        // Song 3 is in the active playlist: jumping to it must not switch
+        // the player to all_songs.
+        let result = player
+            .play_song_from("Song 3", std::time::Duration::ZERO)
+            .await?;
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().name(), "Song 3");
+        eventually(|| device.is_playing(), "Song never started playing");
+        assert_eq!(player.get_playlist().name(), "playlist");
+        assert_eq!(
+            player
+                .get_playlist()
+                .current()
+                .map(|s| s.name().to_string()),
+            Some("Song 3".to_string())
+        );
 
         player.stop().await;
         eventually(|| !device.is_playing(), "Song never stopped");
