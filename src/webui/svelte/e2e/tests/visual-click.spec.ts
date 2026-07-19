@@ -63,7 +63,9 @@ test.describe("Visual click", () => {
   let wsId: string;
 
   test.beforeEach(async ({ page }) => {
-    wsId = `visual-click-${++testCounter}-${Date.now()}`;
+    // The worker index keeps ids unique across parallel workers, whose
+    // per-worker counters can otherwise collide within the same millisecond.
+    wsId = `visual-click-${test.info().parallelIndex}-${++testCounter}-${Date.now()}`;
     await page.goto(`/?wsId=${wsId}#/`);
     await expect(page.locator(".playback-card__title")).toContainText(
       "Test Song Alpha",
