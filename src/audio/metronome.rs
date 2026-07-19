@@ -169,22 +169,32 @@ fn load_click_file(path: &Path, volume: f64, sample_rate: u32) -> Result<Vec<f32
     Ok(resampled.into_iter().map(|s| s * volume as f32).collect())
 }
 
-/// Renders the waveform for one click sound role.
+/// Renders the waveform for one click sound role. Fields resolve per-field:
+/// the song's sound, then the player-wide default sound, then the built-in
+/// synthesized click.
 fn render_click_sound(
     sound: Option<&ClickSound>,
-    default_freq: f64,
-    default_volume: f64,
+    default_sound: Option<&ClickSound>,
+    builtin_freq: f64,
+    builtin_volume: f64,
     base_path: &Path,
     sample_rate: u32,
 ) -> Result<Vec<f32>, Box<dyn Error>> {
-    let (file, freq, volume) = match sound {
-        Some(sound) => (
-            sound.file.as_deref(),
-            sound.freq.unwrap_or(default_freq),
-            sound.volume.unwrap_or(default_volume),
-        ),
-        None => (None, default_freq, default_volume),
+    let pick = |get: fn(&ClickSound) -> Option<f64>| {
+        sound.and_then(get).or_else(|| default_sound.and_then(get))
     };
+    // A song-level file wins outright; otherwise a song freq overrides a
+    // default file (the song asked for a synth click).
+    let file = match (
+        sound.and_then(|s| s.file.as_deref()),
+        sound.and_then(|s| s.freq),
+    ) {
+        (Some(file), _) => Some(file),
+        (None, Some(_)) => None,
+        (None, None) => default_sound.and_then(|s| s.file.as_deref()),
+    };
+    let freq = pick(|s| s.freq).unwrap_or(builtin_freq);
+    let volume = pick(|s| s.volume).unwrap_or(builtin_volume);
     match file {
         Some(file) => {
             let path = if Path::new(file).is_absolute() {
@@ -224,6 +234,7 @@ impl MetronomeSource {
     pub fn new(
         grid: &BeatGrid,
         config: &MetronomeConfig,
+        defaults: Option<&crate::config::metronome::MetronomeSounds>,
         base_path: &Path,
         sample_rate: u32,
         start_time: Duration,
@@ -232,6 +243,7 @@ impl MetronomeSource {
         let sounds = config.sounds.as_ref();
         let accent = render_click_sound(
             sounds.and_then(|s| s.accent.as_ref()),
+            defaults.and_then(|s| s.accent.as_ref()),
             DEFAULT_ACCENT_FREQ,
             DEFAULT_ACCENT_VOLUME,
             base_path,
@@ -239,6 +251,7 @@ impl MetronomeSource {
         )?;
         let normal = render_click_sound(
             sounds.and_then(|s| s.normal.as_ref()),
+            defaults.and_then(|s| s.normal.as_ref()),
             DEFAULT_NORMAL_FREQ,
             DEFAULT_NORMAL_VOLUME,
             base_path,
@@ -424,6 +437,7 @@ mod tests {
         let mut source = MetronomeSource::new(
             &grid,
             &config,
+            None,
             Path::new("/nonexistent"),
             RATE,
             Duration::ZERO,
@@ -463,6 +477,7 @@ mod tests {
         let mut source = MetronomeSource::new(
             &grid,
             &config,
+            None,
             Path::new("/nonexistent"),
             RATE,
             start_time,
@@ -485,12 +500,57 @@ mod tests {
     }
 
     #[test]
+    fn player_defaults_apply_when_song_has_no_sounds() {
+        use crate::config::metronome::{ClickSound, MetronomeSounds};
+
+        let grid = simple_grid(4, 0.5, 1);
+        let config = MetronomeConfig::default();
+        let render = |defaults: Option<&MetronomeSounds>| {
+            let mut source = MetronomeSource::new(
+                &grid,
+                &config,
+                defaults,
+                Path::new("/nonexistent"),
+                RATE,
+                Duration::ZERO,
+                Duration::from_secs(1),
+            )
+            .unwrap();
+            let mut peak = 0.0f32;
+            while let Some(sample) = source.next_sample().unwrap() {
+                peak = peak.max(sample.abs());
+            }
+            peak
+        };
+
+        let builtin_peak = render(None);
+        let defaults = MetronomeSounds {
+            accent: Some(ClickSound {
+                file: None,
+                freq: Some(1125.0),
+                volume: Some(0.25),
+            }),
+            normal: Some(ClickSound {
+                file: None,
+                freq: Some(1125.0),
+                volume: Some(0.25),
+            }),
+        };
+        let default_peak = render(Some(&defaults));
+        assert!(
+            default_peak < builtin_peak * 0.5,
+            "player defaults should scale the click ({default_peak} vs {builtin_peak})"
+        );
+    }
+
+    #[test]
     fn source_exhausts_at_song_end() {
         let grid = simple_grid(4, 0.5, 1);
         let config = MetronomeConfig::default();
         let mut source = MetronomeSource::new(
             &grid,
             &config,
+            None,
             Path::new("/nonexistent"),
             RATE,
             Duration::ZERO,

@@ -232,6 +232,9 @@ metronome:
   on beat 1, or on each group start when `accent` is set.
 - Sounds default to short synthesized sine clicks (accent 1600 Hz, normal 1200 Hz); each can
   be overridden with a sample file.
+- Player-wide default sounds can be set once in `mtrack.yaml` (see the player configuration);
+  a song then just needs `metronome: {}` to enable the click with your preferred sound.
+  Song-level sound fields override the defaults per field.
 - The `metronome` track name must not collide with a real track. A beat grid (tempo map or
   analyzed click track) is required.
 

@@ -712,6 +712,7 @@ impl Song {
                     let metronome_source = crate::audio::metronome::MetronomeSource::new(
                         grid,
                         metronome,
+                        context.metronome_defaults.as_ref(),
                         &self.base_path,
                         context.target_format.sample_rate,
                         start_time,

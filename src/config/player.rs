@@ -110,6 +110,19 @@ pub struct Player {
     sample_triggers: Vec<SampleTrigger>,
     /// Maximum number of concurrent sample voices globally.
     max_sample_voices: Option<u32>,
+    /// Player-wide metronome defaults. Songs enable the metronome with a
+    /// `metronome:` block; sounds not overridden there fall back to these.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    metronome: Option<MetronomeDefaults>,
+}
+
+/// Player-wide metronome defaults.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+pub struct MetronomeDefaults {
+    /// Default click sounds used when a song's metronome config doesn't
+    /// override them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sounds: Option<super::metronome::MetronomeSounds>,
 }
 
 impl Default for Player {
@@ -135,6 +148,7 @@ impl Default for Player {
             samples_file: None,
             sample_triggers: Vec::new(),
             max_sample_voices: None,
+            metronome: None,
         };
         player.normalize();
         player
@@ -174,6 +188,7 @@ impl Player {
             samples_file: None,
             sample_triggers: Vec::new(),
             max_sample_voices: None,
+            metronome: None,
         };
         player.normalize();
         player
@@ -592,6 +607,11 @@ impl Player {
         }
 
         Ok(config)
+    }
+
+    /// Gets the player-wide metronome defaults.
+    pub fn metronome(&self) -> Option<&MetronomeDefaults> {
+        self.metronome.as_ref()
     }
 
     /// Gets the maximum sample voices limit.
