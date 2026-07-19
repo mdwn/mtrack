@@ -1112,6 +1112,7 @@
             <SongPilotEditor
               pilot={pilotConfig}
               hasBeatGrid={!!song.beat_grid || !!tempoConfig}
+              beatGrid={song.beat_grid}
               onchange={onPilotChange}
             />
           </div>
