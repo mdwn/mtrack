@@ -277,6 +277,8 @@ message TrackGain {
     string track = 1;
     // The gain in dB, in [-60, +12]. -60 and below mutes the track.
     double gain_db = 2;
+    // Whether the track is currently muted (independently of the gain).
+    bool muted = 3;
 }
 
 // SetTrackGainRequest sets the gain of a single output track.
@@ -292,6 +294,21 @@ message SetTrackGainRequest {
 message SetTrackGainResponse {
     // The applied gain in dB after clamping.
     double applied_gain_db = 1;
+}
+
+// SetTrackMuteRequest mutes or unmutes a single output track without
+// changing its gain. Mute state is runtime-only and never persisted.
+message SetTrackMuteRequest {
+    // The output track name (a track_mappings key).
+    string track = 1;
+    // True to mute, false to unmute.
+    bool muted = 2;
+}
+
+// SetTrackMuteResponse is returned after setting a track mute.
+message SetTrackMuteResponse {
+    // The applied mute state.
+    bool muted = 1;
 }
 
 // GetTrackGainsRequest requests the gains of all output tracks.
@@ -377,6 +394,10 @@ service PlayerService {
 
     // SetTrackGain sets the gain of a single output track in dB.
     rpc SetTrackGain(SetTrackGainRequest) returns (SetTrackGainResponse);
+
+    // SetTrackMute mutes or unmutes an output track without changing its
+    // gain. Mute state is runtime-only and never persisted.
+    rpc SetTrackMute(SetTrackMuteRequest) returns (SetTrackMuteResponse);
 
     // GetTrackGains returns the gains of all output tracks in dB.
     rpc GetTrackGains(GetTrackGainsRequest) returns (GetTrackGainsResponse);

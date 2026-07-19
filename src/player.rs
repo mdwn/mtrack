@@ -749,6 +749,31 @@ impl Player {
             .map(|tg| tg.snapshot_db())
     }
 
+    /// Mutes or unmutes an output track without changing its gain, returning
+    /// the applied state. Mute is a runtime performance control and is never
+    /// persisted — a restart starts unmuted.
+    pub fn set_track_mute(&self, track: &str, muted: bool) -> Result<bool, TrackGainError> {
+        let track_gains = self
+            .hardware
+            .read()
+            .track_gains
+            .clone()
+            .ok_or(TrackGainError::NoAudioProfile)?;
+        let applied = track_gains.set_muted(track, muted)?;
+        info!(track, muted = applied, "track mute changed");
+        Ok(applied)
+    }
+
+    /// Returns all output track mute states as (name, muted) pairs, or None
+    /// when no audio profile is active.
+    pub fn get_track_mutes(&self) -> Option<Vec<(String, bool)>> {
+        self.hardware
+            .read()
+            .track_gains
+            .as_ref()
+            .map(|tg| tg.snapshot_muted())
+    }
+
     /// Returns true if the player is in locked mode (state-altering operations blocked).
     pub fn is_locked(&self) -> bool {
         self.locked.load(Ordering::Relaxed)

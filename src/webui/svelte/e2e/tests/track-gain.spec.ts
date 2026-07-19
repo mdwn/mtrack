@@ -90,6 +90,33 @@ test.describe("Track Gain Sliders", () => {
     await expect(dashboard.gainReadouts.nth(1)).toHaveText("0.0 dB");
   });
 
+  test("mute button fires SetTrackMute and lights up from server state", async ({
+    page,
+  }) => {
+    const muteButtons = page.locator(".tracks-card__mute");
+    await expect(muteButtons).toHaveCount(3);
+    await expect(muteButtons.nth(0)).toHaveAttribute("aria-pressed", "false");
+
+    const requestPromise = page.waitForRequest((req) =>
+      req.url().includes("/player.v1.PlayerService/SetTrackMute"),
+    );
+    await muteButtons.nth(0).click();
+    await requestPromise;
+
+    // Mute state is server-authoritative: the button reflects the next
+    // WS frame, and the gain readout is untouched.
+    await sendWsMessage(page, wsId, {
+      ...PLAYBACK_STATE,
+      tracks: [
+        { name: "kick", output_channels: [0, 1], gain_db: 0, muted: true },
+        { name: "snare", output_channels: [2, 3], gain_db: -6 },
+        { name: "bass", output_channels: [4, 5], gain_db: -60 },
+      ],
+    });
+    await expect(muteButtons.nth(0)).toHaveAttribute("aria-pressed", "true");
+    await expect(dashboard.gainReadouts.nth(0)).toHaveText("0.0 dB");
+  });
+
   test("server-pushed gain updates the slider when idle", async ({ page }) => {
     await sendWsMessage(page, wsId, {
       ...PLAYBACK_STATE,

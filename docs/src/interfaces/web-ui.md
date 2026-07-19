@@ -74,7 +74,10 @@ The dashboard is the landing page, providing an at-a-glance view of the player s
   playlist's songs are listed below. Songs are clickable to jump directly to a song during
   playback.
 - **Waveform** — Per-track waveform peak display for the current song, rendered with DPR
-  scaling for crisp display on HiDPI/Retina screens.
+  scaling for crisp display on HiDPI/Retina screens. Each track row also has a gain slider
+  (double-click resets to 0 dB) and an **M** mute button. Muting silences the track
+  immediately without touching the fader value, so unmuting restores the exact gain you
+  had — mute state is runtime-only and resets on player restart.
 - **Stage view** — Interactive canvas showing fixture positions organized by tags (left, right,
   front, back), with real-time RGB color rendering, glow effects, and strobe animation. Drag
   fixtures to rearrange the layout — positions persist in localStorage across page reloads.
