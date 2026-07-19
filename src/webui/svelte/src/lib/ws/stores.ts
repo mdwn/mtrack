@@ -60,6 +60,8 @@ export interface PlaybackState {
   looping: boolean;
   available_sections: SectionInfo[];
   active_section: ActiveSection | null;
+  /** Current tempo/meter from the song's tempo map, sampled at the playhead. */
+  tempo: { bpm: number; time_signature: [number, number] } | null;
 }
 
 export interface FixtureChannels {
@@ -107,6 +109,7 @@ export const playbackStore = writable<PlaybackState>({
   looping: false,
   available_sections: [],
   active_section: null,
+  tempo: null,
 });
 
 export const fixtureStore = writable<Record<string, FixtureChannels>>({});
@@ -149,6 +152,7 @@ on("playback", (msg) => {
     looping: m.looping ?? false,
     available_sections: m.available_sections ?? [],
     active_section: m.active_section ?? null,
+    tempo: m.tempo ?? null,
   });
 });
 

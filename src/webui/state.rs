@@ -177,6 +177,19 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
             raw_elapsed_ms
         };
 
+        // Current tempo and meter from the song's tempo map, sampled at the
+        // playhead so tempo changes show live.
+        let tempo = playlist.current().and_then(|song| {
+            song.tempo_map().map(|map| {
+                let at = Duration::from_millis(elapsed_ms);
+                let time_signature = map.time_signature_at_time(at, 0.0);
+                json!({
+                    "bpm": map.bpm_at_time(at, 0.0),
+                    "time_signature": [time_signature.numerator, time_signature.denominator],
+                })
+            })
+        });
+
         let msg = json!({
             "type": "playback",
             "is_playing": is_playing,
@@ -195,6 +208,7 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
             "active_section": active_section,
             "looping": looping,
             "reactive_loop_state": reactive_loop_state,
+            "tempo": tempo,
         });
 
         let _ = tx.send(msg.to_string());
