@@ -702,10 +702,13 @@ impl AudioMixer {
                             }
                         }
                     }
-                    Err(_) => {
-                        debug!(
+                    Err(e) => {
+                        // A read error drops just this source while the mix
+                        // keeps going — worth a warning, not just a debug line.
+                        tracing::warn!(
                             source_id = active_source.id,
-                            "mixer: source marked finished (read_frames error)"
+                            "mixer: source dropped mid-playback (read_frames error): {}",
+                            e
                         );
                         active_source.is_finished.store(true, Ordering::Relaxed);
                         finished_source_ids.push(active_source.id);

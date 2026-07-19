@@ -254,7 +254,17 @@ impl BufferedSampleSource {
                 // Decode one frame outside the producer's critical path.
                 let done = {
                     let mut g = inner.lock().unwrap();
-                    !matches!(g.next_frame(&mut local_frame[..]), Ok(Some(_)))
+                    match g.next_frame(&mut local_frame[..]) {
+                        Ok(Some(_)) => false,
+                        Ok(None) => true,
+                        Err(e) => {
+                            // A decode error permanently ends just this source
+                            // while the rest of the mix continues — make sure
+                            // that leaves a trace in the logs.
+                            tracing::warn!("Audio source ended early due to decode error: {}", e);
+                            true
+                        }
+                    }
                 };
 
                 if done {
