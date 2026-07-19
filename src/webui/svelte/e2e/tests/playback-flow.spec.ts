@@ -32,7 +32,9 @@ test.describe("Playback State Transitions", () => {
 
   test.beforeEach(async ({ page }) => {
     // Generate a unique wsId for this test to isolate WebSocket messages.
-    wsId = `playback-${++testCounter}-${Date.now()}`;
+    // The worker index keeps ids unique across parallel workers, whose
+    // per-worker counters can otherwise collide within the same millisecond.
+    wsId = `playback-${test.info().parallelIndex}-${++testCounter}-${Date.now()}`;
 
     // Intercept gRPC calls so play/stop don't fail
     await page.route("**/player.v1.PlayerService/**", async (route) => {
