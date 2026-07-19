@@ -75,8 +75,11 @@ The dashboard is the landing page, providing an at-a-glance view of the player s
   the section name and a "Stop Loop" button. Beat/measure position is displayed when beat grid
   data is available, along with a visual metronome: one dot per beat of the current meter with
   the active beat highlighted, and a pulse that flashes on every beat (accented on downbeats)
-  while playing. Pilot hints appear as markers on the progress bar, and the upcoming hint's
-  label is shown a few seconds ahead of its position (highlighted while its sample plays).
+  while playing. Pilot hints appear as markers on the progress bar, and upcoming hint labels
+  are shown a few seconds ahead of their position. Hints that follow each other closely
+  (e.g. a "bridge" label and its "3..2..1" countdown) stay visible together, with only the
+  live one highlighted — while its sample plays, or briefly at the anchor for label-only
+  hints.
 - **Playlist selector** — Dropdown to switch between all available playlists. The current
   playlist's songs are listed below. Songs are clickable to jump directly to a song during
   playback.

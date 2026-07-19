@@ -148,28 +148,59 @@
   }
 
   // A pilot hint is surfaced from shortly before its audio/anchor until it
-  // has passed; it renders highlighted while its audio window is live.
+  // has passed. Hints whose display windows touch (a label followed by its
+  // countdown) form a group that stays visible together, with only the live
+  // one highlighted, so a tight sequence doesn't overwrite its predecessors.
   const HINT_LEAD_MS = 5000;
-  let currentHint = $derived.by(() => {
+  // Label-only hints have no audio window; highlight them briefly at their
+  // anchor instead.
+  const HINT_LABEL_LIVE_MS = 1000;
+  let visibleHints = $derived.by(() => {
     const hints = $playbackStore.pilot_hints;
-    if (hints.length === 0) return null;
+    if (hints.length === 0) return [];
     const elapsed = $playbackStore.elapsed_ms;
-    let best = null;
-    for (const hint of hints) {
-      const visibleFrom = Math.min(hint.start_ms, hint.at_ms - HINT_LEAD_MS);
-      const visibleTo = Math.max(hint.end_ms, hint.at_ms);
-      if (elapsed >= visibleFrom && elapsed <= visibleTo) {
-        best = hint;
+    const windows = [...hints]
+      .sort((a, b) => a.at_ms - b.at_ms)
+      .map((hint) => {
+        const liveFrom = hint.has_audio
+          ? Math.min(hint.start_ms, hint.at_ms)
+          : hint.at_ms;
+        const liveTo = hint.has_audio
+          ? Math.max(hint.end_ms, hint.at_ms)
+          : hint.at_ms + HINT_LABEL_LIVE_MS;
+        return {
+          hint,
+          liveFrom,
+          liveTo,
+          visibleFrom: Math.min(liveFrom, hint.at_ms - HINT_LEAD_MS),
+        };
+      });
+    // Hand the highlight off as soon as the next hint goes live.
+    for (let i = 0; i < windows.length - 1; i++) {
+      windows[i].liveTo = Math.min(
+        windows[i].liveTo,
+        Math.max(windows[i + 1].liveFrom, windows[i].liveFrom),
+      );
+    }
+    // Chain overlapping display windows into groups; a group is visible from
+    // its first lead-in until its last live window ends.
+    const groups = [];
+    for (const w of windows) {
+      const group = groups[groups.length - 1];
+      if (group && w.visibleFrom <= group.to) {
+        group.members.push(w);
+        group.to = Math.max(group.to, w.liveTo);
+      } else {
+        groups.push({ from: w.visibleFrom, to: w.liveTo, members: [w] });
       }
     }
-    return best;
+    const active = groups.find((g) => elapsed >= g.from && elapsed <= g.to);
+    if (!active) return [];
+    return active.members.map((w) => ({
+      ...w.hint,
+      live: elapsed >= w.liveFrom && elapsed <= w.liveTo,
+    }));
   });
-  let hintLive = $derived(
-    currentHint != null &&
-      $playbackStore.elapsed_ms >= currentHint.start_ms &&
-      $playbackStore.elapsed_ms <=
-        Math.max(currentHint.end_ms, currentHint.at_ms),
-  );
 
   let pendingStartPct = $derived(
     !$playbackStore.is_playing &&
@@ -478,13 +509,15 @@
       >
     </div>
 
-    {#if currentHint && $playbackStore.is_playing}
-      <div
-        class="mono playback-card__hint"
-        class:playback-card__hint--live={hintLive}
-      >
+    {#if visibleHints.length > 0 && $playbackStore.is_playing}
+      <div class="mono playback-card__hint">
         <span aria-hidden="true">🎙</span>
-        {currentHint.label}
+        {#each visibleHints as hint (hint.label + hint.at_ms)}
+          <span
+            class="playback-card__hint-label"
+            class:playback-card__hint-label--live={hint.live}>{hint.label}</span
+          >
+        {/each}
       </div>
     {/if}
 
@@ -755,9 +788,15 @@
     margin-top: 10px;
     font-size: 13px;
     color: var(--nc-fg-3);
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .playback-card__hint-label {
     transition: color var(--nc-dur-fast) var(--nc-ease);
   }
-  .playback-card__hint--live {
+  .playback-card__hint-label--live {
     color: var(--nc-amber-400, #f2b544);
     font-weight: 600;
   }
