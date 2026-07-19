@@ -87,6 +87,45 @@
     accent: { freq: 1600, volume: 1.0 },
     normal: { freq: 1200, volume: 0.8 },
   };
+
+  /** Typical click sounds; applying a preset overwrites both sounds. */
+  const PRESETS: {
+    key: string;
+    sounds: NonNullable<MetronomeConfig["sounds"]>;
+  }[] = [
+    {
+      key: "ui24",
+      sounds: {
+        accent: { freq: 1125, volume: 1.0 },
+        normal: { freq: 1125, volume: 1.0 },
+      },
+    },
+    {
+      key: "hilo",
+      sounds: {
+        accent: { freq: 1600, volume: 1.0 },
+        normal: { freq: 1200, volume: 0.8 },
+      },
+    },
+    {
+      key: "sharp",
+      sounds: {
+        accent: { freq: 2000, volume: 1.0 },
+        normal: { freq: 1500, volume: 0.75 },
+      },
+    },
+    {
+      key: "low",
+      sounds: {
+        accent: { freq: 880, volume: 1.0 },
+        normal: { freq: 660, volume: 0.8 },
+      },
+    },
+  ];
+
+  function applyPreset(sounds: NonNullable<MetronomeConfig["sounds"]>) {
+    update({ sounds: structuredClone(sounds) });
+  }
 </script>
 
 <div class="metronome-editor">
@@ -117,6 +156,18 @@
 
   {#if metronome && expanded}
     <div class="metronome-body">
+      <div class="presets">
+        <span class="field-label">{$t("metronome.presets")}</span>
+        {#each PRESETS as preset (preset.key)}
+          <button
+            class="btn btn-sm"
+            onclick={() => applyPreset(preset.sounds)}
+            title="{preset.sounds.accent?.freq}/{preset.sounds.normal?.freq} Hz"
+          >
+            {$t(`metronome.preset.${preset.key}`)}
+          </button>
+        {/each}
+      </div>
       <div class="metronome-fields">
         <label class="field">
           <span class="field-label">{$t("metronome.track")}</span>
@@ -240,6 +291,12 @@
     display: flex;
     flex-direction: column;
     gap: 10px;
+  }
+  .presets {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
   }
   .metronome-fields {
     display: flex;
