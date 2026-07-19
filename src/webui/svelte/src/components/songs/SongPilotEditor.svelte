@@ -22,9 +22,17 @@
     onchange: (pilot: PilotConfig | null) => void;
     /** Whether the song has a beat grid (for measure-based positions). */
     hasBeatGrid?: boolean;
+    /** The song's beat grid (beat times in seconds + measure start indices),
+     * used to convert positions when switching between measure and time. */
+    beatGrid?: { beats: number[]; measure_starts: number[] } | null;
   }
 
-  let { pilot, onchange, hasBeatGrid = false }: Props = $props();
+  let {
+    pilot,
+    onchange,
+    hasBeatGrid = false,
+    beatGrid = null,
+  }: Props = $props();
 
   let expanded = $state(true);
 
@@ -81,12 +89,59 @@
     return "measure" in hint.at ? "measure" : "time";
   }
 
+  /** Time (seconds) of measure/beat on the grid, or null when off-grid. */
+  function measureBeatToTime(measure: number, beat: number): number | null {
+    if (!beatGrid) return null;
+    const startIdx = beatGrid.measure_starts[measure - 1];
+    if (startIdx === undefined) return null;
+    const time = beatGrid.beats[startIdx + (beat - 1)];
+    return time === undefined ? null : time;
+  }
+
+  /** Nearest measure/beat for a time (seconds), or null without a grid. */
+  function timeToMeasureBeat(
+    time: number,
+  ): { measure: number; beat?: number } | null {
+    if (!beatGrid || beatGrid.beats.length === 0) return null;
+    let nearest = 0;
+    for (let i = 1; i < beatGrid.beats.length; i++) {
+      if (
+        Math.abs(beatGrid.beats[i] - time) <
+        Math.abs(beatGrid.beats[nearest] - time)
+      ) {
+        nearest = i;
+      }
+    }
+    let measure = 0;
+    while (
+      measure + 1 < beatGrid.measure_starts.length &&
+      beatGrid.measure_starts[measure + 1] <= nearest
+    ) {
+      measure++;
+    }
+    const beat = nearest - beatGrid.measure_starts[measure] + 1;
+    const at: { measure: number; beat?: number } = { measure: measure + 1 };
+    if (beat > 1) at.beat = beat;
+    return at;
+  }
+
   function switchPosition(index: number, kind: "measure" | "time") {
     const hint = (pilot?.hints ?? [])[index];
     if (!hint || positionKind(hint) === kind) return;
-    updateHint(index, {
-      at: kind === "measure" ? { measure: 1 } : { time: 0 },
-    });
+    // Convert the current position instead of resetting it, so switching
+    // representation keeps the hint where it is.
+    if (kind === "time") {
+      const at = hint.at as { measure: number; beat?: number };
+      const time = measureBeatToTime(at.measure, at.beat ?? 1);
+      updateHint(index, {
+        at: { time: time !== null ? Math.round(time * 1000) / 1000 : 0 },
+      });
+    } else {
+      const at = hint.at as { time: number };
+      updateHint(index, {
+        at: timeToMeasureBeat(at.time) ?? { measure: 1 },
+      });
+    }
   }
 </script>
 
