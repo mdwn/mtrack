@@ -162,7 +162,8 @@
     | { kind: "midi" }
     | { kind: "lighting" }
     | { kind: "sample" }
-    | { kind: "notification" };
+    | { kind: "notification" }
+    | { kind: "metronome-sound"; role: "accent" | "half" | "normal" | "sub" };
   let browseTarget = $state<BrowseTarget | null>(null);
   let notifBrowseTarget = $state<NotifBrowseTarget | null>(null);
   let songNotifRef: NotificationsSection | undefined = $state();
@@ -204,8 +205,20 @@
     } else if (browseTarget.kind === "notification") {
       onNotifBrowseSelect(paths);
       return;
+    } else if (browseTarget.kind === "metronome-sound") {
+      setMetronomeSoundFile(browseTarget.role, paths[0]);
     }
     browseTarget = null;
+  }
+
+  function setMetronomeSoundFile(
+    role: "accent" | "half" | "normal" | "sub",
+    path: string,
+  ) {
+    if (!metronomeConfig) return;
+    const sounds = { ...(metronomeConfig.sounds ?? {}) };
+    sounds[role] = { ...(sounds[role] ?? {}), file: path };
+    onMetronomeChange({ ...metronomeConfig, sounds });
   }
 
   let browseFilter = $derived.by(() => {
@@ -215,6 +228,7 @@
     if (browseTarget.kind === "lighting") return ["lighting"];
     if (browseTarget.kind === "sample") return ["audio"];
     if (browseTarget.kind === "notification") return ["audio"];
+    if (browseTarget.kind === "metronome-sound") return ["audio"];
     return [];
   });
 
@@ -1116,6 +1130,7 @@
             metronome={metronomeConfig}
             {songName}
             hasMidi={song.has_midi}
+            {songFiles}
             ontempochange={onTempoChange}
             onpilotchange={onPilotChange}
             onmetronomechange={onMetronomeChange}
@@ -1124,6 +1139,10 @@
             <SongMetronomeEditor
               metronome={metronomeConfig}
               hasBeatGrid={!!song.beat_grid || !!tempoConfig}
+              {songName}
+              {songFiles}
+              onbrowsesound={(role) =>
+                openBrowser({ kind: "metronome-sound", role })}
               onchange={onMetronomeChange}
             />
           </div>

@@ -26,6 +26,7 @@
     updateProfile,
     deleteProfile,
     updateSamples,
+    updateMetronomeDefaults,
     fetchProfileFiles,
     fetchProfileFile,
     saveProfileFile,
@@ -44,6 +45,10 @@
   import SamplesSection, {
     type SampleBrowseTarget,
   } from "../components/config/SamplesSection.svelte";
+  import MetronomeSection, {
+    type MetronomeSoundRole,
+    type MetronomeDefaultSounds,
+  } from "../components/config/MetronomeSection.svelte";
   import FileBrowser from "../components/songs/FileBrowser.svelte";
   import Tooltip from "../components/config/Tooltip.svelte";
 
@@ -126,9 +131,17 @@
   let maxSampleVoices = $state<number | undefined>(undefined);
   let maxSampleVoicesSnapshot = $state<number | undefined>(undefined);
 
+  // Player-wide metronome defaults (mtrack.yaml `metronome.sounds`).
+  let metronomeSounds = $state<MetronomeDefaultSounds | null>(null);
+  let metronomeSnapshot = $state("");
+  let metronomeDirty = $state(false);
+  let metronomeSaving = $state(false);
+  let metronomeSaveMsg = $state("");
+  let metronomeSaveOk = $state(false);
+
   $effect(() => {
     return registerDirtyGuard(
-      () => dirty || samplesDirty,
+      () => dirty || samplesDirty || metronomeDirty,
       get(t)("config.discardUnsaved"),
     );
   });
@@ -167,6 +180,9 @@
           : undefined;
       maxSampleVoicesSnapshot = maxSampleVoices;
       samplesDirty = false;
+      metronomeSounds = parsed?.metronome?.sounds ?? null;
+      metronomeSnapshot = JSON.stringify(metronomeSounds);
+      metronomeDirty = false;
     } catch {
       profiles = [];
       samplesMap = {};
@@ -462,6 +478,46 @@
     } finally {
       samplesSaving = false;
     }
+  }
+
+  function onMetronomeChange() {
+    metronomeDirty = JSON.stringify(metronomeSounds) !== metronomeSnapshot;
+  }
+
+  async function saveMetronome() {
+    if ($playbackStore.locked) {
+      metronomeSaveMsg = get(t)("common.locked");
+      return;
+    }
+    metronomeSaving = true;
+    metronomeSaveMsg = "";
+    metronomeSaveOk = false;
+    try {
+      const snapshot = await updateMetronomeDefaults(
+        metronomeSounds as Record<string, unknown> | null,
+        checksum,
+      );
+      applySnapshot(snapshot);
+      metronomeSnapshot = JSON.stringify(metronomeSounds);
+      metronomeDirty = false;
+      metronomeSaveOk = true;
+      setTimeout(() => (metronomeSaveOk = false), 2000);
+    } catch (e: any) {
+      metronomeSaveMsg = e.message;
+    } finally {
+      metronomeSaving = false;
+    }
+  }
+
+  // Metronome sound file browser state
+  let metronomeBrowseRole = $state<MetronomeSoundRole | null>(null);
+  let metronomeRef: MetronomeSection | undefined = $state();
+
+  function onMetronomeBrowseSelect(paths: string[]) {
+    if (paths.length > 0 && metronomeBrowseRole && metronomeRef) {
+      metronomeRef.applyBrowseResult(metronomeBrowseRole, paths[0]);
+    }
+    metronomeBrowseRole = null;
   }
 
   // Sample file browser state
@@ -803,6 +859,42 @@
           onbrowse={onSampleBrowse}
         />
       </div>
+
+      <!-- Player-wide metronome defaults -->
+      <div class="samples-top-section">
+        <div class="list-header">
+          <h2>{$t("config.metronome")}</h2>
+          <div class="toolbar-actions">
+            {#if metronomeSaveOk}
+              <span class="save-msg">{$t("common.saved")}</span>
+            {:else if metronomeSaveMsg}
+              <span class="save-msg save-error">{metronomeSaveMsg}</span>
+            {/if}
+            {#if metronomeDirty && !metronomeSaving}
+              <span class="dirty-flag">{$t("common.unsaved")}</span>
+            {/if}
+            <button
+              class="btn"
+              class:btn-primary={metronomeDirty && !$playbackStore.locked}
+              onclick={saveMetronome}
+              disabled={metronomeSaving ||
+                !metronomeDirty ||
+                $playbackStore.locked}
+              title={$playbackStore.locked ? $t("common.locked") : null}
+            >
+              {metronomeSaving
+                ? $t("common.saving")
+                : $t("config.saveMetronome")}
+            </button>
+          </div>
+        </div>
+        <MetronomeSection
+          bind:this={metronomeRef}
+          bind:sounds={metronomeSounds}
+          onchange={onMetronomeChange}
+          onbrowse={(role) => (metronomeBrowseRole = role)}
+        />
+      </div>
     </div>
   {/if}
 {:else if selectedIndex !== null && profiles[selectedIndex]}
@@ -969,6 +1061,18 @@
         filter={["audio"]}
         onselect={onSampleBrowseSelect}
         oncancel={closeSampleBrowser}
+      />
+    </div>
+  </div>
+{/if}
+
+{#if metronomeBrowseRole}
+  <div class="browser-overlay">
+    <div class="browser-modal">
+      <FileBrowser
+        filter={["audio"]}
+        onselect={onMetronomeBrowseSelect}
+        oncancel={() => (metronomeBrowseRole = null)}
       />
     </div>
   </div>

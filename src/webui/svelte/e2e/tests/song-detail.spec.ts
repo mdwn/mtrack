@@ -35,7 +35,7 @@ test.describe("Song Detail", () => {
     await expect(page.locator(".tab-bar")).toBeVisible();
     await expect(page.locator(".tab", { hasText: "Tracks" })).toBeVisible();
     await expect(page.locator(".tab", { hasText: "Samples" })).toBeVisible();
-    await expect(page.locator(".tab", { hasText: "Sections" })).toBeVisible();
+    await expect(page.locator(".tab", { hasText: "Timeline" })).toBeVisible();
     await expect(page.locator(".tab", { hasText: "Lighting" })).toBeVisible();
     await expect(page.locator(".tab", { hasText: "Config" })).toBeVisible();
     await expect(page.locator(".tab")).toHaveCount(5);
@@ -334,45 +334,45 @@ test.describe("Song Detail - Notifications in Config Tab", () => {
 test.describe("Song Detail - Section Editor", () => {
   test("shows Sections tab", async ({ page }) => {
     await page.goto("/#/songs/Test%20Song%20Alpha");
-    await expect(page.locator(".tab", { hasText: "Sections" })).toBeVisible();
+    await expect(page.locator(".tab", { hasText: "Timeline" })).toBeVisible();
   });
 
   test("clicking Sections tab shows visual timeline editor", async ({
     page,
   }) => {
     await page.goto("/#/songs/Test%20Song%20Alpha");
-    await page.locator(".tab", { hasText: "Sections" }).click();
-    await expect(page.locator(".tab.active")).toContainText("Sections");
+    await page.locator(".tab", { hasText: "Timeline" }).click();
+    await expect(page.locator(".tab.active")).toContainText("Timeline");
     await expect(page.locator(".section-timeline-editor")).toBeVisible();
   });
 
   test("sections tab shows zoom controls", async ({ page }) => {
     await page.goto("/#/songs/Test%20Song%20Alpha");
-    await page.locator(".tab", { hasText: "Sections" }).click();
+    await page.locator(".tab", { hasText: "Timeline" }).click();
     await expect(page.getByRole("button", { name: "Fit" })).toBeVisible();
   });
 
   test("sections tab shows section bar", async ({ page }) => {
     await page.goto("/#/songs/Test%20Song%20Alpha");
-    await page.locator(".tab", { hasText: "Sections" }).click();
+    await page.locator(".tab", { hasText: "Timeline" }).click();
     await expect(page.locator(".section-bar")).toBeVisible();
   });
 
   test("song with sections shows section chips", async ({ page }) => {
     await page.goto("/#/songs/Test%20Song%20Beta");
-    await page.locator(".tab", { hasText: "Sections" }).click();
+    await page.locator(".tab", { hasText: "Timeline" }).click();
     await expect(page.locator(".section-chip")).toHaveCount(2);
   });
 
   test("song with sections shows section blocks in bar", async ({ page }) => {
     await page.goto("/#/songs/Test%20Song%20Beta");
-    await page.locator(".tab", { hasText: "Sections" }).click();
+    await page.locator(".tab", { hasText: "Timeline" }).click();
     await expect(page.locator(".section-block")).toHaveCount(2);
   });
 
   test("drag on empty area creates a new section", async ({ page }) => {
     await page.goto("/#/songs/Test%20Song%20Beta");
-    await page.locator(".tab", { hasText: "Sections" }).click();
+    await page.locator(".tab", { hasText: "Timeline" }).click();
     await expect(page.locator(".section-block")).toHaveCount(2);
 
     // Drag on the bar-content area past the existing sections.
@@ -411,7 +411,7 @@ test.describe("Song Detail - Section Editor", () => {
 
   test("deleting a section from its dialog removes it", async ({ page }) => {
     await page.goto("/#/songs/Test%20Song%20Beta");
-    await page.locator(".tab", { hasText: "Sections" }).click();
+    await page.locator(".tab", { hasText: "Timeline" }).click();
     await expect(page.locator(".section-block")).toHaveCount(2);
 
     // Tap the first section block to open its editor.
@@ -432,7 +432,7 @@ test.describe("Song Detail - Section Editor", () => {
 
   test("tapping a section opens its editor for renaming", async ({ page }) => {
     await page.goto("/#/songs/Test%20Song%20Beta");
-    await page.locator(".tab", { hasText: "Sections" }).click();
+    await page.locator(".tab", { hasText: "Timeline" }).click();
     await expect(page.locator(".section-block")).toHaveCount(2);
 
     // Tap the first section block to open its editor.
@@ -456,7 +456,7 @@ test.describe("Song Detail - Section Editor", () => {
 
   test("section color can be picked in the editor", async ({ page }) => {
     await page.goto("/#/songs/Test%20Song%20Beta");
-    await page.locator(".tab", { hasText: "Sections" }).click();
+    await page.locator(".tab", { hasText: "Timeline" }).click();
 
     const firstBlock = page.locator(".section-block").first();
     const blockBox = await firstBlock.boundingBox();
@@ -485,7 +485,7 @@ test.describe("Song Detail - Section Editor", () => {
 
   test("section editing marks config as dirty", async ({ page }) => {
     await page.goto("/#/songs/Test%20Song%20Beta");
-    await page.locator(".tab", { hasText: "Sections" }).click();
+    await page.locator(".tab", { hasText: "Timeline" }).click();
 
     // Delete a section (via its dialog) to trigger a change.
     const firstBlock = page.locator(".section-block").first();

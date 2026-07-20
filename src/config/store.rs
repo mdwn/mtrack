@@ -474,6 +474,18 @@ impl ConfigStore {
         .await
     }
 
+    /// Updates the player-wide metronome defaults.
+    pub async fn update_metronome(
+        &self,
+        metronome: Option<super::player::MetronomeDefaults>,
+        checksum: &str,
+    ) -> Result<ConfigSnapshot, ConfigError> {
+        self.mutate(checksum, |config| {
+            config.set_metronome(metronome.clone());
+        })
+        .await
+    }
+
     /// Adds a profile.
     pub async fn add_profile(
         &self,

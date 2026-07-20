@@ -631,6 +631,11 @@ impl Player {
         self.metronome.as_ref()
     }
 
+    /// Sets the player-wide metronome defaults.
+    pub fn set_metronome(&mut self, metronome: Option<MetronomeDefaults>) {
+        self.metronome = metronome;
+    }
+
     /// Gets the maximum sample voices limit.
     pub fn max_sample_voices(&self) -> u32 {
         self.max_sample_voices.unwrap_or(DEFAULT_MAX_SAMPLE_VOICES)

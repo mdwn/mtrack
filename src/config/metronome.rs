@@ -224,17 +224,22 @@ impl MetronomeConfig {
                 validate_subdivision(subdivision)?;
             }
         }
+        if let Some(sounds) = &self.sounds {
+            sounds.validate()?;
+        }
+        Ok(())
+    }
+}
+
+impl MetronomeSounds {
+    /// Validates the click sound definitions (shared between song-level
+    /// metronome configs and the player-wide defaults).
+    pub fn validate(&self) -> Result<(), String> {
         for (label, sound) in [
-            (
-                "accent",
-                self.sounds.as_ref().and_then(|s| s.accent.as_ref()),
-            ),
-            (
-                "normal",
-                self.sounds.as_ref().and_then(|s| s.normal.as_ref()),
-            ),
-            ("half", self.sounds.as_ref().and_then(|s| s.half.as_ref())),
-            ("sub", self.sounds.as_ref().and_then(|s| s.sub.as_ref())),
+            ("accent", self.accent.as_ref()),
+            ("normal", self.normal.as_ref()),
+            ("half", self.half.as_ref()),
+            ("sub", self.sub.as_ref()),
         ] {
             if let Some(sound) = sound {
                 if let Some(freq) = sound.freq {

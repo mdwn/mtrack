@@ -14,8 +14,13 @@
      * -->
 <script lang="ts">
   import { t } from "svelte-i18n";
-  import type { MetronomeConfig, ClickSoundConfig } from "../../lib/api/songs";
+  import type {
+    MetronomeConfig,
+    ClickSoundConfig,
+    SongFile,
+  } from "../../lib/api/songs";
   import NumberStepper from "../NumberStepper.svelte";
+  import SongFileField from "./SongFileField.svelte";
 
   interface Props {
     /** The song.yaml `metronome:` block, or null when not configured. */
@@ -23,9 +28,21 @@
     onchange: (metronome: MetronomeConfig | null) => void;
     /** Whether the song has a beat grid (tempo map or analyzed click). */
     hasBeatGrid?: boolean;
+    songName?: string;
+    /** The song directory listing, for the sound-file pickers. */
+    songFiles?: SongFile[];
+    /** Opens the filesystem browser for a sound's file. */
+    onbrowsesound?: (role: "accent" | "half" | "normal" | "sub") => void;
   }
 
-  let { metronome, onchange, hasBeatGrid = false }: Props = $props();
+  let {
+    metronome,
+    onchange,
+    hasBeatGrid = false,
+    songName = "",
+    songFiles = [],
+    onbrowsesound,
+  }: Props = $props();
 
   let expanded = $state(true);
 
@@ -265,19 +282,19 @@
                       updateSound(role, { volume: Math.round(v * 100) / 100 })}
                   />
                 </div>
-                <label class="field sound-file">
+                <div class="field sound-file">
                   <span class="field-label">{$t("metronome.file")}</span>
-                  <input
-                    type="text"
-                    class="input"
-                    placeholder={$t("metronome.filePlaceholder")}
+                  <SongFileField
                     value={sound.file ?? ""}
-                    onchange={(e) => {
-                      const v = (e.target as HTMLInputElement).value.trim();
-                      updateSound(role, { file: v || undefined });
-                    }}
+                    placeholder={$t("metronome.filePlaceholder")}
+                    {songName}
+                    files={songFiles}
+                    onchange={(path) => updateSound(role, { file: path })}
+                    onbrowse={onbrowsesound
+                      ? () => onbrowsesound(role)
+                      : undefined}
                   />
-                </label>
+                </div>
               </div>
             {/if}
           </div>
@@ -403,9 +420,6 @@
   .sound-file {
     flex: 1;
     min-width: 180px;
-  }
-  .sound-file .input {
-    min-height: 44px;
   }
   .hint-text {
     font-size: 12px;
