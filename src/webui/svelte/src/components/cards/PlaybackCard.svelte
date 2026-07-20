@@ -16,6 +16,7 @@
   import { Code, ConnectError } from "@connectrpc/connect";
   import { playbackStore } from "../../lib/ws/stores";
   import { playerClient } from "../../lib/grpc/client";
+  import { sectionColor } from "../../lib/sectionColors";
   import BeatIndicator from "./BeatIndicator.svelte";
   import { formatMs } from "../../lib/util/format";
   import { t } from "svelte-i18n";
@@ -210,6 +211,20 @@
           100
       : null,
   );
+
+  /** The active section's display color, matching its timeline slot. */
+  let activeSectionColor = $derived.by(() => {
+    const active = $playbackStore.active_section;
+    if (!active) return undefined;
+    const index = $playbackStore.available_sections.findIndex(
+      (s) => s.name === active.name,
+    );
+    if (index < 0) return undefined;
+    return sectionColor(
+      $playbackStore.available_sections[index].color ?? undefined,
+      index,
+    );
+  });
 
   async function stopSectionLoop() {
     try {
@@ -536,6 +551,7 @@
         {#if $playbackStore.active_section}
           <button
             class="badge badge--pill badge--active section-chip"
+            style:--sec-color={activeSectionColor}
             onclick={stopSectionLoop}
             title={$t("playback.stopLoop")}
           >
@@ -544,9 +560,12 @@
             <span aria-hidden="true">×</span>
           </button>
         {/if}
-        {#each $playbackStore.available_sections as section (section.name)}
+        {#each $playbackStore.available_sections as section, i (section.name)}
           {#if !$playbackStore.active_section || $playbackStore.active_section.name !== section.name}
-            <span class="section-chip-group">
+            <span
+              class="section-chip-group"
+              style:--sec-color={sectionColor(section.color ?? undefined, i)}
+            >
               <button
                 class="badge badge--pill section-chip section-chip--grouped"
                 onclick={() => seekToSection(section.name)}
@@ -824,8 +843,13 @@
   }
   .section-chip {
     cursor: pointer;
-    border: 1px solid var(--card-border);
-    background: var(--nc-bg-2);
+    border: 1px solid
+      color-mix(in srgb, var(--sec-color, var(--nc-fg-3)) 55%, transparent);
+    background: color-mix(
+      in srgb,
+      var(--sec-color, var(--nc-fg-3)) 14%,
+      var(--nc-bg-2)
+    );
     color: var(--nc-fg-2);
     transition:
       background var(--nc-dur-fast) var(--nc-ease),
@@ -833,7 +857,11 @@
       border-color var(--nc-dur-fast) var(--nc-ease);
   }
   .section-chip:hover:not(:disabled) {
-    background: var(--nc-bg-3);
+    background: color-mix(
+      in srgb,
+      var(--sec-color, var(--nc-fg-3)) 28%,
+      var(--nc-bg-2)
+    );
     color: var(--nc-fg-1);
   }
   .section-chip:disabled {
@@ -851,10 +879,15 @@
   }
   .section-chip-loop {
     cursor: pointer;
-    border: 1px solid var(--card-border);
+    border: 1px solid
+      color-mix(in srgb, var(--sec-color, var(--nc-fg-3)) 55%, transparent);
     border-top-right-radius: 999px;
     border-bottom-right-radius: 999px;
-    background: var(--nc-bg-2);
+    background: color-mix(
+      in srgb,
+      var(--sec-color, var(--nc-fg-3)) 14%,
+      var(--nc-bg-2)
+    );
     color: var(--nc-fg-2);
     font-size: 12px;
     line-height: 1;
@@ -864,7 +897,11 @@
       color var(--nc-dur-fast) var(--nc-ease);
   }
   .section-chip-loop:hover:not(:disabled) {
-    background: var(--nc-bg-3);
+    background: color-mix(
+      in srgb,
+      var(--sec-color, var(--nc-fg-3)) 28%,
+      var(--nc-bg-2)
+    );
     color: var(--nc-fg-1);
   }
   .section-chip-loop:disabled {
@@ -872,12 +909,16 @@
     opacity: 0.55;
   }
   .badge--pill.badge--active.section-chip {
-    background: var(--nc-cyan-400);
-    border-color: var(--nc-cyan-500);
+    background: var(--sec-color, var(--nc-cyan-400));
+    border-color: var(--sec-color, var(--nc-cyan-500));
     color: var(--nc-ink);
   }
   .badge--pill.badge--active.section-chip:hover:not(:disabled) {
-    background: var(--nc-cyan-500);
+    background: color-mix(
+      in srgb,
+      var(--sec-color, var(--nc-cyan-500)) 85%,
+      black
+    );
     color: var(--nc-ink);
   }
 

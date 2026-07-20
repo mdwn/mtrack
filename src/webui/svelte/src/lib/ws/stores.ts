@@ -39,6 +39,8 @@ export interface SectionInfo {
   name: string;
   start_measure: number;
   end_measure: number;
+  /** Explicit display color; absent = UI palette rotation. */
+  color?: string | null;
 }
 
 export interface ActiveSection {
