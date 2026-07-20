@@ -24,6 +24,7 @@
     SongFile,
   } from "../../lib/api/songs";
   import { sortTempoChanges } from "../../lib/util/tempo";
+  import type { TempoSection } from "../../lib/lighting/types";
   import { accentsGlyph, subdivisionChip } from "../../lib/meter";
   import SectionBar from "./SectionBar.svelte";
   import SectionRuler from "./SectionRuler.svelte";
@@ -58,6 +59,8 @@
     hasMidi?: boolean;
     /** The song directory listing, for the pilot clip picker. */
     songFiles?: SongFile[];
+    /** Light shows with their own tempo maps (import sources). */
+    lightShowTempos?: { file: string; tempo: TempoSection }[];
     ontempochange?: (tempo: TempoConfig | null) => void;
     onpilotchange?: (pilot: PilotConfig | null) => void;
     onmetronomechange?: (metronome: MetronomeConfig | null) => void;
@@ -74,6 +77,7 @@
     songName,
     hasMidi = false,
     songFiles = [],
+    lightShowTempos = [],
     ontempochange,
     onpilotchange,
     onmetronomechange,
@@ -847,6 +851,8 @@
     {songName}
     {hasMidi}
     canGuess={!!song.beat_grid}
+    beatGrid={song.beat_grid}
+    {lightShowTempos}
     ontempochange={(updated) => ontempochange?.(updated)}
     onmetronomechange={(updated) => onmetronomechange?.(updated)}
     onmove={(position) => (tempoDialogTarget = position)}

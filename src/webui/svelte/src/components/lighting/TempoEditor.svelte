@@ -28,6 +28,8 @@
     /** Restrict change positions to measure/beat (used by the song-level
      *  tempo editor, whose config format has no absolute-time positions). */
     measureOnly?: boolean;
+    /** The song's own tempo map, offered as a copy source. */
+    songTempo?: TempoSection | null;
   }
 
   let {
@@ -38,6 +40,7 @@
     hasBeatGrid = false,
     hasMidi = false,
     measureOnly = false,
+    songTempo = null,
   }: Props = $props();
 
   let guessSource = $state<"midi" | "beat_grid" | null>(null);
@@ -199,6 +202,13 @@
                 : "Guess from beat grid"}</button
         >
       {/if}
+      {#if songTempo}
+        <button
+          class="btn btn-sm btn-accent"
+          onclick={() => onchange(structuredClone($state.snapshot(songTempo)))}
+          >{$t("tempo.copyFromSong")}</button
+        >
+      {/if}
       <button class="btn btn-sm btn-danger" onclick={disableTempo}
         >{$t("common.remove")}</button
       >
@@ -214,6 +224,13 @@
       {#if (hasBeatGrid || hasMidi) && songName}
         <button class="btn btn-sm btn-accent" onclick={guessTempoMap}
           >{hasMidi ? "Detect from MIDI" : "Guess from beat grid"}</button
+        >
+      {/if}
+      {#if songTempo}
+        <button
+          class="btn btn-sm btn-accent"
+          onclick={() => onchange(structuredClone($state.snapshot(songTempo)))}
+          >{$t("tempo.copyFromSong")}</button
         >
       {/if}
       {#if onclose}

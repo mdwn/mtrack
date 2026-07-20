@@ -18,6 +18,7 @@
     Cue,
     Sequence,
     SubLaneType,
+    TempoSection,
   } from "../../../lib/lighting/types";
   import type { WaveformTrack } from "../../../lib/api/songs";
   import {
@@ -51,6 +52,8 @@
     hasMidi?: boolean;
     isPlaying?: boolean;
     playheadMs?: number | null;
+    /** The song's own tempo map, offered as a copy source. */
+    songTempo?: TempoSection | null;
     onchange: (lightFile: LightFile) => void;
     onplay?: (ms: number) => void;
     onstop?: () => void;
@@ -67,6 +70,7 @@
     hasMidi = false,
     isPlaying = false,
     playheadMs = null,
+    songTempo = null,
     onchange,
     onplay,
     onstop,
@@ -633,6 +637,7 @@
         {songName}
         {hasBeatGrid}
         {hasMidi}
+        {songTempo}
         onchange={(tempo) => {
           onchange({ ...lightFile, tempo });
           if (!tempo) showTempoEditor = false;

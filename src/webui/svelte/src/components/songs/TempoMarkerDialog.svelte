@@ -24,6 +24,8 @@
   import { fetchTempoGuess, type GuessedTempo } from "../../lib/api/songs";
   import { positionTaken, sortTempoChanges } from "../../lib/util/tempo";
   import { subdivisionIcon } from "../../lib/meter";
+  import { sectionToConfigSnapped } from "../../lib/tempoConvert";
+  import type { TempoSection } from "../../lib/lighting/types";
   import NoteIcon from "../NoteIcon.svelte";
   import NumberStepper from "../NumberStepper.svelte";
   import AccentPads from "./AccentPads.svelte";
@@ -47,6 +49,10 @@
     songName?: string;
     hasMidi?: boolean;
     canGuess?: boolean;
+    /** The song's beat grid, for snapping time-anchored imports. */
+    beatGrid?: { beats: number[]; measure_starts: number[] } | null;
+    /** Light shows with their own tempo maps (import sources). */
+    lightShowTempos?: { file: string; tempo: TempoSection }[];
     ontempochange: (tempo: TempoConfig | null) => void;
     onmetronomechange?: (metronome: MetronomeConfig | null) => void;
     /** The marker was moved; the parent should retarget the dialog. */
@@ -62,6 +68,8 @@
     songName,
     hasMidi = false,
     canGuess = false,
+    beatGrid = null,
+    lightShowTempos = [],
     ontempochange,
     onmetronomechange,
     onmove,
@@ -440,6 +448,29 @@
     return config;
   }
 
+  let importNote = $state("");
+
+  /** Imports a light show's tempo map as the song tempo. Time-anchored
+   * changes snap to the nearest measure/beat on the grid. */
+  function importFromLightShow(source: { file: string; tempo: TempoSection }) {
+    const result = sectionToConfigSnapped(source.tempo, beatGrid);
+    ontempochange(result.config);
+    const parts: string[] = [];
+    if (result.snapped > 0)
+      parts.push(
+        $t("tempo.marker.importSnapped", {
+          values: { count: result.snapped },
+        }),
+      );
+    if (result.dropped > 0)
+      parts.push(
+        $t("tempo.marker.importDropped", {
+          values: { count: result.dropped },
+        }),
+      );
+    importNote = parts.join(" · ");
+  }
+
   async function detectTempo() {
     if (!songName) return;
     guessing = true;
@@ -587,19 +618,39 @@
       </div>
     </div>
 
-    {#if (hasMidi || canGuess) && songName}
+    {#if ((hasMidi || canGuess) && songName) || lightShowTempos.length > 0}
       <div class="dialog-section">
-        <button
-          type="button"
-          class="btn detect-btn"
-          onclick={detectTempo}
-          disabled={guessing}
-          >{guessing
-            ? $t("common.loading")
-            : hasMidi
-              ? $t("tempo.marker.detectMidi")
-              : $t("tempo.marker.guessGrid")}</button
-        >
+        <div class="stepper-row">
+          {#if (hasMidi || canGuess) && songName}
+            <button
+              type="button"
+              class="btn detect-btn"
+              onclick={detectTempo}
+              disabled={guessing}
+              >{guessing
+                ? $t("common.loading")
+                : hasMidi
+                  ? $t("tempo.marker.detectMidi")
+                  : $t("tempo.marker.guessGrid")}</button
+            >
+          {/if}
+          {#each lightShowTempos as source (source.file)}
+            <button
+              type="button"
+              class="btn detect-btn"
+              title={source.file}
+              onclick={() => importFromLightShow(source)}
+              >{$t("tempo.marker.importLighting", {
+                values: {
+                  file: source.file.split("/").pop() ?? source.file,
+                },
+              })}</button
+            >
+          {/each}
+        </div>
+        {#if importNote}
+          <span class="import-note">{importNote}</span>
+        {/if}
       </div>
     {/if}
   {:else}
@@ -829,6 +880,10 @@
   .detect-btn {
     min-height: 40px;
     align-self: flex-start;
+  }
+  .import-note {
+    font-size: 12px;
+    color: var(--text-muted);
   }
   .transition-row {
     display: flex;

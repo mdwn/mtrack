@@ -32,6 +32,9 @@
     type TempoConfig,
     type WaveformTrack,
   } from "../../lib/api/songs";
+  import { fetchLightingFile } from "../../lib/api/config";
+  import { parseLightFile } from "../../lib/lighting/parser";
+  import type { TempoSection } from "../../lib/lighting/types";
   import { showConfirm } from "../../lib/dialog.svelte";
   import { registerDirtyGuard } from "../../lib/dirtyGuard";
   import { playbackStore } from "../../lib/ws/stores";
@@ -155,6 +158,30 @@
 
   // Pilot hints state (the song.yaml `pilot:` block)
   let pilotConfig = $state<PilotConfig | null>(null);
+
+  // Light shows with their own tempo maps — offered as import sources in
+  // the timeline's base tempo marker dialog.
+  let lightShowTempos = $state<{ file: string; tempo: TempoSection }[]>([]);
+
+  async function loadLightShowTempos() {
+    const files = song?.lighting_files ?? [];
+    if (files.length === 0) {
+      lightShowTempos = [];
+      return;
+    }
+    const found: { file: string; tempo: TempoSection }[] = [];
+    for (const file of files) {
+      try {
+        const parsed = parseLightFile(await fetchLightingFile(file));
+        if (parsed.tempo) {
+          found.push({ file, tempo: parsed.tempo });
+        }
+      } catch {
+        // Unreadable/unparseable show — just not an import source.
+      }
+    }
+    lightShowTempos = found;
+  }
 
   // File browser state
   type BrowseTarget =
@@ -392,6 +419,7 @@
       fetchWaveform(songName)
         .then((w) => (waveformTracks = w.tracks))
         .catch(() => {});
+      loadLightShowTempos();
     } catch (e) {
       error =
         e instanceof Error
@@ -1131,6 +1159,7 @@
             {songName}
             hasMidi={song.has_midi}
             {songFiles}
+            {lightShowTempos}
             ontempochange={onTempoChange}
             onpilotchange={onPilotChange}
             onmetronomechange={onMetronomeChange}
@@ -1153,6 +1182,7 @@
             bind:this={lightingEditorRef}
             bind:dirty={lightingDirty}
             {song}
+            songTempo={tempoConfig}
             onreload={load}
             onaddlightfile={setLightingFile}
             onremovelightfile={removeLightingFile}
