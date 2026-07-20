@@ -41,9 +41,7 @@
   import TrackEditor from "./TrackEditor.svelte";
   import SongLightingEditor from "./SongLightingEditor.svelte";
   import SectionTimelineEditor from "./SectionTimelineEditor.svelte";
-  import SongTempoEditor from "./SongTempoEditor.svelte";
   import SongMetronomeEditor from "./SongMetronomeEditor.svelte";
-  import SongPilotEditor from "./SongPilotEditor.svelte";
   import SamplesSection from "../config/SamplesSection.svelte";
   import type { SampleBrowseTarget } from "../config/SamplesSection.svelte";
   import MidiEventEditor from "../config/MidiEventEditor.svelte";
@@ -1092,15 +1090,18 @@
         />
       {:else if activeTab === "sections"}
         {#if song}
-          <div class="tempo-editor-wrap">
-            <SongTempoEditor
-              tempo={tempoConfig}
-              {songName}
-              hasBeatGrid={!!song.beat_grid && !tempoConfig}
-              hasMidi={song.has_midi}
-              onchange={onTempoChange}
-            />
-          </div>
+          <SectionTimelineEditor
+            {song}
+            {waveformTracks}
+            bind:sections
+            bind:dirty={sectionsDirty}
+            tempo={tempoConfig}
+            pilot={pilotConfig}
+            {songName}
+            hasMidi={song.has_midi}
+            ontempochange={onTempoChange}
+            onpilotchange={onPilotChange}
+          />
           <div class="tempo-editor-wrap">
             <SongMetronomeEditor
               metronome={metronomeConfig}
@@ -1108,20 +1109,6 @@
               onchange={onMetronomeChange}
             />
           </div>
-          <div class="tempo-editor-wrap">
-            <SongPilotEditor
-              pilot={pilotConfig}
-              hasBeatGrid={!!song.beat_grid || !!tempoConfig}
-              beatGrid={song.beat_grid}
-              onchange={onPilotChange}
-            />
-          </div>
-          <SectionTimelineEditor
-            {song}
-            {waveformTracks}
-            bind:sections
-            bind:dirty={sectionsDirty}
-          />
         {/if}
       {:else if activeTab === "lighting"}
         {#if song}
