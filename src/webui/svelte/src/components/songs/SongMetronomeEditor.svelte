@@ -19,8 +19,12 @@
     ClickSoundConfig,
     SongFile,
   } from "../../lib/api/songs";
-  import NumberStepper from "../NumberStepper.svelte";
+  import SliderStepper from "../SliderStepper.svelte";
   import SongFileField from "./SongFileField.svelte";
+  import {
+    METRONOME_PRESETS,
+    SOUND_DEFAULTS,
+  } from "../../lib/metronomePresets";
 
   interface Props {
     /** The song.yaml `metronome:` block, or null when not configured. */
@@ -49,56 +53,8 @@
   const ROLES = ["accent", "half", "normal", "sub"] as const;
   type Role = (typeof ROLES)[number];
 
-  /** Built-in synthesized defaults, used to seed a fresh override. */
-  const DEFAULTS: Record<Role, { freq: number; volume: number }> = {
-    accent: { freq: 1600, volume: 1.0 },
-    half: { freq: 1400, volume: 0.9 },
-    normal: { freq: 1200, volume: 0.8 },
-    sub: { freq: 1000, volume: 0.45 },
-  };
-
-  /** Typical click sounds; applying a preset overwrites all sounds. */
-  const PRESETS: {
-    key: string;
-    sounds: NonNullable<MetronomeConfig["sounds"]>;
-  }[] = [
-    {
-      key: "classic",
-      sounds: {
-        accent: { freq: 1125, volume: 1.0 },
-        half: { freq: 1125, volume: 1.0 },
-        normal: { freq: 1125, volume: 1.0 },
-        sub: { freq: 1125, volume: 0.5 },
-      },
-    },
-    {
-      key: "hilo",
-      sounds: {
-        accent: { freq: 1600, volume: 1.0 },
-        half: { freq: 1400, volume: 0.9 },
-        normal: { freq: 1200, volume: 0.8 },
-        sub: { freq: 1000, volume: 0.45 },
-      },
-    },
-    {
-      key: "sharp",
-      sounds: {
-        accent: { freq: 2000, volume: 1.0 },
-        half: { freq: 1750, volume: 0.85 },
-        normal: { freq: 1500, volume: 0.75 },
-        sub: { freq: 1200, volume: 0.4 },
-      },
-    },
-    {
-      key: "low",
-      sounds: {
-        accent: { freq: 880, volume: 1.0 },
-        half: { freq: 770, volume: 0.9 },
-        normal: { freq: 660, volume: 0.8 },
-        sub: { freq: 550, volume: 0.45 },
-      },
-    },
-  ];
+  const DEFAULTS = SOUND_DEFAULTS;
+  const PRESETS = METRONOME_PRESETS;
 
   function enable() {
     onchange({});
@@ -200,9 +156,9 @@
   {#if metronome && expanded}
     <div class="metronome-body">
       <div class="level-row">
-        <div class="field">
+        <div class="field level-field">
           <span class="field-label">{$t("metronome.level")}</span>
-          <NumberStepper
+          <SliderStepper
             value={metronome.volume ?? 1}
             min={0}
             max={2}
@@ -259,7 +215,7 @@
               <div class="sound-controls">
                 <div class="field">
                   <span class="field-label">{$t("metronome.volume")}</span>
-                  <NumberStepper
+                  <SliderStepper
                     value={sound.volume ?? DEFAULTS[role].volume}
                     min={0}
                     max={2}
@@ -272,12 +228,13 @@
                 </div>
                 <div class="field">
                   <span class="field-label">{$t("metronome.freq")}</span>
-                  <NumberStepper
+                  <SliderStepper
                     value={sound.freq ?? DEFAULTS[role].freq}
                     min={20}
                     max={20000}
                     step={25}
                     suffix="Hz"
+                    log
                     ariaLabel={$t("metronome.freq")}
                     onchange={(v) => updateSound(role, { freq: v })}
                   />
@@ -349,6 +306,10 @@
     align-items: flex-end;
     gap: 20px;
     flex-wrap: wrap;
+  }
+  .level-field {
+    flex: 1;
+    min-width: 260px;
   }
   .track-field {
     min-width: 160px;

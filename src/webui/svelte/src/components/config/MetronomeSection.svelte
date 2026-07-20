@@ -26,8 +26,12 @@
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
   import { uploadSampleFile } from "../../lib/api/config";
-  import NumberStepper from "../NumberStepper.svelte";
+  import SliderStepper from "../SliderStepper.svelte";
   import FileUpload from "../songs/FileUpload.svelte";
+  import {
+    METRONOME_PRESETS,
+    SOUND_DEFAULTS,
+  } from "../../lib/metronomePresets";
 
   interface Props {
     /** The player-wide `metronome.sounds` block, or null when unset. */
@@ -40,14 +44,12 @@
 
   const ROLES: MetronomeSoundRole[] = ["accent", "half", "normal", "sub"];
 
-  /** Built-in synthesized defaults, used to seed a fresh override. */
-  const DEFAULTS: Record<MetronomeSoundRole, { freq: number; volume: number }> =
-    {
-      accent: { freq: 1600, volume: 1.0 },
-      half: { freq: 1400, volume: 0.9 },
-      normal: { freq: 1200, volume: 0.8 },
-      sub: { freq: 1000, volume: 0.45 },
-    };
+  const DEFAULTS = SOUND_DEFAULTS;
+
+  function applyPreset(preset: MetronomeDefaultSounds) {
+    sounds = structuredClone(preset);
+    onchange();
+  }
 
   let uploading = $state(false);
   let uploadMsg = $state("");
@@ -106,6 +108,18 @@
 
 <div class="metronome-defaults">
   <p class="muted hint-text">{$t("config.metronomeHint")}</p>
+  <div class="presets">
+    <span class="field-label">{$t("metronome.presets")}</span>
+    {#each METRONOME_PRESETS as preset (preset.key)}
+      <button
+        class="btn btn-sm"
+        onclick={() => applyPreset(preset.sounds)}
+        title="{preset.sounds.accent?.freq}/{preset.sounds.normal?.freq} Hz"
+      >
+        {$t(`metronome.preset.${preset.key}`)}
+      </button>
+    {/each}
+  </div>
   {#each ROLES as role (role)}
     {@const sound = sounds?.[role]}
     <div class="sound-row" class:sound-row--off={!sound}>
@@ -125,7 +139,7 @@
         <div class="sound-controls">
           <div class="field">
             <span class="field-label">{$t("metronome.volume")}</span>
-            <NumberStepper
+            <SliderStepper
               value={sound.volume ?? DEFAULTS[role].volume}
               min={0}
               max={2}
@@ -138,12 +152,13 @@
           </div>
           <div class="field">
             <span class="field-label">{$t("metronome.freq")}</span>
-            <NumberStepper
+            <SliderStepper
               value={sound.freq ?? DEFAULTS[role].freq}
               min={20}
               max={20000}
               step={25}
               suffix="Hz"
+              log
               ariaLabel={$t("metronome.freq")}
               onchange={(v) => updateSound(role, { freq: v })}
             />
@@ -198,8 +213,15 @@
     }
   }
   .metronome-defaults > .hint-text,
+  .metronome-defaults > .presets,
   .metronome-defaults > .upload-msg {
     grid-column: 1 / -1;
+  }
+  .presets {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
   }
   .hint-text {
     font-size: 12px;
