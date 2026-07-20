@@ -27,6 +27,7 @@
   import { get } from "svelte/store";
   import { uploadSampleFile } from "../../lib/api/config";
   import SliderStepper from "../SliderStepper.svelte";
+  import { previewClick } from "../../lib/clickPreview";
   import FileUpload from "../songs/FileUpload.svelte";
   import {
     METRONOME_PRESETS,
@@ -134,6 +135,20 @@
         {#if !sound}
           <span class="inherited-note">{$t("config.metronomeBuiltin")}</span>
         {/if}
+        {#if sound && !sound.file}
+          <button
+            type="button"
+            class="preview-click-btn"
+            title={$t("metronome.previewClick")}
+            onclick={(e) => {
+              e.preventDefault();
+              previewClick(
+                sound.freq ?? DEFAULTS[role].freq,
+                sound.volume ?? DEFAULTS[role].volume,
+              );
+            }}>🔊</button
+          >
+        {/if}
       </label>
       {#if sound}
         <div class="sound-controls">
@@ -145,6 +160,7 @@
               max={2}
               step={0.05}
               decimals={2}
+              defaultValue={DEFAULTS[role].volume}
               ariaLabel={$t("metronome.volume")}
               onchange={(v) =>
                 updateSound(role, { volume: Math.round(v * 100) / 100 })}
@@ -159,6 +175,7 @@
               step={25}
               suffix="Hz"
               log
+              defaultValue={DEFAULTS[role].freq}
               ariaLabel={$t("metronome.freq")}
               onchange={(v) => updateSound(role, { freq: v })}
             />
@@ -245,6 +262,19 @@
     gap: 10px;
     cursor: pointer;
     min-height: 24px;
+  }
+  .preview-click-btn {
+    margin-left: auto;
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    min-width: 36px;
+    min-height: 30px;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  .preview-click-btn:active {
+    background: var(--accent);
   }
   .toggle-row input[type="checkbox"] {
     width: 18px;

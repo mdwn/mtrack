@@ -13,6 +13,8 @@
      *
      * -->
 <script lang="ts">
+  import { t } from "svelte-i18n";
+
   interface Props {
     value: number;
     onchange: (value: number) => void;
@@ -27,6 +29,8 @@
     /** Logarithmic slider travel — for ranges like frequencies where the
      * low end deserves most of the resolution. */
     log?: boolean;
+    /** Double-clicking the slider resets to this value. */
+    defaultValue?: number;
     ariaLabel?: string;
   }
 
@@ -39,6 +43,7 @@
     decimals,
     suffix = "",
     log = false,
+    defaultValue,
     ariaLabel,
   }: Props = $props();
 
@@ -82,6 +87,10 @@
 
   function handleSlider(e: Event) {
     onchange(clamp(posToValue(Number((e.target as HTMLInputElement).value))));
+  }
+
+  function resetToDefault() {
+    if (defaultValue !== undefined) onchange(clamp(defaultValue));
   }
 
   function bump(direction: 1 | -1) {
@@ -146,7 +155,11 @@
     style="--fill: {fillPct}%"
     aria-label={ariaLabel}
     aria-valuetext={display + suffix}
+    title={defaultValue !== undefined
+      ? $t("slider.resetHint", { values: { value: defaultValue } })
+      : undefined}
     oninput={handleSlider}
+    ondblclick={resetToDefault}
   />
   <button
     type="button"
