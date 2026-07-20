@@ -186,11 +186,13 @@
     return time === undefined ? songDurationMs : time * 1000;
   }
 
-  /** Signature denominator in effect at a position (base + prior changes). */
-  function sigDenAt(measure: number, beat: number): number {
-    let den = parseInt(
-      /\/\s*(\d+)/.exec(tempo?.time_signature ?? "4/4")?.[1] ?? "4",
-    );
+  /** Signature in effect at a position (base + prior changes). */
+  function sigAt(measure: number, beat: number): [number, number] {
+    const parse = (raw: string | undefined): [number, number] | null => {
+      const match = /^\s*(\d+)\s*\/\s*(\d+)\s*$/.exec(raw ?? "");
+      return match ? [parseInt(match[1]), parseInt(match[2])] : null;
+    };
+    let sig = parse(tempo?.time_signature) ?? [4, 4];
     const sorted = [...(tempo?.changes ?? [])].sort(
       (a, b) => a.measure - b.measure || (a.beat ?? 1) - (b.beat ?? 1),
     );
@@ -198,10 +200,14 @@
       const atOrBefore =
         c.measure < measure || (c.measure === measure && (c.beat ?? 1) <= beat);
       if (!atOrBefore) break;
-      const match = /\/\s*(\d+)/.exec(c.time_signature ?? "");
-      if (match) den = parseInt(match[1]);
+      sig = parse(c.time_signature) ?? sig;
     }
-    return den;
+    return sig;
+  }
+
+  /** Pattern resized to the meter at its position, like the renderer. */
+  function chipPattern(levels: number[], numerator: number): number[] {
+    return Array.from({ length: numerator }, (_, i) => levels[i] ?? 1);
   }
 
   /** One marker per position, merging tempo changes with metronome feel
@@ -210,10 +216,12 @@
     if (!tempo) return [];
     const baseParts = [`${tempo.bpm}`, tempo.time_signature ?? "4/4"];
     if (metronome?.accents?.length) {
-      baseParts.push(accentsGlyph(metronome.accents));
+      baseParts.push(
+        accentsGlyph(chipPattern(metronome.accents, sigAt(1, 0)[0])),
+      );
     }
     if (metronome?.subdivision !== undefined && metronome.subdivision !== 1) {
-      baseParts.push(subdivisionChip(metronome.subdivision, sigDenAt(1, 0)));
+      baseParts.push(subdivisionChip(metronome.subdivision, sigAt(1, 0)[1]));
     }
     const markers = [
       {
@@ -249,11 +257,11 @@
       const parts: string[] = [];
       if (tc?.bpm !== undefined) parts.push(`${tc.bpm}`);
       if (tc?.time_signature) parts.push(tc.time_signature);
-      if (mc?.accents) parts.push(accentsGlyph(mc.accents));
+      const sig = sigAt(pos.measure, pos.beat);
+      if (mc?.accents)
+        parts.push(accentsGlyph(chipPattern(mc.accents, sig[0])));
       if (mc?.subdivision !== undefined) {
-        parts.push(
-          subdivisionChip(mc.subdivision, sigDenAt(pos.measure, pos.beat)),
-        );
+        parts.push(subdivisionChip(mc.subdivision, sig[1]));
       }
       markers.push({
         id: `c${pos.measure}:${pos.beat}`,

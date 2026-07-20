@@ -79,12 +79,15 @@
 
   let padCount = $derived(Math.max(1, Math.min(16, beatsPerMeasure)));
 
-  /** The pattern the pads display: explicit `accents` when it matches the
-   * meter, otherwise levels derived from the accent grouping (or the plain
-   * downbeat accent). */
+  /** The pattern the pads display: explicit `accents` (padded with baseline
+   * / truncated to the meter, matching the renderer), otherwise levels
+   * derived from the accent grouping (or the plain downbeat accent). */
   let padLevels = $derived.by(() => {
-    if (metronome?.accents && metronome.accents.length === padCount) {
-      return metronome.accents;
+    if (metronome?.accents?.length) {
+      return Array.from(
+        { length: padCount },
+        (_, i) => metronome.accents![i] ?? 1,
+      );
     }
     const groupStarts = [0];
     let acc = 0;
@@ -98,7 +101,7 @@
   });
 
   /** Whether the pads show an explicit per-beat pattern from the config. */
-  let padsCustomized = $derived((metronome?.accents?.length ?? 0) === padCount);
+  let padsCustomized = $derived((metronome?.accents?.length ?? 0) > 0);
 
   function resetPads() {
     update({ accents: [] });

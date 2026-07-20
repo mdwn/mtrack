@@ -104,10 +104,12 @@ fn measure_bounds(grid: &BeatGrid) -> Vec<(usize, usize)> {
 }
 
 /// Resolves the accent level (0 silent, 1 normal, 2 half, 3 accent) of every
-/// beat in the grid: per-beat patterns where the measure's beat count matches
-/// (including positional `changes`), accent grouping otherwise, plain
-/// downbeat accent without either. This is the source of truth shared by the
-/// audio renderer and the web UI's visual metronome.
+/// beat in the grid: the per-beat pattern in effect (base `accents` swapped
+/// by positional `changes`), applied per measure — padded with the baseline
+/// level when a measure has more beats than the pattern, truncated when it
+/// has fewer. Without a pattern the `accent` grouping applies, and without
+/// either the downbeat gets a plain accent. This is the source of truth
+/// shared by the audio renderer and the web UI's visual metronome.
 pub fn accent_levels(grid: &BeatGrid, config: &MetronomeConfig) -> Vec<u8> {
     let group_starts = accent_group_starts(config);
     let mut sorted_changes = config.changes.clone();
@@ -125,8 +127,12 @@ pub fn accent_levels(grid: &BeatGrid, config: &MetronomeConfig) -> Vec<u8> {
         }
         let measure_len = measure_end - measure_start;
         for beat_in_measure in 0..measure_len {
-            levels[measure_start + beat_in_measure] = if active_accents.len() == measure_len {
-                active_accents[beat_in_measure].min(3)
+            levels[measure_start + beat_in_measure] = if !active_accents.is_empty() {
+                active_accents
+                    .get(beat_in_measure)
+                    .copied()
+                    .unwrap_or(1)
+                    .min(3)
             } else if group_starts.contains(&beat_in_measure) {
                 3
             } else {
@@ -140,10 +146,10 @@ pub fn accent_levels(grid: &BeatGrid, config: &MetronomeConfig) -> Vec<u8> {
 /// Derives click events from a beat grid.
 ///
 /// Beat accents come from `config.accents` (per-beat levels: 0 silent,
-/// 1 normal, 2 half accent, 3 accent) in measures whose beat count matches
-/// the pattern length. Other measures fall back to `config.accent` grouping
-/// (e.g. `[3, 2, 2]` accents beats 1, 4 and 6) or, without one, a plain
-/// downbeat accent. `config.changes` swaps the accent pattern and/or the
+/// 1 normal, 2 half accent, 3 accent), padded/truncated per measure; without
+/// a pattern the `config.accent` grouping applies (e.g. `[3, 2, 2]` accents
+/// beats 1, 4 and 6), and without either the downbeat gets a plain accent.
+/// `config.changes` swaps the accent pattern and/or the
 /// subdivision from their anchor measures onward. Subdivisions add sub-sound
 /// ticks: evenly spaced between beats, or at clave positions over a
 /// two-measure cycle (anchored where the subdivision last changed).
@@ -587,26 +593,17 @@ mod tests {
     }
 
     #[test]
-    fn events_accent_levels_fall_back_on_length_mismatch() {
-        // A 3-entry pattern on a 4-beat measure falls back to the default
-        // downbeat accent.
+    fn accent_pattern_pads_and_truncates_on_length_mismatch() {
+        // A short pattern pads with the baseline level instead of being
+        // silently ignored (e.g. a hand-edited 3-entry pattern in 4/4).
         let grid = simple_grid(4, 0.5, 1);
-        let events = click_events_from_beat_grid(
-            &grid,
-            &config_with(vec![], vec![3, 0, 1], Subdivision::Even(1)),
-            RATE,
-            Duration::ZERO,
-        );
-        let kinds: Vec<ClickKind> = events.iter().map(|e| e.kind).collect();
-        assert_eq!(
-            kinds,
-            vec![
-                ClickKind::Accent,
-                ClickKind::Normal,
-                ClickKind::Normal,
-                ClickKind::Normal,
-            ]
-        );
+        let config = config_with(vec![], vec![3, 0, 2], Subdivision::Even(1));
+        assert_eq!(accent_levels(&grid, &config), vec![3, 0, 2, 1]);
+
+        // A long pattern truncates to the measure.
+        let grid = simple_grid(2, 0.5, 1);
+        let config = config_with(vec![], vec![3, 2, 0, 0], Subdivision::Even(1));
+        assert_eq!(accent_levels(&grid, &config), vec![3, 2]);
     }
 
     #[test]

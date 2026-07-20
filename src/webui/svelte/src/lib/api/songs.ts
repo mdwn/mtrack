@@ -157,7 +157,8 @@ export interface MetronomeChangeConfig {
 export interface MetronomeConfig {
   track?: string;
   accent?: number[];
-  /** Per-beat accent levels: 0 silent, 1 normal, 2 half accent, 3 accent. */
+  /** Per-beat accent levels: 0 silent, 1 normal, 2 half accent, 3 accent.
+   * Padded with baseline / truncated per measure on length mismatch. */
   accents?: number[];
   subdivision?: SubdivisionValue;
   /** Feel changes anchored at measures, active until the next change. */

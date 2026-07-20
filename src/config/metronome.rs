@@ -47,9 +47,10 @@ pub struct MetronomeConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub accent: Vec<u32>,
     /// Optional per-beat accent levels, one entry per beat of the measure:
-    /// 0 = silent, 1 = normal (baseline), 2 = half accent, 3 = accent. Takes
-    /// precedence over `accent` grouping in measures whose beat count matches
-    /// the pattern length; other measures fall back to the grouping.
+    /// 0 = silent, 1 = normal (baseline), 2 = half accent, 3 = accent.
+    /// Takes precedence over `accent` grouping; measures with more beats
+    /// than the pattern pad the tail with the baseline level, measures with
+    /// fewer truncate it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub accents: Vec<u8>,
     /// Subdivision: even clicks per beat (1 = none, 2 = eighths,
