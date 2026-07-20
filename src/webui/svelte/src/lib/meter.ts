@@ -14,64 +14,99 @@
 
 import type { SubdivisionValue } from "./api/songs";
 
-const NOTE_GLYPHS: Record<number, string> = {
-  1: "𝅝",
-  2: "𝅗𝅥",
-  4: "♩",
-  8: "♪",
-  16: "𝅘𝅥𝅯",
-  32: "𝅘𝅥𝅰",
+/** Clave hits as half-beat offsets over a two-measure 4/4 cycle (16). */
+export const CLAVE_PATTERNS: Record<"son" | "rumba", number[]> = {
+  son: [0, 3, 6, 10, 12],
+  rumba: [0, 3, 7, 10, 12],
 };
 
-/** The note glyph for a 1/den note value. */
-export function noteGlyph(den: number): string {
-  return NOTE_GLYPHS[den] ?? `1/${den}`;
-}
+/** How to draw a subdivision option: a (beamed) note group or a clave
+ * hit pattern, plus the i18n key of its caption. */
+export type SubdivisionIcon =
+  | {
+      kind: "notes";
+      den: number;
+      count: number;
+      tuplet?: number;
+      nameKey: string;
+    }
+  | { kind: "clave"; pattern: number[]; nameKey: string };
 
-/** Display parts for a subdivision option, relative to the meter's beat
+/** Icon and caption for a subdivision option, relative to the meter's beat
  * note (the time-signature denominator): 4/4 subdivides quarters into
  * eighths/triplets/sixteenths, 3/2 halves into quarters, 7/8 eighths into
  * sixteenths, and so on. */
-export function subdivisionParts(
+export function subdivisionIcon(
   sub: SubdivisionValue,
   beatDen: number,
-): { glyph: string; nameKey: string } {
-  if (sub === "son") return { glyph: "3–2", nameKey: "metronome.subdiv.son" };
-  if (sub === "rumba")
-    return { glyph: "3–2", nameKey: "metronome.subdiv.rumba" };
+): SubdivisionIcon {
+  if (sub === "son" || sub === "rumba") {
+    return {
+      kind: "clave",
+      pattern: CLAVE_PATTERNS[sub],
+      nameKey: `metronome.subdiv.${sub}`,
+    };
+  }
   switch (sub) {
     case 2:
       return {
-        glyph: noteGlyph(beatDen * 2),
+        kind: "notes",
+        den: beatDen * 2,
+        count: 2,
         nameKey: `meter.notes.${beatDen * 2}`,
       };
     case 3:
       return {
-        glyph: noteGlyph(beatDen * 2) + "³",
+        kind: "notes",
+        den: beatDen * 2,
+        count: 3,
+        tuplet: 3,
         nameKey: "metronome.subdiv.triplets",
       };
     case 4:
       return {
-        glyph: noteGlyph(beatDen * 4),
+        kind: "notes",
+        den: beatDen * 4,
+        count: 4,
         nameKey: `meter.notes.${beatDen * 4}`,
       };
     case 6:
       return {
-        glyph: noteGlyph(beatDen * 4) + "³",
+        kind: "notes",
+        den: beatDen * 4,
+        count: 6,
+        tuplet: 6,
         nameKey: "metronome.subdiv.sextuplets",
       };
     default:
-      return { glyph: noteGlyph(beatDen), nameKey: `meter.note.${beatDen}` };
+      return {
+        kind: "notes",
+        den: beatDen,
+        count: 1,
+        nameKey: `meter.note.${beatDen}`,
+      };
   }
 }
 
-/** Compact chip text for a subdivision on a timeline marker. */
+/** Compact chip text for a subdivision on a timeline marker, e.g. "1/8",
+ * "1/8t" (triplet feel), "son". */
 export function subdivisionChip(
   sub: SubdivisionValue,
   beatDen: number,
 ): string {
   if (typeof sub === "string") return sub;
-  return subdivisionParts(sub, beatDen).glyph;
+  switch (sub) {
+    case 2:
+      return `1/${beatDen * 2}`;
+    case 3:
+      return `1/${beatDen * 2}t`;
+    case 4:
+      return `1/${beatDen * 4}`;
+    case 6:
+      return `1/${beatDen * 4}t`;
+    default:
+      return `1/${beatDen}`;
+  }
 }
 
 /** Compact per-beat accent pattern for marker chips:

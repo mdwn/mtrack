@@ -23,7 +23,8 @@
   } from "../../lib/api/songs";
   import { fetchTempoGuess, type GuessedTempo } from "../../lib/api/songs";
   import { positionTaken, sortTempoChanges } from "../../lib/util/tempo";
-  import { subdivisionParts } from "../../lib/meter";
+  import { subdivisionIcon } from "../../lib/meter";
+  import NoteIcon from "../NoteIcon.svelte";
   import NumberStepper from "../NumberStepper.svelte";
   import AccentPads from "./AccentPads.svelte";
   import MarkerDialog from "./MarkerDialog.svelte";
@@ -455,15 +456,25 @@
 )}
   <div class="subdiv-options">
     {#each SUBDIVISIONS as sub (sub)}
-      {@const parts = subdivisionParts(sub, beatDen)}
+      {@const icon = subdivisionIcon(sub, beatDen)}
       <button
         type="button"
         class="subdiv-option"
         class:active={value === sub}
         onclick={() => onpick(sub)}
       >
-        <span class="subdiv-glyph">{parts.glyph}</span>
-        <span class="subdiv-name">{$t(parts.nameKey)}</span>
+        <span class="subdiv-glyph">
+          {#if icon.kind === "clave"}
+            <svg class="clave-icon" viewBox="0 0 52 10" aria-hidden="true">
+              {#each icon.pattern as hit (hit)}
+                <circle cx={4 + hit * 3} cy="5" r="2.7" fill="currentColor" />
+              {/each}
+            </svg>
+          {:else}
+            <NoteIcon den={icon.den} count={icon.count} tuplet={icon.tuplet} />
+          {/if}
+        </span>
+        <span class="subdiv-name">{$t(icon.nameKey)}</span>
       </button>
     {/each}
   </div>
@@ -837,8 +848,15 @@
     font-weight: 600;
   }
   .subdiv-glyph {
-    font-size: 17px;
-    line-height: 1.1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 28px;
+  }
+  .clave-icon {
+    height: 10px;
+    width: auto;
+    display: block;
   }
   .subdiv-name {
     font-size: 10px;
