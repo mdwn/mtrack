@@ -202,9 +202,114 @@
     return () => cancelAnimationFrame(raf);
   });
 
-  let playheadX = $derived(
-    LABEL_WIDTH + smoothElapsedMs * pixelsPerMs - scrollLeft,
+  // Dragging the playhead scrubs: the line follows the pointer locally and
+  // a single seek fires on release (seeks restart sources, so continuous
+  // seeking while dragging would thrash).
+  let playheadDragMs = $state<number | null>(null);
+  let timelineWrapEl: HTMLDivElement | undefined = $state();
+
+  let playheadMs = $derived(
+    playheadDragMs ??
+      (!$playbackStore.is_playing && isCurrentSong
+        ? ($playbackStore.pending_start_ms ?? smoothElapsedMs)
+        : smoothElapsedMs),
   );
+  let playheadX = $derived(LABEL_WIDTH + playheadMs * pixelsPerMs - scrollLeft);
+
+  function playheadMsFromPointer(clientX: number): number {
+    if (!timelineWrapEl) return playheadMs;
+    const rect = timelineWrapEl.getBoundingClientRect();
+    const ms = (clientX - rect.left - LABEL_WIDTH + scrollLeft) / pixelsPerMs;
+    return Math.max(0, Math.min(ms, songDurationMs));
+  }
+
+  function handlePlayheadDown(e: PointerEvent) {
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    playheadDragMs = playheadMsFromPointer(e.clientX);
+    e.preventDefault();
+  }
+
+  function handlePlayheadMove(e: PointerEvent) {
+    if (playheadDragMs === null) return;
+    playheadDragMs = playheadMsFromPointer(e.clientX);
+  }
+
+  function handlePlayheadUp() {
+    if (playheadDragMs === null) return;
+    const target = playheadDragMs;
+    // Hold the line at the drop position until the seek's state comes back.
+    previewSeek(target).finally(() => {
+      if (playheadDragMs === target) playheadDragMs = null;
+    });
+  }
+
+  function handlePlayheadKeydown(e: KeyboardEvent) {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault();
+    previewSeek(playheadMs + (e.key === "ArrowLeft" ? -5000 : 5000));
+  }
+
+  function formatPlayheadMs(ms: number): string {
+    const totalSec = Math.floor(ms / 1000);
+    return `${Math.floor(totalSec / 60)}:${(totalSec % 60).toString().padStart(2, "0")}`;
+  }
+
+  /** Musical position + tempo/meter at the playhead, from the beat grid and
+   * the tempo config — live while playing and while dragging. */
+  let playheadInfo = $derived.by(() => {
+    const grid = song.beat_grid;
+    if (!grid || grid.beats.length === 0 || grid.measure_starts.length === 0) {
+      return null;
+    }
+    const secs = playheadMs / 1000;
+
+    // The last beat at or before the playhead (binary search).
+    let beatIdx = 0;
+    if (secs >= grid.beats[0]) {
+      let lo = 0;
+      let hi = grid.beats.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1;
+        if (grid.beats[mid] <= secs) lo = mid;
+        else hi = mid - 1;
+      }
+      beatIdx = lo;
+    }
+    let measure = 0;
+    for (let i = grid.measure_starts.length - 1; i >= 0; i--) {
+      if (grid.measure_starts[i] <= beatIdx) {
+        measure = i;
+        break;
+      }
+    }
+    const beat = beatIdx - grid.measure_starts[measure] + 1;
+
+    // Tempo/meter in effect at this measure/beat, from the config (snap
+    // semantics — gradual transitions show their target once passed).
+    let bpm: number | null = null;
+    let sig: string | null = null;
+    if (tempo) {
+      bpm = tempo.bpm;
+      sig = tempo.time_signature ?? "4/4";
+      const sorted = [...(tempo.changes ?? [])].sort(
+        (a, b) => a.measure - b.measure || (a.beat ?? 1) - (b.beat ?? 1),
+      );
+      for (const c of sorted) {
+        const atOrBefore =
+          c.measure < measure + 1 ||
+          (c.measure === measure + 1 && (c.beat ?? 1) <= beat);
+        if (!atOrBefore) break;
+        if (c.bpm !== undefined) bpm = c.bpm;
+        if (c.time_signature) sig = c.time_signature;
+      }
+    } else if (beatIdx + 1 < grid.beats.length) {
+      // No tempo map: estimate from the local beat spacing.
+      const interval = grid.beats[beatIdx + 1] - grid.beats[beatIdx];
+      if (interval > 0) bpm = Math.round(600 / interval) / 10;
+    }
+
+    return { measure: measure + 1, beat, bpm, sig };
+  });
 
   function msToProtoDuration(ms: number) {
     return {
@@ -213,10 +318,14 @@
     };
   }
 
-  async function togglePreview() {
+  /** Play/pause. The player has no native pause, so pausing stops playback
+   * and stores the position as the pending seek; play resumes from it. */
+  async function previewPlayPause() {
     try {
       if (isCurrentSong && $playbackStore.is_playing) {
+        const at = smoothElapsedMs;
         await playerClient.stop({});
+        await playerClient.seek({ position: msToProtoDuration(at) });
       } else if (isCurrentSong) {
         await playerClient.play({});
       } else {
@@ -226,7 +335,21 @@
         });
       }
     } catch (e) {
-      console.error("preview toggle failed:", e);
+      console.error("preview play/pause failed:", e);
+    }
+  }
+
+  /** Full stop: also rewinds the resume point to the top. */
+  async function previewStop() {
+    try {
+      if (isCurrentSong && $playbackStore.is_playing) {
+        await playerClient.stop({});
+      }
+      if (isCurrentSong) {
+        await playerClient.seek({ position: msToProtoDuration(0) });
+      }
+    } catch (e) {
+      console.error("preview stop failed:", e);
     }
   }
 
@@ -539,6 +662,21 @@
 <div class="section-timeline-editor">
   <div class="toolbar">
     <span class="toolbar-title">{$t("songs.detail.sections")}</span>
+    {#if isCurrentSong && playheadInfo}
+      <span class="playhead-info mono">
+        <span class="playhead-info__pos"
+          >m{playheadInfo.measure}.{playheadInfo.beat}</span
+        >
+        · {formatPlayheadMs(playheadMs)}
+        {#if playheadInfo.bpm !== null}
+          · {playheadInfo.bpm}
+          {$t("tempo.bpm")}
+        {/if}
+        {#if playheadInfo.sig}
+          · {playheadInfo.sig}
+        {/if}
+      </span>
+    {/if}
     <div class="toolbar-controls">
       {#if !song.beat_grid}
         <span class="no-grid-warning"
@@ -549,12 +687,20 @@
       <button
         class="btn btn-sm preview-btn"
         class:preview-btn--live={isCurrentSong && $playbackStore.is_playing}
-        onclick={togglePreview}
+        onclick={previewPlayPause}
         title={isCurrentSong && $playbackStore.is_playing
-          ? $t("sections.preview.stop")
+          ? $t("sections.preview.pause")
           : $t("sections.preview.play")}
       >
-        {isCurrentSong && $playbackStore.is_playing ? "⏹" : "▶"}
+        {isCurrentSong && $playbackStore.is_playing ? "⏸" : "▶"}
+      </button>
+      <button
+        class="btn btn-sm preview-btn"
+        onclick={previewStop}
+        disabled={!isCurrentSong}
+        title={$t("sections.preview.stop")}
+      >
+        ⏹
       </button>
       <button class="btn btn-sm" onclick={zoomOut} title="Zoom out">−</button>
       <button class="btn btn-sm" onclick={fitView} title="Fit to view"
@@ -564,9 +710,30 @@
     </div>
   </div>
 
-  <div class="timeline-wrap">
+  <div class="timeline-wrap" bind:this={timelineWrapEl}>
     {#if isCurrentSong && playheadX >= LABEL_WIDTH}
-      <div class="playhead" style:left="{playheadX}px" aria-hidden="true"></div>
+      <div
+        class="playhead"
+        class:playhead--dragging={playheadDragMs !== null}
+        style:left="{playheadX}px"
+        role="slider"
+        tabindex="0"
+        aria-label={$t("sections.preview.playhead")}
+        aria-valuemin={0}
+        aria-valuemax={Math.floor(songDurationMs / 1000)}
+        aria-valuenow={Math.floor(playheadMs / 1000)}
+        aria-valuetext={formatPlayheadMs(playheadMs)}
+        onpointerdown={handlePlayheadDown}
+        onpointermove={handlePlayheadMove}
+        onpointerup={handlePlayheadUp}
+        onpointercancel={() => (playheadDragMs = null)}
+        onkeydown={handlePlayheadKeydown}
+      >
+        {#if playheadDragMs !== null}
+          <span class="playhead__time mono">{formatPlayheadMs(playheadMs)}</span
+          >
+        {/if}
+      </div>
     {/if}
     <div
       class="timeline-scroll"
@@ -724,6 +891,18 @@
     font-weight: 600;
     font-size: 13px;
   }
+  .playhead-info {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-left: 12px;
+    margin-right: auto;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+  .playhead-info__pos {
+    color: var(--nc-amber-400, #f2b544);
+    font-weight: 600;
+  }
   .toolbar-controls {
     display: flex;
     gap: 6px;
@@ -747,12 +926,44 @@
     position: absolute;
     top: 0;
     bottom: 0;
+    /* Wide invisible grab zone around the 2px visible line. */
+    width: 14px;
+    margin-left: -7px;
+    background: transparent;
+    z-index: 20;
+    cursor: ew-resize;
+    touch-action: none;
+  }
+  .playhead::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 6px;
     width: 2px;
-    margin-left: -1px;
     background: var(--nc-amber-400, #f2b544);
     box-shadow: 0 0 6px rgba(242, 181, 68, 0.5);
-    z-index: 20;
-    pointer-events: none;
+  }
+  .playhead--dragging::before,
+  .playhead:focus-visible::before {
+    width: 3px;
+    left: 5.5px;
+    box-shadow: 0 0 10px rgba(242, 181, 68, 0.8);
+  }
+  .playhead:focus-visible {
+    outline: none;
+  }
+  .playhead__time {
+    position: absolute;
+    top: 2px;
+    left: 12px;
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 6px;
+    background: var(--nc-amber-400, #f2b544);
+    color: var(--nc-ink, #111);
+    font-weight: 600;
+    white-space: nowrap;
   }
   .preview-btn--live {
     color: var(--nc-amber-400, #f2b544);
