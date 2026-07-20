@@ -724,7 +724,7 @@
   "metronome.filePlaceholder": "optional, e.g. clicks/hi.wav",
   "metronome.noBeatGrid": "Needs a tempo map or click track",
   "metronome.presets": "Presets",
-  "metronome.preset.ui24": "Ui24 classic",
+  "metronome.preset.classic": "Classic",
   "metronome.preset.hilo": "Hi/Lo",
   "metronome.preset.sharp": "Sharp",
   "metronome.preset.low": "Low",

@@ -46,7 +46,7 @@
     sounds: NonNullable<MetronomeConfig["sounds"]>;
   }[] = [
     {
-      key: "ui24",
+      key: "classic",
       sounds: {
         accent: { freq: 1125, volume: 1.0 },
         half: { freq: 1125, volume: 1.0 },
