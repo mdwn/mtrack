@@ -20,6 +20,7 @@
     TempoConfig,
     PilotConfig,
     PilotHintConfig,
+    MetronomeConfig,
   } from "../../lib/api/songs";
   import { sortTempoChanges } from "../../lib/util/tempo";
   import SectionBar from "./SectionBar.svelte";
@@ -44,10 +45,13 @@
     tempo?: TempoConfig | null;
     /** The song's `pilot:` block; edited via the pilot layer. */
     pilot?: PilotConfig | null;
+    /** The song's `metronome:` block; feel changes ride on tempo markers. */
+    metronome?: MetronomeConfig | null;
     songName?: string;
     hasMidi?: boolean;
     ontempochange?: (tempo: TempoConfig | null) => void;
     onpilotchange?: (pilot: PilotConfig | null) => void;
+    onmetronomechange?: (metronome: MetronomeConfig | null) => void;
   }
 
   let {
@@ -57,10 +61,12 @@
     dirty = $bindable(false), // eslint-disable-line no-useless-assignment -- consumed by parent via bind:dirty
     tempo = null,
     pilot = null,
+    metronome = null,
     songName,
     hasMidi = false,
     ontempochange,
     onpilotchange,
+    onmetronomechange,
   }: Props = $props();
 
   // Timeline state.
@@ -161,7 +167,12 @@
 
   // --- Tempo / pilot marker layers ---
 
-  let tempoDialogTarget = $state<"start" | number | null>(null);
+  interface MarkerPosition {
+    measure: number;
+    beat: number;
+  }
+
+  let tempoDialogTarget = $state<"start" | MarkerPosition | null>(null);
   let pilotDialogIndex = $state<number | null>(null);
 
   /** Time (ms) of a measure/beat position on the beat grid. */
@@ -174,6 +185,8 @@
     return time === undefined ? songDurationMs : time * 1000;
   }
 
+  /** One marker per position, merging tempo changes with metronome feel
+   * changes at the same measure. */
   let tempoMarkers = $derived.by(() => {
     if (!tempo) return [];
     const markers = [
@@ -183,18 +196,59 @@
         label: `${tempo.bpm} · ${tempo.time_signature ?? "4/4"}`,
       },
     ];
-    (tempo.changes ?? []).forEach((c, i) => {
+    // Collect marker positions: every tempo change plus every metronome
+    // change measure (feel changes attach to the lowest-beat marker of
+    // their measure, or stand alone).
+    const positions: Record<string, MarkerPosition> = {};
+    for (const c of tempo.changes ?? []) {
+      const beat = c.beat ?? 1;
+      positions[`${c.measure}:${beat}`] = { measure: c.measure, beat };
+    }
+    for (const c of metronome?.changes ?? []) {
+      if (!feelHostBeat(c.measure)) {
+        positions[`${c.measure}:1`] = { measure: c.measure, beat: 1 };
+      }
+    }
+    const sorted = Object.values(positions).sort(
+      (a, b) => a.measure - b.measure || a.beat - b.beat,
+    );
+    for (const pos of sorted) {
+      const tc = (tempo.changes ?? []).find(
+        (c) => c.measure === pos.measure && (c.beat ?? 1) === pos.beat,
+      );
+      const mc =
+        pos.beat === (feelHostBeat(pos.measure) ?? 1)
+          ? (metronome?.changes ?? []).find((c) => c.measure === pos.measure)
+          : undefined;
       const parts: string[] = [];
-      if (c.bpm !== undefined) parts.push(`${c.bpm}`);
-      if (c.time_signature) parts.push(c.time_signature);
+      if (tc?.bpm !== undefined) parts.push(`${tc.bpm}`);
+      if (tc?.time_signature) parts.push(tc.time_signature);
+      if (mc?.accents) parts.push($t("timelineLayers.accentsChip"));
+      if (mc?.subdivision !== undefined) {
+        parts.push(
+          typeof mc.subdivision === "number"
+            ? `÷${mc.subdivision}`
+            : `${mc.subdivision}`,
+        );
+      }
       markers.push({
-        id: `c${i}`,
-        ms: measureBeatToMs(c.measure, c.beat ?? 1),
-        label: (c.transition ? "↗ " : "") + (parts.join(" · ") || "—"),
+        id: `c${pos.measure}:${pos.beat}`,
+        ms: measureBeatToMs(pos.measure, pos.beat),
+        label: (tc?.transition ? "↗ " : "") + (parts.join(" · ") || "—"),
       });
-    });
+    }
     return markers;
   });
+
+  /** The beat of the marker hosting feel changes for a measure: the lowest
+   * tempo-change beat there, or 1 (undefined when no tempo change exists,
+   * which also maps to a beat-1 marker). */
+  function feelHostBeat(measure: number): number | undefined {
+    const beats = (tempo?.changes ?? [])
+      .filter((c) => c.measure === measure)
+      .map((c) => c.beat ?? 1);
+    return beats.length > 0 ? Math.min(...beats) : undefined;
+  }
 
   let pilotMarkers = $derived(
     (pilot?.hints ?? []).map((h, i) => ({
@@ -232,7 +286,17 @@
   }
 
   function handleTempoMarkerClick(id: string) {
-    tempoDialogTarget = id === "start" ? "start" : parseInt(id.slice(1));
+    if (id === "start") {
+      tempoDialogTarget = "start";
+      return;
+    }
+    const match = /^c(\d+):(\d+)$/.exec(id);
+    if (match) {
+      tempoDialogTarget = {
+        measure: parseInt(match[1]),
+        beat: parseInt(match[2]),
+      };
+    }
   }
 
   function handleTempoEmptyClick(ms: number) {
@@ -251,20 +315,22 @@
       tempoDialogTarget = "start";
       return;
     }
-    const existing = (tempo.changes ?? []).findIndex(
-      (c) => c.measure === measure,
-    );
-    if (existing >= 0) {
-      tempoDialogTarget = existing;
+    // A marker already at this measure? Open it instead of stacking.
+    const hostBeat = feelHostBeat(measure);
+    if (hostBeat !== undefined) {
+      tempoDialogTarget = { measure, beat: hostBeat };
+      return;
+    }
+    if ((metronome?.changes ?? []).some((c) => c.measure === measure)) {
+      tempoDialogTarget = { measure, beat: 1 };
       return;
     }
     // Tapping a spot before an existing change must not append out of order —
-    // the backend rejects a non-ascending map. Sort, then follow the entry to
-    // its new index so the dialog keeps editing the marker that was tapped.
+    // the backend rejects a non-ascending map.
     const entry = { measure, bpm: effectiveBpmAt(measure) };
     const changes = sortTempoChanges([...(tempo.changes ?? []), entry]);
     ontempochange?.({ ...tempo, changes });
-    tempoDialogTarget = changes.indexOf(entry);
+    tempoDialogTarget = { measure, beat: 1 };
   }
 
   /** Nearest beat as measure/beat for a position (ms), or null off-grid. */
@@ -450,11 +516,15 @@
   <TempoMarkerDialog
     {tempo}
     target={tempoDialogTarget}
+    {metronome}
+    feelHost={tempoDialogTarget === "start" ||
+      tempoDialogTarget.beat === (feelHostBeat(tempoDialogTarget.measure) ?? 1)}
     {songName}
     {hasMidi}
     canGuess={!!song.beat_grid}
-    onchange={(updated) => ontempochange?.(updated)}
-    onretarget={(index) => (tempoDialogTarget = index)}
+    ontempochange={(updated) => ontempochange?.(updated)}
+    onmetronomechange={(updated) => onmetronomechange?.(updated)}
+    onmove={(position) => (tempoDialogTarget = position)}
     onclose={() => (tempoDialogTarget = null)}
   />
 {/if}

@@ -14,7 +14,12 @@
      * -->
 <script lang="ts">
   import { t } from "svelte-i18n";
-  import type { MetronomeConfig, ClickSoundConfig } from "../../lib/api/songs";
+  import type {
+    MetronomeConfig,
+    ClickSoundConfig,
+    SubdivisionValue,
+  } from "../../lib/api/songs";
+  import AccentPads from "./AccentPads.svelte";
 
   interface Props {
     /** The song.yaml `metronome:` block, or null when not configured. */
@@ -61,7 +66,7 @@
       delete updated.subdivision;
     }
     if (updated.sounds) {
-      for (const key of ["accent", "normal", "half"] as const) {
+      for (const key of ["accent", "half", "normal", "sub"] as const) {
         const sound = updated.sounds[key];
         if (sound && Object.keys(sound).length === 0) {
           delete updated.sounds[key];
@@ -92,29 +97,28 @@
       groupStarts.push(acc);
     }
     return Array.from({ length: padCount }, (_, i) =>
-      groupStarts.includes(i) ? 3 : 2,
+      groupStarts.includes(i) ? 3 : 1,
     );
   });
 
   /** Whether the pads show an explicit per-beat pattern from the config. */
   let padsCustomized = $derived((metronome?.accents?.length ?? 0) === padCount);
 
-  /** One-way cycle: silent → half → normal → accent → silent. Materializes
-   * the full pattern on first tap. */
-  function cyclePad(index: number) {
-    const levels = [...padLevels];
-    levels[index] = (levels[index] + 1) % 4;
-    update({ accents: levels });
-  }
-
   function resetPads() {
     update({ accents: [] });
   }
 
-  const SUBDIVISIONS = [1, 2, 3, 4, 6];
+  const SUBDIVISIONS: SubdivisionValue[] = [1, 2, 3, 4, 6, "son", "rumba"];
+
+  function setSubdivision(value: SubdivisionValue) {
+    if (!metronome) return;
+    const updated: MetronomeConfig = { ...metronome, subdivision: value };
+    if (value === 1) delete updated.subdivision;
+    onchange(updated);
+  }
 
   function updateSound(
-    role: "accent" | "normal" | "half",
+    role: "accent" | "half" | "normal" | "sub",
     patch: Partial<ClickSoundConfig>,
   ) {
     if (!metronome) return;
@@ -138,8 +142,9 @@
 
   const DEFAULTS = {
     accent: { freq: 1600, volume: 1.0 },
+    half: { freq: 1400, volume: 0.9 },
     normal: { freq: 1200, volume: 0.8 },
-    half: { freq: 900, volume: 0.55 },
+    sub: { freq: 1000, volume: 0.45 },
   };
 
   /** Typical click sounds; applying a preset overwrites all sounds. */
@@ -151,32 +156,36 @@
       key: "ui24",
       sounds: {
         accent: { freq: 1125, volume: 1.0 },
+        half: { freq: 1125, volume: 1.0 },
         normal: { freq: 1125, volume: 1.0 },
-        half: { freq: 1125, volume: 0.5 },
+        sub: { freq: 1125, volume: 0.5 },
       },
     },
     {
       key: "hilo",
       sounds: {
         accent: { freq: 1600, volume: 1.0 },
+        half: { freq: 1400, volume: 0.9 },
         normal: { freq: 1200, volume: 0.8 },
-        half: { freq: 900, volume: 0.55 },
+        sub: { freq: 1000, volume: 0.45 },
       },
     },
     {
       key: "sharp",
       sounds: {
         accent: { freq: 2000, volume: 1.0 },
+        half: { freq: 1750, volume: 0.85 },
         normal: { freq: 1500, volume: 0.75 },
-        half: { freq: 1100, volume: 0.5 },
+        sub: { freq: 1200, volume: 0.4 },
       },
     },
     {
       key: "low",
       sounds: {
         accent: { freq: 880, volume: 1.0 },
+        half: { freq: 770, volume: 0.9 },
         normal: { freq: 660, volume: 0.8 },
-        half: { freq: 500, volume: 0.55 },
+        sub: { freq: 550, volume: 0.45 },
       },
     },
   ];
@@ -214,51 +223,34 @@
 
   {#if metronome && expanded}
     <div class="metronome-body">
-      <div class="accent-row">
-        <div class="accent-pads-block">
-          <div class="accent-pads-header">
-            <span class="field-label">{$t("metronome.accents")}</span>
-            {#if padsCustomized}
-              <button class="btn-link" onclick={resetPads}
-                >{$t("metronome.accentsReset")}</button
-              >
-            {/if}
-          </div>
-          <div class="accent-pads">
-            {#each padLevels as level, i (i)}
-              <button
-                class="accent-pad"
-                class:silent={level === 0}
-                title={$t(`metronome.level.${level}`)}
-                aria-label="{$t('metronome.beat')} {i + 1}: {$t(
-                  `metronome.level.${level}`,
-                )}"
-                onclick={() => cyclePad(i)}
-              >
-                {#each [3, 2, 1] as segment (segment)}
-                  <span class="pad-seg" class:filled={level >= segment}></span>
-                {/each}
-              </button>
-            {/each}
-          </div>
+      <div class="accent-block">
+        <div class="accent-pads-header">
+          <span class="field-label">{$t("metronome.accents")}</span>
+          {#if padsCustomized}
+            <button class="btn-link" onclick={resetPads}
+              >{$t("metronome.accentsReset")}</button
+            >
+          {/if}
         </div>
-        <label class="field">
-          <span class="field-label">{$t("metronome.subdivision")}</span>
-          <select
-            class="input subdiv-select"
-            value={String(metronome.subdivision ?? 1)}
-            onchange={(e) =>
-              update({
-                subdivision: parseInt((e.target as HTMLSelectElement).value),
-              })}
-          >
-            {#each SUBDIVISIONS as sub (sub)}
-              <option value={String(sub)}
-                >{$t(`metronome.subdiv.${sub}`)}</option
-              >
-            {/each}
-          </select>
-        </label>
+        <AccentPads
+          levels={padLevels}
+          onchange={(levels) => update({ accents: levels })}
+        />
+      </div>
+      <div class="accent-block">
+        <span class="field-label">{$t("metronome.subdivision")}</span>
+        <div class="subdiv-options">
+          {#each SUBDIVISIONS as sub (sub)}
+            <button
+              type="button"
+              class="subdiv-option"
+              class:active={(metronome.subdivision ?? 1) === sub}
+              onclick={() => setSubdivision(sub)}
+            >
+              {$t(`metronome.subdiv.${sub}`)}
+            </button>
+          {/each}
+        </div>
       </div>
       <div class="presets">
         <span class="field-label">{$t("metronome.presets")}</span>
@@ -299,7 +291,7 @@
         </label>
       </div>
       <div class="sounds">
-        {#each ["accent", "normal", "half"] as const as role (role)}
+        {#each ["accent", "half", "normal", "sub"] as const as role (role)}
           {@const sound = metronome.sounds?.[role] ?? {}}
           <div class="sound-row">
             <span class="field-label sound-label"
@@ -402,13 +394,7 @@
     gap: 6px;
     flex-wrap: wrap;
   }
-  .accent-row {
-    display: flex;
-    align-items: flex-end;
-    gap: 20px;
-    flex-wrap: wrap;
-  }
-  .accent-pads-block {
+  .accent-block {
     display: flex;
     flex-direction: column;
     gap: 6px;
@@ -426,48 +412,27 @@
     cursor: pointer;
     padding: 0;
   }
-  .accent-pads {
+  .subdiv-options {
     display: flex;
     gap: 8px;
     flex-wrap: wrap;
   }
-  .accent-pad {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-    width: 46px;
-    height: 60px;
-    padding: 5px;
-    background: var(--bg-input);
+  .subdiv-option {
     border: 1px solid var(--border);
-    border-radius: 9px;
+    background: var(--bg-input);
+    color: var(--text);
+    border-radius: 10px;
+    padding: 0 14px;
+    min-height: 40px;
+    font-size: 13px;
     cursor: pointer;
     touch-action: manipulation;
-    user-select: none;
-    -webkit-user-select: none;
-    transition: transform 0.06s;
   }
-  .accent-pad:active {
-    transform: scale(0.94);
-  }
-  .accent-pad.silent {
-    opacity: 0.45;
-  }
-  .pad-seg {
-    flex: 1;
-    border-radius: 3px;
-    border: 1px solid
-      color-mix(in srgb, var(--accent, #5ecaea) 45%, transparent);
-    background: transparent;
-    transition: background 0.08s;
-  }
-  .pad-seg.filled {
-    background: var(--accent, #5ecaea);
-    border-color: var(--accent, #5ecaea);
-  }
-  .subdiv-select {
-    min-height: 40px;
-    min-width: 140px;
+  .subdiv-option.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--bg);
+    font-weight: 600;
   }
   .metronome-fields {
     display: flex;

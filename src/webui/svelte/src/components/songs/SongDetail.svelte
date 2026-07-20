@@ -1114,10 +1114,12 @@
             bind:dirty={sectionsDirty}
             tempo={tempoConfig}
             pilot={pilotConfig}
+            metronome={metronomeConfig}
             {songName}
             hasMidi={song.has_midi}
             ontempochange={onTempoChange}
             onpilotchange={onPilotChange}
+            onmetronomechange={onMetronomeChange}
           />
           <div class="tempo-editor-wrap">
             <SongMetronomeEditor

@@ -144,17 +144,29 @@ export interface ClickSoundConfig {
   volume?: number;
 }
 
+/** Even ticks per beat (1 = none, 2 = eighths, ...) or a clave pattern. */
+export type SubdivisionValue = number | "son" | "rumba";
+
+/** A positional change to the metronome feel, anchored at a measure. */
+export interface MetronomeChangeConfig {
+  measure: number;
+  accents?: number[];
+  subdivision?: SubdivisionValue;
+}
+
 export interface MetronomeConfig {
   track?: string;
   accent?: number[];
-  /** Per-beat accent levels: 0 silent, 1 half, 2 normal, 3 accent. */
+  /** Per-beat accent levels: 0 silent, 1 normal, 2 half accent, 3 accent. */
   accents?: number[];
-  /** Clicks per beat: 1 = none, 2 = eighths, 3 = triplets, ... */
-  subdivision?: number;
+  subdivision?: SubdivisionValue;
+  /** Feel changes anchored at measures, active until the next change. */
+  changes?: MetronomeChangeConfig[];
   sounds?: {
     accent?: ClickSoundConfig;
     normal?: ClickSoundConfig;
     half?: ClickSoundConfig;
+    sub?: ClickSoundConfig;
   };
 }
 
