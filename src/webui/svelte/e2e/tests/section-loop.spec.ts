@@ -56,7 +56,9 @@ test.describe("Section Loop Controls", () => {
   let wsId: string;
 
   test.beforeEach(async ({ page }) => {
-    wsId = `section-loop-${++testCounter}-${Date.now()}`;
+    // The worker index keeps ids unique across parallel workers, whose
+    // per-worker counters can otherwise collide within the same millisecond.
+    wsId = `section-loop-${test.info().parallelIndex}-${++testCounter}-${Date.now()}`;
 
     await page.route("**/player.v1.PlayerService/**", async (route) => {
       await route.fulfill({

@@ -33,7 +33,9 @@ test.describe("Track Gain Sliders", () => {
   let wsId: string;
 
   test.beforeEach(async ({ page }) => {
-    wsId = `gain-${++testCounter}-${Date.now()}`;
+    // The worker index keeps ids unique across parallel workers, whose
+    // per-worker counters can otherwise collide within the same millisecond.
+    wsId = `gain-${test.info().parallelIndex}-${++testCounter}-${Date.now()}`;
 
     // Stub the gRPC endpoint so gain changes succeed.
     await page.route("**/player.v1.PlayerService/**", async (route) => {
