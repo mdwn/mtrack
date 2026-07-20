@@ -330,9 +330,31 @@
 
   // --- Base feel edits ---
 
+  let baseAccentsOn = $derived((metronome?.accents?.length ?? 0) > 0);
+  let baseSubdivisionOn = $derived(
+    metronome?.subdivision !== undefined && metronome.subdivision !== 1,
+  );
+
   function setBaseAccents(levels: number[]) {
     if (!metronome || !onmetronomechange) return;
     onmetronomechange({ ...metronome, accents: levels });
+  }
+
+  /** Off = no explicit pattern: back to the grouping / downbeat default. */
+  function toggleBaseAccents(on: boolean) {
+    if (!metronome || !onmetronomechange) return;
+    const updated: MetronomeConfig = { ...metronome };
+    if (on) updated.accents = defaultPattern(numerator);
+    else delete updated.accents;
+    onmetronomechange(updated);
+  }
+
+  function toggleBaseSubdivision(on: boolean) {
+    if (!metronome || !onmetronomechange) return;
+    const updated: MetronomeConfig = { ...metronome };
+    if (on) updated.subdivision = 2;
+    else delete updated.subdivision;
+    onmetronomechange(updated);
   }
 
   function setBaseSubdivision(value: SubdivisionValue) {
@@ -511,24 +533,41 @@
     </div>
 
     {#if metronome}
-      <div class="dialog-section">
-        <span class="section-label">{$t("metronome.accents")}</span>
-        <AccentPads
-          levels={resizePattern(
-            metronome.accents ?? defaultPattern(numerator),
-            numerator,
-          )}
-          onchange={setBaseAccents}
-        />
+      <div class="dialog-section" class:section-off={!baseAccentsOn}>
+        <label class="toggle-row">
+          <input
+            type="checkbox"
+            checked={baseAccentsOn}
+            onchange={(e) =>
+              toggleBaseAccents((e.target as HTMLInputElement).checked)}
+          />
+          <span class="section-label">{$t("metronome.accents")}</span>
+        </label>
+        {#if baseAccentsOn && metronome.accents}
+          <AccentPads
+            levels={resizePattern(metronome.accents, numerator)}
+            onchange={setBaseAccents}
+          />
+        {/if}
       </div>
 
-      <div class="dialog-section">
-        <span class="section-label">{$t("metronome.subdivision")}</span>
-        {@render subdivisionSelect(
-          metronome.subdivision ?? 1,
-          baseSig[1],
-          setBaseSubdivision,
-        )}
+      <div class="dialog-section" class:section-off={!baseSubdivisionOn}>
+        <label class="toggle-row">
+          <input
+            type="checkbox"
+            checked={baseSubdivisionOn}
+            onchange={(e) =>
+              toggleBaseSubdivision((e.target as HTMLInputElement).checked)}
+          />
+          <span class="section-label">{$t("metronome.subdivision")}</span>
+        </label>
+        {#if baseSubdivisionOn && metronome.subdivision !== undefined}
+          {@render subdivisionSelect(
+            metronome.subdivision,
+            baseSig[1],
+            setBaseSubdivision,
+          )}
+        {/if}
       </div>
     {/if}
 
