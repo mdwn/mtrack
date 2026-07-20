@@ -1167,11 +1167,13 @@ mod test {
                         name: "verse".to_string(),
                         start_measure: 1,
                         end_measure: 2,
+                        color: None,
                     },
                     crate::config::Section {
                         name: "chorus".to_string(),
                         start_measure: 2,
                         end_measure: 3,
+                        color: None,
                     },
                 ],
             )

@@ -27,14 +27,17 @@
   import SectionBar from "./SectionBar.svelte";
   import SectionRuler from "./SectionRuler.svelte";
   import SectionWaveformLane from "./SectionWaveformLane.svelte";
+  import { sectionColor } from "../../lib/sectionColors";
   import TimelineMarkerLane from "./TimelineMarkerLane.svelte";
   import TempoMarkerDialog from "./TempoMarkerDialog.svelte";
   import PilotHintDialog from "./PilotHintDialog.svelte";
+  import SectionEditDialog from "./SectionEditDialog.svelte";
 
   interface SectionEntry {
     name: string;
     start_measure: number;
     end_measure: number;
+    color?: string;
   }
 
   interface Props {
@@ -164,6 +167,25 @@
   function handleSectionsChange(updated: SectionEntry[]) {
     sections = updated;
     dirty = true;
+  }
+
+  // --- Section edit dialog ---
+
+  let sectionDialogIndex = $state<number | null>(null);
+
+  function patchSection(index: number, patch: Partial<SectionEntry>) {
+    const updated = [...sections];
+    const merged = { ...updated[index], ...patch };
+    // An empty name keeps the previous one; "auto" color drops the key.
+    if (!merged.name) merged.name = updated[index].name;
+    if (!merged.color) delete merged.color;
+    updated[index] = merged;
+    handleSectionsChange(updated);
+  }
+
+  function deleteSection(index: number) {
+    handleSectionsChange(sections.filter((_, i) => i !== index));
+    sectionDialogIndex = null;
   }
 
   // --- Tempo / pilot marker layers ---
@@ -478,7 +500,9 @@
       {viewportWidth}
       {measureTimesMs}
       {songDurationMs}
+      emptyHint={song.beat_grid ? $t("sections.emptyHint") : ""}
       onsectionschange={handleSectionsChange}
+      onsectionedit={(index) => (sectionDialogIndex = index)}
     />
 
     <TimelineMarkerLane
@@ -527,19 +551,20 @@
 
   {#if sections.length > 0}
     <div class="section-list-summary">
-      {#each sections as section (section.name)}
-        <span class="section-chip">
+      {#each sections as section, i (section.name)}
+        <span
+          class="section-chip"
+          style:border-color="color-mix(in srgb, {sectionColor(
+            section.color,
+            i,
+          )} 60%, transparent)"
+        >
           {section.name}
           <span class="chip-range"
             >m{section.start_measure}–{section.end_measure}</span
           >
         </span>
       {/each}
-    </div>
-  {:else if song.beat_grid}
-    <div class="hint">
-      Drag on the sections bar above to define a section. Sections snap to
-      measure boundaries.
     </div>
   {/if}
 </div>
@@ -558,6 +583,16 @@
     onmetronomechange={(updated) => onmetronomechange?.(updated)}
     onmove={(position) => (tempoDialogTarget = position)}
     onclose={() => (tempoDialogTarget = null)}
+  />
+{/if}
+
+{#if sectionDialogIndex !== null && sections[sectionDialogIndex]}
+  <SectionEditDialog
+    section={sections[sectionDialogIndex]}
+    index={sectionDialogIndex}
+    onchange={(patch) => patchSection(sectionDialogIndex!, patch)}
+    ondelete={() => deleteSection(sectionDialogIndex!)}
+    onclose={() => (sectionDialogIndex = null)}
   />
 {/if}
 
@@ -638,11 +673,5 @@
     color: var(--text-dim);
     margin-left: 4px;
     font-family: var(--mono);
-  }
-  .hint {
-    padding: 8px 12px;
-    font-size: 12px;
-    color: var(--text-dim);
-    border-top: 1px solid var(--border);
   }
 </style>

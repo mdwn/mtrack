@@ -14,11 +14,13 @@
      * -->
 <script lang="ts">
   import { t } from "svelte-i18n";
+  import { sectionColor } from "../../lib/sectionColors";
 
   interface SectionEntry {
     name: string;
     start_measure: number;
     end_measure: number;
+    color?: string;
   }
 
   interface Props {
@@ -30,7 +32,11 @@
     measureTimesMs: number[];
     /** Total song duration in ms */
     songDurationMs: number;
+    /** Shown centered when there are no sections. */
+    emptyHint?: string;
     onsectionschange: (sections: SectionEntry[]) => void;
+    /** A section was tapped (without dragging): open its editor. */
+    onsectionedit?: (index: number) => void;
   }
 
   let {
@@ -41,31 +47,14 @@
     viewportWidth,
     measureTimesMs,
     songDurationMs,
+    emptyHint = "",
     onsectionschange,
+    onsectionedit,
   }: Props = $props();
 
   const BAR_HEIGHT = 32;
   const LABEL_WIDTH = 80;
   const HANDLE_WIDTH = 6;
-
-  const SECTION_COLORS = [
-    { fill: "rgba(94, 202, 234, 0.25)", border: "rgba(94, 202, 234, 0.6)" },
-    {
-      fill: "rgba(139, 92, 246, 0.25)",
-      border: "rgba(139, 92, 246, 0.6)",
-    },
-    { fill: "rgba(234, 179, 8, 0.25)", border: "rgba(234, 179, 8, 0.6)" },
-    { fill: "rgba(239, 96, 163, 0.25)", border: "rgba(239, 96, 163, 0.6)" },
-    { fill: "rgba(34, 197, 94, 0.25)", border: "rgba(34, 197, 94, 0.6)" },
-    {
-      fill: "rgba(249, 115, 22, 0.25)",
-      border: "rgba(249, 115, 22, 0.6)",
-    },
-  ];
-
-  let selectedIndex = $state<number | null>(null);
-  let editingIndex = $state<number | null>(null);
-  let editingName = $state("");
 
   // Convert 1-indexed measure to ms using beat grid.
   function measureToMs(measure: number): number {
@@ -112,7 +101,7 @@
       const endMs = measureToMs(s.end_measure);
       const left = startMs * pixelsPerMs - scrollLeft;
       const width = (endMs - startMs) * pixelsPerMs;
-      const color = SECTION_COLORS[i % SECTION_COLORS.length];
+      const color = sectionColor(s.color, i);
       return { ...s, left, width, startMs, endMs, color, index: i };
     }),
   );
@@ -125,7 +114,7 @@
     originMeasure: number;
     /** For move: width of section in measures (preserved during drag) */
     spanMeasures?: number;
-    /** For move: has the pointer moved far enough to count as a drag? */
+    /** Has the pointer moved far enough to count as a drag (vs a tap)? */
     engaged?: boolean;
   } | null>(null);
 
@@ -147,12 +136,12 @@
 
       if (x >= blockLeft - HANDLE_WIDTH && x <= blockLeft + HANDLE_WIDTH) {
         // Left edge drag.
-        selectedIndex = block.index;
         dragState = {
           index: block.index,
           edge: "start",
           originX: x,
           originMeasure: block.start_measure,
+          engaged: false,
         };
         (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
         e.preventDefault();
@@ -160,21 +149,19 @@
       }
       if (x >= blockRight - HANDLE_WIDTH && x <= blockRight + HANDLE_WIDTH) {
         // Right edge drag.
-        selectedIndex = block.index;
         dragState = {
           index: block.index,
           edge: "end",
           originX: x,
           originMeasure: block.end_measure,
+          engaged: false,
         };
         (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
         e.preventDefault();
         return;
       }
       if (x > blockLeft && x < blockRight) {
-        // Body — start potential move drag. If pointer doesn't move far enough,
-        // it stays a click (select). Don't preventDefault so dblclick can fire.
-        selectedIndex = block.index;
+        // Body — a drag moves the section, a tap opens its editor.
         dragState = {
           index: block.index,
           edge: "move",
@@ -189,7 +176,6 @@
     }
 
     // Click on empty area — start creating.
-    selectedIndex = null;
     const measure = snapToMeasure(ms);
     createState = { startMeasure: measure, currentMeasure: measure };
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
@@ -204,9 +190,9 @@
     const measure = snapToMeasure(ms);
 
     if (dragState) {
-      // For move drags, require a minimum distance before engaging.
+      // Require a minimum distance before engaging, so a tap stays a tap.
       const DRAG_THRESHOLD = 4; // px
-      if (dragState.edge === "move" && !dragState.engaged) {
+      if (!dragState.engaged) {
         if (Math.abs(x - dragState.originX) < DRAG_THRESHOLD) return;
         dragState = { ...dragState, engaged: true };
       }
@@ -250,75 +236,16 @@
           end_measure: end,
         };
         onsectionschange([...sections, newSection]);
-        selectedIndex = sections.length;
-        editingIndex = sections.length;
-        editingName = newSection.name;
+        // Straight into the editor to name it.
+        onsectionedit?.(sections.length);
       }
       createState = null;
     }
+    if (dragState && !dragState.engaged) {
+      // A tap (no drag): open the section's editor.
+      onsectionedit?.(dragState.index);
+    }
     dragState = null;
-  }
-
-  function handleDblClick(e: MouseEvent) {
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    for (const block of blocks) {
-      if (x > block.left && x < block.left + block.width) {
-        editingIndex = block.index;
-        editingName = block.name;
-        return;
-      }
-    }
-  }
-
-  function finishRename() {
-    if (editingIndex !== null && editingName.trim()) {
-      const updated = [...sections];
-      updated[editingIndex] = {
-        ...updated[editingIndex],
-        name: editingName.trim(),
-      };
-      onsectionschange(updated);
-    }
-    editingIndex = null;
-  }
-
-  function deleteSelected() {
-    if (selectedIndex !== null) {
-      const updated = sections.filter((_, i) => i !== selectedIndex);
-      onsectionschange(updated);
-      selectedIndex = null;
-    }
-  }
-
-  function handleKeydown(e: KeyboardEvent) {
-    // Only handle when the section bar or its children are focused
-    const tag = (e.target as HTMLElement)?.tagName;
-    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") {
-      // Allow Enter/Escape for rename input but block Delete/Backspace
-      if (e.key === "Enter" && editingIndex !== null) {
-        finishRename();
-        e.preventDefault();
-      }
-      if (e.key === "Escape") {
-        editingIndex = null;
-        selectedIndex = null;
-      }
-      return;
-    }
-    if (e.key === "Delete" || e.key === "Backspace") {
-      if (editingIndex !== null) return;
-      deleteSelected();
-      e.preventDefault();
-    }
-    if (e.key === "Enter" && editingIndex !== null) {
-      finishRename();
-      e.preventDefault();
-    }
-    if (e.key === "Escape") {
-      editingIndex = null;
-      selectedIndex = null;
-    }
   }
 
   // Dynamic cursor based on hover position.
@@ -375,9 +302,6 @@
 <div
   class="section-bar"
   style:height="{BAR_HEIGHT}px"
-  tabindex="0"
-  onkeydown={handleKeydown}
-  role="toolbar"
   aria-label={$t("songs.detail.sections", { default: "Sections" })}
 >
   <div class="lane-label" style:width="{LABEL_WIDTH}px">
@@ -390,32 +314,19 @@
     onpointerdown={handlePointerDown}
     onpointermove={handlePointerMove}
     onpointerup={handlePointerUp}
-    ondblclick={handleDblClick}
   >
+    {#if sections.length === 0 && emptyHint}
+      <span class="bar-empty-hint">{emptyHint}</span>
+    {/if}
     {#each blocks as block (block.index)}
       <div
         class="section-block"
-        class:selected={selectedIndex === block.index}
         style:left="{block.left}px"
         style:width="{Math.max(block.width, 2)}px"
-        style:background={block.color.fill}
-        style:border-color={block.color.border}
+        style:background="color-mix(in srgb, {block.color} 25%, transparent)"
+        style:border-color="color-mix(in srgb, {block.color} 60%, transparent)"
       >
-        {#if editingIndex === block.index}
-          <!-- svelte-ignore a11y_autofocus -->
-          <input
-            class="section-name-input"
-            type="text"
-            autofocus
-            bind:value={editingName}
-            onblur={finishRename}
-            onkeydown={(e) => {
-              if (e.key === "Enter") finishRename();
-            }}
-          />
-        {:else}
-          <span class="section-name">{block.name}</span>
-        {/if}
+        <span class="section-name">{block.name}</span>
       </div>
     {/each}
 
@@ -466,12 +377,20 @@
     transition: box-shadow 0.1s;
     pointer-events: none;
   }
-  .section-block.selected {
-    box-shadow: 0 0 0 1px var(--accent);
-  }
   .section-block.creating {
-    background: rgba(255, 255, 255, 0.1);
-    border: 1px dashed rgba(255, 255, 255, 0.3);
+    background: rgba(255, 255, 255, 0.1) !important;
+    border: 1px dashed rgba(255, 255, 255, 0.3) !important;
+  }
+  .bar-empty-hint {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    color: var(--text-dim);
+    font-style: italic;
+    pointer-events: none;
   }
   .section-name {
     font-size: 10px;
@@ -480,17 +399,5 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-  }
-  .section-name-input {
-    font-size: 10px;
-    font-weight: 600;
-    background: var(--bg);
-    border: 1px solid var(--accent);
-    border-radius: 2px;
-    color: var(--text);
-    padding: 1px 4px;
-    width: 100%;
-    outline: none;
-    pointer-events: auto;
   }
 </style>

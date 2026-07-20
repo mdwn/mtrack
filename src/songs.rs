@@ -3671,11 +3671,13 @@ pilot:
                 name: "verse".to_string(),
                 start_measure: 1,
                 end_measure: 2,
+                color: None,
             },
             crate::config::Section {
                 name: "chorus".to_string(),
                 start_measure: 2,
                 end_measure: 3,
+                color: None,
             },
         ];
         song
@@ -3719,6 +3721,7 @@ pilot:
             name: "verse".to_string(),
             start_measure: 1,
             end_measure: 2,
+            color: None,
         }];
         // No beat grid set.
         assert!(song.resolve_section("verse").is_none());
@@ -3731,6 +3734,7 @@ pilot:
             name: "bad".to_string(),
             start_measure: 0, // Invalid: 1-indexed, so 0 means checked_sub fails.
             end_measure: 2,
+            color: None,
         }];
         assert!(song.resolve_section("bad").is_none());
     }
@@ -3742,6 +3746,7 @@ pilot:
             name: "far".to_string(),
             start_measure: 99,
             end_measure: 100,
+            color: None,
         }];
         assert!(song.resolve_section("far").is_none());
     }
