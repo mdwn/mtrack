@@ -509,15 +509,24 @@
       >
     </div>
 
-    {#if visibleHints.length > 0 && $playbackStore.is_playing}
-      <div class="mono playback-card__hint">
+    <!-- The hint row stays mounted whenever the song has pilot hints, so
+         the card doesn't resize every time a label comes and goes. -->
+    {#if $playbackStore.pilot_hints.length > 0}
+      <div
+        class="mono playback-card__hint"
+        class:playback-card__hint--idle={visibleHints.length === 0 ||
+          !$playbackStore.is_playing}
+      >
         <span aria-hidden="true">🎙</span>
-        {#each visibleHints as hint (hint.label + hint.at_ms)}
-          <span
-            class="playback-card__hint-label"
-            class:playback-card__hint-label--live={hint.live}>{hint.label}</span
-          >
-        {/each}
+        {#if $playbackStore.is_playing}
+          {#each visibleHints as hint (hint.label + hint.at_ms)}
+            <span
+              class="playback-card__hint-label"
+              class:playback-card__hint-label--live={hint.live}
+              >{hint.label}</span
+            >
+          {/each}
+        {/if}
       </div>
     {/if}
 
@@ -792,6 +801,11 @@
     align-items: baseline;
     gap: 10px;
     flex-wrap: wrap;
+    /* Reserve one line of height even with no labels on screen. */
+    min-height: 1.5em;
+  }
+  .playback-card__hint--idle {
+    opacity: 0.35;
   }
   .playback-card__hint-label {
     transition: color var(--nc-dur-fast) var(--nc-ease);

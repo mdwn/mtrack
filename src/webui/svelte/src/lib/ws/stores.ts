@@ -30,6 +30,9 @@ export interface TrackInfo {
 export interface BeatGrid {
   beats: number[];
   measure_starts: number[];
+  /** Per-beat accent levels (0 silent, 1 normal, 2 half, 3 accent);
+   * present when the song has a metronome. */
+  accent_levels?: number[];
 }
 
 export interface SectionInfo {
