@@ -147,9 +147,14 @@ export interface ClickSoundConfig {
 export interface MetronomeConfig {
   track?: string;
   accent?: number[];
+  /** Per-beat accent levels: 0 silent, 1 half, 2 normal, 3 accent. */
+  accents?: number[];
+  /** Clicks per beat: 1 = none, 2 = eighths, 3 = triplets, ... */
+  subdivision?: number;
   sounds?: {
     accent?: ClickSoundConfig;
     normal?: ClickSoundConfig;
+    half?: ClickSoundConfig;
   };
 }
 

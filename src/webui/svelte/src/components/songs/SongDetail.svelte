@@ -151,6 +151,23 @@
   // Pilot hints state (the song.yaml `pilot:` block)
   let pilotConfig = $state<PilotConfig | null>(null);
 
+  // Beats per measure of the base meter, for the metronome accent pads:
+  // the tempo map's time signature when set, else the beat grid's first
+  // measure length.
+  let beatsPerMeasure = $derived.by(() => {
+    const sig = tempoConfig?.time_signature;
+    if (sig) {
+      const match = /^\s*(\d+)/.exec(sig);
+      if (match) return parseInt(match[1]);
+    }
+    if (tempoConfig) return 4;
+    const grid = song?.beat_grid;
+    if (grid && grid.measure_starts.length > 1) {
+      return grid.measure_starts[1] - grid.measure_starts[0];
+    }
+    return 4;
+  });
+
   // File browser state
   type BrowseTarget =
     | { kind: "track"; index: number }
@@ -1106,6 +1123,7 @@
             <SongMetronomeEditor
               metronome={metronomeConfig}
               hasBeatGrid={!!song.beat_grid || !!tempoConfig}
+              {beatsPerMeasure}
               onchange={onMetronomeChange}
             />
           </div>

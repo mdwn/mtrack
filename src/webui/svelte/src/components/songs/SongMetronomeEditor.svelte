@@ -22,9 +22,17 @@
     onchange: (metronome: MetronomeConfig | null) => void;
     /** Whether the song has a beat grid (tempo map or analyzed click). */
     hasBeatGrid?: boolean;
+    /** Beats per measure of the song's (base) time signature; sizes the
+     * accent pads. */
+    beatsPerMeasure?: number;
   }
 
-  let { metronome, onchange, hasBeatGrid = false }: Props = $props();
+  let {
+    metronome,
+    onchange,
+    hasBeatGrid = false,
+    beatsPerMeasure = 4,
+  }: Props = $props();
 
   let expanded = $state(true);
 
@@ -46,8 +54,14 @@
     if (updated.accent && updated.accent.length === 0) {
       delete updated.accent;
     }
+    if (updated.accents && updated.accents.length === 0) {
+      delete updated.accents;
+    }
+    if (updated.subdivision === 1 || updated.subdivision === undefined) {
+      delete updated.subdivision;
+    }
     if (updated.sounds) {
-      for (const key of ["accent", "normal"] as const) {
+      for (const key of ["accent", "normal", "half"] as const) {
         const sound = updated.sounds[key];
         if (sound && Object.keys(sound).length === 0) {
           delete updated.sounds[key];
@@ -60,8 +74,47 @@
     onchange(updated);
   }
 
+  // --- Accent pads (Soundbrenner-style) ---
+
+  let padCount = $derived(Math.max(1, Math.min(16, beatsPerMeasure)));
+
+  /** The pattern the pads display: explicit `accents` when it matches the
+   * meter, otherwise levels derived from the accent grouping (or the plain
+   * downbeat accent). */
+  let padLevels = $derived.by(() => {
+    if (metronome?.accents && metronome.accents.length === padCount) {
+      return metronome.accents;
+    }
+    const groupStarts = [0];
+    let acc = 0;
+    for (const group of metronome?.accent ?? []) {
+      acc += group;
+      groupStarts.push(acc);
+    }
+    return Array.from({ length: padCount }, (_, i) =>
+      groupStarts.includes(i) ? 3 : 2,
+    );
+  });
+
+  /** Whether the pads show an explicit per-beat pattern from the config. */
+  let padsCustomized = $derived((metronome?.accents?.length ?? 0) === padCount);
+
+  /** One-way cycle: silent → half → normal → accent → silent. Materializes
+   * the full pattern on first tap. */
+  function cyclePad(index: number) {
+    const levels = [...padLevels];
+    levels[index] = (levels[index] + 1) % 4;
+    update({ accents: levels });
+  }
+
+  function resetPads() {
+    update({ accents: [] });
+  }
+
+  const SUBDIVISIONS = [1, 2, 3, 4, 6];
+
   function updateSound(
-    role: "accent" | "normal",
+    role: "accent" | "normal" | "half",
     patch: Partial<ClickSoundConfig>,
   ) {
     if (!metronome) return;
@@ -86,9 +139,10 @@
   const DEFAULTS = {
     accent: { freq: 1600, volume: 1.0 },
     normal: { freq: 1200, volume: 0.8 },
+    half: { freq: 900, volume: 0.55 },
   };
 
-  /** Typical click sounds; applying a preset overwrites both sounds. */
+  /** Typical click sounds; applying a preset overwrites all sounds. */
   const PRESETS: {
     key: string;
     sounds: NonNullable<MetronomeConfig["sounds"]>;
@@ -98,6 +152,7 @@
       sounds: {
         accent: { freq: 1125, volume: 1.0 },
         normal: { freq: 1125, volume: 1.0 },
+        half: { freq: 1125, volume: 0.5 },
       },
     },
     {
@@ -105,6 +160,7 @@
       sounds: {
         accent: { freq: 1600, volume: 1.0 },
         normal: { freq: 1200, volume: 0.8 },
+        half: { freq: 900, volume: 0.55 },
       },
     },
     {
@@ -112,6 +168,7 @@
       sounds: {
         accent: { freq: 2000, volume: 1.0 },
         normal: { freq: 1500, volume: 0.75 },
+        half: { freq: 1100, volume: 0.5 },
       },
     },
     {
@@ -119,6 +176,7 @@
       sounds: {
         accent: { freq: 880, volume: 1.0 },
         normal: { freq: 660, volume: 0.8 },
+        half: { freq: 500, volume: 0.55 },
       },
     },
   ];
@@ -156,6 +214,52 @@
 
   {#if metronome && expanded}
     <div class="metronome-body">
+      <div class="accent-row">
+        <div class="accent-pads-block">
+          <div class="accent-pads-header">
+            <span class="field-label">{$t("metronome.accents")}</span>
+            {#if padsCustomized}
+              <button class="btn-link" onclick={resetPads}
+                >{$t("metronome.accentsReset")}</button
+              >
+            {/if}
+          </div>
+          <div class="accent-pads">
+            {#each padLevels as level, i (i)}
+              <button
+                class="accent-pad"
+                class:silent={level === 0}
+                title={$t(`metronome.level.${level}`)}
+                aria-label="{$t('metronome.beat')} {i + 1}: {$t(
+                  `metronome.level.${level}`,
+                )}"
+                onclick={() => cyclePad(i)}
+              >
+                {#each [3, 2, 1] as segment (segment)}
+                  <span class="pad-seg" class:filled={level >= segment}></span>
+                {/each}
+              </button>
+            {/each}
+          </div>
+        </div>
+        <label class="field">
+          <span class="field-label">{$t("metronome.subdivision")}</span>
+          <select
+            class="input subdiv-select"
+            value={String(metronome.subdivision ?? 1)}
+            onchange={(e) =>
+              update({
+                subdivision: parseInt((e.target as HTMLSelectElement).value),
+              })}
+          >
+            {#each SUBDIVISIONS as sub (sub)}
+              <option value={String(sub)}
+                >{$t(`metronome.subdiv.${sub}`)}</option
+              >
+            {/each}
+          </select>
+        </label>
+      </div>
       <div class="presets">
         <span class="field-label">{$t("metronome.presets")}</span>
         {#each PRESETS as preset (preset.key)}
@@ -195,7 +299,7 @@
         </label>
       </div>
       <div class="sounds">
-        {#each ["accent", "normal"] as const as role (role)}
+        {#each ["accent", "normal", "half"] as const as role (role)}
           {@const sound = metronome.sounds?.[role] ?? {}}
           <div class="sound-row">
             <span class="field-label sound-label"
@@ -297,6 +401,73 @@
     align-items: center;
     gap: 6px;
     flex-wrap: wrap;
+  }
+  .accent-row {
+    display: flex;
+    align-items: flex-end;
+    gap: 20px;
+    flex-wrap: wrap;
+  }
+  .accent-pads-block {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .accent-pads-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .btn-link {
+    background: none;
+    border: none;
+    color: var(--accent);
+    font-size: 11px;
+    cursor: pointer;
+    padding: 0;
+  }
+  .accent-pads {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .accent-pad {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    width: 46px;
+    height: 60px;
+    padding: 5px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    cursor: pointer;
+    touch-action: manipulation;
+    user-select: none;
+    -webkit-user-select: none;
+    transition: transform 0.06s;
+  }
+  .accent-pad:active {
+    transform: scale(0.94);
+  }
+  .accent-pad.silent {
+    opacity: 0.45;
+  }
+  .pad-seg {
+    flex: 1;
+    border-radius: 3px;
+    border: 1px solid
+      color-mix(in srgb, var(--accent, #5ecaea) 45%, transparent);
+    background: transparent;
+    transition: background 0.08s;
+  }
+  .pad-seg.filled {
+    background: var(--accent, #5ecaea);
+    border-color: var(--accent, #5ecaea);
+  }
+  .subdiv-select {
+    min-height: 40px;
+    min-width: 140px;
   }
   .metronome-fields {
     display: flex;
