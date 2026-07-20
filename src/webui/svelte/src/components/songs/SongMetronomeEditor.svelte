@@ -373,9 +373,14 @@
   }
   .sounds {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    grid-template-columns: 1fr 1fr;
     gap: 8px;
     align-items: start;
+  }
+  @media (max-width: 720px) {
+    .sounds {
+      grid-template-columns: 1fr;
+    }
   }
   .sound-row {
     display: flex;
