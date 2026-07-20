@@ -65,6 +65,10 @@ pub struct MetronomeConfig {
     /// at measures; each stays in effect until the next change.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub changes: Vec<MetronomeChange>,
+    /// Master click volume (0.0-2.0): scales every click sound uniformly,
+    /// preserving the accent/half/normal/sub level ordering.
+    #[serde(default = "default_volume", skip_serializing_if = "is_default_volume")]
+    pub volume: f64,
     /// Click sounds. Defaults to synthesized clicks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sounds: Option<MetronomeSounds>,
@@ -153,6 +157,14 @@ fn default_subdivision() -> Subdivision {
     Subdivision::default()
 }
 
+fn default_volume() -> f64 {
+    1.0
+}
+
+fn is_default_volume(volume: &f64) -> bool {
+    *volume == 1.0
+}
+
 fn is_default_subdivision(subdivision: &Subdivision) -> bool {
     *subdivision == Subdivision::Even(1)
 }
@@ -165,6 +177,7 @@ impl Default for MetronomeConfig {
             accents: Vec::new(),
             subdivision: Subdivision::default(),
             changes: Vec::new(),
+            volume: 1.0,
             sounds: None,
         }
     }
@@ -192,6 +205,12 @@ impl MetronomeConfig {
             return Err("metronome accent levels must be 0-3".to_string());
         }
         validate_subdivision(&self.subdivision)?;
+        if !self.volume.is_finite() || !(0.0..=2.0).contains(&self.volume) {
+            return Err(format!(
+                "metronome volume must be within 0.0-2.0, got {}",
+                self.volume
+            ));
+        }
         for change in &self.changes {
             if change.measure < 1 {
                 return Err("metronome change measures are 1-indexed".to_string());
@@ -304,6 +323,20 @@ sounds:
         assert!(deserialize("sounds:\n  half: { volume: 3.0 }")
             .validate()
             .is_err());
+        assert!(deserialize("volume: 3.0").validate().is_err());
+        assert!(deserialize("volume: -0.5").validate().is_err());
+    }
+
+    #[test]
+    fn master_volume_roundtrip() {
+        let config = deserialize("volume: 0.7");
+        assert_eq!(config.volume, 0.7);
+        assert!(config.validate().is_ok());
+        let serialized = crate::util::to_yaml_string(&config).unwrap();
+        assert_eq!(deserialize(&serialized), config);
+        // The default stays out of the YAML.
+        let plain = crate::util::to_yaml_string(&deserialize("{}")).unwrap();
+        assert!(!plain.contains("volume"));
     }
 
     #[test]

@@ -15,7 +15,7 @@
 <script lang="ts">
   import { t } from "svelte-i18n";
   import type { MetronomeConfig, ClickSoundConfig } from "../../lib/api/songs";
-  import AccentPads from "./AccentPads.svelte";
+  import NumberStepper from "../NumberStepper.svelte";
 
   interface Props {
     /** The song.yaml `metronome:` block, or null when not configured. */
@@ -23,114 +23,17 @@
     onchange: (metronome: MetronomeConfig | null) => void;
     /** Whether the song has a beat grid (tempo map or analyzed click). */
     hasBeatGrid?: boolean;
-    /** Beats per measure of the song's (base) time signature; sizes the
-     * accent pads. */
-    beatsPerMeasure?: number;
   }
 
-  let {
-    metronome,
-    onchange,
-    hasBeatGrid = false,
-    beatsPerMeasure = 4,
-  }: Props = $props();
+  let { metronome, onchange, hasBeatGrid = false }: Props = $props();
 
   let expanded = $state(true);
 
-  function enable() {
-    onchange({});
-  }
+  const ROLES = ["accent", "half", "normal", "sub"] as const;
+  type Role = (typeof ROLES)[number];
 
-  function disable() {
-    onchange(null);
-  }
-
-  function update(patch: Partial<MetronomeConfig>) {
-    if (!metronome) return;
-    const updated = { ...metronome, ...patch };
-    // Drop empty/default keys to keep the YAML tidy.
-    if (updated.track === "metronome" || updated.track === "") {
-      delete updated.track;
-    }
-    if (updated.accent && updated.accent.length === 0) {
-      delete updated.accent;
-    }
-    if (updated.accents && updated.accents.length === 0) {
-      delete updated.accents;
-    }
-    if (updated.subdivision === 1 || updated.subdivision === undefined) {
-      delete updated.subdivision;
-    }
-    if (updated.sounds) {
-      for (const key of ["accent", "half", "normal", "sub"] as const) {
-        const sound = updated.sounds[key];
-        if (sound && Object.keys(sound).length === 0) {
-          delete updated.sounds[key];
-        }
-      }
-      if (Object.keys(updated.sounds).length === 0) {
-        delete updated.sounds;
-      }
-    }
-    onchange(updated);
-  }
-
-  // --- Accent pads (Soundbrenner-style) ---
-
-  let padCount = $derived(Math.max(1, Math.min(16, beatsPerMeasure)));
-
-  /** The pattern the pads display: explicit `accents` (padded with baseline
-   * / truncated to the meter, matching the renderer), otherwise levels
-   * derived from the accent grouping (or the plain downbeat accent). */
-  let padLevels = $derived.by(() => {
-    if (metronome?.accents?.length) {
-      return Array.from(
-        { length: padCount },
-        (_, i) => metronome.accents![i] ?? 1,
-      );
-    }
-    const groupStarts = [0];
-    let acc = 0;
-    for (const group of metronome?.accent ?? []) {
-      acc += group;
-      groupStarts.push(acc);
-    }
-    return Array.from({ length: padCount }, (_, i) =>
-      groupStarts.includes(i) ? 3 : 1,
-    );
-  });
-
-  /** Whether the pads show an explicit per-beat pattern from the config. */
-  let padsCustomized = $derived((metronome?.accents?.length ?? 0) > 0);
-
-  function resetPads() {
-    update({ accents: [] });
-  }
-
-  function updateSound(
-    role: "accent" | "half" | "normal" | "sub",
-    patch: Partial<ClickSoundConfig>,
-  ) {
-    if (!metronome) return;
-    const sounds = { ...(metronome.sounds ?? {}) };
-    const merged: ClickSoundConfig = { ...(sounds[role] ?? {}), ...patch };
-    for (const key of ["file", "freq", "volume"] as const) {
-      if (merged[key] === undefined || merged[key] === null) {
-        delete merged[key];
-      }
-    }
-    sounds[role] = merged;
-    update({ sounds });
-  }
-
-  function parseAccent(raw: string): number[] {
-    return raw
-      .split(/[\s,]+/)
-      .map((part) => parseInt(part))
-      .filter((n) => Number.isFinite(n) && n > 0);
-  }
-
-  const DEFAULTS = {
+  /** Built-in synthesized defaults, used to seed a fresh override. */
+  const DEFAULTS: Record<Role, { freq: number; volume: number }> = {
     accent: { freq: 1600, volume: 1.0 },
     half: { freq: 1400, volume: 0.9 },
     normal: { freq: 1200, volume: 0.8 },
@@ -180,6 +83,72 @@
     },
   ];
 
+  function enable() {
+    onchange({});
+  }
+
+  function disable() {
+    onchange(null);
+  }
+
+  function update(patch: Partial<MetronomeConfig>) {
+    if (!metronome) return;
+    const updated = { ...metronome, ...patch };
+    // Drop empty/default keys to keep the YAML tidy.
+    if (updated.track === "metronome" || updated.track === "") {
+      delete updated.track;
+    }
+    if (updated.accent && updated.accent.length === 0) {
+      delete updated.accent;
+    }
+    if (updated.accents && updated.accents.length === 0) {
+      delete updated.accents;
+    }
+    if (updated.subdivision === 1 || updated.subdivision === undefined) {
+      delete updated.subdivision;
+    }
+    if (updated.volume === 1 || updated.volume === undefined) {
+      delete updated.volume;
+    }
+    if (updated.sounds) {
+      for (const key of ROLES) {
+        const sound = updated.sounds[key];
+        if (sound && Object.keys(sound).length === 0) {
+          delete updated.sounds[key];
+        }
+      }
+      if (Object.keys(updated.sounds).length === 0) {
+        delete updated.sounds;
+      }
+    }
+    onchange(updated);
+  }
+
+  function updateSound(role: Role, patch: Partial<ClickSoundConfig>) {
+    if (!metronome) return;
+    const sounds = { ...(metronome.sounds ?? {}) };
+    const merged: ClickSoundConfig = { ...(sounds[role] ?? {}), ...patch };
+    for (const key of ["file", "freq", "volume"] as const) {
+      if (merged[key] === undefined || merged[key] === null) {
+        delete merged[key];
+      }
+    }
+    sounds[role] = merged;
+    update({ sounds });
+  }
+
+  /** On = the song overrides this sound; off = player defaults apply. */
+  function toggleSound(role: Role, on: boolean) {
+    if (!metronome) return;
+    if (on) {
+      updateSound(role, DEFAULTS[role]);
+    } else {
+      const sounds = { ...(metronome.sounds ?? {}) };
+      delete sounds[role];
+      update({ sounds });
+    }
+  }
+
   function applyPreset(sounds: NonNullable<MetronomeConfig["sounds"]>) {
     update({ sounds: structuredClone(sounds) });
   }
@@ -194,8 +163,8 @@
     {#if metronome}
       <span class="metronome-info">
         {metronome.track ?? "metronome"}
-        {#if metronome.accent?.length}
-          · {metronome.accent.join("+")}
+        {#if metronome.volume !== undefined && metronome.volume !== 1}
+          · ×{metronome.volume}
         {/if}
       </span>
       <button class="btn btn-sm btn-danger" onclick={disable}
@@ -213,20 +182,33 @@
 
   {#if metronome && expanded}
     <div class="metronome-body">
-      <div class="accent-block">
-        <div class="accent-pads-header">
-          <span class="field-label">{$t("metronome.accents")}</span>
-          {#if padsCustomized}
-            <button class="btn-link" onclick={resetPads}
-              >{$t("metronome.accentsReset")}</button
-            >
-          {/if}
+      <div class="level-row">
+        <div class="field">
+          <span class="field-label">{$t("metronome.level")}</span>
+          <NumberStepper
+            value={metronome.volume ?? 1}
+            min={0}
+            max={2}
+            step={0.05}
+            decimals={2}
+            suffix="×"
+            ariaLabel={$t("metronome.level")}
+            onchange={(v) => update({ volume: Math.round(v * 100) / 100 })}
+          />
         </div>
-        <AccentPads
-          levels={padLevels}
-          onchange={(levels) => update({ accents: levels })}
-        />
+        <label class="field track-field">
+          <span class="field-label">{$t("metronome.track")}</span>
+          <input
+            type="text"
+            class="input"
+            placeholder="metronome"
+            value={metronome.track ?? ""}
+            onchange={(e) =>
+              update({ track: (e.target as HTMLInputElement).value.trim() })}
+          />
+        </label>
       </div>
+
       <div class="presets">
         <span class="field-label">{$t("metronome.presets")}</span>
         {#each PRESETS as preset (preset.key)}
@@ -239,83 +221,65 @@
           </button>
         {/each}
       </div>
-      <div class="metronome-fields">
-        <label class="field">
-          <span class="field-label">{$t("metronome.track")}</span>
-          <input
-            type="text"
-            class="input"
-            placeholder="metronome"
-            value={metronome.track ?? ""}
-            onchange={(e) =>
-              update({ track: (e.target as HTMLInputElement).value.trim() })}
-          />
-        </label>
-        <label class="field">
-          <span class="field-label">{$t("metronome.accentPattern")}</span>
-          <input
-            type="text"
-            class="input"
-            placeholder="e.g. 3, 2, 2"
-            value={(metronome.accent ?? []).join(", ")}
-            onchange={(e) =>
-              update({
-                accent: parseAccent((e.target as HTMLInputElement).value),
-              })}
-          />
-        </label>
-      </div>
+
       <div class="sounds">
-        {#each ["accent", "half", "normal", "sub"] as const as role (role)}
-          {@const sound = metronome.sounds?.[role] ?? {}}
-          <div class="sound-row">
-            <span class="field-label sound-label"
-              >{$t(`metronome.sound.${role}`)}</span
-            >
-            <label class="field">
-              <span class="field-label">{$t("metronome.freq")}</span>
+        {#each ROLES as role (role)}
+          {@const sound = metronome.sounds?.[role]}
+          <div class="sound-row" class:sound-row--off={!sound}>
+            <label class="toggle-row">
               <input
-                type="number"
-                class="input sm-input"
-                min="20"
-                max="20000"
-                placeholder={String(DEFAULTS[role].freq)}
-                value={sound.freq ?? ""}
-                onchange={(e) => {
-                  const v = (e.target as HTMLInputElement).value;
-                  updateSound(role, { freq: v ? parseFloat(v) : undefined });
-                }}
+                type="checkbox"
+                checked={!!sound}
+                onchange={(e) =>
+                  toggleSound(role, (e.target as HTMLInputElement).checked)}
               />
+              <span class="sound-label">{$t(`metronome.sound.${role}`)}</span>
+              {#if !sound}
+                <span class="inherited-note">{$t("metronome.inherited")}</span>
+              {/if}
             </label>
-            <label class="field">
-              <span class="field-label">{$t("metronome.volume")}</span>
-              <input
-                type="number"
-                class="input sm-input"
-                min="0"
-                max="2"
-                step="0.05"
-                placeholder={String(DEFAULTS[role].volume)}
-                value={sound.volume ?? ""}
-                onchange={(e) => {
-                  const v = (e.target as HTMLInputElement).value;
-                  updateSound(role, { volume: v ? parseFloat(v) : undefined });
-                }}
-              />
-            </label>
-            <label class="field sound-file">
-              <span class="field-label">{$t("metronome.file")}</span>
-              <input
-                type="text"
-                class="input"
-                placeholder={$t("metronome.filePlaceholder")}
-                value={sound.file ?? ""}
-                onchange={(e) => {
-                  const v = (e.target as HTMLInputElement).value.trim();
-                  updateSound(role, { file: v || undefined });
-                }}
-              />
-            </label>
+            {#if sound}
+              <div class="sound-controls">
+                <div class="field">
+                  <span class="field-label">{$t("metronome.freq")}</span>
+                  <NumberStepper
+                    value={sound.freq ?? DEFAULTS[role].freq}
+                    min={20}
+                    max={20000}
+                    step={25}
+                    suffix="Hz"
+                    ariaLabel={$t("metronome.freq")}
+                    onchange={(v) => updateSound(role, { freq: v })}
+                  />
+                </div>
+                <div class="field">
+                  <span class="field-label">{$t("metronome.volume")}</span>
+                  <NumberStepper
+                    value={sound.volume ?? DEFAULTS[role].volume}
+                    min={0}
+                    max={2}
+                    step={0.05}
+                    decimals={2}
+                    ariaLabel={$t("metronome.volume")}
+                    onchange={(v) =>
+                      updateSound(role, { volume: Math.round(v * 100) / 100 })}
+                  />
+                </div>
+                <label class="field sound-file">
+                  <span class="field-label">{$t("metronome.file")}</span>
+                  <input
+                    type="text"
+                    class="input"
+                    placeholder={$t("metronome.filePlaceholder")}
+                    value={sound.file ?? ""}
+                    onchange={(e) => {
+                      const v = (e.target as HTMLInputElement).value.trim();
+                      updateSound(role, { file: v || undefined });
+                    }}
+                  />
+                </label>
+              </div>
+            {/if}
           </div>
         {/each}
       </div>
@@ -361,35 +325,24 @@
     padding: 0 12px 12px;
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 12px;
+  }
+  .level-row {
+    display: flex;
+    align-items: flex-end;
+    gap: 20px;
+    flex-wrap: wrap;
+  }
+  .track-field {
+    min-width: 160px;
+  }
+  .track-field .input {
+    min-height: 44px;
   }
   .presets {
     display: flex;
     align-items: center;
     gap: 6px;
-    flex-wrap: wrap;
-  }
-  .accent-block {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-  .accent-pads-header {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-  .btn-link {
-    background: none;
-    border: none;
-    color: var(--accent);
-    font-size: 11px;
-    cursor: pointer;
-    padding: 0;
-  }
-  .metronome-fields {
-    display: flex;
-    gap: 12px;
     flex-wrap: wrap;
   }
   .field {
@@ -408,21 +361,51 @@
   }
   .sound-row {
     display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 8px 10px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+  .sound-row--off {
+    padding: 6px 10px;
+  }
+  .toggle-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    cursor: pointer;
+    min-height: 24px;
+  }
+  .toggle-row input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    accent-color: var(--accent);
+    margin: 0;
+  }
+  .sound-label {
+    font-size: 12px;
+    font-weight: 600;
+    min-width: 60px;
+  }
+  .inherited-note {
+    font-size: 11px;
+    color: var(--text-dim);
+    font-style: italic;
+  }
+  .sound-controls {
+    display: flex;
     align-items: flex-end;
     gap: 12px;
     flex-wrap: wrap;
   }
-  .sound-label {
-    min-width: 60px;
-    padding-bottom: 8px;
-    font-weight: 600;
-  }
-  .sm-input {
-    width: 90px;
-  }
   .sound-file {
     flex: 1;
     min-width: 180px;
+  }
+  .sound-file .input {
+    min-height: 44px;
   }
   .hint-text {
     font-size: 12px;

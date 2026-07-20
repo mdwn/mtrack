@@ -163,6 +163,8 @@ export interface MetronomeConfig {
   subdivision?: SubdivisionValue;
   /** Feel changes anchored at measures, active until the next change. */
   changes?: MetronomeChangeConfig[];
+  /** Master click volume (0-2), scaling all sounds uniformly. */
+  volume?: number;
   sounds?: {
     accent?: ClickSoundConfig;
     normal?: ClickSoundConfig;

@@ -384,7 +384,7 @@ impl MetronomeSource {
             base_path,
             sample_rate,
         )?;
-        let sub = render_click_sound(
+        let mut sub = render_click_sound(
             sounds.and_then(|s| s.sub.as_ref()),
             defaults.and_then(|s| s.sub.as_ref()),
             DEFAULT_SUB_FREQ,
@@ -392,6 +392,20 @@ impl MetronomeSource {
             base_path,
             sample_rate,
         )?;
+
+        // Master volume scales every click uniformly, preserving the
+        // accent/half/normal/sub ordering.
+        let mut accent = accent;
+        let mut normal = normal;
+        let mut half = half;
+        if config.volume != 1.0 {
+            let scale = config.volume as f32;
+            for waveform in [&mut accent, &mut half, &mut normal, &mut sub] {
+                for sample in waveform.iter_mut() {
+                    *sample *= scale;
+                }
+            }
+        }
 
         let end_position = ((song_duration.saturating_sub(start_time)).as_secs_f64()
             * sample_rate as f64)
@@ -842,6 +856,39 @@ mod tests {
         assert!(
             peak > 0.01,
             "mid-click seek should play the tail, got {peak}"
+        );
+    }
+
+    #[test]
+    fn master_volume_scales_all_clicks() {
+        let grid = simple_grid(4, 0.5, 1);
+        let render = |volume: f64| {
+            let config = MetronomeConfig {
+                volume,
+                ..MetronomeConfig::default()
+            };
+            let mut source = MetronomeSource::new(
+                &grid,
+                &config,
+                None,
+                Path::new("/nonexistent"),
+                RATE,
+                Duration::ZERO,
+                Duration::from_secs(1),
+            )
+            .unwrap();
+            let mut peak = 0.0f32;
+            while let Some(sample) = source.next_sample().unwrap() {
+                peak = peak.max(sample.abs());
+            }
+            peak
+        };
+
+        let full = render(1.0);
+        let half = render(0.5);
+        assert!(
+            (half - full * 0.5).abs() < 0.01,
+            "master volume 0.5 should halve the peak ({half} vs {full})"
         );
     }
 
