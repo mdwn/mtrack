@@ -23,6 +23,7 @@
   } from "../../lib/api/songs";
   import { fetchTempoGuess, type GuessedTempo } from "../../lib/api/songs";
   import { positionTaken, sortTempoChanges } from "../../lib/util/tempo";
+  import { subdivisionParts } from "../../lib/meter";
   import NumberStepper from "../NumberStepper.svelte";
   import AccentPads from "./AccentPads.svelte";
   import MarkerDialog from "./MarkerDialog.svelte";
@@ -103,9 +104,9 @@
 
   let baseSig = $derived(parseSig(tempo.time_signature));
 
-  /** Numerator in effect at the target (including its own sig change). */
-  let numerator = $derived.by(() => {
-    if (target === "start") return baseSig[0];
+  /** Signature in effect at the target (including its own sig change). */
+  let effectiveSig = $derived.by(() => {
+    if (target === "start") return baseSig;
     let sig = baseSig;
     const sorted = [...(tempo.changes ?? [])].sort(
       (a, b) => a.measure - b.measure || (a.beat ?? 1) - (b.beat ?? 1),
@@ -117,8 +118,9 @@
       if (!atOrBefore) break;
       if (c.time_signature) sig = parseSig(c.time_signature);
     }
-    return sig[0];
+    return sig;
   });
+  let numerator = $derived(effectiveSig[0]);
 
   function defaultPattern(count: number): number[] {
     const groupStarts = [0];
@@ -448,17 +450,20 @@
 
 {#snippet subdivisionSelect(
   value: SubdivisionValue,
+  beatDen: number,
   onpick: (v: SubdivisionValue) => void,
 )}
   <div class="subdiv-options">
     {#each SUBDIVISIONS as sub (sub)}
+      {@const parts = subdivisionParts(sub, beatDen)}
       <button
         type="button"
         class="subdiv-option"
         class:active={value === sub}
         onclick={() => onpick(sub)}
       >
-        {$t(`metronome.subdiv.${sub}`)}
+        <span class="subdiv-glyph">{parts.glyph}</span>
+        <span class="subdiv-name">{$t(parts.nameKey)}</span>
       </button>
     {/each}
   </div>
@@ -510,6 +515,7 @@
         <span class="section-label">{$t("metronome.subdivision")}</span>
         {@render subdivisionSelect(
           metronome.subdivision ?? 1,
+          baseSig[1],
           setBaseSubdivision,
         )}
       </div>
@@ -682,8 +688,10 @@
           <span class="section-label">{$t("metronome.subdivision")}</span>
         </label>
         {#if subdivisionOn && mChange?.subdivision !== undefined}
-          {@render subdivisionSelect(mChange.subdivision, (v) =>
-            patchMetroChange({ subdivision: v }),
+          {@render subdivisionSelect(
+            mChange.subdivision,
+            effectiveSig[1],
+            (v) => patchMetroChange({ subdivision: v }),
           )}
         {/if}
       </div>
@@ -807,13 +815,18 @@
     flex-wrap: wrap;
   }
   .subdiv-option {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
     border: 1px solid var(--border);
     background: var(--bg-input);
     color: var(--text);
     border-radius: 10px;
-    padding: 0 14px;
-    min-height: 42px;
-    font-size: 13px;
+    padding: 6px 12px;
+    min-height: 52px;
+    min-width: 64px;
     cursor: pointer;
     touch-action: manipulation;
   }
@@ -822,6 +835,19 @@
     border-color: var(--accent);
     color: var(--bg);
     font-weight: 600;
+  }
+  .subdiv-glyph {
+    font-size: 17px;
+    line-height: 1.1;
+  }
+  .subdiv-name {
+    font-size: 10px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+  }
+  .subdiv-option.active .subdiv-name {
+    color: var(--bg);
   }
   .feel-note {
     font-size: 12px;

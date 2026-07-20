@@ -23,6 +23,7 @@
     MetronomeConfig,
   } from "../../lib/api/songs";
   import { sortTempoChanges } from "../../lib/util/tempo";
+  import { accentsGlyph, subdivisionChip } from "../../lib/meter";
   import SectionBar from "./SectionBar.svelte";
   import SectionRuler from "./SectionRuler.svelte";
   import SectionWaveformLane from "./SectionWaveformLane.svelte";
@@ -185,15 +186,40 @@
     return time === undefined ? songDurationMs : time * 1000;
   }
 
+  /** Signature denominator in effect at a position (base + prior changes). */
+  function sigDenAt(measure: number, beat: number): number {
+    let den = parseInt(
+      /\/\s*(\d+)/.exec(tempo?.time_signature ?? "4/4")?.[1] ?? "4",
+    );
+    const sorted = [...(tempo?.changes ?? [])].sort(
+      (a, b) => a.measure - b.measure || (a.beat ?? 1) - (b.beat ?? 1),
+    );
+    for (const c of sorted) {
+      const atOrBefore =
+        c.measure < measure || (c.measure === measure && (c.beat ?? 1) <= beat);
+      if (!atOrBefore) break;
+      const match = /\/\s*(\d+)/.exec(c.time_signature ?? "");
+      if (match) den = parseInt(match[1]);
+    }
+    return den;
+  }
+
   /** One marker per position, merging tempo changes with metronome feel
    * changes at the same measure. */
   let tempoMarkers = $derived.by(() => {
     if (!tempo) return [];
+    const baseParts = [`${tempo.bpm}`, tempo.time_signature ?? "4/4"];
+    if (metronome?.accents?.length) {
+      baseParts.push(accentsGlyph(metronome.accents));
+    }
+    if (metronome?.subdivision !== undefined && metronome.subdivision !== 1) {
+      baseParts.push(subdivisionChip(metronome.subdivision, sigDenAt(1, 0)));
+    }
     const markers = [
       {
         id: "start",
         ms: (tempo.start ?? 0) * 1000,
-        label: `${tempo.bpm} · ${tempo.time_signature ?? "4/4"}`,
+        label: baseParts.join(" · "),
       },
     ];
     // Collect marker positions: every tempo change plus every metronome
@@ -223,12 +249,10 @@
       const parts: string[] = [];
       if (tc?.bpm !== undefined) parts.push(`${tc.bpm}`);
       if (tc?.time_signature) parts.push(tc.time_signature);
-      if (mc?.accents) parts.push($t("timelineLayers.accentsChip"));
+      if (mc?.accents) parts.push(accentsGlyph(mc.accents));
       if (mc?.subdivision !== undefined) {
         parts.push(
-          typeof mc.subdivision === "number"
-            ? `÷${mc.subdivision}`
-            : `${mc.subdivision}`,
+          subdivisionChip(mc.subdivision, sigDenAt(pos.measure, pos.beat)),
         );
       }
       markers.push({

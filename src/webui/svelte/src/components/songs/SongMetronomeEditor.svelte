@@ -14,11 +14,7 @@
      * -->
 <script lang="ts">
   import { t } from "svelte-i18n";
-  import type {
-    MetronomeConfig,
-    ClickSoundConfig,
-    SubdivisionValue,
-  } from "../../lib/api/songs";
+  import type { MetronomeConfig, ClickSoundConfig } from "../../lib/api/songs";
   import AccentPads from "./AccentPads.svelte";
 
   interface Props {
@@ -106,15 +102,6 @@
 
   function resetPads() {
     update({ accents: [] });
-  }
-
-  const SUBDIVISIONS: SubdivisionValue[] = [1, 2, 3, 4, 6, "son", "rumba"];
-
-  function setSubdivision(value: SubdivisionValue) {
-    if (!metronome) return;
-    const updated: MetronomeConfig = { ...metronome, subdivision: value };
-    if (value === 1) delete updated.subdivision;
-    onchange(updated);
   }
 
   function updateSound(
@@ -236,21 +223,6 @@
           levels={padLevels}
           onchange={(levels) => update({ accents: levels })}
         />
-      </div>
-      <div class="accent-block">
-        <span class="field-label">{$t("metronome.subdivision")}</span>
-        <div class="subdiv-options">
-          {#each SUBDIVISIONS as sub (sub)}
-            <button
-              type="button"
-              class="subdiv-option"
-              class:active={(metronome.subdivision ?? 1) === sub}
-              onclick={() => setSubdivision(sub)}
-            >
-              {$t(`metronome.subdiv.${sub}`)}
-            </button>
-          {/each}
-        </div>
       </div>
       <div class="presets">
         <span class="field-label">{$t("metronome.presets")}</span>
@@ -411,28 +383,6 @@
     font-size: 11px;
     cursor: pointer;
     padding: 0;
-  }
-  .subdiv-options {
-    display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
-  }
-  .subdiv-option {
-    border: 1px solid var(--border);
-    background: var(--bg-input);
-    color: var(--text);
-    border-radius: 10px;
-    padding: 0 14px;
-    min-height: 40px;
-    font-size: 13px;
-    cursor: pointer;
-    touch-action: manipulation;
-  }
-  .subdiv-option.active {
-    background: var(--accent);
-    border-color: var(--accent);
-    color: var(--bg);
-    font-weight: 600;
   }
   .metronome-fields {
     display: flex;
