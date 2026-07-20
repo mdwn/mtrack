@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-07-20
+
+### Added
+
+- **Per-track mute**: each output track can now be muted live without touching its fader
+  value or persisted gain. Mute is a runtime-only flag — it silences the track in the mixer
+  and resets on restart — exposed as a `SetTrackMute` gRPC call, a `muted` flag on the web UI
+  track frames, and an `M` button per track row in the Tracks card.
+
+### Changed
+
+- **Jumping to a song keeps the active playlist**: clicking a song in the dashboard now
+  navigates within the active playlist when the song is one of its members, only falling back
+  to the session-only all-songs playlist for songs outside it. Previously any song jump reset
+  the selected playlist.
+
+### Fixed
+
+- **Single-source dropouts are now visible in the logs**: a decode or read error ends just
+  that one source while the rest of the mix continues (by design), but every path was silent
+  at the default log level, making a track that vanished mid-song impossible to diagnose after
+  the fact. Decode errors in the buffer-fill task and read errors in the mixer now warn.
+
 ## [0.14.0] - 2026-06-10
 
 ### Added
