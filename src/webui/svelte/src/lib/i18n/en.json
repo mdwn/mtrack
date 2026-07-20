@@ -88,6 +88,8 @@
   "tracks.noTracks": "No tracks",
   "tracks.unmapped": "(unmapped)",
   "tracks.gainFor": "Gain for {name}",
+  "tracks.mute": "Mute {name}",
+  "tracks.unmute": "Unmute {name}",
   "tracks.gainReset": "Reset gain to 0 dB",
   "effects.title": "Active Effects",
   "effects.noEffects": "No active effects",

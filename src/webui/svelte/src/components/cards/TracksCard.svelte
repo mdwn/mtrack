@@ -16,7 +16,11 @@
   import { playbackStore, waveformStore } from "../../lib/ws/stores";
   import type { TrackInfo } from "../../lib/ws/stores";
   import GainSlider from "../GainSlider.svelte";
-  import { sendTrackGain, sendTrackGainThrottled } from "../../lib/gain";
+  import {
+    sendTrackGain,
+    sendTrackGainThrottled,
+    sendTrackMute,
+  } from "../../lib/gain";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
 
@@ -120,8 +124,22 @@
   {:else}
     <div class="tracks-card__list">
       {#each $playbackStore.tracks as track, i (`${i}:${track.name}`)}
-        <div class="tracks-card__row">
+        <div
+          class="tracks-card__row"
+          class:tracks-card__row--muted={track.muted}
+        >
           <div class="tracks-card__main">
+            <button
+              class="tracks-card__mute mono"
+              class:tracks-card__mute--active={track.muted}
+              title={track.muted
+                ? $t("tracks.unmute", { values: { name: track.name } })
+                : $t("tracks.mute", { values: { name: track.name } })}
+              aria-pressed={track.muted ?? false}
+              onclick={() => sendTrackMute(track.name, !track.muted)}
+            >
+              M
+            </button>
             <div class="tracks-card__info">
               <div class="tracks-card__name">{track.name}</div>
               <div
@@ -196,6 +214,31 @@
     display: flex;
     align-items: center;
     gap: 12px;
+  }
+  .tracks-card__mute {
+    flex: 0 0 auto;
+    width: 28px;
+    height: 28px;
+    border: 1px solid var(--card-border);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--nc-fg-3);
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    line-height: 1;
+  }
+  .tracks-card__mute--active {
+    background: var(--nc-pink-600);
+    border-color: var(--nc-pink-600);
+    color: #fff;
+  }
+  :global(.nc--dark) .tracks-card__mute--active {
+    background: var(--nc-pink-500);
+    border-color: var(--nc-pink-500);
+  }
+  .tracks-card__row--muted .tracks-card__waveform {
+    opacity: 0.35;
   }
   .tracks-card__info {
     flex: 0 0 132px;

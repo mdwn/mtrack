@@ -18,7 +18,7 @@
 //! `f32` bit patterns in atomics so the callback can read them lock-free.
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use indexmap::IndexMap;
 use tracing::warn;
@@ -72,6 +72,9 @@ pub struct TrackGains {
     /// single atomic per slot, so concurrent setters can never leave the two
     /// representations desynced. The mixer hot path reads only the low half.
     gain_bits: Vec<AtomicU64>,
+    /// Per-slot mute flags. Kept separate from the gain so muting preserves
+    /// the fader value and is never persisted to the profile.
+    muted: Vec<AtomicBool>,
 }
 
 /// Packs a (dB, linear) gain pair into a single u64.
@@ -133,10 +136,12 @@ impl TrackGains {
             gain_bits.push(AtomicU64::new(pack_gain(db, db_to_linear(db))));
         }
 
+        let muted = names.iter().map(|_| AtomicBool::new(false)).collect();
         Self {
             slots,
             names,
             gain_bits,
+            muted,
         }
     }
 
@@ -171,9 +176,38 @@ impl TrackGains {
             .map(|slot| unpack_db(self.gain_bits[slot].load(Ordering::Relaxed)))
     }
 
-    /// Gets the linear multiplier for a slot. Hot path: single relaxed load.
+    /// Gets the linear multiplier for a slot, honoring the mute flag.
+    /// Hot path: two relaxed loads.
     pub fn linear(&self, slot: usize) -> f32 {
+        if self.muted[slot].load(Ordering::Relaxed) {
+            return 0.0;
+        }
         unpack_linear(self.gain_bits[slot].load(Ordering::Relaxed))
+    }
+
+    /// Mutes or unmutes a track without touching its gain, returning the
+    /// applied state. Mute state is runtime-only and never persisted.
+    pub fn set_muted(&self, track: &str, muted: bool) -> Result<bool, UnknownTrackError> {
+        let slot = self
+            .slot(track)
+            .ok_or_else(|| UnknownTrackError(track.to_string()))?;
+        self.muted[slot].store(muted, Ordering::Relaxed);
+        Ok(muted)
+    }
+
+    /// Gets the mute state of a track.
+    pub fn get_muted(&self, track: &str) -> Option<bool> {
+        self.slot(track)
+            .map(|slot| self.muted[slot].load(Ordering::Relaxed))
+    }
+
+    /// Snapshots all mute states as (name, muted) pairs in slot order.
+    pub fn snapshot_muted(&self) -> Vec<(String, bool)> {
+        self.names
+            .iter()
+            .enumerate()
+            .map(|(slot, name)| (name.clone(), self.muted[slot].load(Ordering::Relaxed)))
+            .collect()
     }
 
     /// Snapshots all gains as (name, dB) pairs in slot order.
@@ -219,6 +253,26 @@ mod tests {
         assert_eq!(db_to_linear(-60.0), 0.0);
         assert_eq!(db_to_linear(-80.0), 0.0);
         assert!((db_to_linear(6.0) - 1.9953).abs() < 0.001);
+    }
+
+    #[test]
+    fn mute_preserves_gain() {
+        let gains = TrackGains::from_config(&mappings(&["click"]), None);
+        let slot = gains.slot("click").unwrap();
+        gains.set_db("click", -6.0).unwrap();
+        assert!(gains.linear(slot) > 0.0);
+
+        assert!(gains.set_muted("click", true).unwrap());
+        assert_eq!(gains.linear(slot), 0.0);
+        assert_eq!(gains.get_muted("click"), Some(true));
+        // The fader value survives the mute...
+        assert_eq!(gains.get_db("click"), Some(-6.0));
+        // ...and persistence snapshots are unaffected by mute state.
+        assert_eq!(gains.snapshot_db_map().get("click"), Some(&-6.0));
+
+        assert!(!gains.set_muted("click", false).unwrap());
+        assert!(gains.linear(slot) > 0.0);
+        assert!(gains.set_muted("nope", true).is_err());
     }
 
     #[test]

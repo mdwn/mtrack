@@ -27,11 +27,12 @@ use crate::{
         GetTrackGainsResponse, LoopSectionRequest, LoopSectionResponse, NextRequest, NextResponse,
         PlayFromRequest, PlayRequest, PlayResponse, PlaySongFromRequest, PreviousRequest,
         PreviousResponse, RemoveProfileRequest, SectionAckRequest, SectionAckResponse,
-        SetTrackGainRequest, SetTrackGainResponse, StatusRequest, StatusResponse, StopRequest,
-        StopResponse, StopSamplesRequest, StopSamplesResponse, StopSectionLoopRequest,
-        StopSectionLoopResponse, SwitchToPlaylistRequest, SwitchToPlaylistResponse, TrackGain,
-        UpdateAudioRequest, UpdateConfigResponse, UpdateControllersRequest, UpdateDmxRequest,
-        UpdateMidiRequest, UpdateProfileRequest, FILE_DESCRIPTOR_SET,
+        SetTrackGainRequest, SetTrackGainResponse, SetTrackMuteRequest, SetTrackMuteResponse,
+        StatusRequest, StatusResponse, StopRequest, StopResponse, StopSamplesRequest,
+        StopSamplesResponse, StopSectionLoopRequest, StopSectionLoopResponse,
+        SwitchToPlaylistRequest, SwitchToPlaylistResponse, TrackGain, UpdateAudioRequest,
+        UpdateConfigResponse, UpdateControllersRequest, UpdateDmxRequest, UpdateMidiRequest,
+        UpdateProfileRequest, FILE_DESCRIPTOR_SET,
     },
 };
 
@@ -535,16 +536,43 @@ impl PlayerService for PlayerServer {
         }))
     }
 
+    async fn set_track_mute(
+        &self,
+        request: Request<SetTrackMuteRequest>,
+    ) -> Result<Response<SetTrackMuteResponse>, Status> {
+        let req = request.into_inner();
+        let muted = self
+            .player
+            .set_track_mute(&req.track, req.muted)
+            .map_err(|e| match e {
+                crate::player::TrackGainError::NoAudioProfile => {
+                    Status::failed_precondition(e.to_string())
+                }
+                crate::player::TrackGainError::NonFinite(_)
+                | crate::player::TrackGainError::UnknownTrack(_) => {
+                    Status::invalid_argument(e.to_string())
+                }
+            })?;
+        Ok(Response::new(SetTrackMuteResponse { muted }))
+    }
+
     async fn get_track_gains(
         &self,
         _: Request<GetTrackGainsRequest>,
     ) -> Result<Response<GetTrackGainsResponse>, Status> {
+        let mutes: std::collections::HashMap<String, bool> = self
+            .player
+            .get_track_mutes()
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
         let gains = self
             .player
             .get_track_gains()
             .unwrap_or_default()
             .into_iter()
             .map(|(track, gain_db)| TrackGain {
+                muted: mutes.get(&track).copied().unwrap_or(false),
                 track,
                 gain_db: gain_db as f64,
             })

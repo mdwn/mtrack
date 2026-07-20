@@ -749,6 +749,31 @@ impl Player {
             .map(|tg| tg.snapshot_db())
     }
 
+    /// Mutes or unmutes an output track without changing its gain, returning
+    /// the applied state. Mute is a runtime performance control and is never
+    /// persisted — a restart starts unmuted.
+    pub fn set_track_mute(&self, track: &str, muted: bool) -> Result<bool, TrackGainError> {
+        let track_gains = self
+            .hardware
+            .read()
+            .track_gains
+            .clone()
+            .ok_or(TrackGainError::NoAudioProfile)?;
+        let applied = track_gains.set_muted(track, muted)?;
+        info!(track, muted = applied, "track mute changed");
+        Ok(applied)
+    }
+
+    /// Returns all output track mute states as (name, muted) pairs, or None
+    /// when no audio profile is active.
+    pub fn get_track_mutes(&self) -> Option<Vec<(String, bool)>> {
+        self.hardware
+            .read()
+            .track_gains
+            .as_ref()
+            .map(|tg| tg.snapshot_muted())
+    }
+
     /// Returns true if the player is in locked mode (state-altering operations blocked).
     pub fn is_locked(&self) -> bool {
         self.locked.load(Ordering::Relaxed)
@@ -2512,8 +2537,55 @@ mod test {
         assert_eq!(result.unwrap().name(), "Song 2");
         eventually(|| device.is_playing(), "Song never started playing");
 
-        // Switches to all_songs (session-only) for the duration of playback
+        // Song 2 is not in the active playlist, so this switches to
+        // all_songs (session-only) for the duration of playback.
         assert_eq!(player.get_playlist().name(), "all_songs");
+
+        player.stop().await;
+        eventually(|| !device.is_playing(), "Song never stopped");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn play_song_from_keeps_active_playlist() -> Result<(), Box<dyn Error>> {
+        let songs = songs::get_all_songs(Path::new("assets/songs"))?;
+        let playlist = Playlist::new(
+            "playlist",
+            &config::Playlist::deserialize(Path::new("assets/playlist.yaml"))?,
+            songs.clone(),
+        )?;
+        let player = Player::new(
+            test_playlists(playlist, songs.clone()),
+            "playlist".to_string(),
+            &config::Player::new(
+                vec![],
+                Some(config::Audio::new("mock-device")),
+                Some(config::Midi::new("mock-midi-device", None)),
+                None,
+                HashMap::new(),
+                "assets/songs",
+            ),
+            None,
+        )?;
+        player.await_hardware_ready().await;
+        let device = player.audio_device().expect("audio device").to_mock()?;
+
+        // Song 3 is in the active playlist: jumping to it must not switch
+        // the player to all_songs.
+        let result = player
+            .play_song_from("Song 3", std::time::Duration::ZERO)
+            .await?;
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().name(), "Song 3");
+        eventually(|| device.is_playing(), "Song never started playing");
+        assert_eq!(player.get_playlist().name(), "playlist");
+        assert_eq!(
+            player
+                .get_playlist()
+                .current()
+                .map(|s| s.name().to_string()),
+            Some("Song 3".to_string())
+        );
 
         player.stop().await;
         eventually(|| !device.is_playing(), "Song never stopped");

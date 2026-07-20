@@ -28,8 +28,10 @@ use super::{Player, PlaylistDirection};
 
 impl Player {
     /// Plays a specific song by name, starting from the given time.
-    /// Switches to the all_songs playlist (session-only, not persisted) and
-    /// navigates to the song before calling play_from.
+    /// If the song is in the active playlist, navigates to it there — jumping
+    /// to a song never kicks you out of the playlist you chose. Only songs
+    /// outside the active playlist switch to the all_songs playlist
+    /// (session-only, not persisted).
     /// Returns an error if the song is not found.
     pub async fn play_song_from(
         &self,
@@ -47,13 +49,15 @@ impl Player {
             return Ok(None);
         }
 
-        let all_songs = self
-            .get_all_songs_playlist()
-            .ok_or_else(|| -> Box<dyn Error> { "all_songs playlist not available".into() })?;
-        if all_songs.navigate_to(song_name).is_none() {
-            return Err(format!("Song '{}' not found", song_name).into());
+        if self.get_playlist().navigate_to(song_name).is_none() {
+            let all_songs = self
+                .get_all_songs_playlist()
+                .ok_or_else(|| -> Box<dyn Error> { "all_songs playlist not available".into() })?;
+            if all_songs.navigate_to(song_name).is_none() {
+                return Err(format!("Song '{}' not found", song_name).into());
+            }
+            *self.active_playlist.write() = "all_songs".to_string();
         }
-        *self.active_playlist.write() = "all_songs".to_string();
 
         // Start playback with the lock already held.
         self.play_from_locked(start_time, &mut join).await

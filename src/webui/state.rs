@@ -72,6 +72,10 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
                     .get_track_gains()
                     .map(|gains| gains.into_iter().collect())
                     .unwrap_or_default();
+                let track_mutes: std::collections::HashMap<String, bool> = player
+                    .get_track_mutes()
+                    .map(|mutes| mutes.into_iter().collect())
+                    .unwrap_or_default();
                 let tracks: Vec<serde_json::Value> = current_song
                     .tracks()
                     .iter()
@@ -85,6 +89,7 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
                             "name": t.name(),
                             "output_channels": output_channels,
                             "gain_db": track_gains.get(t.name()).copied().unwrap_or(0.0),
+                            "muted": track_mutes.get(t.name()).copied().unwrap_or(false),
                         })
                     })
                     .collect();

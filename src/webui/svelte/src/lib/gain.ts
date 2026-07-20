@@ -48,6 +48,18 @@ export async function sendTrackGain(
   }
 }
 
+/** Mutes or unmutes a track without touching its gain value. */
+export async function sendTrackMute(
+  track: string,
+  muted: boolean,
+): Promise<void> {
+  try {
+    await playerClient.setTrackMute({ track, muted });
+  } catch (e) {
+    console.error(`Failed to set mute for track "${track}":`, e);
+  }
+}
+
 /**
  * Trailing-throttled gain send for use while dragging, keyed per track so
  * concurrent sliders never starve each other. The final value should be

@@ -22,6 +22,9 @@ export interface TrackInfo {
   output_channels: number[];
   /** Output track gain in dB; absent on older backends (treat as 0). */
   gain_db?: number;
+  /** Whether the track is muted (independently of the gain); absent on
+   * older backends (treat as false). */
+  muted?: boolean;
 }
 
 export interface BeatGrid {
