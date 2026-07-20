@@ -124,18 +124,6 @@
       {#if sound}
         <div class="sound-controls">
           <div class="field">
-            <span class="field-label">{$t("metronome.freq")}</span>
-            <NumberStepper
-              value={sound.freq ?? DEFAULTS[role].freq}
-              min={20}
-              max={20000}
-              step={25}
-              suffix="Hz"
-              ariaLabel={$t("metronome.freq")}
-              onchange={(v) => updateSound(role, { freq: v })}
-            />
-          </div>
-          <div class="field">
             <span class="field-label">{$t("metronome.volume")}</span>
             <NumberStepper
               value={sound.volume ?? DEFAULTS[role].volume}
@@ -146,6 +134,18 @@
               ariaLabel={$t("metronome.volume")}
               onchange={(v) =>
                 updateSound(role, { volume: Math.round(v * 100) / 100 })}
+            />
+          </div>
+          <div class="field">
+            <span class="field-label">{$t("metronome.freq")}</span>
+            <NumberStepper
+              value={sound.freq ?? DEFAULTS[role].freq}
+              min={20}
+              max={20000}
+              step={25}
+              suffix="Hz"
+              ariaLabel={$t("metronome.freq")}
+              onchange={(v) => updateSound(role, { freq: v })}
             />
           </div>
           <div class="field sound-file">
@@ -187,9 +187,14 @@
 
 <style>
   .metronome-defaults {
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
     gap: 8px;
+    align-items: start;
+  }
+  .metronome-defaults > .hint-text,
+  .metronome-defaults > .upload-msg {
+    grid-column: 1 / -1;
   }
   .hint-text {
     font-size: 12px;
@@ -232,9 +237,9 @@
   }
   .sound-controls {
     display: flex;
-    align-items: flex-end;
-    gap: 12px;
-    flex-wrap: wrap;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
   }
   .field {
     display: flex;
