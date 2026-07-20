@@ -756,6 +756,8 @@
   "sections.dialog.colorAuto": "Automatic",
   "sections.dialog.start": "Start measure",
   "sections.dialog.length": "Measures",
+  "sections.preview.play": "Preview this song (click the ruler to jump)",
+  "sections.preview.stop": "Stop preview",
   "sections.dialog.delete": "Delete",
   "timelineLayers.tempo": "Tempo",
   "timelineLayers.pilot": "Pilot",

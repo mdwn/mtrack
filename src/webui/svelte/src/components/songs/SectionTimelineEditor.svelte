@@ -27,6 +27,8 @@
   import SectionBar from "./SectionBar.svelte";
   import SectionRuler from "./SectionRuler.svelte";
   import SectionWaveformLane from "./SectionWaveformLane.svelte";
+  import { playbackStore } from "../../lib/ws/stores";
+  import { playerClient } from "../../lib/grpc/client";
   import { sectionColor } from "../../lib/sectionColors";
   import TimelineMarkerLane from "./TimelineMarkerLane.svelte";
   import TempoMarkerDialog from "./TempoMarkerDialog.svelte";
@@ -167,6 +169,82 @@
   function handleSectionsChange(updated: SectionEntry[]) {
     sections = updated;
     dirty = true;
+  }
+
+  // --- Preview playback / playhead ---
+
+  let isCurrentSong = $derived($playbackStore.song_name === song.name);
+
+  // Smoothly-extrapolated elapsed, resynced on every 5Hz frame (matches
+  // the BeatIndicator's approach). Never extrapolates past 600ms so a
+  // dropped connection freezes the playhead instead of running away.
+  const MAX_EXTRAPOLATION_MS = 600;
+  let smoothElapsedMs = $state(0);
+  $effect(() => {
+    if (!isCurrentSong || !$playbackStore.is_playing) {
+      smoothElapsedMs = $playbackStore.elapsed_ms;
+      return;
+    }
+    let raf = 0;
+    const tick = () => {
+      const state = $playbackStore;
+      const since = Math.min(
+        performance.now() - state.received_at,
+        MAX_EXTRAPOLATION_MS,
+      );
+      smoothElapsedMs = Math.min(
+        state.elapsed_ms + since,
+        state.song_duration_ms || Infinity,
+      );
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  });
+
+  let playheadX = $derived(
+    LABEL_WIDTH + smoothElapsedMs * pixelsPerMs - scrollLeft,
+  );
+
+  function msToProtoDuration(ms: number) {
+    return {
+      seconds: BigInt(Math.floor(ms / 1000)),
+      nanos: Math.round((ms % 1000) * 1e6),
+    };
+  }
+
+  async function togglePreview() {
+    try {
+      if (isCurrentSong && $playbackStore.is_playing) {
+        await playerClient.stop({});
+      } else if (isCurrentSong) {
+        await playerClient.play({});
+      } else {
+        await playerClient.playSongFrom({
+          songName: song.name,
+          startTime: msToProtoDuration(0),
+        });
+      }
+    } catch (e) {
+      console.error("preview toggle failed:", e);
+    }
+  }
+
+  /** Ruler click: seek the preview (starting the song here if needed). */
+  async function previewSeek(ms: number) {
+    const clamped = Math.min(ms, songDurationMs);
+    try {
+      if (isCurrentSong) {
+        await playerClient.seek({ position: msToProtoDuration(clamped) });
+      } else {
+        await playerClient.playSongFrom({
+          songName: song.name,
+          startTime: msToProtoDuration(clamped),
+        });
+      }
+    } catch (e) {
+      console.error("preview seek failed:", e);
+    }
   }
 
   // --- Section edit dialog ---
@@ -468,6 +546,16 @@
           sections</span
         >
       {/if}
+      <button
+        class="btn btn-sm preview-btn"
+        class:preview-btn--live={isCurrentSong && $playbackStore.is_playing}
+        onclick={togglePreview}
+        title={isCurrentSong && $playbackStore.is_playing
+          ? $t("sections.preview.stop")
+          : $t("sections.preview.play")}
+      >
+        {isCurrentSong && $playbackStore.is_playing ? "⏹" : "▶"}
+      </button>
       <button class="btn btn-sm" onclick={zoomOut} title="Zoom out">−</button>
       <button class="btn btn-sm" onclick={fitView} title="Fit to view"
         >Fit</button
@@ -476,77 +564,83 @@
     </div>
   </div>
 
-  <div
-    class="timeline-scroll"
-    bind:this={scrollContainer}
-    onscroll={handleScroll}
-    onwheel={handleWheel}
-  >
-    <TimelineMarkerLane
-      laneLabel={$t("timelineLayers.tempo")}
-      markers={tempoMarkers}
-      {pixelsPerMs}
-      {scrollLeft}
-      accent="#f97316"
-      emptyHint={$t("timelineLayers.tempoEmptyHint")}
-      onmarkerclick={handleTempoMarkerClick}
-      onemptyclick={handleTempoEmptyClick}
-    />
+  <div class="timeline-wrap">
+    {#if isCurrentSong && playheadX >= LABEL_WIDTH}
+      <div class="playhead" style:left="{playheadX}px" aria-hidden="true"></div>
+    {/if}
+    <div
+      class="timeline-scroll"
+      bind:this={scrollContainer}
+      onscroll={handleScroll}
+      onwheel={handleWheel}
+    >
+      <TimelineMarkerLane
+        laneLabel={$t("timelineLayers.tempo")}
+        markers={tempoMarkers}
+        {pixelsPerMs}
+        {scrollLeft}
+        accent="#f97316"
+        emptyHint={$t("timelineLayers.tempoEmptyHint")}
+        onmarkerclick={handleTempoMarkerClick}
+        onemptyclick={handleTempoEmptyClick}
+      />
 
-    <SectionBar
-      {sections}
-      {pixelsPerMs}
-      {scrollLeft}
-      {viewportWidth}
-      {measureTimesMs}
-      {songDurationMs}
-      emptyHint={song.beat_grid ? $t("sections.emptyHint") : ""}
-      onsectionschange={handleSectionsChange}
-      onsectionedit={(index) => (sectionDialogIndex = index)}
-    />
+      <SectionBar
+        {sections}
+        {pixelsPerMs}
+        {scrollLeft}
+        {viewportWidth}
+        {measureTimesMs}
+        {songDurationMs}
+        emptyHint={song.beat_grid ? $t("sections.emptyHint") : ""}
+        onsectionschange={handleSectionsChange}
+        onsectionedit={(index) => (sectionDialogIndex = index)}
+      />
 
-    <TimelineMarkerLane
-      laneLabel={$t("timelineLayers.pilot")}
-      markers={pilotMarkers}
-      {pixelsPerMs}
-      {scrollLeft}
-      accent="#8b5cf6"
-      emptyHint={$t("timelineLayers.pilotEmptyHint")}
-      onmarkerclick={handlePilotMarkerClick}
-      onemptyclick={handlePilotEmptyClick}
-    />
+      <TimelineMarkerLane
+        laneLabel={$t("timelineLayers.pilot")}
+        markers={pilotMarkers}
+        {pixelsPerMs}
+        {scrollLeft}
+        accent="#8b5cf6"
+        emptyHint={$t("timelineLayers.pilotEmptyHint")}
+        onmarkerclick={handlePilotMarkerClick}
+        onemptyclick={handlePilotEmptyClick}
+      />
 
-    <SectionRuler
-      {songDurationMs}
-      {pixelsPerMs}
-      {scrollLeft}
-      {viewportWidth}
-      {measureTimesMs}
-    />
-
-    {#each waveformTracks as track (track.name)}
-      <SectionWaveformLane
-        name={track.name}
-        peaks={track.peaks}
+      <SectionRuler
         {songDurationMs}
         {pixelsPerMs}
         {scrollLeft}
         {viewportWidth}
         {measureTimesMs}
+        onseek={previewSeek}
       />
-    {/each}
 
-    {#if waveformTracks.length === 0}
-      <div class="empty-waveform">
-        <span class="muted">No waveform data available</span>
-      </div>
-    {/if}
+      {#each waveformTracks as track (track.name)}
+        <SectionWaveformLane
+          name={track.name}
+          peaks={track.peaks}
+          {songDurationMs}
+          {pixelsPerMs}
+          {scrollLeft}
+          {viewportWidth}
+          {measureTimesMs}
+        />
+      {/each}
 
-    <div
-      class="scroll-spacer"
-      style:width="{totalWidthPx + LABEL_WIDTH}px"
-      style:height="1px"
-    ></div>
+      {#if waveformTracks.length === 0}
+        <div class="empty-waveform">
+          <span class="muted">No waveform data available</span>
+        </div>
+      {/if}
+
+      <div
+        class="scroll-spacer"
+        style:width="{totalWidthPx + LABEL_WIDTH}px"
+        style:height="1px"
+      ></div>
+    </div>
   </div>
 
   {#if sections.length > 0}
@@ -640,11 +734,28 @@
     color: var(--yellow);
     margin-right: 8px;
   }
+  .timeline-wrap {
+    position: relative;
+  }
   .timeline-scroll {
     overflow-x: auto;
     overflow-y: hidden;
     position: relative;
     max-height: 400px;
+  }
+  .playhead {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    margin-left: -1px;
+    background: var(--nc-amber-400, #f2b544);
+    box-shadow: 0 0 6px rgba(242, 181, 68, 0.5);
+    z-index: 20;
+    pointer-events: none;
+  }
+  .preview-btn--live {
+    color: var(--nc-amber-400, #f2b544);
   }
   .scroll-spacer {
     height: 0;

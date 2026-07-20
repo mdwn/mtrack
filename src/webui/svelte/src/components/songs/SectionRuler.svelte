@@ -20,6 +20,8 @@
     viewportWidth: number;
     /** Beat grid measure start times in ms */
     measureTimesMs?: number[];
+    /** Click on the ruler, in song ms — the preview scrub target. */
+    onseek?: (ms: number) => void;
   }
 
   let {
@@ -29,7 +31,15 @@
     scrollLeft,
     viewportWidth,
     measureTimesMs = [],
+    onseek,
   }: Props = $props();
+
+  function handleClick(e: MouseEvent) {
+    if (!onseek) return;
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const ms = (scrollLeft + e.clientX - rect.left) / pixelsPerMs;
+    onseek(Math.max(0, ms));
+  }
 
   let canvasEl: HTMLCanvasElement | undefined = $state();
 
@@ -156,7 +166,13 @@
 
 <div class="ruler" style:height="{RULER_HEIGHT}px">
   <div class="label-spacer" style:width="{LABEL_WIDTH}px"></div>
-  <div class="ruler-content">
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="ruler-content"
+    class:ruler-content--seekable={!!onseek}
+    onclick={handleClick}
+  >
     <canvas bind:this={canvasEl} class="ruler-canvas"></canvas>
   </div>
 </div>
@@ -178,6 +194,9 @@
     flex: 1;
     position: relative;
     overflow: hidden;
+  }
+  .ruler-content--seekable {
+    cursor: pointer;
   }
   .ruler-canvas {
     width: 100%;
