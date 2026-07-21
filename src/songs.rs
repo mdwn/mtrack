@@ -637,6 +637,21 @@ impl Song {
     /// Names of all output tracks this song produces: real audio tracks plus
     /// virtual tracks (metronome, pilot). These are the names that can appear
     /// in `track_mappings` and carry per-track gains.
+    /// Resolves the metronome tri-state against the player-wide default:
+    /// `enabled: false` blocks turn the metronome off, absent blocks follow
+    /// the default (a plain default metronome for songs with a tempo map).
+    /// In-memory only; the on-disk config keeps the tri-state.
+    pub fn apply_metronome_default(&mut self, default_enabled: bool) {
+        match &self.metronome {
+            Some(m) if m.enabled == Some(false) => self.metronome = None,
+            Some(_) => {}
+            None if default_enabled && self.tempo_map.is_some() => {
+                self.metronome = Some(config::MetronomeConfig::default());
+            }
+            None => {}
+        }
+    }
+
     pub fn output_track_names(&self) -> Vec<String> {
         let mut names: Vec<String> = self.tracks.iter().map(|t| t.name.clone()).collect();
         if let Some(metronome) = &self.metronome {
@@ -1470,6 +1485,17 @@ pub fn initialize_songs(start_path: &Path) -> Result<usize, Box<dyn Error>> {
 
 /// Recurse into the given path and return all valid songs found.
 pub fn get_all_songs(path: &Path) -> Result<Arc<Songs>, Box<dyn Error>> {
+    get_all_songs_with_defaults(path, false)
+}
+
+/// Like [`get_all_songs`], applying the player-wide metronome default:
+/// when enabled, songs with a tempo map and no `metronome:` block get a
+/// default metronome (in memory only), and `metronome: { enabled: false }`
+/// blocks resolve to no metronome.
+pub fn get_all_songs_with_defaults(
+    path: &Path,
+    default_metronome: bool,
+) -> Result<Arc<Songs>, Box<dyn Error>> {
     debug!("Getting songs for directory {path:?}");
     let mut songs: HashMap<String, Arc<Song>> = HashMap::new();
     let mut failures: Vec<SongLoadFailure> = Vec::new();
@@ -1488,7 +1514,7 @@ pub fn get_all_songs(path: &Path) -> Result<Arc<Songs>, Box<dyn Error>> {
                 continue;
             }
 
-            let child = get_all_songs(path.as_path())?;
+            let child = get_all_songs_with_defaults(path.as_path(), default_metronome)?;
             child.list().iter().for_each(|song| {
                 songs.insert(song.name().to_string(), song.clone());
             });
@@ -1531,6 +1557,7 @@ pub fn get_all_songs(path: &Path) -> Result<Arc<Songs>, Box<dyn Error>> {
                                             path.canonicalize()
                                                 .unwrap_or_else(|_| path.to_path_buf()),
                                         );
+                                        song.apply_metronome_default(default_metronome);
                                         songs.insert(song.name().to_string(), Arc::new(song));
                                     }
                                     Err(e) => {
@@ -3749,6 +3776,37 @@ pilot:
             color: None,
         }];
         assert!(song.resolve_section("far").is_none());
+    }
+
+    #[test]
+    fn metronome_default_resolution() {
+        // No tempo map: the default never applies.
+        let mut song = super::Song::new_for_test("test", &["a"]);
+        song.apply_metronome_default(true);
+        assert!(song.metronome.is_none());
+
+        // With a tempo map: default-on materializes a plain metronome.
+        let mut song = super::Song::new_for_test("test", &["a"]);
+        let tempo: crate::config::TempoConfig =
+            serde_json::from_value(serde_json::json!({"bpm": 120.0})).unwrap();
+        song.tempo_map = Some(tempo.to_tempo_map().unwrap());
+        song.apply_metronome_default(true);
+        assert!(song.metronome.is_some());
+
+        // Explicitly disabled block resolves to no metronome.
+        let mut song = super::Song::new_for_test("test", &["a"]);
+        song.metronome = Some(crate::config::MetronomeConfig {
+            enabled: Some(false),
+            ..Default::default()
+        });
+        song.apply_metronome_default(true);
+        assert!(song.metronome.is_none());
+
+        // Default off: absent stays absent, present block stays.
+        let mut song = super::Song::new_for_test("test", &["a"]);
+        song.metronome = Some(crate::config::MetronomeConfig::default());
+        song.apply_metronome_default(false);
+        assert!(song.metronome.is_some());
     }
 
     #[test]

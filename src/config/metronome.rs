@@ -34,6 +34,12 @@ pub const DEFAULT_SUB_VOLUME: f64 = 0.45;
 /// generated from the song's beat grid, routable like any other track.
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 pub struct MetronomeConfig {
+    /// Tri-state switch: absent = the block enables the metronome (and a
+    /// song without any `metronome:` block follows the player-wide
+    /// default); `false` = explicitly off, keeping the rest of the block's
+    /// settings around.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
     /// The output track name the metronome plays on. Route it by adding this
     /// name to `track_mappings` in the player profile. Defaults to
     /// "metronome".
@@ -172,6 +178,7 @@ fn is_default_subdivision(subdivision: &Subdivision) -> bool {
 impl Default for MetronomeConfig {
     fn default() -> Self {
         MetronomeConfig {
+            enabled: None,
             track: default_metronome_track(),
             accent: Vec::new(),
             accents: Vec::new(),
@@ -330,6 +337,18 @@ sounds:
             .is_err());
         assert!(deserialize("volume: 3.0").validate().is_err());
         assert!(deserialize("volume: -0.5").validate().is_err());
+    }
+
+    #[test]
+    fn enabled_tristate_roundtrip() {
+        let config = deserialize("enabled: false\nvolume: 0.7");
+        assert_eq!(config.enabled, Some(false));
+        assert!(config.validate().is_ok());
+        let serialized = crate::util::to_yaml_string(&config).unwrap();
+        assert_eq!(deserialize(&serialized), config);
+        // Absent stays absent.
+        let plain = crate::util::to_yaml_string(&deserialize("{}")).unwrap();
+        assert!(!plain.contains("enabled"));
     }
 
     #[test]

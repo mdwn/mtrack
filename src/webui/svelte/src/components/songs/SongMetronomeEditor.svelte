@@ -57,12 +57,23 @@
   const DEFAULTS = SOUND_DEFAULTS;
   const PRESETS = METRONOME_PRESETS;
 
-  function enable() {
-    onchange({});
-  }
+  type MetronomeState = "default" | "on" | "off";
 
-  function disable() {
-    onchange(null);
+  let metronomeState: MetronomeState = $derived(
+    metronome === null ? "default" : metronome.enabled === false ? "off" : "on",
+  );
+
+  function setMetronomeState(next: MetronomeState) {
+    if (next === metronomeState) return;
+    if (next === "default") {
+      onchange(null);
+    } else if (next === "on") {
+      const updated = { ...(metronome ?? {}) };
+      delete updated.enabled;
+      onchange(updated);
+    } else {
+      onchange({ ...(metronome ?? {}), enabled: false });
+    }
   }
 
   function update(patch: Partial<MetronomeConfig>) {
@@ -83,6 +94,9 @@
     }
     if (updated.volume === 1 || updated.volume === undefined) {
       delete updated.volume;
+    }
+    if (updated.enabled === undefined || updated.enabled === true) {
+      delete updated.enabled;
     }
     if (updated.sounds) {
       for (const key of ROLES) {
@@ -134,27 +148,31 @@
       {expanded ? "▼" : "▶"}
     </button>
     <span class="section-title">{$t("metronome.title")}</span>
-    {#if metronome}
-      <span class="metronome-info">
-        {metronome.track ?? "metronome"}
-        {#if metronome.volume !== undefined && metronome.volume !== 1}
+    <span class="metronome-info">
+      {#if metronomeState === "on"}
+        {metronome?.track ?? "metronome"}
+        {#if metronome?.volume !== undefined && metronome.volume !== 1}
           · ×{metronome.volume}
         {/if}
-      </span>
-      <button class="btn btn-sm btn-danger" onclick={disable}
-        >{$t("common.remove")}</button
-      >
-    {:else}
-      <button class="btn btn-sm btn-primary" onclick={enable}
-        >{$t("metronome.add")}</button
-      >
-    {/if}
-    {#if metronome && !hasBeatGrid}
+      {/if}
+    </span>
+    <div class="segmented">
+      {#each ["default", "on", "off"] as const as option (option)}
+        <button
+          type="button"
+          class="seg-btn"
+          class:active={metronomeState === option}
+          onclick={() => setMetronomeState(option)}
+          >{$t(`metronome.state.${option}`)}</button
+        >
+      {/each}
+    </div>
+    {#if metronomeState === "on" && !hasBeatGrid}
       <span class="no-grid-warning">{$t("metronome.noBeatGrid")}</span>
     {/if}
   </div>
 
-  {#if metronome && expanded}
+  {#if metronome && metronomeState === "on" && expanded}
     <div class="metronome-body">
       <div class="level-row">
         <div class="field level-field">
@@ -308,6 +326,29 @@
     color: var(--text-muted);
     font-size: 12px;
     flex: 1;
+  }
+  .segmented {
+    display: inline-flex;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .seg-btn {
+    border: none;
+    background: var(--bg-input);
+    color: var(--text-muted);
+    padding: 0 12px;
+    min-height: 32px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .seg-btn + .seg-btn {
+    border-left: 1px solid var(--border);
+  }
+  .seg-btn.active {
+    background: var(--accent);
+    color: var(--bg);
+    font-weight: 600;
   }
   .no-grid-warning {
     color: var(--warning, #e8a54b);

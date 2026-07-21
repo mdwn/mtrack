@@ -459,9 +459,17 @@ pub(super) async fn put_config_metronome(
         Ok(s) => s,
         Err(e) => return e,
     };
+    let default_enabled = metronome.as_ref().is_some_and(|m| m.enabled);
     match store.update_metronome(metronome, &checksum).await {
         Ok(snapshot) => {
             reload_hardware_after_mutation(&state).await;
+            // The default-on flag is applied at song load; refresh both.
+            state.player.set_default_metronome(default_enabled);
+            state.player.reload_songs(
+                &state.songs_path,
+                state.playlists_dir.as_deref(),
+                state.legacy_playlist_path.as_deref(),
+            );
             config_snapshot_response(snapshot, StatusCode::OK)
         }
         Err(e) => config_store_error_response(e),

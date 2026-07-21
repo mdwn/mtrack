@@ -133,6 +133,7 @@
 
   // Player-wide metronome defaults (mtrack.yaml `metronome.sounds`).
   let metronomeSounds = $state<MetronomeDefaultSounds | null>(null);
+  let metronomeEnabled = $state(false);
   let metronomeSnapshot = $state("");
   let metronomeDirty = $state(false);
   let metronomeSaving = $state(false);
@@ -181,7 +182,8 @@
       maxSampleVoicesSnapshot = maxSampleVoices;
       samplesDirty = false;
       metronomeSounds = parsed?.metronome?.sounds ?? null;
-      metronomeSnapshot = JSON.stringify(metronomeSounds);
+      metronomeEnabled = parsed?.metronome?.enabled === true;
+      metronomeSnapshot = JSON.stringify([metronomeSounds, metronomeEnabled]);
       metronomeDirty = false;
     } catch {
       profiles = [];
@@ -481,7 +483,8 @@
   }
 
   function onMetronomeChange() {
-    metronomeDirty = JSON.stringify(metronomeSounds) !== metronomeSnapshot;
+    metronomeDirty =
+      JSON.stringify([metronomeSounds, metronomeEnabled]) !== metronomeSnapshot;
   }
 
   async function saveMetronome() {
@@ -495,10 +498,11 @@
     try {
       const snapshot = await updateMetronomeDefaults(
         metronomeSounds as Record<string, unknown> | null,
+        metronomeEnabled,
         checksum,
       );
       applySnapshot(snapshot);
-      metronomeSnapshot = JSON.stringify(metronomeSounds);
+      metronomeSnapshot = JSON.stringify([metronomeSounds, metronomeEnabled]);
       metronomeDirty = false;
       metronomeSaveOk = true;
       setTimeout(() => (metronomeSaveOk = false), 2000);
@@ -891,6 +895,7 @@
         <MetronomeSection
           bind:this={metronomeRef}
           bind:sounds={metronomeSounds}
+          bind:enabled={metronomeEnabled}
           onchange={onMetronomeChange}
           onbrowse={(role) => (metronomeBrowseRole = role)}
         />

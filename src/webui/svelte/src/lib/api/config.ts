@@ -196,11 +196,16 @@ export async function updateSamples(
 
 export async function updateMetronomeDefaults(
   sounds: Record<string, unknown> | null,
+  enabled: boolean,
   checksum: string,
 ): Promise<ConfigSnapshot> {
+  const hasSounds = sounds && Object.keys(sounds).length > 0;
   const body = {
     expected_checksum: checksum,
-    metronome: sounds && Object.keys(sounds).length > 0 ? { sounds } : null,
+    metronome:
+      hasSounds || enabled
+        ? { ...(enabled ? { enabled } : {}), ...(hasSounds ? { sounds } : {}) }
+        : null,
   };
   const res = await put("/config/metronome", JSON.stringify(body));
   if (!res.ok) throw await apiError(res, "Failed to update metronome defaults");

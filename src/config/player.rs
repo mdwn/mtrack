@@ -136,6 +136,10 @@ pub struct Player {
 /// Player-wide metronome defaults.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 pub struct MetronomeDefaults {
+    /// When true, every song with a tempo map gets a metronome by default;
+    /// individual songs opt out with `metronome: { enabled: false }`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub enabled: bool,
     /// Default click sounds used when a song's metronome config doesn't
     /// override them.
     #[serde(default, skip_serializing_if = "Option::is_none")]

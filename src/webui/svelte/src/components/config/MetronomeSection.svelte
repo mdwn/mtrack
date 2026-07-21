@@ -37,11 +37,18 @@
   interface Props {
     /** The player-wide `metronome.sounds` block, or null when unset. */
     sounds: MetronomeDefaultSounds | null;
+    /** Default-on: songs with a tempo map get a metronome automatically. */
+    enabled: boolean;
     onchange: () => void;
     onbrowse: (role: MetronomeSoundRole) => void;
   }
 
-  let { sounds = $bindable(), onchange, onbrowse }: Props = $props();
+  let {
+    sounds = $bindable(),
+    enabled = $bindable(),
+    onchange,
+    onbrowse,
+  }: Props = $props();
 
   const ROLES: MetronomeSoundRole[] = ["accent", "half", "normal", "sub"];
 
@@ -109,6 +116,17 @@
 
 <div class="metronome-defaults">
   <p class="muted hint-text">{$t("config.metronomeHint")}</p>
+  <label class="toggle-row default-toggle">
+    <input
+      type="checkbox"
+      checked={enabled}
+      onchange={(e) => {
+        enabled = (e.target as HTMLInputElement).checked;
+        onchange();
+      }}
+    />
+    <span class="default-label">{$t("config.metronomeDefaultOn")}</span>
+  </label>
   <div class="presets">
     <span class="field-label">{$t("metronome.presets")}</span>
     {#each METRONOME_PRESETS as preset (preset.key)}
@@ -231,8 +249,13 @@
   }
   .metronome-defaults > .hint-text,
   .metronome-defaults > .presets,
+  .metronome-defaults > .default-toggle,
   .metronome-defaults > .upload-msg {
     grid-column: 1 / -1;
+  }
+  .default-label {
+    font-size: 13px;
+    font-weight: 600;
   }
   .presets {
     display: flex;
