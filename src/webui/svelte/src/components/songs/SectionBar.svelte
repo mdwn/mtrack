@@ -35,6 +35,9 @@
     measureTimesMs: number[];
     /** Time (ms) of a measure/beat position, for beat-precise boundaries. */
     beatToMs?: (measure: number, beat: number) => number;
+    /** Nearest whole-beat position for edge drags, or null when the zoom
+     * is too coarse for beats (edges then snap to measure lines). */
+    snapBoundary?: (ms: number) => { measure: number; beat: number } | null;
     /** Total song duration in ms */
     songDurationMs: number;
     /** Shown centered when there are no sections. */
@@ -52,6 +55,7 @@
     viewportWidth,
     measureTimesMs,
     beatToMs,
+    snapBoundary,
     songDurationMs,
     emptyHint = "",
     onsectionschange,
@@ -212,14 +216,34 @@
 
       const updated = [...sections];
       const section = { ...updated[dragState.index] };
+      // When zoomed in enough for beats to be distinct, edges snap to
+      // whole beats; zoomed out they snap to measure lines. Either way
+      // the dragged edge's config matches exactly what was dropped.
+      const beatPos = snapBoundary?.(ms) ?? null;
       if (dragState.edge === "start") {
-        // Edge drags snap to measure lines; a beat offset set in the
-        // dialog is cleared so the config matches what was dragged.
-        section.start_measure = Math.min(measure, section.end_measure - 1);
-        delete section.start_beat;
+        if (beatPos) {
+          const candidate = posToMs(beatPos.measure, beatPos.beat);
+          if (candidate < posToMs(section.end_measure, section.end_beat)) {
+            section.start_measure = beatPos.measure;
+            if (beatPos.beat !== 1) section.start_beat = beatPos.beat;
+            else delete section.start_beat;
+          }
+        } else {
+          section.start_measure = Math.min(measure, section.end_measure - 1);
+          delete section.start_beat;
+        }
       } else if (dragState.edge === "end") {
-        section.end_measure = Math.max(measure, section.start_measure + 1);
-        delete section.end_beat;
+        if (beatPos) {
+          const candidate = posToMs(beatPos.measure, beatPos.beat);
+          if (candidate > posToMs(section.start_measure, section.start_beat)) {
+            section.end_measure = beatPos.measure;
+            if (beatPos.beat !== 1) section.end_beat = beatPos.beat;
+            else delete section.end_beat;
+          }
+        } else {
+          section.end_measure = Math.max(measure, section.start_measure + 1);
+          delete section.end_beat;
+        }
       } else if (dragState.edge === "move" && dragState.engaged) {
         const span =
           dragState.spanMeasures ?? section.end_measure - section.start_measure;

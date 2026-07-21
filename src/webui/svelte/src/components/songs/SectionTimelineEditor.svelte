@@ -388,6 +388,61 @@
 
   let sectionDialogIndex = $state<number | null>(null);
 
+  /** The nearest (measure, beat) at a timeline position; beats snap to
+   * halves. Used to capture the preview playhead as a section boundary. */
+  function msToMeasureBeat(
+    ms: number,
+  ): { measure: number; beat: number } | null {
+    const grid = song.beat_grid;
+    if (!grid || grid.beats.length < 2) return null;
+    const sec = ms / 1000;
+    // Last beat at or before the position (binary search).
+    let lo = 0;
+    let hi = grid.beats.length - 1;
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2);
+      if (grid.beats[mid] <= sec) lo = mid;
+      else hi = mid - 1;
+    }
+    const gap =
+      grid.beats[lo + 1] !== undefined
+        ? grid.beats[lo + 1] - grid.beats[lo]
+        : 0;
+    const frac = gap > 0 ? (sec - grid.beats[lo]) / gap : 0;
+    const idx = lo + Math.round(frac * 2) / 2;
+    // Measure containing the (possibly fractional) beat index.
+    let mIdx = 0;
+    for (let i = 0; i < grid.measure_starts.length; i++) {
+      if (grid.measure_starts[i] <= idx) mIdx = i;
+      else break;
+    }
+    return { measure: mIdx + 1, beat: idx - grid.measure_starts[mIdx] + 1 };
+  }
+
+  /** Playhead position as a section boundary, when this song is loaded. */
+  let playheadPos = $derived(
+    isCurrentSong ? msToMeasureBeat(playheadMs) : null,
+  );
+
+  /** Beat-snapping for edge drags: only when zoomed in far enough that
+   * individual beats are visually distinct; zoomed out, edges keep
+   * snapping to measure lines (SectionBar falls back on null). */
+  const BEAT_SNAP_MIN_PX = 14;
+  function snapBoundary(ms: number): { measure: number; beat: number } | null {
+    const grid = song.beat_grid;
+    if (!grid || grid.beats.length < 2) return null;
+    const avgBeatGapMs =
+      ((grid.beats[grid.beats.length - 1] - grid.beats[0]) /
+        (grid.beats.length - 1)) *
+      1000;
+    if (avgBeatGapMs * pixelsPerMs < BEAT_SNAP_MIN_PX) return null;
+    const pos = msToMeasureBeat(ms);
+    if (!pos) return null;
+    // Edge drags snap to whole beats; fractions stay a dialog affair.
+    const beat = Math.round(pos.beat);
+    return { measure: pos.measure, beat };
+  }
+
   function patchSection(index: number, patch: Partial<SectionEntry>) {
     const updated = [...sections];
     const merged = { ...updated[index], ...patch };
@@ -784,6 +839,7 @@
         {viewportWidth}
         {measureTimesMs}
         beatToMs={measureBeatToMs}
+        {snapBoundary}
         {songDurationMs}
         emptyHint={song.beat_grid ? $t("sections.emptyHint") : ""}
         onsectionschange={handleSectionsChange}
@@ -880,6 +936,7 @@
     section={sections[sectionDialogIndex]}
     index={sectionDialogIndex}
     maxMeasure={measureTimesMs.length || 9999}
+    {playheadPos}
     onchange={(patch) => patchSection(sectionDialogIndex!, patch)}
     ondelete={() => deleteSection(sectionDialogIndex!)}
     onclose={() => (sectionDialogIndex = null)}

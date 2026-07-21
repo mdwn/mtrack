@@ -34,6 +34,9 @@
     index: number;
     /** The song's measure count, bounding the steppers. */
     maxMeasure?: number;
+    /** The preview playhead as a boundary position (half-beat snapped),
+     * when this song is loaded in the player. Enables "set here". */
+    playheadPos?: { measure: number; beat: number } | null;
     onchange: (patch: Partial<SectionEntry>) => void;
     ondelete: () => void;
     onclose: () => void;
@@ -43,6 +46,7 @@
     section,
     index,
     maxMeasure = 9999,
+    playheadPos = null,
     onchange,
     ondelete,
     onclose,
@@ -59,6 +63,40 @@
   /** Beat 1 is the measure line — store that as "unset". */
   function setBeat(field: "start_beat" | "end_beat", beat: number) {
     onchange({ [field]: beat === 1 ? undefined : beat });
+  }
+
+  /** Position ordering as (measure, beat) tuples. */
+  function isBefore(
+    a: { measure: number; beat: number },
+    b: { measure: number; beat: number },
+  ): boolean {
+    return (
+      a.measure < b.measure || (a.measure === b.measure && a.beat < b.beat)
+    );
+  }
+
+  let startPos = $derived({
+    measure: section.start_measure,
+    beat: section.start_beat ?? 1,
+  });
+  let endPos = $derived({
+    measure: section.end_measure,
+    beat: section.end_beat ?? 1,
+  });
+  /** The capture buttons stay disabled when they would invert the section. */
+  let canCaptureStart = $derived(
+    playheadPos !== null && isBefore(playheadPos, endPos),
+  );
+  let canCaptureEnd = $derived(
+    playheadPos !== null && isBefore(startPos, playheadPos),
+  );
+
+  function captureBoundary(field: "start" | "end") {
+    if (!playheadPos) return;
+    onchange({
+      [`${field}_measure`]: playheadPos.measure,
+      [`${field}_beat`]: playheadPos.beat === 1 ? undefined : playheadPos.beat,
+    });
   }
 
   /** Moving the start slides the whole section, like a body drag. */
@@ -150,6 +188,31 @@
       </div>
     </div>
     <span class="beat-note">{$t("sections.dialog.beatNote")}</span>
+    {#if playheadPos}
+      <div class="stepper-row playhead-capture">
+        <span class="mini-label"
+          >{$t("sections.dialog.playheadAt", {
+            values: {
+              pos: `m${posLabel(playheadPos.measure, playheadPos.beat)}`,
+            },
+          })}</span
+        >
+        <button
+          type="button"
+          class="btn btn-sm"
+          disabled={!canCaptureStart}
+          onclick={() => captureBoundary("start")}
+          >{$t("sections.dialog.setStartHere")}</button
+        >
+        <button
+          type="button"
+          class="btn btn-sm"
+          disabled={!canCaptureEnd}
+          onclick={() => captureBoundary("end")}
+          >{$t("sections.dialog.setEndHere")}</button
+        >
+      </div>
+    {/if}
   </div>
 
   <div class="dialog-section">
@@ -213,6 +276,15 @@
     margin-top: 6px;
     font-size: 11px;
     color: var(--text-dim);
+  }
+
+  .playhead-capture {
+    margin-top: 10px;
+    align-items: center;
+  }
+
+  .playhead-capture .mini-label {
+    font-family: var(--mono);
   }
   .name-input {
     font-size: 16px;
