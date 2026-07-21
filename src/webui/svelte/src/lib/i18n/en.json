@@ -754,6 +754,8 @@
   "sections.dialog.name": "Name",
   "sections.dialog.color": "Color",
   "sections.dialog.colorAuto": "Automatic",
+  "sections.dialog.start": "Start measure",
+  "sections.dialog.length": "Measures",
   "sections.dialog.delete": "Delete",
   "timelineLayers.tempo": "Tempo",
   "timelineLayers.pilot": "Pilot",

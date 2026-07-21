@@ -16,6 +16,7 @@
   import { t } from "svelte-i18n";
   import { SECTION_COLORS, sectionColor } from "../../lib/sectionColors";
   import MarkerDialog from "./MarkerDialog.svelte";
+  import NumberStepper from "../NumberStepper.svelte";
 
   interface SectionEntry {
     name: string;
@@ -28,14 +29,41 @@
     section: SectionEntry;
     /** The section's index, for the automatic palette color. */
     index: number;
+    /** The song's measure count, bounding the steppers. */
+    maxMeasure?: number;
     onchange: (patch: Partial<SectionEntry>) => void;
     ondelete: () => void;
     onclose: () => void;
   }
 
-  let { section, index, onchange, ondelete, onclose }: Props = $props();
+  let {
+    section,
+    index,
+    maxMeasure = 9999,
+    onchange,
+    ondelete,
+    onclose,
+  }: Props = $props();
 
   let autoColor = $derived(sectionColor(undefined, index));
+  let length = $derived(section.end_measure - section.start_measure);
+
+  /** Moving the start slides the whole section, like a body drag. */
+  function moveStart(start: number) {
+    const clamped = Math.max(1, Math.min(start, maxMeasure - length + 1));
+    onchange({
+      start_measure: clamped,
+      end_measure: clamped + length,
+    });
+  }
+
+  function setLength(measures: number) {
+    const clamped = Math.max(
+      1,
+      Math.min(measures, maxMeasure + 1 - section.start_measure),
+    );
+    onchange({ end_measure: section.start_measure + clamped });
+  }
 </script>
 
 <MarkerDialog title={$t("sections.dialog.title")} {onclose}>
@@ -53,6 +81,32 @@
       onchange={(e) =>
         onchange({ name: (e.target as HTMLInputElement).value.trim() })}
     />
+  </div>
+
+  <div class="dialog-section">
+    <span class="section-label">{$t("tempo.marker.position")}</span>
+    <div class="stepper-row">
+      <div class="labeled-stepper">
+        <span class="mini-label">{$t("sections.dialog.start")}</span>
+        <NumberStepper
+          value={section.start_measure}
+          min={1}
+          max={Math.max(1, maxMeasure - length + 1)}
+          ariaLabel={$t("sections.dialog.start")}
+          onchange={moveStart}
+        />
+      </div>
+      <div class="labeled-stepper">
+        <span class="mini-label">{$t("sections.dialog.length")}</span>
+        <NumberStepper
+          value={length}
+          min={1}
+          max={Math.max(1, maxMeasure + 1 - section.start_measure)}
+          ariaLabel={$t("sections.dialog.length")}
+          onchange={setLength}
+        />
+      </div>
+    </div>
   </div>
 
   <div class="dialog-section">
@@ -113,6 +167,23 @@
   .name-input {
     font-size: 16px;
     min-height: 44px;
+  }
+  .stepper-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .labeled-stepper {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .mini-label {
+    font-size: 10px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
   }
   .swatches {
     display: flex;

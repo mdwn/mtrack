@@ -590,6 +590,7 @@
   <SectionEditDialog
     section={sections[sectionDialogIndex]}
     index={sectionDialogIndex}
+    maxMeasure={measureTimesMs.length || 9999}
     onchange={(patch) => patchSection(sectionDialogIndex!, patch)}
     ondelete={() => deleteSection(sectionDialogIndex!)}
     onclose={() => (sectionDialogIndex = null)}
