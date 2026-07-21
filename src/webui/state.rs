@@ -36,6 +36,81 @@ pub type TrackInfo = (String, PathBuf, u16);
 /// Per-track waveform peaks: (track_name, peak_values).
 pub type TrackPeaks = (String, Vec<f32>);
 
+/// Renders waveform peaks for a song's virtual tracks (metronome, pilot)
+/// by running their sources offline at a low sample rate. These are
+/// config-derived and cheap, so they're computed fresh rather than cached.
+pub fn virtual_track_peaks(song: &crate::songs::Song, num_buckets: usize) -> Vec<TrackPeaks> {
+    const RENDER_RATE: u32 = 8000;
+
+    fn collect(mut source: impl SampleSource, duration: Duration, num_buckets: usize) -> Vec<f32> {
+        let total = ((duration.as_secs_f64() * RENDER_RATE as f64).ceil() as usize).max(1);
+        let mut peaks = vec![0.0f32; num_buckets];
+        let mut i = 0usize;
+        while i < total {
+            match source.next_sample() {
+                Ok(Some(sample)) => {
+                    let bucket = (i * num_buckets / total).min(num_buckets - 1);
+                    let value = sample.abs();
+                    if value > peaks[bucket] {
+                        peaks[bucket] = value;
+                    }
+                }
+                _ => break,
+            }
+            i += 1;
+        }
+        peaks
+    }
+
+    let mut out = Vec::new();
+    if let (Some(metronome), Some(grid)) = (song.metronome(), song.beat_grid()) {
+        match crate::audio::metronome::MetronomeSource::new(
+            grid,
+            metronome,
+            None,
+            song.base_path(),
+            RENDER_RATE,
+            Duration::ZERO,
+            song.duration(),
+        ) {
+            Ok(source) => out.push((
+                metronome.track.clone(),
+                collect(source, song.duration(), num_buckets),
+            )),
+            Err(e) => warn!("Metronome waveform render failed: {e}"),
+        }
+    }
+    if let Some(pilot) = song.pilot() {
+        let clips: Vec<crate::audio::pilot::PilotClip> = song
+            .pilot_hints()
+            .iter()
+            .filter_map(|hint| {
+                hint.file
+                    .as_ref()
+                    .map(|path| crate::audio::pilot::PilotClip {
+                        start_secs: hint.start_secs,
+                        path: path.clone(),
+                    })
+            })
+            .collect();
+        if !clips.is_empty() {
+            match crate::audio::pilot::PilotSource::new(
+                &clips,
+                RENDER_RATE,
+                Duration::ZERO,
+                song.duration(),
+            ) {
+                Ok(source) => out.push((
+                    pilot.track.clone(),
+                    collect(source, song.duration(), num_buckets),
+                )),
+                Err(e) => warn!("Pilot waveform render failed: {e}"),
+            }
+        }
+    }
+    out
+}
+
 /// Polls the player state at ~5Hz and broadcasts playback status messages.
 #[tracing::instrument(skip_all, name = "playback_poller")]
 pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>) {
@@ -463,8 +538,16 @@ pub async fn waveform_poller(
             }
         };
 
+        // Virtual tracks render fresh — they follow the current config.
+        let song_for_virtual = current_song.clone();
+        let virtual_peaks =
+            tokio::task::spawn_blocking(move || virtual_track_peaks(&song_for_virtual, 500))
+                .await
+                .unwrap_or_default();
+
         let tracks_json: Vec<serde_json::Value> = track_peaks
             .into_iter()
+            .chain(virtual_peaks)
             .map(|(name, peaks)| {
                 json!({
                     "name": name,
@@ -827,6 +910,40 @@ mod test {
         assert_eq!(parsed["type"], "metadata");
         assert!(parsed["fixtures"].is_object());
         assert!(parsed["fixtures"].as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn virtual_track_peaks_renders_metronome() -> Result<(), Box<dyn std::error::Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("click_song");
+        std::fs::create_dir(&song_dir)?;
+        // Two seconds of silence at 44.1kHz.
+        crate::testutil::write_wav(song_dir.join("track.wav"), vec![vec![0_i32; 88200]], 44100)?;
+        std::fs::write(
+            song_dir.join("song.yaml"),
+            r#"
+name: Click Song
+tracks:
+  - name: track
+    file: track.wav
+tempo:
+  bpm: 120
+  time_signature: 4/4
+metronome: {}
+"#,
+        )?;
+        let song_config = crate::config::Song::deserialize(song_dir.join("song.yaml").as_path())?;
+        let song = crate::songs::Song::new(&song_dir, &song_config)?;
+
+        let peaks = virtual_track_peaks(&song, 100);
+        assert_eq!(peaks.len(), 1);
+        assert_eq!(peaks[0].0, "metronome");
+        assert_eq!(peaks[0].1.len(), 100);
+        // 2s song, 100 buckets = 20ms each; beats at 0, 0.5, 1.0, 1.5s with
+        // ~50ms clicks: the first bucket has signal, 0.3s (bucket 15) is silent.
+        assert!(peaks[0].1[0] > 0.1);
+        assert!(peaks[0].1[15] < 0.01);
+        Ok(())
     }
 
     #[test]
