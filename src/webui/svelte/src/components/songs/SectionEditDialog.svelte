@@ -22,6 +22,9 @@
     name: string;
     start_measure: number;
     end_measure: number;
+    /** 1-based beat within the measure, fractional allowed; absent = 1. */
+    start_beat?: number;
+    end_beat?: number;
     color?: string;
   }
 
@@ -48,6 +51,16 @@
   let autoColor = $derived(sectionColor(undefined, index));
   let length = $derived(section.end_measure - section.start_measure);
 
+  /** "13" for a measure-line boundary, "13.4" with a beat offset. */
+  function posLabel(measure: number, beat?: number): string {
+    return beat && beat !== 1 ? `${measure}.${beat}` : `${measure}`;
+  }
+
+  /** Beat 1 is the measure line — store that as "unset". */
+  function setBeat(field: "start_beat" | "end_beat", beat: number) {
+    onchange({ [field]: beat === 1 ? undefined : beat });
+  }
+
   /** Moving the start slides the whole section, like a body drag. */
   function moveStart(start: number) {
     const clamped = Math.max(1, Math.min(start, maxMeasure - length + 1));
@@ -71,7 +84,10 @@
     <span class="section-label">
       {$t("sections.dialog.name")}
       <span class="range-note"
-        >m{section.start_measure}–{section.end_measure}</span
+        >m{posLabel(section.start_measure, section.start_beat)}–{posLabel(
+          section.end_measure,
+          section.end_beat,
+        )}</span
       >
     </span>
     <input
@@ -107,6 +123,33 @@
         />
       </div>
     </div>
+    <div class="stepper-row">
+      <div class="labeled-stepper">
+        <span class="mini-label">{$t("sections.dialog.startBeat")}</span>
+        <NumberStepper
+          value={section.start_beat ?? 1}
+          min={1}
+          max={32}
+          step={0.5}
+          decimals={1}
+          ariaLabel={$t("sections.dialog.startBeat")}
+          onchange={(v) => setBeat("start_beat", v)}
+        />
+      </div>
+      <div class="labeled-stepper">
+        <span class="mini-label">{$t("sections.dialog.endBeat")}</span>
+        <NumberStepper
+          value={section.end_beat ?? 1}
+          min={1}
+          max={32}
+          step={0.5}
+          decimals={1}
+          ariaLabel={$t("sections.dialog.endBeat")}
+          onchange={(v) => setBeat("end_beat", v)}
+        />
+      </div>
+    </div>
+    <span class="beat-note">{$t("sections.dialog.beatNote")}</span>
   </div>
 
   <div class="dialog-section">
@@ -162,6 +205,13 @@
     font-family: var(--mono);
     text-transform: none;
     letter-spacing: 0;
+    color: var(--text-dim);
+  }
+
+  .beat-note {
+    display: block;
+    margin-top: 6px;
+    font-size: 11px;
     color: var(--text-dim);
   }
   .name-input {

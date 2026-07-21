@@ -145,6 +145,8 @@
       name: string;
       start_measure: number;
       end_measure: number;
+      start_beat?: number;
+      end_beat?: number;
       color?: string;
     }[]
   >([]);
@@ -282,12 +284,16 @@
             name: string;
             start_measure: number;
             end_measure: number;
+            start_beat?: number;
+            end_beat?: number;
             color?: string;
           } = {
             name: (s.name as string) ?? "",
             start_measure: (s.start_measure as number) ?? 1,
             end_measure: (s.end_measure as number) ?? 2,
           };
+          if (typeof s.start_beat === "number") entry.start_beat = s.start_beat;
+          if (typeof s.end_beat === "number") entry.end_beat = s.end_beat;
           if (typeof s.color === "string") entry.color = s.color;
           return entry;
         });

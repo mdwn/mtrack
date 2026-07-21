@@ -77,6 +77,26 @@ impl BeatGrid {
         self.measure_starts.len().saturating_sub(1)
     }
 
+    /// Returns the absolute time of a (possibly fractional) beat within a
+    /// measure: measure 0-indexed, beat 1-based (beat 1.0 is the measure
+    /// boundary, 2.5 is halfway between the measure's second and third
+    /// beats). Fractional positions interpolate linearly between grid
+    /// beats. Returns `None` when the position falls outside the grid.
+    pub fn beat_time(&self, measure: usize, beat: f64) -> Option<f64> {
+        if !beat.is_finite() || beat < 1.0 {
+            return None;
+        }
+        let offset = beat - 1.0;
+        let base = self.measure_starts.get(measure)? + offset.floor() as usize;
+        let t0 = *self.beats.get(base)?;
+        let frac = offset.fract();
+        if frac == 0.0 {
+            return Some(t0);
+        }
+        let t1 = *self.beats.get(base + 1)?;
+        Some(t0 + (t1 - t0) * frac)
+    }
+
     /// Returns the time range (start, end) of the given measure (0-indexed).
     /// Returns `None` if the measure index is out of range.
     pub fn measure_time_range(&self, measure: usize) -> Option<(f64, f64)> {
@@ -1045,6 +1065,28 @@ mod tests {
 
         // Out of range.
         assert!(grid.measure_time_range(2).is_none());
+    }
+
+    #[test]
+    fn beat_grid_beat_time() {
+        let grid = BeatGrid {
+            beats: vec![0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5],
+            measure_starts: vec![0, 4],
+        };
+
+        // Whole beats land on grid entries.
+        assert_eq!(grid.beat_time(0, 1.0), Some(0.0));
+        assert_eq!(grid.beat_time(0, 3.0), Some(1.0));
+        assert_eq!(grid.beat_time(1, 1.0), Some(2.0));
+        // Fractional beats interpolate linearly.
+        assert_eq!(grid.beat_time(0, 4.5), Some(1.75));
+        // The final grid beat is addressable; past it is not.
+        assert_eq!(grid.beat_time(1, 4.0), Some(3.5));
+        assert!(grid.beat_time(1, 4.5).is_none());
+        // Invalid inputs.
+        assert!(grid.beat_time(0, 0.5).is_none());
+        assert!(grid.beat_time(2, 1.0).is_none());
+        assert!(grid.beat_time(0, f64::NAN).is_none());
     }
 
     #[test]

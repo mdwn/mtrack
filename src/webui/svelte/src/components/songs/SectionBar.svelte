@@ -20,6 +20,9 @@
     name: string;
     start_measure: number;
     end_measure: number;
+    /** 1-based beat within the measure, fractional allowed; absent = 1. */
+    start_beat?: number;
+    end_beat?: number;
     color?: string;
   }
 
@@ -30,6 +33,8 @@
     viewportWidth: number;
     /** Beat grid measure start times in ms (0-indexed) */
     measureTimesMs: number[];
+    /** Time (ms) of a measure/beat position, for beat-precise boundaries. */
+    beatToMs?: (measure: number, beat: number) => number;
     /** Total song duration in ms */
     songDurationMs: number;
     /** Shown centered when there are no sections. */
@@ -46,6 +51,7 @@
     // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for API consistency
     viewportWidth,
     measureTimesMs,
+    beatToMs,
     songDurationMs,
     emptyHint = "",
     onsectionschange,
@@ -94,11 +100,18 @@
     return closest;
   }
 
+  // A boundary's time: the measure line, or its beat offset within the
+  // measure when one is set (beat 1 = the line itself).
+  function posToMs(measure: number, beat?: number): number {
+    if (beat && beat !== 1 && beatToMs) return beatToMs(measure, beat);
+    return measureToMs(measure);
+  }
+
   // Section block positions derived from sections + pixelsPerMs.
   let blocks = $derived(
     sections.map((s, i) => {
-      const startMs = measureToMs(s.start_measure);
-      const endMs = measureToMs(s.end_measure);
+      const startMs = posToMs(s.start_measure, s.start_beat);
+      const endMs = posToMs(s.end_measure, s.end_beat);
       const left = startMs * pixelsPerMs - scrollLeft;
       const width = (endMs - startMs) * pixelsPerMs;
       const color = sectionColor(s.color, i);
@@ -200,9 +213,13 @@
       const updated = [...sections];
       const section = { ...updated[dragState.index] };
       if (dragState.edge === "start") {
+        // Edge drags snap to measure lines; a beat offset set in the
+        // dialog is cleared so the config matches what was dragged.
         section.start_measure = Math.min(measure, section.end_measure - 1);
+        delete section.start_beat;
       } else if (dragState.edge === "end") {
         section.end_measure = Math.max(measure, section.start_measure + 1);
+        delete section.end_beat;
       } else if (dragState.edge === "move" && dragState.engaged) {
         const span =
           dragState.spanMeasures ?? section.end_measure - section.start_measure;

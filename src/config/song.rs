@@ -87,6 +87,14 @@ pub struct Section {
     pub start_measure: usize,
     /// End measure (1-indexed, exclusive).
     pub end_measure: usize,
+    /// Start beat within the start measure (1-based, fractional allowed;
+    /// omitted = 1, the measure boundary).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_beat: Option<f64>,
+    /// End beat within the end measure (1-based, fractional allowed;
+    /// omitted = 1, keeping the end bound exclusive at the measure line).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_beat: Option<f64>,
     /// Optional display color for the web UI timeline (hex "#rrggbb").
     /// Without one the UI rotates through its palette.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -210,10 +218,29 @@ impl Song {
                     ));
                 }
             }
-            if section.end_measure <= section.start_measure {
+            for (field, beat) in [
+                ("start_beat", section.start_beat),
+                ("end_beat", section.end_beat),
+            ] {
+                if let Some(beat) = beat {
+                    if !beat.is_finite() || beat < 1.0 {
+                        errors.push(format!(
+                            "{}: {} must be 1 or greater (beats are 1-indexed within the measure), got {}",
+                            label, field, beat
+                        ));
+                    }
+                }
+            }
+            // The end bound must come after the start; equal measures are
+            // fine when the beats are ordered (a section within one measure).
+            let start_beat = section.start_beat.unwrap_or(1.0);
+            let end_beat = section.end_beat.unwrap_or(1.0);
+            if section.end_measure < section.start_measure
+                || (section.end_measure == section.start_measure && end_beat <= start_beat)
+            {
                 errors.push(format!(
-                    "{}: end_measure must be greater than start_measure",
-                    label
+                    "{}: the end position (measure {} beat {}) must come after the start (measure {} beat {})",
+                    label, section.end_measure, end_beat, section.start_measure, start_beat
                 ));
             }
         }
@@ -843,6 +870,8 @@ mod tests {
             name: "bad".to_string(),
             start_measure: 0,
             end_measure: 4,
+            start_beat: None,
+            end_beat: None,
             color: None,
         }];
         let errors = song.validate().unwrap_err();
@@ -856,12 +885,14 @@ mod tests {
             name: "bad".to_string(),
             start_measure: 5,
             end_measure: 5,
+            start_beat: None,
+            end_beat: None,
             color: None,
         }];
         let errors = song.validate().unwrap_err();
         assert!(errors
             .iter()
-            .any(|e| e.contains("end_measure must be greater")));
+            .any(|e| e.contains("must come after the start")));
     }
 
     #[test]
@@ -871,12 +902,62 @@ mod tests {
             name: "bad".to_string(),
             start_measure: 8,
             end_measure: 4,
+            start_beat: None,
+            end_beat: None,
             color: None,
         }];
         let errors = song.validate().unwrap_err();
         assert!(errors
             .iter()
-            .any(|e| e.contains("end_measure must be greater")));
+            .any(|e| e.contains("must come after the start")));
+    }
+
+    #[test]
+    fn validate_accepts_section_within_one_measure_via_beats() {
+        let mut song = minimal_song();
+        song.sections = vec![Section {
+            name: "pickup".to_string(),
+            start_measure: 5,
+            end_measure: 5,
+            start_beat: Some(2.0),
+            end_beat: Some(4.5),
+            color: None,
+        }];
+        assert!(song.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_section_same_position_beats() {
+        let mut song = minimal_song();
+        song.sections = vec![Section {
+            name: "bad".to_string(),
+            start_measure: 5,
+            end_measure: 5,
+            start_beat: Some(3.0),
+            end_beat: Some(3.0),
+            color: None,
+        }];
+        let errors = song.validate().unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("must come after the start")));
+    }
+
+    #[test]
+    fn validate_rejects_section_beat_below_one() {
+        let mut song = minimal_song();
+        song.sections = vec![Section {
+            name: "bad".to_string(),
+            start_measure: 1,
+            end_measure: 4,
+            start_beat: Some(0.5),
+            end_beat: None,
+            color: None,
+        }];
+        let errors = song.validate().unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("start_beat must be 1 or greater")));
     }
 
     #[test]
@@ -886,6 +967,8 @@ mod tests {
             name: "".to_string(),
             start_measure: 1,
             end_measure: 4,
+            start_beat: None,
+            end_beat: None,
             color: None,
         }];
         let errors = song.validate().unwrap_err();
@@ -900,12 +983,16 @@ mod tests {
                 name: "verse".to_string(),
                 start_measure: 1,
                 end_measure: 8,
+                start_beat: None,
+                end_beat: None,
                 color: None,
             },
             Section {
                 name: "chorus".to_string(),
                 start_measure: 9,
                 end_measure: 16,
+                start_beat: None,
+                end_beat: None,
                 color: None,
             },
         ];

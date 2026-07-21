@@ -36,8 +36,15 @@ export interface SongSummary {
   has_tempo_map: boolean;
   /** Whether this song loops when it finishes playing */
   loop_playback: boolean;
-  /** Named sections defined by measure boundaries */
-  sections: { name: string; start_measure: number; end_measure: number }[];
+  /** Named sections defined by measure boundaries, optionally offset to a
+   * (possibly fractional) beat within the boundary measures. */
+  sections: {
+    name: string;
+    start_measure: number;
+    end_measure: number;
+    start_beat?: number;
+    end_beat?: number;
+  }[];
 }
 
 export interface WaveformTrack {

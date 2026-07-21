@@ -41,6 +41,9 @@
     name: string;
     start_measure: number;
     end_measure: number;
+    /** 1-based beat within the measure, fractional allowed; absent = 1. */
+    start_beat?: number;
+    end_beat?: number;
     color?: string;
   }
 
@@ -389,8 +392,11 @@
     const updated = [...sections];
     const merged = { ...updated[index], ...patch };
     // An empty name keeps the previous one; "auto" color drops the key.
+    // Beat 1 is the measure boundary — drop the key to keep configs clean.
     if (!merged.name) merged.name = updated[index].name;
     if (!merged.color) delete merged.color;
+    if (!merged.start_beat || merged.start_beat === 1) delete merged.start_beat;
+    if (!merged.end_beat || merged.end_beat === 1) delete merged.end_beat;
     updated[index] = merged;
     handleSectionsChange(updated);
   }
@@ -416,8 +422,16 @@
     if (!grid) return 0;
     const startIdx = grid.measure_starts[measure - 1];
     if (startIdx === undefined) return songDurationMs;
-    const time = grid.beats[startIdx + (beat - 1)];
-    return time === undefined ? songDurationMs : time * 1000;
+    const offset = beat - 1;
+    const base = startIdx + Math.floor(offset);
+    const t0 = grid.beats[base];
+    if (t0 === undefined) return songDurationMs;
+    // Fractional beats interpolate between grid beats, matching the
+    // Rust-side BeatGrid::beat_time.
+    const frac = offset - Math.floor(offset);
+    if (frac === 0) return t0 * 1000;
+    const t1 = grid.beats[base + 1];
+    return (t1 === undefined ? t0 : t0 + (t1 - t0) * frac) * 1000;
   }
 
   /** Signature in effect at a position (base + prior changes). */
@@ -769,6 +783,7 @@
         {scrollLeft}
         {viewportWidth}
         {measureTimesMs}
+        beatToMs={measureBeatToMs}
         {songDurationMs}
         emptyHint={song.beat_grid ? $t("sections.emptyHint") : ""}
         onsectionschange={handleSectionsChange}
