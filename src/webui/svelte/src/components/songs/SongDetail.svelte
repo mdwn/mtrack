@@ -27,6 +27,7 @@
     type SongFile,
     type SongFailure,
     type SongSummary,
+    type TempoConfig,
     type WaveformTrack,
   } from "../../lib/api/songs";
   import { showConfirm } from "../../lib/dialog.svelte";
@@ -38,6 +39,7 @@
   import TrackEditor from "./TrackEditor.svelte";
   import SongLightingEditor from "./SongLightingEditor.svelte";
   import SectionTimelineEditor from "./SectionTimelineEditor.svelte";
+  import SongTempoEditor from "./SongTempoEditor.svelte";
   import SamplesSection from "../config/SamplesSection.svelte";
   import type { SampleBrowseTarget } from "../config/SamplesSection.svelte";
   import MidiEventEditor from "../config/MidiEventEditor.svelte";
@@ -138,6 +140,9 @@
   >([]);
   let sectionsDirty = $state(false);
 
+  // Tempo map state (the song.yaml `tempo:` block)
+  let tempoConfig = $state<TempoConfig | null>(null);
+
   // File browser state
   type BrowseTarget =
     | { kind: "track"; index: number }
@@ -231,6 +236,9 @@
         const na = parsed.notification_audio;
         notificationAudio =
           na && typeof na === "object" ? (na as Record<string, unknown>) : {};
+        const tempo = parsed.tempo;
+        tempoConfig =
+          tempo && typeof tempo === "object" ? (tempo as TempoConfig) : null;
       }
     } catch {
       parsedConfig = null;
@@ -240,6 +248,7 @@
       sections = [];
       songSamples = {};
       notificationAudio = {};
+      tempoConfig = null;
     }
   }
 
@@ -270,6 +279,11 @@
       updated.sections = sections;
     } else {
       delete updated.sections;
+    }
+    if (tempoConfig) {
+      updated.tempo = tempoConfig;
+    } else {
+      delete updated.tempo;
     }
     if (Object.keys(songSamples).length > 0) {
       updated.samples = songSamples;
@@ -412,6 +426,11 @@
   });
 
   function onSongSamplesChange() {
+    editedYaml = buildYaml();
+  }
+
+  function onTempoChange(tempo: TempoConfig | null) {
+    tempoConfig = tempo;
     editedYaml = buildYaml();
   }
 
@@ -1033,6 +1052,15 @@
         />
       {:else if activeTab === "sections"}
         {#if song}
+          <div class="tempo-editor-wrap">
+            <SongTempoEditor
+              tempo={tempoConfig}
+              {songName}
+              hasBeatGrid={!!song.beat_grid && !tempoConfig}
+              hasMidi={song.has_midi}
+              onchange={onTempoChange}
+            />
+          </div>
           <SectionTimelineEditor
             {song}
             {waveformTracks}
@@ -1129,6 +1157,9 @@
     max-width: 700px;
     max-height: 90vh;
     overflow: hidden;
+  }
+  .tempo-editor-wrap {
+    margin-bottom: 12px;
   }
   .browse-row {
     margin-top: 8px;

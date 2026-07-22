@@ -268,6 +268,10 @@
           {#if $playbackStore.tracks.length > 0}
             {$playbackStore.tracks.length} tracks
           {/if}
+          {#if $playbackStore.tempo}
+            · {Math.round($playbackStore.tempo.bpm)} BPM {$playbackStore.tempo
+              .time_signature[0]}/{$playbackStore.tempo.time_signature[1]}
+          {/if}
           {#if currentBeatInfo}
             · beat {currentBeatInfo.beat} / measure {currentBeatInfo.measure}
           {/if}

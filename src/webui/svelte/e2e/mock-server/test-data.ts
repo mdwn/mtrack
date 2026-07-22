@@ -28,6 +28,7 @@ export const SONGS = {
       lighting_files: ["show.light"],
       midi_dmx_files: [],
       beat_grid: null,
+      has_tempo_map: false,
       loop_playback: false,
       sections: [],
     },
@@ -58,6 +59,7 @@ export const SONGS = {
           0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60,
         ],
       },
+      has_tempo_map: false,
       loop_playback: true,
       sections: [
         { name: "verse", start_measure: 1, end_measure: 4 },

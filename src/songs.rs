@@ -132,7 +132,10 @@ pub struct Song {
     tracks: Vec<Track>,
     /// Per-song samples configuration.
     samples_config: config::SamplesConfig,
-    /// Tempo map derived from click track analysis.
+    /// The explicit tempo map from the song config, when present.
+    tempo_map: Option<crate::tempo::TempoMap>,
+    /// The song's beat grid: generated from the explicit tempo map when one
+    /// is configured, otherwise derived from click track analysis.
     beat_grid: Option<crate::audio::click_analysis::BeatGrid>,
     /// Whether this song should loop when it finishes playing.
     loop_playback: bool,
@@ -201,8 +204,54 @@ impl Song {
             warn!("no sample format found");
         }
 
-        // Analyze click track for BPM/time signature if present.
-        let beat_grid = tracks
+        // An explicit tempo map is the canonical beat grid source; click
+        // track analysis is the fallback for songs without one.
+        let tempo_map = match config.tempo() {
+            Some(tempo_config) => Some(
+                tempo_config
+                    .to_tempo_map()
+                    .map_err(|e| format!("song {}: invalid tempo config: {}", config.name(), e))?,
+            ),
+            None => None,
+        };
+        let beat_grid = if let Some(tempo_map) = &tempo_map {
+            Some(crate::audio::click_analysis::BeatGrid::from_tempo_map(
+                tempo_map,
+                max_duration,
+            ))
+        } else {
+            Self::analyze_click_track(start_path, &tracks)
+        };
+
+        Ok(Song {
+            name: config.name().to_string(),
+            base_path: start_path.to_path_buf(),
+            config_path: None,
+            midi_event: config.midi_event()?,
+            midi_playback,
+            light_shows,
+            dsl_lighting_shows,
+            num_channels,
+            sample_rate,
+            sample_format: sample_format.unwrap_or(SampleFormat::Int),
+            duration: max_duration,
+            tracks,
+            samples_config: config.samples_config(),
+            tempo_map,
+            beat_grid,
+            loop_playback: config.loop_playback(),
+            sections: config.sections().to_vec(),
+            notification_audio: config.notification_audio().cloned(),
+        })
+    }
+
+    /// Analyzes the track named "click" (if any) into a beat grid, caching
+    /// the result alongside the song.
+    fn analyze_click_track(
+        start_path: &Path,
+        tracks: &[Track],
+    ) -> Option<crate::audio::click_analysis::BeatGrid> {
+        tracks
             .iter()
             .find(|t| t.name == "click")
             .and_then(|click_track| {
@@ -231,27 +280,7 @@ impl Song {
                 }
 
                 Some(map)
-            });
-
-        Ok(Song {
-            name: config.name().to_string(),
-            base_path: start_path.to_path_buf(),
-            config_path: None,
-            midi_event: config.midi_event()?,
-            midi_playback,
-            light_shows,
-            dsl_lighting_shows,
-            num_channels,
-            sample_rate,
-            sample_format: sample_format.unwrap_or(SampleFormat::Int),
-            duration: max_duration,
-            tracks,
-            samples_config: config.samples_config(),
-            beat_grid,
-            loop_playback: config.loop_playback(),
-            sections: config.sections().to_vec(),
-            notification_audio: config.notification_audio().cloned(),
-        })
+            })
     }
 
     /// Create a song from a directory without a configuration file
@@ -456,9 +485,15 @@ impl Song {
         &self.tracks
     }
 
-    /// Gets the beat grid derived from click track analysis, if available.
+    /// Gets the beat grid (from the explicit tempo map when configured,
+    /// otherwise from click track analysis), if available.
     pub fn beat_grid(&self) -> Option<&crate::audio::click_analysis::BeatGrid> {
         self.beat_grid.as_ref()
+    }
+
+    /// Gets the explicit tempo map from the song config, if configured.
+    pub fn tempo_map(&self) -> Option<&crate::tempo::TempoMap> {
+        self.tempo_map.as_ref()
     }
 
     /// Returns whether this song should loop when it finishes playing.
@@ -697,6 +732,7 @@ impl Default for Song {
             duration: Default::default(),
             tracks: Default::default(),
             samples_config: config::SamplesConfig::default(),
+            tempo_map: None,
             beat_grid: None,
             loop_playback: false,
             sections: Vec::new(),
@@ -2370,6 +2406,99 @@ mod test {
         let config = song.get_config();
         assert_eq!(config.name(), "Song 1");
         assert_eq!(config.tracks().len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn tempo_config_takes_precedence_over_click_analysis() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("tempo_song");
+        fs::create_dir(&song_dir)?;
+        // A "click" track that analysis would find nothing useful in
+        // (silence), plus an explicit tempo map that must win regardless.
+        crate::testutil::write_wav(
+            song_dir.join("click.wav"),
+            vec![vec![0_i32; 44100 * 4]],
+            44100,
+        )?;
+        fs::write(
+            song_dir.join("song.yaml"),
+            r#"
+name: Tempo Song
+tracks:
+  - name: click
+    file: click.wav
+tempo:
+  bpm: 120
+  time_signature: 4/4
+"#,
+        )?;
+        let song_config = crate::config::Song::deserialize(song_dir.join("song.yaml").as_path())?;
+        let song = super::Song::new(&song_dir, &song_config)?;
+        assert!(song.tempo_map().is_some());
+        let grid = song.beat_grid().expect("beat grid");
+        // 4 seconds at 120 BPM in 4/4: 8 beats, measures start at beats 0 and 4.
+        assert_eq!(grid.beats.len(), 8);
+        assert_eq!(grid.measure_starts, vec![0, 4]);
+        assert!((grid.beats[1] - 0.5).abs() < 1e-9);
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_tempo_config_fails_song_load() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("bad_tempo_song");
+        fs::create_dir(&song_dir)?;
+        crate::testutil::write_wav(
+            song_dir.join("track.wav"),
+            vec![vec![1_i32, 2, 3, 4, 5]],
+            44100,
+        )?;
+        fs::write(
+            song_dir.join("song.yaml"),
+            "name: Bad Tempo\ntracks:\n  - name: track\n    file: track.wav\ntempo:\n  bpm: -5\n",
+        )?;
+        let song_config = crate::config::Song::deserialize(song_dir.join("song.yaml").as_path())?;
+        let result = super::Song::new(&song_dir, &song_config);
+        assert!(result.is_err());
+        assert!(result
+            .err()
+            .map(|e| e.to_string().contains("invalid tempo config"))
+            .unwrap_or(false));
+        Ok(())
+    }
+
+    #[test]
+    fn sections_resolve_against_tempo_map_grid() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("section_tempo_song");
+        fs::create_dir(&song_dir)?;
+        crate::testutil::write_wav(
+            song_dir.join("track.wav"),
+            vec![vec![0_i32; 44100 * 8]],
+            44100,
+        )?;
+        fs::write(
+            song_dir.join("song.yaml"),
+            r#"
+name: Sectioned
+tracks:
+  - name: track
+    file: track.wav
+tempo:
+  bpm: 120
+sections:
+  - name: verse
+    start_measure: 2
+    end_measure: 4
+"#,
+        )?;
+        let song_config = crate::config::Song::deserialize(song_dir.join("song.yaml").as_path())?;
+        let song = super::Song::new(&song_dir, &song_config)?;
+        // Measures are 2s long at 120 BPM 4/4; verse spans measures 2..4.
+        let (start, end) = song.resolve_section("verse").expect("resolves");
+        assert!((start.as_secs_f64() - 2.0).abs() < 1e-9);
+        assert!((end.as_secs_f64() - 6.0).abs() < 1e-9);
         Ok(())
     }
 

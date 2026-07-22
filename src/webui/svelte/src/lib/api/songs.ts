@@ -30,8 +30,10 @@ export interface SongSummary {
   lighting_files: string[];
   /** MIDI DMX file paths relative to the songs root */
   midi_dmx_files: string[];
-  /** Beat grid derived from click track analysis */
+  /** Beat grid, from the explicit tempo map or click track analysis */
   beat_grid: { beats: number[]; measure_starts: number[] } | null;
+  /** Whether the song has an explicit tempo map configured */
+  has_tempo_map: boolean;
   /** Whether this song loops when it finishes playing */
   loop_playback: boolean;
   /** Named sections defined by measure boundaries */
@@ -117,6 +119,22 @@ export async function importFileToSong(
 
 export async function deleteSong(name: string): Promise<Response> {
   return fetch(`/api/songs/${encodeURIComponent(name)}`, { method: "DELETE" });
+}
+
+/** The song.yaml `tempo:` block — the song's explicit tempo map. */
+export interface TempoChangeConfig {
+  measure: number;
+  beat?: number;
+  bpm?: number;
+  time_signature?: string;
+  transition?: { beats: number } | { measures: number };
+}
+
+export interface TempoConfig {
+  bpm: number;
+  time_signature?: string;
+  start?: number;
+  changes?: TempoChangeConfig[];
 }
 
 export interface GuessedTempo {

@@ -90,10 +90,16 @@ impl Engine {
             if !all_shows.is_empty() {
                 let timeline = crate::lighting::timeline::LightingTimeline::new(all_shows);
                 // Set or clear the tempo map — a song without a tempo block must not
-                // inherit one from the previous song.
+                // inherit one from the previous song. Shows without their own tempo
+                // block fall back to the song's tempo map (song.yaml `tempo:`).
                 {
                     let mut effect_engine = dmx_engine.effect_engine.lock();
-                    effect_engine.set_tempo_map(timeline.tempo_map().cloned());
+                    effect_engine.set_tempo_map(
+                        timeline
+                            .tempo_map()
+                            .cloned()
+                            .or_else(|| song.tempo_map().cloned()),
+                    );
                 }
                 {
                     let mut current_timeline = dmx_engine.current_song_timeline.lock();
@@ -136,6 +142,7 @@ impl Engine {
                         dmx_engine.current_song_time.clone(),
                         dmx_engine.lighting_system.clone(),
                         dmx_engine.lighting_config.clone(),
+                        song.tempo_map().cloned(),
                         tx.clone(),
                     ) {
                         Ok(handle) => {

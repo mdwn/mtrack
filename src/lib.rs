@@ -32,6 +32,7 @@ pub mod section_loop;
 pub mod song_cache;
 pub mod songs;
 pub mod state;
+pub mod tempo;
 #[cfg(test)]
 pub mod testutil;
 pub(crate) mod thread_priority;
