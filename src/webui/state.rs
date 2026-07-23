@@ -76,20 +76,22 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
                     .get_track_mutes()
                     .map(|mutes| mutes.into_iter().collect())
                     .unwrap_or_default();
+                // Output tracks include virtual tracks (e.g. the metronome)
+                // so they show up in the gains mixer like any other track.
                 let tracks: Vec<serde_json::Value> = current_song
-                    .tracks()
+                    .output_track_names()
                     .iter()
-                    .map(|t| {
+                    .map(|name| {
                         let output_channels = mappings
                             .as_ref()
-                            .and_then(|m| m.get(t.name()))
+                            .and_then(|m| m.get(name))
                             .cloned()
                             .unwrap_or_default();
                         json!({
-                            "name": t.name(),
+                            "name": name,
                             "output_channels": output_channels,
-                            "gain_db": track_gains.get(t.name()).copied().unwrap_or(0.0),
-                            "muted": track_mutes.get(t.name()).copied().unwrap_or(false),
+                            "gain_db": track_gains.get(name).copied().unwrap_or(0.0),
+                            "muted": track_mutes.get(name).copied().unwrap_or(false),
                         })
                     })
                     .collect();
@@ -208,6 +210,7 @@ pub async fn playback_poller(player: Arc<Player>, tx: broadcast::Sender<String>)
             "active_section": active_section,
             "looping": looping,
             "reactive_loop_state": reactive_loop_state,
+            "pending_start_ms": player.pending_start().map(|d| d.as_millis() as u64),
             "tempo": tempo,
         });
 

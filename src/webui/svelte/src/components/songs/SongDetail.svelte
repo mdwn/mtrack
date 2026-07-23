@@ -24,6 +24,7 @@
     updateSong,
     uploadTrack,
     uploadTracks,
+    type MetronomeConfig,
     type SongFile,
     type SongFailure,
     type SongSummary,
@@ -40,6 +41,7 @@
   import SongLightingEditor from "./SongLightingEditor.svelte";
   import SectionTimelineEditor from "./SectionTimelineEditor.svelte";
   import SongTempoEditor from "./SongTempoEditor.svelte";
+  import SongMetronomeEditor from "./SongMetronomeEditor.svelte";
   import SamplesSection from "../config/SamplesSection.svelte";
   import type { SampleBrowseTarget } from "../config/SamplesSection.svelte";
   import MidiEventEditor from "../config/MidiEventEditor.svelte";
@@ -143,6 +145,9 @@
   // Tempo map state (the song.yaml `tempo:` block)
   let tempoConfig = $state<TempoConfig | null>(null);
 
+  // Metronome state (the song.yaml `metronome:` block)
+  let metronomeConfig = $state<MetronomeConfig | null>(null);
+
   // File browser state
   type BrowseTarget =
     | { kind: "track"; index: number }
@@ -239,6 +244,11 @@
         const tempo = parsed.tempo;
         tempoConfig =
           tempo && typeof tempo === "object" ? (tempo as TempoConfig) : null;
+        const metronome = parsed.metronome;
+        metronomeConfig =
+          metronome && typeof metronome === "object"
+            ? (metronome as MetronomeConfig)
+            : null;
       }
     } catch {
       parsedConfig = null;
@@ -249,6 +259,7 @@
       songSamples = {};
       notificationAudio = {};
       tempoConfig = null;
+      metronomeConfig = null;
     }
   }
 
@@ -284,6 +295,11 @@
       updated.tempo = tempoConfig;
     } else {
       delete updated.tempo;
+    }
+    if (metronomeConfig) {
+      updated.metronome = metronomeConfig;
+    } else {
+      delete updated.metronome;
     }
     if (Object.keys(songSamples).length > 0) {
       updated.samples = songSamples;
@@ -431,6 +447,11 @@
 
   function onTempoChange(tempo: TempoConfig | null) {
     tempoConfig = tempo;
+    editedYaml = buildYaml();
+  }
+
+  function onMetronomeChange(metronome: MetronomeConfig | null) {
+    metronomeConfig = metronome;
     editedYaml = buildYaml();
   }
 
@@ -1059,6 +1080,13 @@
               hasBeatGrid={!!song.beat_grid && !tempoConfig}
               hasMidi={song.has_midi}
               onchange={onTempoChange}
+            />
+          </div>
+          <div class="tempo-editor-wrap">
+            <SongMetronomeEditor
+              metronome={metronomeConfig}
+              hasBeatGrid={!!song.beat_grid || !!tempoConfig}
+              onchange={onMetronomeChange}
             />
           </div>
           <SectionTimelineEditor

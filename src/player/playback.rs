@@ -31,8 +31,12 @@ impl Player {
     /// Plays the song at the current position. Returns the song if playback started successfully.
     /// Returns None if a song is already playing.
     /// Returns an error if lighting show validation fails.
+    ///
+    /// A pending start position (set by seeking while stopped) is consumed
+    /// and playback starts there instead of the beginning.
     pub async fn play(&self) -> Result<Option<Arc<Song>>, Box<dyn Error>> {
-        self.play_from(Duration::ZERO).await
+        let start_time = self.take_pending_start().unwrap_or(Duration::ZERO);
+        self.play_from(start_time).await
     }
 
     /// Plays the song starting from a specific time position.
@@ -86,6 +90,9 @@ impl Player {
                 return Ok(None);
             }
         };
+
+        // Any explicit playback start supersedes a pending seek position.
+        self.clear_pending_start();
 
         // Load samples for this song (if not already loaded)
         self.load_song_samples(&song);

@@ -37,6 +37,9 @@ pub struct PlaybackContext {
     pub buffer_fill_pool: Option<Arc<BufferFillPool>>,
     /// Which resampling algorithm to use when sample rates differ.
     pub resampler_type: ResamplerType,
+    /// Player-level default metronome sounds, used when a song's metronome
+    /// config doesn't override them.
+    pub metronome_defaults: Option<crate::config::metronome::MetronomeSounds>,
 }
 
 impl PlaybackContext {
@@ -52,7 +55,17 @@ impl PlaybackContext {
             buffer_size,
             buffer_fill_pool,
             resampler_type,
+            metronome_defaults: None,
         }
+    }
+
+    /// Sets the player-level default metronome sounds.
+    pub fn with_metronome_defaults(
+        mut self,
+        defaults: Option<crate::config::metronome::MetronomeSounds>,
+    ) -> Self {
+        self.metronome_defaults = defaults;
+        self
     }
 }
 

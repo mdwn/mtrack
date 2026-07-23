@@ -267,8 +267,9 @@ test.describe("Playback State Transitions", () => {
     ).toBeVisible();
   });
 
-  test("section chips disabled when not playing", async ({ page }) => {
-    // Stopped state with sections — chips render but are disabled.
+  test("section loop buttons disabled when not playing", async ({ page }) => {
+    // Stopped state with sections — seek chips stay enabled (they set the
+    // pending start position) but loop buttons are disabled.
     await sendWsMessage(page, wsId, {
       type: "playback",
       is_playing: false,
@@ -288,7 +289,8 @@ test.describe("Playback State Transitions", () => {
 
     const chip = page.locator(".section-chip", { hasText: "verse" });
     await expect(chip).toBeVisible();
-    await expect(chip).toBeDisabled();
+    await expect(chip).toBeEnabled();
+    await expect(page.locator(".section-chip-loop")).toBeDisabled();
   });
 
   test("active section chip shows name and is the only active chip", async ({

@@ -26,6 +26,7 @@ pub mod context;
 pub mod cpal;
 pub mod crossfade;
 pub mod format;
+pub mod metronome;
 pub mod midi_tempo;
 pub mod mixer;
 pub mod mock;
@@ -108,6 +109,10 @@ pub trait Device: Any + fmt::Display + std::marker::Send + std::marker::Sync {
     fn sample_rate(&self) -> Option<u32> {
         self.mixer().map(|m| m.sample_rate())
     }
+
+    /// Sets player-level default metronome sounds, applied to songs that
+    /// don't override them. Devices that don't play the metronome ignore it.
+    fn set_metronome_defaults(&self, _defaults: Option<config::metronome::MetronomeSounds>) {}
 
     #[cfg(test)]
     fn to_mock(&self) -> Result<Arc<mock::Device>, AudioError>;

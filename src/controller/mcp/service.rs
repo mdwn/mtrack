@@ -116,6 +116,18 @@ pub struct LoopSectionArgs {
     pub section_name: String,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SeekArgs {
+    /// Position to seek to, formatted as `mm:ss.mmm` or `Ns` (e.g. `1:23.456`, `45.5s`).
+    pub position: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SeekToSectionArgs {
+    /// Name of the section to seek to. Must match a section defined on the current song.
+    pub section_name: String,
+}
+
 /// Schema helper for `body: serde_json::Value` fields in update-tool args.
 ///
 /// Without an explicit schema, schemars emits `true` (any value) for
@@ -423,6 +435,32 @@ impl McpServer {
             "now_playing": song.as_ref().map(|s| song_summary(s)),
             "start_time": format_duration(start),
         })))
+    }
+
+    #[tool(description = "Seek within the current song. While playing, playback \
+        restarts at the position with all subsystems re-synchronized; while \
+        stopped, the position is used by the next play.")]
+    async fn seek(
+        &self,
+        Parameters(args): Parameters<SeekArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let position = parse_duration(&args.position)?;
+        self.player.seek_to(position).await.map_err(internal_err)?;
+        Ok(ok_json(json!({
+            "position": format_duration(position),
+        })))
+    }
+
+    #[tool(description = "Seek to the start of a named section of the current song.")]
+    async fn seek_to_section(
+        &self,
+        Parameters(args): Parameters<SeekToSectionArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.player
+            .seek_to_section(&args.section_name)
+            .await
+            .map_err(internal_err)?;
+        Ok(ok_json(json!({ "section": args.section_name })))
     }
 
     #[tool(description = "Stop playback of the currently playing song.")]

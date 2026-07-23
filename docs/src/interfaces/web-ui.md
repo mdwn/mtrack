@@ -67,9 +67,15 @@ The dashboard is the landing page, providing an at-a-glance view of the player s
 ![Dashboard](../images/dashboard.png)
 
 - **Playback card** — Play/stop/next/prev with a progress bar showing elapsed and total time.
-  Displays the currently playing song name. When playing a song with defined sections,
-  section buttons appear for activating section loops. An active loop shows the section name
-  and a "Stop Loop" button. Beat/measure position is displayed when beat grid data is available.
+  Displays the currently playing song name. The progress bar is clickable: click anywhere to
+  seek — while playing everything (audio, MIDI, lighting) restarts in sync at that position;
+  while stopped the position is remembered and used by the next Play (shown as a marker on the
+  bar). When a song has defined sections, section chips appear: clicking a section name seeks
+  to its start, and the small loop button next to it arms a section loop. An active loop shows
+  the section name and a "Stop Loop" button. Beat/measure position is displayed when beat grid
+  data is available, along with a visual metronome: one dot per beat of the current meter with
+  the active beat highlighted, and a pulse that flashes on every beat (accented on downbeats)
+  while playing.
 - **Playlist selector** — Dropdown to switch between all available playlists. The current
   playlist's songs are listed below. Songs are clickable to jump directly to a song during
   playback.

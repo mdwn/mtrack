@@ -9,6 +9,8 @@ player:
 ```
 $ mtrack play
 $ mtrack play --from "1:23.456"  # Start playback from a specific time
+$ mtrack seek "1:23.456"  # Jump to a time in the current song (all subsystems resync)
+$ mtrack seek chorus      # Jump to the start of a named section
 $ mtrack previous
 $ mtrack next
 $ mtrack stop

@@ -133,6 +133,15 @@ enum Commands {
         #[arg(long)]
         from: Option<String>,
     },
+    /// Seeks within the current song to a time (e.g. "1:23.456" or "45.5s")
+    /// or to the start of a named section (e.g. "chorus").
+    Seek {
+        /// The host and port of the gRPC server.
+        #[arg(short = 'H', long)]
+        host_port: Option<String>,
+        /// The target: a time string or a section name.
+        to: String,
+    },
     /// Moves to the previous song in the playlist.
     Previous {
         /// The host and port of the gRPC server.
@@ -275,6 +284,7 @@ pub async fn run(tui_mode: bool) -> Result<(), Box<dyn Error>> {
             local::start(&path, playlist_path, web_config, effective_tui).await?
         }
         Commands::Play { host_port, from } => remote::play(host_port, from).await?,
+        Commands::Seek { host_port, to } => remote::seek(host_port, &to).await?,
         Commands::Previous { host_port } => remote::previous(host_port).await?,
         Commands::Next { host_port } => remote::next(host_port).await?,
         Commands::Stop { host_port } => remote::stop(host_port).await?,

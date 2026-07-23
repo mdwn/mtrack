@@ -16,6 +16,7 @@
   import { Code, ConnectError } from "@connectrpc/connect";
   import { playbackStore } from "../../lib/ws/stores";
   import { playerClient } from "../../lib/grpc/client";
+  import BeatIndicator from "./BeatIndicator.svelte";
   import { formatMs } from "../../lib/util/format";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
@@ -99,6 +100,61 @@
       showError(get(t)("playback.error.loopSection"));
     }
   }
+
+  async function seekToMs(ms: number) {
+    const duration = $playbackStore.song_duration_ms;
+    if (duration <= 0) return;
+    const clamped = Math.max(0, Math.min(ms, duration));
+    try {
+      await playerClient.seek({
+        position: {
+          seconds: BigInt(Math.floor(clamped / 1000)),
+          nanos: Math.round((clamped % 1000) * 1e6),
+        },
+      });
+    } catch (e) {
+      console.error("seek failed:", e);
+      showError(get(t)("playback.error.seek"));
+    }
+  }
+
+  async function seekToSection(name: string) {
+    try {
+      await playerClient.seekToSection({ sectionName: name });
+    } catch (e) {
+      console.error("seek to section failed:", e);
+      showError(get(t)("playback.error.seek"));
+    }
+  }
+
+  function onScrubClick(e: MouseEvent) {
+    if ($playbackStore.song_duration_ms <= 0) return;
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    if (rect.width <= 0) return;
+    const frac = (e.clientX - rect.left) / rect.width;
+    seekToMs(frac * $playbackStore.song_duration_ms);
+  }
+
+  function onScrubKeydown(e: KeyboardEvent) {
+    if ($playbackStore.song_duration_ms <= 0) return;
+    if (e.code !== "ArrowLeft" && e.code !== "ArrowRight") return;
+    e.preventDefault();
+    // Keep the global next/prev shortcuts from also firing.
+    e.stopPropagation();
+    const base = $playbackStore.is_playing
+      ? $playbackStore.elapsed_ms
+      : ($playbackStore.pending_start_ms ?? $playbackStore.elapsed_ms);
+    seekToMs(base + (e.code === "ArrowLeft" ? -5000 : 5000));
+  }
+
+  let pendingStartPct = $derived(
+    !$playbackStore.is_playing &&
+      $playbackStore.pending_start_ms != null &&
+      $playbackStore.song_duration_ms > 0
+      ? ($playbackStore.pending_start_ms / $playbackStore.song_duration_ms) *
+          100
+      : null,
+  );
 
   async function stopSectionLoop() {
     try {
@@ -275,6 +331,7 @@
           {#if currentBeatInfo}
             · beat {currentBeatInfo.beat} / measure {currentBeatInfo.measure}
           {/if}
+          <BeatIndicator />
         </div>
       </div>
       <div class="playback-card__transport">
@@ -351,13 +408,17 @@
         >{formatMs($playbackStore.elapsed_ms)}</span
       >
       <div
-        class="scrub"
+        class="scrub scrub--seekable"
         class:scrub--playing={$playbackStore.is_playing}
-        role="progressbar"
+        role="slider"
+        tabindex="0"
         aria-valuenow={progressPct}
         aria-valuemin={0}
         aria-valuemax={100}
         aria-label={$t("playback.songProgress")}
+        title={$t("playback.seekTooltip")}
+        onclick={onScrubClick}
+        onkeydown={onScrubKeydown}
       >
         {#each sectionRegions as region (region.name)}
           <div
@@ -370,6 +431,13 @@
           ></div>
         {/each}
         <div class="scrub__fill" style:width="{progressPct}%"></div>
+        {#if pendingStartPct != null}
+          <div
+            class="scrub__pending"
+            style:left="{pendingStartPct}%"
+            title={formatMs($playbackStore.pending_start_ms ?? 0)}
+          ></div>
+        {/if}
       </div>
       <span class="mono playback-card__time"
         >{formatMs($playbackStore.song_duration_ms)}</span
@@ -392,14 +460,26 @@
         {/if}
         {#each $playbackStore.available_sections as section (section.name)}
           {#if !$playbackStore.active_section || $playbackStore.active_section.name !== section.name}
-            <button
-              class="badge badge--pill section-chip"
-              onclick={() => loopSection(section.name)}
-              title="m{section.start_measure}-{section.end_measure}"
-              disabled={!$playbackStore.is_playing}
-            >
-              {section.name}
-            </button>
+            <span class="section-chip-group">
+              <button
+                class="badge badge--pill section-chip section-chip--grouped"
+                onclick={() => seekToSection(section.name)}
+                title="m{section.start_measure}-{section.end_measure} — {$t(
+                  'playback.seekToSection',
+                )}"
+              >
+                {section.name}
+              </button>
+              <button
+                class="section-chip-loop"
+                onclick={() => loopSection(section.name)}
+                disabled={!$playbackStore.is_playing}
+                title={$t("playback.loopSectionTooltip")}
+                aria-label="{$t('playback.loopSectionTooltip')}: {section.name}"
+              >
+                ↻
+              </button>
+            </span>
           {/if}
         {/each}
       </div>
@@ -599,6 +679,23 @@
     border-left-color: rgba(var(--section-rgb), 0.7);
     border-right-color: rgba(var(--section-rgb), 0.7);
   }
+  .scrub--seekable {
+    cursor: pointer;
+  }
+  .scrub--seekable:focus-visible {
+    outline: 2px solid var(--nc-cyan-400);
+    outline-offset: 2px;
+  }
+  .scrub__pending {
+    position: absolute;
+    top: -2px;
+    bottom: -2px;
+    width: 3px;
+    margin-left: -1px;
+    background: var(--nc-cyan-400);
+    border-radius: 1px;
+    z-index: 3;
+  }
 
   .playback-card__sections {
     display: flex;
@@ -622,6 +719,37 @@
     color: var(--nc-fg-1);
   }
   .section-chip:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+  }
+  .section-chip-group {
+    display: inline-flex;
+    align-items: stretch;
+  }
+  .section-chip--grouped {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+    border-right: none;
+  }
+  .section-chip-loop {
+    cursor: pointer;
+    border: 1px solid var(--card-border);
+    border-top-right-radius: 999px;
+    border-bottom-right-radius: 999px;
+    background: var(--nc-bg-2);
+    color: var(--nc-fg-2);
+    font-size: 12px;
+    line-height: 1;
+    padding: 0 8px 0 6px;
+    transition:
+      background var(--nc-dur-fast) var(--nc-ease),
+      color var(--nc-dur-fast) var(--nc-ease);
+  }
+  .section-chip-loop:hover:not(:disabled) {
+    background: var(--nc-bg-3);
+    color: var(--nc-fg-1);
+  }
+  .section-chip-loop:disabled {
     cursor: not-allowed;
     opacity: 0.55;
   }
