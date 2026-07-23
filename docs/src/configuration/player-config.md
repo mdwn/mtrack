@@ -15,6 +15,14 @@ songs: /mnt/song-storage
 # The path to the playlist file.
 playlist: /mnt/playlist.yaml
 
+# (Optional) Player-wide metronome defaults. Songs enable the metronome with
+# a `metronome:` block in song.yaml; sounds not overridden there fall back to
+# these, so `metronome: {}` is enough per song once this is configured.
+metronome:
+  sounds:
+    accent: { freq: 1600, volume: 1.0 }
+    normal: { freq: 1200, volume: 0.8 }
+
 # The audio configuration for mtrack.
 audio:
   # This audio device will be matched as best as possible against the devices on your system.
@@ -166,6 +174,11 @@ controllers:
   section_ack: /mtrack/section_ack
   stop_section_loop: /mtrack/stop_section_loop
   loop_section: /mtrack/loop_section
+
+  # Seek paths. `seek` takes a numeric seconds argument; `seek_section`
+  # takes a section name string argument.
+  seek: /mtrack/seek
+  seek_section: /mtrack/seek_section
 
 
 # The MIDI controller configuration.

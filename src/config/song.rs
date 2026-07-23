@@ -19,8 +19,10 @@ use serde::{Deserialize, Serialize};
 use tracing::info;
 
 use super::{
+    metronome::MetronomeConfig,
     midi::{self, ToMidiEvent},
     notification::SongNotificationConfig,
+    pilot::PilotConfig,
     samples::{SampleDefinition, SampleTrigger, SamplesConfig},
     tempo::TempoConfig,
     track::Track,
@@ -63,6 +65,14 @@ pub struct Song {
     /// the beat grid, taking precedence over click track analysis.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     tempo: Option<TempoConfig>,
+    /// The song's metronome: a generated click track, routable like any
+    /// other track. Requires a beat grid (tempo map or click analysis).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    metronome: Option<MetronomeConfig>,
+    /// Voice pilot hints: labeled cues at song positions, with optional
+    /// audio samples rendered onto a dedicated virtual track.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pilot: Option<PilotConfig>,
     /// Per-song notification audio overrides.
     #[serde(default)]
     notification_audio: Option<SongNotificationConfig>,
@@ -107,6 +117,8 @@ impl Song {
             loop_playback: false,
             sections: Vec::new(),
             tempo: None,
+            metronome: None,
+            pilot: None,
             notification_audio: None,
         }
     }
@@ -197,6 +209,42 @@ impl Song {
             }
         }
 
+        if let Some(metronome) = &self.metronome {
+            if let Err(err) = metronome.validate() {
+                errors.push(format!("metronome: {}", err));
+            }
+            if self
+                .tracks
+                .iter()
+                .any(|track| track.name() == metronome.track)
+            {
+                errors.push(format!(
+                    "metronome: track name \"{}\" collides with an audio track",
+                    metronome.track
+                ));
+            }
+        }
+
+        if let Some(pilot) = &self.pilot {
+            if let Err(err) = pilot.validate() {
+                errors.push(format!("pilot: {}", err));
+            }
+            if self.tracks.iter().any(|track| track.name() == pilot.track) {
+                errors.push(format!(
+                    "pilot: track name \"{}\" collides with an audio track",
+                    pilot.track
+                ));
+            }
+            if let Some(metronome) = &self.metronome {
+                if metronome.track == pilot.track {
+                    errors.push(format!(
+                        "pilot: track name \"{}\" collides with the metronome track",
+                        pilot.track
+                    ));
+                }
+            }
+        }
+
         if errors.is_empty() {
             Ok(())
         } else {
@@ -264,6 +312,16 @@ impl Song {
     /// Gets the song's tempo map configuration.
     pub fn tempo(&self) -> Option<&TempoConfig> {
         self.tempo.as_ref()
+    }
+
+    /// Gets the song's metronome configuration.
+    pub fn metronome(&self) -> Option<&MetronomeConfig> {
+        self.metronome.as_ref()
+    }
+
+    /// Gets the song's pilot hints configuration.
+    pub fn pilot(&self) -> Option<&PilotConfig> {
+        self.pilot.as_ref()
     }
 
     /// Gets the per-song notification audio overrides.

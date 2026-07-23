@@ -237,6 +237,8 @@ pub struct Device {
     output_manager: Arc<OutputManager>,
     /// Audio configuration for buffering and performance tuning.
     audio_config: config::Audio,
+    /// Player-level default metronome sounds, set at hardware init.
+    metronome_defaults: parking_lot::Mutex<Option<config::metronome::MetronomeSounds>>,
 }
 
 impl fmt::Display for Device {
@@ -316,6 +318,7 @@ impl Device {
                         target_format: default_format,
                         output_manager: temp_output_manager,
                         audio_config: config::Audio::new("default"), // Default config for listing
+                        metronome_defaults: parking_lot::Mutex::new(None),
                     })
                 }
             }
@@ -463,6 +466,10 @@ fn build_active_source(
 }
 
 impl AudioDevice for Device {
+    fn set_metronome_defaults(&self, defaults: Option<config::metronome::MetronomeSounds>) {
+        *self.metronome_defaults.lock() = defaults;
+    }
+
     /// Play the given song through the audio device, starting from a specific time.
     fn play_from(
         &self,
@@ -532,7 +539,8 @@ impl AudioDevice for Device {
             self.audio_config.buffer_size(),
             buffer_fill_pool,
             self.audio_config.resampler(),
-        );
+        )
+        .with_metronome_defaults(self.metronome_defaults.lock().clone());
 
         // Create channel mapped sources for each track in the song, starting from start_time.
         let channel_mapped_sources = song

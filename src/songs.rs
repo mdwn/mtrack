@@ -99,6 +99,22 @@ impl DslLightingShow {
     }
 }
 
+/// A pilot hint resolved to absolute song times (seconds from song start).
+/// `start_secs` can be negative when a countdown clip begins before the song.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedPilotHint {
+    /// Label shown in the UI around the hint position.
+    pub label: String,
+    /// The anchor position (with offset applied).
+    pub at_secs: f64,
+    /// When the hint audio starts (== `at_secs` for label-only hints).
+    pub start_secs: f64,
+    /// When the hint audio ends (== `at_secs` for label-only hints).
+    pub end_secs: f64,
+    /// Resolved absolute path of the hint audio, if any.
+    pub file: Option<PathBuf>,
+}
+
 /// A song with associated tracks for multitrack playback. Can contain:
 /// - An optional MIDI event, which will be played when the song is selected in a playlist.
 /// - An optional MIDI file, which will be played along with the audio tracks.
@@ -134,6 +150,12 @@ pub struct Song {
     samples_config: config::SamplesConfig,
     /// The explicit tempo map from the song config, when present.
     tempo_map: Option<crate::tempo::TempoMap>,
+    /// The metronome configuration, when present.
+    metronome: Option<config::MetronomeConfig>,
+    /// The pilot configuration, when present.
+    pilot: Option<config::PilotConfig>,
+    /// Pilot hints resolved to absolute song times, sorted by anchor.
+    pilot_hints: Vec<ResolvedPilotHint>,
     /// The song's beat grid: generated from the explicit tempo map when one
     /// is configured, otherwise derived from click track analysis.
     beat_grid: Option<crate::audio::click_analysis::BeatGrid>,
@@ -223,6 +245,12 @@ impl Song {
             Self::analyze_click_track(start_path, &tracks)
         };
 
+        let pilot_hints = match config.pilot() {
+            Some(pilot) => Self::resolve_pilot_hints(pilot, beat_grid.as_ref(), start_path)
+                .map_err(|e| format!("song {}: {}", config.name(), e))?,
+            None => Vec::new(),
+        };
+
         Ok(Song {
             name: config.name().to_string(),
             base_path: start_path.to_path_buf(),
@@ -238,11 +266,106 @@ impl Song {
             tracks,
             samples_config: config.samples_config(),
             tempo_map,
+            metronome: config.metronome().cloned(),
+            pilot: config.pilot().cloned(),
+            pilot_hints,
             beat_grid,
             loop_playback: config.loop_playback(),
             sections: config.sections().to_vec(),
             notification_audio: config.notification_audio().cloned(),
         })
+    }
+
+    /// Resolves pilot hints to absolute song times.
+    ///
+    /// Measure/beat positions require a beat grid; `time` positions work
+    /// without one. Hints with audio files get their placement from the
+    /// file's duration and the configured alignment: `end` (default) makes
+    /// the sample finish exactly at the anchor (start can be negative when
+    /// a countdown begins before the song), `start` begins it there.
+    fn resolve_pilot_hints(
+        pilot: &config::PilotConfig,
+        beat_grid: Option<&crate::audio::click_analysis::BeatGrid>,
+        start_path: &Path,
+    ) -> Result<Vec<ResolvedPilotHint>, Box<dyn Error>> {
+        use crate::config::pilot::{HintAlign, HintPosition};
+
+        let mut resolved = Vec::with_capacity(pilot.hints.len());
+        for hint in &pilot.hints {
+            let base_secs = match &hint.at {
+                HintPosition::Time { time } => *time,
+                HintPosition::MeasureBeat { measure, beat } => {
+                    let grid = beat_grid.ok_or_else(|| {
+                        format!(
+                            "pilot hint \"{}\": measure positions need a beat grid (add a tempo map or click track)",
+                            hint.label
+                        )
+                    })?;
+                    let measure_idx = (*measure as usize).saturating_sub(1);
+                    let beat_offset = beat.unwrap_or(1).saturating_sub(1) as usize;
+                    let beat_idx = grid
+                        .measure_starts
+                        .get(measure_idx)
+                        .map(|start| start + beat_offset)
+                        .ok_or_else(|| {
+                            format!(
+                                "pilot hint \"{}\": measure {} is out of range",
+                                hint.label, measure
+                            )
+                        })?;
+                    *grid.beats.get(beat_idx).ok_or_else(|| {
+                        format!(
+                            "pilot hint \"{}\": beat {} of measure {} is out of range",
+                            hint.label,
+                            beat.unwrap_or(1),
+                            measure
+                        )
+                    })?
+                }
+            };
+            let at_secs = (base_secs + hint.offset.unwrap_or(0.0)).max(0.0);
+
+            let (start_secs, end_secs, file) = match &hint.file {
+                None => (at_secs, at_secs, None),
+                Some(file) => {
+                    let path = if Path::new(file).is_absolute() {
+                        PathBuf::from(file)
+                    } else {
+                        start_path.join(file)
+                    };
+                    let source = crate::audio::sample_source::create_sample_source_from_file(
+                        &path, None, 1024,
+                    )
+                    .map_err(|e| {
+                        format!(
+                            "pilot hint \"{}\": cannot read {}: {}",
+                            hint.label,
+                            path.display(),
+                            e
+                        )
+                    })?;
+                    let clip_secs = source.duration().unwrap_or(Duration::ZERO).as_secs_f64();
+                    match hint.align.unwrap_or(HintAlign::End) {
+                        HintAlign::End => (at_secs - clip_secs, at_secs, Some(path)),
+                        HintAlign::Start => (at_secs, at_secs + clip_secs, Some(path)),
+                    }
+                }
+            };
+
+            resolved.push(ResolvedPilotHint {
+                label: hint.label.clone(),
+                at_secs,
+                start_secs,
+                end_secs,
+                file,
+            });
+        }
+        resolved.sort_by(|a, b| {
+            a.at_secs
+                .partial_cmp(&b.at_secs)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        Ok(resolved)
     }
 
     /// Analyzes the track named "click" (if any) into a beat grid, caching
@@ -496,6 +619,35 @@ impl Song {
         self.tempo_map.as_ref()
     }
 
+    /// Gets the metronome configuration, if configured.
+    pub fn metronome(&self) -> Option<&config::MetronomeConfig> {
+        self.metronome.as_ref()
+    }
+
+    /// Gets the pilot configuration, if configured.
+    pub fn pilot(&self) -> Option<&config::PilotConfig> {
+        self.pilot.as_ref()
+    }
+
+    /// Gets the pilot hints resolved to absolute song times.
+    pub fn pilot_hints(&self) -> &[ResolvedPilotHint] {
+        &self.pilot_hints
+    }
+
+    /// Names of all output tracks this song produces: real audio tracks plus
+    /// virtual tracks (metronome, pilot). These are the names that can appear
+    /// in `track_mappings` and carry per-track gains.
+    pub fn output_track_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.tracks.iter().map(|t| t.name.clone()).collect();
+        if let Some(metronome) = &self.metronome {
+            names.push(metronome.track.clone());
+        }
+        if let Some(pilot) = &self.pilot {
+            names.push(pilot.track.clone());
+        }
+        names
+    }
+
     /// Returns whether this song should loop when it finishes playing.
     pub fn loop_playback(&self) -> bool {
         self.loop_playback
@@ -610,6 +762,27 @@ impl Song {
         sorted_files.sort_by_key(|(path, _)| path.clone());
 
         for (file_path, tracks) in sorted_files {
+            // Skip files that end before the start position: seeking them
+            // would fail (symphonia rejects out-of-range seek timestamps),
+            // and they contribute nothing at this offset anyway. This makes
+            // seek work with tracks shorter than the song.
+            if start_time > Duration::ZERO {
+                let file_duration = tracks
+                    .iter()
+                    .map(|t| t.duration)
+                    .max()
+                    .unwrap_or(Duration::ZERO);
+                if file_duration <= start_time {
+                    info!(
+                        "Skipping {} at this start position: file ends at {:?}, before {:?}",
+                        file_path.display(),
+                        file_duration,
+                        start_time
+                    );
+                    continue;
+                }
+            }
+
             // Create the sample source once and reuse it for both metadata and playback
             // This avoids creating two instances which can cause issues with symphonia's global state
             let sample_source = create_sample_source_from_file(
@@ -662,6 +835,71 @@ impl Song {
 
             sources.push(source);
         }
+
+        // Append the virtual metronome track when configured, mapped in the
+        // profile, and a beat grid is available. It synthesizes at the device
+        // sample rate, so no transcoding is needed beyond format conversion.
+        if let Some(metronome) = &self.metronome {
+            if track_mappings.contains_key(&metronome.track) {
+                if let Some(grid) = &self.beat_grid {
+                    let metronome_source = crate::audio::metronome::MetronomeSource::new(
+                        grid,
+                        metronome,
+                        context.metronome_defaults.as_ref(),
+                        &self.base_path,
+                        context.target_format.sample_rate,
+                        start_time,
+                        self.duration,
+                    )?;
+                    let source = create_channel_mapped_sample_source(
+                        Box::new(metronome_source),
+                        context.target_format.clone(),
+                        vec![vec![metronome.track.clone()]],
+                        context.resampler_type,
+                    )?;
+                    sources.push(source);
+                } else {
+                    warn!(
+                        song = self.name.as_str(),
+                        "Metronome configured but no beat grid available (add a tempo map or click track)"
+                    );
+                }
+            }
+        }
+
+        // Append the virtual pilot track when configured, mapped in the
+        // profile, and at least one hint carries audio.
+        if let Some(pilot) = &self.pilot {
+            if track_mappings.contains_key(&pilot.track) {
+                let clips: Vec<crate::audio::pilot::PilotClip> = self
+                    .pilot_hints
+                    .iter()
+                    .filter_map(|hint| {
+                        hint.file
+                            .as_ref()
+                            .map(|path| crate::audio::pilot::PilotClip {
+                                start_secs: hint.start_secs,
+                                path: path.clone(),
+                            })
+                    })
+                    .collect();
+                if !clips.is_empty() {
+                    let pilot_source = crate::audio::pilot::PilotSource::new(
+                        &clips,
+                        context.target_format.sample_rate,
+                        start_time,
+                        self.duration,
+                    )?;
+                    let source = create_channel_mapped_sample_source(
+                        Box::new(pilot_source),
+                        context.target_format.clone(),
+                        vec![vec![pilot.track.clone()]],
+                        context.resampler_type,
+                    )?;
+                    sources.push(source);
+                }
+            }
+        }
         Ok(sources)
     }
 
@@ -689,7 +927,7 @@ impl Song {
         Ok(player::v1::Song {
             name: self.name.to_string(),
             duration: Some(duration),
-            tracks: self.tracks.iter().map(|track| track.name.clone()).collect(),
+            tracks: self.output_track_names(),
             beat_grid,
             sections,
         })
@@ -733,6 +971,9 @@ impl Default for Song {
             tracks: Default::default(),
             samples_config: config::SamplesConfig::default(),
             tempo_map: None,
+            metronome: None,
+            pilot: None,
+            pilot_hints: Vec::new(),
             beat_grid: None,
             loop_playback: false,
             sections: Vec::new(),
@@ -2890,6 +3131,230 @@ sections:
             &mappings,
         )?;
         assert_eq!(sources.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn create_channel_mapped_sources_seek_past_short_track() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        // A 2s main track and a 0.1s stub (like the empty.wav padding some
+        // repositories use). Seeking past the stub must skip it instead of
+        // failing the whole restart with an out-of-range seek.
+        crate::testutil::write_wav(
+            tempdir.path().join("long.wav"),
+            vec![vec![1_i32; 88200]],
+            44100,
+        )?;
+        crate::testutil::write_wav(
+            tempdir.path().join("short.wav"),
+            vec![vec![1_i32; 4410]],
+            44100,
+        )?;
+
+        let song_config = crate::config::Song::new(
+            "seek-short",
+            None,
+            None,
+            None,
+            None,
+            None,
+            vec![
+                crate::config::Track::new("main".to_string(), "long.wav", Some(1)),
+                crate::config::Track::new("stub".to_string(), "short.wav", Some(1)),
+            ],
+            std::collections::HashMap::new(),
+            vec![],
+        );
+        let song = super::Song::new(tempdir.path(), &song_config)?;
+        let target = crate::audio::TargetFormat::new(44100, crate::audio::SampleFormat::Int, 16)?;
+        let context = crate::audio::PlaybackContext::new(target, 1024, None, Default::default());
+        let mut mappings = std::collections::HashMap::new();
+        mappings.insert("main".to_string(), vec![1_u16]);
+        mappings.insert("stub".to_string(), vec![2_u16]);
+
+        // Seek to 1s: the stub file (0.1s) is skipped, the main file plays.
+        let sources = song.create_channel_mapped_sources_from(
+            &context,
+            std::time::Duration::from_secs(1),
+            &mappings,
+        )?;
+        assert_eq!(sources.len(), 1);
+
+        // From the start both files play.
+        let sources = song.create_channel_mapped_sources_from(
+            &context,
+            std::time::Duration::ZERO,
+            &mappings,
+        )?;
+        assert_eq!(sources.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn create_channel_mapped_sources_with_metronome() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("metronome_song");
+        fs::create_dir(&song_dir)?;
+        // 2 seconds of silence at 44.1k.
+        crate::testutil::write_wav(song_dir.join("track.wav"), vec![vec![0_i32; 88200]], 44100)?;
+        fs::write(
+            song_dir.join("song.yaml"),
+            r#"
+name: Metronome Song
+tracks:
+  - name: track
+    file: track.wav
+tempo:
+  bpm: 120
+metronome: {}
+"#,
+        )?;
+        let song_config = crate::config::Song::deserialize(song_dir.join("song.yaml").as_path())?;
+        let song = super::Song::new(&song_dir, &song_config)?;
+        assert_eq!(
+            song.output_track_names(),
+            vec!["track".to_string(), "metronome".to_string()]
+        );
+
+        let target = crate::audio::TargetFormat::new(44100, crate::audio::SampleFormat::Int, 16)?;
+        let context = crate::audio::PlaybackContext::new(target, 1024, None, Default::default());
+
+        // Without the metronome mapped, only the file source is produced.
+        let mut mappings = std::collections::HashMap::new();
+        mappings.insert("track".to_string(), vec![1_u16]);
+        let sources = song.create_channel_mapped_sources_from(
+            &context,
+            std::time::Duration::ZERO,
+            &mappings,
+        )?;
+        assert_eq!(sources.len(), 1);
+
+        // With the metronome mapped, the virtual source is appended.
+        mappings.insert("metronome".to_string(), vec![2_u16]);
+        let mut sources = song.create_channel_mapped_sources_from(
+            &context,
+            std::time::Duration::ZERO,
+            &mappings,
+        )?;
+        assert_eq!(sources.len(), 2);
+
+        let metronome_source = sources
+            .iter_mut()
+            .find(|s| s.channel_mappings() == [vec!["metronome".to_string()]])
+            .expect("metronome source present");
+        // The first click starts at t=0 — the opening frames carry energy.
+        let mut buf = vec![0.0f32; 512];
+        let frames = metronome_source.read_frames(&mut buf, 512)?;
+        assert_eq!(frames, 512);
+        let peak = buf.iter().fold(0.0f32, |max, s| max.max(s.abs()));
+        assert!(peak > 0.1, "metronome should click at t=0, peak was {peak}");
+        Ok(())
+    }
+
+    #[test]
+    fn pilot_hints_resolve_and_render() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("pilot_song");
+        fs::create_dir(&song_dir)?;
+        // 8 seconds of silence, plus a 0.5s hint clip.
+        crate::testutil::write_wav(
+            song_dir.join("track.wav"),
+            vec![vec![0_i32; 44100 * 8]],
+            44100,
+        )?;
+        crate::testutil::write_wav(
+            song_dir.join("bridge.wav"),
+            vec![vec![1_000_000_000_i32; 22050]],
+            44100,
+        )?;
+        fs::write(
+            song_dir.join("song.yaml"),
+            r#"
+name: Pilot Song
+tracks:
+  - name: track
+    file: track.wav
+tempo:
+  bpm: 120
+pilot:
+  hints:
+    - at: { measure: 2 }
+      label: "bridge in 3..2..1"
+      file: bridge.wav
+    - at: { time: 5.0 }
+      label: "solo"
+"#,
+        )?;
+        let song_config = crate::config::Song::deserialize(song_dir.join("song.yaml").as_path())?;
+        let song = super::Song::new(&song_dir, &song_config)?;
+
+        // Measure 2 at 120 BPM 4/4 starts at 2.0s. The clip aligns `end`
+        // there, so its audio starts at 1.5s.
+        let hints = song.pilot_hints();
+        assert_eq!(hints.len(), 2);
+        assert_eq!(hints[0].label, "bridge in 3..2..1");
+        assert!((hints[0].at_secs - 2.0).abs() < 1e-6);
+        assert!((hints[0].start_secs - 1.5).abs() < 1e-3);
+        assert!((hints[0].end_secs - 2.0).abs() < 1e-3);
+        assert!(hints[0].file.is_some());
+        // Label-only hint collapses to its anchor.
+        assert_eq!(hints[1].label, "solo");
+        assert!((hints[1].at_secs - 5.0).abs() < 1e-6);
+        assert!(hints[1].file.is_none());
+
+        assert_eq!(
+            song.output_track_names(),
+            vec!["track".to_string(), "pilot".to_string()]
+        );
+
+        // The pilot source renders the clip at 1.5s.
+        let target = crate::audio::TargetFormat::new(44100, crate::audio::SampleFormat::Int, 16)?;
+        let context = crate::audio::PlaybackContext::new(target, 1024, None, Default::default());
+        let mut mappings = std::collections::HashMap::new();
+        mappings.insert("track".to_string(), vec![1_u16]);
+        mappings.insert("pilot".to_string(), vec![2_u16]);
+        let mut sources = song.create_channel_mapped_sources_from(
+            &context,
+            std::time::Duration::ZERO,
+            &mappings,
+        )?;
+        assert_eq!(sources.len(), 2);
+        let pilot_source = sources
+            .iter_mut()
+            .find(|s| s.channel_mappings() == [vec!["pilot".to_string()]])
+            .expect("pilot source present");
+        // Skip to just after 1.5s and confirm energy.
+        let mut buf = vec![0.0f32; 1024];
+        let mut skipped = 0usize;
+        while skipped < 66150 {
+            let frames = pilot_source.read_frames(&mut buf, 1024.min(66150 - skipped))?;
+            assert!(frames > 0);
+            skipped += frames;
+        }
+        let frames = pilot_source.read_frames(&mut buf, 1024)?;
+        assert_eq!(frames, 1024);
+        let peak = buf.iter().fold(0.0f32, |max, s| max.max(s.abs()));
+        assert!(peak > 0.1, "hint clip should sound at 1.5s, got {peak}");
+        Ok(())
+    }
+
+    #[test]
+    fn pilot_measure_hint_without_grid_fails() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let song_dir = tempdir.path().join("gridless_pilot");
+        fs::create_dir(&song_dir)?;
+        crate::testutil::write_wav(song_dir.join("track.wav"), vec![vec![1_i32, 2, 3]], 44100)?;
+        fs::write(
+            song_dir.join("song.yaml"),
+            "name: Gridless\ntracks:\n  - name: track\n    file: track.wav\npilot:\n  hints:\n    - at: { measure: 2 }\n      label: x\n",
+        )?;
+        let song_config = crate::config::Song::deserialize(song_dir.join("song.yaml").as_path())?;
+        let result = super::Song::new(&song_dir, &song_config);
+        assert!(result.is_err());
+        assert!(result
+            .err()
+            .map(|e| e.to_string().contains("beat grid"))
+            .unwrap_or(false));
         Ok(())
     }
 

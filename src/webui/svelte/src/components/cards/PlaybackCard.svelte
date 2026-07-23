@@ -16,6 +16,7 @@
   import { Code, ConnectError } from "@connectrpc/connect";
   import { playbackStore } from "../../lib/ws/stores";
   import { playerClient } from "../../lib/grpc/client";
+  import BeatIndicator from "./BeatIndicator.svelte";
   import { formatMs } from "../../lib/util/format";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
@@ -99,6 +100,116 @@
       showError(get(t)("playback.error.loopSection"));
     }
   }
+
+  async function seekToMs(ms: number) {
+    const duration = $playbackStore.song_duration_ms;
+    if (duration <= 0) return;
+    const clamped = Math.max(0, Math.min(ms, duration));
+    try {
+      await playerClient.seek({
+        position: {
+          seconds: BigInt(Math.floor(clamped / 1000)),
+          nanos: Math.round((clamped % 1000) * 1e6),
+        },
+      });
+    } catch (e) {
+      console.error("seek failed:", e);
+      showError(get(t)("playback.error.seek"));
+    }
+  }
+
+  async function seekToSection(name: string) {
+    try {
+      await playerClient.seekToSection({ sectionName: name });
+    } catch (e) {
+      console.error("seek to section failed:", e);
+      showError(get(t)("playback.error.seek"));
+    }
+  }
+
+  function onScrubClick(e: MouseEvent) {
+    if ($playbackStore.song_duration_ms <= 0) return;
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    if (rect.width <= 0) return;
+    const frac = (e.clientX - rect.left) / rect.width;
+    seekToMs(frac * $playbackStore.song_duration_ms);
+  }
+
+  function onScrubKeydown(e: KeyboardEvent) {
+    if ($playbackStore.song_duration_ms <= 0) return;
+    if (e.code !== "ArrowLeft" && e.code !== "ArrowRight") return;
+    e.preventDefault();
+    // Keep the global next/prev shortcuts from also firing.
+    e.stopPropagation();
+    const base = $playbackStore.is_playing
+      ? $playbackStore.elapsed_ms
+      : ($playbackStore.pending_start_ms ?? $playbackStore.elapsed_ms);
+    seekToMs(base + (e.code === "ArrowLeft" ? -5000 : 5000));
+  }
+
+  // A pilot hint is surfaced from shortly before its audio/anchor until it
+  // has passed. Hints whose display windows touch (a label followed by its
+  // countdown) form a group that stays visible together, with only the live
+  // one highlighted, so a tight sequence doesn't overwrite its predecessors.
+  const HINT_LEAD_MS = 5000;
+  // Label-only hints have no audio window; highlight them briefly at their
+  // anchor instead.
+  const HINT_LABEL_LIVE_MS = 1000;
+  let visibleHints = $derived.by(() => {
+    const hints = $playbackStore.pilot_hints;
+    if (hints.length === 0) return [];
+    const elapsed = $playbackStore.elapsed_ms;
+    const windows = [...hints]
+      .sort((a, b) => a.at_ms - b.at_ms)
+      .map((hint) => {
+        const liveFrom = hint.has_audio
+          ? Math.min(hint.start_ms, hint.at_ms)
+          : hint.at_ms;
+        const liveTo = hint.has_audio
+          ? Math.max(hint.end_ms, hint.at_ms)
+          : hint.at_ms + HINT_LABEL_LIVE_MS;
+        return {
+          hint,
+          liveFrom,
+          liveTo,
+          visibleFrom: Math.min(liveFrom, hint.at_ms - HINT_LEAD_MS),
+        };
+      });
+    // Hand the highlight off as soon as the next hint goes live.
+    for (let i = 0; i < windows.length - 1; i++) {
+      windows[i].liveTo = Math.min(
+        windows[i].liveTo,
+        Math.max(windows[i + 1].liveFrom, windows[i].liveFrom),
+      );
+    }
+    // Chain overlapping display windows into groups; a group is visible from
+    // its first lead-in until its last live window ends.
+    const groups = [];
+    for (const w of windows) {
+      const group = groups[groups.length - 1];
+      if (group && w.visibleFrom <= group.to) {
+        group.members.push(w);
+        group.to = Math.max(group.to, w.liveTo);
+      } else {
+        groups.push({ from: w.visibleFrom, to: w.liveTo, members: [w] });
+      }
+    }
+    const active = groups.find((g) => elapsed >= g.from && elapsed <= g.to);
+    if (!active) return [];
+    return active.members.map((w) => ({
+      ...w.hint,
+      live: elapsed >= w.liveFrom && elapsed <= w.liveTo,
+    }));
+  });
+
+  let pendingStartPct = $derived(
+    !$playbackStore.is_playing &&
+      $playbackStore.pending_start_ms != null &&
+      $playbackStore.song_duration_ms > 0
+      ? ($playbackStore.pending_start_ms / $playbackStore.song_duration_ms) *
+          100
+      : null,
+  );
 
   async function stopSectionLoop() {
     try {
@@ -275,6 +386,7 @@
           {#if currentBeatInfo}
             · beat {currentBeatInfo.beat} / measure {currentBeatInfo.measure}
           {/if}
+          <BeatIndicator />
         </div>
       </div>
       <div class="playback-card__transport">
@@ -351,13 +463,17 @@
         >{formatMs($playbackStore.elapsed_ms)}</span
       >
       <div
-        class="scrub"
+        class="scrub scrub--seekable"
         class:scrub--playing={$playbackStore.is_playing}
-        role="progressbar"
+        role="slider"
+        tabindex="0"
         aria-valuenow={progressPct}
         aria-valuemin={0}
         aria-valuemax={100}
         aria-label={$t("playback.songProgress")}
+        title={$t("playback.seekTooltip")}
+        onclick={onScrubClick}
+        onkeydown={onScrubKeydown}
       >
         {#each sectionRegions as region (region.name)}
           <div
@@ -369,12 +485,41 @@
             title={region.name}
           ></div>
         {/each}
+        {#if $playbackStore.song_duration_ms > 0}
+          {#each $playbackStore.pilot_hints as hint (hint.label + hint.at_ms)}
+            <div
+              class="scrub__hint"
+              style:left="{(hint.at_ms / $playbackStore.song_duration_ms) *
+                100}%"
+              title={hint.label}
+            ></div>
+          {/each}
+        {/if}
         <div class="scrub__fill" style:width="{progressPct}%"></div>
+        {#if pendingStartPct != null}
+          <div
+            class="scrub__pending"
+            style:left="{pendingStartPct}%"
+            title={formatMs($playbackStore.pending_start_ms ?? 0)}
+          ></div>
+        {/if}
       </div>
       <span class="mono playback-card__time"
         >{formatMs($playbackStore.song_duration_ms)}</span
       >
     </div>
+
+    {#if visibleHints.length > 0 && $playbackStore.is_playing}
+      <div class="mono playback-card__hint">
+        <span aria-hidden="true">🎙</span>
+        {#each visibleHints as hint (hint.label + hint.at_ms)}
+          <span
+            class="playback-card__hint-label"
+            class:playback-card__hint-label--live={hint.live}>{hint.label}</span
+          >
+        {/each}
+      </div>
+    {/if}
 
     {#if $playbackStore.available_sections.length > 0}
       <div class="playback-card__sections">
@@ -392,14 +537,26 @@
         {/if}
         {#each $playbackStore.available_sections as section (section.name)}
           {#if !$playbackStore.active_section || $playbackStore.active_section.name !== section.name}
-            <button
-              class="badge badge--pill section-chip"
-              onclick={() => loopSection(section.name)}
-              title="m{section.start_measure}-{section.end_measure}"
-              disabled={!$playbackStore.is_playing}
-            >
-              {section.name}
-            </button>
+            <span class="section-chip-group">
+              <button
+                class="badge badge--pill section-chip section-chip--grouped"
+                onclick={() => seekToSection(section.name)}
+                title="m{section.start_measure}-{section.end_measure} — {$t(
+                  'playback.seekToSection',
+                )}"
+              >
+                {section.name}
+              </button>
+              <button
+                class="section-chip-loop"
+                onclick={() => loopSection(section.name)}
+                disabled={!$playbackStore.is_playing}
+                title={$t("playback.loopSectionTooltip")}
+                aria-label="{$t('playback.loopSectionTooltip')}: {section.name}"
+              >
+                ↻
+              </button>
+            </span>
           {/if}
         {/each}
       </div>
@@ -599,6 +756,50 @@
     border-left-color: rgba(var(--section-rgb), 0.7);
     border-right-color: rgba(var(--section-rgb), 0.7);
   }
+  .scrub--seekable {
+    cursor: pointer;
+  }
+  .scrub--seekable:focus-visible {
+    outline: 2px solid var(--nc-cyan-400);
+    outline-offset: 2px;
+  }
+  .scrub__pending {
+    position: absolute;
+    top: -2px;
+    bottom: -2px;
+    width: 3px;
+    margin-left: -1px;
+    background: var(--nc-cyan-400);
+    border-radius: 1px;
+    z-index: 3;
+  }
+  .scrub__hint {
+    position: absolute;
+    top: -3px;
+    width: 2px;
+    height: 6px;
+    margin-left: -1px;
+    background: var(--nc-amber-400, #f2b544);
+    border-radius: 1px;
+    z-index: 3;
+    pointer-events: none;
+  }
+  .playback-card__hint {
+    margin-top: 10px;
+    font-size: 13px;
+    color: var(--nc-fg-3);
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .playback-card__hint-label {
+    transition: color var(--nc-dur-fast) var(--nc-ease);
+  }
+  .playback-card__hint-label--live {
+    color: var(--nc-amber-400, #f2b544);
+    font-weight: 600;
+  }
 
   .playback-card__sections {
     display: flex;
@@ -622,6 +823,37 @@
     color: var(--nc-fg-1);
   }
   .section-chip:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+  }
+  .section-chip-group {
+    display: inline-flex;
+    align-items: stretch;
+  }
+  .section-chip--grouped {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+    border-right: none;
+  }
+  .section-chip-loop {
+    cursor: pointer;
+    border: 1px solid var(--card-border);
+    border-top-right-radius: 999px;
+    border-bottom-right-radius: 999px;
+    background: var(--nc-bg-2);
+    color: var(--nc-fg-2);
+    font-size: 12px;
+    line-height: 1;
+    padding: 0 8px 0 6px;
+    transition:
+      background var(--nc-dur-fast) var(--nc-ease),
+      color var(--nc-dur-fast) var(--nc-ease);
+  }
+  .section-chip-loop:hover:not(:disabled) {
+    background: var(--nc-bg-3);
+    color: var(--nc-fg-1);
+  }
+  .section-chip-loop:disabled {
     cursor: not-allowed;
     opacity: 0.55;
   }

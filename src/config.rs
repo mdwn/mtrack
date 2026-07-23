@@ -17,11 +17,13 @@ mod dmx;
 mod error;
 mod hostname;
 pub mod lighting;
+pub mod metronome;
 #[cfg(test)]
 pub mod midi;
 #[cfg(not(test))]
 mod midi;
 pub mod notification;
+pub mod pilot;
 mod player;
 mod playlist;
 mod profile;
@@ -49,10 +51,12 @@ pub use self::dmx::Dmx;
 pub use self::dmx::Universe;
 pub use self::error::ConfigError;
 pub use self::lighting::Lighting;
+pub use self::metronome::MetronomeConfig;
 pub use self::midi::Midi;
 pub use self::midi::MidiTransformer;
 pub use self::midi::ToMidiEvent;
-pub use self::player::Player;
+pub use self::pilot::PilotConfig;
+pub use self::player::{MetronomeDefaults, Player};
 pub use self::playlist::Playlist;
 // Sample types are exported for external configuration
 pub use self::hostname::resolve_hostname;

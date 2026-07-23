@@ -97,6 +97,27 @@ tempo:
       bpm: 96
       time_signature: 6/8
 
+# (Optional) A generated metronome click track, derived from the beat grid
+# (tempo map or click analysis). It appears as a virtual output track —
+# route it via track_mappings in the profile like any other track.
+metronome:
+  track: metronome          # output track name (default "metronome")
+  accent: [3, 2, 2]         # optional accent grouping within a measure
+  sounds:                   # optional; synthesized clicks by default
+    accent: { freq: 1600, volume: 1.0 }
+    normal: { file: clicks/lo.wav }
+
+# (Optional) Voice pilot hints: labeled cues at song positions, each with an
+# optional short audio sample rendered onto a virtual "pilot" track.
+pilot:
+  track: pilot
+  hints:
+    - at: { measure: 25 }
+      label: "bridge in 3..2..1"
+      file: hints/bridge.wav
+    - at: { time: 84.2 }
+      label: "solo"
+
 # (Optional) Named sections defined by measure boundaries. Used for section
 # looping during playback. Measure numbers are 1-indexed; end_measure is exclusive.
 sections:
@@ -198,6 +219,71 @@ prefills it from the song's MIDI file or an analyzed click track.
 
 Songs with a DSL light show but no `tempo {}` block in the `.light` file automatically use
 the song's tempo map for measure-based cues and beat-based effect parameters.
+
+## Metronome
+
+The optional `metronome:` block generates a click track from the song's beat grid — no click
+audio file needed. It replaces external metronome tools: the clicks always stay locked to the
+song (including seeks and section loops), follow tempo changes and odd meters from the tempo
+map, and route anywhere.
+
+```yaml
+metronome:
+  track: metronome    # the output track name (default "metronome")
+  accent: [3, 2, 2]   # optional accent grouping (7/8: accents on beats 1, 4, 6)
+  sounds:
+    accent: { freq: 1600, volume: 1.0 }   # synthesized click, or:
+    normal: { file: clicks/lo.wav }       # a sample file (relative to the song dir)
+```
+
+- The metronome is a **virtual track**: add its track name to the profile's `track_mappings`
+  to route it (e.g. to your in-ear mix), and adjust its level in the track gains mixer.
+  Without a mapping it is silent and costs nothing.
+- One click per denominator note: a 7/8 song clicks seven eighths per measure. Accents fall
+  on beat 1, or on each group start when `accent` is set.
+- Sounds default to short synthesized sine clicks (accent 1600 Hz, normal 1200 Hz); each can
+  be overridden with a sample file.
+- Player-wide default sounds can be set once in `mtrack.yaml` (see the player configuration);
+  a song then just needs `metronome: {}` to enable the click with your preferred sound.
+  Song-level sound fields override the defaults per field.
+- The `metronome` track name must not collide with a real track. A beat grid (tempo map or
+  analyzed click track) is required.
+
+## Pilot Hints
+
+The optional `pilot:` block defines voice hints: short cues ("bridge in 3..2..1") anchored to
+positions in the song. Each hint has a **label** shown in the web UI as the position
+approaches, and optionally a short **audio sample** rendered onto a dedicated virtual track.
+Because hints are individual clips placed by config, moving one is an edit in the UI or YAML —
+no re-recording of a full-length pilot track.
+
+```yaml
+pilot:
+  track: pilot                # the output track name (default "pilot")
+  hints:
+    - at: { measure: 25 }     # or { measure: 25, beat: 3 }, or { time: 84.2 }
+      label: "bridge in 3..2..1"
+      file: hints/bridge.wav  # optional — label-only hints are purely visual
+      align: end              # default: the sample ENDS at the position (countdowns);
+                              # "start" begins it there
+      # offset: -0.5          # optional fine shift of the anchor, in seconds
+```
+
+- `at` positions use measures/beats (requires a beat grid — tempo map or click track; beats
+  are grid beats, so beat 3 in 7/8 is the third eighth) or absolute `time` in seconds.
+- Hint audio plays on the **pilot virtual track**: add its name to `track_mappings` to route
+  it (e.g. only to your in-ears), with its own gain in the track mixer. Label-only hints need
+  no routing.
+- With `align: end`, a countdown sample finishes exactly on the target beat — even one that
+  overlaps the start of the song plays its remaining tail correctly, and seeks are
+  sample-accurate (seeking mid-hint plays the rest of the clip).
+
+**Migrating from a full-length pilot track:** slice the useful cues out of the old track into
+short files (any audio editor), drop the full-length track from `tracks:`, and reference the
+clips from `pilot.hints` at the right measures. From then on, moving a cue is a config edit.
+
+Hints are edited in the web UI's Sections tab and shown during playback as markers on the
+progress bar plus the current hint's label.
 
 ## Sections
 
