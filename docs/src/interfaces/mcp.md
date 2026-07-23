@@ -55,8 +55,9 @@ Roughly 45 tools are available. They fall into a few groups:
 - **Status & discovery** — current playback status, host/runtime info, and listings of songs,
   playlists, groups, venues, and fixture types.
 - **Playback control** — play, stop, next/previous, play-from-a-time, play-a-named-song-from-a-time,
-  switch playlist, stop triggered samples, and section-loop control (loop a section, stop the loop,
-  acknowledge the current section in reactive looping).
+  seek within the current song (to a time or a named section), switch playlist, stop triggered
+  samples, and section-loop control (loop a section, stop the loop, acknowledge the current
+  section in reactive looping).
 - **Configuration editing** — read the full config and update the `audio`, `midi`, `dmx`, and
   `controllers` subsections, plus add / update / remove hardware profiles.
 - **Song & playlist authoring** — read, write, and patch `song.yaml` and playlist files, plus

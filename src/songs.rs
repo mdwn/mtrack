@@ -610,6 +610,27 @@ impl Song {
         sorted_files.sort_by_key(|(path, _)| path.clone());
 
         for (file_path, tracks) in sorted_files {
+            // Skip files that end before the start position: seeking them
+            // would fail (symphonia rejects out-of-range seek timestamps),
+            // and they contribute nothing at this offset anyway. This makes
+            // seek work with tracks shorter than the song.
+            if start_time > Duration::ZERO {
+                let file_duration = tracks
+                    .iter()
+                    .map(|t| t.duration)
+                    .max()
+                    .unwrap_or(Duration::ZERO);
+                if file_duration <= start_time {
+                    info!(
+                        "Skipping {} at this start position: file ends at {:?}, before {:?}",
+                        file_path.display(),
+                        file_duration,
+                        start_time
+                    );
+                    continue;
+                }
+            }
+
             // Create the sample source once and reuse it for both metadata and playback
             // This avoids creating two instances which can cause issues with symphonia's global state
             let sample_source = create_sample_source_from_file(
@@ -2884,6 +2905,62 @@ sections:
         let mut mappings = std::collections::HashMap::new();
         mappings.insert("a".to_string(), vec![1_u16]);
         mappings.insert("b".to_string(), vec![2_u16]);
+        let sources = song.create_channel_mapped_sources_from(
+            &context,
+            std::time::Duration::ZERO,
+            &mappings,
+        )?;
+        assert_eq!(sources.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn create_channel_mapped_sources_seek_past_short_track() -> Result<(), Box<dyn Error>> {
+        let tempdir = tempfile::tempdir()?;
+        // A 2s main track and a 0.1s stub (like the empty.wav padding some
+        // repositories use). Seeking past the stub must skip it instead of
+        // failing the whole restart with an out-of-range seek.
+        crate::testutil::write_wav(
+            tempdir.path().join("long.wav"),
+            vec![vec![1_i32; 88200]],
+            44100,
+        )?;
+        crate::testutil::write_wav(
+            tempdir.path().join("short.wav"),
+            vec![vec![1_i32; 4410]],
+            44100,
+        )?;
+
+        let song_config = crate::config::Song::new(
+            "seek-short",
+            None,
+            None,
+            None,
+            None,
+            None,
+            vec![
+                crate::config::Track::new("main".to_string(), "long.wav", Some(1)),
+                crate::config::Track::new("stub".to_string(), "short.wav", Some(1)),
+            ],
+            std::collections::HashMap::new(),
+            vec![],
+        );
+        let song = super::Song::new(tempdir.path(), &song_config)?;
+        let target = crate::audio::TargetFormat::new(44100, crate::audio::SampleFormat::Int, 16)?;
+        let context = crate::audio::PlaybackContext::new(target, 1024, None, Default::default());
+        let mut mappings = std::collections::HashMap::new();
+        mappings.insert("main".to_string(), vec![1_u16]);
+        mappings.insert("stub".to_string(), vec![2_u16]);
+
+        // Seek to 1s: the stub file (0.1s) is skipped, the main file plays.
+        let sources = song.create_channel_mapped_sources_from(
+            &context,
+            std::time::Duration::from_secs(1),
+            &mappings,
+        )?;
+        assert_eq!(sources.len(), 1);
+
+        // From the start both files play.
         let sources = song.create_channel_mapped_sources_from(
             &context,
             std::time::Duration::ZERO,
