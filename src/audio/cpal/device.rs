@@ -694,7 +694,9 @@ impl AudioDevice for Device {
             } else if armed.is_some() {
                 armed.clone()
             } else {
-                current_playhead_section(&song, clock.elapsed())
+                // The clock is stream-relative; section bounds are
+                // song-absolute. Offset by the playback start position.
+                current_playhead_section(&song, start_time + clock.elapsed())
             };
 
             // Collect the result of a finished background build. Take the
@@ -766,7 +768,12 @@ impl AudioDevice for Device {
             // Only loop when the section is actually armed.
             if let Some(section) = armed {
                 if !break_requested {
-                    let elapsed = clock.elapsed();
+                    // Section bounds are song-absolute; the clock counts from
+                    // this playback's start. Without the offset, a loop armed
+                    // after starting mid-song (seek, section chip) fires every
+                    // boundary `start_time` too late — the audio runs past the
+                    // section end while the UI wraps on the correct grid.
+                    let elapsed = start_time + clock.elapsed();
                     if let Some(trigger_time) =
                         section_trigger.check(&section, elapsed, loop_trigger_lookahead)
                     {
