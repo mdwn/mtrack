@@ -35,7 +35,6 @@ use crate::{
     playsync::CancelHandle,
     songs::Song,
 };
-use std::sync::Barrier;
 
 use super::transform::{ControlChangeMapper, MidiTransformer, NoteMapper};
 
@@ -65,6 +64,11 @@ pub struct Device {
     midi_to_dmx_mappings: HashMap<u8, String>,
     dmx_engine: Option<Arc<dmx::engine::Engine>>,
     dmx_midi_transformers: HashMap<u8, Vec<MidiTransformer>>,
+    /// Device-owned, always-on beat clock. Present when `beat_clock_enabled` is
+    /// set and the device has an output port. Songs retune it by submitting their
+    /// tick schedule; between songs it either free-runs the last tempo (when
+    /// `persist_tempo` is set) or stays silent.
+    beat_clock_engine: Option<Arc<BeatClockEngine>>,
 }
 
 impl Device {
@@ -79,6 +83,7 @@ impl Device {
             midi_to_dmx_mappings: HashMap::new(),
             dmx_engine: None,
             dmx_midi_transformers: HashMap::new(),
+            beat_clock_engine: None,
         }
     }
 }
@@ -235,82 +240,23 @@ impl super::Device for Device {
         let playback_delay = self.playback_delay;
         let mut connection = output.connect(output_port, "mtrack player")?;
 
-        // Optionally set up beat clock on a second connection
-        let beat_clock_handle = if self.beat_clock_enabled {
-            if let Some(ref beat_clock) = midi_sheet.beat_clock {
-                let clock_output = MidiOutput::new("mtrack beat clock output")?;
-                let mut clock_connection =
-                    clock_output.connect(output_port, "mtrack beat clock")?;
-                let clock_cancel = cancel_handle.clone();
-                let clock_playback_delay = playback_delay;
-                let clock_start_time = start_time;
-                // Use a dedicated wall clock for beat clock timing instead of
-                // the audio-derived PlaybackClock. The audio clock only updates
-                // once per buffer callback (~23ms at 1024/44.1kHz), causing the
-                // beat clock's spin_sleep to overshoot by variable amounts.
-                // A wall clock provides smooth, sub-millisecond precision.
-                let clock_clock = PlaybackClock::wall();
-
-                // Build a small wrapper that owns the PrecomputedBeatClock data we need.
-                // We can't move midi_sheet into the closure since the note thread uses it,
-                // so re-extract the tick data.
-                let ticks: Vec<Duration> = beat_clock.ticks_from(Duration::ZERO).to_vec();
-
-                // Internal barrier to synchronize the beat clock thread with the note
-                // playback thread. The note thread will wait on this after the external
-                // play_barrier releases, so both start sending at the same time.
-                let internal_barrier = Arc::new(Barrier::new(2));
-                let clock_internal_barrier = internal_barrier.clone();
-
-                info!("Starting MIDI beat clock thread.");
-                Some((
-                    thread::spawn(move || {
-                        // Elevate to real-time thread priority to minimize
-                        // scheduling jitter on clock tick delivery.
-                        promote_to_realtime_thread();
-
-                        // Wait for the note thread to signal us after it passes the
-                        // external play_barrier.
-                        clock_internal_barrier.wait();
-
-                        if clock_cancel.is_cancelled() {
-                            return;
-                        }
-
-                        // Sleep the playback delay using a simple spin_sleep.
-                        if !clock_playback_delay.is_zero() {
-                            spin_sleep::sleep(clock_playback_delay);
-                        }
-
-                        if clock_cancel.is_cancelled() {
-                            return;
-                        }
-
-                        // Start the wall clock right before we begin sending.
-                        clock_clock.start();
-
-                        run_beat_clock(
-                            &mut clock_connection,
-                            &ticks,
-                            clock_start_time,
-                            &clock_cancel,
-                            &clock_clock,
-                        );
-                    }),
-                    internal_barrier,
-                ))
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        // Extract the internal barrier (if any) for synchronizing the beat clock thread.
-        let (beat_clock_join, beat_clock_internal_barrier) = match beat_clock_handle {
-            Some((handle, barrier)) => (Some(handle), Some(barrier)),
-            None => (None, None),
-        };
+        // Hand this song's beat clock schedule to the always-on device engine. The
+        // engine (not a per-song thread) owns the clock output: it syncs to the
+        // shared playback clock's "go" signal, plays this schedule, and then holds
+        // the last tempo until the next song retunes it.
+        if let (Some(engine), Some(beat_clock)) =
+            (&self.beat_clock_engine, midi_sheet.beat_clock.as_ref())
+        {
+            let ticks: Arc<Vec<Duration>> =
+                Arc::new(beat_clock.ticks_from(Duration::ZERO).to_vec());
+            engine.play(BeatClockPlay {
+                ticks,
+                start_time,
+                playback_delay,
+                cancel: cancel_handle.clone(),
+                clock: clock.clone(),
+            });
+        }
 
         let join_handle = {
             let cancel_handle = cancel_handle.clone();
@@ -327,7 +273,6 @@ impl super::Device for Device {
                         ready_tx,
                         finished,
                         exclude_channels: &exclude_midi_channels,
-                        beat_clock_barrier: beat_clock_internal_barrier,
                         clock: &clock,
                         loop_playback: song.loop_playback(),
                         loop_break: loop_break.clone(),
@@ -346,12 +291,6 @@ impl super::Device for Device {
 
         if join_handle.join().is_err() {
             return Err("Error while joining thread!".into());
-        }
-
-        if let Some(handle) = beat_clock_join {
-            if handle.join().is_err() {
-                return Err("Error while joining beat clock thread!".into());
-            }
         }
 
         info!("MIDI playback stopped.");
@@ -568,6 +507,20 @@ pub fn get(
     midi_device.dmx_engine = dmx_engine;
     midi_device.dmx_midi_transformers = dmx_midi_transformers;
 
+    // Spawn the always-on beat clock engine when the beat clock is enabled. Songs
+    // retune it as they play; `persist_tempo` controls whether it free-runs the
+    // last tempo or stays silent between songs.
+    if midi_device.beat_clock_enabled {
+        if let Some(ref output_port) = midi_device.output_port {
+            midi_device.beat_clock_engine = Some(Arc::new(BeatClockEngine::new(
+                output_port.clone(),
+                config.persist_tempo(),
+            )));
+        } else {
+            warn!("beat_clock is enabled but the MIDI device has no output port; ignoring.");
+        }
+    }
+
     // We've verified that there's only one element in the vector, so this should be safe.
     Ok(midi_device)
 }
@@ -681,7 +634,6 @@ struct PlaybackContext<'a> {
     ready_tx: crate::playsync::ReadyGuard,
     finished: Arc<AtomicBool>,
     exclude_channels: &'a HashSet<u8>,
-    beat_clock_barrier: Option<Arc<Barrier>>,
     clock: &'a PlaybackClock,
     loop_playback: bool,
     loop_break: Arc<AtomicBool>,
@@ -705,10 +657,8 @@ fn run_playback(sender: &mut dyn MidiSender, mut ctx: PlaybackContext<'_>) {
         std::hint::spin_loop();
     }
 
-    // Signal the beat clock thread (if any) to start in sync with us.
-    if let Some(ref barrier) = ctx.beat_clock_barrier {
-        barrier.wait();
-    }
+    // The beat clock engine (if any) keys off this same shared clock's start
+    // signal, so it begins in sync with us without an explicit rendezvous.
 
     if ctx.cancel_handle.is_cancelled() {
         ctx.finished.store(true, Ordering::Relaxed);
@@ -828,13 +778,19 @@ fn realtime_bytes(msg: midly::live::SystemRealtime) -> Vec<u8> {
 }
 
 /// Runs the beat clock on a MIDI sender, sending START/CONTINUE, timing clocks, and STOP.
+///
+/// Returns the spacing between the final two clock ticks it actually delivered —
+/// i.e. the instantaneous tempo at the point playback ended (natural end or
+/// cancellation). Returns `None` if fewer than two ticks were sent, in which case
+/// the tempo can't be determined. Callers use this to keep the clock free-running
+/// at the last known tempo between songs.
 fn run_beat_clock(
     sender: &mut dyn MidiSender,
     ticks: &[Duration],
     start_time: Duration,
     cancel_handle: &CancelHandle,
     clock: &PlaybackClock,
-) {
+) -> Option<Duration> {
     use midly::live::SystemRealtime;
 
     // Send START or CONTINUE
@@ -854,10 +810,15 @@ fn run_beat_clock(
     let clock_bytes = realtime_bytes(SystemRealtime::TimingClock);
     let stop_bytes = realtime_bytes(SystemRealtime::Stop);
 
+    // Track the spacing between consecutive delivered ticks so we can report the
+    // final tempo when we stop.
+    let mut prev_tick: Option<Duration> = None;
+    let mut last_interval: Option<Duration> = None;
+
     for tick_time in remaining_ticks {
         if cancel_handle.is_cancelled() {
             let _ = sender.send(&stop_bytes);
-            return;
+            return last_interval;
         }
 
         let target_wall = *tick_time - start_time;
@@ -868,16 +829,211 @@ fn run_beat_clock(
 
         if cancel_handle.is_cancelled() {
             let _ = sender.send(&stop_bytes);
-            return;
+            return last_interval;
         }
 
         if let Err(e) = sender.send(&clock_bytes) {
             debug!("MIDI beat clock send failed: {:?}", e);
         }
+
+        if let Some(prev) = prev_tick {
+            last_interval = Some(tick_time.saturating_sub(prev));
+        }
+        prev_tick = Some(*tick_time);
     }
 
     // Send STOP when finished
     let _ = sender.send(&stop_bytes);
+    last_interval
+}
+
+/// A song's beat clock schedule, submitted to the [`BeatClockEngine`].
+struct BeatClockPlay {
+    /// Absolute tick timestamps for the song (from the song's tempo map).
+    ticks: Arc<Vec<Duration>>,
+    /// Position in the tick timeline to begin from (for seeks/section starts).
+    start_time: Duration,
+    /// Delay before the first clock is sent, matching note playback.
+    playback_delay: Duration,
+    /// Cancellation for this song.
+    cancel: CancelHandle,
+    /// The shared playback clock whose `start()` is the "go" signal. The engine
+    /// waits on it (cancel-aware) so its `Start` lands with the first note.
+    clock: PlaybackClock,
+}
+
+/// A command sent to the beat clock engine thread.
+enum BeatClockCommand {
+    /// Play a song's schedule, then hold its final tempo.
+    Play(BeatClockPlay),
+    /// Terminate the engine thread.
+    Shutdown,
+}
+
+/// A device-owned, always-on MIDI beat clock.
+///
+/// A single long-lived thread owns the clock output for the device's lifetime.
+/// Songs don't spawn their own clock threads — they submit a [`BeatClockPlay`]
+/// and the engine plays it (see [`run_beat_clock`]), then, if `persist_tempo` is
+/// set, keeps emitting timing clocks (0xF8) at the song's final tempo so
+/// downstream gear holds its tempo until the next song retunes the engine. With
+/// `persist_tempo` off it stays silent between songs, matching the original
+/// send-Start/clocks/Stop-then-silent behavior.
+struct BeatClockEngine {
+    tx: mpsc::Sender<BeatClockCommand>,
+    join: Mutex<Option<thread::JoinHandle<()>>>,
+}
+
+impl BeatClockEngine {
+    /// Spawns the engine thread, which opens its own output connection to `port`
+    /// and waits for schedules.
+    fn new(port: MidiOutputPort, persist_tempo: bool) -> Self {
+        let (tx, rx) = mpsc::channel::<BeatClockCommand>();
+        let join = thread::spawn(move || {
+            let output = match MidiOutput::new("mtrack beat clock output") {
+                Ok(output) => output,
+                Err(e) => {
+                    warn!("Unable to create beat clock output: {:?}", e);
+                    return;
+                }
+            };
+            let mut connection = match output.connect(&port, "mtrack beat clock") {
+                Ok(connection) => connection,
+                Err(e) => {
+                    warn!("Unable to connect beat clock output: {:?}", e);
+                    return;
+                }
+            };
+
+            // Elevate to real-time thread priority to minimize scheduling jitter
+            // on clock tick delivery.
+            promote_to_realtime_thread();
+
+            beat_clock_engine_loop(&mut connection, persist_tempo, &rx);
+        });
+
+        BeatClockEngine {
+            tx,
+            join: Mutex::new(Some(join)),
+        }
+    }
+
+    /// Submits a song's schedule to the engine.
+    fn play(&self, play: BeatClockPlay) {
+        let _ = self.tx.send(BeatClockCommand::Play(play));
+    }
+}
+
+impl Drop for BeatClockEngine {
+    fn drop(&mut self) {
+        let _ = self.tx.send(BeatClockCommand::Shutdown);
+        if let Some(handle) = self.join.lock().expect("beat clock engine lock").take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+/// The engine's main loop: alternately plays a submitted schedule and (when
+/// `persist_tempo` is set) free-runs the last tempo until the next schedule
+/// arrives.
+fn beat_clock_engine_loop(
+    sender: &mut dyn MidiSender,
+    persist_tempo: bool,
+    rx: &mpsc::Receiver<BeatClockCommand>,
+) {
+    // The inter-tick interval of the last schedule we played, used to hold tempo.
+    let mut last_interval: Option<Duration> = None;
+
+    loop {
+        let command = match next_command(sender, persist_tempo, last_interval, rx) {
+            Some(command) => command,
+            // Sender dropped: the device is going away.
+            None => return,
+        };
+
+        let play = match command {
+            BeatClockCommand::Play(play) => play,
+            BeatClockCommand::Shutdown => return,
+        };
+
+        // Wait for the shared "go" signal so our Start lands with the first note.
+        // This is cancel-aware, so an early stop can't wedge the engine.
+        play.clock.wait_for_start_or_cancel(&play.cancel);
+        if play.cancel.is_cancelled() {
+            continue;
+        }
+
+        // Sleep the playback delay, matching the note thread.
+        if !play.playback_delay.is_zero() {
+            spin_sleep::sleep(play.playback_delay);
+        }
+        if play.cancel.is_cancelled() {
+            continue;
+        }
+
+        // Use a dedicated wall clock for tick timing instead of the audio-derived
+        // playback clock: the audio clock only updates once per buffer callback
+        // (~23ms at 1024/44.1kHz), which would make the beat clock's spin_sleep
+        // overshoot by variable amounts. A wall clock is smooth and sub-ms.
+        let wall = PlaybackClock::wall();
+        wall.start();
+        last_interval = run_beat_clock(sender, &play.ticks, play.start_time, &play.cancel, &wall);
+    }
+}
+
+/// Returns the next command to act on. If persistence is enabled and a tempo is
+/// known, free-runs the clock at that tempo while waiting; otherwise blocks
+/// silently. Returns `None` if the sender is dropped.
+fn next_command(
+    sender: &mut dyn MidiSender,
+    persist_tempo: bool,
+    last_interval: Option<Duration>,
+    rx: &mpsc::Receiver<BeatClockCommand>,
+) -> Option<BeatClockCommand> {
+    // A schedule may already be queued (e.g. a rapid stop→play); take it now so we
+    // don't emit an idle tempo blip between back-to-back songs.
+    match rx.try_recv() {
+        Ok(command) => return Some(command),
+        Err(std::sync::mpsc::TryRecvError::Disconnected) => return None,
+        Err(std::sync::mpsc::TryRecvError::Empty) => {}
+    }
+
+    match (persist_tempo, last_interval) {
+        (true, Some(interval)) => run_idle_until_command(sender, interval, rx),
+        // Not persisting (or no tempo yet): wait silently for the next schedule.
+        _ => rx.recv().ok(),
+    }
+}
+
+/// Free-runs the clock at `interval`, emitting timing clocks until a command
+/// arrives (returned) or the sender is dropped (`None`). Timing is anchored to a
+/// wall clock so the tempo does not drift.
+fn run_idle_until_command(
+    sender: &mut dyn MidiSender,
+    interval: Duration,
+    rx: &mpsc::Receiver<BeatClockCommand>,
+) -> Option<BeatClockCommand> {
+    use midly::live::SystemRealtime;
+    use std::sync::mpsc::RecvTimeoutError;
+
+    let clock_bytes = realtime_bytes(SystemRealtime::TimingClock);
+    let clock = PlaybackClock::wall();
+    clock.start();
+    let mut next_tick = interval;
+
+    loop {
+        let wait = next_tick.saturating_sub(clock.elapsed());
+        match rx.recv_timeout(wait) {
+            Ok(command) => return Some(command),
+            Err(RecvTimeoutError::Timeout) => {
+                if let Err(e) = sender.send(&clock_bytes) {
+                    debug!("MIDI idle beat clock send failed: {:?}", e);
+                }
+                next_tick += interval;
+            }
+            Err(RecvTimeoutError::Disconnected) => return None,
+        }
+    }
 }
 
 /// Parameters for playing pre-computed MIDI events.
@@ -1001,6 +1157,7 @@ mod test {
             assert!(device.midi_to_dmx_mappings.is_empty());
             assert!(device.dmx_engine.is_none());
             assert!(device.dmx_midi_transformers.is_empty());
+            assert!(device.beat_clock_engine.is_none());
         }
     }
 
@@ -1967,7 +2124,6 @@ mod test {
                     ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
                     finished: finished.clone(),
                     exclude_channels: &exclude,
-                    beat_clock_barrier: None,
                     clock: &clock,
                     loop_playback: false,
                     loop_break: Arc::new(AtomicBool::new(false)),
@@ -2002,7 +2158,6 @@ mod test {
                     ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
                     finished: finished.clone(),
                     exclude_channels: &exclude,
-                    beat_clock_barrier: None,
                     clock: &clock,
                     loop_playback: false,
                     loop_break: Arc::new(AtomicBool::new(false)),
@@ -2044,7 +2199,6 @@ mod test {
                     ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
                     finished: finished.clone(),
                     exclude_channels: &exclude,
-                    beat_clock_barrier: None,
                     clock: &clock,
                     loop_playback: false,
                     loop_break: Arc::new(AtomicBool::new(false)),
@@ -2080,7 +2234,6 @@ mod test {
                     ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
                     finished: finished.clone(),
                     exclude_channels: &exclude,
-                    beat_clock_barrier: None,
                     clock: &clock,
                     loop_playback: false,
                     loop_break: Arc::new(AtomicBool::new(false)),
@@ -2133,7 +2286,6 @@ mod test {
                     ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
                     finished: finished.clone(),
                     exclude_channels: &exclude,
-                    beat_clock_barrier: None,
                     clock: &clock,
                     loop_playback: false,
                     loop_break: Arc::new(AtomicBool::new(false)),
@@ -2172,7 +2324,6 @@ mod test {
                         ready_tx: crate::playsync::ReadyGuard::new(ready_tx),
                         finished: finished_clone,
                         exclude_channels: &exclude,
-                        beat_clock_barrier: None,
                         clock: &clock_clone,
                         loop_playback: false,
                         loop_break: Arc::new(AtomicBool::new(false)),
@@ -2311,6 +2462,257 @@ mod test {
             assert_eq!(sent.len(), 2);
             assert_eq!(sent[0], start_bytes());
             assert_eq!(sent[1], stop_bytes());
+        }
+
+        #[test]
+        fn returns_last_delivered_interval() {
+            // The returned interval reflects the tempo at the end of playback:
+            // the spacing between the final two delivered ticks.
+            let ticks = vec![
+                Duration::from_millis(1),
+                Duration::from_millis(3),
+                Duration::from_millis(6),
+            ];
+            let cancel = CancelHandle::new();
+            let mut sender = MockSender::new();
+            let clock = PlaybackClock::wall();
+
+            let interval = run_beat_clock(&mut sender, &ticks, Duration::ZERO, &cancel, &clock);
+
+            // Last two ticks: 6ms - 3ms = 3ms.
+            assert_eq!(interval, Some(Duration::from_millis(3)));
+        }
+
+        #[test]
+        fn returns_none_for_single_tick() {
+            // A single tick can't establish an interval, so no tempo is reported.
+            let ticks = vec![Duration::from_millis(1)];
+            let cancel = CancelHandle::new();
+            let mut sender = MockSender::new();
+            let clock = PlaybackClock::wall();
+
+            let interval = run_beat_clock(&mut sender, &ticks, Duration::ZERO, &cancel, &clock);
+
+            assert_eq!(interval, None);
+        }
+    }
+
+    mod beat_clock_engine_tests {
+        use super::*;
+        use crate::playsync::CancelHandle;
+        use midly::live::SystemRealtime;
+        use std::sync::mpsc;
+        use std::sync::Arc;
+
+        fn clock_bytes() -> Vec<u8> {
+            realtime_bytes(SystemRealtime::TimingClock)
+        }
+        fn start_bytes() -> Vec<u8> {
+            realtime_bytes(SystemRealtime::Start)
+        }
+        fn stop_bytes() -> Vec<u8> {
+            realtime_bytes(SystemRealtime::Stop)
+        }
+
+        /// A sender whose buffer can be inspected from another thread while the
+        /// engine loop runs.
+        #[derive(Clone)]
+        struct SharedSender {
+            sent: Arc<parking_lot::Mutex<Vec<Vec<u8>>>>,
+        }
+
+        impl SharedSender {
+            fn new() -> Self {
+                SharedSender {
+                    sent: Arc::new(parking_lot::Mutex::new(Vec::new())),
+                }
+            }
+            fn len(&self) -> usize {
+                self.sent.lock().len()
+            }
+        }
+
+        impl MidiSender for SharedSender {
+            fn send(&mut self, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
+                self.sent.lock().push(bytes.to_vec());
+                Ok(())
+            }
+        }
+
+        /// Builds a `BeatClockPlay` whose clock has already been started, so the
+        /// engine's `wait_for_start_or_cancel` returns immediately.
+        fn ready_play(ticks: Vec<Duration>, cancel: CancelHandle) -> BeatClockPlay {
+            let clock = PlaybackClock::wall();
+            clock.start();
+            BeatClockPlay {
+                ticks: Arc::new(ticks),
+                start_time: Duration::ZERO,
+                playback_delay: Duration::ZERO,
+                cancel,
+                clock,
+            }
+        }
+
+        #[test]
+        fn shutdown_before_any_schedule_sends_nothing() {
+            let (tx, rx) = mpsc::channel();
+            let mut sender = SharedSender::new();
+
+            tx.send(BeatClockCommand::Shutdown).unwrap();
+            // persist on, but no tempo known yet → must block on recv, then exit.
+            beat_clock_engine_loop(&mut sender, true, &rx);
+
+            assert!(sender.sent.lock().is_empty());
+        }
+
+        #[test]
+        fn plays_schedule_then_holds_tempo_when_persisting() {
+            let (tx, rx) = mpsc::channel();
+            let sender = SharedSender::new();
+            let loop_sender = sender.clone();
+            let handle = thread::spawn(move || {
+                let mut sender = loop_sender;
+                beat_clock_engine_loop(&mut sender, true, &rx);
+            });
+
+            // A 3-tick schedule at ~10ms spacing; final interval = 10ms.
+            let cancel = CancelHandle::new();
+            tx.send(BeatClockCommand::Play(ready_play(
+                vec![
+                    Duration::from_millis(10),
+                    Duration::from_millis(20),
+                    Duration::from_millis(30),
+                ],
+                cancel,
+            )))
+            .unwrap();
+
+            // Wait for the schedule (START + 3 clocks + STOP = 5) plus some held
+            // ticks to accumulate.
+            thread::sleep(Duration::from_millis(120));
+            let held = sender.len();
+            assert!(
+                held > 5,
+                "expected schedule (5 msgs) plus held ticks, got {held}"
+            );
+
+            tx.send(BeatClockCommand::Shutdown).unwrap();
+            handle.join().unwrap();
+
+            let sent = sender.sent.lock();
+            // Schedule framing is intact at the front.
+            assert_eq!(sent[0], start_bytes());
+            assert_eq!(sent[1], clock_bytes());
+            assert_eq!(sent[2], clock_bytes());
+            assert_eq!(sent[3], clock_bytes());
+            assert_eq!(sent[4], stop_bytes());
+            // Everything after the STOP is a held timing clock.
+            for msg in &sent[5..] {
+                assert_eq!(*msg, clock_bytes(), "held tempo must be timing clocks");
+            }
+        }
+
+        #[test]
+        fn stays_silent_between_songs_without_persist() {
+            let (tx, rx) = mpsc::channel();
+            let sender = SharedSender::new();
+            let loop_sender = sender.clone();
+            let handle = thread::spawn(move || {
+                let mut sender = loop_sender;
+                beat_clock_engine_loop(&mut sender, false, &rx);
+            });
+
+            let cancel = CancelHandle::new();
+            tx.send(BeatClockCommand::Play(ready_play(
+                vec![Duration::from_millis(5), Duration::from_millis(10)],
+                cancel,
+            )))
+            .unwrap();
+
+            // Give it time to play and then sit idle.
+            thread::sleep(Duration::from_millis(80));
+            let count = sender.len();
+            // START + 2 clocks + STOP = 4, and nothing more without persistence.
+            assert_eq!(count, 4, "expected exactly the schedule, got {count}");
+
+            tx.send(BeatClockCommand::Shutdown).unwrap();
+            handle.join().unwrap();
+
+            let sent = sender.sent.lock();
+            assert_eq!(sent[0], start_bytes());
+            assert_eq!(sent[3], stop_bytes());
+        }
+
+        #[test]
+        fn queued_schedule_preempts_idle_without_blip() {
+            // With a schedule already queued, next_command must take it via
+            // try_recv rather than emitting an idle tick first.
+            let (tx, rx) = mpsc::channel();
+            let mut sender = SharedSender::new();
+
+            let cancel = CancelHandle::new();
+            tx.send(BeatClockCommand::Play(ready_play(
+                vec![Duration::from_millis(1)],
+                cancel,
+            )))
+            .unwrap();
+
+            let command = next_command(&mut sender, true, Some(Duration::from_millis(10)), &rx);
+            assert!(matches!(command, Some(BeatClockCommand::Play(_))));
+            // No idle tick was emitted while a command was already waiting.
+            assert!(sender.sent.lock().is_empty());
+        }
+
+        #[test]
+        fn cancelled_schedule_is_skipped() {
+            let (tx, rx) = mpsc::channel();
+            let sender = SharedSender::new();
+            let loop_sender = sender.clone();
+            let handle = thread::spawn(move || {
+                let mut sender = loop_sender;
+                beat_clock_engine_loop(&mut sender, false, &rx);
+            });
+
+            // A schedule whose clock never starts and is already cancelled: the
+            // engine's cancel-aware wait must let it through without wedging.
+            let cancel = CancelHandle::new();
+            cancel.cancel();
+            let clock = PlaybackClock::wall();
+            tx.send(BeatClockCommand::Play(BeatClockPlay {
+                ticks: Arc::new(vec![Duration::from_millis(10)]),
+                start_time: Duration::ZERO,
+                playback_delay: Duration::ZERO,
+                cancel,
+                clock,
+            }))
+            .unwrap();
+
+            // The engine must remain responsive to Shutdown afterward.
+            tx.send(BeatClockCommand::Shutdown).unwrap();
+            handle.join().unwrap();
+            assert!(sender.sent.lock().is_empty());
+        }
+
+        #[test]
+        fn run_idle_until_command_returns_command_and_emits_ticks() {
+            let (tx, rx) = mpsc::channel();
+            let sender = SharedSender::new();
+            let loop_sender = sender.clone();
+            let handle = thread::spawn(move || {
+                let mut sender = loop_sender;
+                let cmd = run_idle_until_command(&mut sender, Duration::from_millis(10), &rx);
+                assert!(matches!(cmd, Some(BeatClockCommand::Shutdown)));
+            });
+
+            thread::sleep(Duration::from_millis(65));
+            tx.send(BeatClockCommand::Shutdown).unwrap();
+            handle.join().unwrap();
+
+            let sent = sender.sent.lock();
+            assert!(!sent.is_empty(), "idle free-run should emit timing clocks");
+            for msg in sent.iter() {
+                assert_eq!(*msg, clock_bytes());
+            }
         }
     }
 }

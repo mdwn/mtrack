@@ -75,6 +75,16 @@ midi:
   # real-time scheduling entirely with MTRACK_DISABLE_RT_AUDIO=1.
   beat_clock: true
 
+  # (Optional) Keep the beat clock free-running at the last known tempo once a song stops,
+  # until the next song starts. Only meaningful when beat_clock is enabled. When a song ends
+  # (or is stopped), mtrack sends Stop and then keeps emitting Timing Clock messages at that
+  # song's final tempo, so downstream gear (tempo-synced delays, LFOs, arpeggiators, tempo
+  # displays) holds the tempo instead of drifting or resetting during the gap between songs.
+  # When the next song begins, its own tempo takes over. Songs without a tempo map keep the
+  # previously established tempo alive. Defaults to false, which restores the original
+  # behavior where the clock goes silent once a song stops.
+  persist_tempo: true
+
   # (Optional) You can route live MIDI events into the DMX engine with this configuration.
   midi_to_dmx:
 
