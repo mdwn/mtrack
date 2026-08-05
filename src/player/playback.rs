@@ -408,9 +408,17 @@ impl Player {
         // Set play_start_time NOW, at the exact moment playback begins.
         // Offset backwards by start_time so elapsed() reflects song position.
         // We use blocking_lock because we're in a spawn_blocking context.
+        //
+        // Skip it if this playback was cancelled during startup: stop() and
+        // seek_to() clear play_start_time themselves (both cancel while holding
+        // this lock), so stamping it afterwards would leave a stale position
+        // behind — a seek would briefly report the pre-seek offset, and a stop
+        // would report a position while nothing is playing.
         {
             let mut pst = play_start_time.blocking_lock();
-            *pst = Some(SystemTime::now() - start_time);
+            if !cancel_handle.is_cancelled() {
+                *pst = Some(SystemTime::now() - start_time);
+            }
         }
 
         if let Some(audio_join_handle) = audio_join_handle {
@@ -460,12 +468,12 @@ impl Player {
         };
         info!(song = song.name(), "Stopping playback.");
 
-        play_handles.cancel.cancel();
-
         // Reset play start time — the cleanup task skips this when cancelled
-        // so we must do it here.
+        // so we must do it here. Cancel while holding the lock so a playback
+        // still in startup can't stamp play_start_time after we clear it.
         {
             let mut play_start_time = self.play_start_time.lock().await;
+            play_handles.cancel.cancel();
             *play_start_time = None;
         }
 
