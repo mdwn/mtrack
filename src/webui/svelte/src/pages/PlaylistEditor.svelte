@@ -24,7 +24,6 @@
     type PlaylistData,
   } from "../lib/api/config";
   import { playbackStore } from "../lib/ws/stores";
-  import { showConfirm } from "../lib/dialog.svelte";
   import { registerDirtyGuard } from "../lib/dirtyGuard";
   import { t } from "svelte-i18n";
   import { get } from "svelte/store";
@@ -87,19 +86,42 @@
     }
   }
 
+  /** Selection flows one way: clicks write the URL, and `applySelection`
+   * follows it (via the URL-sync effect). Two-way sync between `selected`
+   * and the hash used to ping-pong rapid clicks into an infinite fetch
+   * loop through trailing hashchange events. */
   async function selectPlaylist(name: string) {
-    if (dirty && !(await showConfirm(get(t)("config.discardUnsaved")))) return;
+    // Just write the URL; the URL-sync effect drives `applySelection`. The
+    // global navigation guard (App.svelte#onHashChange) already prompts to
+    // discard unsaved edits on this cross-scope hash change, so a local
+    // check here would double-prompt (with different wording).
+    window.location.hash = `#/playlists/${encodeURIComponent(name)}`;
+  }
+
+  async function applySelection(name: string) {
+    // Commit before the async fetch so the URL-sync effect sees a
+    // consistent state; a newer selection supersedes the fetch below.
+    selected = name;
+    searchQuery = "";
     try {
       error = "";
-      detail = await fetchPlaylist(name);
-      selected = name;
-      editSongs = [...detail.songs];
+      const fetched = await fetchPlaylist(name);
+      if (selected !== name) return;
+      detail = fetched;
+      editSongs = [...fetched.songs];
       assignSlotIds(editSongs);
       dirty = false;
-      searchQuery = "";
-      window.location.hash = `#/playlists/${encodeURIComponent(name)}`;
     } catch (e: any) {
-      error = e.message;
+      // Keep the failed state consistent: `selected` was committed up front,
+      // so clear the (now stale) detail/songs/dirty too, else the header shows
+      // the new name over the previous playlist's body. Guarded so a newer
+      // selection's fetch isn't clobbered.
+      if (selected === name) {
+        error = e.message;
+        detail = null;
+        editSongs = [];
+        dirty = false;
+      }
     }
   }
 
@@ -237,12 +259,13 @@
 
   loadPlaylists();
 
-  // Auto-select playlist from URL after data loads
+  // The URL is the source of truth for the selection (deep links, back
+  // navigation, and in-page clicks all funnel through it).
   $effect(() => {
     if (loading || !routePlaylist || selected === routePlaylist) return;
     const match = playlists.find((p) => p.name === routePlaylist);
     if (match && match.name !== "all_songs") {
-      selectPlaylist(match.name);
+      applySelection(match.name);
     }
   });
 
