@@ -14,6 +14,7 @@
 mod hardware;
 mod navigation;
 mod playback;
+mod seek;
 
 use midly::live::LiveEvent;
 use parking_lot::RwLock;
@@ -275,6 +276,9 @@ pub struct Player {
     loop_time_consumed: Arc<parking_lot::Mutex<Duration>>,
     /// Reactive loop state machine.
     reactive_loop_state: Arc<parking_lot::RwLock<ReactiveLoopState>>,
+    /// Start position for the next play(), set by seeking while stopped.
+    /// Cleared when the playlist position changes.
+    pending_start: Arc<parking_lot::Mutex<Option<Duration>>>,
     /// Notification engine for section loop audio feedback.
     notification_engine: Arc<crate::notification::NotificationEngine>,
     /// Pending debounced task persisting track gains to the config store.
@@ -497,6 +501,7 @@ impl Player {
             section_loop_break: Arc::new(AtomicBool::new(false)),
             loop_time_consumed: Arc::new(parking_lot::Mutex::new(Duration::ZERO)),
             reactive_loop_state: Arc::new(parking_lot::RwLock::new(ReactiveLoopState::Idle)),
+            pending_start: Arc::new(parking_lot::Mutex::new(None)),
             notification_engine: Arc::new(crate::notification::NotificationEngine::with_defaults(
                 44100,
             )),
@@ -1587,6 +1592,117 @@ mod test {
         assert!(result.is_some(), "play_from should succeed");
 
         eventually(|| device.is_playing(), "Song never started playing");
+
+        player.stop().await;
+        eventually(|| !device.is_playing(), "Song never stopped playing");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_seek_while_playing_restarts_at_position() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        let binding = player
+            .audio_device()
+            .expect("audio device should be present");
+        let device = binding.to_mock()?;
+
+        player.play().await?;
+        eventually(|| device.is_playing(), "Song never started playing");
+
+        player.seek_to(Duration::from_millis(200)).await?;
+        eventually(|| device.is_playing(), "Song never resumed after seek");
+
+        let elapsed = player.elapsed().await?.expect("elapsed after seek");
+        assert!(
+            elapsed >= Duration::from_millis(200),
+            "elapsed after seek should be at least the seek target, got {:?}",
+            elapsed
+        );
+        assert!(player.pending_start().is_none());
+
+        player.stop().await;
+        eventually(|| !device.is_playing(), "Song never stopped playing");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_seek_while_stopped_sets_pending_start() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        let binding = player
+            .audio_device()
+            .expect("audio device should be present");
+        let device = binding.to_mock()?;
+
+        player.seek_to(Duration::from_millis(150)).await?;
+        assert_eq!(player.pending_start(), Some(Duration::from_millis(150)));
+        assert!(!device.is_playing(), "seek while stopped must not play");
+
+        // play() consumes the pending position.
+        player.play().await?;
+        eventually(|| device.is_playing(), "Song never started playing");
+        assert!(player.pending_start().is_none());
+        let elapsed = player.elapsed().await?.expect("elapsed after play");
+        assert!(
+            elapsed >= Duration::from_millis(150),
+            "elapsed should start at the pending position, got {:?}",
+            elapsed
+        );
+
+        player.stop().await;
+        eventually(|| !device.is_playing(), "Song never stopped playing");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_seek_pending_cleared_on_navigation() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+
+        player.seek_to(Duration::from_millis(150)).await?;
+        assert!(player.pending_start().is_some());
+        player.next().await;
+        assert!(
+            player.pending_start().is_none(),
+            "navigation must clear the pending seek position"
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_seek_beyond_duration_errors() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+
+        let result = player.seek_to(Duration::from_secs(3600)).await;
+        assert!(result.is_err(), "seeking past the song end should error");
+        assert!(player.pending_start().is_none());
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_seek_to_section_unknown_errors() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+
+        let result = player.seek_to_section("no-such-section").await;
+        assert!(result.is_err());
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_seek_spam_stays_consistent() -> Result<(), Box<dyn Error>> {
+        let player = make_test_player().await?;
+        let binding = player
+            .audio_device()
+            .expect("audio device should be present");
+        let device = binding.to_mock()?;
+
+        player.play().await?;
+        eventually(|| device.is_playing(), "Song never started playing");
+
+        // Rapid repeated seeks must not wedge the player.
+        for ms in [50u64, 120, 80, 200, 30] {
+            player.seek_to(Duration::from_millis(ms)).await?;
+        }
+        eventually(|| device.is_playing(), "Song not playing after seek spam");
+        assert!(player.is_playing().await);
 
         player.stop().await;
         eventually(|| !device.is_playing(), "Song never stopped playing");

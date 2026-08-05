@@ -60,6 +60,8 @@ export interface PlaybackState {
   looping: boolean;
   available_sections: SectionInfo[];
   active_section: ActiveSection | null;
+  /** Start position for the next play, set by seeking while stopped. */
+  pending_start_ms: number | null;
   /** Current tempo/meter from the song's tempo map, sampled at the playhead. */
   tempo: { bpm: number; time_signature: [number, number] } | null;
 }
@@ -109,6 +111,7 @@ export const playbackStore = writable<PlaybackState>({
   looping: false,
   available_sections: [],
   active_section: null,
+  pending_start_ms: null,
   tempo: null,
 });
 
@@ -152,6 +155,7 @@ on("playback", (msg) => {
     looping: m.looping ?? false,
     available_sections: m.available_sections ?? [],
     active_section: m.active_section ?? null,
+    pending_start_ms: m.pending_start_ms ?? null,
     tempo: m.tempo ?? null,
   });
 });

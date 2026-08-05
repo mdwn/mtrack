@@ -58,6 +58,8 @@ enum OscAction {
     SectionAck,
     StopSectionLoop,
     LoopSection,
+    Seek,
+    SeekToSection,
     SetTrackGain,
     Unrecognized,
 }
@@ -95,6 +97,10 @@ pub(super) struct OscEvents {
     stop_section_loop: Matcher,
     /// The OSC address to loop a specific section by name.
     loop_section: Matcher,
+    /// The OSC address to seek to a position (numeric seconds argument).
+    seek: Matcher,
+    /// The OSC address to seek to the start of a named section.
+    seek_section: Matcher,
     /// The OSC address pattern to set an output track's gain in dB.
     track_gain: Matcher,
     /// The raw track gain pattern; the `*` segment carries the track name and
@@ -138,6 +144,8 @@ impl Driver {
                 section_ack: Matcher::new(config.section_ack())?,
                 stop_section_loop: Matcher::new(config.stop_section_loop())?,
                 loop_section: Matcher::new(config.loop_section())?,
+                seek: Matcher::new(config.seek())?,
+                seek_section: Matcher::new(config.seek_section())?,
                 track_gain: Matcher::new(config.track_gain())?,
                 track_gain_pattern: config.track_gain().to_string(),
                 status: config.status().to_string(),
@@ -423,6 +431,39 @@ impl Driver {
                     error!("Failed to loop section '{}': {}", section_name, e);
                 }
             }
+            OscAction::Seek => {
+                // Accept any numeric OSC type as seconds.
+                let seconds = msg.args.first().and_then(|arg| match arg {
+                    OscType::Float(f) => Some(*f as f64),
+                    OscType::Double(d) => Some(*d),
+                    OscType::Int(i) => Some(*i as f64),
+                    _ => None,
+                });
+                match seconds {
+                    Some(seconds) if seconds >= 0.0 && seconds.is_finite() => {
+                        let position = std::time::Duration::from_secs_f64(seconds);
+                        if let Err(e) = player.seek_to(position).await {
+                            error!("Failed to seek to {}s: {}", seconds, e);
+                        }
+                    }
+                    _ => error!("seek OSC message missing valid numeric seconds argument"),
+                }
+            }
+            OscAction::SeekToSection => {
+                let section_name = msg
+                    .args
+                    .first()
+                    .and_then(|arg| match arg {
+                        OscType::String(s) => Some(s.as_str()),
+                        _ => None,
+                    })
+                    .unwrap_or("");
+                if section_name.is_empty() {
+                    error!("seek_section OSC message missing section name argument");
+                } else if let Err(e) = player.seek_to_section(section_name).await {
+                    error!("Failed to seek to section '{}': {}", section_name, e);
+                }
+            }
             OscAction::SetTrackGain => {
                 let track = extract_track_name(&osc_events.track_gain_pattern, &msg.addr);
                 // Accept any numeric OSC type as dB for controller compatibility.
@@ -476,6 +517,10 @@ fn classify_message(osc_events: &OscEvents, addr: &str) -> Result<OscAction, Box
         Ok(OscAction::StopSectionLoop)
     } else if osc_events.loop_section.match_address(&address) {
         Ok(OscAction::LoopSection)
+    } else if osc_events.seek.match_address(&address) {
+        Ok(OscAction::Seek)
+    } else if osc_events.seek_section.match_address(&address) {
+        Ok(OscAction::SeekToSection)
     } else if osc_events.track_gain.match_address(&address) {
         Ok(OscAction::SetTrackGain)
     } else {
@@ -1035,6 +1080,8 @@ mod test {
             section_ack: Matcher::new(config.section_ack()).unwrap(),
             stop_section_loop: Matcher::new(config.stop_section_loop()).unwrap(),
             loop_section: Matcher::new(config.loop_section()).unwrap(),
+            seek: Matcher::new(config.seek()).unwrap(),
+            seek_section: Matcher::new(config.seek_section()).unwrap(),
             track_gain: Matcher::new(config.track_gain()).unwrap(),
             track_gain_pattern: config.track_gain().to_string(),
             status: config.status().to_string(),
@@ -1053,6 +1100,24 @@ mod test {
             assert_eq!(
                 classify_message(&events, "/mtrack/play").unwrap(),
                 OscAction::Play
+            );
+        }
+
+        #[test]
+        fn recognizes_seek() {
+            let events = make_default_osc_events();
+            assert_eq!(
+                classify_message(&events, "/mtrack/seek").unwrap(),
+                OscAction::Seek
+            );
+        }
+
+        #[test]
+        fn recognizes_seek_section() {
+            let events = make_default_osc_events();
+            assert_eq!(
+                classify_message(&events, "/mtrack/seek_section").unwrap(),
+                OscAction::SeekToSection
             );
         }
 

@@ -77,21 +77,54 @@ test.describe("Section Loop Controls", () => {
     );
   });
 
-  test("clicking section chip sends LoopSection gRPC call", async ({
+  test("clicking a section's loop button sends LoopSection gRPC call", async ({
     page,
   }) => {
     // Put into playing state with sections.
     await sendWsMessage(page, wsId, playbackWithSections(wsId));
 
-    // Section chips render inline — no toggle button to open first.
-    const verseChip = page.locator(".section-chip", { hasText: "verse" });
-    await expect(verseChip).toBeVisible();
+    // Each section chip has a dedicated loop button next to the name.
+    const verseGroup = page.locator(".section-chip-group", {
+      hasText: "verse",
+    });
+    await expect(verseGroup).toBeVisible();
 
     const requestPromise = page.waitForRequest((req) =>
       req.url().includes("LoopSection"),
     );
+    await verseGroup.locator(".section-chip-loop").click();
+    await requestPromise;
+  });
+
+  test("clicking a section chip name sends SeekToSection gRPC call", async ({
+    page,
+  }) => {
+    await sendWsMessage(page, wsId, playbackWithSections(wsId));
+
+    const verseChip = page.locator(".section-chip", { hasText: "verse" });
+    await expect(verseChip).toBeVisible();
+
+    const requestPromise = page.waitForRequest((req) =>
+      req.url().includes("SeekToSection"),
+    );
     await verseChip.click();
     await requestPromise;
+  });
+
+  test("loop button is disabled while stopped, seek chip is not", async ({
+    page,
+  }) => {
+    await sendWsMessage(
+      page,
+      wsId,
+      playbackWithSections(wsId, { is_playing: false }),
+    );
+
+    const verseGroup = page.locator(".section-chip-group", {
+      hasText: "verse",
+    });
+    await expect(verseGroup.locator(".section-chip-loop")).toBeDisabled();
+    await expect(verseGroup.locator(".section-chip")).toBeEnabled();
   });
 
   test("clicking the active section chip sends StopSectionLoop gRPC call", async ({

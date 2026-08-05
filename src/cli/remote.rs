@@ -17,7 +17,8 @@ use crate::lighting::parser::utils::parse_time_string;
 use crate::proto::player::v1::player_service_client::PlayerServiceClient;
 use crate::proto::player::v1::{
     GetActiveEffectsRequest, GetCuesRequest, NextRequest, PlayFromRequest, PlayRequest,
-    PreviousRequest, Song, StatusRequest, StopRequest, SwitchToPlaylistRequest,
+    PreviousRequest, SeekRequest, SeekToSectionRequest, Song, StatusRequest, StopRequest,
+    SwitchToPlaylistRequest,
 };
 use crate::util;
 use std::error::Error;
@@ -68,6 +69,32 @@ pub async fn play(host_port: Option<String>, from: Option<String>) -> Result<(),
         let response = client.play(Request::new(PlayRequest {})).await?;
         println!("Playing the song:");
         print_song(response.into_inner().song)?;
+    }
+    Ok(())
+}
+
+pub async fn seek(host_port: Option<String>, to: &str) -> Result<(), Box<dyn Error>> {
+    let mut client = connect(host_port).await?;
+    // Try to parse the target as a time; anything unparseable is a section name.
+    match parse_time_string(to) {
+        Ok(position) => {
+            let position = prost_types::Duration::try_from(position)
+                .map_err(|e| format!("Failed to convert duration: {}", e))?;
+            client
+                .seek(Request::new(SeekRequest {
+                    position: Some(position),
+                }))
+                .await?;
+            println!("Seeked to {}", to);
+        }
+        Err(_) => {
+            client
+                .seek_to_section(Request::new(SeekToSectionRequest {
+                    section_name: to.to_string(),
+                }))
+                .await?;
+            println!("Seeked to section {}", to);
+        }
     }
     Ok(())
 }

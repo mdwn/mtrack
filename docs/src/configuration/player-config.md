@@ -167,6 +167,11 @@ controllers:
   stop_section_loop: /mtrack/stop_section_loop
   loop_section: /mtrack/loop_section
 
+  # Seek paths. `seek` takes a numeric seconds argument; `seek_section`
+  # takes a section name string argument.
+  seek: /mtrack/seek
+  seek_section: /mtrack/seek_section
+
 
 # The MIDI controller configuration.
 - kind: midi

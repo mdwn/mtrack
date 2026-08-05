@@ -58,6 +58,7 @@ impl Player {
             }
             *self.active_playlist.write() = "all_songs".to_string();
         }
+        self.clear_pending_start();
 
         // Start playback with the lock already held.
         self.play_from_locked(start_time, &mut join).await
@@ -96,6 +97,7 @@ impl Player {
             PlaylistDirection::Next => playlist.next()?,
             PlaylistDirection::Prev => playlist.prev()?,
         };
+        self.clear_pending_start();
         self.emit_song_change(&song);
         drop(join);
         self.load_song_samples(&song);
@@ -138,6 +140,7 @@ impl Player {
         }
 
         *self.active_playlist.write() = name.to_string();
+        self.clear_pending_start();
 
         // Persist the choice to the config store, unless it's "all_songs" (session-only).
         if name != "all_songs" {
