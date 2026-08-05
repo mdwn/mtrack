@@ -754,9 +754,11 @@ fn run_playback(sender: &mut dyn MidiSender, mut ctx: PlaybackContext<'_>) {
             break;
         }
 
-        // Check for section loop using shared monitor.
+        // Check for section loop using shared monitor. Section bounds are
+        // song-absolute while the clock counts from this playback's start,
+        // so offset by the start position.
         if !ctx.section_loop_break.load(Ordering::Relaxed) {
-            let elapsed = ctx.clock.elapsed();
+            let elapsed = ctx.start_time + ctx.clock.elapsed();
             match section_monitor.poll(&ctx.active_section, elapsed) {
                 crate::section_loop::LoopPoll::Triggered(section) => {
                     if ctx.cancel_handle.is_cancelled() {

@@ -30,6 +30,24 @@ use crate::{playsync::CancelHandle, songs::Song};
 use super::{Engine, MidiDmxPlayback};
 use crate::midi::playback::PrecomputedMidi;
 
+/// Song time to write while resuming after a section-loop break.
+///
+/// `break_clock` is the song-absolute clock captured at the break instant
+/// (`start_time + clock.elapsed()` then). The live playback clock is
+/// stream-relative (zero at playback start), so it must be offset by
+/// `start_time` the same way before taking the delta — otherwise the resume
+/// drops an extra `start_time`, freezing then lagging DMX song time after a
+/// loop that was started mid-song (seek / section chip).
+fn resume_song_time(
+    resume_time: Duration,
+    break_clock: Duration,
+    start_time: Duration,
+    clock_elapsed: Duration,
+) -> Duration {
+    let since_break = (start_time + clock_elapsed).saturating_sub(break_clock);
+    resume_time + since_break
+}
+
 impl Engine {
     /// Plays the given song through the DMX interface.
     pub fn play(
@@ -290,10 +308,14 @@ impl Engine {
                         break;
                     }
 
-                    // Post-break: advance song time from resume point.
+                    // Post-break: advance song time from resume point. The
+                    // clock is offset by start_time inside resume_song_time so
+                    // the delta since the break is measured in the same
+                    // (song-absolute) space break_clock was stored in.
                     if let Some((resume_time, break_clock)) = continue_from {
-                        let since_break = clock.elapsed().saturating_sub(break_clock);
-                        dmx_engine.update_song_time(resume_time + since_break);
+                        let song_time =
+                            resume_song_time(resume_time, break_clock, start_time, clock.elapsed());
+                        dmx_engine.update_song_time(song_time);
                         thread::sleep(Duration::from_millis(10));
                         continue;
                     }
@@ -302,7 +324,7 @@ impl Engine {
                     // which may already be cleared by stop_section_loop).
                     if section_loop_break.load(Ordering::Relaxed) {
                         if let Some(section) = section_monitor.cached_section().cloned() {
-                            let elapsed = clock.elapsed();
+                            let elapsed = start_time + clock.elapsed();
                             let current_pos = if let Some(iter_start) = iteration_start {
                                 let time_since = elapsed.saturating_sub(iter_start);
                                 let sd = section.end_time.saturating_sub(section.start_time);
@@ -333,7 +355,9 @@ impl Engine {
                         continue;
                     }
 
-                    let elapsed = clock.elapsed();
+                    // Section bounds are song-absolute; the clock counts from
+                    // this playback's start, so offset by the start position.
+                    let elapsed = start_time + clock.elapsed();
                     match section_monitor.poll(&active_section, elapsed) {
                         crate::section_loop::LoopPoll::Waiting(ref section) => {
                             let section_duration =
@@ -587,5 +611,59 @@ impl Engine {
                 thread::sleep(Duration::from_millis(10));
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resume_song_time;
+    use std::time::Duration;
+
+    fn secs(s: u64) -> Duration {
+        Duration::from_secs(s)
+    }
+
+    #[test]
+    fn resume_advances_from_song_top() {
+        // Played from the top (start_time = 0). The loop broke at the section
+        // end (resume_time = 50s) with a song-absolute break_clock of 40s.
+        // 2s of wall-clock later the DMX song time should be 52s.
+        let start_time = secs(0);
+        let break_clock = start_time + secs(40); // song-absolute
+        let resume_time = secs(50);
+        assert_eq!(
+            resume_song_time(resume_time, break_clock, start_time, secs(42)),
+            secs(52),
+        );
+    }
+
+    #[test]
+    fn resume_advances_when_started_mid_song() {
+        // Regression for the section-loop-offset review: playback started
+        // mid-song (start_time = 30s). The loop broke 10s of wall-clock in, so
+        // the stored break_clock is song-absolute 40s, at the section end
+        // (resume_time = 50s). The stream-relative clock reads 10s at the
+        // break and 12s two seconds later.
+        let start_time = secs(30);
+        let break_clock = start_time + secs(10); // = 40s, song-absolute
+        let resume_time = secs(50);
+
+        // At the break instant: no advance yet.
+        assert_eq!(
+            resume_song_time(resume_time, break_clock, start_time, secs(10)),
+            secs(50),
+        );
+        // 2s of wall-clock later: advanced by exactly 2s. The pre-fix formula
+        // `clock.elapsed().saturating_sub(break_clock)` = 12s - 40s saturates
+        // to zero here, freezing DMX song time at 50s — this asserts 52s.
+        assert_eq!(
+            resume_song_time(resume_time, break_clock, start_time, secs(12)),
+            secs(52),
+        );
+        // Still tracks 1:1 further along.
+        assert_eq!(
+            resume_song_time(resume_time, break_clock, start_time, secs(15)),
+            secs(55),
+        );
     }
 }
