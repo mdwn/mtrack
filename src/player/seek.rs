@@ -63,10 +63,14 @@ impl Player {
         // Fade the audio to avoid a click, then cancel playback. The cleanup
         // task observes the cancellation and takes the StopCancelled path,
         // leaving player state to us.
+        // Cancel while holding the play_start_time lock: a playback still in
+        // startup stamps play_start_time under that lock and skips the stamp
+        // when cancelled, so this ordering keeps it from writing the pre-seek
+        // position back after we clear it.
         self.fade_out_current_audio();
-        handles.cancel.cancel();
         {
             let mut play_start_time = self.play_start_time.lock().await;
+            handles.cancel.cancel();
             *play_start_time = None;
         }
 

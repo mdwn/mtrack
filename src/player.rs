@@ -1269,6 +1269,26 @@ mod test {
         Ok(player)
     }
 
+    /// Waits until the player reports an elapsed position, and returns it.
+    ///
+    /// `play_start_time` is set inside `play_files` just after `clock.start()`,
+    /// while the mock device raises `is_playing` before it signals readiness — so
+    /// `elapsed()` can still be `None` for a moment after `is_playing` turns true.
+    /// Waiting for the mock device is not enough on a loaded machine.
+    async fn elapsed_eventually(player: &Arc<Player>) -> Result<Duration, Box<dyn Error>> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            if let Some(elapsed) = player.elapsed().await? {
+                return Ok(elapsed);
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "player never reported an elapsed position"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
     /// Helper to create a player with the standard test assets (audio + MIDI).
     async fn make_test_player() -> Result<Arc<Player>, Box<dyn Error>> {
         make_test_player_with_config(
@@ -1329,20 +1349,7 @@ mod test {
 
         player.play().await?;
         eventually(|| device.is_playing(), "Song never started playing");
-
-        // play_start_time is set inside play_files after clock.start(),
-        // so there may be a brief gap after is_playing becomes true.
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
-        loop {
-            if player.elapsed().await?.is_some() {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "elapsed should have a value while playing"
-            );
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        elapsed_eventually(&player).await?;
 
         player.stop().await;
         eventually(|| !device.is_playing(), "Song never stopped playing");
@@ -1612,7 +1619,7 @@ mod test {
         player.seek_to(Duration::from_millis(200)).await?;
         eventually(|| device.is_playing(), "Song never resumed after seek");
 
-        let elapsed = player.elapsed().await?.expect("elapsed after seek");
+        let elapsed = elapsed_eventually(&player).await?;
         assert!(
             elapsed >= Duration::from_millis(200),
             "elapsed after seek should be at least the seek target, got {:?}",
@@ -1641,7 +1648,7 @@ mod test {
         player.play().await?;
         eventually(|| device.is_playing(), "Song never started playing");
         assert!(player.pending_start().is_none());
-        let elapsed = player.elapsed().await?.expect("elapsed after play");
+        let elapsed = elapsed_eventually(&player).await?;
         assert!(
             elapsed >= Duration::from_millis(150),
             "elapsed should start at the pending position, got {:?}",
