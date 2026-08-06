@@ -15,6 +15,14 @@ songs: /mnt/song-storage
 # The path to the playlist file.
 playlist: /mnt/playlist.yaml
 
+# (Optional) Player-wide metronome defaults. Songs enable the metronome with
+# a `metronome:` block in song.yaml; sounds not overridden there fall back to
+# these, so `metronome: {}` is enough per song once this is configured.
+metronome:
+  sounds:
+    accent: { freq: 1600, volume: 1.0 }
+    normal: { freq: 1200, volume: 0.8 }
+
 # The audio configuration for mtrack.
 audio:
   # This audio device will be matched as best as possible against the devices on your system.

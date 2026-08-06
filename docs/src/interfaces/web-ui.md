@@ -73,7 +73,9 @@ The dashboard is the landing page, providing an at-a-glance view of the player s
   bar). When a song has defined sections, section chips appear: clicking a section name seeks
   to its start, and the small loop button next to it arms a section loop. An active loop shows
   the section name and a "Stop Loop" button. Beat/measure position is displayed when beat grid
-  data is available.
+  data is available, along with a visual metronome: one dot per beat of the current meter with
+  the active beat highlighted, and a pulse that flashes on every beat (accented on downbeats)
+  while playing.
 - **Playlist selector** — Dropdown to switch between all available playlists. The current
   playlist's songs are listed below. Songs are clickable to jump directly to a song during
   playback.
