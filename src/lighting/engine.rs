@@ -684,13 +684,16 @@ impl EffectEngine {
 
             if let Some(effect) = self.active_effects.remove(&effect_id) {
                 // Clean up per-layer multipliers for completed effects
-                let dimmer_key = multiplier_key("dimmer", effect.layer);
-                let pulse_key = multiplier_key("pulse", effect.layer);
+                let multiplier_keys: Vec<String> = MULTIPLIER_PREFIXES
+                    .iter()
+                    .map(|prefix| multiplier_key(prefix, effect.layer))
+                    .collect();
 
                 for fixture_name in &effect.target_fixtures {
                     if let Some(current_state) = current_fixture_states.get_mut(fixture_name) {
-                        current_state.channels.remove(&dimmer_key);
-                        current_state.channels.remove(&pulse_key);
+                        for key in &multiplier_keys {
+                            current_state.channels.remove(key);
+                        }
                     }
                 }
             }

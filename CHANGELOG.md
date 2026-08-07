@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`static` no longer discards its level on fixtures without a dimmer channel**: the level was
+  passed through only when its name matched a real DMX channel, so on an RGB-only fixture (an
+  Astera PixelBrick, say) both `intensity:` and `dimmer:` were dropped and the colour rendered
+  at full — with no error and nothing in the logs. The level now routes through the fixture
+  profile, landing on the dedicated dimmer where one exists and on the RGB multiplier where it
+  doesn't, so an authored intensity ladder survives the venue. `intensity` is also now accepted
+  as a synonym for `dimmer` on `static`, as the reference documents.
+
+- **`chase` modulates instead of overwriting on fixtures without a dimmer channel**: a chase on
+  an RGB-only fixture wrote its value straight into red, green and blue, so the chase value
+  *became* the colour — always white — and every fixture off the chase was driven to zero,
+  wiping the layer beneath. It now goes to a chase multiplier the same way it already used the
+  dimmer channel on dimmer-equipped fixtures, making it a moving brightness mask over whatever
+  colour the lower layers provide. The same show now looks the same in both venues.
+
+  Note for show authors: a chase supplies brightness, not colour, so a chase with nothing
+  underneath it renders dark rather than white. Put a colour bed on a lower layer.
+
 ## [0.15.0] - 2026-07-20
 
 ### Added

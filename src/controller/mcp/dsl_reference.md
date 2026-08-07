@@ -33,11 +33,11 @@ show "Optional Name" {
 
 | Effect    | Required params                                        | Notes |
 |-----------|--------------------------------------------------------|-------|
-| `static`  | `duration`                                             | Hold a color/intensity. Use `color`, `dimmer`. |
+| `static`  | `duration`                                             | Hold a color/intensity. Use `color`, and `intensity` or `dimmer` for the level. |
 | `cycle`   | one or more `color:`, `duration`                       | Iterates colors. Optional `speed`, `direction`. |
 | `strobe`  | `frequency`, `duration`                                | Hz strobe. Optional `intensity`. |
 | `pulse`   | `frequency`, `duration`                                | Sinusoidal pulse. Optional `intensity`. |
-| `chase`   | `speed`, `duration`                                    | Optional `direction`, `pattern: linear|snake|random`. |
+| `chase`   | `speed`, `duration`                                    | A moving brightness mask over the layers beneath — needs a color bed under it. Optional `direction`, `pattern: linear|snake|random`. |
 | `dimmer`  | `start_level`, `end_level`, `duration`                 | Linear ramp; `curve: linear` optional. |
 | `rainbow` | `duration`                                             | Hue sweep. Optional `speed`. |
 

@@ -249,10 +249,16 @@ fn apply_static_effect(
     // Calculate crossfade multiplier
     let crossfade_multiplier = effect.calculate_crossfade_multiplier(elapsed);
 
+    // The level goes through the fixture profile rather than being matched against a
+    // channel name, so on a fixture with no dimmer channel it lands on the RGB
+    // multiplier instead of being dropped and rendering at full.
+    let level = parameters.get("dimmer").copied();
+
     let fixture_states =
-        build_fixture_states_with_info(fixture_registry, effect, |fixture, _profile| {
+        build_fixture_states_with_info(fixture_registry, effect, |fixture, profile| {
             let channels = parameters
                 .iter()
+                .filter(|(param_name, _)| param_name.as_str() != "dimmer")
                 .filter(|(param_name, _)| fixture.channels.contains_key(*param_name))
                 .map(|(param_name, value)| {
                     let faded_value = *value * crossfade_multiplier;
@@ -261,7 +267,19 @@ fn apply_static_effect(
                         ChannelState::new(faded_value, effect.layer, effect.blend_mode),
                     )
                 });
-            FixtureState::from_channels(channels)
+            let mut state = FixtureState::from_channels(channels);
+
+            if let Some(level) = level {
+                for (channel_name, channel_state) in profile.apply_brightness(
+                    level * crossfade_multiplier,
+                    effect.layer,
+                    effect.blend_mode,
+                ) {
+                    state.set_channel(channel_name, channel_state);
+                }
+            }
+
+            state
         });
 
     Ok(Some(fixture_states))

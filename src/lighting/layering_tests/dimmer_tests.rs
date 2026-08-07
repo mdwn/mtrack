@@ -1028,20 +1028,12 @@ fn test_chase_effect_without_dimmer_channel() {
     // Update engine to generate commands
     let commands = engine.update(Duration::from_millis(100), None).unwrap();
 
-    // Should have RGB commands (not dimmer commands)
-    let red_cmd = commands.iter().find(|cmd| cmd.channel == 1);
-    let green_cmd = commands.iter().find(|cmd| cmd.channel == 2);
-    let blue_cmd = commands.iter().find(|cmd| cmd.channel == 3);
-
-    assert!(red_cmd.is_some(), "Should have red channel command");
-    assert!(green_cmd.is_some(), "Should have green channel command");
-    assert!(blue_cmd.is_some(), "Should have blue channel command");
-
-    // All RGB channels should have the same value (white chase)
-    if let (Some(red), Some(green), Some(blue)) = (red_cmd, green_cmd, blue_cmd) {
-        assert_eq!(red.value, green.value);
-        assert_eq!(green.value, blue.value);
-    }
+    // The chase routes through the chase multiplier rather than writing RGB directly
+    // (#345), so on its own it contributes no colour — it masks whatever is beneath.
+    assert!(
+        commands.iter().all(|cmd| cmd.value == 0),
+        "chase on an RGB-only fixture should not paint colour of its own"
+    );
 }
 #[test]
 fn test_chase_effect_with_dimmer_channel() {

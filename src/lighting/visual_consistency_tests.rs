@@ -301,10 +301,10 @@ mod tests {
         // Test at a specific time point
         let commands = engine.update(Duration::from_millis(100), None).unwrap();
 
-        // All fixtures should have appropriate commands based on their capabilities
-        // RGB-only fixture: should use RGB channels
+        // All fixtures should modulate rather than paint, based on their capabilities:
         // RGB+dimmer fixture: should use dimmer channel
         // Dimmer-only fixture: should use dimmer channel
+        // RGB-only fixture: should use _chase_multiplier (no direct DMX commands)
 
         // Find commands for each fixture
         // RGB-only fixture: universe 1, channels 1-3 (RGB at address 1)
@@ -321,15 +321,17 @@ mod tests {
             .iter()
             .find(|cmd| cmd.channel == 20 && cmd.universe == 1);
 
-        // RGB-only fixture should use RGB channels for chase
-        assert!(
-            !rgb_commands.is_empty(),
-            "RGB-only fixture should use RGB channels for chase"
-        );
-
         // RGB+dimmer and dimmer-only fixtures should use dimmer channel (prioritized over RGB)
         assert!(rgb_dimmer_cmd.is_some());
         assert!(dimmer_cmd.is_some());
+
+        // RGB-only fixture should have no direct DMX commands (uses _chase_multiplier).
+        // Writing the chase value into RGB would make the chase its own colour — always
+        // white — and zero every inactive fixture on the layer. See #345.
+        assert!(
+            rgb_commands.is_empty(),
+            "RGB-only fixture should use _chase_multiplier, not direct DMX commands"
+        );
     }
 
     /// Test that the same lighting show produces equivalent results across fixture types
