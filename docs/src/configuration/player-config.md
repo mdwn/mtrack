@@ -107,7 +107,13 @@ dmx:
   # PC5 * 0.25 dim speed modifier = 1.25 second dim time
   dim_speed_modifier: 0.25
 
-  # (Optional) Once a song is started, mtrack will wait this amount before triggering the DMX playback.
+  # (Optional) Once a song is started, mtrack will wait this amount before triggering the DMX
+  # playback. This applies to both DMX paths — MIDI-based DMX and DSL `.light` shows.
+  #
+  # Audio leaves late (decode, the output stream buffer, device latency) while DMX frames go out
+  # with only frame time and fixture response in the way, so lights driven straight off the
+  # transport clock fire early relative to what the audience hears. This is the knob that pulls
+  # them back into line.
   playback_delay: 500ms
 
   # Universes here map OLA universe numbers into light show names.

@@ -18,7 +18,7 @@ impl Engine {
     /// Advances all MIDI DMX playback cursors to the current song time,
     /// dispatching events via handle_midi_event_by_id.
     pub(super) fn advance_midi_dmx_playbacks(&self) {
-        let song_time = match self.get_song_time().checked_sub(self.playback_delay) {
+        let song_time = match self.delayed_song_time() {
             Some(t) => t,
             None => return, // Still within the playback delay period
         };

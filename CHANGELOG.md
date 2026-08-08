@@ -37,6 +37,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   masters of the layers they kill. Both song-start paths replay the new show's layer commands
   from the timeline afterwards, so seeking still rebuilds masters from show history.
 
+- **`dmx.playback_delay` now applies to DSL light shows**: the delay was implemented for the
+  MIDI-based DMX path but never consumed by the DSL path, so latency compensation configured for
+  what the docs call the primary lighting system silently did nothing — cues fired at their
+  nominal times no matter what the profile said. Audio leaves late (decode/transcode, the
+  CPAL/ALSA stream buffer, device latency) while DMX frames go out with only frame time and
+  fixture response in the way, so uncompensated lighting runs early against what the audience
+  hears; on fast material a few tens of milliseconds is a visible fraction of a subdivision. Both
+  DMX paths now share one compensation knob, applied to cue dispatch, to the tempo base that
+  tempo-aware effects resolve against, and to the state reconstructed when seeking.
+
 ## [0.15.0] - 2026-07-20
 
 ### Added
