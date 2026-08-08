@@ -153,6 +153,20 @@ export interface MetronomeConfig {
   };
 }
 
+/** The song.yaml `pilot:` block — labeled voice hints at song positions. */
+export interface PilotHintConfig {
+  at: { measure: number; beat?: number } | { time: number };
+  label: string;
+  file?: string;
+  align?: "end" | "start";
+  offset?: number;
+}
+
+export interface PilotConfig {
+  track?: string;
+  hints?: PilotHintConfig[];
+}
+
 export interface GuessedTempo {
   start_seconds: number;
   bpm: number;

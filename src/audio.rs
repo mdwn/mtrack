@@ -30,6 +30,8 @@ pub mod metronome;
 pub mod midi_tempo;
 pub mod mixer;
 pub mod mock;
+pub mod monoclip;
+pub mod pilot;
 pub mod sample_source;
 pub mod tempo_guess;
 pub mod track_gains;
