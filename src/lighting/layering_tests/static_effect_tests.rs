@@ -803,3 +803,128 @@ fn test_static_effect_fade_out() {
 
     println!("✅ Static effect fade-out test completed");
 }
+
+/// Build an Astera-PixelBrick-style fixture: RGB plus strobe, no dimmer channel.
+fn dimmerless_rgb_fixture(name: &str, address: u16) -> FixtureInfo {
+    let mut channels = HashMap::new();
+    channels.insert("red".to_string(), 1);
+    channels.insert("green".to_string(), 2);
+    channels.insert("blue".to_string(), 3);
+    channels.insert("strobe".to_string(), 4);
+
+    FixtureInfo::new(
+        name.to_string(),
+        1,
+        address,
+        "Astera-PixelBrick".to_string(),
+        channels,
+        Some(20.0),
+    )
+}
+
+fn static_with_level(level: f64, green: f64) -> EffectInstance {
+    let mut parameters = HashMap::new();
+    parameters.insert("red".to_string(), 0.0);
+    parameters.insert("green".to_string(), green);
+    parameters.insert("blue".to_string(), 0.0);
+    parameters.insert("dimmer".to_string(), level);
+
+    create_effect_with_layering(
+        "back_wash".to_string(),
+        EffectType::Static {
+            parameters,
+            duration: Duration::from_secs(8),
+        },
+        vec!["back_wash".to_string()],
+        EffectLayer::Background,
+        BlendMode::Replace,
+    )
+}
+
+/// A static level must dim a fixture that has no dimmer channel, rather than being
+/// filtered out and rendering at full. Regression test for #346.
+#[test]
+fn test_static_level_dims_a_dimmerless_fixture() {
+    let mut engine = EffectEngine::new();
+    engine.register_fixture(dimmerless_rgb_fixture("back_wash", 1));
+
+    // The case from the issue: green at full, level 22%.
+    engine.start_effect(static_with_level(0.22, 1.0)).unwrap();
+
+    let commands = engine.update(Duration::from_millis(0), None).unwrap();
+    let green = commands
+        .iter()
+        .find(|cmd| cmd.channel == 2)
+        .expect("green channel command");
+
+    // 255 * 0.22 = 56.1, truncated to 56 on the way to DMX.
+    assert_eq!(
+        green.value, 56,
+        "static level must scale the colour, not be discarded"
+    );
+}
+
+/// The same show on a fixture that does have a dimmer channel keeps using it, so the
+/// level lands in one place per fixture type rather than being applied twice.
+#[test]
+fn test_static_level_uses_the_dimmer_channel_when_present() {
+    let mut engine = EffectEngine::new();
+
+    let mut channels = HashMap::new();
+    channels.insert("red".to_string(), 1);
+    channels.insert("green".to_string(), 2);
+    channels.insert("blue".to_string(), 3);
+    channels.insert("dimmer".to_string(), 4);
+    engine.register_fixture(FixtureInfo::new(
+        "back_wash".to_string(),
+        1,
+        1,
+        "RGB_Dimmer_Par".to_string(),
+        channels,
+        None,
+    ));
+
+    engine.start_effect(static_with_level(0.22, 1.0)).unwrap();
+
+    let commands = engine.update(Duration::from_millis(0), None).unwrap();
+    let value_at = |channel: u16| {
+        commands
+            .iter()
+            .find(|cmd| cmd.channel == channel)
+            .map(|cmd| cmd.value)
+            .unwrap_or(0)
+    };
+
+    // Colour stays at full on the RGB channels; the level goes to the dimmer.
+    assert_eq!(value_at(2), 255, "green should carry the colour, undimmed");
+    assert_eq!(value_at(4), 56, "dimmer should carry the level");
+}
+
+/// A static with no level at all is unaffected — it still renders at full.
+#[test]
+fn test_static_without_a_level_still_renders_full() {
+    let mut engine = EffectEngine::new();
+    engine.register_fixture(dimmerless_rgb_fixture("back_wash", 1));
+
+    let mut parameters = HashMap::new();
+    parameters.insert("green".to_string(), 1.0);
+    engine
+        .start_effect(create_effect_with_layering(
+            "back_wash".to_string(),
+            EffectType::Static {
+                parameters,
+                duration: Duration::from_secs(8),
+            },
+            vec!["back_wash".to_string()],
+            EffectLayer::Background,
+            BlendMode::Replace,
+        ))
+        .unwrap();
+
+    let commands = engine.update(Duration::from_millis(0), None).unwrap();
+    let green = commands
+        .iter()
+        .find(|cmd| cmd.channel == 2)
+        .expect("green channel command");
+    assert_eq!(green.value, 255);
+}

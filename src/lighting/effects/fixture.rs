@@ -28,6 +28,14 @@ fn layer_suffix(layer: EffectLayer) -> &'static str {
     }
 }
 
+/// Prefixes of the internal per-layer multiplier channels.
+///
+/// Effects that scale brightness route their level through one of these on fixtures
+/// with no dedicated dimmer channel, so the level modulates whatever colour the
+/// layers beneath provide instead of overwriting RGB. Every prefix listed here must
+/// also be resolved by `state::effective_channel_value`.
+pub const MULTIPLIER_PREFIXES: [&str; 3] = ["dimmer", "pulse", "chase"];
+
 /// Build a multiplier channel key (e.g. "_dimmer_mult_bg", "_pulse_mult_fg")
 #[inline]
 pub fn multiplier_key(prefix: &str, layer: EffectLayer) -> String {
@@ -157,7 +165,7 @@ pub enum PulseStrategy {
 pub enum ChaseStrategy {
     /// Use dedicated dimmer channel (RGB+dimmer fixtures)
     DedicatedDimmer,
-    /// Use RGB channels directly (RGB-only fixtures)
+    /// Multiply RGB channels to preserve color (RGB-only fixtures)
     RgbChannels,
     /// Use brightness control (fallback)
     BrightnessControl,
@@ -421,27 +429,24 @@ impl FixtureProfile {
     }
 
     /// Apply chase control using the fixture's strategy
+    ///
+    /// A chase is a moving brightness mask, not a colour. On a fixture with no dimmer
+    /// channel the value goes to the chase multiplier rather than straight into RGB,
+    /// so the chase modulates the colour the layers beneath provide instead of
+    /// painting white over them and zeroing every inactive fixture.
     pub fn apply_chase(
         &self,
         chase_value: f64,
         layer: EffectLayer,
         blend_mode: BlendMode,
     ) -> HashMap<String, ChannelState> {
-        let mut result = HashMap::new();
-
-        match self.chase_strategy {
-            ChaseStrategy::DedicatedDimmer | ChaseStrategy::BrightnessControl => {
-                result.insert(
-                    "dimmer".to_string(),
-                    ChannelState::new(chase_value, layer, blend_mode),
-                );
-            }
-            ChaseStrategy::RgbChannels => {
-                insert_rgb(&mut result, chase_value, layer, blend_mode);
-            }
-        }
-
-        result
+        Self::apply_dimmer_or_multiplier(
+            self.chase_strategy != ChaseStrategy::RgbChannels,
+            "chase",
+            chase_value,
+            layer,
+            blend_mode,
+        )
     }
 }
 
@@ -887,12 +892,20 @@ mod tests {
     }
 
     #[test]
-    fn apply_chase_rgb_channels() {
+    fn apply_chase_rgb_uses_multiplier_not_rgb_channels() {
         let p = rgb_fixture().profile().clone();
         let result = p.apply_chase(0.5, EffectLayer::Foreground, BlendMode::Replace);
-        assert!(result.contains_key("red"));
-        assert!(result.contains_key("green"));
-        assert!(result.contains_key("blue"));
+
+        // A chase is a brightness mask. Writing it into RGB would make the chase value
+        // the colour (always white) and zero every inactive fixture on the layer.
+        assert!(!result.contains_key("red"));
+        assert!(!result.contains_key("green"));
+        assert!(!result.contains_key("blue"));
+
+        let key = multiplier_key("chase", EffectLayer::Foreground);
+        let state = result.get(&key).expect("chase multiplier");
+        assert_eq!(state.value, 0.5);
+        assert_eq!(state.blend_mode, BlendMode::Multiply);
     }
 
     // ── FixtureInfo accessors ────────────────────────────────────────

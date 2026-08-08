@@ -14,14 +14,22 @@
 
 use std::collections::HashMap;
 
-use super::fixture::FixtureInfo;
+use super::fixture::{FixtureInfo, MULTIPLIER_PREFIXES};
 use super::types::{BlendMode, EffectLayer};
 
-/// Check if a channel name is a multiplier channel (dimmer or pulse)
+/// Check if a channel name is a multiplier channel (dimmer, pulse or chase)
 /// These are special internal channels used for RGB-only fixtures
 #[inline]
 pub fn is_multiplier_channel(channel_name: &str) -> bool {
-    channel_name.starts_with("_dimmer_mult") || channel_name.starts_with("_pulse_mult")
+    // Real channel names never start with an underscore, so this bails out
+    // immediately for the overwhelmingly common case.
+    let Some(rest) = channel_name.strip_prefix('_') else {
+        return false;
+    };
+    MULTIPLIER_PREFIXES.iter().any(|prefix| {
+        rest.strip_prefix(prefix)
+            .is_some_and(|tail| tail.starts_with("_mult"))
+    })
 }
 
 /// DMX command for sending to fixtures
@@ -157,8 +165,12 @@ impl FixtureState {
                 read("_dimmer_mult_bg") * read("_dimmer_mult_mid") * read("_dimmer_mult_fg");
             let pulse_mult =
                 read("_pulse_mult_bg") * read("_pulse_mult_mid") * read("_pulse_mult_fg");
-            let combined_multiplier = (dimmer_mult * pulse_mult).clamp(0.0, 1.0);
-            let fg_multiplier = (read("_dimmer_mult_fg") * read("_pulse_mult_fg")).clamp(0.0, 1.0);
+            let chase_mult =
+                read("_chase_mult_bg") * read("_chase_mult_mid") * read("_chase_mult_fg");
+            let combined_multiplier = (dimmer_mult * pulse_mult * chase_mult).clamp(0.0, 1.0);
+            let fg_multiplier =
+                (read("_dimmer_mult_fg") * read("_pulse_mult_fg") * read("_chase_mult_fg"))
+                    .clamp(0.0, 1.0);
 
             let effective_multiplier = if state.layer == EffectLayer::Foreground
                 && state.blend_mode == BlendMode::Replace
@@ -219,10 +231,67 @@ mod tests {
     }
 
     #[test]
+    fn is_multiplier_chase_fg() {
+        assert!(is_multiplier_channel("_chase_mult_fg"));
+    }
+
+    #[test]
     fn is_multiplier_regular_channel() {
         assert!(!is_multiplier_channel("red"));
         assert!(!is_multiplier_channel("dimmer"));
         assert!(!is_multiplier_channel("strobe"));
+    }
+
+    #[test]
+    fn is_multiplier_rejects_lookalikes() {
+        assert!(!is_multiplier_channel("_dimmer"));
+        assert!(!is_multiplier_channel("_chase_bg"));
+        assert!(!is_multiplier_channel("dimmer_mult_bg"));
+        assert!(!is_multiplier_channel("_unknown_mult_bg"));
+    }
+
+    #[test]
+    fn effective_value_with_chase_multiplier() {
+        let mut fs = FixtureState::new();
+        let red = ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace);
+        fs.set_channel("red".to_string(), red);
+        fs.set_channel(
+            "_chase_mult_mid".to_string(),
+            ChannelState::new(0.5, EffectLayer::Midground, BlendMode::Multiply),
+        );
+        assert!((fs.effective_channel_value("red", &red, false) - 0.5).abs() < 1e-9);
+    }
+
+    /// Dimmer, pulse and chase multipliers compose rather than clobbering each other,
+    /// so a chase over a dimmed bed lands at the product of the two.
+    #[test]
+    fn effective_value_composes_chase_with_dimmer() {
+        let mut fs = FixtureState::new();
+        let red = ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace);
+        fs.set_channel("red".to_string(), red);
+        fs.set_channel(
+            "_dimmer_mult_bg".to_string(),
+            ChannelState::new(0.5, EffectLayer::Background, BlendMode::Multiply),
+        );
+        fs.set_channel(
+            "_chase_mult_mid".to_string(),
+            ChannelState::new(0.4, EffectLayer::Midground, BlendMode::Multiply),
+        );
+        assert!((fs.effective_channel_value("red", &red, false) - 0.2).abs() < 1e-9);
+    }
+
+    /// Multiplier channels are internal — a fixture with a real dimmer channel gets
+    /// its level on that channel instead, so RGB must not be scaled twice.
+    #[test]
+    fn effective_value_ignores_multipliers_with_dedicated_dimmer() {
+        let mut fs = FixtureState::new();
+        let red = ChannelState::new(1.0, EffectLayer::Background, BlendMode::Replace);
+        fs.set_channel("red".to_string(), red);
+        fs.set_channel(
+            "_chase_mult_mid".to_string(),
+            ChannelState::new(0.5, EffectLayer::Midground, BlendMode::Multiply),
+        );
+        assert!((fs.effective_channel_value("red", &red, true) - 1.0).abs() < 1e-9);
     }
 
     // ── ChannelState::new ──────────────────────────────────────────

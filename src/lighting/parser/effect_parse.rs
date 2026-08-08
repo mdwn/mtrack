@@ -317,7 +317,9 @@ pub(crate) fn apply_parameters_to_effect_type(
         } => {
             for (key, value) in parameters {
                 match key.as_str() {
-                    "dimmer" => {
+                    // `intensity` is the documented common parameter, `dimmer` the
+                    // static-specific spelling. They mean the same level.
+                    "dimmer" | "intensity" => {
                         if let Ok(val) = parse_percentage_to_f64(value) {
                             static_params.insert("dimmer".to_string(), val);
                         }
@@ -715,6 +717,26 @@ mod tests {
         let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx()).unwrap();
         if let EffectType::Static { parameters, .. } = result {
             assert!((parameters["dimmer"] - 0.5).abs() < 1e-9);
+        } else {
+            panic!("Expected Static");
+        }
+    }
+
+    /// `intensity` is documented as a common parameter applying to all effects, and
+    /// used to be dropped on the floor by static's catch-all (it isn't a bare f64).
+    /// Regression test for #346.
+    #[test]
+    fn apply_static_intensity_is_a_synonym_for_dimmer() {
+        let et = EffectType::Static {
+            parameters: HashMap::new(),
+            duration: Duration::ZERO,
+        };
+        let mut params = HashMap::new();
+        params.insert("intensity".to_string(), "22%".to_string());
+        let result = apply_parameters_to_effect_type(et, &params, &[], &default_ctx()).unwrap();
+        if let EffectType::Static { parameters, .. } = result {
+            assert!((parameters["dimmer"] - 0.22).abs() < 1e-9);
+            assert!(!parameters.contains_key("intensity"));
         } else {
             panic!("Expected Static");
         }

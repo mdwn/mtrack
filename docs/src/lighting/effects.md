@@ -10,9 +10,13 @@ Sets fixed parameter values for fixtures. Useful for solid colors, fixed dimmer 
 
 **Parameters:**
 - `color`: Color name (e.g., `"red"`, `"blue"`), hex (`#FF0000`), or RGB (`rgb(255,0,0)`)
-- `dimmer`: Dimmer level (0-100% or 0.0-1.0)
+- `dimmer` or `intensity`: Dimmer level (0-100% or 0.0-1.0)
 - `red`, `green`, `blue`, `white`: Individual color channel levels (0-100% or 0.0-1.0)
 - `duration`: **Required.** Duration after which effect stops (e.g., `5s`, `2measures`)
+
+The level applies on every fixture, not just those with a dimmer channel. On a
+fixture with a dedicated dimmer it drives that channel; on an RGB-only fixture it
+scales the color instead, so the same show dims the same way in either venue.
 
 **Example:**
 ```light
@@ -62,10 +66,15 @@ all_lights: strobe frequency: 1beat, duration: 4measures
 Smoothly pulses the dimmer level up and down, creating a breathing effect.
 
 **Parameters:**
-- `base_level`: Base dimmer level (0-100% or 0.0-1.0)
+- `base_level`: Base dimmer level (0-100% or 0.0-1.0). Defaults to 50%
 - `pulse_amplitude` or `intensity`: Amplitude of the pulse (0-100% or 0.0-1.0)
 - `frequency`: Pulses per second (Hz), or tempo-aware (e.g., `2`, `1beat`)
 - `duration`: **Required.** Duration of the pulse effect
+
+The amplitude is added *on top of* the base level: the pulse sweeps
+`base_level` to `base_level + amplitude`, it does not modulate around the level
+underneath. So `pulse intensity: 16%` with the default base level sweeps 50% to 66%,
+not ±16%. Set `base_level` explicitly to place the pulse where you want it.
 
 **Example:**
 ```light
@@ -84,10 +93,16 @@ Moves an effect pattern across multiple fixtures in a spatial pattern.
 - `transition`: `snap` or `fade` for transitions between fixtures
 - `duration`: **Required.** Duration of the chase effect (e.g., `10s`, `8measures`)
 
+A chase is a moving brightness mask, not a color. It dims the fixtures it is not
+currently on and passes through the ones it is, so the color comes from a lower
+layer — put a bed underneath it rather than expecting the chase to light the rig by
+itself.
+
 **Example:**
 ```light
 @00:25.000
-movers: chase pattern: linear, speed: 2.0, direction: left_to_right, transition: fade, duration: 10s
+movers: static color: "red", duration: 10s, layer: background
+movers: chase pattern: linear, speed: 2.0, direction: left_to_right, transition: fade, duration: 10s, layer: midground
 ```
 
 ### Dimmer Effect

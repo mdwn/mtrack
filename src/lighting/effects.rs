@@ -28,6 +28,7 @@ pub use color::Color;
 pub use error::EffectError;
 pub use fixture::{
     multiplier_key, FixtureCapabilities, FixtureInfo, FixtureProfile, StrobeStrategy,
+    MULTIPLIER_PREFIXES,
 };
 pub use instance::EffectInstance;
 pub use state::{is_multiplier_channel, ChannelState, DmxCommand, FixtureState};

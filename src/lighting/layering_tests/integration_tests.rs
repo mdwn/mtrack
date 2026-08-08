@@ -1834,3 +1834,74 @@ fn test_example_files_parse() {
         );
     }
 }
+
+/// End-to-end reproduction of the show that surfaced #345 and #346: a red bed with
+/// an authored intensity, plus a chase over the top, on Astera PixelBricks (RGB +
+/// strobe, no dimmer channel).
+///
+/// Before the fix the bed rendered at full because `intensity:` was discarded, and
+/// the chase painted white over it because it wrote RGB directly. This drives the
+/// real parser so both the DSL spelling and the render path are covered.
+#[test]
+fn test_bed_plus_chase_on_dimmerless_fixtures() {
+    use super::super::parser::parse_light_shows;
+    use super::super::timeline::LightingTimeline;
+
+    // Note the doubled hashes: the colour literal contains `"#`.
+    let dsl_content = r##"show "Legions" {
+    @00:00.000
+    all_wash: static color: "#C40000", intensity: 45%, duration: 7s, layer: background
+    all_wash: chase pattern: linear, speed: 2.0, direction: left_to_right, duration: 7s, layer: midground
+}"##;
+
+    let shows = parse_light_shows(dsl_content).expect("show should parse");
+    let show = shows.get("Legions").expect("show by name");
+
+    let mut engine = EffectEngine::new();
+    for i in 1..=2 {
+        let mut channels = HashMap::new();
+        channels.insert("red".to_string(), 1);
+        channels.insert("green".to_string(), 2);
+        channels.insert("blue".to_string(), 3);
+        channels.insert("strobe".to_string(), 4);
+        engine.register_fixture(FixtureInfo::new(
+            format!("Brick{}", i),
+            1,
+            (i - 1) * 4 + 1,
+            "Astera-PixelBrick".to_string(),
+            channels,
+            Some(25.0),
+        ));
+    }
+
+    // The DSL targets the "all_wash" group; retarget onto the registered fixtures.
+    for cue in &show.cues {
+        for effect in &cue.effects {
+            let mut instance = LightingTimeline::create_effect_instance(effect, cue.time);
+            instance.target_fixtures = vec!["Brick1".to_string(), "Brick2".to_string()];
+            engine.start_effect(instance).unwrap();
+        }
+    }
+
+    let commands = engine.update(Duration::from_millis(0), None).unwrap();
+    let value_at = |channel: u16| {
+        commands
+            .iter()
+            .find(|cmd| cmd.channel == channel)
+            .map(|cmd| cmd.value)
+            .unwrap_or(0)
+    };
+
+    // Brick1 is the active chase position, so it shows the bed's colour at the
+    // authored level: red 0xC4 (196) scaled to 45% is 88.
+    assert_eq!(
+        value_at(1),
+        88,
+        "active fixture should render the red bed at 45%, not full and not white"
+    );
+    assert_eq!(value_at(2), 0, "chase must not add green");
+    assert_eq!(value_at(3), 0, "chase must not add blue");
+
+    // Brick2 is masked off by the chase.
+    assert_eq!(value_at(5), 0, "inactive fixture should be dark");
+}

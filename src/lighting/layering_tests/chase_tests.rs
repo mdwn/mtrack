@@ -503,11 +503,8 @@ fn test_chase_single_fixture() {
     let fixture_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
     assert_eq!(fixture_cmd.value, 255); // Should be ON
 }
-#[test]
-fn test_chase_rgb_only_fixtures() {
-    let mut engine = EffectEngine::new();
-
-    // Create RGB-only fixtures
+/// Register three RGB-only fixtures (no dimmer channel) at addresses 1, 4 and 7.
+fn register_rgb_only_fixtures(engine: &mut EffectEngine) {
     for i in 1..=3 {
         let mut channels = HashMap::new();
         channels.insert("red".to_string(), 1);
@@ -525,8 +522,10 @@ fn test_chase_rgb_only_fixtures() {
         );
         engine.register_fixture(fixture);
     }
+}
 
-    let chase_effect = create_effect_with_layering(
+fn rgb_only_chase() -> EffectInstance {
+    create_effect_with_layering(
         "chase_rgb".to_string(),
         EffectType::Chase {
             pattern: ChasePattern::Linear,
@@ -540,31 +539,98 @@ fn test_chase_rgb_only_fixtures() {
             "rgb_fixture_2".to_string(),
             "rgb_fixture_3".to_string(),
         ],
+        EffectLayer::Midground,
+        BlendMode::Replace,
+    )
+}
+
+/// A chase on a fixture with no dimmer channel must not write colour. It is a
+/// brightness mask, so on its own — with no colour bed underneath — it emits nothing
+/// rather than painting white. Regression test for #345.
+#[test]
+fn test_chase_rgb_only_fixtures_emit_no_color_of_their_own() {
+    let mut engine = EffectEngine::new();
+    register_rgb_only_fixtures(&mut engine);
+    engine.start_effect(rgb_only_chase()).unwrap();
+
+    let commands = engine.update(Duration::from_millis(0), None).unwrap();
+
+    // The chase multiplier is an internal channel with no DMX mapping, so a bare
+    // chase over RGB-only fixtures produces no output at all.
+    assert!(
+        commands.iter().all(|cmd| cmd.value == 0),
+        "chase alone should not light RGB-only fixtures, got {:?}",
+        commands
+            .iter()
+            .filter(|cmd| cmd.value > 0)
+            .map(|cmd| (cmd.channel, cmd.value))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// With a colour bed underneath, the chase modulates that colour instead of
+/// replacing it: the active fixture shows the bed's colour, not white. Regression
+/// test for #345.
+#[test]
+fn test_chase_rgb_only_fixtures_modulate_the_layer_beneath() {
+    let mut engine = EffectEngine::new();
+    register_rgb_only_fixtures(&mut engine);
+
+    // A red bed on the background layer, under the chase on midground.
+    let mut parameters = HashMap::new();
+    parameters.insert("red".to_string(), 1.0);
+    parameters.insert("green".to_string(), 0.0);
+    parameters.insert("blue".to_string(), 0.0);
+    let bed = create_effect_with_layering(
+        "red_bed".to_string(),
+        EffectType::Static {
+            parameters,
+            duration: Duration::from_secs(10),
+        },
+        vec![
+            "rgb_fixture_1".to_string(),
+            "rgb_fixture_2".to_string(),
+            "rgb_fixture_3".to_string(),
+        ],
         EffectLayer::Background,
         BlendMode::Replace,
     );
 
-    engine.start_effect(chase_effect).unwrap();
+    engine.start_effect(bed).unwrap();
+    engine.start_effect(rgb_only_chase()).unwrap();
 
-    // Test that RGB channels are used for chase (white chase)
+    // t=0: fixture_1 is the active chase position.
     let commands = engine.update(Duration::from_millis(0), None).unwrap();
+    let value_at = |channel: u16| {
+        commands
+            .iter()
+            .find(|cmd| cmd.channel == channel)
+            .map(|cmd| cmd.value)
+            .unwrap_or(0)
+    };
 
-    // fixture_1 should have all RGB channels ON
-    let red_cmd = commands.iter().find(|cmd| cmd.channel == 1).unwrap();
-    let green_cmd = commands.iter().find(|cmd| cmd.channel == 2).unwrap();
-    let blue_cmd = commands.iter().find(|cmd| cmd.channel == 3).unwrap();
-    assert_eq!(red_cmd.value, 255);
-    assert_eq!(green_cmd.value, 255);
-    assert_eq!(blue_cmd.value, 255);
+    // The chase renders the bed's red, not white — green and blue stay dark.
+    assert_eq!(value_at(1), 255, "fixture_1 red should be at full");
+    assert_eq!(value_at(2), 0, "chase must not add green");
+    assert_eq!(value_at(3), 0, "chase must not add blue");
 
-    // At t=167ms (1/3 cycle) - fixture_2 should be ON
+    // Inactive fixtures are masked to black by the chase multiplier.
+    assert_eq!(value_at(4), 0, "fixture_2 is not the active chase position");
+    assert_eq!(value_at(7), 0, "fixture_3 is not the active chase position");
+
+    // At t=167ms (1/3 cycle) the mask has moved to fixture_2, still red.
     let commands = engine.update(Duration::from_millis(167), None).unwrap();
-    let red_cmd = commands.iter().find(|cmd| cmd.channel == 4).unwrap(); // fixture_2 red
-    let green_cmd = commands.iter().find(|cmd| cmd.channel == 5).unwrap(); // fixture_2 green
-    let blue_cmd = commands.iter().find(|cmd| cmd.channel == 6).unwrap(); // fixture_2 blue
-    assert_eq!(red_cmd.value, 255);
-    assert_eq!(green_cmd.value, 255);
-    assert_eq!(blue_cmd.value, 255);
+    let value_at = |channel: u16| {
+        commands
+            .iter()
+            .find(|cmd| cmd.channel == channel)
+            .map(|cmd| cmd.value)
+            .unwrap_or(0)
+    };
+    assert_eq!(value_at(4), 255, "fixture_2 red should be at full");
+    assert_eq!(value_at(5), 0, "chase must not add green");
+    assert_eq!(value_at(6), 0, "chase must not add blue");
+    assert_eq!(value_at(1), 0, "fixture_1 is no longer the active position");
 }
 #[test]
 fn test_chase_effect_crossfade() {
@@ -684,9 +750,27 @@ fn test_random_chase_pattern_visibility() {
         Some(Duration::from_secs(4)), // hold_time: 4 seconds
         None,
     );
-    random_chase.layer = EffectLayer::Background;
+    random_chase.layer = EffectLayer::Midground;
     random_chase.blend_mode = BlendMode::Replace;
 
+    // A chase modulates the colour beneath it rather than supplying its own (#345),
+    // so the visibility this test measures needs a bed on a lower layer.
+    let mut parameters = HashMap::new();
+    parameters.insert("red".to_string(), 1.0);
+    parameters.insert("green".to_string(), 1.0);
+    parameters.insert("blue".to_string(), 1.0);
+    let bed = create_effect_with_layering(
+        "white_bed".to_string(),
+        EffectType::Static {
+            parameters,
+            duration: Duration::from_secs(10),
+        },
+        (1..=8).map(|i| format!("Brick{}", i)).collect(),
+        EffectLayer::Background,
+        BlendMode::Replace,
+    );
+
+    engine.start_effect(bed).unwrap();
     engine.start_effect(random_chase).unwrap();
 
     // Update engine and check that we get DMX commands
