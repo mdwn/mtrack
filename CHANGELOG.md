@@ -27,6 +27,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Note for show authors: a chase supplies brightness, not colour, so a chase with nothing
   underneath it renders dark rather than white. Put a colour bed on a lower layer.
 
+- **Layer masters and freezes no longer leak across songs**: layer intensity/speed masters and
+  frozen layers survived both song changes and `clear_all_layers`, because the effect engine is
+  reused across songs and nothing ever reset its layer state. A show that ducked a layer and was
+  stopped before its reset cue — the tense beat before a chorus is exactly when an operator
+  stops — left the rig mastered down for the rest of the set, with no way back short of
+  restarting mtrack, and silently changed the meaning of every song loaded afterwards. Layer
+  state is now reset when playback stops or a new song loads, and the `clear` commands reset the
+  masters of the layers they kill. Both song-start paths replay the new show's layer commands
+  from the timeline afterwards, so seeking still rebuilds masters from show history.
+
 ## [0.15.0] - 2026-07-20
 
 ### Added

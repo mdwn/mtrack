@@ -668,3 +668,143 @@ fn test_freeze_unfreeze_with_releasing_effects() {
     // Layer should no longer be frozen (release clears freeze)
     assert!(!engine.is_layer_frozen(EffectLayer::Background));
 }
+
+// ── Layer master lifetime (#343) ───────────────────────────────────
+
+fn static_dimmer_effect(id: &str, layer: EffectLayer, level: f64) -> EffectInstance {
+    let mut effect = EffectInstance::new(
+        id.to_string(),
+        EffectType::Static {
+            parameters: {
+                let mut p = HashMap::new();
+                p.insert("dimmer".to_string(), level);
+                p
+            },
+            duration: Duration::from_secs(30),
+        },
+        vec!["test_fixture".to_string()],
+        None,
+        Some(Duration::from_secs(30)),
+        None,
+    );
+    effect.layer = layer;
+    effect
+}
+
+/// The panic button has to clear the masters too, or the rig stays mastered down
+/// with no way back short of restarting mtrack.
+#[test]
+fn test_clear_all_layers_resets_layer_masters() {
+    let mut engine = EffectEngine::new();
+    engine.register_fixture(create_test_fixture("test_fixture", 1, 1));
+
+    engine.set_layer_intensity_master(EffectLayer::Background, 0.15);
+    engine.set_layer_speed_master(EffectLayer::Midground, 2.0);
+    assert_eq!(
+        engine.get_layer_intensity_master(EffectLayer::Background),
+        0.15
+    );
+    assert_eq!(engine.get_layer_speed_master(EffectLayer::Midground), 2.0);
+
+    engine.clear_all_layers();
+
+    assert_eq!(
+        engine.get_layer_intensity_master(EffectLayer::Background),
+        1.0
+    );
+    assert_eq!(engine.get_layer_speed_master(EffectLayer::Midground), 1.0);
+}
+
+/// Killing a single layer resets that layer's masters, and leaves the others alone.
+#[test]
+fn test_clear_layer_resets_only_that_layers_masters() {
+    let mut engine = EffectEngine::new();
+    engine.register_fixture(create_test_fixture("test_fixture", 1, 1));
+
+    engine.set_layer_intensity_master(EffectLayer::Background, 0.15);
+    engine.set_layer_intensity_master(EffectLayer::Foreground, 0.5);
+
+    engine.clear_layer(EffectLayer::Background);
+
+    assert_eq!(
+        engine.get_layer_intensity_master(EffectLayer::Background),
+        1.0
+    );
+    assert_eq!(
+        engine.get_layer_intensity_master(EffectLayer::Foreground),
+        0.5,
+        "clearing one layer must not touch another's master"
+    );
+}
+
+/// Masters belong to the song that set them. The engine is reused across songs, so
+/// stopping a show mid-duck must not carry the duck into the next song.
+#[test]
+fn test_stop_all_effects_resets_layer_masters() {
+    let mut engine = EffectEngine::new();
+    engine.register_fixture(create_test_fixture("test_fixture", 1, 1));
+
+    engine.set_layer_intensity_master(EffectLayer::Background, 0.15);
+    engine.set_layer_speed_master(EffectLayer::Background, 0.5);
+    engine.freeze_layer(EffectLayer::Foreground);
+
+    engine.stop_all_effects();
+
+    assert_eq!(
+        engine.get_layer_intensity_master(EffectLayer::Background),
+        1.0
+    );
+    assert_eq!(engine.get_layer_speed_master(EffectLayer::Background), 1.0);
+    assert!(
+        !engine.is_layer_frozen(EffectLayer::Foreground),
+        "a frozen layer must not stay frozen into the next song"
+    );
+}
+
+/// The live symptom from #343, at the DMX level: song A ducks the background layer
+/// and is stopped before its reset cue; song B must not play at 15%.
+#[test]
+fn test_duck_does_not_leak_into_the_next_song() {
+    let mut engine = EffectEngine::new();
+    engine.register_fixture(create_test_fixture("test_fixture", 1, 1));
+
+    // Song A: a full-level background bed, ducked to 15% by a master.
+    engine
+        .start_effect(static_dimmer_effect(
+            "song_a_bed",
+            EffectLayer::Background,
+            1.0,
+        ))
+        .unwrap();
+    engine.set_layer_intensity_master(EffectLayer::Background, 0.15);
+
+    let commands = engine.update(Duration::from_millis(0), None).unwrap();
+    let ducked = commands
+        .iter()
+        .find(|cmd| cmd.channel == 1)
+        .expect("dimmer command");
+    assert_eq!(
+        ducked.value, 38,
+        "song A should be ducked to 15% (255 * 0.15)"
+    );
+
+    // Operator stops playback inside the duck window, then song B starts.
+    engine.stop_all_effects();
+    engine
+        .start_effect(static_dimmer_effect(
+            "song_b_bed",
+            EffectLayer::Background,
+            1.0,
+        ))
+        .unwrap();
+
+    let commands = engine.update(Duration::from_millis(10), None).unwrap();
+    let fresh = commands
+        .iter()
+        .find(|cmd| cmd.channel == 1)
+        .expect("dimmer command");
+    assert_eq!(
+        fresh.value, 255,
+        "song B must play at its own level, not song A's leftover duck"
+    );
+}
