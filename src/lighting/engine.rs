@@ -100,6 +100,20 @@ impl LayerState {
         }
     }
 
+    /// Reset every layer back to defaults — no masters, nothing frozen.
+    fn reset(&mut self) {
+        self.intensity_masters.clear();
+        self.speed_masters.clear();
+        self.frozen.clear();
+    }
+
+    /// Reset a single layer back to defaults.
+    fn reset_layer(&mut self, layer: EffectLayer) {
+        self.intensity_masters.remove(&layer);
+        self.speed_masters.remove(&layer);
+        self.frozen.remove(&layer);
+    }
+
     fn intensity_master(&self, layer: &EffectLayer) -> f64 {
         *self.intensity_masters.get(layer).unwrap_or(&1.0)
     }
@@ -725,11 +739,17 @@ impl EffectEngine {
         Ok(self.cache.get_cached())
     }
 
-    /// Stop all active effects
+    /// Stop all active effects and reset per-song layer state
     pub fn stop_all_effects(&mut self) {
         self.active_effects.clear();
         self.releasing_effects.clear();
         self.last_merged_states.clear();
+        // Layer masters and freezes belong to the song that set them. The engine is
+        // reused across songs, so without this a show stopped mid-duck leaves the next
+        // song mastered down while its own source looks perfectly correct. Both callers
+        // replay the new song's layer commands from the timeline afterwards, so a seek
+        // rebuilds masters from show history rather than inheriting them.
+        self.layer_state.reset();
         // Clear MIDI DMX values so they don't bleed into the next song.
         // Uses a read lock because MidiDmxStore uses interior mutability
         // (atomics) — no write lock needed.
@@ -771,6 +791,9 @@ impl EffectEngine {
             &mut self.layer_state.frozen,
             layer,
         );
+        // Including the layer's masters — killing a layer that stays mastered down
+        // silently dims whatever is started on it next.
+        self.layer_state.reset_layer(layer);
         self.last_merged_states.clear();
         self.cache.invalidate();
     }
@@ -783,6 +806,9 @@ impl EffectEngine {
             &mut self.releasing_effects,
             &mut self.layer_state.frozen,
         );
+        // Including the layer masters — a panic button that leaves the rig mastered
+        // down is not a panic button.
+        self.layer_state.reset();
         self.last_merged_states.clear();
         self.cache.invalidate();
     }

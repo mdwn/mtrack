@@ -76,6 +76,12 @@ master(layer: foreground, intensity: 50%)        # scale the layer's output
 `master(...)` also accepts `speed:` (scales effect rates) in addition to
 `intensity:`.
 
+Layer masters and freezes last for the song that set them. They are reset when
+playback stops or a new song loads, and when the layer is cleared (`clear(layer:
+…)` resets that layer, `clear()` with no layer resets all of them) — so a show
+stopped between a duck and its reset cue cannot leave the next song mastered
+down.
+
 ### Sequences and inline loops
 
 A `sequence "Name" { … }` block defines a reusable timeline of cues. Inside a
