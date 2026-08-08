@@ -12,15 +12,15 @@
 // this program. If not, see <https://www.gnu.org/licenses/>.
 //
 use parking_lot::{Condvar, Mutex};
-use std::{
-    error::Error,
-    fmt,
-    sync::{Arc, Barrier},
-    thread,
-    time::Duration,
-};
+use std::{error::Error, fmt, sync::Arc, thread, time::Duration};
 
 use tracing::{error, info};
+
+/// First delay before retrying a stream rebuild after a backend error.
+const REBUILD_BACKOFF_START: Duration = Duration::from_millis(250);
+/// Ceiling for the rebuild retry backoff. Bounded so a device that comes back
+/// after a long absence is picked up promptly rather than after a doubling gap.
+const REBUILD_BACKOFF_MAX: Duration = Duration::from_secs(5);
 
 use crate::audio::mixer::{ActiveSource as MixerActiveSource, AudioMixer};
 
@@ -112,6 +112,19 @@ impl OutputManager {
     /// Starts the output thread that creates and manages the audio stream.
     /// Uses direct callback mode — no intermediate ring buffer for lowest latency.
     /// On backend errors (e.g. ALSA POLLERR), the stream is recreated automatically.
+    ///
+    /// Returning `Ok(())` means a live stream exists. A first-build failure is
+    /// reported to the caller rather than swallowed, so `get_device` returns `Err`
+    /// and the perpetual `retry_until_ready` loop in `player::hardware` covers it —
+    /// that loop re-runs the whole device lookup, which is what a device that is not
+    /// present yet actually needs.
+    ///
+    /// A *later* build failure is retried in-thread with backoff instead, because
+    /// nothing upstream is watching once initialization has succeeded. This is the
+    /// case that matters live: when a USB interface is power-cycled mid-set, the
+    /// backend errors immediately but re-enumeration takes seconds, so the first
+    /// rebuild attempt lands while the card is still absent. Retrying lets the
+    /// stream come back on its own once the device does.
     pub(super) fn start_output_thread(
         &mut self,
         factory: Box<dyn OutputStreamFactory>,
@@ -127,14 +140,20 @@ impl OutputManager {
         // Shared shutdown signal so drop can wake the output thread.
         let shutdown = self.shutdown_notify.clone();
 
-        // Use a barrier to ensure the first stream is created before we return.
-        let barrier = Arc::new(Barrier::new(2));
-        let barrier_clone = barrier.clone();
+        // Carries the first build's outcome back to the caller. A channel rather than
+        // a barrier, so "the thread got as far as returning to us" and "the thread has
+        // a live stream" can no longer be confused for each other.
+        let (first_result_tx, first_result_rx) = std::sync::mpsc::sync_channel::<Option<String>>(1);
 
         let output_thread = thread::spawn(move || {
             let mut first_run = true;
+            let mut backoff = REBUILD_BACKOFF_START;
 
             loop {
+                if *shutdown.0.lock() {
+                    return;
+                }
+
                 let stream_result = factory.build_stream(
                     mixer.clone(),
                     source_rx.clone(),
@@ -144,11 +163,12 @@ impl OutputManager {
 
                 match stream_result {
                     Ok(stream) => {
+                        backoff = REBUILD_BACKOFF_START;
                         if first_run {
                             info!(
                                 "Audio output stream started successfully (direct callback mode)"
                             );
-                            barrier_clone.wait();
+                            let _ = first_result_tx.send(None);
                             first_run = false;
                         } else {
                             info!("Audio output stream recovered after backend error");
@@ -180,21 +200,56 @@ impl OutputManager {
                         drop(stream);
                     }
                     Err(e) => {
-                        error!("Failed to create audio stream: {}", e);
                         if first_run {
-                            barrier_clone.wait();
+                            // Hand the failure to the caller and stop. The outer retry
+                            // re-runs device discovery, which a first build needs.
+                            error!("Failed to create audio stream: {}", e);
+                            let _ = first_result_tx.send(Some(e.to_string()));
+                            return;
                         }
-                        return;
+
+                        error!(
+                            "Failed to recreate audio stream: {} (retrying in {:?})",
+                            e, backoff
+                        );
+                        if Self::sleep_unless_shutdown(&shutdown, backoff) {
+                            return;
+                        }
+                        backoff = (backoff * 2).min(REBUILD_BACKOFF_MAX);
                     }
                 }
             }
         });
 
-        // Wait for first stream to be created.
-        barrier.wait();
+        // Wait for the first build to report its outcome.
+        match first_result_rx.recv() {
+            Ok(None) => {
+                self.output_thread = Some(output_thread);
+                Ok(())
+            }
+            Ok(Some(e)) => {
+                let _ = output_thread.join();
+                Err(format!("failed to create audio stream: {}", e).into())
+            }
+            // The thread died without reporting — treat as failure rather than
+            // reporting a device that has no stream behind it.
+            Err(_) => {
+                let _ = output_thread.join();
+                Err("audio output thread exited before creating a stream".into())
+            }
+        }
+    }
 
-        self.output_thread = Some(output_thread);
-        Ok(())
+    /// Sleeps for `duration`, waking early if shutdown is signalled.
+    /// Returns true if shutdown was requested.
+    fn sleep_unless_shutdown(shutdown: &CondvarNotify, duration: Duration) -> bool {
+        let (mutex, condvar) = &**shutdown;
+        let mut guard = mutex.lock();
+        if *guard {
+            return true;
+        }
+        condvar.wait_for(&mut guard, duration);
+        *guard
     }
 }
 
@@ -280,18 +335,92 @@ mod test {
             );
         }
 
+        /// A first-build failure must reach the caller. Returning Ok here left the
+        /// device reported as connected with a dead output thread behind it, and the
+        /// perpetual retry in player::hardware never re-ran because it only retries
+        /// on Err. See #350.
         #[test]
-        fn handles_build_failure() {
+        fn first_build_failure_is_reported_to_the_caller() {
             let mut manager = OutputManager::new(2, 44100).unwrap();
 
-            // Should not panic even though the factory fails.
             let result = manager.start_output_thread(Box::new(FailingOutputStreamFactory));
             assert!(
-                result.is_ok(),
-                "start_output_thread should return Ok even if build fails"
+                result.is_err(),
+                "a first build that failed must not be reported as success"
             );
-            // Thread was spawned but exited after failure.
-            assert!(manager.output_thread.is_some());
+            assert!(
+                manager.output_thread.is_none(),
+                "no thread handle should be retained for a stream that was never created"
+            );
+        }
+
+        /// The case that strands a rig mid-set: a USB interface is power-cycled, the
+        /// backend errors immediately, but the card takes seconds to re-enumerate so
+        /// the first rebuild attempts fail. The thread has to keep trying — it used to
+        /// return on the first failed rebuild, killing audio until mtrack restarted.
+        #[test]
+        fn rebuild_retries_while_the_device_is_away() {
+            let (factory, handle) = ErrorCapturingFactory::new();
+            let mut manager = OutputManager::new(2, 44100).unwrap();
+
+            manager
+                .start_output_thread(Box::new(factory))
+                .expect("should start");
+            assert_eq!(handle.build_count(), 1);
+
+            // Device disappears: the next two rebuild attempts fail, then it is back.
+            handle.fail_next_builds(2);
+            handle.trigger_error();
+
+            // Wait on the build count, not on is_alive — the original stream is still
+            // alive at this point, so an is_alive check would pass before the thread
+            // has even woken up.
+            //
+            // Backoff is 250ms then 500ms, so allow room for both failed retries plus
+            // the successful third build.
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while std::time::Instant::now() < deadline && handle.build_count() < 4 {
+                thread::sleep(Duration::from_millis(25));
+            }
+
+            assert!(
+                handle.is_alive(),
+                "stream should come back on its own once the device returns"
+            );
+            assert!(
+                handle.build_count() >= 4,
+                "expected the initial build plus retries, got {}",
+                handle.build_count()
+            );
+
+            drop(manager);
+        }
+
+        /// Retrying must not outlive the manager — a device that never comes back
+        /// should not keep a thread spinning past shutdown.
+        #[test]
+        fn rebuild_retry_stops_on_shutdown() {
+            let (factory, handle) = ErrorCapturingFactory::new();
+            let mut manager = OutputManager::new(2, 44100).unwrap();
+
+            manager
+                .start_output_thread(Box::new(factory))
+                .expect("should start");
+
+            // Device never returns.
+            handle.fail_next_builds(u32::MAX);
+            handle.trigger_error();
+            thread::sleep(Duration::from_millis(100));
+
+            // Drop joins the output thread; if the backoff sleep ignored shutdown this
+            // would hang rather than return.
+            let start = std::time::Instant::now();
+            drop(manager);
+            assert!(
+                start.elapsed() < Duration::from_secs(2),
+                "shutdown should interrupt the retry backoff, took {:?}",
+                start.elapsed()
+            );
         }
 
         #[test]

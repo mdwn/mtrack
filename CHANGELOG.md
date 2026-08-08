@@ -116,6 +116,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   DMX paths now share one compensation knob, applied to cue dispatch, to the tempo base that
   tempo-aware effects resolve against, and to the state reconstructed when seeking.
 
+- **The audio output thread survives a device that goes away and comes back**: any failure to
+  build the output stream killed the output thread outright. Two distinct consequences. On the
+  *first* build the failure was swallowed — `start_output_thread` returned `Ok`, so the device
+  reported as `connected` with no live stream behind it and the perpetual retry in
+  `player::hardware` never re-ran, because it only retries on an `Err`. On a *later* build, after
+  a backend error, the single immediate retry was the only one: power-cycling a USB interface
+  mid-set raises the error at once but re-enumeration takes seconds, so that one attempt lands
+  while the card is still absent, and audio was then gone until mtrack itself was restarted.
+  A first-build failure is now reported to the caller so the existing retry loop covers it
+  (re-running device discovery, which is what a not-yet-present device needs), and later
+  failures retry in-thread with backoff until the device returns or shutdown is requested. After
+  a successful start the thread can no longer exit on its own, so "connected" can no longer mean
+  "connected to nothing".
+
+  A rebuild that fails also re-resolves the device by name before giving up. ALSA keys a device by
+  name, so the original handle reopens a power-cycled interface fine — but CoreAudio keys it by
+  device id and WASAPI by endpoint, and a re-plugged interface comes back under a new one, leaving
+  the retry loop hammering a handle that can never work again.
+
+  Because that retry runs twice a second forever, it now says which situation it is in: opening a
+  device that was located but would not open reports `audio device 'X' was found but could not be
+  opened`, distinct from `no device found with name X`. An absent device may still be enumerating
+  and the retry will pick it up on its own — that is what the perpetual retry is for. A device
+  sitting right there refusing to open will still be refusing in an hour, and needs a person:
+  usually a sample rate, format or buffer size the interface won't accept, or another process
+  holding it exclusively. Deciding to stop retrying a failure that can never succeed is a broader
+  change — it applies equally to MIDI and DMX — and is left for its own.
+
+- **Concurrent device enumeration can no longer destroy mtrack's stdout**: enumeration silences
+  ALSA's chatter by redirecting the process's file descriptors and restoring them afterwards. Two
+  threads doing that at once interleave the save and restore and the real stdout is lost for the
+  life of the process — a failure that, by construction, prints nothing at all. Enumeration paths
+  now serialise on a single lock.
+
 ## [0.15.0] - 2026-07-20
 
 ### Added
