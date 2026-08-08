@@ -68,7 +68,11 @@ impl Engine {
     }
 
     /// Starts the lighting timeline at a specific time
+    ///
+    /// `start_time` is song-absolute; it is shifted into the delayed lighting time
+    /// base so the reconstructed state matches what the live loop advances from.
     pub fn start_lighting_timeline_at(&self, start_time: Duration) {
+        let start_time = self.to_delayed_song_time(start_time);
         // Clear effects from previous song before starting new timeline
         {
             let mut effect_engine = self.effect_engine.lock();
@@ -197,6 +201,28 @@ impl Engine {
             self.current_song_time
                 .load(std::sync::atomic::Ordering::Relaxed),
         )
+    }
+
+    /// Song time with the configured `dmx.playback_delay` applied, or `None` while
+    /// still inside the delay window.
+    ///
+    /// Audio leaves late — decode/transcode, the CPAL/ALSA stream buffer, device
+    /// latency — while DMX frames go out with only frame time and fixture response
+    /// in the way. So lights driven straight off the transport clock fire early
+    /// relative to what the audience hears, and this is the knob that pulls them
+    /// back. `None` means the show has not started yet as far as the lights are
+    /// concerned: hold, don't fire at zero.
+    pub(crate) fn delayed_song_time(&self) -> Option<Duration> {
+        self.get_song_time().checked_sub(self.playback_delay)
+    }
+
+    /// Shift a song-absolute time into the delayed lighting time base.
+    ///
+    /// Used for the reconstruction points that don't come from the live clock
+    /// (playback start, section-loop restart), so a seek lands on the same show
+    /// state the live loop will go on to advance from.
+    pub(crate) fn to_delayed_song_time(&self, song_time: Duration) -> Duration {
+        song_time.saturating_sub(self.playback_delay)
     }
 
     /// Gets all cues from the current timeline with their times and indices

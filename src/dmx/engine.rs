@@ -317,11 +317,15 @@ impl Engine {
             error!("Error updating effects: {}", e);
         }
 
-        // Update song lighting timeline with actual song time
+        // Update song lighting timeline with the delay-compensated song time. Holding
+        // off entirely inside the delay window matters: clamping to zero instead would
+        // fire the @00:00.000 cues at true zero, which is the early firing the delay
+        // exists to correct.
         self.effects_loop_phase.store(4, Ordering::Relaxed);
-        let song_time = self.get_song_time();
-        if let Err(e) = self.update_song_lighting(song_time) {
-            error!("Error updating song lighting: {}", e);
+        if let Some(song_time) = self.delayed_song_time() {
+            if let Err(e) = self.update_song_lighting(song_time) {
+                error!("Error updating song lighting: {}", e);
+            }
         }
 
         // Check if all lighting has finished (DSL timeline cues + MIDI DMX playbacks)
@@ -420,9 +424,13 @@ impl Engine {
     pub fn update_effects(&self) -> Result<(), Box<dyn std::error::Error>> {
         // Update the effects engine with a frame time matching Universe TARGET_HZ
         let dt = Duration::from_secs_f64(1.0 / super::universe::TARGET_HZ);
-        // Subphase 1: about to acquire current_song_time lock
+        // Subphase 1: about to acquire current_song_time lock.
+        // Tempo-aware effects resolve their speeds against this, so it has to sit in
+        // the same delayed time base as the cues that started them. Clamped rather
+        // than skipped: the render also carries MIDI DMX store values, which do their
+        // own delay handling in advance_midi_dmx_playbacks and must keep flowing.
         self.update_subphase.store(1, Ordering::Relaxed);
-        let song_time = self.get_song_time();
+        let song_time = self.to_delayed_song_time(self.get_song_time());
         // Subphase 2: about to acquire effect_engine lock
         self.update_subphase.store(2, Ordering::Relaxed);
         let mut effect_engine = match self.effect_engine.try_lock_for(Duration::from_secs(2)) {
@@ -2461,13 +2469,179 @@ mod test {
 
             // Update at t=0 — cue hasn't fired yet
             engine.update_song_lighting(std::time::Duration::ZERO)?;
+            assert_eq!(
+                engine.effect_engine.lock().active_effects_count(),
+                0,
+                "cue at t=1s must not fire at t=0"
+            );
 
             // Update at t=2s — cue should fire
             engine.update_song_lighting(std::time::Duration::from_secs(2))?;
 
-            let effect_engine = engine.effect_engine.lock();
-            let active = effect_engine.format_active_effects();
-            assert!(!active.is_empty(), "Cue effect should be active at t=2s");
+            // Counted, not string-checked: format_active_effects() returns the literal
+            // "No active effects" when there are none, so is_empty() is never true and
+            // the old assertion here passed whether or not the cue ever fired.
+            assert_eq!(
+                engine.effect_engine.lock().active_effects_count(),
+                1,
+                "Cue effect should be active at t=2s"
+            );
+            Ok(())
+        }
+    }
+
+    /// The DSL lighting path has to honour `dmx.playback_delay` the same way the
+    /// MIDI-based DMX path already does — otherwise latency compensation configured
+    /// for the primary lighting system silently does nothing. See #336.
+    mod dsl_playback_delay_tests {
+        use super::*;
+
+        fn engine_with_delay(delay: &str) -> Result<Arc<Engine>, Box<dyn Error>> {
+            let config = config::Dmx::new(
+                Some(1.0),
+                Some(delay.to_string()),
+                Some(9091),
+                vec![config::Universe::new(5, "universe1".to_string())],
+                None,
+            );
+            let ola_client = crate::dmx::ola_client::OlaClientFactory::create_mock_client();
+            Ok(Arc::new(Engine::new(&config, None, None, ola_client)?))
+        }
+
+        /// A cue at t=0 fires once the transport reaches the delay, not before.
+        fn timeline_with_cue_at_zero(engine: &Engine) {
+            let mut channels = std::collections::HashMap::new();
+            channels.insert("dimmer".to_string(), 1);
+            {
+                let mut effect_engine = engine.effect_engine.lock();
+                effect_engine.register_fixture(crate::lighting::effects::FixtureInfo::new(
+                    "test_fixture".to_string(),
+                    1,
+                    1,
+                    "Generic".to_string(),
+                    channels,
+                    None,
+                ));
+            }
+
+            use crate::lighting::parser::{Cue, Effect};
+            let cue = Cue {
+                time: std::time::Duration::ZERO,
+                effects: vec![Effect {
+                    sequence_name: None,
+                    groups: vec!["test_fixture".to_string()],
+                    effect_type: crate::lighting::effects::EffectType::Static {
+                        parameters: {
+                            let mut p = std::collections::HashMap::new();
+                            p.insert("dimmer".to_string(), 0.5);
+                            p
+                        },
+                        duration: Duration::from_secs(30),
+                    },
+                    up_time: None,
+                    hold_time: Some(Duration::from_secs(30)),
+                    down_time: None,
+                    layer: None,
+                    blend_mode: None,
+                }],
+                layer_commands: vec![],
+                stop_sequences: vec![],
+                start_sequences: vec![],
+            };
+
+            let mut timeline = engine.current_song_timeline.lock();
+            let mut tl = crate::lighting::timeline::LightingTimeline::new_with_cues(vec![cue]);
+            tl.start();
+            *timeline = Some(tl);
+        }
+
+        // Note: format_active_effects() returns the literal "No active effects" when
+        // there are none, so an is_empty() check on it is always false. Count instead.
+        fn has_active_effects(engine: &Engine) -> bool {
+            engine.effect_engine.lock().active_effects_count() > 0
+        }
+
+        #[test]
+        fn delayed_song_time_holds_inside_the_window() -> Result<(), Box<dyn Error>> {
+            let engine = engine_with_delay("200ms")?;
+
+            engine.update_song_time(Duration::from_millis(100));
+            assert_eq!(engine.delayed_song_time(), None);
+
+            engine.update_song_time(Duration::from_millis(200));
+            assert_eq!(engine.delayed_song_time(), Some(Duration::ZERO));
+
+            engine.update_song_time(Duration::from_millis(350));
+            assert_eq!(engine.delayed_song_time(), Some(Duration::from_millis(150)));
+            Ok(())
+        }
+
+        #[test]
+        fn zero_delay_is_a_passthrough() -> Result<(), Box<dyn Error>> {
+            let engine = engine_with_delay("0ms")?;
+            engine.update_song_time(Duration::from_millis(500));
+            assert_eq!(
+                engine.delayed_song_time(),
+                Some(Duration::from_millis(500)),
+                "an unconfigured delay must not shift anything"
+            );
+            Ok(())
+        }
+
+        /// The regression this issue is about: cues used to fire at their nominal
+        /// times regardless of the configured delay.
+        #[test]
+        fn cue_at_zero_waits_for_the_delay() -> Result<(), Box<dyn Error>> {
+            let engine = engine_with_delay("200ms")?;
+            timeline_with_cue_at_zero(&engine);
+
+            // Inside the delay window the timeline must not advance at all. Clamping
+            // to zero here instead of holding would fire the cue immediately.
+            engine.update_song_time(Duration::from_millis(100));
+            engine.effects_loop_tick();
+            assert!(
+                !has_active_effects(&engine),
+                "cue fired during the delay window — the delay was ignored"
+            );
+
+            // Past the window, the cue fires.
+            engine.update_song_time(Duration::from_millis(250));
+            engine.effects_loop_tick();
+            assert!(
+                has_active_effects(&engine),
+                "cue should fire once the transport passes the delay"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn cue_at_zero_fires_immediately_without_a_delay() -> Result<(), Box<dyn Error>> {
+            let engine = engine_with_delay("0ms")?;
+            timeline_with_cue_at_zero(&engine);
+
+            engine.update_song_time(Duration::from_millis(10));
+            engine.effects_loop_tick();
+            assert!(
+                has_active_effects(&engine),
+                "with no delay configured the cue should fire right away"
+            );
+            Ok(())
+        }
+
+        /// Seeking reconstructs show state at the delayed time, so the live loop
+        /// picks up from the same point rather than jumping by the delay.
+        #[test]
+        fn timeline_start_shifts_the_reconstruction_point() -> Result<(), Box<dyn Error>> {
+            let engine = engine_with_delay("200ms")?;
+            assert_eq!(
+                engine.to_delayed_song_time(Duration::from_secs(10)),
+                Duration::from_millis(9800)
+            );
+            // A seek shallower than the delay clamps rather than underflowing.
+            assert_eq!(
+                engine.to_delayed_song_time(Duration::from_millis(50)),
+                Duration::ZERO
+            );
             Ok(())
         }
     }
