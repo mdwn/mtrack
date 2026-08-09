@@ -14,11 +14,13 @@
 //! Deliberately breaking a check's premise, to prove the check can fail.
 //!
 //! A check that cannot fail is worse than no check: it reports success forever
-//! and nobody looks at it again. This harness has shipped two.
+//! and nobody looks at it again. This harness has shipped three.
 //! `bogus_*_device_degrades_gracefully` read a subsystem status milliseconds
-//! after spawn, when everything reads `initializing` whatever mtrack does, and
+//! after spawn, when everything reads `initializing` whatever mtrack does;
 //! `stop_halts_playback` used a four-second song that ended on its own inside
-//! the ten-second stop deadline. Both passed every review; neither could fail.
+//! the ten-second stop deadline; and `active_playlist_persists_across_restart`
+//! asserted the opposite of documented behaviour. All three passed every
+//! review; none could fail.
 //!
 //! Each check therefore names one thing it depends on and asks here whether to
 //! break it. Running with the flag set is that check's negative control, and
@@ -40,8 +42,11 @@ pub fn active() -> bool {
     ACTIVE.load(Ordering::SeqCst)
 }
 
-/// Runs `f` with sabotage enabled. Checks execute one at a time, so a plain
-/// flag is sufficient.
+/// Turns sabotage on for the next check.
+///
+/// Paired with [`disable`] by the self-test runner rather than being a scope
+/// guard: `runner::execute` catches unwinds, so a panicking control cannot
+/// leave the flag set. Checks execute one at a time, so a plain flag suffices.
 pub fn enable() {
     ACTIVE.store(true, Ordering::SeqCst);
 }

@@ -49,7 +49,7 @@ pub async fn plays_a_song_to_completion() -> CheckOutcome {
             "Short Tone",
             "short-tone",
             2,
-            crate::sabotage::pick(4.0, 0.3),
+            crate::sabotage::pick(4.0, 1.0),
         )])
         .build()?;
     let server = Server::start(&project).await?;
@@ -225,7 +225,7 @@ pub async fn tracks_route_to_their_mapped_channels() -> CheckOutcome {
     for (track, output) in song.tracks.iter().zip(outputs.iter()) {
         mappings.insert(
             track.name.clone(),
-            vec![crate::sabotage::pick(*output, outputs[0])],
+            vec![crate::sabotage::pick(*output, outputs[outputs.len() - 1])],
         );
     }
 

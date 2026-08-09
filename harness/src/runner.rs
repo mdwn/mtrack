@@ -247,7 +247,8 @@ pub async fn run_self_test(filter: &Option<String>) -> ExitCode {
 
     let mut cannot_fail = Vec::new();
     let mut proved = 0;
-    let mut inconclusive = Vec::new();
+    let mut not_runnable = Vec::new();
+    let mut unproven: Vec<(&str, &str)> = Vec::new();
 
     for check in checks::all() {
         if let Some(needle) = filter {
@@ -266,6 +267,12 @@ pub async fn run_self_test(filter: &Option<String>) -> ExitCode {
         let outcome = execute(&check).await;
         crate::sabotage::disable();
 
+        // Whether the check's own assertion produced this, as opposed to a
+        // helper failing first. A control that dies inside `Server::start`
+        // reports Failed and would otherwise be indistinguishable from one
+        // that drove its assertion to failure.
+        let from_assertion = matches!(&outcome, Err(e) if e.is_assertion());
+
         let result = CheckResult::from_outcome(
             check.area,
             check.name,
@@ -274,39 +281,72 @@ pub async fn run_self_test(filter: &Option<String>) -> ExitCode {
             std::time::Duration::ZERO,
         );
         match result.outcome {
+            // The only outcome that proves anything: the assertion fired and
+            // reported a defect.
+            // Some checks' strongest verdict is "I cannot trust this", so an
+            // inconclusive raised by the check itself is its assertion firing.
+            Outcome::Failed | Outcome::Inconclusive if from_assertion => {
+                println!("  ok           {:<46} assertion fired", check.name);
+                proved += 1;
+            }
+            // Failed, but before the assertion was reached.
+            Outcome::Failed => {
+                println!(
+                    "  NO ASSERTION {:<46} failed before the assertion ran",
+                    check.name
+                );
+                unproven.push((check.name, "pre-assertion failure"));
+            }
             Outcome::Passed => {
                 println!("  CANNOT FAIL  {:<46}", check.name);
                 cannot_fail.push(check.name);
             }
-            // Skipped means the machine could not run it either way, so the
-            // control proved nothing -- it is not evidence the check is sound.
+            // The machine cannot run this check at all, so the control says
+            // nothing either way.
             Outcome::Skipped | Outcome::Blocked => {
                 println!(
-                    "  not run      {:<46} {}",
+                    "  not run here {:<46} {}",
                     check.name,
                     result.detail.as_deref().unwrap_or("")
                 );
-                inconclusive.push(check.name);
+                not_runnable.push(check.name);
             }
+            // The control broke the run before the assertion could be reached.
+            // A check that crashes under sabotage has been shown to crash, not
+            // to detect anything -- counting this as proof is what let several
+            // useless controls report "ok".
             other => {
-                println!("  ok           {:<46} {}", check.name, other.label());
-                proved += 1;
+                println!(
+                    "  NO ASSERTION {:<46} control ended in {}",
+                    check.name,
+                    other.label()
+                );
+                unproven.push((check.name, other.label()));
             }
         }
     }
 
     println!("\n{}", "=".repeat(72));
-    println!("  {proved} proved capable of failing");
-    if !inconclusive.is_empty() {
+    println!("  {proved} proved capable of failing (the assertion fired)");
+    if !not_runnable.is_empty() {
         println!(
-            "  {} not exercised on this machine: {}",
-            inconclusive.len(),
-            inconclusive.join(", ")
+            "  {} not runnable on this machine: {}",
+            not_runnable.len(),
+            not_runnable.join(", ")
         );
     }
-    if cannot_fail.is_empty() {
-        println!("  No check reported success unconditionally.");
-    } else {
+    if !unproven.is_empty() {
+        println!(
+            "\n  {} control(s) never reached their assertion:",
+            unproven.len()
+        );
+        for (name, how) in &unproven {
+            println!("    {name} (ended in {how})");
+        }
+        println!("  These prove the check can break, not that it can detect anything.");
+        println!("  Move the sabotage closer to what the assertion reads.");
+    }
+    if !cannot_fail.is_empty() {
         println!(
             "\n  {} CANNOT FAIL — these report success unconditionally:",
             cannot_fail.len()
@@ -314,11 +354,14 @@ pub async fn run_self_test(filter: &Option<String>) -> ExitCode {
         for name in &cannot_fail {
             println!("    {name}");
         }
-        println!("\n  Give each a sabotage point (see harness/src/sabotage.rs).");
+        println!("  Give each a sabotage point (see harness/src/sabotage.rs).");
+    }
+    if cannot_fail.is_empty() && unproven.is_empty() {
+        println!("\n  Every check runnable here proved capable of failing.");
     }
     println!("{}", "=".repeat(72));
 
-    if cannot_fail.is_empty() {
+    if cannot_fail.is_empty() && unproven.is_empty() {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE

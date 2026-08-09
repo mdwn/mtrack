@@ -117,9 +117,16 @@ whether or not Stop did anything. All three survived several reviews.
 ```
 
 Every check names one thing it depends on and asks `sabotage::` whether to
-break it. `--self-test` runs them all with the flag set and requires *none* to
-pass. **26/26 on the MAT rig; 25/26 on the WING**, where routing is not
-exercised because that console has no loopback.
+break it. `--self-test` runs them all with the flag set and requires each to
+report a defect **from its own assertion**. **26/26 on the MAT rig; 25/26 on
+the WING**, where routing is not exercised because that console has no
+loopback.
+
+Only an assertion counts. Failures carry a `from_assertion` flag, because a
+control that dies inside `Server::start` reports `Failed` and would otherwise
+be indistinguishable from one that drove its assertion to failure -- the same
+"reading it cannot tell you" problem, one level up. Counting any non-pass as
+proof initially hid four broken controls behind a green 26/26.
 
 The control lives beside the assertion it guards, so refactoring cannot orphan
 it, and completeness enforces itself: a check with no break point, or an

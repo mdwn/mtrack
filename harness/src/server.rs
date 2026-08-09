@@ -142,11 +142,13 @@ impl Server {
                 INIT_TIMED_OUT.store(true, Ordering::SeqCst);
                 // A real finding: the player could not come up against a config
                 // naming devices it had itself advertised.
-                Err(crate::outcome::CheckError::Failed(msg))
+                Err(crate::outcome::CheckError::before_assertion(msg))
             }
             // Also a real finding, but specific to this check's config, so the
             // rest of the run still gets to say something.
-            Err(StartFailure::Exited(msg)) => Err(crate::outcome::CheckError::Failed(msg)),
+            Err(StartFailure::Exited(msg)) => {
+                Err(crate::outcome::CheckError::before_assertion(msg))
+            }
             // Never latched: the harness broke, not the player.
             Err(StartFailure::Harness(msg)) => Err(crate::outcome::CheckError::Harness(msg)),
         }
@@ -162,7 +164,7 @@ impl Server {
                 // Its callers exist to check that an unresolvable device degrades
                 // rather than killing the player. Reporting an exit as a harness
                 // error would label the very defect they hunt as our own bug.
-                StartFailure::Exited(m) => crate::outcome::CheckError::Failed(m),
+                StartFailure::Exited(m) => crate::outcome::CheckError::before_assertion(m),
                 StartFailure::Timeout(m) | StartFailure::Harness(m) => {
                     crate::outcome::CheckError::Harness(m)
                 }
@@ -315,7 +317,7 @@ impl Server {
         if unexpected.is_empty() {
             Ok(())
         } else {
-            Err(crate::outcome::CheckError::Failed(format!(
+            Err(crate::outcome::CheckError::assertion(format!(
                 "mtrack logged {} unexpected error(s):\n{}",
                 unexpected.len(),
                 unexpected.join("\n")
@@ -346,7 +348,7 @@ impl Server {
         if ignored.is_empty() {
             Ok(())
         } else {
-            Err(crate::outcome::CheckError::Failed(format!(
+            Err(crate::outcome::CheckError::assertion(format!(
                 "mtrack ignored part of the generated config:\n{}",
                 ignored.join("\n")
             )))

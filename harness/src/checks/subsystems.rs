@@ -25,7 +25,7 @@ use crate::client::Client;
 use crate::outcome::CheckOutcome;
 use crate::project::{ProfileSpec, ProjectBuilder, Subsystem};
 use crate::server::Server;
-use crate::{check, check_eq, fail};
+use crate::{check, check_eq, fail, skip};
 use mtrack::proto::player::v1::PlayRequest;
 
 /// How long to watch a deliberately-broken subsystem before concluding it
@@ -66,6 +66,9 @@ async fn watch_subsystem(
 pub async fn absent_midi_is_skipped_not_fatal() -> CheckOutcome {
     crate::runner::require_area("subsystems")?;
     let mut profile = ProfileSpec::detected("01-e2e");
+    if crate::sabotage::active() && Capabilities::get().midi_out.is_none() {
+        skip!("this machine has no MIDI device, so making the profile declare one is a no-op");
+    }
     profile.midi = crate::sabotage::pick(Subsystem::Absent, Subsystem::Detected);
 
     let project = ProjectBuilder::new()
@@ -211,8 +214,22 @@ pub async fn first_profile_wins() -> CheckOutcome {
         return Ok(());
     };
 
+    // Sorts first under sabotage, and names a *valid* other device: a bogus one
+    // stops the player booting, so the control died before this check's
+    // assertion could run.
     let mut second = ProfileSpec::detected(crate::sabotage::pick("02-decoy", "00-decoy"));
-    second.audio = Subsystem::Bogus("e2e-decoy-device".to_string());
+    second.audio = if crate::sabotage::active() {
+        match caps
+            .all_audio_out
+            .iter()
+            .find(|d| Some(&d.name) != caps.audio_out.as_ref().map(|s| &s.name))
+        {
+            Some(other) => Subsystem::Named(other.name.clone()),
+            None => skip!("only one openable output device, so no decoy is possible"),
+        }
+    } else {
+        Subsystem::Bogus("e2e-decoy-device".to_string())
+    };
 
     let project = ProjectBuilder::new()
         .profiles(vec![ProfileSpec::detected("01-e2e"), second])
@@ -238,7 +255,7 @@ pub async fn controllers_restart_while_idle() -> CheckOutcome {
     let server = Server::start(&project).await?;
     let mut client = Client::connect(&server).await?;
 
-    if !crate::sabotage::perform() {
+    if crate::sabotage::active() {
         client.grpc().play(PlayRequest {}).await?;
         client.wait_until_playing(Duration::from_secs(10)).await?;
     }

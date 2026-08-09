@@ -231,10 +231,13 @@ impl Client {
             last = Some(status);
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        Err(
-            format!("player never reported {what} within {timeout:?} (last status: {last:?})")
-                .into(),
-        )
+        // Explicitly Failed, not `.into()`. `From<String>` maps to Harness, so
+        // a player that accepts Play and never plays was reported as "our bug,
+        // not mtrack's". Round five raised this; the signature was changed and
+        // the body was not.
+        Err(crate::outcome::CheckError::assertion(format!(
+            "player never reported {what} within {timeout:?} (last status: {last:?})"
+        )))
     }
 }
 

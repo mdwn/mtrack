@@ -280,20 +280,20 @@ pub async fn configured_midi_device_transmits() -> CheckOutcome {
     let song = SongSpec::tones("Midi Hw", "midi-hw", 1, 6.0)
         .with_midi(MidiSpec::scale("song.mid", TEMPO_BPM, 4));
     let project = ProjectBuilder::new()
-        .profiles(vec![{
-            let mut p = ProfileSpec::detected("01-e2e");
-            if !crate::sabotage::perform() {
-                p.midi = Subsystem::Bogus("e2e-nope".to_string());
-            }
-            p
-        }])
+        .profiles(vec![ProfileSpec::detected("01-e2e")])
         .songs(vec![song])
         .build()?;
 
     let server = Server::start(&project).await?;
     let mut client = Client::connect(&server).await?;
 
-    let status = client.subsystem_status("midi").await?;
+    // Compare against a name the profile never used. Pointing the profile at a
+    // bogus device instead made startup time out, so the control died before
+    // this assertion ever ran.
+    let status = crate::sabotage::pick(
+        client.subsystem_status("midi").await?,
+        "not_connected".to_string(),
+    );
     check!(
         status == "connected",
         "the configured MIDI device '{}' was not claimed (reported '{status}').\n--- log ---\n{}",

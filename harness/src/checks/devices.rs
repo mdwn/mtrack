@@ -139,7 +139,7 @@ pub async fn selected_output_is_real_hardware() -> CheckOutcome {
         // Reachable only by an operator override; device_rank already prefers
         // raw hardware. Blaming mtrack (and exiting non-zero) for the harness's
         // own device choice would be wrong.
-        return Err(crate::outcome::CheckError::Inconclusive(format!(
+        return Err(crate::outcome::CheckError::inconclusive_assertion(format!(
             "selected the plug device '{}' even though raw hardware was available: {:?}. Its \
              {}-channel count is the plug layer's, not the interface's, so routing measured \
              through it would not mean what it appears to. Check MTRACK_E2E_AUDIO_DEVICE.",

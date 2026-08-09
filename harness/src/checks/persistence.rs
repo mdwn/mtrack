@@ -154,7 +154,7 @@ pub async fn midi_beat_clock_persists() -> CheckOutcome {
         client,
         "midi beat_clock",
         "01-e2e",
-        crate::sabotage::pick("beat_clock: true", "kind: hardware_profile"),
+        crate::sabotage::pick("beat_clock: true", "beat_clock: false"),
         move |mut client, checksum| async move {
             let midi_json = serde_json::json!({
                 "device": device,

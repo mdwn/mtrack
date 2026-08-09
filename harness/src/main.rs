@@ -154,6 +154,11 @@ async fn main() -> ExitCode {
     // Verifying the verifier: every check must stop passing when its own
     // premise is broken.
     if options.self_test {
+        // Neither applies: the self-test is one deterministic pass over the
+        // controls, and its output is a verdict rather than a report.
+        if options.repeat > 1 || options.json.is_some() {
+            eprintln!("--self-test ignores --repeat and --json.\n");
+        }
         return runner::run_self_test(&options.filter).await;
     }
 

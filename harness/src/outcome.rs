@@ -31,7 +31,17 @@ use std::time::Duration;
 #[derive(Debug)]
 pub enum CheckError {
     /// The behaviour under test is wrong. This is a defect in mtrack.
-    Failed(String),
+    ///
+    /// `from_assertion` records whether the check's own assertion produced
+    /// this, as opposed to a helper failing before the assertion was reached.
+    /// Both are real defect reports in a normal run; only the former proves
+    /// anything in `--self-test`, where a control that dies inside
+    /// `Server::start` would otherwise look identical to one that drove its
+    /// assertion to failure.
+    Failed {
+        message: String,
+        from_assertion: bool,
+    },
     /// The check cannot run on this machine, typically for missing hardware.
     /// This will never pass here no matter how often it is run.
     Skipped(String),
@@ -41,7 +51,14 @@ pub enum CheckError {
     Blocked(String),
     /// The check ran but its measurement cannot be trusted, e.g. the audio
     /// interface underran mid-capture. Not a defect, but not evidence either.
-    Inconclusive(String),
+    ///
+    /// Carries the same origin flag as `Failed`: for a check whose strongest
+    /// verdict is "I cannot trust this", an inconclusive raised by its own
+    /// logic *is* its assertion firing.
+    Inconclusive {
+        message: String,
+        from_assertion: bool,
+    },
     /// The harness itself broke: a connection failed, a temp dir could not be
     /// written. This says nothing about mtrack.
     Harness(String),
@@ -50,11 +67,11 @@ pub enum CheckError {
 impl fmt::Display for CheckError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            CheckError::Failed(m)
-            | CheckError::Skipped(m)
-            | CheckError::Blocked(m)
-            | CheckError::Inconclusive(m)
-            | CheckError::Harness(m) => write!(f, "{m}"),
+            CheckError::Failed { message: m, .. } => write!(f, "{m}"),
+            CheckError::Skipped(m) | CheckError::Blocked(m) | CheckError::Harness(m) => {
+                write!(f, "{m}")
+            }
+            CheckError::Inconclusive { message: m, .. } => write!(f, "{m}"),
         }
     }
 }
@@ -97,8 +114,50 @@ impl From<tonic::Status> for CheckError {
             tonic::Code::Unavailable | tonic::Code::DeadlineExceeded | tonic::Code::Unknown => {
                 CheckError::Harness(e.to_string())
             }
-            _ => CheckError::Failed(format!("the player rejected a request: {e}")),
+            _ => CheckError::assertion(format!("the player rejected a request: {e}")),
         }
+    }
+}
+
+impl CheckError {
+    /// A defect reported by a check's own assertion.
+    pub fn assertion(message: impl Into<String>) -> CheckError {
+        CheckError::Failed {
+            message: message.into(),
+            from_assertion: true,
+        }
+    }
+
+    /// A defect detected before the check's assertion was reached, e.g. the
+    /// player never becoming ready. Real in a normal run; proves nothing as a
+    /// negative control.
+    pub fn before_assertion(message: impl Into<String>) -> CheckError {
+        CheckError::Failed {
+            message: message.into(),
+            from_assertion: false,
+        }
+    }
+
+    /// A verdict of "this measurement cannot be trusted", from the check itself.
+    pub fn inconclusive_assertion(message: impl Into<String>) -> CheckError {
+        CheckError::Inconclusive {
+            message: message.into(),
+            from_assertion: true,
+        }
+    }
+
+    /// Whether this came from a check's own assertion.
+    pub fn is_assertion(&self) -> bool {
+        matches!(
+            self,
+            CheckError::Failed {
+                from_assertion: true,
+                ..
+            } | CheckError::Inconclusive {
+                from_assertion: true,
+                ..
+            }
+        )
     }
 }
 
@@ -198,10 +257,10 @@ impl CheckResult {
         let evidence = take_evidence();
         let (outcome, detail) = match result {
             Ok(()) => (Outcome::Passed, None),
-            Err(CheckError::Failed(m)) => (Outcome::Failed, Some(m)),
+            Err(CheckError::Failed { message, .. }) => (Outcome::Failed, Some(message)),
             Err(CheckError::Skipped(m)) => (Outcome::Skipped, Some(m)),
             Err(CheckError::Blocked(m)) => (Outcome::Blocked, Some(m)),
-            Err(CheckError::Inconclusive(m)) => (Outcome::Inconclusive, Some(m)),
+            Err(CheckError::Inconclusive { message, .. }) => (Outcome::Inconclusive, Some(message)),
             Err(CheckError::Harness(m)) => (Outcome::HarnessError, Some(m)),
         };
 
@@ -230,7 +289,7 @@ macro_rules! check {
         match $cond {
             true => {}
             false => {
-                return Err($crate::outcome::CheckError::Failed(format!($($arg)+)));
+                return Err($crate::outcome::CheckError::assertion(format!($($arg)+)));
             }
         }
     };
@@ -243,7 +302,7 @@ macro_rules! check_eq {
         let left = &$left;
         let right = &$right;
         if left != right {
-            return Err($crate::outcome::CheckError::Failed(format!(
+            return Err($crate::outcome::CheckError::assertion(format!(
                 "{}\n  expected: {:?}\n  actual:   {:?}",
                 format!($($arg)+), right, left
             )));
@@ -255,7 +314,7 @@ macro_rules! check_eq {
 #[macro_export]
 macro_rules! fail {
     ($($arg:tt)+) => {
-        return Err($crate::outcome::CheckError::Failed(format!($($arg)+)))
+        return Err($crate::outcome::CheckError::assertion(format!($($arg)+)))
     };
 }
 
@@ -279,6 +338,6 @@ macro_rules! skip {
 #[macro_export]
 macro_rules! inconclusive {
     ($($arg:tt)+) => {
-        return Err($crate::outcome::CheckError::Inconclusive(format!($($arg)+)))
+        return Err($crate::outcome::CheckError::inconclusive_assertion(format!($($arg)+)))
     };
 }
