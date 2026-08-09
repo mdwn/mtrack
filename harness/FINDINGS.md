@@ -110,8 +110,22 @@ A check that cannot fail is worse than no check, and two have shipped here:
 whatever mtrack did, and `active_playlist_persists_across_restart` asserted the
 opposite of documented behaviour. Both survived several reviews.
 
-`harness/negative-control.py` breaks each check's premise, runs it alone, and
-requires it to stop passing. It distinguishes two strengths:
+A one-off sweep was run against every check on 2026-08-09: break the check's
+premise, run it alone, require it to stop passing. **20 of 26 checks were
+demonstrated capable of failing.** The remaining six need a deliberately broken
+mtrack rather than a broken input, and are unproven:
+`selected_output_is_real_hardware`, `plays_a_song_to_completion`,
+`stop_halts_playback`, `active_playlist_persists_across_restart`,
+`controllers_restart_while_idle`, `lighting_effects_activate_during_playback`.
+
+The tooling was **not** retained. It was a table of mutations pinned to exact
+source strings, nothing ran it, and it had no idea the registry contained
+checks it did not cover -- so it would have reported a perfect score against
+its own table while silently ignoring a third of the suite. Rebuilding it
+properly means having it read `checks::all()` and fail when a registered check
+has neither a mutation nor an explicit exemption.
+
+Two strengths of evidence are worth keeping distinct when it is rebuilt:
 
 - **world** — the input the check reads is broken. Strong: it proves the check
   notices a changed reality.
@@ -119,11 +133,16 @@ requires it to stop passing. It distinguishes two strengths:
   its message renders. *A vacuous check passes this*, which is why the two
   defects above needed world mutations to catch.
 
-Two lessons from the first run, both bugs in the sweep rather than the checks:
-profiles load in **filename** order, so reordering the vec was a no-op; and a
-*bogus* device stops the player booting, which fails the check for the wrong
-reason and never exercises the assertion — a valid-but-different device is the
-right control.
+Three lessons from that run, all bugs in the sweep rather than in the checks:
+
+- Profiles load in **filename** order (`config/player.rs`), so reordering the
+  vec passed to `.profiles()` is a no-op sabotage.
+- A *bogus* device stops the player booting, so the check fails at startup
+  without ever reaching the assertion under test. A valid-but-different device
+  is the correct control.
+- Scoping a mutation to a function needs **string-aware** brace matching: one
+  check body contains `"show \"Broken\" { ..."`, and naive matching never
+  rebalances.
 
 ## Non-defects worth knowing
 
