@@ -22,11 +22,11 @@ use mtrack::proto::player::v1::{NextRequest, PlayRequest, PreviousRequest, StopR
 use crate::capabilities::Capabilities;
 use crate::capture::{self, Capture};
 use crate::client::{elapsed_of, Client};
+use crate::outcome::CheckOutcome;
 use crate::project::{ProfileSpec, ProjectBuilder};
 use crate::server::Server;
 use crate::songs::SongSpec;
-use crate::outcome::CheckOutcome;
-use crate::{check, check_eq, fail, inconclusive, skip};
+use crate::{check, check_eq, skip};
 
 /// Playing a song advances the clock and then stops on its own.
 ///
@@ -34,7 +34,7 @@ use crate::{check, check_eq, fail, inconclusive, skip};
 /// is stuck or that jumps backwards is a real defect that a "did it finish?"
 /// assertion alone would miss.
 pub async fn plays_a_song_to_completion() -> CheckOutcome {
-    let mut evidence: Vec<String> = Vec::new();
+    let evidence: Vec<String> = Vec::new();
     crate::runner::require_area("playback")?;
     let project = ProjectBuilder::new()
         .songs(vec![SongSpec::tones("Short Tone", "short-tone", 2, 4.0)])
@@ -79,7 +79,7 @@ pub async fn plays_a_song_to_completion() -> CheckOutcome {
 
 /// Stop takes effect while a song is mid-flight.
 pub async fn stop_halts_playback() -> CheckOutcome {
-    let mut evidence: Vec<String> = Vec::new();
+    let evidence: Vec<String> = Vec::new();
     crate::runner::require_area("playback")?;
     let project = crate::checks::standard_project()?;
     let server = Server::start(&project).await?;
@@ -96,7 +96,7 @@ pub async fn stop_halts_playback() -> CheckOutcome {
 
 /// Playlist navigation moves between songs without playback running.
 pub async fn playlist_navigation_moves_between_songs() -> CheckOutcome {
-    let mut evidence: Vec<String> = Vec::new();
+    let evidence: Vec<String> = Vec::new();
     crate::runner::require_area("playback")?;
     let project = crate::checks::standard_project()?;
     let server = Server::start(&project).await?;
@@ -127,18 +127,26 @@ pub async fn tracks_route_to_their_mapped_channels() -> CheckOutcome {
     let caps = Capabilities::get();
 
     // Cabling was measured once, before any server claimed the devices.
-    let device = caps.audio_out.as_ref().expect("audio-routing requires an output").name.clone();
+    let device = caps
+        .audio_out
+        .as_ref()
+        .expect("audio-routing requires an output")
+        .name
+        .clone();
     let links = crate::discovery::Discovery::get().audio_for_device(&device);
     if links.is_empty() {
         skip!("no output channel of {device} is patched back to an input");
     }
 
     let outputs: Vec<u16> = links.iter().map(|l| l.out_channel).collect();
-    evidence.push(format!("loopback: {}", links
+    evidence.push(format!(
+        "loopback: {}",
+        links
             .iter()
             .map(|l| format!("out{}->in{}", l.out_channel, l.in_channel))
             .collect::<Vec<_>>()
-            .join(", ")));
+            .join(", ")
+    ));
 
     // One tone track per verifiable output, mapped one-to-one so a tone's
     // identity determines which channel it should have come out of.
@@ -180,8 +188,9 @@ pub async fn tracks_route_to_their_mapped_channels() -> CheckOutcome {
     let expected_samples = recorded.sample_rate() as usize; // at least one second
     if shortest < expected_samples {
         skip!(
-                "capture returned only {shortest} samples per channel (wanted at least \
-                 {expected_samples}); the interface underran, so routing was not verified");
+            "capture returned only {shortest} samples per channel (wanted at least \
+                 {expected_samples}); the interface underran, so routing was not verified"
+        );
     }
 
     let expected_tones: Vec<f32> = song.tracks.iter().filter_map(|t| t.tone_hz).collect();
@@ -202,7 +211,10 @@ pub async fn tracks_route_to_their_mapped_channels() -> CheckOutcome {
             failures.push(format!(
                 "track '{}' ({} Hz) was mapped to output {output} but no such tone reached input \
                  {input} (peak {:.4}, tones seen: {:?})",
-                song.tracks[index].name, expected_tones[index], recorded.peak(input), found
+                song.tracks[index].name,
+                expected_tones[index],
+                recorded.peak(input),
+                found
             ));
         }
 

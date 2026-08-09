@@ -26,10 +26,9 @@
 //! playback will then reject. That is invisible to unit tests, because it only
 //! happens against real hardware that ALSA reports inconsistently.
 
-
 use crate::capabilities::Capabilities;
 use crate::outcome::{CheckError, CheckOutcome};
-use crate::{check, check_eq, fail, inconclusive, skip};
+use crate::{check, skip};
 
 /// Every device offered to users can actually be opened by the player.
 pub async fn advertised_devices_are_openable() -> CheckOutcome {
@@ -96,9 +95,15 @@ pub async fn selected_output_is_real_hardware() -> CheckOutcome {
         skip!("no audio output device was selected");
     };
 
-    evidence.push(format!("selected output: {} ({} ch)", device.name, device.max_channels));
+    evidence.push(format!(
+        "selected output: {} ({} ch)",
+        device.name, device.max_channels
+    ));
     for other in &caps.all_audio_out {
-        evidence.push(format!("  candidate: {} ({} ch)", other.name, other.max_channels));
+        evidence.push(format!(
+            "  candidate: {} ({} ch)",
+            other.name, other.max_channels
+        ));
     }
 
     let is_raw_hw = device.name.contains("hw:CARD=") && !device.name.contains("plughw:");

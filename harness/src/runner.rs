@@ -95,11 +95,7 @@ fn panic_message(panic: &Box<dyn std::any::Any + Send>) -> String {
 ///
 /// Some defects appear in a minority of runs. A single pass cannot distinguish
 /// "works" from "works most of the time", and the latter is worse on stage.
-pub async fn run_repeated(
-    filter: &Option<String>,
-    times: usize,
-    json: Option<&Path>,
-) -> ExitCode {
+pub async fn run_repeated(filter: &Option<String>, times: usize, json: Option<&Path>) -> ExitCode {
     let mut failures: BTreeMap<String, usize> = BTreeMap::new();
     let mut last: Option<Report> = None;
     let mut bad_runs = 0;
@@ -166,7 +162,12 @@ fn hostname() -> String {
 fn mtrack_version() -> String {
     crate::server::resolve_mtrack_binary()
         .ok()
-        .and_then(|bin| std::process::Command::new(bin).arg("--version").output().ok())
+        .and_then(|bin| {
+            std::process::Command::new(bin)
+                .arg("--version")
+                .output()
+                .ok()
+        })
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())

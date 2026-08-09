@@ -508,11 +508,11 @@ fn select_midi(all: &[MidiPort], skips: &mut Vec<Skip>) -> (Option<MidiPort>, Op
 
     let in_ = match env_override("MTRACK_E2E_MIDI_INPUT") {
         Some(name) => find(&name),
-        None => out
-            .as_ref()
-            .filter(|o| o.has_input)
-            .cloned()
-            .or_else(|| all.iter().find(|d| d.has_input && !is_synthetic(&d.name)).cloned()),
+        None => out.as_ref().filter(|o| o.has_input).cloned().or_else(|| {
+            all.iter()
+                .find(|d| d.has_input && !is_synthetic(&d.name))
+                .cloned()
+        }),
     };
 
     if out.is_none() {
@@ -523,9 +523,10 @@ fn select_midi(all: &[MidiPort], skips: &mut Vec<Skip>) -> (Option<MidiPort>, Op
     } else if in_.is_none() {
         skips.push(Skip {
             area: "midi-verification",
-            reason: "no MIDI input port; can send MIDI but cannot verify beat clock or note timing \
+            reason:
+                "no MIDI input port; can send MIDI but cannot verify beat clock or note timing \
                      (try `sudo modprobe snd-virmidi`)"
-                .to_string(),
+                    .to_string(),
         });
     }
 

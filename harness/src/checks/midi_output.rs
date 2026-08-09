@@ -22,13 +22,13 @@ use mtrack::proto::player::v1::{PlayRequest, StopRequest};
 
 use crate::capabilities::Capabilities;
 use crate::client::Client;
-use crate::midi::{self, MidiCapture};
 use crate::discovery::Discovery;
+use crate::midi::{self, MidiCapture};
+use crate::outcome::CheckOutcome;
 use crate::project::{ProfileSpec, ProjectBuilder, Subsystem};
 use crate::server::Server;
 use crate::songs::{MidiSpec, SongSpec};
-use crate::outcome::CheckOutcome;
-use crate::{check, check_eq, fail, inconclusive, skip};
+use crate::{check, check_eq, skip};
 
 /// Tempo of the generated MIDI song. Chosen away from round numbers so a clock
 /// derived from a default rather than from the file is obvious.
@@ -138,10 +138,15 @@ pub async fn song_midi_notes_are_transmitted() -> CheckOutcome {
 
     // The generated file ascends from middle C, so the transmitted notes must
     // match in both value and order.
-    let received: Vec<u8> = notes.iter().take(expected_notes).filter_map(|n| n.note()).collect();
+    let received: Vec<u8> = notes
+        .iter()
+        .take(expected_notes)
+        .filter_map(|n| n.note())
+        .collect();
     let expected: Vec<u8> = (0..expected_notes).map(|b| 60 + (b as u8 % 12)).collect();
     check_eq!(
-        received, expected,
+        received,
+        expected,
         "the transmitted notes do not match the song's MIDI file"
     );
     evidence.push(format!("transmitted notes: {received:?}"));
@@ -190,8 +195,11 @@ pub async fn beat_clock_runs_at_the_song_tempo() -> CheckOutcome {
     let measured = measured.expect("pulse count checked above");
     let error_pct = ((measured - expected) / expected).abs() * 100.0;
 
-    evidence.push(format!("beat clock: {measured:.2} Hz measured, {expected:.2} Hz expected \
-         ({error_pct:.1}% off, {} pulses)", pulses.len()));
+    evidence.push(format!(
+        "beat clock: {measured:.2} Hz measured, {expected:.2} Hz expected \
+         ({error_pct:.1}% off, {} pulses)",
+        pulses.len()
+    ));
 
     // 5% accommodates scheduling jitter on a non-realtime kernel while still
     // catching a wrong tempo, a wrong pulse count per beat, or a fixed rate.

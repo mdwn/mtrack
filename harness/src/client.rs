@@ -44,7 +44,9 @@ impl Client {
             match PlayerServiceClient::connect(server.grpc_url()).await {
                 Ok(client) => break client,
                 Err(e) if Instant::now() >= deadline => {
-                    return Err(format!("could not reach gRPC at {}: {e}", server.grpc_url()).into())
+                    return Err(
+                        format!("could not reach gRPC at {}: {e}", server.grpc_url()).into(),
+                    )
                 }
                 Err(_) => tokio::time::sleep(Duration::from_millis(200)).await,
             }
@@ -200,7 +202,8 @@ impl Client {
         &mut self,
         timeout: Duration,
     ) -> Result<StatusResponse, Box<dyn std::error::Error>> {
-        self.wait_for_status(timeout, "playing", |s| s.playing).await
+        self.wait_for_status(timeout, "playing", |s| s.playing)
+            .await
     }
 
     /// Waits until the player reports it has stopped.
@@ -228,10 +231,10 @@ impl Client {
             last = Some(status);
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        Err(format!(
-            "player never reported {what} within {timeout:?} (last status: {last:?})"
+        Err(
+            format!("player never reported {what} within {timeout:?} (last status: {last:?})")
+                .into(),
         )
-        .into())
     }
 }
 
@@ -239,7 +242,6 @@ impl Client {
 pub fn elapsed_of(status: &StatusResponse) -> Duration {
     status
         .elapsed
-        .clone()
         .and_then(|d| Duration::try_from(d).ok())
         .unwrap_or_default()
 }

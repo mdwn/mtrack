@@ -147,7 +147,10 @@ pub fn blocked_reason(area: &Area) -> Option<String> {
 
 /// Why the named area cannot run, or `None` if it can.
 pub fn blocked_reason_for(name: &str) -> Option<String> {
-    AREAS.iter().find(|a| a.name == name).and_then(blocked_reason)
+    AREAS
+        .iter()
+        .find(|a| a.name == name)
+        .and_then(blocked_reason)
 }
 
 /// Prints the plan before anything runs.

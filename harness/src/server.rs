@@ -136,7 +136,8 @@ impl Server {
         let log = File::create(&log_path)?;
         let log_err = log.try_clone()?;
 
-        let binary = resolve_mtrack_binary().map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+        let binary =
+            resolve_mtrack_binary().map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
         let child = Command::new(binary)
             .arg("start")
             .arg(project.root())
@@ -146,7 +147,10 @@ impl Server {
             .arg("127.0.0.1")
             // Without this the player's own logging is near-silent, and the log
             // is the only record of what the hardware did during a failure.
-            .env("RUST_LOG", std::env::var("MTRACK_E2E_LOG").as_deref().unwrap_or("info"))
+            .env(
+                "RUST_LOG",
+                std::env::var("MTRACK_E2E_LOG").as_deref().unwrap_or("info"),
+            )
             .stdout(Stdio::from(log))
             .stderr(Stdio::from(log_err))
             .stdin(Stdio::null())

@@ -24,10 +24,10 @@ use mtrack::proto::player::v1::{GetConfigRequest, UpdateMidiRequest};
 
 use crate::capabilities::Capabilities;
 use crate::client::Client;
+use crate::outcome::{CheckError, CheckOutcome};
 use crate::project::Project;
 use crate::server::Server;
-use crate::outcome::{CheckError, CheckOutcome};
-use crate::{check, check_eq, fail, inconclusive, skip};
+use crate::{check, check_eq, fail, skip};
 
 /// Asserts that a config mutation reaches memory, disk, and a restarted process.
 ///
@@ -46,7 +46,11 @@ where
     F: FnOnce(Client, String) -> Fut,
     Fut: std::future::Future<Output = Result<Client, CheckError>>,
 {
-    let before = client.grpc().get_config(GetConfigRequest {}).await?.into_inner();
+    let before = client
+        .grpc()
+        .get_config(GetConfigRequest {})
+        .await?
+        .into_inner();
     check!(
         !before.yaml.contains(expect),
         "{what}: '{expect}' was already present before the mutation, so this proves nothing"
@@ -63,7 +67,11 @@ where
     // "written somewhere the loader ignores".
     let mut problems = Vec::new();
 
-    let after = client.grpc().get_config(GetConfigRequest {}).await?.into_inner();
+    let after = client
+        .grpc()
+        .get_config(GetConfigRequest {})
+        .await?
+        .into_inner();
     if !after.yaml.contains(expect) {
         problems.push(format!(
             "the running config does not contain '{expect}' after the update"
@@ -83,7 +91,11 @@ where
     let server = Server::start(project).await?;
     let mut client = Client::connect(&server).await?;
 
-    let reloaded = client.grpc().get_config(GetConfigRequest {}).await?.into_inner();
+    let reloaded = client
+        .grpc()
+        .get_config(GetConfigRequest {})
+        .await?
+        .into_inner();
     if !reloaded.yaml.contains(expect) {
         problems.push(format!("'{expect}' did not survive a restart"));
     }
@@ -110,7 +122,9 @@ where
             project.dump_yaml()
         );
     }
-    evidence.push(format!("{what} reached the profile file and survived a restart"));
+    evidence.push(format!(
+        "{what} reached the profile file and survived a restart"
+    ));
 
     server.check_clean_log(&[])?;
     Ok(evidence)
@@ -118,7 +132,7 @@ where
 
 /// MIDI beat clock survives being enabled, written, and reloaded.
 pub async fn midi_beat_clock_persists() -> CheckOutcome {
-    let mut evidence: Vec<String> = Vec::new();
+    let _evidence: Vec<String> = Vec::new();
     crate::runner::require_area("midi-config")?;
     let caps = Capabilities::get();
     let Some(midi) = caps.midi_out.clone() else {
@@ -161,7 +175,7 @@ pub async fn midi_beat_clock_persists() -> CheckOutcome {
 /// Optimistic concurrency is what stops the web UI and a controller from
 /// clobbering each other, so it is worth proving against the real store.
 pub async fn stale_checksum_is_rejected() -> CheckOutcome {
-    let mut evidence: Vec<String> = Vec::new();
+    let evidence: Vec<String> = Vec::new();
     crate::runner::require_area("midi-config")?;
     let caps = Capabilities::get();
     let Some(midi) = caps.midi_out.clone() else {
@@ -172,7 +186,11 @@ pub async fn stale_checksum_is_rejected() -> CheckOutcome {
     let server = Server::start(&project).await?;
     let mut client = Client::connect(&server).await?;
 
-    let first = client.grpc().get_config(GetConfigRequest {}).await?.into_inner();
+    let first = client
+        .grpc()
+        .get_config(GetConfigRequest {})
+        .await?
+        .into_inner();
 
     // Land one accepted update so the stored checksum moves on.
     client
@@ -197,7 +215,11 @@ pub async fn stale_checksum_is_rejected() -> CheckOutcome {
         "a stale checksum was accepted; concurrent editors can silently overwrite each other"
     );
 
-    let current = client.grpc().get_config(GetConfigRequest {}).await?.into_inner();
+    let current = client
+        .grpc()
+        .get_config(GetConfigRequest {})
+        .await?
+        .into_inner();
     check!(
         current.yaml.contains("beat_clock: true"),
         "the rejected update still changed the config:\n{}",
@@ -213,7 +235,7 @@ pub async fn stale_checksum_is_rejected() -> CheckOutcome {
 /// Unlike the MIDI settings this lives in `mtrack.yaml` rather than a profile,
 /// so it exercises the other persistence path.
 pub async fn active_playlist_persists_across_restart() -> CheckOutcome {
-    let mut evidence: Vec<String> = Vec::new();
+    let evidence: Vec<String> = Vec::new();
     crate::runner::require_area("persistence")?;
     use mtrack::proto::player::v1::SwitchToPlaylistRequest;
 
@@ -243,7 +265,8 @@ pub async fn active_playlist_persists_across_restart() -> CheckOutcome {
 
     let after_restart = client.status().await?.playlist_name;
     check_eq!(
-        after_restart, switched,
+        after_restart,
+        switched,
         "the active playlist did not survive a restart, though `active_playlist` in \
          config/player.rs is documented as persisted across restarts.\n\
          Project files follow:{}",

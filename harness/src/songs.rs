@@ -37,9 +37,7 @@ const DEFAULT_AMPLITUDE: f32 = 0.25;
 /// Spaced by roughly a factor of 1.57 so no frequency is a low-order harmonic
 /// of another. Harmonically related tones would make a Goertzel measurement on
 /// one channel light up for a neighbour's leakage.
-pub const TRACK_TONES: [f32; 8] = [
-    400.0, 630.0, 990.0, 1560.0, 2460.0, 3870.0, 6090.0, 9580.0,
-];
+pub const TRACK_TONES: [f32; 8] = [400.0, 630.0, 990.0, 1560.0, 2460.0, 3870.0, 6090.0, 9580.0];
 
 /// Returns the configured tone amplitude.
 pub fn amplitude() -> f32 {
@@ -101,7 +99,9 @@ impl MidiSpec {
             file: file.to_string(),
             tempo_bpm,
             channel: 0,
-            notes: (0..beats).map(|b| (b as f32, 60 + (b as u8 % 12))).collect(),
+            notes: (0..beats)
+                .map(|b| (b as f32, 60 + (b as u8 % 12)))
+                .collect(),
         }
     }
 
@@ -271,7 +271,7 @@ const TICKS_PER_BEAT: u16 = 480;
 
 /// Writes a single-track MIDI file with a tempo and the spec's notes.
 pub fn write_midi(path: &Path, spec: &MidiSpec) -> Result<(), Box<dyn std::error::Error>> {
-    use midly::num::{u4, u7, u15, u24, u28};
+    use midly::num::{u15, u24, u28, u4, u7};
     use midly::{
         Format, Header, MetaMessage, MidiMessage, Smf, Timing, Track, TrackEvent, TrackEventKind,
     };

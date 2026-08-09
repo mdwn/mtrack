@@ -48,13 +48,13 @@ pub use self::controller::OscController;
 pub use self::controller::DEFAULT_GRPC_PORT;
 pub use self::controller::DEFAULT_MCP_PORT;
 pub use self::dmx::Dmx;
+pub use self::dmx::Universe;
 // Re-exported for the hardware harness, which needs the default port to probe
 // for a running OLA daemon. Gated to match the constant itself, which (with
 // `Dmx::ola_port`) is excluded from test builds; the harness links the
 // non-test build and so still sees it.
 #[cfg(not(test))]
 pub use self::dmx::DEFAULT_OLA_PORT;
-pub use self::dmx::Universe;
 pub use self::error::ConfigError;
 pub use self::lighting::Lighting;
 pub use self::metronome::MetronomeConfig;

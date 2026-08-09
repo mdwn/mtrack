@@ -13,12 +13,11 @@
 //
 //! Hardware probing and cold start.
 
-
 use crate::capabilities::Capabilities;
 use crate::client::Client;
-use crate::server::Server;
 use crate::outcome::CheckOutcome;
-use crate::{check, check_eq, fail, inconclusive, skip};
+use crate::server::Server;
+use crate::{check, check_eq, fail};
 
 /// Starts the player against a generated project and confirms it reaches a
 /// ready state with the audio device actually claimed.
@@ -85,7 +84,7 @@ pub async fn player_starts_against_detected_hardware() -> CheckOutcome {
 /// Confirms the generated project is one mtrack itself considers valid, so a
 /// later failure points at the player rather than at the harness.
 pub async fn generated_project_loads_all_songs() -> CheckOutcome {
-    let mut evidence: Vec<String> = Vec::new();
+    let evidence: Vec<String> = Vec::new();
     let project = crate::checks::standard_project()?;
     let server = Server::start(&project).await?;
     let client = Client::connect(&server).await?;
@@ -94,7 +93,12 @@ pub async fn generated_project_loads_all_songs() -> CheckOutcome {
     let listed = songs
         .as_array()
         .map(|a| a.len())
-        .or_else(|| songs.get("songs").and_then(|s| s.as_array()).map(|a| a.len()))
+        .or_else(|| {
+            songs
+                .get("songs")
+                .and_then(|s| s.as_array())
+                .map(|a| a.len())
+        })
         .unwrap_or(0);
 
     check_eq!(
@@ -107,4 +111,3 @@ pub async fn generated_project_loads_all_songs() -> CheckOutcome {
     server.check_clean_log(&[])?;
     Ok(evidence)
 }
-

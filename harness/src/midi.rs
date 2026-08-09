@@ -88,8 +88,10 @@ impl MidiCapture {
                     .unwrap_or(false)
             })
             .ok_or_else(|| {
-                let available: Vec<String> =
-                    ports.iter().filter_map(|p| input.port_name(p).ok()).collect();
+                let available: Vec<String> = ports
+                    .iter()
+                    .filter_map(|p| input.port_name(p).ok())
+                    .collect();
                 format!("no MIDI input port matching '{needle}'; available: {available:?}")
             })?
             .clone();
@@ -145,7 +147,10 @@ impl MidiCapture {
 
     /// Note-on messages received, in arrival order.
     pub fn note_ons(&self) -> Vec<TimedMessage> {
-        self.messages().into_iter().filter(|m| m.is_note_on()).collect()
+        self.messages()
+            .into_iter()
+            .filter(|m| m.is_note_on())
+            .collect()
     }
 
     /// Measured beat clock rate in pulses per second.

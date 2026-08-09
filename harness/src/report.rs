@@ -77,7 +77,10 @@ impl Report {
     fn print_by_area(&self) {
         let mut by_area: BTreeMap<&str, Vec<&CheckResult>> = BTreeMap::new();
         for result in &self.results {
-            by_area.entry(result.area.as_str()).or_default().push(result);
+            by_area
+                .entry(result.area.as_str())
+                .or_default()
+                .push(result);
         }
 
         println!("\n  Results");
@@ -178,7 +181,10 @@ impl Report {
 
         if !inconclusive.is_empty() {
             println!("\n{}", "-".repeat(72));
-            println!("  Ran, but the measurement is not trustworthy ({})", inconclusive.len());
+            println!(
+                "  Ran, but the measurement is not trustworthy ({})",
+                inconclusive.len()
+            );
             println!("{}", "-".repeat(72));
             for result in inconclusive {
                 println!("  {}\n      {}", result.name, detail_of(result));
@@ -233,8 +239,8 @@ impl Report {
 
     /// Writes the report as JSON, for diffing runs over time.
     pub fn write_json(&self, path: &std::path::Path) -> std::io::Result<()> {
-        let body = serde_json::to_string_pretty(self)
-            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        let body =
+            serde_json::to_string_pretty(self).map_err(|e| std::io::Error::other(e.to_string()))?;
         std::fs::write(path, body)
     }
 }

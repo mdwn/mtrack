@@ -18,17 +18,16 @@
 //! a missing subsystem must not stop the player, and a broken one must degrade
 //! rather than take the process down.
 
-
 use crate::capabilities::Capabilities;
 use crate::client::Client;
+use crate::outcome::CheckOutcome;
 use crate::project::{ProfileSpec, ProjectBuilder, Subsystem};
 use crate::server::Server;
-use crate::outcome::CheckOutcome;
-use crate::{check, check_eq, fail, inconclusive, skip};
+use crate::{check, check_eq};
 
 /// A profile with no `midi:` block leaves the player running without MIDI.
 pub async fn absent_midi_is_skipped_not_fatal() -> CheckOutcome {
-    let mut evidence: Vec<String> = Vec::new();
+    let evidence: Vec<String> = Vec::new();
     crate::runner::require_area("subsystems")?;
     let mut profile = ProfileSpec::detected("01-e2e");
     profile.midi = Subsystem::Absent;
@@ -58,7 +57,7 @@ pub async fn absent_midi_is_skipped_not_fatal() -> CheckOutcome {
 
 /// A profile with no `dmx:` block leaves the player running without DMX.
 pub async fn absent_dmx_is_skipped_not_fatal() -> CheckOutcome {
-    let mut evidence: Vec<String> = Vec::new();
+    let evidence: Vec<String> = Vec::new();
     crate::runner::require_area("subsystems")?;
     let mut profile = ProfileSpec::detected("01-e2e");
     profile.dmx = Subsystem::Absent;
@@ -157,7 +156,7 @@ pub async fn bogus_audio_device_degrades_gracefully() -> CheckOutcome {
 /// Profiles are sorted by filename, so a second profile pointing at a
 /// different device must not be the one that gets claimed.
 pub async fn first_profile_wins() -> CheckOutcome {
-    let mut evidence: Vec<String> = Vec::new();
+    let evidence: Vec<String> = Vec::new();
     crate::runner::require_area("subsystems")?;
     let caps = Capabilities::get();
     let Some(expected) = caps.audio_out.as_ref().map(|d| d.name.clone()) else {
@@ -186,7 +185,7 @@ pub async fn first_profile_wins() -> CheckOutcome {
 
 /// Controllers can be restarted while the player is idle.
 pub async fn controllers_restart_while_idle() -> CheckOutcome {
-    let mut evidence: Vec<String> = Vec::new();
+    let evidence: Vec<String> = Vec::new();
     crate::runner::require_area("subsystems")?;
     let project = crate::checks::standard_project()?;
     let server = Server::start(&project).await?;

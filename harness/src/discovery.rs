@@ -217,9 +217,18 @@ fn fingerprint(caps: &Capabilities) -> String {
     // must not reuse cabling measured while it was enabled.
     parts.insert(format!(
         "sel:{}:{}:{}",
-        caps.audio_out.as_ref().map(|d| d.name.as_str()).unwrap_or("-"),
-        caps.audio_in.as_ref().map(|d| d.name.as_str()).unwrap_or("-"),
-        caps.midi_out.as_ref().map(|d| d.name.as_str()).unwrap_or("-"),
+        caps.audio_out
+            .as_ref()
+            .map(|d| d.name.as_str())
+            .unwrap_or("-"),
+        caps.audio_in
+            .as_ref()
+            .map(|d| d.name.as_str())
+            .unwrap_or("-"),
+        caps.midi_out
+            .as_ref()
+            .map(|d| d.name.as_str())
+            .unwrap_or("-"),
     ));
     parts.into_iter().collect::<Vec<_>>().join("|")
 }

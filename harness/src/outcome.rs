@@ -188,8 +188,14 @@ impl CheckResult {
 #[macro_export]
 macro_rules! check {
     ($cond:expr, $($arg:tt)+) => {
-        if !$cond {
-            return Err($crate::outcome::CheckError::Failed(format!($($arg)+)));
+        // Matched rather than negated: call sites routinely pass float
+        // comparisons, and `!(a < b)` on a partially ordered type is both a
+        // clippy warning and genuinely ambiguous about NaN.
+        match $cond {
+            true => {}
+            false => {
+                return Err($crate::outcome::CheckError::Failed(format!($($arg)+)));
+            }
         }
     };
 }

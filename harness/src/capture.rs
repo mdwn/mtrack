@@ -428,18 +428,42 @@ fn build_tone_stream(
 ) -> Result<cpal::Stream, Box<dyn std::error::Error>> {
     match format {
         cpal::SampleFormat::I16 => build_tone_stream_typed::<i16>(
-            device, config, tones, channels, sample_rate, amplitude, phase,
+            device,
+            config,
+            tones,
+            channels,
+            sample_rate,
+            amplitude,
+            phase,
         ),
         cpal::SampleFormat::I32 => build_tone_stream_typed::<i32>(
-            device, config, tones, channels, sample_rate, amplitude, phase,
+            device,
+            config,
+            tones,
+            channels,
+            sample_rate,
+            amplitude,
+            phase,
         ),
         // 24-bit interfaces are common on consoles and outboard converters,
         // and they usually refuse f32 outright.
         cpal::SampleFormat::I24 => build_tone_stream_typed::<cpal::I24>(
-            device, config, tones, channels, sample_rate, amplitude, phase,
+            device,
+            config,
+            tones,
+            channels,
+            sample_rate,
+            amplitude,
+            phase,
         ),
         _ => build_tone_stream_typed::<f32>(
-            device, config, tones, channels, sample_rate, amplitude, phase,
+            device,
+            config,
+            tones,
+            channels,
+            sample_rate,
+            amplitude,
+            phase,
         ),
     }
 }
