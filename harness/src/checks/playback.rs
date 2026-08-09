@@ -45,7 +45,12 @@ const MEASURE_TAKE: Duration = Duration::from_millis(1500);
 pub async fn plays_a_song_to_completion() -> CheckOutcome {
     crate::runner::require_area("playback")?;
     let project = ProjectBuilder::new()
-        .songs(vec![SongSpec::tones("Short Tone", "short-tone", 2, 4.0)])
+        .songs(vec![SongSpec::tones(
+            "Short Tone",
+            "short-tone",
+            2,
+            crate::sabotage::pick(4.0, 0.3),
+        )])
         .build()?;
     let server = Server::start(&project).await?;
     let mut client = Client::connect(&server).await?;
@@ -88,14 +93,27 @@ pub async fn plays_a_song_to_completion() -> CheckOutcome {
 /// Stop takes effect while a song is mid-flight.
 pub async fn stop_halts_playback() -> CheckOutcome {
     crate::runner::require_area("playback")?;
-    let project = crate::checks::standard_project()?;
+
+    // A song far longer than the stop deadline. With the standard 4-6 second
+    // songs this check was vacuous: the song ended on its own well inside the
+    // timeout, so it passed whether or not Stop did anything. Verified by
+    // deleting the stop call, which changed nothing.
+    let project = ProjectBuilder::new()
+        .songs(vec![SongSpec::tones("Long Tone", "long-tone", 1, 120.0)])
+        .build()?;
     let server = Server::start(&project).await?;
     let mut client = Client::connect(&server).await?;
 
     client.grpc().play(PlayRequest {}).await?;
     client.wait_until_playing(Duration::from_secs(10)).await?;
-    client.grpc().stop(StopRequest {}).await?;
-    client.wait_until_stopped(Duration::from_secs(10)).await?;
+    if crate::sabotage::perform() {
+        client.grpc().stop(StopRequest {}).await?;
+    }
+
+    // Five seconds against a two-minute song: natural completion cannot
+    // masquerade as a successful stop.
+    client.wait_until_stopped(Duration::from_secs(5)).await?;
+    crate::outcome::record("stopped a 120s song within 5s of the stop request");
 
     server.check_clean_log(&[])?;
     Ok(())
@@ -109,7 +127,9 @@ pub async fn playlist_navigation_moves_between_songs() -> CheckOutcome {
     let mut client = Client::connect(&server).await?;
 
     let first = client.status().await?.current_song.map(|s| s.name);
-    client.grpc().next(NextRequest {}).await?;
+    if crate::sabotage::perform() {
+        client.grpc().next(NextRequest {}).await?;
+    }
     let second = client.status().await?.current_song.map(|s| s.name);
     check!(
         first != second,
@@ -203,7 +223,10 @@ pub async fn tracks_route_to_their_mapped_channels() -> CheckOutcome {
     let song = SongSpec::tones("Routing", "routing", outputs.len(), 12.0);
     let mut mappings = BTreeMap::new();
     for (track, output) in song.tracks.iter().zip(outputs.iter()) {
-        mappings.insert(track.name.clone(), vec![*output]);
+        mappings.insert(
+            track.name.clone(),
+            vec![crate::sabotage::pick(*output, outputs[0])],
+        );
     }
 
     let mut profile = ProfileSpec::detected("01-e2e");

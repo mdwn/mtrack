@@ -34,11 +34,19 @@ use crate::{check, check_eq};
 
 /// A project whose profile has lighting wired up and whose first song has a show.
 fn lighting_project() -> Result<crate::project::Project, Box<dyn std::error::Error>> {
-    let song = SongSpec::tones("Lit Song", "lit-song", 2, 8.0).with_lighting(LightingSpec::simple(
-        "E2E Show",
-        "lighting/show.light",
-        LIGHTING_GROUP,
-    ));
+    // The break point for the checks that read cues and live effects: a song
+    // with no show at all should leave both empty. The validation checks post
+    // their own DSL and so have their own break points.
+    let song = SongSpec::tones("Lit Song", "lit-song", 2, 8.0);
+    let song = if crate::sabotage::perform() {
+        song.with_lighting(LightingSpec::simple(
+            "E2E Show",
+            "lighting/show.light",
+            LIGHTING_GROUP,
+        ))
+    } else {
+        song
+    };
 
     ProjectBuilder::new()
         .profiles(vec![ProfileSpec::detected("01-e2e").with_lighting()])
@@ -61,7 +69,7 @@ pub async fn generated_show_passes_validation() -> CheckOutcome {
         .send_text(
             reqwest::Method::POST,
             "lighting/validate",
-            show.source.clone(),
+            crate::sabotage::pick(show.source.clone(), "not a show".to_string()),
         )
         .await?;
 
@@ -85,7 +93,10 @@ pub async fn malformed_show_is_rejected() -> CheckOutcome {
     let server = Server::start(&project).await?;
     let client = Client::connect(&server).await?;
 
-    let broken = "show \"Broken\" { @00:00.000 this is not a valid effect line ".to_string();
+    let broken = crate::sabotage::pick(
+        "show \"Broken\" { @00:00.000 this is not a valid effect line ".to_string(),
+        LightingSpec::simple("Valid", "v.light", LIGHTING_GROUP).source,
+    );
     let (status, body) = client
         .send_text(reqwest::Method::POST, "lighting/validate", broken)
         .await?;
@@ -225,7 +236,7 @@ pub async fn show_written_via_api_is_readable() -> CheckOutcome {
         "reading the show back failed: HTTP {status}\n{readback}"
     );
     check!(
-        readback.contains(LIGHTING_GROUP),
+        readback.contains(crate::sabotage::pick(LIGHTING_GROUP, "e2e-absent-marker")),
         "the show read back does not contain what was written:\n{readback}"
     );
 

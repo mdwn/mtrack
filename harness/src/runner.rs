@@ -232,3 +232,95 @@ pub fn list_checks(filter: &Option<String>) {
     }
     println!("=======================\n");
 }
+
+/// Runs every check with its premise deliberately broken and requires each to
+/// stop passing.
+///
+/// A check that still passes here cannot fail, which means it has been
+/// reporting success unconditionally. That is a defect in the harness and is
+/// reported as one, with a non-zero exit.
+pub async fn run_self_test(filter: &Option<String>) -> ExitCode {
+    println!("\n{}", "=".repeat(72));
+    println!("  SELF-TEST — breaking each check's premise; none may pass");
+    println!("{}", "=".repeat(72));
+    println!("  A check that passes here reports success unconditionally.\n");
+
+    let mut cannot_fail = Vec::new();
+    let mut proved = 0;
+    let mut inconclusive = Vec::new();
+
+    for check in checks::all() {
+        if let Some(needle) = filter {
+            if !check.name.contains(needle.as_str()) && !check.area.contains(needle.as_str()) {
+                continue;
+            }
+        }
+
+        // Each control is independent. Several sabotages deliberately stop the
+        // player reaching readiness, and without this the first one would latch
+        // and block every control after it -- which is exactly what happened on
+        // the first run, suppressing twelve of twenty-six.
+        crate::server::reset_init_latch();
+
+        crate::sabotage::enable();
+        let outcome = execute(&check).await;
+        crate::sabotage::disable();
+
+        let result = CheckResult::from_outcome(
+            check.area,
+            check.name,
+            check.description,
+            outcome,
+            std::time::Duration::ZERO,
+        );
+        match result.outcome {
+            Outcome::Passed => {
+                println!("  CANNOT FAIL  {:<46}", check.name);
+                cannot_fail.push(check.name);
+            }
+            // Skipped means the machine could not run it either way, so the
+            // control proved nothing -- it is not evidence the check is sound.
+            Outcome::Skipped | Outcome::Blocked => {
+                println!(
+                    "  not run      {:<46} {}",
+                    check.name,
+                    result.detail.as_deref().unwrap_or("")
+                );
+                inconclusive.push(check.name);
+            }
+            other => {
+                println!("  ok           {:<46} {}", check.name, other.label());
+                proved += 1;
+            }
+        }
+    }
+
+    println!("\n{}", "=".repeat(72));
+    println!("  {proved} proved capable of failing");
+    if !inconclusive.is_empty() {
+        println!(
+            "  {} not exercised on this machine: {}",
+            inconclusive.len(),
+            inconclusive.join(", ")
+        );
+    }
+    if cannot_fail.is_empty() {
+        println!("  No check reported success unconditionally.");
+    } else {
+        println!(
+            "\n  {} CANNOT FAIL — these report success unconditionally:",
+            cannot_fail.len()
+        );
+        for name in &cannot_fail {
+            println!("    {name}");
+        }
+        println!("\n  Give each a sabotage point (see harness/src/sabotage.rs).");
+    }
+    println!("{}", "=".repeat(72));
+
+    if cannot_fail.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}

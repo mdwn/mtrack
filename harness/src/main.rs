@@ -39,6 +39,7 @@ mod plan;
 mod project;
 mod report;
 mod runner;
+mod sabotage;
 mod server;
 mod songs;
 
@@ -49,6 +50,7 @@ use std::process::ExitCode;
 struct Options {
     filter: Option<String>,
     list_only: bool,
+    self_test: bool,
     repeat: usize,
     json: Option<PathBuf>,
 }
@@ -57,6 +59,7 @@ fn parse_args() -> Result<Options, String> {
     let mut options = Options {
         filter: None,
         list_only: false,
+        self_test: false,
         repeat: 1,
         json: None,
     };
@@ -78,6 +81,7 @@ fn parse_args() -> Result<Options, String> {
                 options.json = Some(PathBuf::from(args.next().ok_or("--json needs a path")?));
             }
             "--list" => options.list_only = true,
+            "--self-test" => options.self_test = true,
             "-h" | "--help" => {
                 print_help();
                 std::process::exit(0);
@@ -94,6 +98,7 @@ fn print_help() {
          OPTIONS:\n  \
            --only <substring>   run only areas or checks matching this\n  \
            --list               print the plan and exit without running\n  \
+           --self-test          prove every check can fail, and exit\n  \
            --repeat <n>         run n times; reports how often each check failed\n  \
            --json <path>        write machine-readable results alongside the report\n  \
            -h, --help           this message\n\n\
@@ -144,6 +149,12 @@ async fn main() -> ExitCode {
             "Neither an audio output nor a MIDI port was found, so there is nothing to verify."
         );
         return ExitCode::from(2);
+    }
+
+    // Verifying the verifier: every check must stop passing when its own
+    // premise is broken.
+    if options.self_test {
+        return runner::run_self_test(&options.filter).await;
     }
 
     if options.repeat > 1 {

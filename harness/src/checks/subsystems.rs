@@ -25,7 +25,8 @@ use crate::client::Client;
 use crate::outcome::CheckOutcome;
 use crate::project::{ProfileSpec, ProjectBuilder, Subsystem};
 use crate::server::Server;
-use crate::{check, check_eq};
+use crate::{check, check_eq, fail};
+use mtrack::proto::player::v1::PlayRequest;
 
 /// How long to watch a deliberately-broken subsystem before concluding it
 /// degraded rather than misbehaved.
@@ -65,7 +66,7 @@ async fn watch_subsystem(
 pub async fn absent_midi_is_skipped_not_fatal() -> CheckOutcome {
     crate::runner::require_area("subsystems")?;
     let mut profile = ProfileSpec::detected("01-e2e");
-    profile.midi = Subsystem::Absent;
+    profile.midi = crate::sabotage::pick(Subsystem::Absent, Subsystem::Detected);
 
     let project = ProjectBuilder::new()
         .profiles(vec![profile])
@@ -94,7 +95,7 @@ pub async fn absent_midi_is_skipped_not_fatal() -> CheckOutcome {
 pub async fn absent_dmx_is_skipped_not_fatal() -> CheckOutcome {
     crate::runner::require_area("subsystems")?;
     let mut profile = ProfileSpec::detected("01-e2e");
-    profile.dmx = Subsystem::Absent;
+    profile.dmx = crate::sabotage::pick(Subsystem::Absent, Subsystem::Detected);
 
     let project = ProjectBuilder::new()
         .profiles(vec![profile])
@@ -126,7 +127,10 @@ pub async fn absent_dmx_is_skipped_not_fatal() -> CheckOutcome {
 pub async fn bogus_midi_device_degrades_gracefully() -> CheckOutcome {
     crate::runner::require_area("subsystems")?;
     let mut profile = ProfileSpec::detected("01-e2e");
-    profile.midi = Subsystem::Bogus("e2e-nonexistent-midi-device".to_string());
+    profile.midi = crate::sabotage::pick(
+        Subsystem::Bogus("e2e-nonexistent-midi-device".to_string()),
+        Subsystem::Detected,
+    );
 
     let project = ProjectBuilder::new()
         .profiles(vec![profile])
@@ -163,7 +167,10 @@ pub async fn bogus_midi_device_degrades_gracefully() -> CheckOutcome {
 pub async fn bogus_audio_device_degrades_gracefully() -> CheckOutcome {
     crate::runner::require_area("subsystems")?;
     let mut profile = ProfileSpec::detected("01-e2e");
-    profile.audio = Subsystem::Bogus("e2e-nonexistent-audio-device".to_string());
+    profile.audio = crate::sabotage::pick(
+        Subsystem::Bogus("e2e-nonexistent-audio-device".to_string()),
+        Subsystem::Detected,
+    );
 
     let project = ProjectBuilder::new()
         .profiles(vec![profile])
@@ -204,7 +211,7 @@ pub async fn first_profile_wins() -> CheckOutcome {
         return Ok(());
     };
 
-    let mut second = ProfileSpec::detected("02-decoy");
+    let mut second = ProfileSpec::detected(crate::sabotage::pick("02-decoy", "00-decoy"));
     second.audio = Subsystem::Bogus("e2e-decoy-device".to_string());
 
     let project = ProjectBuilder::new()
@@ -229,8 +236,12 @@ pub async fn controllers_restart_while_idle() -> CheckOutcome {
     crate::runner::require_area("subsystems")?;
     let project = crate::checks::standard_project()?;
     let server = Server::start(&project).await?;
-    let client = Client::connect(&server).await?;
+    let mut client = Client::connect(&server).await?;
 
+    if !crate::sabotage::perform() {
+        client.grpc().play(PlayRequest {}).await?;
+        client.wait_until_playing(Duration::from_secs(10)).await?;
+    }
     let (status, body) = client
         .send_text(reqwest::Method::POST, "controllers/restart", String::new())
         .await?;
@@ -240,9 +251,21 @@ pub async fn controllers_restart_while_idle() -> CheckOutcome {
     );
 
     // The gRPC controller must come back, or the player has lost its control
-    // surface without saying so.
-    let mut reconnected = Client::connect(&server).await?;
-    reconnected.status().await?;
+    // surface without saying so. Reconnecting *is* this check's assertion, so a
+    // failure here is a defect in the player -- not, as it was previously
+    // reported, an error in the harness.
+    let mut reconnected = match Client::connect(&server).await {
+        Ok(client) => client,
+        Err(e) => fail!(
+            "the gRPC controller did not come back after a restart, so the player has \
+             silently lost its control surface: {e}\n--- log ---\n{}",
+            server.log()
+        ),
+    };
+    if let Err(e) = reconnected.status().await {
+        fail!("the restarted gRPC controller accepted a connection but not a request: {e}");
+    }
+    crate::outcome::record("gRPC controller answered again after restart");
 
     server.check_clean_log(&[])?;
     Ok(())

@@ -105,44 +105,44 @@ the exception; that comment has been corrected.
 
 ## Verifying the checks themselves
 
-A check that cannot fail is worse than no check, and two have shipped here:
+A check that cannot fail is worse than no check, and three have shipped here:
 `bogus_*_device_degrades_gracefully` read a status that was `initializing`
-whatever mtrack did, and `active_playlist_persists_across_restart` asserted the
-opposite of documented behaviour. Both survived several reviews.
+whatever mtrack did; `active_playlist_persists_across_restart` asserted the
+opposite of documented behaviour; and `stop_halts_playback` used a four-second
+song that ended on its own inside the ten-second stop deadline, so it passed
+whether or not Stop did anything. All three survived several reviews.
 
-A one-off sweep was run against every check on 2026-08-09: break the check's
-premise, run it alone, require it to stop passing. **20 of 26 checks were
-demonstrated capable of failing.** The remaining six need a deliberately broken
-mtrack rather than a broken input, and are unproven:
-`selected_output_is_real_hardware`, `plays_a_song_to_completion`,
-`stop_halts_playback`, `active_playlist_persists_across_restart`,
-`controllers_restart_while_idle`, `lighting_effects_activate_during_playback`.
+```
+./scripts/hardware-test.sh --self-test      # or: mtrack-harness --self-test
+```
 
-The tooling was **not** retained. It was a table of mutations pinned to exact
-source strings, nothing ran it, and it had no idea the registry contained
-checks it did not cover -- so it would have reported a perfect score against
-its own table while silently ignoring a third of the suite. Rebuilding it
-properly means having it read `checks::all()` and fail when a registered check
-has neither a mutation nor an explicit exemption.
+Every check names one thing it depends on and asks `sabotage::` whether to
+break it. `--self-test` runs them all with the flag set and requires *none* to
+pass. **26/26 on the MAT rig; 25/26 on the WING**, where routing is not
+exercised because that console has no loopback.
 
-Two strengths of evidence are worth keeping distinct when it is rebuilt:
+The control lives beside the assertion it guards, so refactoring cannot orphan
+it, and completeness enforces itself: a check with no break point, or an
+ineffective one, simply passes the self-test and is reported as a defect. That
+is how the two lighting checks and a rig-dependent control were caught — the
+self-test found them, not review.
 
-- **world** — the input the check reads is broken. Strong: it proves the check
-  notices a changed reality.
-- **predicate** — the assertion is inverted. Proves only that it is reached and
-  its message renders. *A vacuous check passes this*, which is why the two
-  defects above needed world mutations to catch.
+An external source-mutating version was tried first and removed. Its mutations
+were pinned to exact source strings, so it rotted whenever a check was edited,
+and it did not know the registry held checks it never covered: it scored itself
+16/16 while ignoring ten.
 
-Three lessons from that run, all bugs in the sweep rather than in the checks:
+Three lessons from building it, all bugs in the controls rather than the checks:
 
 - Profiles load in **filename** order (`config/player.rs`), so reordering the
   vec passed to `.profiles()` is a no-op sabotage.
 - A *bogus* device stops the player booting, so the check fails at startup
-  without ever reaching the assertion under test. A valid-but-different device
-  is the correct control.
-- Scoping a mutation to a function needs **string-aware** brace matching: one
-  check body contains `"show \"Broken\" { ..."`, and naive matching never
-  rebalances.
+  without reaching the assertion under test. A valid-but-different device is
+  the correct control.
+- A control must not depend on the rig supplying the failure condition. The
+  plug-device check could not fail on the WING, where no raw device exists at
+  all -- the very case it was written to tolerate.
+
 
 ## Non-defects worth knowing
 

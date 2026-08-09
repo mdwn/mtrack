@@ -44,6 +44,7 @@ pub async fn player_starts_against_detected_hardware() -> CheckOutcome {
         .as_ref()
         .map(|d| d.name.clone())
         .unwrap_or_default();
+    let configured = crate::sabotage::pick(configured, "e2e-never-configured".to_string());
     let claimed = client.subsystem_device("audio").await?.unwrap_or_default();
     check!(
         claimed.starts_with(&configured),
@@ -98,7 +99,8 @@ pub async fn generated_project_loads_all_songs() -> CheckOutcome {
                 .and_then(|s| s.as_array())
                 .map(|a| a.len())
         })
-        .unwrap_or(0);
+        .unwrap_or(0)
+        + crate::sabotage::pick(0, 1);
 
     check_eq!(
         listed,

@@ -142,7 +142,9 @@ pub async fn song_midi_notes_are_transmitted() -> CheckOutcome {
         .take(expected_notes)
         .filter_map(|n| n.note())
         .collect();
-    let expected: Vec<u8> = (0..expected_notes).map(|b| 60 + (b as u8 % 12)).collect();
+    let expected: Vec<u8> = (0..expected_notes)
+        .map(|b| crate::sabotage::pick(60, 90) + (b as u8 % 12))
+        .collect();
     check_eq!(
         received,
         expected,
@@ -189,7 +191,12 @@ pub async fn beat_clock_runs_at_the_song_tempo() -> CheckOutcome {
         server.log()
     );
 
-    let expected = MidiSpec::scale("song.mid", TEMPO_BPM, 8).expected_clock_hz();
+    let expected = MidiSpec::scale(
+        "song.mid",
+        crate::sabotage::pick(TEMPO_BPM, TEMPO_BPM * 2.0),
+        8,
+    )
+    .expected_clock_hz();
     // `clock_hz` also returns None when the span is zero, which a backend
     // without real port timestamping can produce. Panicking there would surface
     // as a harness error -- the one outcome a measurement should never yield.
@@ -229,7 +236,7 @@ pub async fn beat_clock_is_silent_when_disabled() -> CheckOutcome {
     let listen = path.listen.clone();
     crate::outcome::record(path.describe());
 
-    let project = midi_project(false)?;
+    let project = midi_project(crate::sabotage::pick(false, true))?;
     let server = Server::start(&project).await?;
     let mut client = Client::connect(&server).await?;
 
@@ -273,7 +280,13 @@ pub async fn configured_midi_device_transmits() -> CheckOutcome {
     let song = SongSpec::tones("Midi Hw", "midi-hw", 1, 6.0)
         .with_midi(MidiSpec::scale("song.mid", TEMPO_BPM, 4));
     let project = ProjectBuilder::new()
-        .profiles(vec![ProfileSpec::detected("01-e2e")])
+        .profiles(vec![{
+            let mut p = ProfileSpec::detected("01-e2e");
+            if !crate::sabotage::perform() {
+                p.midi = Subsystem::Bogus("e2e-nope".to_string());
+            }
+            p
+        }])
         .songs(vec![song])
         .build()?;
 
