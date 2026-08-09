@@ -87,6 +87,8 @@ affects `update_audio` and `update_dmx`, which were not exercised.
 
 ---
 
+---
+
 ## 3. WITHDRAWN -- `active_playlist` (was #359)
 
 Not a defect. The check switched to `all_songs`, which the player treats as

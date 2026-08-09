@@ -159,7 +159,11 @@ impl Server {
         Server::start_inner(project, false)
             .await
             .map_err(|e| match e {
-                StartFailure::Timeout(m) | StartFailure::Exited(m) | StartFailure::Harness(m) => {
+                // Its callers exist to check that an unresolvable device degrades
+                // rather than killing the player. Reporting an exit as a harness
+                // error would label the very defect they hunt as our own bug.
+                StartFailure::Exited(m) => crate::outcome::CheckError::Failed(m),
+                StartFailure::Timeout(m) | StartFailure::Harness(m) => {
                     crate::outcome::CheckError::Harness(m)
                 }
             })

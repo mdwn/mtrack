@@ -55,8 +55,23 @@ need_value() {
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --only)       need_value "$@"; FILTER="$2"; shift; shift ;;
-        --repeat)     need_value "$@"; REPEAT="$2"; shift; shift ;;
+        --only)
+            need_value "$@"
+            if [[ -z "$2" ]]; then
+                echo "--only needs a non-empty filter." >&2
+                usage 1
+            fi
+            FILTER="$2"; shift; shift ;;
+        --repeat)
+            need_value "$@"
+            # Validated here: [[ -gt ]] arithmetic-evaluates, so "abc" and "0"
+            # would silently run once and "1.5" would print a bash syntax error
+            # and carry on.
+            if [[ ! "$2" =~ ^[1-9][0-9]*$ ]]; then
+                echo "--repeat needs a positive whole number, got '$2'." >&2
+                usage 1
+            fi
+            REPEAT="$2"; shift; shift ;;
         --json)       need_value "$@"; JSON_OUT="$2"; shift; shift ;;
         --list)       LIST_ONLY=true; shift ;;
         --rediscover) export MTRACK_E2E_REDISCOVER=1; shift ;;
@@ -83,10 +98,12 @@ fi
 
 HARNESS="$PROJECT_ROOT/target/debug/mtrack-harness"
 
-# Pin the player the harness runs. Without this it resolves target/release
-# first, so on a rig with an older release build the script would compile a
-# fresh debug binary and then verify the stale release one.
-export MTRACK_BIN="${MTRACK_BIN:-$PROJECT_ROOT/target/debug/mtrack}"
+# Pin the player only when this script built it. Doing so unconditionally broke
+# --no-build on a release-only machine, where the harness's own release-first
+# fallback would have found a perfectly good binary.
+if [[ "$SKIP_BUILD" != "true" ]]; then
+    export MTRACK_BIN="${MTRACK_BIN:-$PROJECT_ROOT/target/debug/mtrack}"
+fi
 
 ARGS=()
 [[ -n "$FILTER" ]] && ARGS+=(--only "$FILTER")

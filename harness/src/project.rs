@@ -375,6 +375,7 @@ impl ProjectBuilder {
     /// Name of the second generated playlist, usable as a persistence target.
     pub const ALTERNATE_PLAYLIST: &'static str = "alternate";
 
+    /// Overrides the playlist contents.
     pub fn playlist(mut self, names: Vec<String>) -> ProjectBuilder {
         self.playlist = names;
         self

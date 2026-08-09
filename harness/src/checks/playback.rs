@@ -26,6 +26,9 @@ use crate::outcome::CheckOutcome;
 use crate::project::{ProfileSpec, ProjectBuilder};
 use crate::server::Server;
 use crate::songs::SongSpec;
+
+/// How long the routing measurement records for.
+const CAPTURE_SECONDS: f32 = 3.0;
 use crate::{check, check_eq, skip};
 
 /// Playing a song advances the clock and then stops on its own.
@@ -213,7 +216,7 @@ pub async fn tracks_route_to_their_mapped_channels() -> CheckOutcome {
     tokio::time::sleep(Duration::from_millis(800)).await;
 
     let recorded = tokio::task::spawn_blocking(|| {
-        Capture::record(Duration::from_secs(3)).map_err(|e| e.to_string())
+        Capture::record(Duration::from_secs_f32(CAPTURE_SECONDS)).map_err(|e| e.to_string())
     })
     .await??;
     client.grpc().stop(StopRequest {}).await?;
@@ -226,7 +229,15 @@ pub async fn tracks_route_to_their_mapped_channels() -> CheckOutcome {
         .map(|ch| recorded.channel(ch).len())
         .min()
         .unwrap_or(0);
-    let expected_samples = recorded.sample_rate() as usize; // at least one second
+    // The measurement reads steady(skip 500ms, take 1500ms), i.e. two seconds
+    // into a three-second capture, so a one-second floor let a short capture
+    // silently measure less than intended. Require nearly the whole request.
+    //
+    // This still cannot see ALSA dropping periods mid-capture: the buffer is
+    // simply shorter than wall time, and the resulting phase discontinuities
+    // smear the Goertzel result into "no such tone reached input N". Length is
+    // a floor, not a guarantee of continuity.
+    let expected_samples = (CAPTURE_SECONDS * 0.9 * recorded.sample_rate() as f32) as usize;
     if shortest < expected_samples {
         skip!(
             "capture returned only {shortest} samples per channel (wanted at least \

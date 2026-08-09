@@ -26,7 +26,7 @@ use std::time::Instant;
 use crate::capabilities::Capabilities;
 use crate::checks;
 use crate::discovery::Discovery;
-use crate::outcome::{CheckError, CheckOutcome, CheckResult};
+use crate::outcome::{CheckError, CheckOutcome, CheckResult, Outcome};
 use crate::report::Report;
 
 /// Runs every check whose name or area matches `filter`.
@@ -109,7 +109,11 @@ fn panic_message(panic: &Box<dyn std::any::Any + Send>) -> String {
 /// Some defects appear in a minority of runs. A single pass cannot distinguish
 /// "works" from "works most of the time", and the latter is worse on stage.
 pub async fn run_repeated(filter: &Option<String>, times: usize, json: Option<&Path>) -> ExitCode {
+    // Tracked apart: a harness-side error recurring across runs is our bug, and
+    // labelling it "an intermittent mtrack defect" would send the reader hunting
+    // in the wrong codebase.
     let mut failures: BTreeMap<String, usize> = BTreeMap::new();
+    let mut harness_errors: BTreeMap<String, usize> = BTreeMap::new();
     let mut last: Option<Report> = None;
     let mut bad_runs = 0;
 
@@ -118,8 +122,12 @@ pub async fn run_repeated(filter: &Option<String>, times: usize, json: Option<&P
         let report = run_once(filter).await;
 
         for result in &report.results {
-            if result.outcome.is_bad() {
-                *failures.entry(result.name.clone()).or_insert(0) += 1;
+            match result.outcome {
+                Outcome::Failed => *failures.entry(result.name.clone()).or_insert(0) += 1,
+                Outcome::HarnessError => {
+                    *harness_errors.entry(result.name.clone()).or_insert(0) += 1
+                }
+                _ => {}
             }
         }
         if report.has_problems() {
@@ -140,8 +148,14 @@ pub async fn run_repeated(filter: &Option<String>, times: usize, json: Option<&P
     println!("\n{}", "=".repeat(72));
     println!("  Repeat summary: {times} runs, {bad_runs} with problems");
     println!("{}", "=".repeat(72));
+    if !harness_errors.is_empty() {
+        println!("  Harness errors (our bug, not mtrack's):");
+        for (name, count) in &harness_errors {
+            println!("    {name}: {count}/{times}");
+        }
+    }
     if failures.is_empty() {
-        println!("  No check failed in any run.");
+        println!("  No check reported an mtrack defect in any run.");
     } else {
         for (name, count) in &failures {
             let rate = (*count as f64 / times as f64) * 100.0;
@@ -193,4 +207,28 @@ pub fn require_area(name: &'static str) -> Result<(), CheckError> {
         Some(reason) => Err(CheckError::Skipped(reason)),
         None => Ok(()),
     }
+}
+
+/// Prints the checks a run would execute, honouring the same filter.
+pub fn list_checks(filter: &Option<String>) {
+    println!("=== checks selected ===");
+    let mut shown = 0;
+    for check in checks::all() {
+        if let Some(needle) = filter {
+            if !check.name.contains(needle.as_str()) && !check.area.contains(needle.as_str()) {
+                continue;
+            }
+        }
+        shown += 1;
+        let blocked = crate::plan::blocked_reason_for(check.area);
+        match blocked {
+            Some(reason) => println!("  SKIP  {:<14} {:<44} {reason}", check.area, check.name),
+            None => println!("  RUN   {:<14} {}", check.area, check.name),
+        }
+    }
+    match filter {
+        Some(needle) => println!("\n  {shown} check(s) match '{needle}'."),
+        None => println!("\n  {shown} check(s) total."),
+    }
+    println!("=======================\n");
 }

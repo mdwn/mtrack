@@ -130,6 +130,10 @@ async fn main() -> ExitCode {
     if options.list_only {
         discovery::forbid_probing();
         plan::print_plan();
+        // The plan is per-area; --only selects checks, so list them too or
+        // `--list --only lighting` would show every area and contradict the
+        // wrapper's own "what would run" description.
+        runner::list_checks(&options.filter);
         return ExitCode::SUCCESS;
     }
 

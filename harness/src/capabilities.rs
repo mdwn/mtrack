@@ -513,11 +513,16 @@ fn select_midi(all: &[MidiPort], skips: &mut Vec<Skip>) -> (Option<MidiPort>, Op
 
     let in_ = match env_override("MTRACK_E2E_MIDI_INPUT") {
         Some(name) => {
-            let found = find(&name);
+            // Must be able to receive, mirroring the output override above.
+            // An output-only port here yields a midi_in that cannot listen,
+            // and has_midi_loopback() would then claim a loopback exists.
+            let found = find(&name).filter(|d| d.has_input);
             if found.is_none() {
                 skips.push(Skip {
                     area: "midi",
-                    reason: format!("MTRACK_E2E_MIDI_INPUT={name} matched no device"),
+                    reason: format!(
+                        "MTRACK_E2E_MIDI_INPUT={name} matched no device with an input port"
+                    ),
                 });
             }
             found

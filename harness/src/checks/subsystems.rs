@@ -18,12 +18,52 @@
 //! a missing subsystem must not stop the player, and a broken one must degrade
 //! rather than take the process down.
 
+use std::time::Duration;
+
 use crate::capabilities::Capabilities;
 use crate::client::Client;
 use crate::outcome::CheckOutcome;
 use crate::project::{ProfileSpec, ProjectBuilder, Subsystem};
 use crate::server::Server;
 use crate::{check, check_eq};
+
+/// How long to watch a deliberately-broken subsystem before concluding it
+/// degraded rather than misbehaved.
+///
+/// `start_degraded` returns on the first HTTP 200, which mtrack serves while
+/// hardware initialization is still running. Reading the status at that instant
+/// always yields "initializing", so an assertion made there passes against any
+/// build -- including one that later reports the bogus device as connected.
+const SETTLE: Duration = Duration::from_secs(6);
+
+/// Watches a subsystem for [`SETTLE`], returning every distinct status seen.
+///
+/// A device that is present in the profile but unresolvable is one mtrack
+/// retries forever, so "initializing" for the whole window is the expected
+/// outcome -- what matters is that it never claims to be connected, and that
+/// nothing panics while it keeps trying.
+async fn watch_subsystem(
+    client: &crate::client::Client,
+    server: &Server,
+    subsystem: &str,
+) -> Result<Vec<String>, crate::outcome::CheckError> {
+    let deadline = std::time::Instant::now() + SETTLE;
+    let mut seen: Vec<String> = Vec::new();
+    while std::time::Instant::now() < deadline {
+        let status = client.subsystem_status(subsystem).await?;
+        if !seen.contains(&status) {
+            seen.push(status.clone());
+        }
+        // Once it has settled on something other than initializing there is
+        // nothing further to learn.
+        if status != "initializing" && status != "connected" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    let _ = server;
+    Ok(seen)
+}
 
 /// A profile with no `midi:` block leaves the player running without MIDI.
 pub async fn absent_midi_is_skipped_not_fatal() -> CheckOutcome {
@@ -102,18 +142,23 @@ pub async fn bogus_midi_device_degrades_gracefully() -> CheckOutcome {
     let server = Server::start_degraded(&project).await?;
     let client = Client::connect_http_only(&server).await?;
 
-    let midi = client.subsystem_status("midi").await?;
+    let seen = watch_subsystem(&client, &server, "midi").await?;
     check!(
-        midi != "connected",
-        "a nonexistent MIDI device was reported as connected"
+        !seen.iter().any(|s| s == "connected"),
+        "a nonexistent MIDI device was reported as connected (statuses seen: {seen:?})"
     );
 
+    // Read after the settle window, so a panic during device resolution is
+    // caught rather than missed by looking a few milliseconds after startup.
     let log = server.log();
     check!(
         !log.contains("panicked at"),
         "a nonexistent MIDI device panicked the player.\n--- log ---\n{log}"
     );
-    crate::outcome::record(format!("bogus MIDI device reported as '{midi}'"));
+    crate::outcome::record(format!(
+        "bogus MIDI device: statuses over {}s were {seen:?}, never connected, no panic",
+        SETTLE.as_secs()
+    ));
 
     Ok(())
 }
@@ -131,18 +176,23 @@ pub async fn bogus_audio_device_degrades_gracefully() -> CheckOutcome {
     let server = Server::start_degraded(&project).await?;
     let client = Client::connect_http_only(&server).await?;
 
-    let audio = client.subsystem_status("audio").await?;
+    let seen = watch_subsystem(&client, &server, "audio").await?;
     check!(
-        audio != "connected",
-        "a nonexistent audio device was reported as connected"
+        !seen.iter().any(|s| s == "connected"),
+        "a nonexistent audio device was reported as connected (statuses seen: {seen:?})"
     );
 
+    // Read after the settle window, so a panic during device resolution is
+    // caught rather than missed by looking a few milliseconds after startup.
     let log = server.log();
     check!(
         !log.contains("panicked at"),
         "a nonexistent audio device panicked the player.\n--- log ---\n{log}"
     );
-    crate::outcome::record(format!("bogus audio device reported as '{audio}'"));
+    crate::outcome::record(format!(
+        "bogus audio device: statuses over {}s were {seen:?}, never connected, no panic",
+        SETTLE.as_secs()
+    ));
 
     Ok(())
 }
