@@ -116,7 +116,9 @@ impl Discovery {
                         );
                         return cached;
                     }
-                    if age > CACHE_MAX_AGE_SECS {
+                    if age > CACHE_MAX_AGE_SECS
+                        && !PROBING_FORBIDDEN.load(std::sync::atomic::Ordering::SeqCst)
+                    {
                         println!(
                             "  (cached cabling is {} old, re-measuring)",
                             describe_age(age)

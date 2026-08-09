@@ -339,15 +339,24 @@ where
     Ok(device.build_input_stream(
         config,
         move |data: &[T], _: &cpal::InputCallbackInfo| {
-            if !buffer.active.load(Ordering::SeqCst) {
+            if !buffer.active.load(Ordering::Relaxed) {
                 return;
             }
-            for frame in data.chunks(channels) {
-                for (ch, sample) in frame.iter().enumerate() {
-                    if let Some(slot) = buffer.channels.get(ch) {
-                        slot.lock().push(sample.to_sample::<f32>());
-                    }
-                }
+            // One lock per channel per callback, not per sample. The naive
+            // version took a mutex and grew a Vec for every sample of every
+            // channel -- around 768k lock/push cycles per second on a 16-channel
+            // 48 kHz capture, inside the real-time input callback. That is
+            // plausibly what was producing the xruns this capture then reported
+            // as "the interface underran".
+            for (ch, slot) in buffer.channels.iter().enumerate().take(channels) {
+                let mut out = slot.lock();
+                out.reserve(data.len() / channels);
+                out.extend(
+                    data.iter()
+                        .skip(ch)
+                        .step_by(channels)
+                        .map(|s| s.to_sample::<f32>()),
+                );
             }
         },
         |e| eprintln!("capture stream error: {e}"),

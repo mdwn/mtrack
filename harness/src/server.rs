@@ -47,8 +47,8 @@ pub fn resolve_mtrack_binary() -> Result<PathBuf, String> {
         .map(|p| p.to_path_buf())
         .unwrap_or_default();
 
-    // Release first: if both exist, the newer-looking one is usually what the
-    // operator just built for the rig.
+    // Release before debug, unconditionally -- mtime is not consulted. Callers
+    // that care (the wrapper script) set MTRACK_BIN explicitly.
     let candidates = [
         workspace.join("target/release/mtrack"),
         workspace.join("target/debug/mtrack"),
@@ -96,9 +96,13 @@ pub fn reset_init_latch() {
 /// Why a server failed to come up. The distinction decides whether the failure
 /// is reported against mtrack or against the harness.
 enum StartFailure {
-    /// The player itself failed to come up: it exited, or never reported
-    /// readiness before the deadline.
-    Player(String),
+    /// The player never reported readiness before the deadline. Latching on
+    /// this is what stops a wedged device costing one timeout per check.
+    Timeout(String),
+    /// The player exited. Config-specific, so it must NOT latch: one profile
+    /// that makes mtrack exit would otherwise hide every independent defect
+    /// behind ~20 blocked checks.
+    Exited(String),
     /// The harness could not even get that far, or could not tell. Says
     /// nothing about the player.
     Harness(String),
@@ -134,12 +138,15 @@ impl Server {
 
         match Server::start_inner(project, true).await {
             Ok(server) => Ok(server),
-            Err(StartFailure::Player(msg)) => {
+            Err(StartFailure::Timeout(msg)) => {
                 INIT_TIMED_OUT.store(true, Ordering::SeqCst);
                 // A real finding: the player could not come up against a config
                 // naming devices it had itself advertised.
                 Err(crate::outcome::CheckError::Failed(msg))
             }
+            // Also a real finding, but specific to this check's config, so the
+            // rest of the run still gets to say something.
+            Err(StartFailure::Exited(msg)) => Err(crate::outcome::CheckError::Failed(msg)),
             // Never latched: the harness broke, not the player.
             Err(StartFailure::Harness(msg)) => Err(crate::outcome::CheckError::Harness(msg)),
         }
@@ -152,7 +159,7 @@ impl Server {
         Server::start_inner(project, false)
             .await
             .map_err(|e| match e {
-                StartFailure::Player(m) | StartFailure::Harness(m) => {
+                StartFailure::Timeout(m) | StartFailure::Exited(m) | StartFailure::Harness(m) => {
                     crate::outcome::CheckError::Harness(m)
                 }
             })
@@ -210,7 +217,7 @@ impl Server {
         let mut last_state = String::from("no response");
         while Instant::now() < deadline {
             if let Some(status) = self.exit_status() {
-                return Err(StartFailure::Player(format!(
+                return Err(StartFailure::Exited(format!(
                     "mtrack exited with {status} during startup.\n--- log ---\n{}",
                     self.log()
                 )));
@@ -243,7 +250,7 @@ impl Server {
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
 
-        Err(StartFailure::Player(format!(
+        Err(StartFailure::Timeout(format!(
             "mtrack was not ready within {READY_TIMEOUT:?} ({last_state}).\n--- log ---\n{}",
             self.log()
         )))

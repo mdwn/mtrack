@@ -95,7 +95,9 @@ pub struct Player {
     playlist: Option<String>,
     /// Directory containing playlist YAML files.
     playlists_dir: Option<String>,
-    /// The active playlist name (persisted across restarts).
+    /// The active playlist name (persisted across restarts). Switching to
+    /// "all_songs" is session-only and deliberately not stored here, so the
+    /// value is the last non-all_songs selection -- see `Player::switch_to_playlist`.
     #[serde(default = "default_active_playlist")]
     active_playlist: String,
     /// The path to the song definitions.

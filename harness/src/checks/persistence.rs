@@ -232,6 +232,12 @@ pub async fn stale_checksum_is_rejected() -> CheckOutcome {
 ///
 /// Unlike the MIDI settings this lives in `mtrack.yaml` rather than a profile,
 /// so it exercises the other persistence path.
+///
+/// Switches to a second generated playlist rather than `all_songs`, which the
+/// player deliberately treats as session-only (`player/navigation.rs`). An
+/// earlier version of this check used `all_songs` and so asserted the opposite
+/// of the documented behaviour -- it failed on every rig, and the "defect" it
+/// reported was not one.
 pub async fn active_playlist_persists_across_restart() -> CheckOutcome {
     crate::runner::require_area("persistence")?;
     use mtrack::proto::player::v1::SwitchToPlaylistRequest;
@@ -244,14 +250,15 @@ pub async fn active_playlist_persists_across_restart() -> CheckOutcome {
     client
         .grpc()
         .switch_to_playlist(SwitchToPlaylistRequest {
-            playlist_name: "all_songs".to_string(),
+            playlist_name: crate::project::ProjectBuilder::ALTERNATE_PLAYLIST.to_string(),
         })
         .await?;
 
     let switched = client.status().await?.playlist_name;
     check!(
         original != switched,
-        "switching to all_songs did not change the reported playlist (still {original:?})"
+        "switching to the alternate playlist did not change the reported selection \
+         (still {original:?})"
     );
 
     drop(server);

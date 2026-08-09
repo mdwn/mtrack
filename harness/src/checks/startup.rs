@@ -83,6 +83,7 @@ pub async fn player_starts_against_detected_hardware() -> CheckOutcome {
 /// Confirms the generated project is one mtrack itself considers valid, so a
 /// later failure points at the player rather than at the harness.
 pub async fn generated_project_loads_all_songs() -> CheckOutcome {
+    crate::runner::require_area("startup")?;
     let project = crate::checks::standard_project()?;
     let server = Server::start(&project).await?;
     let client = Client::connect(&server).await?;

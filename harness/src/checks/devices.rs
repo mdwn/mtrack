@@ -122,14 +122,17 @@ pub async fn selected_output_is_real_hardware() -> CheckOutcome {
         .map(|d| d.name.as_str())
         .collect();
 
-    check!(
-        raw_alternatives.is_empty(),
-        "selected the plug device '{}' even though raw hardware devices were available: {:?}. \
-         A plug device's {}-channel count is a property of the plug layer, not the interface.",
-        device.name,
-        raw_alternatives,
-        device.max_channels
-    );
+    if !raw_alternatives.is_empty() {
+        // Reachable only by an operator override; device_rank already prefers
+        // raw hardware. Blaming mtrack (and exiting non-zero) for the harness's
+        // own device choice would be wrong.
+        return Err(crate::outcome::CheckError::Inconclusive(format!(
+            "selected the plug device '{}' even though raw hardware was available: {:?}. Its \
+             {}-channel count is the plug layer's, not the interface's, so routing measured \
+             through it would not mean what it appears to. Check MTRACK_E2E_AUDIO_DEVICE.",
+            device.name, raw_alternatives, device.max_channels
+        )));
+    }
 
     crate::outcome::record(format!(
         "caveat: '{}' is an ALSA plug device, but no raw hw device was usable -- its \

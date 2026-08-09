@@ -72,7 +72,9 @@ cd "$PROJECT_ROOT"
 if [[ "$SKIP_BUILD" != "true" ]]; then
     echo "=== Building mtrack and the harness ==="
     # The harness runs the real binary, so both must be current.
-    if ! cargo build --bin mtrack -p mtrack && cargo build -p mtrack-harness; then
+    # `if ! A && B` parses as `(! A) && B`: when A succeeded the negation was
+    # false and && short-circuited, so the harness was never built at all.
+    if ! cargo build --bin mtrack -p mtrack || ! cargo build -p mtrack-harness; then
         echo "Build failed." >&2
         exit 1
     fi

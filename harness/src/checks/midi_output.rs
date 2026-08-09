@@ -28,7 +28,7 @@ use crate::outcome::CheckOutcome;
 use crate::project::{ProfileSpec, ProjectBuilder, Subsystem};
 use crate::server::Server;
 use crate::songs::{MidiSpec, SongSpec};
-use crate::{check, check_eq, skip};
+use crate::{check, check_eq, inconclusive, skip};
 
 /// Tempo of the generated MIDI song. Chosen away from round numbers so a clock
 /// derived from a default rather than from the file is obvious.
@@ -190,7 +190,16 @@ pub async fn beat_clock_runs_at_the_song_tempo() -> CheckOutcome {
     );
 
     let expected = MidiSpec::scale("song.mid", TEMPO_BPM, 8).expected_clock_hz();
-    let measured = measured.expect("pulse count checked above");
+    // `clock_hz` also returns None when the span is zero, which a backend
+    // without real port timestamping can produce. Panicking there would surface
+    // as a harness error -- the one outcome a measurement should never yield.
+    let Some(measured) = measured else {
+        inconclusive!(
+            "{} clock pulses arrived but carried no usable timestamps, so the rate could not \
+             be measured",
+            pulses.len()
+        );
+    };
     let error_pct = ((measured - expected) / expected).abs() * 100.0;
 
     crate::outcome::record(format!(

@@ -160,7 +160,13 @@ pub async fn tracks_route_to_their_mapped_channels() -> CheckOutcome {
     let mut links: Vec<_> = links.into_iter().collect();
     let mut seen_outputs = std::collections::BTreeSet::new();
     let mut seen_inputs = std::collections::BTreeSet::new();
-    links.retain(|l| seen_outputs.insert(l.out_channel) && seen_inputs.insert(l.in_channel));
+    links.retain(|l| {
+        // Both inserts must run: `&&` would short-circuit on a duplicate
+        // output and leave that link's input unrecorded.
+        let fresh_out = seen_outputs.insert(l.out_channel);
+        let fresh_in = seen_inputs.insert(l.in_channel);
+        fresh_out && fresh_in
+    });
 
     // Only as many channels as there are distinct tones can be told apart.
     let verifiable = crate::songs::TRACK_TONES.len();

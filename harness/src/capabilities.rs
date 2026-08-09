@@ -489,11 +489,16 @@ fn select_midi(all: &[MidiPort], skips: &mut Vec<Skip>) -> (Option<MidiPort>, Op
 
     let out = match env_override("MTRACK_E2E_MIDI_DEVICE") {
         Some(name) => {
-            let found = find(&name);
+            // Must be able to transmit. The auto path filters on this; without
+            // the same filter here an input-only port becomes the "output",
+            // Need::MidiOut reports satisfied, and mtrack is blamed for a typo.
+            let found = find(&name).filter(|d| d.has_output);
             if found.is_none() {
                 skips.push(Skip {
                     area: "midi",
-                    reason: format!("MTRACK_E2E_MIDI_DEVICE={name} matched no device"),
+                    reason: format!(
+                        "MTRACK_E2E_MIDI_DEVICE={name} matched no device with an output port"
+                    ),
                 });
             }
             found

@@ -5,7 +5,7 @@ failing check, so an entry can be deleted once that check passes.
 
 Reproduce with `./scripts/hardware-test.sh`.
 
-All three reproduce on **two independent machines** (recorded 2026-08-08,
+Both reproduce on **two independent machines** (recorded 2026-08-08,
 both against `3a92ceb`):
 
 - `mtrack-harness` (Pi, test rig): MAT USB interface 8 out / 16 in, outputs
@@ -87,20 +87,19 @@ affects `update_audio` and `update_dmx`, which were not exercised.
 
 ---
 
-## 3. `active_playlist` does not survive a restart
+## 3. WITHDRAWN -- `active_playlist` (was #359)
 
-**Tracked as [#359](https://github.com/mdwn/mtrack/issues/359).**
+Not a defect. The check switched to `all_songs`, which the player treats as
+session-only by design (`player/navigation.rs`: "Switching to \"all_songs\" is
+session-only (not persisted to config)"), so it asserted the opposite of
+intended behaviour and failed on every rig -- which is why it appeared to
+"reproduce on two independent machines".
 
-**Check:** `active_playlist_persists_across_restart` (area `persistence`)
+The check now switches to a second generated playlist and passes. Issue #359
+was closed as invalid. What misled the original report was
+`config/player.rs`'s comment, which promised persistence without mentioning
+the exception; that comment has been corrected.
 
-Switching to `all_songs`, then restarting, reports `playlist` again. The field
-is documented in `config/player.rs:98` as *"The active playlist name (persisted
-across restarts)"*, so either the persistence is broken or the comment is wrong.
-
-Reproduces independently of finding 2 — different project, different server, no
-config mutation RPC involved.
-
----
 
 ## Non-defects worth knowing
 
