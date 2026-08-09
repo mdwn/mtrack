@@ -17,6 +17,8 @@ both against `3a92ceb`):
 
 ## 1. `/api/devices/audio` advertises devices the player cannot open
 
+**Tracked as [#357](https://github.com/mdwn/mtrack/issues/357).**
+
 **Check:** `advertised_devices_are_openable` (area `devices`)
 
 mtrack enumerates audio devices through two paths that do not agree:
@@ -55,6 +57,8 @@ confirming before fixing.
 
 ## 2. `UpdateMidi` persists to a location the loader discards
 
+**Tracked as [#358](https://github.com/mdwn/mtrack/issues/358).**
+
 **Check:** `midi_beat_clock_persists` (area `midi-config`)
 
 On a project using `profiles_dir`, enabling beat clock over gRPC rewrites
@@ -84,6 +88,8 @@ affects `update_audio` and `update_dmx`, which were not exercised.
 ---
 
 ## 3. `active_playlist` does not survive a restart
+
+**Tracked as [#359](https://github.com/mdwn/mtrack/issues/359).**
 
 **Check:** `active_playlist_persists_across_restart` (area `persistence`)
 
