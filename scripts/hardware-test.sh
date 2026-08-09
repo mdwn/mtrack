@@ -69,6 +69,12 @@ if [[ "$SKIP_BUILD" != "true" ]]; then
 fi
 
 HARNESS="$PROJECT_ROOT/target/debug/mtrack-harness"
+
+# Pin the player the harness runs. Without this it resolves target/release
+# first, so on a rig with an older release build the script would compile a
+# fresh debug binary and then verify the stale release one.
+export MTRACK_BIN="${MTRACK_BIN:-$PROJECT_ROOT/target/debug/mtrack}"
+
 ARGS=()
 [[ -n "$FILTER" ]] && ARGS+=(--only "$FILTER")
 [[ "$REPEAT" -gt 1 ]] && ARGS+=(--repeat "$REPEAT")

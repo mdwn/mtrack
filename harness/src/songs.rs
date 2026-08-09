@@ -163,12 +163,12 @@ impl SongSpec {
     ///
     /// Every track is written into its own single-channel WAV so that a track
     /// maps cleanly onto one output channel and one tone.
+    /// More tracks than there are defined tones is clamped rather than
+    /// rejected: the caller's channel count comes from discovered hardware, and
+    /// a rig with more patched channels than we have tones is a reason to
+    /// verify fewer of them, not to abort the run.
     pub fn tones(name: &str, dir: &str, track_count: usize, duration_secs: f32) -> SongSpec {
-        assert!(
-            track_count <= TRACK_TONES.len(),
-            "only {} distinct tones are defined",
-            TRACK_TONES.len()
-        );
+        let track_count = track_count.min(TRACK_TONES.len());
 
         let tracks = (0..track_count)
             .map(|i| TrackSpec {

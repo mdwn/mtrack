@@ -161,7 +161,15 @@ impl ProfileSpec {
         {
             let rates = &detected.sample_rates;
             if !rates.is_empty() && !rates.contains(&44_100) {
-                let chosen = rates.iter().copied().min().unwrap_or(48_000);
+                // Prefer 48k, else the highest on offer. Taking the lowest
+                // would happily pin an 8000 Hz device, which is below Nyquist
+                // for five of the eight diagnostic tones -- the routing checks
+                // would then fail for a reason we created.
+                let chosen = if rates.contains(&48_000) {
+                    48_000
+                } else {
+                    rates.iter().copied().max().unwrap_or(48_000)
+                };
                 let _ = writeln!(out, "  sample_rate: {chosen}");
             }
         }
@@ -389,8 +397,7 @@ impl ProjectBuilder {
             song.write(&root.join("songs"))?;
         }
 
-        let grpc_port = free_port()?;
-        let web_port = free_port()?;
+        let (grpc_port, web_port) = free_port_pair()?;
 
         if self.profiles.iter().any(|p| p.lighting) {
             write_lighting_definitions(&root)?;
@@ -489,9 +496,14 @@ fixture_type "{FIXTURE_TYPE}" {{
 /// There is an unavoidable race between closing the listener and mtrack
 /// binding the port; binding to port 0 inside mtrack would avoid it but the
 /// port would then not be knowable in advance.
-fn free_port() -> std::io::Result<u16> {
-    let listener = TcpListener::bind("127.0.0.1:0")?;
-    let port = listener.local_addr()?.port();
-    drop(listener);
-    Ok(port)
+fn free_port_pair() -> std::io::Result<(u16, u16)> {
+    // Both listeners are held until both ports are known. Asking twice in
+    // sequence can return the same port, and the collision surfaces only as an
+    // opaque 45-second readiness timeout.
+    let first = TcpListener::bind("127.0.0.1:0")?;
+    let second = TcpListener::bind("127.0.0.1:0")?;
+    let ports = (first.local_addr()?.port(), second.local_addr()?.port());
+    drop(first);
+    drop(second);
+    Ok(ports)
 }

@@ -32,7 +32,6 @@ use crate::{check, skip};
 
 /// Every device offered to users can actually be opened by the player.
 pub async fn advertised_devices_are_openable() -> CheckOutcome {
-    let mut evidence: Vec<String> = Vec::new();
     if Capabilities::get().all_audio_out.is_empty() {
         skip!("no audio devices to compare");
     }
@@ -76,11 +75,11 @@ pub async fn advertised_devices_are_openable() -> CheckOutcome {
         openable_names,
     );
 
-    evidence.push(format!(
+    crate::outcome::record(format!(
         "{} advertised device(s), all openable by the player",
         advertised.len()
     ));
-    Ok(evidence)
+    Ok(())
 }
 
 /// The channel count advertised for the selected device is plausible.
@@ -89,18 +88,17 @@ pub async fn advertised_devices_are_openable() -> CheckOutcome {
 /// profile generated from that number maps tracks onto channels that do not
 /// exist, which fails silently: the mixer writes them and nothing is heard.
 pub async fn selected_output_is_real_hardware() -> CheckOutcome {
-    let mut evidence: Vec<String> = Vec::new();
     let caps = Capabilities::get();
     let Some(device) = &caps.audio_out else {
         skip!("no audio output device was selected");
     };
 
-    evidence.push(format!(
+    crate::outcome::record(format!(
         "selected output: {} ({} ch)",
         device.name, device.max_channels
     ));
     for other in &caps.all_audio_out {
-        evidence.push(format!(
+        crate::outcome::record(format!(
             "  candidate: {} ({} ch)",
             other.name, other.max_channels
         ));
@@ -108,7 +106,7 @@ pub async fn selected_output_is_real_hardware() -> CheckOutcome {
 
     let is_raw_hw = device.name.contains("hw:CARD=") && !device.name.contains("plughw:");
     if is_raw_hw {
-        return Ok(evidence);
+        return Ok(());
     }
 
     // Selecting a plug device is only wrong when a raw one was available. Some
@@ -133,10 +131,10 @@ pub async fn selected_output_is_real_hardware() -> CheckOutcome {
         device.max_channels
     );
 
-    evidence.push(format!(
+    crate::outcome::record(format!(
         "caveat: '{}' is an ALSA plug device, but no raw hw device was usable -- its \
          {}-channel count comes from the plug layer, not the interface",
         device.name, device.max_channels
     ));
-    Ok(evidence)
+    Ok(())
 }

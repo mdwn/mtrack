@@ -103,10 +103,9 @@ fn midi_path() -> Result<MidiPath, crate::outcome::CheckError> {
 
 /// The notes in a song's MIDI file are actually transmitted.
 pub async fn song_midi_notes_are_transmitted() -> CheckOutcome {
-    let mut evidence: Vec<String> = Vec::new();
     let path = midi_path()?;
     let listen = path.listen.clone();
-    evidence.push(path.describe());
+    crate::outcome::record(path.describe());
 
     let project = midi_project(false)?;
     let server = Server::start(&project).await?;
@@ -149,10 +148,10 @@ pub async fn song_midi_notes_are_transmitted() -> CheckOutcome {
         expected,
         "the transmitted notes do not match the song's MIDI file"
     );
-    evidence.push(format!("transmitted notes: {received:?}"));
+    crate::outcome::record(format!("transmitted notes: {received:?}"));
 
     server.check_clean_log(&[])?;
-    Ok(evidence)
+    Ok(())
 }
 
 /// With beat clock enabled, mtrack emits 24 pulses per quarter note at the
@@ -161,10 +160,9 @@ pub async fn song_midi_notes_are_transmitted() -> CheckOutcome {
 /// The rate is what makes this meaningful: any implementation can emit 0xF8
 /// bytes, but only a correct one emits them at `bpm * 24 / 60` Hz.
 pub async fn beat_clock_runs_at_the_song_tempo() -> CheckOutcome {
-    let mut evidence: Vec<String> = Vec::new();
     let path = midi_path()?;
     let listen = path.listen.clone();
-    evidence.push(path.describe());
+    crate::outcome::record(path.describe());
 
     let project = midi_project(true)?;
     let server = Server::start(&project).await?;
@@ -195,7 +193,7 @@ pub async fn beat_clock_runs_at_the_song_tempo() -> CheckOutcome {
     let measured = measured.expect("pulse count checked above");
     let error_pct = ((measured - expected) / expected).abs() * 100.0;
 
-    evidence.push(format!(
+    crate::outcome::record(format!(
         "beat clock: {measured:.2} Hz measured, {expected:.2} Hz expected \
          ({error_pct:.1}% off, {} pulses)",
         pulses.len()
@@ -210,7 +208,7 @@ pub async fn beat_clock_runs_at_the_song_tempo() -> CheckOutcome {
     );
 
     server.check_clean_log(&[])?;
-    Ok(evidence)
+    Ok(())
 }
 
 /// With beat clock disabled, no timing clock is transmitted.
@@ -218,10 +216,9 @@ pub async fn beat_clock_runs_at_the_song_tempo() -> CheckOutcome {
 /// Without this, the rate check above would still pass against a build that
 /// ignores the setting and always emits a clock.
 pub async fn beat_clock_is_silent_when_disabled() -> CheckOutcome {
-    let mut evidence: Vec<String> = Vec::new();
     let path = midi_path()?;
     let listen = path.listen.clone();
-    evidence.push(path.describe());
+    crate::outcome::record(path.describe());
 
     let project = midi_project(false)?;
     let server = Server::start(&project).await?;
@@ -244,7 +241,7 @@ pub async fn beat_clock_is_silent_when_disabled() -> CheckOutcome {
     );
 
     server.check_clean_log(&[])?;
-    Ok(evidence)
+    Ok(())
 }
 
 /// The MIDI device the operator actually configured opens and transmits.
@@ -255,7 +252,6 @@ pub async fn beat_clock_is_silent_when_disabled() -> CheckOutcome {
 /// bytes (there is nothing to listen on), but it does prove the configured
 /// port opens, is claimed, and carries a song's playback without error.
 pub async fn configured_midi_device_transmits() -> CheckOutcome {
-    let mut evidence: Vec<String> = Vec::new();
     crate::runner::require_area("midi-config")?;
 
     let caps = Capabilities::get();
@@ -289,7 +285,7 @@ pub async fn configured_midi_device_transmits() -> CheckOutcome {
     client.grpc().stop(StopRequest {}).await?;
 
     server.check_clean_log(&[])?;
-    evidence.push(format!(
+    crate::outcome::record(format!(
         "transmitted a MIDI song on {} without error",
         device.name
     ));
@@ -298,7 +294,7 @@ pub async fn configured_midi_device_transmits() -> CheckOutcome {
     let verified_elsewhere = Discovery::get()
         .midi_pair()
         .is_some_and(|pair| pair.out_port == device.name);
-    evidence.push(if verified_elsewhere {
+    crate::outcome::record(if verified_elsewhere {
         "this port also loops back, so its bytes are verified by the midi-transmit checks"
             .to_string()
     } else {
@@ -306,5 +302,5 @@ pub async fn configured_midi_device_transmits() -> CheckOutcome {
          that it opened and transmitted is proven"
             .to_string()
     });
-    Ok(evidence)
+    Ok(())
 }

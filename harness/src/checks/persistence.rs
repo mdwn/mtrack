@@ -55,7 +55,6 @@ where
         !before.yaml.contains(expect),
         "{what}: '{expect}' was already present before the mutation, so this proves nothing"
     );
-    let mut evidence: Vec<String> = Vec::new();
 
     // The store uses optimistic concurrency, so the mutation carries the
     // checksum it read.
@@ -122,12 +121,12 @@ where
             project.dump_yaml()
         );
     }
-    evidence.push(format!(
+    crate::outcome::record(format!(
         "{what} reached the profile file and survived a restart"
     ));
 
     server.check_clean_log(&[])?;
-    Ok(evidence)
+    Ok(())
 }
 
 /// MIDI beat clock survives being enabled, written, and reloaded.
@@ -175,7 +174,6 @@ pub async fn midi_beat_clock_persists() -> CheckOutcome {
 /// Optimistic concurrency is what stops the web UI and a controller from
 /// clobbering each other, so it is worth proving against the real store.
 pub async fn stale_checksum_is_rejected() -> CheckOutcome {
-    let evidence: Vec<String> = Vec::new();
     crate::runner::require_area("midi-config")?;
     let caps = Capabilities::get();
     let Some(midi) = caps.midi_out.clone() else {
@@ -227,7 +225,7 @@ pub async fn stale_checksum_is_rejected() -> CheckOutcome {
     );
 
     server.check_clean_log(&["invalid", "checksum", "conflict"])?;
-    Ok(evidence)
+    Ok(())
 }
 
 /// The active playlist selection survives a restart.
@@ -235,7 +233,6 @@ pub async fn stale_checksum_is_rejected() -> CheckOutcome {
 /// Unlike the MIDI settings this lives in `mtrack.yaml` rather than a profile,
 /// so it exercises the other persistence path.
 pub async fn active_playlist_persists_across_restart() -> CheckOutcome {
-    let evidence: Vec<String> = Vec::new();
     crate::runner::require_area("persistence")?;
     use mtrack::proto::player::v1::SwitchToPlaylistRequest;
 
@@ -252,9 +249,9 @@ pub async fn active_playlist_persists_across_restart() -> CheckOutcome {
         .await?;
 
     let switched = client.status().await?.playlist_name;
-    assert_ne!(
-        original, switched,
-        "switching to all_songs did not change the reported playlist"
+    check!(
+        original != switched,
+        "switching to all_songs did not change the reported playlist (still {original:?})"
     );
 
     drop(server);
@@ -274,5 +271,5 @@ pub async fn active_playlist_persists_across_restart() -> CheckOutcome {
     );
 
     server.check_clean_log(&[])?;
-    Ok(evidence)
+    Ok(())
 }

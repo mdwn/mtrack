@@ -22,6 +22,12 @@
 use crate::capabilities::Capabilities;
 use crate::discovery::Discovery;
 
+// Note: there is deliberately no `dmx-output` area. Verifying DMX on the wire
+// needs a reader on the far side of OLA, which does not exist yet; the lighting
+// checks record a caveat when olad is absent instead. An area with no checks
+// behind it would advertise RUN in the plan and then never appear in the
+// results -- exactly the overstated coverage this tool exists to avoid.
+
 /// A capability an area depends on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Need {
@@ -132,11 +138,6 @@ pub const AREAS: &[Area] = &[
         name: "lighting",
         description: "show creation, validation, cues, live effects",
         needs: &[Need::AudioOut],
-    },
-    Area {
-        name: "dmx-output",
-        description: "DMX frames on the wire",
-        needs: &[Need::OlaDaemon],
     },
 ];
 

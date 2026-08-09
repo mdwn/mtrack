@@ -22,7 +22,6 @@ use crate::{check, check_eq, fail};
 /// Starts the player against a generated project and confirms it reaches a
 /// ready state with the audio device actually claimed.
 pub async fn player_starts_against_detected_hardware() -> CheckOutcome {
-    let mut evidence: Vec<String> = Vec::new();
     crate::runner::require_area("playback")?;
     let caps = Capabilities::get();
     let project = crate::checks::standard_project()?;
@@ -56,7 +55,7 @@ pub async fn player_starts_against_detected_hardware() -> CheckOutcome {
     let midi = client.subsystem_status("midi").await?;
     match (&caps.midi_out, midi.as_str()) {
         (Some(device), "connected") => {
-            evidence.push(format!("midi connected: {}", device.name));
+            crate::outcome::record(format!("midi connected: {}", device.name));
         }
         (Some(device), other) => fail!(
             "MIDI device {} was detected but the player reports '{other}'.\n--- log ---\n{}",
@@ -65,7 +64,7 @@ pub async fn player_starts_against_detected_hardware() -> CheckOutcome {
         ),
         // No MIDI is a normal configuration, not a defect, so the check still
         // passes on its own terms and the gap is noted as evidence.
-        (None, _) => evidence.push("no MIDI device present to claim".to_string()),
+        (None, _) => crate::outcome::record("no MIDI device present to claim".to_string()),
     }
 
     let dmx = client.subsystem_status("dmx").await?;
@@ -78,13 +77,12 @@ pub async fn player_starts_against_detected_hardware() -> CheckOutcome {
 
     server.check_config_understood()?;
     server.check_clean_log(&[])?;
-    Ok(evidence)
+    Ok(())
 }
 
 /// Confirms the generated project is one mtrack itself considers valid, so a
 /// later failure points at the player rather than at the harness.
 pub async fn generated_project_loads_all_songs() -> CheckOutcome {
-    let evidence: Vec<String> = Vec::new();
     let project = crate::checks::standard_project()?;
     let server = Server::start(&project).await?;
     let client = Client::connect(&server).await?;
@@ -109,5 +107,5 @@ pub async fn generated_project_loads_all_songs() -> CheckOutcome {
     );
 
     server.check_clean_log(&[])?;
-    Ok(evidence)
+    Ok(())
 }

@@ -26,11 +26,15 @@ use std::time::Instant;
 use crate::capabilities::Capabilities;
 use crate::checks;
 use crate::discovery::Discovery;
-use crate::outcome::{CheckError, CheckOutcome, CheckResult, Outcome};
+use crate::outcome::{CheckError, CheckOutcome, CheckResult};
 use crate::report::Report;
 
 /// Runs every check whose name or area matches `filter`.
 pub async fn run_once(filter: &Option<String>) -> Report {
+    // Each run is independent; without this, one readiness timeout in run 1
+    // would block every server-backed check for the rest of a --repeat sweep.
+    crate::server::reset_init_latch();
+
     let mut results = Vec::new();
     for check in checks::all() {
         if let Some(needle) = filter {
@@ -57,7 +61,16 @@ pub async fn run_once(filter: &Option<String>) -> Report {
     Report {
         host: hostname(),
         mtrack_version: mtrack_version(),
-        hardware: caps.summary_lines(),
+        hardware: {
+            let mut lines = caps.summary_lines();
+            // Probe-time problems (an unmatched MTRACK_E2E_* override, a
+            // subsystem that would not enumerate) were previously recorded and
+            // never shown, so a typo'd device name produced silence.
+            for skip in caps.probe_skips() {
+                lines.push(format!("note ({}): {}", skip.area, skip.reason));
+            }
+            lines
+        },
         cabling: Discovery::get().describe(),
         cabling_source: Discovery::get().source().to_string(),
         results,
@@ -181,12 +194,3 @@ pub fn require_area(name: &'static str) -> Result<(), CheckError> {
         None => Ok(()),
     }
 }
-
-/// Marks an outcome as passed with no measurements to report.
-pub fn passed() -> CheckOutcome {
-    Ok(Vec::new())
-}
-
-/// Suppresses the unused warning for the `Outcome` re-export in tests.
-#[allow(unused)]
-fn _outcome_marker(_: Outcome) {}

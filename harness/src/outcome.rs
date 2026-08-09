@@ -24,6 +24,7 @@
 
 use std::error::Error;
 use std::fmt;
+use std::sync::Mutex;
 use std::time::Duration;
 
 /// Why a check did not simply pass.
@@ -99,8 +100,32 @@ impl From<tonic::Status> for CheckError {
 /// 41.60 expected" is worth more than the word "passed".
 pub type Evidence = Vec<String>;
 
-/// What a check body returns.
-pub type CheckOutcome = Result<Evidence, CheckError>;
+/// Evidence recorded by the check currently running.
+///
+/// Held aside rather than returned, because a check that fails abandons its
+/// return value -- and that is exactly when its measurements matter most. A
+/// beat-clock failure without the "via a loopback port, NOT the configured
+/// device" line is a failure that invites the wrong conclusion.
+///
+/// Checks run strictly one at a time, so a plain mutex is sufficient.
+static EVIDENCE: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Records a measurement for the running check.
+pub fn record(line: impl Into<String>) {
+    EVIDENCE
+        .lock()
+        .expect("evidence buffer poisoned")
+        .push(line.into());
+}
+
+/// Takes and clears everything recorded so far.
+pub fn take_evidence() -> Evidence {
+    std::mem::take(&mut *EVIDENCE.lock().expect("evidence buffer poisoned"))
+}
+
+/// What a check body returns. Measurements travel through [`record`], so the
+/// success value carries nothing.
+pub type CheckOutcome = Result<(), CheckError>;
 
 /// How a completed check ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -160,13 +185,16 @@ impl CheckResult {
         result: CheckOutcome,
         elapsed: Duration,
     ) -> CheckResult {
-        let (outcome, detail, evidence) = match result {
-            Ok(evidence) => (Outcome::Passed, None, evidence),
-            Err(CheckError::Failed(m)) => (Outcome::Failed, Some(m), Vec::new()),
-            Err(CheckError::Skipped(m)) => (Outcome::Skipped, Some(m), Vec::new()),
-            Err(CheckError::Blocked(m)) => (Outcome::Blocked, Some(m), Vec::new()),
-            Err(CheckError::Inconclusive(m)) => (Outcome::Inconclusive, Some(m), Vec::new()),
-            Err(CheckError::Harness(m)) => (Outcome::HarnessError, Some(m), Vec::new()),
+        // Collected regardless of outcome, so a failure keeps the measurements
+        // that explain it.
+        let evidence = take_evidence();
+        let (outcome, detail) = match result {
+            Ok(()) => (Outcome::Passed, None),
+            Err(CheckError::Failed(m)) => (Outcome::Failed, Some(m)),
+            Err(CheckError::Skipped(m)) => (Outcome::Skipped, Some(m)),
+            Err(CheckError::Blocked(m)) => (Outcome::Blocked, Some(m)),
+            Err(CheckError::Inconclusive(m)) => (Outcome::Inconclusive, Some(m)),
+            Err(CheckError::Harness(m)) => (Outcome::HarnessError, Some(m)),
         };
 
         CheckResult {

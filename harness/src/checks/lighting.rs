@@ -51,7 +51,6 @@ fn lighting_project() -> Result<crate::project::Project, Box<dyn std::error::Err
 /// Run before the playback cases so a DSL mistake in the harness is reported
 /// as a validation failure rather than as an empty cue list later on.
 pub async fn generated_show_passes_validation() -> CheckOutcome {
-    let evidence: Vec<String> = Vec::new();
     crate::runner::require_area("lighting")?;
     let project = lighting_project()?;
     let server = Server::start(&project).await?;
@@ -73,7 +72,7 @@ pub async fn generated_show_passes_validation() -> CheckOutcome {
     );
 
     server.check_clean_log(&[])?;
-    Ok(evidence)
+    Ok(())
 }
 
 /// A malformed show is rejected rather than silently accepted.
@@ -81,7 +80,6 @@ pub async fn generated_show_passes_validation() -> CheckOutcome {
 /// Without this, the validation case above would pass against a validator that
 /// approves everything.
 pub async fn malformed_show_is_rejected() -> CheckOutcome {
-    let evidence: Vec<String> = Vec::new();
     crate::runner::require_area("lighting")?;
     let project = lighting_project()?;
     let server = Server::start(&project).await?;
@@ -98,12 +96,11 @@ pub async fn malformed_show_is_rejected() -> CheckOutcome {
     );
 
     server.check_clean_log(&["invalid", "parse", "lighting"])?;
-    Ok(evidence)
+    Ok(())
 }
 
 /// A show attached to a song turns into cues the player can report.
 pub async fn song_lighting_produces_cues() -> CheckOutcome {
-    let mut evidence: Vec<String> = Vec::new();
     crate::runner::require_area("lighting")?;
     let project = lighting_project()?;
     let server = Server::start(&project).await?;
@@ -136,10 +133,10 @@ pub async fn song_lighting_produces_cues() -> CheckOutcome {
         "the song's light show produced no cues during playback.\n--- log ---\n{}",
         server.log()
     );
-    evidence.push(format!("{} cue(s) from the generated show", cues.len()));
+    crate::outcome::record(format!("{} cue(s) from the generated show", cues.len()));
 
     server.check_clean_log(&[])?;
-    Ok(evidence)
+    Ok(())
 }
 
 /// Effects become active while the song plays.
@@ -147,7 +144,6 @@ pub async fn song_lighting_produces_cues() -> CheckOutcome {
 /// The show's first cue is at 00:00, so something must be active shortly after
 /// playback starts and nothing should be active before it.
 pub async fn lighting_effects_activate_during_playback() -> CheckOutcome {
-    let mut evidence: Vec<String> = Vec::new();
     crate::runner::require_area("lighting")?;
     let caps = Capabilities::get();
     let project = lighting_project()?;
@@ -175,9 +171,8 @@ pub async fn lighting_effects_activate_during_playback() -> CheckOutcome {
 
     client.grpc().stop(StopRequest {}).await?;
 
-    assert_ne!(
-        during.trim(),
-        idle.trim(),
+    check!(
+        during.trim() != idle.trim(),
         "the active effects did not change once the show started.\nidle: {idle:?}\n--- log ---\n{}",
         server.log()
     );
@@ -186,23 +181,26 @@ pub async fn lighting_effects_activate_during_playback() -> CheckOutcome {
         "no lighting effects were active during playback.\n--- log ---\n{}",
         server.log()
     );
-    evidence.push(format!("active during playback: {}", during.trim()));
+    crate::outcome::record(format!("active during playback: {}", during.trim()));
 
-    if caps.ola_port.is_none() {
-        evidence.push(
-            "caveat: effects verified through the player's own state only; without olad the \
-             DMX frames on the wire are unverified"
-                .to_string(),
-        );
-    }
+    // Stated either way. Silence when olad is present would read as "the wire
+    // was checked", and nothing here reads DMX back.
+    crate::outcome::record(match caps.ola_port {
+        Some(port) => format!(
+            "caveat: frames were handed to olad on port {port}; nothing reads DMX back, so what \
+             reached the fixtures is unverified"
+        ),
+        None => "caveat: no olad, so the DMX engine ran against its null client; effects were \
+                 verified through the player's own state only"
+            .to_string(),
+    });
 
     server.check_clean_log(&[])?;
-    Ok(evidence)
+    Ok(())
 }
 
 /// A show written through the API can be read back.
 pub async fn show_written_via_api_is_readable() -> CheckOutcome {
-    let evidence: Vec<String> = Vec::new();
     crate::runner::require_area("lighting")?;
     let project = lighting_project()?;
     let server = Server::start(&project).await?;
@@ -232,5 +230,5 @@ pub async fn show_written_via_api_is_readable() -> CheckOutcome {
     );
 
     server.check_clean_log(&[])?;
-    Ok(evidence)
+    Ok(())
 }

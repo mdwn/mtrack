@@ -75,17 +75,39 @@ const READY_TIMEOUT: Duration = Duration::from_secs(45);
 /// How long to wait for a killed process to actually exit.
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Set once a player has failed to reach readiness.
+/// Set once a player has timed out reaching readiness.
 ///
 /// Hardware that never initializes fails identically for every check, and
 /// mtrack deliberately waits and retries forever on a subsystem its profile
 /// declares. Paying the readiness timeout once per check turns one problem
 /// into twenty-five timeouts and a run that reports nothing useful.
-static INIT_FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+///
+/// Latched *only* on a genuine readiness timeout. A harness-side failure -- a
+/// log file that could not be created, a port that collided -- says nothing
+/// about the player and must not suppress the rest of the run.
+static INIT_TIMED_OUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Clears the latch. Called at the start of each run so that `--repeat` gives
+/// N independent runs rather than one run followed by N-1 blocked ones.
+pub fn reset_init_latch() {
+    INIT_TIMED_OUT.store(false, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Why a server failed to come up. The distinction decides whether the failure
+/// is reported against mtrack or against the harness.
+enum StartFailure {
+    /// The player came up but never reported readiness.
+    Timeout(String),
+    /// The harness could not even get that far.
+    Harness(String),
+}
 
 /// A running mtrack process.
 pub struct Server {
     child: Option<Child>,
+    /// Cached once the child has been reaped; `try_wait` only reports an exit
+    /// once.
+    exit_status: Option<std::process::ExitStatus>,
     web_port: u16,
     grpc_port: u16,
     log_path: PathBuf,
@@ -100,7 +122,7 @@ impl Server {
     pub async fn start(project: &Project) -> Result<Server, crate::outcome::CheckError> {
         use std::sync::atomic::Ordering;
 
-        if INIT_FAILED.load(Ordering::SeqCst) {
+        if INIT_TIMED_OUT.load(Ordering::SeqCst) {
             return Err(crate::outcome::CheckError::Blocked(
                 "the player could not initialize its hardware in an earlier check; this would \
                  fail the same way after the same timeout, so it was not repeated"
@@ -110,12 +132,14 @@ impl Server {
 
         match Server::start_inner(project, true).await {
             Ok(server) => Ok(server),
-            Err(e) => {
-                INIT_FAILED.store(true, Ordering::SeqCst);
-                // The first occurrence is a real finding: the player could not
-                // come up against a config naming devices it advertised.
-                Err(crate::outcome::CheckError::Failed(e.to_string()))
+            Err(StartFailure::Timeout(msg)) => {
+                INIT_TIMED_OUT.store(true, Ordering::SeqCst);
+                // A real finding: the player could not come up against a config
+                // naming devices it had itself advertised.
+                Err(crate::outcome::CheckError::Failed(msg))
             }
+            // Never latched: the harness broke, not the player.
+            Err(StartFailure::Harness(msg)) => Err(crate::outcome::CheckError::Harness(msg)),
         }
     }
 
@@ -125,19 +149,21 @@ impl Server {
     pub async fn start_degraded(project: &Project) -> Result<Server, crate::outcome::CheckError> {
         Server::start_inner(project, false)
             .await
-            .map_err(|e| crate::outcome::CheckError::Harness(e.to_string()))
+            .map_err(|e| match e {
+                StartFailure::Timeout(m) | StartFailure::Harness(m) => {
+                    crate::outcome::CheckError::Harness(m)
+                }
+            })
     }
 
-    async fn start_inner(
-        project: &Project,
-        require_init: bool,
-    ) -> Result<Server, Box<dyn std::error::Error>> {
-        let log_path = project.root().join("mtrack.log");
-        let log = File::create(&log_path)?;
-        let log_err = log.try_clone()?;
+    async fn start_inner(project: &Project, require_init: bool) -> Result<Server, StartFailure> {
+        let harness = StartFailure::Harness;
 
-        let binary =
-            resolve_mtrack_binary().map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+        let log_path = project.root().join("mtrack.log");
+        let log = File::create(&log_path).map_err(|e| harness(e.to_string()))?;
+        let log_err = log.try_clone().map_err(|e| harness(e.to_string()))?;
+
+        let binary = resolve_mtrack_binary().map_err(harness)?;
         let child = Command::new(binary)
             .arg("start")
             .arg(project.root())
@@ -154,29 +180,37 @@ impl Server {
             .stdout(Stdio::from(log))
             .stderr(Stdio::from(log_err))
             .stdin(Stdio::null())
-            .spawn()?;
+            .spawn()
+            .map_err(|e| harness(e.to_string()))?;
 
-        let server = Server {
+        let mut server = Server {
             child: Some(child),
+            exit_status: None,
             web_port: project.web_port(),
             grpc_port: project.grpc_port(),
             log_path,
         };
 
-        server.wait_until_ready(require_init).await?;
+        server
+            .wait_until_ready(require_init)
+            .await
+            .map_err(|e| StartFailure::Timeout(e.to_string()))?;
         Ok(server)
     }
 
-    async fn wait_until_ready(&self, require_init: bool) -> Result<(), Box<dyn std::error::Error>> {
+    async fn wait_until_ready(
+        &mut self,
+        require_init: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let client = reqwest::Client::new();
         let url = format!("{}/api/status", self.base_url());
         let deadline = Instant::now() + READY_TIMEOUT;
 
         let mut last_state = String::from("no response");
         while Instant::now() < deadline {
-            if let Some(code) = self.exit_code() {
+            if let Some(status) = self.exit_status() {
                 return Err(format!(
-                    "mtrack exited with {code} during startup.\n--- log ---\n{}",
+                    "mtrack exited with {status} during startup.\n--- log ---\n{}",
                     self.log()
                 )
                 .into());
@@ -217,29 +251,20 @@ impl Server {
         format!("http://127.0.0.1:{}", self.grpc_port)
     }
 
-    /// The process exit code, if it has exited.
-    fn exit_code(&self) -> Option<i32> {
-        // `try_wait` needs &mut, and callers hold &self during polling; reading
-        // the child's status through a raw check keeps this side-effect free.
-        self.child.as_ref().and_then(|c| {
-            let pid = c.id();
-            // A process that has exited but not been reaped still exists as a
-            // zombie, so liveness is checked by signal 0 rather than /proc.
-            #[cfg(unix)]
-            {
-                let alive = unsafe { libc_kill(pid as i32, 0) } == 0;
-                if alive {
-                    None
-                } else {
-                    Some(-1)
-                }
-            }
-            #[cfg(not(unix))]
-            {
-                let _ = pid;
-                None
-            }
-        })
+    /// The process exit status, if it has exited.
+    ///
+    /// Reaps with `try_wait` rather than probing with `kill(pid, 0)`. An exited
+    /// but unreaped child is a zombie, which still owns its pid, so signal 0
+    /// *succeeds* for it -- the process would read as alive forever and a
+    /// player that died 200 ms into startup would be waited on for the full
+    /// readiness timeout instead of being reported immediately.
+    fn exit_status(&mut self) -> Option<std::process::ExitStatus> {
+        if let Some(status) = self.exit_status {
+            return Some(status);
+        }
+        let status = self.child.as_mut()?.try_wait().ok().flatten()?;
+        self.exit_status = Some(status);
+        Some(status)
     }
 
     /// The captured server log.
@@ -325,6 +350,10 @@ impl Server {
         }
         #[cfg(not(unix))]
         let _ = child.kill();
+
+        if self.exit_status.is_some() {
+            return;
+        }
 
         let deadline = Instant::now() + SHUTDOWN_TIMEOUT;
         while Instant::now() < deadline {

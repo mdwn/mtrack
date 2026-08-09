@@ -237,7 +237,13 @@ fn cache_path() -> PathBuf {
     std::env::var("MTRACK_E2E_CACHE")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
+            // The workspace target dir, matching where the mtrack binary is
+            // looked up. Under harness/target it would survive a workspace
+            // `cargo clean`, which is precisely when a stale cabling map is
+            // least expected.
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
                 .join("target")
                 .join("hardware-e2e-discovery.json")
         })

@@ -27,7 +27,6 @@ use crate::{check, check_eq};
 
 /// A profile with no `midi:` block leaves the player running without MIDI.
 pub async fn absent_midi_is_skipped_not_fatal() -> CheckOutcome {
-    let evidence: Vec<String> = Vec::new();
     crate::runner::require_area("subsystems")?;
     let mut profile = ProfileSpec::detected("01-e2e");
     profile.midi = Subsystem::Absent;
@@ -52,12 +51,11 @@ pub async fn absent_midi_is_skipped_not_fatal() -> CheckOutcome {
 
     server.check_config_understood()?;
     server.check_clean_log(&[])?;
-    Ok(evidence)
+    Ok(())
 }
 
 /// A profile with no `dmx:` block leaves the player running without DMX.
 pub async fn absent_dmx_is_skipped_not_fatal() -> CheckOutcome {
-    let evidence: Vec<String> = Vec::new();
     crate::runner::require_area("subsystems")?;
     let mut profile = ProfileSpec::detected("01-e2e");
     profile.dmx = Subsystem::Absent;
@@ -82,7 +80,7 @@ pub async fn absent_dmx_is_skipped_not_fatal() -> CheckOutcome {
 
     server.check_config_understood()?;
     server.check_clean_log(&[])?;
-    Ok(evidence)
+    Ok(())
 }
 
 /// A MIDI device that does not exist degrades instead of killing the player.
@@ -90,7 +88,6 @@ pub async fn absent_dmx_is_skipped_not_fatal() -> CheckOutcome {
 /// This is the closest the suite gets to unplugging hardware without a human:
 /// the device name is real-looking but resolves to nothing.
 pub async fn bogus_midi_device_degrades_gracefully() -> CheckOutcome {
-    let mut evidence: Vec<String> = Vec::new();
     crate::runner::require_area("subsystems")?;
     let mut profile = ProfileSpec::detected("01-e2e");
     profile.midi = Subsystem::Bogus("e2e-nonexistent-midi-device".to_string());
@@ -106,8 +103,8 @@ pub async fn bogus_midi_device_degrades_gracefully() -> CheckOutcome {
     let client = Client::connect_http_only(&server).await?;
 
     let midi = client.subsystem_status("midi").await?;
-    assert_ne!(
-        midi, "connected",
+    check!(
+        midi != "connected",
         "a nonexistent MIDI device was reported as connected"
     );
 
@@ -116,14 +113,13 @@ pub async fn bogus_midi_device_degrades_gracefully() -> CheckOutcome {
         !log.contains("panicked at"),
         "a nonexistent MIDI device panicked the player.\n--- log ---\n{log}"
     );
-    evidence.push(format!("bogus MIDI device reported as '{midi}'"));
+    crate::outcome::record(format!("bogus MIDI device reported as '{midi}'"));
 
-    Ok(evidence)
+    Ok(())
 }
 
 /// An audio device that does not exist degrades instead of killing the player.
 pub async fn bogus_audio_device_degrades_gracefully() -> CheckOutcome {
-    let mut evidence: Vec<String> = Vec::new();
     crate::runner::require_area("subsystems")?;
     let mut profile = ProfileSpec::detected("01-e2e");
     profile.audio = Subsystem::Bogus("e2e-nonexistent-audio-device".to_string());
@@ -136,8 +132,8 @@ pub async fn bogus_audio_device_degrades_gracefully() -> CheckOutcome {
     let client = Client::connect_http_only(&server).await?;
 
     let audio = client.subsystem_status("audio").await?;
-    assert_ne!(
-        audio, "connected",
+    check!(
+        audio != "connected",
         "a nonexistent audio device was reported as connected"
     );
 
@@ -146,9 +142,9 @@ pub async fn bogus_audio_device_degrades_gracefully() -> CheckOutcome {
         !log.contains("panicked at"),
         "a nonexistent audio device panicked the player.\n--- log ---\n{log}"
     );
-    evidence.push(format!("bogus audio device reported as '{audio}'"));
+    crate::outcome::record(format!("bogus audio device reported as '{audio}'"));
 
-    Ok(evidence)
+    Ok(())
 }
 
 /// Only the first matching profile is active, and it is the one applied.
@@ -156,11 +152,10 @@ pub async fn bogus_audio_device_degrades_gracefully() -> CheckOutcome {
 /// Profiles are sorted by filename, so a second profile pointing at a
 /// different device must not be the one that gets claimed.
 pub async fn first_profile_wins() -> CheckOutcome {
-    let evidence: Vec<String> = Vec::new();
     crate::runner::require_area("subsystems")?;
     let caps = Capabilities::get();
     let Some(expected) = caps.audio_out.as_ref().map(|d| d.name.clone()) else {
-        return Ok(evidence);
+        return Ok(());
     };
 
     let mut second = ProfileSpec::detected("02-decoy");
@@ -180,12 +175,11 @@ pub async fn first_profile_wins() -> CheckOutcome {
     );
 
     server.check_clean_log(&[])?;
-    Ok(evidence)
+    Ok(())
 }
 
 /// Controllers can be restarted while the player is idle.
 pub async fn controllers_restart_while_idle() -> CheckOutcome {
-    let evidence: Vec<String> = Vec::new();
     crate::runner::require_area("subsystems")?;
     let project = crate::checks::standard_project()?;
     let server = Server::start(&project).await?;
@@ -205,5 +199,5 @@ pub async fn controllers_restart_while_idle() -> CheckOutcome {
     reconnected.status().await?;
 
     server.check_clean_log(&[])?;
-    Ok(evidence)
+    Ok(())
 }

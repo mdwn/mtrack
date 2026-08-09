@@ -41,46 +41,6 @@ const RELATIVE_FLOOR_DB: f32 = -40.0;
 /// noise from reporting its loudest noise bin as a detected tone.
 const ABSOLUTE_FLOOR: f32 = 1e-4;
 
-/// Which physical input each output channel arrives on.
-#[derive(Debug, Clone, Default)]
-pub struct LoopbackMap {
-    /// `(output_channel, input_channel)` pairs, both 1-based.
-    pairs: Vec<(u16, u16)>,
-}
-
-impl LoopbackMap {
-    /// The input channel an output is patched to.
-    pub fn input_for(&self, output_channel: u16) -> Option<u16> {
-        self.pairs
-            .iter()
-            .find(|(out, _)| *out == output_channel)
-            .map(|(_, input)| *input)
-    }
-
-    /// Output channels that are patched back and can therefore be verified.
-    pub fn verifiable_outputs(&self) -> Vec<u16> {
-        self.pairs.iter().map(|(out, _)| *out).collect()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.pairs.is_empty()
-    }
-
-    /// Parses `MTRACK_E2E_LOOPBACK_MAP`, formatted `"1:3,2:4"`.
-    ///
-    /// Discovery costs a few seconds of tone playback and needs exclusive use
-    /// of the device, so a known rig can declare its patch instead.
-    fn from_env() -> Option<LoopbackMap> {
-        let raw = std::env::var("MTRACK_E2E_LOOPBACK_MAP").ok()?;
-        let mut pairs = Vec::new();
-        for entry in raw.split(',').map(str::trim).filter(|e| !e.is_empty()) {
-            let (out, input) = entry.split_once(':')?;
-            pairs.push((out.trim().parse().ok()?, input.trim().parse().ok()?));
-        }
-        Some(LoopbackMap { pairs })
-    }
-}
-
 /// Magnitude of a single frequency within `samples`.
 ///
 /// A Goertzel filter rather than an FFT: only a handful of known frequencies
@@ -286,78 +246,6 @@ fn find_input_device(name: &str) -> Result<cpal::Device, Box<dyn std::error::Err
         }
     }
     Err(format!("input device '{name}' not found").into())
-}
-
-/// Plays a distinct tone on each output channel while recording every input,
-/// and reports which output arrives on which input.
-///
-/// Runs independently of mtrack on purpose: it establishes ground truth about
-/// the cabling, so a later routing failure is attributable to the player
-/// rather than to the patch bay. It needs exclusive use of the device, so it
-/// must not run while a server is up.
-pub fn discover_loopback(tones: &[f32]) -> Result<LoopbackMap, Box<dyn std::error::Error>> {
-    if let Some(map) = LoopbackMap::from_env() {
-        return Ok(map);
-    }
-
-    let caps = Capabilities::get();
-    let output = caps
-        .audio_out
-        .as_ref()
-        .ok_or("no audio output device to probe")?;
-    if caps.audio_in.is_none() {
-        return Ok(LoopbackMap::default());
-    }
-
-    let device = find_output_device(&output.name)?;
-    let default_config = device.default_output_config()?;
-    let out_channels = output.max_channels.min(tones.len() as u16);
-    let sample_rate = default_config.sample_rate();
-
-    let stream_config = cpal::StreamConfig {
-        channels: output.max_channels,
-        sample_rate,
-        buffer_size: cpal::BufferSize::Default,
-    };
-
-    let phase = Arc::new(Mutex::new(0u64));
-    let tones_owned: Vec<f32> = tones[..out_channels as usize].to_vec();
-    let total_channels = output.max_channels as usize;
-    let amplitude = crate::songs::amplitude();
-
-    // Interfaces commonly refuse f32; the MAT, for instance, offers only
-    // S32_LE and S16_LE. Build the stream in whatever the device natively
-    // supports rather than assuming.
-    let stream = build_tone_stream(
-        &device,
-        &stream_config,
-        default_config.sample_format(),
-        tones_owned.clone(),
-        total_channels,
-        sample_rate,
-        amplitude,
-        phase.clone(),
-    )?;
-
-    stream.play()?;
-    // Let the output settle before the measured window begins.
-    std::thread::sleep(Duration::from_millis(500));
-    let capture = Capture::record(Duration::from_secs(3))?;
-    drop(stream);
-
-    let mut pairs = Vec::new();
-    for input_channel in 1..=capture.channel_count() as u16 {
-        let window = capture.steady(
-            input_channel,
-            Duration::from_millis(500),
-            Duration::from_millis(1500),
-        );
-        for (tone_index, _) in tones_present(window, capture.sample_rate(), &tones_owned) {
-            pairs.push((tone_index as u16 + 1, input_channel));
-        }
-    }
-
-    Ok(LoopbackMap { pairs })
 }
 
 /// Plays a distinct tone per output channel on `out` while recording every

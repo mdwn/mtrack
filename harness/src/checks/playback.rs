@@ -34,7 +34,6 @@ use crate::{check, check_eq, skip};
 /// is stuck or that jumps backwards is a real defect that a "did it finish?"
 /// assertion alone would miss.
 pub async fn plays_a_song_to_completion() -> CheckOutcome {
-    let evidence: Vec<String> = Vec::new();
     crate::runner::require_area("playback")?;
     let project = ProjectBuilder::new()
         .songs(vec![SongSpec::tones("Short Tone", "short-tone", 2, 4.0)])
@@ -74,12 +73,11 @@ pub async fn plays_a_song_to_completion() -> CheckOutcome {
 
     client.wait_until_stopped(Duration::from_secs(15)).await?;
     server.check_clean_log(&[])?;
-    Ok(evidence)
+    Ok(())
 }
 
 /// Stop takes effect while a song is mid-flight.
 pub async fn stop_halts_playback() -> CheckOutcome {
-    let evidence: Vec<String> = Vec::new();
     crate::runner::require_area("playback")?;
     let project = crate::checks::standard_project()?;
     let server = Server::start(&project).await?;
@@ -91,12 +89,11 @@ pub async fn stop_halts_playback() -> CheckOutcome {
     client.wait_until_stopped(Duration::from_secs(10)).await?;
 
     server.check_clean_log(&[])?;
-    Ok(evidence)
+    Ok(())
 }
 
 /// Playlist navigation moves between songs without playback running.
 pub async fn playlist_navigation_moves_between_songs() -> CheckOutcome {
-    let evidence: Vec<String> = Vec::new();
     crate::runner::require_area("playback")?;
     let project = crate::checks::standard_project()?;
     let server = Server::start(&project).await?;
@@ -105,14 +102,17 @@ pub async fn playlist_navigation_moves_between_songs() -> CheckOutcome {
     let first = client.status().await?.current_song.map(|s| s.name);
     client.grpc().next(NextRequest {}).await?;
     let second = client.status().await?.current_song.map(|s| s.name);
-    assert_ne!(first, second, "next did not change the current song");
+    check!(
+        first != second,
+        "next did not change the current song (still {first:?})"
+    );
 
     client.grpc().previous(PreviousRequest {}).await?;
     let back = client.status().await?.current_song.map(|s| s.name);
     check_eq!(back, first, "previous did not return to the first song");
 
     server.check_clean_log(&[])?;
-    Ok(evidence)
+    Ok(())
 }
 
 /// Each track reaches the physical output channel it was mapped to, and does
@@ -122,7 +122,6 @@ pub async fn playlist_navigation_moves_between_songs() -> CheckOutcome {
 /// sound" would pass even if every track were summed onto every output; the
 /// absence half is what actually catches misrouting.
 pub async fn tracks_route_to_their_mapped_channels() -> CheckOutcome {
-    let mut evidence: Vec<String> = Vec::new();
     crate::runner::require_area("audio-routing")?;
     let caps = Capabilities::get();
 
@@ -138,8 +137,27 @@ pub async fn tracks_route_to_their_mapped_channels() -> CheckOutcome {
         skip!("no output channel of {device} is patched back to an input");
     }
 
+    // One output can be detected on several inputs -- a mult, or a second
+    // arrival above the -40 dB floor. Mapping two tracks to one physical output
+    // would then manufacture a "bleeding across channels" failure that says
+    // nothing about mtrack. Keep the first link per output channel.
+    let mut links: Vec<_> = links.into_iter().collect();
+    let mut seen_outputs = std::collections::BTreeSet::new();
+    links.retain(|l| seen_outputs.insert(l.out_channel));
+
+    // Only as many channels as there are distinct tones can be told apart.
+    let verifiable = crate::songs::TRACK_TONES.len();
+    if links.len() > verifiable {
+        crate::outcome::record(format!(
+            "caveat: {} channels are patched back but only {verifiable} distinct tones exist, so \
+             the remainder were not verified",
+            links.len()
+        ));
+        links.truncate(verifiable);
+    }
+
     let outputs: Vec<u16> = links.iter().map(|l| l.out_channel).collect();
-    evidence.push(format!(
+    crate::outcome::record(format!(
         "loopback: {}",
         links
             .iter()
@@ -236,12 +254,12 @@ pub async fn tracks_route_to_their_mapped_channels() -> CheckOutcome {
 
     let total = caps.audio_out.as_ref().map(|d| d.max_channels).unwrap_or(0) as usize;
     if outputs.len() < total {
-        evidence.push(format!(
+        crate::outcome::record(format!(
             "caveat: only outputs {outputs:?} of {total} are patched back, so the rest were \
              exercised but not acoustically verified"
         ));
     }
 
     server.check_clean_log(&[])?;
-    Ok(evidence)
+    Ok(())
 }
