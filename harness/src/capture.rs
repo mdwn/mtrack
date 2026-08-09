@@ -23,7 +23,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use mtrack::calibrate::{build_capture_stream, CaptureBuffer};
+use mtrack::calibrate::CaptureBuffer;
 use parking_lot::Mutex;
 
 use crate::capabilities::{AudioInput, Capabilities};
@@ -194,7 +194,12 @@ pub fn record_from(
             buffer_size: cpal::BufferSize::Default,
         };
 
-        let stream = build_capture_stream(
+        // Deliberately not `mtrack::calibrate::build_capture_stream`: that has
+        // no I24 arm and falls through to f32, which 24-bit interfaces refuse.
+        // The tone side already handles I24, so delegating here would open the
+        // output, fail the capture, and surface as the thoroughly misleading
+        // "no output channel is patched back to an input".
+        let stream = build_capture_stream_any(
             &device,
             &stream_config,
             buffer.clone(),
@@ -300,6 +305,54 @@ pub fn probe_pair(
         }
     }
     Ok(pairs)
+}
+
+/// Builds a capture stream in the device's native sample format, including the
+/// 24-bit formats common on consoles and outboard converters.
+fn build_capture_stream_any(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    buffer: Arc<CaptureBuffer>,
+    channels: u16,
+    format: cpal::SampleFormat,
+) -> Result<cpal::Stream, Box<dyn std::error::Error>> {
+    match format {
+        cpal::SampleFormat::I16 => capture_typed::<i16>(device, config, buffer, channels),
+        cpal::SampleFormat::I32 => capture_typed::<i32>(device, config, buffer, channels),
+        cpal::SampleFormat::I24 => capture_typed::<cpal::I24>(device, config, buffer, channels),
+        _ => capture_typed::<f32>(device, config, buffer, channels),
+    }
+}
+
+/// Typed capture builder. Samples are converted to f32 for analysis.
+fn capture_typed<T>(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    buffer: Arc<CaptureBuffer>,
+    channels: u16,
+) -> Result<cpal::Stream, Box<dyn std::error::Error>>
+where
+    T: cpal::SizedSample,
+    f32: cpal::FromSample<T>,
+{
+    let channels = channels.max(1) as usize;
+    Ok(device.build_input_stream(
+        config,
+        move |data: &[T], _: &cpal::InputCallbackInfo| {
+            if !buffer.active.load(Ordering::SeqCst) {
+                return;
+            }
+            for frame in data.chunks(channels) {
+                for (ch, sample) in frame.iter().enumerate() {
+                    if let Some(slot) = buffer.channels.get(ch) {
+                        slot.lock().push(sample.to_sample::<f32>());
+                    }
+                }
+            }
+        },
+        |e| eprintln!("capture stream error: {e}"),
+        None,
+    )?)
 }
 
 /// Builds the probe's tone stream in the device's native sample format.

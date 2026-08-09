@@ -26,6 +26,7 @@
 #   ./scripts/hardware-test.sh --rediscover     # re-measure cabling, ignore cache
 #   ./scripts/hardware-test.sh --probe-all      # probe every device pair, not just the selected one
 #   ./scripts/hardware-test.sh --json out.json  # also write machine-readable results
+#   ./scripts/hardware-test.sh --no-build       # skip the build step
 
 set -uo pipefail
 
@@ -42,14 +43,24 @@ usage() {
     exit "${1:-0}"
 }
 
+# `shift 2` fails and shifts nothing when only one argument remains, and there
+# is no `set -e`, so a bare `--only` used to spin forever. Options taking a
+# value check for one explicitly and shift twice.
+need_value() {
+    if [[ $# -lt 2 ]]; then
+        echo "Option $1 requires a value." >&2
+        usage 1
+    fi
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --only)       FILTER="${2:-}"; shift 2 ;;
-        --repeat)     REPEAT="${2:-1}"; shift 2 ;;
+        --only)       need_value "$@"; FILTER="$2"; shift; shift ;;
+        --repeat)     need_value "$@"; REPEAT="$2"; shift; shift ;;
+        --json)       need_value "$@"; JSON_OUT="$2"; shift; shift ;;
         --list)       LIST_ONLY=true; shift ;;
         --rediscover) export MTRACK_E2E_REDISCOVER=1; shift ;;
         --probe-all)  export MTRACK_E2E_PROBE_ALL=1; shift ;;
-        --json)       JSON_OUT="${2:-}"; shift 2 ;;
         --no-build)   SKIP_BUILD=true; shift ;;
         -h|--help)    usage 0 ;;
         *)            echo "Unknown option: $1" >&2; usage 1 ;;
@@ -81,7 +92,7 @@ ARGS=()
 [[ -n "${JSON_OUT:-}" ]] && ARGS+=(--json "$JSON_OUT")
 
 if [[ "$LIST_ONLY" == "true" ]]; then
-    exec "$HARNESS" --list
+    exec "$HARNESS" --list "${ARGS[@]}"
 fi
 
 exec "$HARNESS" "${ARGS[@]}"

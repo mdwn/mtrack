@@ -507,7 +507,16 @@ fn select_midi(all: &[MidiPort], skips: &mut Vec<Skip>) -> (Option<MidiPort>, Op
     };
 
     let in_ = match env_override("MTRACK_E2E_MIDI_INPUT") {
-        Some(name) => find(&name),
+        Some(name) => {
+            let found = find(&name);
+            if found.is_none() {
+                skips.push(Skip {
+                    area: "midi",
+                    reason: format!("MTRACK_E2E_MIDI_INPUT={name} matched no device"),
+                });
+            }
+            found
+        }
         None => out.as_ref().filter(|o| o.has_input).cloned().or_else(|| {
             all.iter()
                 .find(|d| d.has_input && !is_synthetic(&d.name))

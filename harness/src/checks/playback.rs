@@ -132,7 +132,20 @@ pub async fn tracks_route_to_their_mapped_channels() -> CheckOutcome {
         .expect("audio-routing requires an output")
         .name
         .clone();
-    let links = crate::discovery::Discovery::get().audio_for_device(&device);
+    // Capture always reads from the selected input device, so a link arriving
+    // on some *other* input would index the wrong device's channels and be
+    // reported as an mtrack routing defect. Reachable under
+    // MTRACK_E2E_PROBE_ALL, which probes across device pairs.
+    let capture_device = caps
+        .audio_in
+        .as_ref()
+        .map(|d| d.name.clone())
+        .unwrap_or_default();
+    let links: Vec<_> = crate::discovery::Discovery::get()
+        .audio_for_device(&device)
+        .into_iter()
+        .filter(|l| l.in_device == capture_device)
+        .collect();
     if links.is_empty() {
         skip!("no output channel of {device} is patched back to an input");
     }
@@ -141,9 +154,13 @@ pub async fn tracks_route_to_their_mapped_channels() -> CheckOutcome {
     // arrival above the -40 dB floor. Mapping two tracks to one physical output
     // would then manufacture a "bleeding across channels" failure that says
     // nothing about mtrack. Keep the first link per output channel.
+    // Unique on both ends. One output on several inputs (a mult) and several
+    // outputs summed into one input both map two tracks onto one measurement
+    // and manufacture a "bleeding across channels" failure out of cabling.
     let mut links: Vec<_> = links.into_iter().collect();
     let mut seen_outputs = std::collections::BTreeSet::new();
-    links.retain(|l| seen_outputs.insert(l.out_channel));
+    let mut seen_inputs = std::collections::BTreeSet::new();
+    links.retain(|l| seen_outputs.insert(l.out_channel) && seen_inputs.insert(l.in_channel));
 
     // Only as many channels as there are distinct tones can be told apart.
     let verifiable = crate::songs::TRACK_TONES.len();

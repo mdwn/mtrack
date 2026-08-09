@@ -58,6 +58,8 @@ impl Need {
                     Some("no audio output device to play through".to_string())
                 } else if caps.audio_in.is_none() {
                     Some("no audio input device to capture with".to_string())
+                } else if !Discovery::get().was_measured() {
+                    Some("cabling has not been measured, so this is unknown".to_string())
                 } else if !Discovery::get().has_audio_loopback() {
                     Some("no output channel is patched back to an input".to_string())
                 } else {
@@ -71,6 +73,9 @@ impl Need {
             // A loopback presupposes a port to transmit on, so the simpler
             // failure is reported first rather than as "nothing loops back".
             Need::MidiLoopback => Need::MidiOut.unmet().or_else(|| {
+                if !Discovery::get().was_measured() {
+                    return Some("cabling has not been measured, so this is unknown".to_string());
+                }
                 (!Discovery::get().has_midi_loopback()).then(|| {
                     "no MIDI output port loops back to an input (try `sudo modprobe snd-virmidi`, \
                      or ALSA's Midi Through)"
@@ -95,9 +100,12 @@ pub struct Area {
 /// Every area the suite knows about, in the order they are reported.
 pub const AREAS: &[Area] = &[
     Area {
+        // Its checks claim an audio device, so a MIDI-only machine cannot run
+        // them. Declaring no needs made the plan print RUN and then skip
+        // everything -- the overstatement this tool exists to avoid.
         name: "startup",
         description: "config synthesis, device claim, song loading",
-        needs: &[],
+        needs: &[Need::AudioOut],
     },
     Area {
         name: "devices",

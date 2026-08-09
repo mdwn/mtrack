@@ -22,7 +22,7 @@ use crate::{check, check_eq, fail};
 /// Starts the player against a generated project and confirms it reaches a
 /// ready state with the audio device actually claimed.
 pub async fn player_starts_against_detected_hardware() -> CheckOutcome {
-    crate::runner::require_area("playback")?;
+    crate::runner::require_area("startup")?;
     let caps = Capabilities::get();
     let project = crate::checks::standard_project()?;
     let server = Server::start(&project).await?;

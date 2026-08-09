@@ -125,11 +125,15 @@ async fn main() -> ExitCode {
         return ExitCode::from(2);
     }
 
-    plan::print_plan();
-
+    // Listing must not measure: discovery plays tones and sends MIDI, which is
+    // not what "print the plan and exit" should do on a live rig.
     if options.list_only {
+        discovery::forbid_probing();
+        plan::print_plan();
         return ExitCode::SUCCESS;
     }
+
+    plan::print_plan();
 
     if !plan::anything_runs() {
         eprintln!(

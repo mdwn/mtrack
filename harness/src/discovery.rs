@@ -86,6 +86,16 @@ fn describe_age(secs: u64) -> String {
     }
 }
 
+/// Set when the caller must not make noise -- `--list` says "show me the plan",
+/// not "play tones out of every output and send SysEx to every MIDI port",
+/// which on a live rig is a genuinely unwelcome surprise.
+static PROBING_FORBIDDEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Forbids measuring. A cached map is still used if one is valid.
+pub fn forbid_probing() {
+    PROBING_FORBIDDEN.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
 impl Discovery {
     /// Discovers once per process, reusing a cached result when the hardware
     /// inventory is unchanged.
@@ -113,6 +123,16 @@ impl Discovery {
                         );
                     }
                 }
+            }
+
+            if PROBING_FORBIDDEN.load(std::sync::atomic::Ordering::SeqCst) {
+                return Discovery {
+                    audio: Vec::new(),
+                    midi: Vec::new(),
+                    fingerprint,
+                    measured_at: 0,
+                    source: "not measured -- probing suppressed for --list".to_string(),
+                };
             }
 
             let mut discovered = measure(caps, fingerprint);
@@ -146,6 +166,12 @@ impl Discovery {
             .iter()
             .find(|l| l.out_port == l.in_port)
             .or_else(|| self.midi.first())
+    }
+
+    /// Whether this map reflects an actual measurement. A suppressed probe
+    /// yields an empty map, which must not be reported as "nothing is patched".
+    pub fn was_measured(&self) -> bool {
+        self.measured_at != 0
     }
 
     /// How this cabling map was obtained.
@@ -215,6 +241,9 @@ fn fingerprint(caps: &Capabilities) -> String {
     }
     // Selection matters as much as inventory: a run with a subsystem disabled
     // must not reuse cabling measured while it was enabled.
+    // Probe breadth changes what the map can contain, so a --probe-all result
+    // and a single-pair result are not interchangeable.
+    parts.insert(format!("probe_all:{}", probe_all_devices()));
     parts.insert(format!(
         "sel:{}:{}:{}",
         caps.audio_out

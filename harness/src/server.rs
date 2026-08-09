@@ -96,9 +96,11 @@ pub fn reset_init_latch() {
 /// Why a server failed to come up. The distinction decides whether the failure
 /// is reported against mtrack or against the harness.
 enum StartFailure {
-    /// The player came up but never reported readiness.
-    Timeout(String),
-    /// The harness could not even get that far.
+    /// The player itself failed to come up: it exited, or never reported
+    /// readiness before the deadline.
+    Player(String),
+    /// The harness could not even get that far, or could not tell. Says
+    /// nothing about the player.
     Harness(String),
 }
 
@@ -132,7 +134,7 @@ impl Server {
 
         match Server::start_inner(project, true).await {
             Ok(server) => Ok(server),
-            Err(StartFailure::Timeout(msg)) => {
+            Err(StartFailure::Player(msg)) => {
                 INIT_TIMED_OUT.store(true, Ordering::SeqCst);
                 // A real finding: the player could not come up against a config
                 // naming devices it had itself advertised.
@@ -150,7 +152,7 @@ impl Server {
         Server::start_inner(project, false)
             .await
             .map_err(|e| match e {
-                StartFailure::Timeout(m) | StartFailure::Harness(m) => {
+                StartFailure::Player(m) | StartFailure::Harness(m) => {
                     crate::outcome::CheckError::Harness(m)
                 }
             })
@@ -159,7 +161,12 @@ impl Server {
     async fn start_inner(project: &Project, require_init: bool) -> Result<Server, StartFailure> {
         let harness = StartFailure::Harness;
 
-        let log_path = project.root().join("mtrack.log");
+        // A distinct log per start. Reusing one path meant a restart truncated
+        // the previous process's log -- including the errors from the run that
+        // performed the mutation being tested.
+        static NEXT_LOG: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let index = NEXT_LOG.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let log_path = project.root().join(format!("mtrack-{index}.log"));
         let log = File::create(&log_path).map_err(|e| harness(e.to_string()))?;
         let log_err = log.try_clone().map_err(|e| harness(e.to_string()))?;
 
@@ -191,17 +198,11 @@ impl Server {
             log_path,
         };
 
-        server
-            .wait_until_ready(require_init)
-            .await
-            .map_err(|e| StartFailure::Timeout(e.to_string()))?;
+        server.wait_until_ready(require_init).await?;
         Ok(server)
     }
 
-    async fn wait_until_ready(
-        &mut self,
-        require_init: bool,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    async fn wait_until_ready(&mut self, require_init: bool) -> Result<(), StartFailure> {
         let client = reqwest::Client::new();
         let url = format!("{}/api/status", self.base_url());
         let deadline = Instant::now() + READY_TIMEOUT;
@@ -209,16 +210,22 @@ impl Server {
         let mut last_state = String::from("no response");
         while Instant::now() < deadline {
             if let Some(status) = self.exit_status() {
-                return Err(format!(
+                return Err(StartFailure::Player(format!(
                     "mtrack exited with {status} during startup.\n--- log ---\n{}",
                     self.log()
-                )
-                .into());
+                )));
             }
 
             match client.get(&url).send().await {
                 Ok(response) if response.status().is_success() => {
-                    let body: serde_json::Value = response.json().await?;
+                    let body: serde_json::Value = match response.json().await {
+                        Ok(body) => body,
+                        Err(e) => {
+                            last_state = format!("status body did not parse: {e}");
+                            tokio::time::sleep(Duration::from_millis(200)).await;
+                            continue;
+                        }
+                    };
                     let init_done = body
                         .get("hardware")
                         .and_then(|h| h.get("init_done"))
@@ -236,11 +243,10 @@ impl Server {
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
 
-        Err(format!(
+        Err(StartFailure::Player(format!(
             "mtrack was not ready within {READY_TIMEOUT:?} ({last_state}).\n--- log ---\n{}",
             self.log()
-        )
-        .into())
+        )))
     }
 
     pub fn base_url(&self) -> String {
@@ -342,6 +348,15 @@ impl Server {
             return;
         };
 
+        // Nothing to signal if the child was already reaped. Its pid has gone
+        // back to the OS, and raw-signalling it could hit an unrelated process
+        // that inherited it. `Child::kill` guards against this; the hand-rolled
+        // `libc_kill` does not, so the check has to come first. Reachable
+        // whenever a player dies during startup and `wait_until_ready` reaps it.
+        if self.exit_status.is_some() {
+            return;
+        }
+
         // SIGTERM first so the player can release devices; a killed process can
         // leave a USB interface or OLA universe claimed for the next case.
         #[cfg(unix)]
@@ -350,10 +365,6 @@ impl Server {
         }
         #[cfg(not(unix))]
         let _ = child.kill();
-
-        if self.exit_status.is_some() {
-            return;
-        }
 
         let deadline = Instant::now() + SHUTDOWN_TIMEOUT;
         while Instant::now() < deadline {
