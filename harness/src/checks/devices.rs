@@ -32,16 +32,19 @@ use crate::{check, skip};
 
 /// Every device offered to users can actually be opened by the player.
 pub async fn advertised_devices_are_openable() -> CheckOutcome {
-    if Capabilities::get().all_audio_out.is_empty() {
-        skip!("no audio devices to compare");
+    // Gated on the raw advertised list, not `all_audio_out` -- that is the
+    // *intersection* of advertised and openable, so on a machine where none of
+    // the advertised devices can be opened (the maximal form of exactly the
+    // defect this check reports) it would be empty and the run would print SKIP
+    // instead of FAIL.
+    let advertised_raw = mtrack::audio::list_device_info()
+        .map_err(|e| CheckError::Harness(format!("could not list device info: {e}")))?;
+    if advertised_raw.is_empty() {
+        skip!("this machine advertises no audio devices at all, so there is nothing to compare");
     }
     // Failing to enumerate is a harness problem, not a finding about mtrack's
     // behaviour, so it propagates rather than being reported as a defect.
-    let advertised: Vec<String> = mtrack::audio::list_device_info()
-        .map_err(|e| CheckError::Harness(format!("could not list device info: {e}")))?
-        .into_iter()
-        .map(|d| d.name)
-        .collect();
+    let advertised: Vec<String> = advertised_raw.into_iter().map(|d| d.name).collect();
 
     let openable: Vec<String> = mtrack::audio::list_devices()
         .map_err(|e| CheckError::Harness(format!("could not list devices: {e}")))?

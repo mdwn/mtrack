@@ -26,10 +26,16 @@ use crate::outcome::CheckOutcome;
 use crate::project::{ProfileSpec, ProjectBuilder};
 use crate::server::Server;
 use crate::songs::SongSpec;
+use crate::{check, check_eq, inconclusive, skip};
 
 /// How long the routing measurement records for.
 const CAPTURE_SECONDS: f32 = 3.0;
-use crate::{check, check_eq, skip};
+
+/// Start of the measured window, past stream startup and any fade.
+const MEASURE_SKIP: Duration = Duration::from_millis(500);
+
+/// Length of the measured window.
+const MEASURE_TAKE: Duration = Duration::from_millis(1500);
 
 /// Playing a song advances the clock and then stops on its own.
 ///
@@ -237,11 +243,30 @@ pub async fn tracks_route_to_their_mapped_channels() -> CheckOutcome {
     // simply shorter than wall time, and the resulting phase discontinuities
     // smear the Goertzel result into "no such tone reached input N". Length is
     // a floor, not a guarantee of continuity.
-    let expected_samples = (CAPTURE_SECONDS * 0.9 * recorded.sample_rate() as f32) as usize;
+    // Known, unexplained: when a discovery probe runs earlier in the same
+    // process (`--rediscover`, or a cold cache), this capture logs tens of
+    // thousands of ALSA POLLERRs and comes back short; with a cached map and no
+    // probe it is clean. Reproducible in both directions on the MAT rig.
+    // Sleeping after the probe releases its streams does not help, so it is not
+    // simply teardown lag -- more likely process-global state in cpal's ALSA
+    // host once an output stream has been built. The measurement itself still
+    // covers its window and passes, so this is noise rather than a wrong
+    // result, but it is not understood and should not be described as fixed.
+    //
+    // Sized to the window actually measured, not to the requested duration. A
+    // 90%-of-request floor rejected captures that fully covered the window and
+    // so lost real coverage; a fraction-of-request floor answers the wrong
+    // question. What matters is whether skip+take is present, with a little
+    // margin.
+    let needed = MEASURE_SKIP + MEASURE_TAKE + Duration::from_millis(200);
+    let expected_samples = (needed.as_secs_f32() * recorded.sample_rate() as f32) as usize;
     if shortest < expected_samples {
-        skip!(
+        // Inconclusive, not skipped: the report files skips under "cannot be
+        // verified on this machine, re-running changes nothing", and an xrun is
+        // the most re-runnable failure there is -- the one --repeat exists for.
+        inconclusive!(
             "capture returned only {shortest} samples per channel (wanted at least \
-                 {expected_samples}); the interface underran, so routing was not verified"
+             {expected_samples}); the interface underran, so routing was not verified"
         );
     }
 
@@ -251,11 +276,7 @@ pub async fn tracks_route_to_their_mapped_channels() -> CheckOutcome {
     for (index, link) in links.iter().enumerate() {
         let output = &link.out_channel;
         let input = link.in_channel;
-        let window = recorded.steady(
-            input,
-            Duration::from_millis(500),
-            Duration::from_millis(1500),
-        );
+        let window = recorded.steady(input, MEASURE_SKIP, MEASURE_TAKE);
         let present = capture::tones_present(window, recorded.sample_rate(), &expected_tones);
         let found: Vec<usize> = present.iter().map(|(i, _)| *i).collect();
 

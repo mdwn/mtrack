@@ -27,7 +27,7 @@ use crate::client::Client;
 use crate::outcome::{CheckError, CheckOutcome};
 use crate::project::Project;
 use crate::server::Server;
-use crate::{check, check_eq, fail, skip};
+use crate::{check, check_eq, fail, inconclusive, skip};
 
 /// Asserts that a config mutation reaches memory, disk, and a restarted process.
 ///
@@ -51,10 +51,15 @@ where
         .get_config(GetConfigRequest {})
         .await?
         .into_inner();
-    check!(
-        !before.yaml.contains(expect),
-        "{what}: '{expect}' was already present before the mutation, so this proves nothing"
-    );
+    if before.yaml.contains(expect) {
+        // The harness could not establish its own starting conditions; that is
+        // not a finding about mtrack, and reporting it as one would exit
+        // non-zero claiming a defect.
+        inconclusive!(
+            "{what}: '{expect}' was already present before the mutation, so this check could \
+             not prove anything"
+        );
+    }
 
     // The store uses optimistic concurrency, so the mutation carries the
     // checksum it read.

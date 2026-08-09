@@ -90,7 +90,15 @@ impl From<tokio::task::JoinError> for CheckError {
 
 impl From<tonic::Status> for CheckError {
     fn from(e: tonic::Status) -> CheckError {
-        CheckError::Harness(e.to_string())
+        // A Status covers two different things. Unavailable/DeadlineExceeded
+        // means we could not reach the player; anything else is the player
+        // rejecting a request, which is a statement about its behaviour.
+        match e.code() {
+            tonic::Code::Unavailable | tonic::Code::DeadlineExceeded | tonic::Code::Unknown => {
+                CheckError::Harness(e.to_string())
+            }
+            _ => CheckError::Failed(format!("the player rejected a request: {e}")),
+        }
     }
 }
 

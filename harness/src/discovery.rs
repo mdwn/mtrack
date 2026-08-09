@@ -246,6 +246,9 @@ fn fingerprint(caps: &Capabilities) -> String {
     // Probe breadth changes what the map can contain, so a --probe-all result
     // and a single-pair result are not interchangeable.
     parts.insert(format!("probe_all:{}", probe_all_devices()));
+    // Amplitude decides whether tones clear the noise floor. One run at 0.02
+    // discovers nothing and caches that emptiness for every later run.
+    parts.insert(format!("amplitude:{}", crate::songs::amplitude()));
     parts.insert(format!(
         "sel:{}:{}:{}",
         caps.audio_out
@@ -367,28 +370,48 @@ fn measure_audio(caps: &Capabilities) -> Vec<AudioLoopback> {
 /// aliases of devices already in the list and would multiply the pass count
 /// while measuring the same cable.
 fn probe_candidates_out(caps: &Capabilities) -> Vec<AudioOutput> {
-    match &caps.audio_out {
-        Some(selected) if !probe_all_devices() => vec![selected.clone()],
-        _ => caps
-            .all_audio_out
-            .iter()
-            .filter(|d| d.name.contains("hw:CARD=") && !d.name.contains("plughw:"))
-            .cloned()
-            .collect(),
+    // The selected device is always a candidate. Filtering the wider set to raw
+    // hardware alone meant that under --probe-all a rig whose only openable
+    // output is a plug device (a 24-bit console, which the harness explicitly
+    // accepts as legitimate) produced no candidates at all -- so --probe-all
+    // lost every loopback on exactly the rig it is most useful for.
+    let mut candidates: Vec<AudioOutput> = caps.audio_out.iter().cloned().collect();
+    if !probe_all_devices() {
+        return candidates;
     }
+    for extra in caps
+        .all_audio_out
+        .iter()
+        .filter(|d| d.name.contains("hw:CARD=") && !d.name.contains("plughw:"))
+    {
+        if !candidates.iter().any(|c| c.name == extra.name) {
+            candidates.push(extra.clone());
+        }
+    }
+    candidates
 }
 
 /// Input devices worth probing, on the same reasoning.
 fn probe_candidates_in(caps: &Capabilities) -> Vec<AudioInput> {
-    match &caps.audio_in {
-        Some(selected) if !probe_all_devices() => vec![selected.clone()],
-        _ => caps
-            .all_audio_in
-            .iter()
-            .filter(|d| d.name.contains("hw:CARD=") && !d.name.contains("plughw:"))
-            .cloned()
-            .collect(),
+    // The selected device is always a candidate. Filtering the wider set to raw
+    // hardware alone meant that under --probe-all a rig whose only openable
+    // output is a plug device (a 24-bit console, which the harness explicitly
+    // accepts as legitimate) produced no candidates at all -- so --probe-all
+    // lost every loopback on exactly the rig it is most useful for.
+    let mut candidates: Vec<AudioInput> = caps.audio_in.iter().cloned().collect();
+    if !probe_all_devices() {
+        return candidates;
     }
+    for extra in caps
+        .all_audio_in
+        .iter()
+        .filter(|d| d.name.contains("hw:CARD=") && !d.name.contains("plughw:"))
+    {
+        if !candidates.iter().any(|c| c.name == extra.name) {
+            candidates.push(extra.clone());
+        }
+    }
+    candidates
 }
 
 /// Whether to probe every hardware device pair rather than just the selected

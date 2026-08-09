@@ -96,7 +96,14 @@ if [[ "$SKIP_BUILD" != "true" ]]; then
     echo
 fi
 
-HARNESS="$PROJECT_ROOT/target/debug/mtrack-harness"
+# Mirrors the harness's own release-then-debug lookup for the player: a
+# release-only machine running --no-build would otherwise fail with
+# no-such-file even though a perfectly good binary is present.
+if [[ -x "$PROJECT_ROOT/target/release/mtrack-harness" && "$SKIP_BUILD" == "true" ]]; then
+    HARNESS="$PROJECT_ROOT/target/release/mtrack-harness"
+else
+    HARNESS="$PROJECT_ROOT/target/debug/mtrack-harness"
+fi
 
 # Pin the player only when this script built it. Doing so unconditionally broke
 # --no-build on a release-only machine, where the harness's own release-first

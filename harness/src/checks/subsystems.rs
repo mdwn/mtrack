@@ -44,7 +44,6 @@ const SETTLE: Duration = Duration::from_secs(6);
 /// nothing panics while it keeps trying.
 async fn watch_subsystem(
     client: &crate::client::Client,
-    server: &Server,
     subsystem: &str,
 ) -> Result<Vec<String>, crate::outcome::CheckError> {
     let deadline = std::time::Instant::now() + SETTLE;
@@ -54,14 +53,11 @@ async fn watch_subsystem(
         if !seen.contains(&status) {
             seen.push(status.clone());
         }
-        // Once it has settled on something other than initializing there is
-        // nothing further to learn.
-        if status != "initializing" && status != "connected" {
-            break;
-        }
+        // Deliberately no early break. Stopping as soon as the status settled
+        // would read the log a few hundred milliseconds in, reintroducing the
+        // "missed by milliseconds" gap the settle window exists to close.
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
-    let _ = server;
     Ok(seen)
 }
 
@@ -142,7 +138,7 @@ pub async fn bogus_midi_device_degrades_gracefully() -> CheckOutcome {
     let server = Server::start_degraded(&project).await?;
     let client = Client::connect_http_only(&server).await?;
 
-    let seen = watch_subsystem(&client, &server, "midi").await?;
+    let seen = watch_subsystem(&client, "midi").await?;
     check!(
         !seen.iter().any(|s| s == "connected"),
         "a nonexistent MIDI device was reported as connected (statuses seen: {seen:?})"
@@ -176,7 +172,7 @@ pub async fn bogus_audio_device_degrades_gracefully() -> CheckOutcome {
     let server = Server::start_degraded(&project).await?;
     let client = Client::connect_http_only(&server).await?;
 
-    let seen = watch_subsystem(&client, &server, "audio").await?;
+    let seen = watch_subsystem(&client, "audio").await?;
     check!(
         !seen.iter().any(|s| s == "connected"),
         "a nonexistent audio device was reported as connected (statuses seen: {seen:?})"

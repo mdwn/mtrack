@@ -201,7 +201,7 @@ impl Client {
     pub async fn wait_until_playing(
         &mut self,
         timeout: Duration,
-    ) -> Result<StatusResponse, Box<dyn std::error::Error>> {
+    ) -> Result<StatusResponse, crate::outcome::CheckError> {
         self.wait_for_status(timeout, "playing", |s| s.playing)
             .await
     }
@@ -210,7 +210,7 @@ impl Client {
     pub async fn wait_until_stopped(
         &mut self,
         timeout: Duration,
-    ) -> Result<StatusResponse, Box<dyn std::error::Error>> {
+    ) -> Result<StatusResponse, crate::outcome::CheckError> {
         self.wait_for_status(timeout, "stopped", |s| !s.playing)
             .await
     }
@@ -220,7 +220,7 @@ impl Client {
         timeout: Duration,
         what: &str,
         predicate: impl Fn(&StatusResponse) -> bool,
-    ) -> Result<StatusResponse, Box<dyn std::error::Error>> {
+    ) -> Result<StatusResponse, crate::outcome::CheckError> {
         let deadline = Instant::now() + timeout;
         let mut last = None;
         while Instant::now() < deadline {
