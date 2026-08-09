@@ -1,3 +1,6 @@
+[workspace]
+members = ["harness"]
+
 [package]
 name = "mtrack"
 description = "A multitrack audio and MIDI player for live performances."

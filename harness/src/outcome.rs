@@ -1,0 +1,242 @@
+// Copyright (C) 2026 Michael Wilson <mike@mdwn.dev>
+//
+// This program is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free Software
+// Foundation, version 3.
+//
+// This program is distributed in the hope that it will be useful, but WITHOUT
+// ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License along with
+// this program. If not, see <https://www.gnu.org/licenses/>.
+//
+//! What a check can conclude.
+//!
+//! A hardware check has more than two possible endings, and collapsing them
+//! into pass/fail is what makes a test harness the wrong tool for this job.
+//! "Could not run here" and "ran but the measurement is untrustworthy" are
+//! both *not* passes, and neither is a defect in mtrack.
+//!
+//! Failure is a value rather than a panic. Panics are for bugs; "mtrack routed
+//! the wrong channel" is the result this tool exists to report, so it travels
+//! as a `Result` like any other outcome.
+
+use std::error::Error;
+use std::fmt;
+use std::time::Duration;
+
+/// Why a check did not simply pass.
+#[derive(Debug)]
+pub enum CheckError {
+    /// The behaviour under test is wrong. This is a defect in mtrack.
+    Failed(String),
+    /// The check cannot run on this machine, typically for missing hardware.
+    /// This will never pass here no matter how often it is run.
+    Skipped(String),
+    /// The check could have run, but an earlier failure made it moot. Unlike a
+    /// skip this says nothing about the machine -- fix the earlier failure and
+    /// it becomes runnable.
+    Blocked(String),
+    /// The check ran but its measurement cannot be trusted, e.g. the audio
+    /// interface underran mid-capture. Not a defect, but not evidence either.
+    Inconclusive(String),
+    /// The harness itself broke: a connection failed, a temp dir could not be
+    /// written. This says nothing about mtrack.
+    Harness(String),
+}
+
+impl fmt::Display for CheckError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CheckError::Failed(m)
+            | CheckError::Skipped(m)
+            | CheckError::Blocked(m)
+            | CheckError::Inconclusive(m)
+            | CheckError::Harness(m) => write!(f, "{m}"),
+        }
+    }
+}
+
+/// Infrastructure errors classify as harness problems, never as defects.
+///
+/// This is the point of the conversion: `?` on a gRPC call, a file read, or a
+/// JSON parse can only ever produce `Harness`, so the sole way to report a
+/// defect is an explicit [`check!`]. The two are impossible to confuse.
+impl From<Box<dyn Error>> for CheckError {
+    fn from(e: Box<dyn Error>) -> CheckError {
+        CheckError::Harness(e.to_string())
+    }
+}
+
+impl From<std::io::Error> for CheckError {
+    fn from(e: std::io::Error) -> CheckError {
+        CheckError::Harness(e.to_string())
+    }
+}
+
+impl From<String> for CheckError {
+    fn from(e: String) -> CheckError {
+        CheckError::Harness(e)
+    }
+}
+
+impl From<tokio::task::JoinError> for CheckError {
+    fn from(e: tokio::task::JoinError) -> CheckError {
+        CheckError::Harness(format!("a blocking task failed: {e}"))
+    }
+}
+
+impl From<tonic::Status> for CheckError {
+    fn from(e: tonic::Status) -> CheckError {
+        CheckError::Harness(e.to_string())
+    }
+}
+
+/// Facts a check measured, reported whether or not it passed.
+///
+/// The evidence is the actual product of a run: "beat clock 41.60 Hz against
+/// 41.60 expected" is worth more than the word "passed".
+pub type Evidence = Vec<String>;
+
+/// What a check body returns.
+pub type CheckOutcome = Result<Evidence, CheckError>;
+
+/// How a completed check ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Outcome {
+    Passed,
+    Failed,
+    /// Cannot be verified on this machine.
+    Skipped,
+    /// Runnable in principle, but an earlier failure made it moot.
+    Blocked,
+    Inconclusive,
+    /// The harness broke rather than the software under test.
+    HarnessError,
+}
+
+impl Outcome {
+    /// Whether this outcome should make the run exit non-zero.
+    ///
+    /// Only a real defect or a broken harness does. A skip is the suite
+    /// correctly declining to test absent hardware, and an inconclusive result
+    /// is an honest "we could not tell".
+    pub fn is_bad(&self) -> bool {
+        matches!(self, Outcome::Failed | Outcome::HarnessError)
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Outcome::Passed => "PASS",
+            Outcome::Failed => "FAIL",
+            Outcome::Skipped => "SKIP",
+            Outcome::Blocked => "BLOCKED",
+            Outcome::Inconclusive => "INCONCLUSIVE",
+            Outcome::HarnessError => "HARNESS-ERROR",
+        }
+    }
+}
+
+/// A finished check.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CheckResult {
+    pub area: String,
+    pub name: String,
+    pub description: String,
+    pub outcome: Outcome,
+    /// Why it did not pass. Absent when it did.
+    pub detail: Option<String>,
+    pub evidence: Evidence,
+    pub duration_ms: u128,
+}
+
+impl CheckResult {
+    pub fn from_outcome(
+        area: &str,
+        name: &str,
+        description: &str,
+        result: CheckOutcome,
+        elapsed: Duration,
+    ) -> CheckResult {
+        let (outcome, detail, evidence) = match result {
+            Ok(evidence) => (Outcome::Passed, None, evidence),
+            Err(CheckError::Failed(m)) => (Outcome::Failed, Some(m), Vec::new()),
+            Err(CheckError::Skipped(m)) => (Outcome::Skipped, Some(m), Vec::new()),
+            Err(CheckError::Blocked(m)) => (Outcome::Blocked, Some(m), Vec::new()),
+            Err(CheckError::Inconclusive(m)) => (Outcome::Inconclusive, Some(m), Vec::new()),
+            Err(CheckError::Harness(m)) => (Outcome::HarnessError, Some(m), Vec::new()),
+        };
+
+        CheckResult {
+            area: area.to_string(),
+            name: name.to_string(),
+            description: description.to_string(),
+            outcome,
+            detail,
+            evidence,
+            duration_ms: elapsed.as_millis(),
+        }
+    }
+}
+
+/// Reports a defect when `cond` is false.
+///
+/// The counterpart to `assert!`, except it yields a value instead of
+/// unwinding, so the caller keeps control and the run keeps its report.
+#[macro_export]
+macro_rules! check {
+    ($cond:expr, $($arg:tt)+) => {
+        if !$cond {
+            return Err($crate::outcome::CheckError::Failed(format!($($arg)+)));
+        }
+    };
+}
+
+/// Reports a defect when two values differ, including both in the message.
+#[macro_export]
+macro_rules! check_eq {
+    ($left:expr, $right:expr, $($arg:tt)+) => {{
+        let left = &$left;
+        let right = &$right;
+        if left != right {
+            return Err($crate::outcome::CheckError::Failed(format!(
+                "{}\n  expected: {:?}\n  actual:   {:?}",
+                format!($($arg)+), right, left
+            )));
+        }
+    }};
+}
+
+/// Reports a defect unconditionally.
+#[macro_export]
+macro_rules! fail {
+    ($($arg:tt)+) => {
+        return Err($crate::outcome::CheckError::Failed(format!($($arg)+)))
+    };
+}
+
+/// Declines to run because an earlier failure made this moot.
+#[macro_export]
+macro_rules! blocked {
+    ($($arg:tt)+) => {
+        return Err($crate::outcome::CheckError::Blocked(format!($($arg)+)))
+    };
+}
+
+/// Declines to run, because this machine cannot.
+#[macro_export]
+macro_rules! skip {
+    ($($arg:tt)+) => {
+        return Err($crate::outcome::CheckError::Skipped(format!($($arg)+)))
+    };
+}
+
+/// Ran, but the measurement cannot be trusted.
+#[macro_export]
+macro_rules! inconclusive {
+    ($($arg:tt)+) => {
+        return Err($crate::outcome::CheckError::Inconclusive(format!($($arg)+)))
+    };
+}
