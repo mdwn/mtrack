@@ -11,6 +11,7 @@
 #
 # You should have received a copy of the GNU General Public License along with
 # this program. If not, see <https://www.gnu.org/licenses/>.
+#
 """Negative-control sweep: prove each check is capable of failing.
 
 Run from anywhere:  python3 harness/negative-control.py [check-name-substring]
