@@ -85,6 +85,7 @@ comments:
     files:
       - ^Makefile$
       - \.sh$
+      - \.py$
       - \.toml$
       - Dockerfile
       - \.dockerignore$
