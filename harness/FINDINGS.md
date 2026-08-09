@@ -103,6 +103,28 @@ was closed as invalid. What misled the original report was
 the exception; that comment has been corrected.
 
 
+## Verifying the checks themselves
+
+A check that cannot fail is worse than no check, and two have shipped here:
+`bogus_*_device_degrades_gracefully` read a status that was `initializing`
+whatever mtrack did, and `active_playlist_persists_across_restart` asserted the
+opposite of documented behaviour. Both survived several reviews.
+
+`harness/negative-control.py` breaks each check's premise, runs it alone, and
+requires it to stop passing. It distinguishes two strengths:
+
+- **world** — the input the check reads is broken. Strong: it proves the check
+  notices a changed reality.
+- **predicate** — the assertion is inverted. Proves only that it is reached and
+  its message renders. *A vacuous check passes this*, which is why the two
+  defects above needed world mutations to catch.
+
+Two lessons from the first run, both bugs in the sweep rather than the checks:
+profiles load in **filename** order, so reordering the vec was a no-op; and a
+*bogus* device stops the player booting, which fails the check for the wrong
+reason and never exercises the assertion — a valid-but-different device is the
+right control.
+
 ## Non-defects worth knowing
 
 These are working as designed but surprised the harness, and cost time:
